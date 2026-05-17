@@ -297,7 +297,7 @@ class TestImportLabelsGoldenPath:
     reason=(
         "CategorizationService.set_category emits category.set audit events, "
         "but the only CLI/MCP surface today (categorize_items via "
-        "transactions categorize apply-from-file) does not invoke set_category — "
+        "transactions categorize commit-from-file) does not invoke set_category — "
         "it inserts via direct SQL UPSERT without audit emission. Wiring that "
         "is out of scope for Task 14 (polish/docs only)."
     )
@@ -328,14 +328,14 @@ class TestCategoryEditAudit:
         txn_id = _loads(result.stdout)["data"]["transaction_id"]
         run_cli("transform", "apply", env=env, timeout=180).assert_success()
 
-        # Apply a category via apply-from-file (writes through CategorizationService.set_category).
+        # Apply a category via commit-from-file (writes through CategorizationService.set_category).
         bulk = [{"transaction_id": txn_id, "category": "Shopping"}]
         bulk_path = Path(env["MONEYBIN_HOME"]) / "categorize.json"
         bulk_path.write_text(json.dumps(bulk))
         result = run_cli(
             "transactions",
             "categorize",
-            "apply-from-file",
+            "commit-from-file",
             str(bulk_path),
             env=env,
         )
@@ -347,7 +347,7 @@ class TestCategoryEditAudit:
         run_cli(
             "transactions",
             "categorize",
-            "apply-from-file",
+            "commit-from-file",
             str(bulk_path),
             env=env,
         ).assert_success()

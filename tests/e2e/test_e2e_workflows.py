@@ -297,7 +297,7 @@ class TestAutoRulePipeline:
         result = run_cli(
             "transactions",
             "categorize",
-            "apply",
+            "commit",
             "--input",
             str(json_path),
             env=env,

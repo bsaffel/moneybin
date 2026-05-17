@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping, Sequence
+from typing import Literal
 
 from fastmcp import FastMCP
 
@@ -29,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 
 @mcp_tool(sensitivity="low", domain="categorize")
-def transactions_categorize_rules_list() -> ResponseEnvelope:
+def transactions_categorize_rules() -> ResponseEnvelope:
     """List all categorization rules.
 
     Returns rule ID, name, pattern, match type, category, priority,
@@ -61,7 +62,7 @@ def transactions_categorize_stats() -> ResponseEnvelope:
 
 
 @mcp_tool(sensitivity="medium", domain="categorize")
-def transactions_categorize_pending_list(
+def transactions_categorize_pending(
     limit: int = 50,
 ) -> ResponseEnvelope:
     """Find transactions that have not been categorized yet.
@@ -87,35 +88,37 @@ def transactions_categorize_pending_list(
         data=records,
         sensitivity="medium",
         actions=[
-            "Use transactions_categorize_apply to assign categories to these transactions",
+            "Use transactions_categorize_commit to commit categorizations for these transactions",
             "Use transactions_categorize_rules_create to set up automatic categorization",
         ],
     )
 
 
 @mcp_tool(sensitivity="medium", domain="categorize", read_only=False)
-def transactions_categorize_apply(
+def transactions_categorize_commit(
     items: Sequence[Mapping[str, str | None]],
 ) -> ResponseEnvelope:
-    """Assign categories to multiple transactions in one call.
+    """Commit externally-decided categorizations for a batch of transactions.
 
-    Each item should have ``transaction_id``, ``category``, and
-    optionally ``subcategory`` and ``canonical_merchant_name``.
-    Transactions that already have a category are overwritten (subject
-    to source-precedence rules).
+    Each item should have ``transaction_id``, ``category``, and optionally
+    ``subcategory`` and ``canonical_merchant_name``. Transactions that
+    already have a category are overwritten (subject to source-precedence
+    rules).
 
-    Also auto-creates exemplar-only merchant mappings from the row's
-    normalized match_text (description + memo) so future rows with the
-    same match_text are categorized automatically via the oneOf
-    set-membership matcher. When ``canonical_merchant_name`` is
-    provided, multiple rows with different match_text values are
-    merged under one merchant identity by appending exemplars rather
-    than spawning per-row merchants.
+    Also auto-creates exemplar-only merchant mappings from each row's
+    normalized match_text so future rows with the same match_text are
+    categorized automatically via the merchant matcher. When
+    ``canonical_merchant_name`` is provided, multiple rows with different
+    match_text values are merged under one merchant identity by appending
+    exemplars rather than spawning per-row merchants.
+
+    Typical caller: an LLM that received redacted rows from
+    transactions_categorize_assist, proposed categorizations, the user
+    reviewed, and the LLM now persists the accepted decisions.
 
     Args:
         items: List of dicts with transaction_id, category, optional
-            subcategory, and optional canonical_merchant_name (the
-            LLM-proposed display name used to merge exemplars).
+            subcategory, and optional canonical_merchant_name.
     """
     if not items:
         return CategorizationResult(
@@ -233,12 +236,42 @@ def transactions_categorize_auto_stats() -> ResponseEnvelope:
     return auto_stats_envelope(data)
 
 
+@mcp_tool(sensitivity="medium", domain="categorize", read_only=False)
+def transactions_categorize_run(
+    methods: list[Literal["rules", "merchants"]] | None = None,
+) -> ResponseEnvelope:
+    """Run the categorization engine cascade over uncategorized transactions.
+
+    Each method runs a deterministic engine: ``rules`` applies active
+    user-authored pattern rules; ``merchants`` applies the stored merchant
+    catalog. Engines run in the order given — an earlier engine's write
+    blocks a later engine's write on the same row via source-precedence.
+    The canonical order ``["rules", "merchants"]`` takes an optimized
+    shared-scan path. Amounts use the accounting convention: negative =
+    expense, positive = income; transfers exempt.
+
+    Args:
+        methods: Engines to run in the listed order. Defaults to
+            ["rules", "merchants"].
+    """
+    with get_database() as db:
+        data = CategorizationService(db).categorize_run(methods=methods)
+    return build_envelope(
+        data=data,
+        sensitivity="medium",
+        actions=[
+            "Use transactions_categorize_stats to check resulting coverage",
+            "Use transactions_categorize_pending to see remaining uncategorized rows",
+        ],
+    )
+
+
 def register_transactions_categorize_tools(mcp: FastMCP) -> None:
     """Register all transactions categorize namespace tools with the FastMCP server."""
     register(
         mcp,
-        transactions_categorize_rules_list,
-        "transactions_categorize_rules_list",
+        transactions_categorize_rules,
+        "transactions_categorize_rules",
         "List all active categorization rules.",
     )
     register(
@@ -250,19 +283,19 @@ def register_transactions_categorize_tools(mcp: FastMCP) -> None:
     )
     register(
         mcp,
-        transactions_categorize_pending_list,
-        "transactions_categorize_pending_list",
+        transactions_categorize_pending,
+        "transactions_categorize_pending",
         "Find transactions that have not been categorized yet. "
         "Amounts use the accounting convention: negative = expense, positive = income; transfers exempt. "
         "Amounts are in the currency named by `summary.display_currency`.",
     )
     register(
         mcp,
-        transactions_categorize_apply,
-        "transactions_categorize_apply",
-        "Assign categories to multiple transactions in one call. "
+        transactions_categorize_commit,
+        "transactions_categorize_commit",
+        "Commit externally-decided categorizations for a batch of transactions. "
         "Auto-creates merchant mappings for future auto-categorization. "
-        "Writes app.transaction_categories and app.user_merchants; revert by calling again with a different category, or by clearing via a follow-up apply.",
+        "Writes app.transaction_categories and app.user_merchants; revert by calling again with a different category.",
     )
     register(
         mcp,
@@ -302,4 +335,12 @@ def register_transactions_categorize_tools(mcp: FastMCP) -> None:
         transactions_categorize_auto_stats,
         "transactions_categorize_auto_stats",
         "Auto-rule health: active count, pending proposals, transactions categorized.",
+    )
+    register(
+        mcp,
+        transactions_categorize_run,
+        "transactions_categorize_run",
+        "Run the categorization engine cascade (rules and/or merchants) over uncategorized transactions. "
+        "Amounts use the accounting convention: negative = expense, positive = income; transfers exempt. "
+        "Writes app.transaction_categories via the named engine(s); revert by calling transactions_categorize_commit with a different category, or by soft-deleting the source rule via transactions_categorize_rules_delete(reapply=True).",
     )

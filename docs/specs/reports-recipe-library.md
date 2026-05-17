@@ -61,7 +61,7 @@ The `reports.*` schema is a **read-only presentation layer** (`architecture-shar
 
 The pattern is small and uniform:
 
-1. **Naming.** `reports.<entity>` mirrors the CLI subcommand `moneybin reports <entity>` and the MCP tool `reports_<entity>_get`. One model, one CLI subcommand, one MCP tool — three names, three surfaces, identical concept.
+1. **Naming.** `reports.<entity>` mirrors the CLI subcommand `moneybin reports <entity>` and the MCP tool `reports_<entity>`. One model, one CLI subcommand, one MCP tool — three names, three surfaces, identical concept.
 2. **Grain.** Each model picks the widest grain its consumers can collapse from. CLI defaults aggregate or rank for the human eye; SQL/MCP consumers re-rank, pivot, or filter as needed.
 3. **Comments.** Every column carries an inline `/* */` comment per `.claude/rules/database.md` — these comments are surfaced verbatim by the `moneybin://schema` MCP resource. The model-level comment (top of the SQL file) explains the view's purpose, grain, and any heuristic it uses.
 4. **Confidence over false certainty.** Where a model is heuristic (`reports.recurring_subscriptions` is the only one in v1), it exposes a `confidence` column instead of a binary classification. Users and AI consumers can apply their own thresholds.
@@ -417,21 +417,20 @@ Extends `moneybin-cli.md` v2's `reports` namespace. Five new subcommands added; 
 
 ```
 moneybin reports
-+-- networth
-|   +-- show [--as-of DATE]                          (existing — now backed by reports.net_worth)
-|   +-- history [--from DATE] [--to DATE] [--interval daily|weekly|monthly]
-+-- cashflow show [--from MONTH] [--to MONTH] [--by account|category|account-and-category]
-+-- spending show [--from MONTH] [--to MONTH] [--category SLUG] [--compare yoy|mom|trailing]
-+-- recurring show [--min-confidence FLOAT] [--status active|inactive|all] [--cadence ...]
-+-- merchants show [--top N] [--sort spend|count|recent]
-+-- uncategorized show [--min-amount DECIMAL] [--account NAME] [--limit N]
-+-- large-transactions show [--top N] [--anomaly account|category|none]
-+-- balance-drift show [--account NAME] [--status drift|warning|clean|no-data] [--since DATE]
++-- networth [--as-of DATE]                          (existing — now backed by reports.net_worth)
++-- networth-history [--from DATE] [--to DATE] [--interval daily|weekly|monthly]
++-- cashflow [--from MONTH] [--to MONTH] [--by account|category|account-and-category]
++-- spending [--from MONTH] [--to MONTH] [--category SLUG] [--compare yoy|mom|trailing]
++-- recurring [--min-confidence FLOAT] [--status active|inactive|all] [--cadence ...]
++-- merchants [--top N] [--sort spend|count|recent]
++-- uncategorized [--min-amount DECIMAL] [--account NAME] [--limit N]
++-- large-transactions [--top N] [--anomaly account|category|none]
++-- balance-drift [--account NAME] [--status drift|warning|clean|no-data] [--since DATE]
 ```
 
 All commands support `--output json` per `moneybin-cli.md`. JSON output uses `ResponseEnvelope` shape per `architecture-shared-primitives.md` §MCP/CLI/SQL Symmetry.
 
-CLI function naming follows `<group>_<verb>` convention (`reports_recurring_show`, etc.) per `.claude/rules/cli.md`.
+CLI function naming follows the noun-only convention for read projections (`reports_recurring`, etc.) per `.claude/rules/surface-design.md` shape 5.
 
 ## MCP Interface
 
@@ -610,7 +609,7 @@ If gaps are discovered during implementation, file a follow-up to `testing-synth
 This spec ships before [`moneybin-doctor.md`](moneybin-doctor.md) (next M2C spec):
 
 1. **PR 1 (this spec):** All eight `reports.*` views; the four migrations from §Migrations (gate-spec amendment, `core.agg_net_worth` → `reports.net_worth`, `app.categories` → `core.dim_categories`, `app.merchants` → `core.dim_merchants`); `schema.py`/`tables.py`/`seeds.py`/`schema_catalog.py` updates; the categorization-service merchant write-path fix; CLI subcommands; MCP tools; tests at all three layers.
-2. **PR 2 (doctor spec):** `moneybin doctor` command + `system_doctor` MCP tool, reading from the existing services and from `reports.balance_drift`.
+2. **PR 2 (doctor spec):** `moneybin system doctor` command + `system_doctor` MCP tool, reading from the existing services and from `reports.balance_drift`.
 
 The two PRs can be reviewed in parallel once both specs are written, but PR 1 must merge first because PR 2's reconciliation traffic-light depends on `reports.balance_drift`. The bundled dim migrations land atomically with the rest of PR 1 — splitting them into a separate "architectural cleanup" PR was considered and rejected because it would re-open the same `tables.py` / `schema_catalog.py` / `seeds.py` surface twice.
 

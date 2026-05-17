@@ -35,14 +35,14 @@ the missing tool/command — caught by the functional-coverage check,
 not by this test). Categories captured from the diff at test
 introduction:
 
-- **A. Naming-pattern mismatches.** MCP ``*_get`` vs CLI ``*_show``
-  across the ``reports_*`` family (9 tools), ``accounts_get`` vs
-  ``accounts_show``, ``accounts_set`` vs ``accounts_set``,
-  ``transactions_review`` vs ``transactions_review``,
-  ``import_formats_list`` vs ``import_formats_list``, ``system_doctor``
-  vs top-level ``doctor``, ``reports_budget`` vs
-  ``reports_budget``, ``accounts_balance_assertion_delete`` vs
-  ``accounts_balance_delete``.
+- **A. Naming-pattern mismatches.** **RESOLVED 2026-05-17 (PR #159).** The
+  rename pass collapsed all entries in this category by adopting the
+  noun-only convention for read projections (``reports_*``,
+  ``accounts_get``), the ``_set`` verb for partial updates
+  (``accounts_set`` from ``accounts_settings_update``), and the ``system
+  doctor`` CLI placement under the existing ``system`` group. No active
+  Category A entries remain; the xfail marker stays until B, C, and D
+  also land per the PR description.
 - **B. Set-semantic vs verb-list split.** MCP collapses to ``*_set``
   while CLI splits into add/remove/list/clear:
   ``import_labels_set`` / ``import_labels_{add,remove,list}``,
@@ -55,7 +55,7 @@ introduction:
   ``transactions_notes_list``, ``export_run``, ``budget_delete``,
   ``categories_delete``, ``system_audit_show``, ``import_history``,
   ``import_inbox_path``, ``import_labels_*``,
-  ``transactions_categorize_apply_from_file``,
+  ``transactions_categorize_commit_from_file``,
   ``transactions_categorize_auto_rules``,
   ``transactions_categorize_export_uncategorized``,
   ``transactions_categorize_rules_apply``, plus the singular-show family
@@ -64,9 +64,9 @@ introduction:
 - **D. CLI gaps.** MCP tools that need a CLI sibling but lack one:
   ``accounts_summary``, ``import_inbox_sync``,
   ``transactions_categorize_assist``,
-  ``transactions_categorize_pending_list``,
-  ``transactions_categorize_rules_delete``,
-  ``transactions_categorize_rules_create``, ``transactions_get``.
+  ``transactions_categorize_pending``, ``transactions_get``.
+  ``transactions_categorize_rules_create`` and
+  ``transactions_categorize_rules_delete`` resolved via PR #167.
 """
 
 # ruff: noqa: S101
@@ -133,14 +133,58 @@ CLI_ONLY_ALLOWED: frozenset[str] = frozenset({
     # path. See `.claude/rules/mcp-server.md` "When CLI-only is justified"
     # and `private/plans/2026-05-17-refresh-run-steps-and-transform-apply-fold.md`.
     "transform_apply",
+    # Category 3 — Typer-idiomatic `<group> list` subcommands whose MCP
+    # sibling uses the noun-only shape-5 form. Intentional surface-idiom
+    # divergence per `.claude/rules/surface-design.md` §CLI.
+    "categories_list",
+    "merchants_list",
+    "import_formats_list",
+    "system_audit_list",
+    "accounts_list",
+    "accounts_balance_list",
+    "accounts_balance_assertions_list",
+    "transactions_categorize_rules_list",
+    "import_inbox_list",
+    # `transactions_categorize_pending_list` is OMITTED: no CLI subcommand
+    # exists (`moneybin transactions categorize pending` is a D-backlog gap,
+    # listed in the module docstring above).
+    # Category 4 — CLI bare-callable convenience aliases for an `<group>
+    # <verb>` subcommand. `moneybin import inbox` (bare) is
+    # `invoke_without_command=True` and drains, equivalent to
+    # `moneybin import inbox sync` / MCP `import_inbox_sync`. The bare
+    # form has no MCP analog (MCP requires explicit tool names; the read
+    # tool that shares this canonical name would create the semantic
+    # collision flagged in PR #172 review).
+    "import_inbox",
 })
 
 # MCP-only by design — tools that implement MCP-protocol-specific
-# mechanisms with no CLI semantic. Empty today; kept as a documented
-# extension point. Client-driven progressive disclosure (and its
+# mechanisms with no CLI semantic, OR where MCP uses the noun-only
+# (shape 5) read form and the CLI uses its Typer-idiomatic `<group> list`
+# subcommand. The noun-only / `_list` split is intentional surface-idiom
+# divergence per `.claude/rules/surface-design.md` §CLI ("CLI has
+# subgroup nesting MCP doesn't"); see `.claude/rules/surface-design.md`
+# Shape 5 verb conventions. Client-driven progressive disclosure (and its
 # ``moneybin_discover`` meta-tool) was retired 2026-05-17, see
 # ``docs/specs/mcp-architecture.md`` §3.
-MCP_ONLY_ALLOWED: frozenset[str] = frozenset()
+MCP_ONLY_ALLOWED: frozenset[str] = frozenset({
+    # Shape 5 noun-only read tools paired with CLI `<group> list`:
+    "categories",
+    "merchants",
+    "import_formats",
+    "system_audit",
+    "accounts",
+    "accounts_balances",
+    "accounts_balance_assertions",
+    "transactions_categorize_rules",
+    "transactions_categorize_pending",
+    # `import_inbox_pending` mirrors the convention but carries a `_pending`
+    # qualifier rather than bare `import_inbox` — the noun-only form would
+    # collide with the CLI bare-callable drain (`moneybin import inbox`),
+    # which is the opposite mutation semantic. Disambiguation is mandatory,
+    # not stylistic. See PR #172 review for the collision analysis.
+    "import_inbox_pending",
+})
 
 
 def _collect_mcp_tool_names() -> set[str]:
@@ -161,8 +205,8 @@ def _collect_mcp_tool_names() -> set[str]:
 def _collect_cli_command_names() -> set[str]:
     """Walk the Typer command tree → underscore-joined canonical names.
 
-    ``moneybin transactions categorize apply`` →
-    ``transactions_categorize_apply``. Hyphens in command names are
+    ``moneybin transactions categorize commit`` →
+    ``transactions_categorize_commit``. Hyphens in command names are
     normalized to underscores (``list-tools`` → ``list_tools``) to match
     the MCP convention.
     """

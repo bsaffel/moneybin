@@ -14,6 +14,8 @@ import time
 from dataclasses import dataclass
 from typing import Literal
 
+import duckdb
+
 from moneybin.config import get_settings
 from moneybin.database import Database
 from moneybin.metrics.registry import (
@@ -47,6 +49,21 @@ class RedactedTransaction:
     transfer_pair_id: str | None
     payment_channel: str | None
     amount_sign: Literal["+", "-", "0"]
+
+    def to_dict(self) -> dict[str, object]:
+        """Serialize to the public wire shape (MCP/CLI envelope row)."""
+        return {
+            "transaction_id": self.transaction_id,
+            "description_redacted": self.description_redacted,
+            "memo_redacted": self.memo_redacted,
+            "source_type": self.source_type,
+            "transaction_type": self.transaction_type,
+            "check_number": self.check_number,
+            "is_transfer": self.is_transfer,
+            "transfer_pair_id": self.transfer_pair_id,
+            "payment_channel": self.payment_channel,
+            "amount_sign": self.amount_sign,
+        }
 
 
 def _amount_sign_label(amount: float | None) -> Literal["+", "-", "0"]:
@@ -104,25 +121,31 @@ class AssistBridge:
         start = time.monotonic()
         result: list[RedactedTransaction] = []
         try:
-            rows = self._db.execute(
-                f"""
-                SELECT t.transaction_id,
-                       t.description,
-                       t.memo,
-                       t.source_type,
-                       t.transaction_type,
-                       t.check_number,
-                       t.is_transfer,
-                       t.transfer_pair_id,
-                       t.payment_channel,
-                       t.amount
-                FROM {FCT_TRANSACTIONS.full_name} t
-                LEFT JOIN {TRANSACTION_CATEGORIES.full_name} tc USING (transaction_id)
-                WHERE {where_sql}
-                LIMIT ?
-                """,  # noqa: S608  # where_sql composed from constants and parameter placeholders
-                params + [effective_limit],
-            ).fetchall()
+            try:
+                rows = self._db.execute(
+                    f"""
+                    SELECT t.transaction_id,
+                           t.description,
+                           t.memo,
+                           t.source_type,
+                           t.transaction_type,
+                           t.check_number,
+                           t.is_transfer,
+                           t.transfer_pair_id,
+                           t.payment_channel,
+                           t.amount
+                    FROM {FCT_TRANSACTIONS.full_name} t
+                    LEFT JOIN {TRANSACTION_CATEGORIES.full_name} tc USING (transaction_id)
+                    WHERE {where_sql}
+                    LIMIT ?
+                    """,  # noqa: S608  # where_sql composed from constants and parameter placeholders
+                    params + [effective_limit],
+                ).fetchall()
+            except duckdb.CatalogException:
+                # core.fct_transactions does not exist yet (no data imported / no
+                # transform applied). Return empty result instead of crashing —
+                # matches the pattern in queries.list_uncategorized_transactions.
+                return []
 
             result = [
                 RedactedTransaction(

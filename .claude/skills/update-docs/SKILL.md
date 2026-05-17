@@ -79,7 +79,7 @@ subagent verbatim. They keep accidentally regrowing:
 - **README anti-patterns**: in-README roadmap matrix; text-heavy comparison cells; feature inventories; License essays; "Wave"/"Level" terminology; 9-node pipeline Mermaid in the README. Comparison stays 7-wide with ✅/❌/🟡 emoji. How-It-Works Mermaid stays 3–4 nodes (sales-pitch, not architecture).
 - **No private/ references in public docs.** Never cite `private/...` paths or phrasing like "the strategic review" / "the strategic audit named X" in README, CHANGELOG, CONTRIBUTING, or any `docs/` file. Restate substance directly. If you find existing violations, fix them in-pass.
 - **No `Co-Authored-By: Claude` trailers in any commit message produced by this skill.**
-- **Tagline preserved**: `Your finances, understood by AI.` — do not change unless Brandon explicitly asks.
+- **Tagline preserved**: `Your finances, understood by AI.` — do not change unless the developer explicitly asks.
 - **Milestone names**: `M0`, `M1`, `M2A`, `M2B`, `M2C`, `M3A` (Plaid), `M3B` (investments), `M3C` (multi-currency + budgets), `M3D` (Web UI + Streamable HTTP), `M3E` (hosted launch). Don't invent new ones.
 
 ## Scope detection

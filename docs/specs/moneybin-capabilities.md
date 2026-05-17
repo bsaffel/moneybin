@@ -61,7 +61,7 @@ not-yet-built.
 |---|------------------------------------------------------------------|------------------------------|----------------------------------------------------|------------|-----------------------|
 | 1 | List recent transactions filtered by date/account/category       | — *(pending-build)*          | `transactions_list`                                | —          | pending-build (MCP)   |
 | 2 | Fetch a single transaction by ID                                 | `transactions_get`           | — *(pending-build)*                                | —          | pending-build (CLI)   |
-| 3 | List all accounts                                                | `accounts_list`              | `accounts_list`                                    | —          | live                  |
+| 3 | List all accounts                                                | `accounts`                   | `accounts_list`                                    | —          | live                  |
 | 4 | Update an account's settings (display name, include/archive)     | `accounts_set`               | `accounts_set` *(`--display-name`, `--include/--exclude`, `--archive/--unarchive`)* | —          | live                  |
 | 5 | Set the complete tag set on a transaction                        | `transactions_tags_set`      | `transactions_tags_{add,remove,list}` *(cat 3)*    | —          | live                  |
 | 6 | Sync the import inbox                                            | `import_inbox_sync`          | `import_inbox` (bare group call)                   | —          | live                  |
@@ -72,6 +72,9 @@ not-yet-built.
 | 11| Hard-delete a user-created category                              | `categories_delete`          | `categories delete`                                | —          | live                  |
 | 12| Create one or more categorization rules (single + batch)         | `transactions_categorize_rules_create` | `transactions categorize rules create` | —          | live                  |
 | 13| Soft-delete a categorization rule by ID                          | `transactions_categorize_rules_delete` | `transactions categorize rules delete` | —          | live                  |
+| 14| Commit externally-decided categorizations (LLM workflow's terminal step) | `transactions_categorize_commit`        | `transactions categorize commit`        | —          | live                  |
+| 15| Run the categorization engine cascade (rules + merchants)        | `transactions_categorize_run`            | `transactions categorize run`            | —          | live                  |
+| 16| Get redacted batch for LLM categorization                        | `transactions_categorize_assist`         | `transactions categorize assist`         | —          | live                  |
 
 *(Bootstrap rows only; full table populates incrementally as
 follow-up work closes the parity backlog. A prior row covering

@@ -33,7 +33,7 @@ mcp = FastMCP(
         - categories, merchants (taxonomy reference data)
         - system (status, audit), import, sync, refresh (rebuild derived tables), sql (read-only escape hatch)
 
-        Tool names: domain_<sub>_verb, verb at end — transactions_categorize_apply, reports_networth, accounts_balance_assert.
+        Tool names: domain_<sub>_verb, verb at end — transactions_categorize_commit, reports_networth, accounts_balance_assert.
 
         Start with system_status — shows what data exists, freshness, pending review queues, and whether core.* tables need a refresh (system_status.data.transforms.pending → call refresh_run).
 

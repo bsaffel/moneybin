@@ -12,7 +12,7 @@ from moneybin.services.categorization import CategorizationService
 
 
 @mcp_tool(sensitivity="low")
-def categories_list(include_inactive: bool = False) -> ResponseEnvelope:
+def categories(include_inactive: bool = False) -> ResponseEnvelope:
     """List all categories in the taxonomy."""
     with get_database(read_only=True) as db:
         data = CategorizationService(db).get_all_categories(
@@ -115,8 +115,8 @@ def register_categories_tools(mcp: FastMCP) -> None:
     """Register all categories namespace tools with the FastMCP server."""
     register(
         mcp,
-        categories_list,
-        "categories_list",
+        categories,
+        "categories",
         "List all categories in the taxonomy.",
     )
     register(

@@ -67,7 +67,7 @@ async def test_formerly_extended_tools_visible_at_connect() -> None:
         names = {t.name for t in await client.list_tools()}
 
     expected = {
-        "transactions_categorize_apply",
+        "transactions_categorize_commit",
         "transactions_categorize_assist",
     }
     missing = expected - names

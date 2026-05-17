@@ -1,3 +1,7 @@
+---
+description: "Post-implementation checklist: CHANGELOG, roadmap, features, README updates, pre-push /simplify pass"
+---
+
 # Shipping & Public Documentation
 
 ## When a Feature Ships

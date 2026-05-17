@@ -77,7 +77,7 @@ Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, sim
 | Database access | `get_database()` → `Database` | `duckdb.connect()` |
 | Configuration | `get_settings()` → `MoneyBinSettings` | `os.getenv()`, hardcoded values |
 | Secrets/keys | `SecretStore` | `os.getenv()`, plain `str` fields |
-| Table references | `TableRef.FCT_TRANSACTIONS`, etc. | Hardcoded table name strings |
+| Table references | `from moneybin.tables import FCT_TRANSACTIONS`, etc. | Hardcoded table name strings |
 | DataFrames | DuckDB > Polars > Pandas | Pandas (unless required for library compat — document why) |
 
 ## Code Standards
@@ -109,7 +109,7 @@ Full schema reference (including `meta`, `seeds`, `synthetic`, prefix convention
 2. **Multi-source union** — Core models `UNION ALL` from every staging source with `source_type` column.
 3. **Dedup in core** — `ROW_NUMBER()` windows for duplicates; mapping tables for cross-source dedup.
 4. **Accounting sign convention** — negative = expense, positive = income. `DECIMAL(18,2)` for amounts, `DATE` for dates.
-5. **Source-agnostic consumers** — MCP server, CLI use `TableRef` constants, never source-specific logic.
+5. **Source-agnostic consumers** — MCP server, CLI use `moneybin.tables` constants, never source-specific logic.
 
 ## Specs & Implementation Tracking
 
@@ -161,6 +161,7 @@ Files in `.claude/rules/` auto-load via Claude Code's `paths:` frontmatter — p
 | Rule | Covers |
 |------|--------|
 | `design-principles.md` | Durable path selection: heuristics for "inevitable choice" decisions and the trigger list for the agent protocol |
+| `surface-design.md` | Cross-surface (MCP / CLI / REST) operation-shape taxonomy, verb vocabulary, audience layering. Consult before adding, renaming, or restructuring a tool/command/endpoint |
 | `shipping.md` | Post-implementation checklist: README updates, roadmap icons, `/simplify` pre-push pass |
 | `branching.md` | Branch prefix → PR label mapping, commit message style |
 | `sandboxing.md` | Bash invocation patterns: single commands, allowlisted pipelines, structured-output filtering, policy denials |

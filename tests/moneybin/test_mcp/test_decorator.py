@@ -171,7 +171,7 @@ def test_find_list_params_single_list() -> None:
 
 @pytest.mark.unit
 def test_find_list_params_sequence() -> None:
-    """Sequence[Mapping[...]] is detected (transactions_categorize_apply shape)."""
+    """Sequence[Mapping[...]] is detected (transactions_categorize_commit shape)."""
     from collections.abc import Mapping, Sequence
 
     from moneybin.mcp.decorator import (
@@ -225,7 +225,7 @@ def test_find_list_params_dict_set_not_lists() -> None:
 
     len(dict) returns key-count, not item-count, so applying the collection
     cap to a dict-typed param surfaces confusing too_many_items errors.
-    Real callers: system_audit_list(filters: dict[...]),
+    Real callers: system_audit(filters: dict[...]),
     transactions_categorize_assist(date_range: dict[...]).
     """
     from typing import Any

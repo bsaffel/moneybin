@@ -96,7 +96,7 @@ class RuleCreationResult:
             sensitivity="low",
             total_count=input_count,
             actions=[
-                "Use transactions_categorize_rules_list to review all rules",
+                "Use transactions_categorize_rules to review all rules",
             ],
         )
 

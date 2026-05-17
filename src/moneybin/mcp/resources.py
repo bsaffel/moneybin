@@ -102,7 +102,7 @@ def resource_schema() -> str:
 #
 # Only promoted namespaces — ones with at least one registered tool today AND
 # a curated user-language description — appear here. Categorization tools live
-# under ``transactions_*`` (e.g. ``transactions_categorize_apply``) and surface
+# under ``transactions_*`` (e.g. ``transactions_categorize_commit``) and surface
 # under the ``transactions`` namespace, not as a separate ``categorize`` entry.
 #
 # Promotion carve-out — registered but intentionally not surfaced here:
@@ -200,7 +200,7 @@ def resource_recent_curation() -> str:
     """Last 50 audit events — ambient context for curation workflows.
 
     Resources are enhancement-only (some MCP clients are tools-only); the
-    canonical read path for audit events is the ``system_audit_list`` tool.
+    canonical read path for audit events is the ``system_audit`` tool.
     Sensitivity: medium — audit before/after values can carry row-level data.
     """
     logger.info("Resource read: moneybin://recent-curation")

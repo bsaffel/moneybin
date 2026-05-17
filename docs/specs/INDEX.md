@@ -64,7 +64,7 @@ Single source of truth for spec status. Update this table when a spec's status c
 | [Auto-Rule Generation](categorization-auto-rules.md) | Feature | implemented | Auto-generate categorization rules from user edits (pillar E); merchant-first pattern extraction, proposal review queue |
 | [Categorize Bulk](categorize-bulk.md) | Feature | implemented | `moneybin categorize bulk` CLI parity for `categorize_bulk` MCP tool; shared Pydantic input model with per-item validation; `BulkRecordingContext` to drop per-item duplicate DB lookups in the bulk loop |
 | [Cold Start](categorization-cold-start.md) | Feature | implemented | First-run categorization: LLM-assist workflow with type-enforced PII redaction, CLI export/apply bridge for agent + manual modes, `app.user_merchants` schema; renames `transactions_categorize_bulk_apply` → `_apply` and `auto_confirm` → `auto_accept`. Seed merchant catalogs retired 2026-05-15 — see spec amendment. |
-| [Matching Mechanics](categorization-matching-mechanics.md) | Feature | implemented | Algorithm contract for the matcher: `match_text` (description + memo) construction, structural-field signals to LLM and matcher, `oneOf` exemplar accumulation replacing auto-generalized patterns, `categorized_by` source-priority enforcement on write, auto-apply (`categorize_pending`) on every `transactions_categorize_apply` commit, OP_SCORES specificity ranking |
+| [Matching Mechanics](categorization-matching-mechanics.md) | Feature | implemented | Algorithm contract for the matcher: `match_text` (description + memo) construction, structural-field signals to LLM and matcher, `oneOf` exemplar accumulation replacing auto-generalized patterns, `categorized_by` source-priority enforcement on write, auto-apply (`categorize_pending`) on every `transactions_categorize_commit` commit, OP_SCORES specificity ranking |
 | `categorization-ml.md` | Feature | planned | Pillar D: local ML-powered categorization |
 | `merchant-entity-resolution.md` | Feature | planned | Evolve merchants from pattern-to-category cache to first-class entities; multi-pattern matching, automated discovery, query-time resolution |
 
@@ -73,6 +73,7 @@ Single source of truth for spec status. Update this table when a spec's status c
 | Spec | Type | Status | Summary |
 |---|---|---|---|
 | [Privacy & AI Trust](privacy-and-ai-trust.md) | Framework | ready | AI data flow tiers, consent model, provider profiles, redaction engine, audit log |
+| [Data Classification](privacy-data-classification.md) | Feature | in-progress | `DataClass` registry, DuckDB comment sigil, completeness CI |
 | [Data Protection](privacy-data-protection.md) | Feature | implemented | DuckDB encryption at rest (AES-256-GCM), `Database` connection factory, key management, file permissions, PII log sanitization |
 | [Privacy & Security Roadmap](privacy-security-roadmap.md) | Roadmap | — | Three-tier data custody model overview |
 
@@ -130,7 +131,7 @@ Single source of truth for spec status. Update this table when a spec's status c
 
 | Spec | Type | Status | Summary |
 |---|---|---|---|
-| [MoneyBin Doctor](moneybin-doctor.md) | Feature | implemented | Pipeline integrity command: `moneybin doctor` runs SQLMesh named audits (FK integrity, sign convention, balanced transfers) + staging coverage + categorization coverage warning. Produces a "✅ N invariants passing" trust artifact. Top-level CLI + `system_doctor` MCP tool. |
+| [MoneyBin Doctor](moneybin-doctor.md) | Feature | implemented | Pipeline integrity command: `moneybin system doctor` runs SQLMesh named audits (FK integrity, sign convention, balanced transfers) + staging coverage + categorization coverage warning. Produces a "✅ N invariants passing" trust artifact. CLI lives under the `system` group; MCP exposes `system_doctor`. |
 | [Data Pipeline Reconciliation](data-reconciliation.md) | Feature | draft | Broader ETL integrity checks: raw→prep→core row accounting, import batch validation, temporal coverage gaps, orphan detection. `moneybin-doctor.md` is the user-facing subset; this spec covers the full warehouse-grade reconciliation surface. |
 
 ## Reports & Health

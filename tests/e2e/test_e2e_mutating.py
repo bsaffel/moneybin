@@ -343,6 +343,26 @@ class TestCategorizeMutating:
         result = run_cli("transactions", "categorize", "rules", "apply", env=env)
         result.assert_success()
 
+    def test_categorize_run_default_methods(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """Categorize run with default methods exits cleanly."""
+        env = make_workflow_env_fast(tmp_path, "catrun", _mutating_profile_template)
+        result = run_cli("transactions", "categorize", "run", env=env)
+        result.assert_success()
+
+    def test_categorize_run_rules_only(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """Categorize run --methods rules applies only the rules engine."""
+        env = make_workflow_env_fast(
+            tmp_path, "catrunrules", _mutating_profile_template
+        )
+        result = run_cli(
+            "transactions", "categorize", "run", "--methods", "rules", env=env
+        )
+        result.assert_success()
+
     def test_categorize_auto_review_and_confirm(
         self, _mutating_profile_template: Path, tmp_path: Path
     ) -> None:

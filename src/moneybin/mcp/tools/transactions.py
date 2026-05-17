@@ -39,7 +39,7 @@ def transactions_get(
 
     Args:
         accounts: Account IDs or display names to filter by. Accepts exact
-            account_id values or fuzzy display names — use accounts_list to
+            account_id values or fuzzy display names — use accounts to
             discover IDs. Multiple values are OR-combined.
         date_from: ISO 8601 start date, inclusive (e.g. '2026-01-01').
         date_to: ISO 8601 end date, inclusive.
@@ -74,7 +74,7 @@ def transactions_review() -> ResponseEnvelope:
     """Return counts of pending reviews across both queues.
 
     Orientation tool: call this to decide which queue to drain first.
-    For categorize, fetch items via ``transactions_categorize_pending_list``.
+    For categorize, fetch items via ``transactions_categorize_pending``.
     Match review is CLI-only today (``moneybin transactions review --type
     matches``); a ``transactions_matches_pending`` MCP tool is planned.
     """
@@ -96,7 +96,7 @@ def transactions_review() -> ResponseEnvelope:
         },
         sensitivity="low",
         actions=[
-            "Use transactions_categorize_pending_list to fetch the categorize queue",
+            "Use transactions_categorize_pending to fetch the categorize queue",
             "For matches, run `moneybin transactions review --type matches` (CLI-only today)",
         ],
     )
@@ -113,8 +113,8 @@ def register_transactions_tools(mcp: FastMCP) -> None:
         "curation fields (notes, tags, splits). "
         "Amounts use the accounting convention: negative = expense, positive = income; "
         "transfers exempt. Amounts are in the currency named by `summary.display_currency`. "
-        "`accounts` accepts display names or exact account IDs — use `accounts_list` to "
-        "discover IDs. Pass `next_cursor` from a previous response to fetch the next page.",
+        "`accounts` accepts display names or exact account IDs — call the `accounts` "
+        "tool to discover IDs. Pass `next_cursor` from a previous response to fetch the next page.",
     )
     register(
         mcp,

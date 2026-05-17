@@ -315,7 +315,7 @@ Every tool declares its **maximum data sensitivity** — the highest sensitivity
 
 | Sensitivity | Data characteristics | Consent required | Example tools |
 |---|---|---|---|
-| `low` | Aggregates, counts, category labels, structural metadata | None | `spending_summary`, `overview_status`, `accounts_list` |
+| `low` | Aggregates, counts, category labels, structural metadata | None | `spending_summary`, `overview_status`, `accounts` |
 | `medium` | Row-level data: descriptions, amounts, dates, merchant names | `mcp-data-sharing` (tier-2, persistent) | `transactions_search`, `spending_merchants`, `categorize_uncategorized` |
 | `high` | Responses that include critical-tier fields (account numbers, routing numbers) — masked for cloud backends, unmaskable only in verified-local mode | `mcp-data-sharing` (tier-2) + masking invariant | `accounts_details` |
 
@@ -469,7 +469,7 @@ def spending_summary_cmd(
 | **Error handling** | Structured error in response envelope | `logger.error` + `typer.Exit(1)` |
 | **Discoverability** | Tool descriptions + `actions` array | `--help` + command group structure |
 
-The `transactions_categorize_apply` MCP tool has CLI parity via `moneybin transactions categorize apply`. Both surfaces share the same `CategorizationService.categorize_items` implementation, validated through the same `CategorizationItem` Pydantic model at every boundary.
+The `transactions_categorize_commit` MCP tool has CLI parity via `moneybin transactions categorize commit`. Both surfaces share the same `CategorizationService.categorize_items` implementation, validated through the same `CategorizationItem` Pydantic model at every boundary.
 
 ### What symmetry does NOT mean
 

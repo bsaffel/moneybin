@@ -102,7 +102,7 @@ If any subagent changed a spec's status, update the corresponding row in
 
 ### 5. Report
 
-After all subagents complete, summarize for Brandon:
+After all subagents complete, summarize for the developer:
 
 - **Auto-edited** — one line per spec, e.g. `categorization-overview.md: refreshed module paths, bumped status to implemented (PR #142)`.
 - **Awaiting your call** — proposals inline, one block per spec, showing the proposed diff and the reason it wasn't auto-applied.
