@@ -10,19 +10,13 @@ the portable Anthropic/OpenAI regex.
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING
 
 import pytest
 from fastmcp import Client
 
-if TYPE_CHECKING:
-    from collections.abc import Generator
-
 
 @pytest.fixture(scope="module", autouse=True)
-def _register_tools(  # pyright: ignore[reportUnusedFunction]
-    monkeypatch_module: pytest.MonkeyPatch,
-) -> None:
+def _register_tools() -> None:  # pyright: ignore[reportUnusedFunction]
     from moneybin.config import reload_settings, set_current_profile
     from moneybin.mcp import server
 
@@ -30,14 +24,6 @@ def _register_tools(  # pyright: ignore[reportUnusedFunction]
     reload_settings()
     server._tools_registered = False  # pyright: ignore[reportPrivateUsage]
     server.register_core_tools()
-
-
-@pytest.fixture(scope="module")
-def monkeypatch_module() -> Generator[pytest.MonkeyPatch, None, None]:
-    """Module-scoped monkeypatch (the built-in fixture is function-scoped)."""
-    mp = pytest.MonkeyPatch()
-    yield mp
-    mp.undo()
 
 
 async def test_full_surface_visible_at_connect() -> None:
