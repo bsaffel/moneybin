@@ -1,3 +1,7 @@
+---
+description: "Branch prefix → PR label mapping, commit message style"
+---
+
 # Branch Naming & PR Labels
 
 ## Branch Format

@@ -1,3 +1,7 @@
+---
+description: "Bash invocation patterns: single commands, allowlisted pipelines, structured-output filtering, policy denials"
+---
+
 # Sandboxed Bash Patterns
 
 Shape bash invocations to run silently and efficiently in this project's sandbox + permission setup.
