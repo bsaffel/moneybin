@@ -1,8 +1,7 @@
 /* Canonical transactions fact view; reads from the deduplicated merged layer
    with categorization and merchant joins; negative amount = expense, positive = income.
    Curation columns (notes/tags/splits + counts) join from app.* per Architectural
-   Pattern 1: app.* writes are flat-relational; consumers read DuckDB nested types. */
--- Query examples for the LLM: see src/moneybin/services/schema_catalog.py (EXAMPLES dict)
+   Pattern 1: app.* writes are flat-relational; consumers read DuckDB nested types. */ /* Query examples for the LLM: see src/moneybin/services/schema_catalog.py (EXAMPLES dict) */
 MODEL (
   name core.fct_transactions,
   kind VIEW,
@@ -12,42 +11,35 @@ MODEL (
 WITH notes_agg AS (
   SELECT
     transaction_id,
-    LIST(STRUCT_PACK(
-      note_id := note_id,
-      text := text,
-      author := author,
-      created_at := created_at
-    ) ORDER BY created_at) AS notes,
+    LIST(
+      {'note_id': note_id, 'text': text, 'author': author, 'created_at': created_at} ORDER BY created_at
+    ) AS notes,
     COUNT(*) AS note_count,
     MAX(created_at) AS notes_latest
   FROM app.transaction_notes
-  GROUP BY transaction_id
-),
-tags_agg AS (
+  GROUP BY
+    transaction_id
+), tags_agg AS (
   SELECT
     transaction_id,
     LIST(tag ORDER BY tag) AS tags,
     COUNT(*) AS tag_count,
     MAX(applied_at) AS tags_latest
   FROM app.transaction_tags
-  GROUP BY transaction_id
-),
-splits_agg AS (
+  GROUP BY
+    transaction_id
+), splits_agg AS (
   SELECT
     transaction_id,
-    LIST(STRUCT_PACK(
-      split_id := split_id,
-      amount := amount,
-      category := category,
-      subcategory := subcategory,
-      note := note
-    ) ORDER BY ord, split_id) AS splits,
+    LIST(
+      {'split_id': split_id, 'amount': amount, 'category': category, 'subcategory': subcategory, 'note': note} ORDER BY ord, split_id
+    ) AS splits,
     COUNT(*) AS split_count,
     MAX(created_at) AS splits_latest
   FROM app.transaction_splits
-  GROUP BY transaction_id
-),
-enriched AS (
+  GROUP BY
+    transaction_id
+), enriched AS (
   SELECT
     t.transaction_id,
     t.account_id,
@@ -59,8 +51,8 @@ enriched AS (
     t.description,
     COALESCE(m.canonical_name, t.merchant_name) AS merchant_name,
     t.memo,
-    COALESCE(c.category, t.category) AS category,
-    COALESCE(c.subcategory, t.subcategory) AS subcategory,
+    COALESCE(dc.category, c.category, t.category) AS category,
+    COALESCE(dc.subcategory, c.subcategory, t.subcategory) AS subcategory,
     c.categorized_by,
     t.payment_channel,
     t.transaction_type,
@@ -80,10 +72,9 @@ enriched AS (
     t.match_confidence,
     t.source_extracted_at,
     COALESCE(bt_debit.transfer_id, bt_credit.transfer_id) AS transfer_pair_id,
-    /* `NOT x IS NULL` is sqlmesh-format's canonical form; do not rewrite to `IS NOT NULL`. */
     (
       NOT bt_debit.transfer_id IS NULL OR NOT bt_credit.transfer_id IS NULL
-    ) AS is_transfer,
+    ) AS is_transfer, /* `NOT x IS NULL` is sqlmesh-format's canonical form; do not rewrite to `IS NOT NULL`. */
     t.loaded_at,
     c.categorized_at,
     n.notes,
@@ -99,6 +90,8 @@ enriched AS (
   FROM prep.int_transactions__merged AS t
   LEFT JOIN app.transaction_categories AS c
     ON t.transaction_id = c.transaction_id
+  LEFT JOIN core.dim_categories AS dc
+    ON c.category_id = dc.category_id
   LEFT JOIN core.dim_merchants AS m
     ON c.merchant_id = m.merchant_id
   LEFT JOIN core.bridge_transfers AS bt_debit
@@ -123,8 +116,8 @@ SELECT
   description, /* Payee or merchant description from highest-priority source */
   merchant_name, /* Normalized merchant name from core.dim_merchants; falls back to source value */
   memo, /* Additional notes from highest-priority source */
-  category, /* Spending category; from app.transaction_categories when categorized, else source value */
-  subcategory, /* Spending subcategory; from app.transaction_categories when categorized, else source value */
+  category, /* Spending category resolved via category_id FK to core.dim_categories; falls back to app.transaction_categories.category snapshot for orphaned rows, then to source-system text for uncategorized rows */
+  subcategory, /* Spending subcategory resolved via FK; same fallback chain as category */
   categorized_by, /* How the category was assigned: rule, ai, user, or NULL if uncategorized */
   payment_channel, /* Payment channel (online, in store, other) */
   transaction_type, /* Source-specific transaction type code */
@@ -144,13 +137,7 @@ SELECT
   match_confidence, /* Match confidence score; NULL for unmatched records */
   source_extracted_at, /* When the data was parsed from the source file */
   loaded_at, /* When this record was last written */
-  GREATEST(
-    loaded_at,
-    categorized_at,
-    notes_latest,
-    tags_latest,
-    splits_latest
-  ) AS updated_at, /* Latest of all per-row input timestamps contributing to this row's current values. Advances on user edits to notes, tags, splits, or categorization. Does not advance on idempotent SQLMesh re-applies. See docs/specs/core-updated-at-convention.md. */
+  GREATEST(loaded_at, categorized_at, notes_latest, tags_latest, splits_latest) AS updated_at, /* Latest of all per-row input timestamps contributing to this row's current values. Advances on user edits to notes, tags, splits, or categorization. Does not advance on idempotent SQLMesh re-applies. See docs/specs/core-updated-at-convention.md. */
   is_transfer, /* TRUE if this transaction is part of a confirmed transfer pair */
   transfer_pair_id, /* FK to core.bridge_transfers.transfer_id; NULL if not a transfer */
   DATE_PART('year', transaction_date) AS transaction_year, /* Calendar year */
