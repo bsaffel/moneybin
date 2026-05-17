@@ -55,7 +55,7 @@ introduction:
   ``transactions_notes_list``, ``export_run``, ``budget_delete``,
   ``categories_delete``, ``system_audit_show``, ``import_history``,
   ``import_inbox_path``, ``import_labels_*``,
-  ``transactions_categorize_apply_from_file``,
+  ``transactions_categorize_commit_from_file``,
   ``transactions_categorize_auto_rules``,
   ``transactions_categorize_export_uncategorized``,
   ``transactions_categorize_rules_apply``, plus the singular-show family

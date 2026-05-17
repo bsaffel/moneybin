@@ -40,8 +40,8 @@ def categorize_export_uncategorized(
     ``check_number``, ``is_transfer``, ``transfer_pair_id``,
     ``payment_channel``, ``amount_sign``). No amounts, dates, or account
     identifiers. Feed the output to an LLM, fill in category/subcategory,
-    then pipe back through ``moneybin transactions categorize apply-from-file``
-    (extra export keys are stripped at the apply boundary).
+    then pipe back through ``moneybin transactions categorize commit-from-file``
+    (extra export keys are stripped at the commit boundary).
     """
     from moneybin.config import get_settings
     from moneybin.mcp.privacy import audit_log

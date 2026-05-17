@@ -1,4 +1,4 @@
-"""Apply LLM-generated categorizations from a JSON file or stdin."""
+"""Commit LLM-generated categorizations from a JSON file or stdin."""
 
 import dataclasses
 import json
@@ -18,33 +18,33 @@ logger = logging.getLogger(__name__)
 
 # Keys the CategorizationItem model accepts (extra="forbid"). Used to strip
 # export-shape extras (description_redacted, source_type) from rows fed to
-# apply-from-file.
+# commit-from-file.
 _ALLOWED_ITEM_KEYS = {"transaction_id", "category", "subcategory"}
 
 
-def categorize_apply_from_file(
+def categorize_commit_from_file(
     input_path: Path | None = typer.Argument(
         None,
         help="Path to a JSON file produced by export-uncategorized, or '-' to read stdin.",
     ),
     output: OutputFormat = output_option,
 ) -> None:
-    r"""Apply LLM-generated categories from a JSON file to transactions.
+    r"""Commit LLM-generated categorizations from a JSON file to transactions.
 
     Reads a JSON array where each object has:
       transaction_id, category, and (optionally) subcategory.
 
-    Designed for the export → LLM → apply workflow:
+    Designed for the export → LLM → commit workflow:
 
       moneybin transactions categorize export-uncategorized -o todo.json
       # edit todo.json: add category/subcategory to each item
-      moneybin transactions categorize apply-from-file todo.json
+      moneybin transactions categorize commit-from-file todo.json
 
     Or pipe through LLM tooling:
 
       moneybin transactions categorize export-uncategorized \
         | llm-tool --fill-categories \
-        | moneybin transactions categorize apply-from-file -
+        | moneybin transactions categorize commit-from-file -
 
     Exit code is 1 if any item failed or was skipped.
     """
