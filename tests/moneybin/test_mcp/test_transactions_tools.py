@@ -49,4 +49,4 @@ async def test_register_includes_review_status() -> None:
     register_transactions_tools(srv)
     names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
     assert "transactions_review" in names
-    assert "transactions_recurring_list" in names
+    assert "transactions_recurring_list" not in names

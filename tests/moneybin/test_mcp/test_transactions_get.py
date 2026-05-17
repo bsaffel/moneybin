@@ -50,4 +50,4 @@ async def test_register_includes_transactions_get() -> None:
     assert "transactions_get" in names
     assert "transactions_search" not in names
     assert "transactions_review" in names
-    assert "transactions_recurring_list" in names
+    assert "transactions_recurring_list" not in names

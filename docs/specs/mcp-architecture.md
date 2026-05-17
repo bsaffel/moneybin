@@ -115,7 +115,7 @@ Tools use a hybrid namespace that reflects the most natural way an AI or user wo
 | `spending.*` | Expense analysis | Summaries, trends, category breakdowns, merchant analysis |
 | `cashflow.*` | Money movement | Income vs outflows, net cash position, income source analysis |
 | `accounts.*` | Account management | Account listing, balance history, net worth |
-| `transactions.*` | Transaction-level operations | Search, corrections, annotations, recurring detection |
+| `transactions.*` | Transaction-level operations | Search, corrections, annotations |
 | `import.*` | Data ingestion | File import, status, source management |
 | `categorize.*` | Categorization pipeline | Rules, merchant mappings, categorization, auto-rule review |
 | `budget.*` | Budget tracking | Targets, status, rollovers |
@@ -504,7 +504,6 @@ moneybin
 |   +-- search
 |   +-- correct
 |   +-- annotate
-|   +-- recurring
 +-- import
 |   +-- file
 |   +-- status

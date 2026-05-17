@@ -3,7 +3,6 @@
 
 Tools:
     - transactions_get — Fetch transactions with filters (medium sensitivity)
-    - transactions_recurring_list — Detect recurring patterns (medium sensitivity)
     - transactions_review — Pending counts across queues (low)
 """
 
@@ -70,25 +69,6 @@ def transactions_get(
     return result.to_envelope()
 
 
-@mcp_tool(sensitivity="medium")
-def transactions_recurring_list(
-    min_occurrences: int = 3,
-) -> ResponseEnvelope:
-    """Detect recurring transaction patterns like subscriptions.
-
-    Groups expense transactions by description and rounded amount to
-    identify recurring charges. Useful for finding subscriptions,
-    memberships, and regular bills.
-
-    Args:
-        min_occurrences: Minimum number of occurrences to consider
-            a transaction as recurring (default 3).
-    """
-    with get_database(read_only=True) as db:
-        result = TransactionService(db).recurring(min_occurrences=min_occurrences)
-    return result.to_envelope()
-
-
 @mcp_tool(sensitivity="low")
 def transactions_review() -> ResponseEnvelope:
     """Return counts of pending reviews across both queues.
@@ -135,14 +115,6 @@ def register_transactions_tools(mcp: FastMCP) -> None:
         "transfers exempt. Amounts are in the currency named by `summary.display_currency`. "
         "`accounts` accepts display names or exact account IDs — use `accounts_list` to "
         "discover IDs. Pass `next_cursor` from a previous response to fetch the next page.",
-    )
-    register(
-        mcp,
-        transactions_recurring_list,
-        "transactions_recurring_list",
-        "Detect recurring transaction patterns like subscriptions and regular charges. "
-        "Amounts use the accounting convention: negative = expense, positive = income; transfers exempt. "
-        "Amounts are in the currency named by `summary.display_currency`.",
     )
     register(
         mcp,

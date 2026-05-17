@@ -17,8 +17,6 @@ from moneybin.services.transaction_service import (
     ManualBatchResult,
     ManualEntryRawResult,
     Note,
-    RecurringResult,
-    RecurringTransaction,
     Split,
     TagRenameResult,
     TransactionService,
@@ -39,7 +37,7 @@ def transaction_db(tmp_path: Path) -> Generator[Database, None, None]:
     conn = database.conn
     create_core_tables_raw(conn)
 
-    # Insert test transactions: 3 "Coffee Shop" across months for recurring
+    # Insert test transactions across multiple months (used by tags rename and other tests)
     conn.execute("""
         INSERT INTO core.fct_transactions (
             transaction_id, account_id, transaction_date, amount,
@@ -81,42 +79,6 @@ def transaction_db(tmp_path: Path) -> Generator[Database, None, None]:
     database.close()
 
 
-class TestRecurring:
-    """Tests for TransactionService.recurring()."""
-
-    @pytest.mark.unit
-    def test_returns_recurring_result(self, transaction_db: Database) -> None:
-        service = TransactionService(transaction_db)
-        result = service.recurring(min_occurrences=3)
-        assert isinstance(result, RecurringResult)
-        assert len(result.transactions) == 1
-
-    @pytest.mark.unit
-    def test_recurring_fields(self, transaction_db: Database) -> None:
-        service = TransactionService(transaction_db)
-        result = service.recurring(min_occurrences=3)
-        rec = result.transactions[0]
-        assert isinstance(rec, RecurringTransaction)
-        assert rec.description == "Coffee Shop"
-        assert rec.occurrence_count == 3
-        assert rec.avg_amount == Decimal("-50.00")
-
-    @pytest.mark.unit
-    def test_min_occurrences_filter(self, transaction_db: Database) -> None:
-        service = TransactionService(transaction_db)
-        # With min_occurrences=4, Coffee Shop (3 occurrences) excluded
-        result = service.recurring(min_occurrences=4)
-        assert len(result.transactions) == 0
-
-    @pytest.mark.unit
-    def test_to_envelope_sensitivity_medium(self, transaction_db: Database) -> None:
-        service = TransactionService(transaction_db)
-        result = service.recurring(min_occurrences=3)
-        envelope = result.to_envelope()
-        d = envelope.to_dict()
-        assert d["summary"]["sensitivity"] == "medium"
-
-
 class TestEmptyResults:
     """Tests for service behavior with no data in tables."""
 
@@ -142,13 +104,6 @@ class TestEmptyResults:
         assert isinstance(result, TransactionGetResult)
         assert result.transactions == []
         assert result.next_cursor is None
-
-    @pytest.mark.unit
-    def test_recurring_empty_db(self, empty_db: Database) -> None:
-        service = TransactionService(empty_db)
-        result = service.recurring()
-        assert isinstance(result, RecurringResult)
-        assert result.transactions == []
 
 
 class TestNotes:
