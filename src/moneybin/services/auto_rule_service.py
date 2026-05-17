@@ -291,12 +291,14 @@ class AutoRuleService:
 
         proposed_rule_id = uuid.uuid4().hex[:12]
         initial_status = "pending" if threshold <= 1 else "tracking"
+        # Phase 1 dual-write: resolve the FK alongside the text snapshot.
+        category_id = resolve_category_id(self._db, category, subcategory)
         self._db.execute(
             f"""
             INSERT INTO {PROPOSED_RULES.full_name}
             (proposed_rule_id, merchant_pattern, match_type, category, subcategory,
-             status, trigger_count, source, sample_txn_ids)
-            VALUES (?, ?, ?, ?, ?, ?, 1, 'pattern_detection', ?)
+             category_id, status, trigger_count, source, sample_txn_ids)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'pattern_detection', ?)
             """,
             [
                 proposed_rule_id,
@@ -304,6 +306,7 @@ class AutoRuleService:
                 match_type,
                 category,
                 subcategory,
+                category_id,
                 initial_status,
                 [transaction_id],
             ],
@@ -569,6 +572,13 @@ class AutoRuleService:
                 "pending" if winning_count >= proposal_threshold else "tracking"
             )
             new_pid = uuid.uuid4().hex[:12]
+            # Phase 1 dual-write: resolve once, share across both writes so the
+            # re-proposal and the audit row agree on the FK in this transaction.
+            # Orphaned text is permitted — the join to dim_categories simply
+            # won't resolve for rows whose target category was later deleted.
+            new_category_id = resolve_category_id(
+                self._db, new_category, new_subcategory
+            )
             # Wrap deactivate + supersede + re-propose + audit in a single
             # transaction so a failure between steps cannot leave the rule
             # deactivated with no replacement proposal.
@@ -590,8 +600,8 @@ class AutoRuleService:
                     f"""
                     INSERT INTO {PROPOSED_RULES.full_name}
                     (proposed_rule_id, merchant_pattern, match_type, category, subcategory,
-                     status, trigger_count, source, sample_txn_ids)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, 'pattern_detection', ?)
+                     category_id, status, trigger_count, source, sample_txn_ids)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pattern_detection', ?)
                     """,
                     [
                         new_pid,
@@ -599,17 +609,11 @@ class AutoRuleService:
                         rule_match_type,
                         new_category,
                         new_subcategory,
+                        new_category_id,
                         new_status,
                         winning_count,
                         sample_ids,
                     ],
-                )
-                # Phase 1 dual-write: resolve the audit-trail FK alongside
-                # the text snapshot. Orphaned text is permitted — the join to
-                # dim_categories simply won't resolve for rows whose target
-                # category was later deleted.
-                new_category_id = resolve_category_id(
-                    self._db, new_category, new_subcategory
                 )
                 self._db.execute(
                     f"""

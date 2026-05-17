@@ -555,3 +555,61 @@ class TestRuleDeactivationDualWrite:
             "FROM app.rule_deactivations"
         ).fetchone()
         assert row == ("Groceries", None, groceries_id)
+
+
+class TestProposedRulesDualWrite:
+    """Phase 1 dual-write: proposed_rules writers populate category_id."""
+
+    def test_proposed_rule_carries_category_id(self, real_db: Database) -> None:
+        """Initial detection via record_categorization stores the resolved FK."""
+        cat_id = CategorizationService(real_db).create_category("Food & Drink")
+        _seed_transaction(real_db, "t1")
+        svc = AutoRuleService(real_db)
+        pid = svc.record_categorization("t1", "Food & Drink")
+        assert pid is not None
+
+        row = real_db.execute(
+            f"SELECT category, category_id FROM {PROPOSED_RULES.full_name} "  # noqa: S608  # TableRef constant
+            "WHERE proposed_rule_id = ?",
+            [pid],
+        ).fetchone()
+        assert row == ("Food & Drink", cat_id)
+
+    def test_re_proposed_rule_on_deactivation_carries_category_id(
+        self, real_db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Override-threshold re-proposal stores category_id on the new row."""
+        monkeypatch.setenv("MONEYBIN_CATEGORIZATION__AUTO_RULE_OVERRIDE_THRESHOLD", "2")
+        clear_settings_cache()
+        monkeypatch.setattr(config_module, "_current_profile", None)
+        monkeypatch.setattr(config_module, "_current_settings", None)
+        set_current_profile("test")
+
+        groceries_id = CategorizationService(real_db).create_category("Groceries")
+
+        _seed_transaction(real_db, "t1")
+        svc = AutoRuleService(real_db)
+        pid = svc.record_categorization("t1", "Food & Drink")
+        assert pid is not None
+        svc.accept(accept=[pid])
+
+        for tid in ("t10", "t11"):
+            real_db.execute(
+                "INSERT INTO core.fct_transactions (transaction_id, account_id, transaction_date, amount, description, source_type) "
+                "VALUES (?, 'a1', DATE '2026-01-03', -8.00, 'STARBUCKS RESERVE', 'csv')",
+                [tid],
+            )
+            real_db.execute(
+                "INSERT INTO app.transaction_categories (transaction_id, category, categorized_at, categorized_by) "
+                "VALUES (?, 'Groceries', CURRENT_TIMESTAMP, 'user')",
+                [tid],
+            )
+
+        assert svc.check_overrides() == 1
+
+        # The newly-created re-proposal is the row with category = Groceries.
+        row = real_db.execute(
+            f"SELECT category, subcategory, category_id FROM {PROPOSED_RULES.full_name} "  # noqa: S608  # TableRef constant
+            "WHERE category = 'Groceries'"
+        ).fetchone()
+        assert row == ("Groceries", None, groceries_id)
