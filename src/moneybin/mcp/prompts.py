@@ -167,11 +167,11 @@ def curate_recent_transactions() -> str:
         next analysis pass has consistent metadata.
 
         **Relevant tools:**
-        - transactions_get — fetch recent rows; pair with system_audit_list to
+        - transactions_get — fetch recent rows; pair with system_audit to
           spot gaps (no note.add / tag.add events on a transaction_id).
         - transactions_tags_set — declarative tag replacement (idempotent).
         - transactions_notes_add — append a curator note.
-        - system_audit_list — sanity check what already happened.
+        - system_audit — sanity check what already happened.
 
         **Workflow:**
         1. Call transactions_get with a recent date window (e.g., last 30 days,
@@ -179,7 +179,7 @@ def curate_recent_transactions() -> str:
         2. For each row, propose a small set of slug-pattern tags
            (^[a-z0-9_-]+(:[a-z0-9_-]+)?$) and an optional note. Keep tags short
            and reusable; reuse existing tags when possible (a prior
-           system_audit_list with action_pattern='tag.%' helps here).
+           system_audit with action_pattern='tag.%' helps here).
         3. Confirm the batch with the user before mutating.
         4. Apply: transactions_tags_set per row, transactions_notes_add for any
            row where a note adds context the description does not.
@@ -204,18 +204,18 @@ def review_curation_history() -> str:
         last week without forcing them to read raw audit rows.
 
         **Relevant tools:**
-        - system_audit_list — pull recent events. Call with limit=500 and
+        - system_audit — pull recent events. Call with limit=500 and
           filters['from'] set to seven days ago (ISO timestamp).
         - The result `data[]` already includes action, actor, target_table,
           target_id, before/after, parent_audit_id.
 
         **Workflow:**
-        1. Call system_audit_list with from = (now - 7 days) and limit=500.
+        1. Call system_audit with from = (now - 7 days) and limit=500.
         2. Group by `action_pattern` prefix: note.*, tag.*, split.*,
            import_label.*, manual.*, category.*.
         3. Report counts per group, top 3 actors, and any noteworthy
            outliers (parent tag.rename events, large split.clear bursts).
-        4. Offer drill-down via further system_audit_list calls
+        4. Offer drill-down via further system_audit calls
            (e.g., action_pattern='tag.rename') if the user asks.
 
         **Guardrails:**

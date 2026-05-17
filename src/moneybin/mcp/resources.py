@@ -200,7 +200,7 @@ def resource_recent_curation() -> str:
     """Last 50 audit events — ambient context for curation workflows.
 
     Resources are enhancement-only (some MCP clients are tools-only); the
-    canonical read path for audit events is the ``system_audit_list`` tool.
+    canonical read path for audit events is the ``system_audit`` tool.
     Sensitivity: medium — audit before/after values can carry row-level data.
     """
     logger.info("Resource read: moneybin://recent-curation")

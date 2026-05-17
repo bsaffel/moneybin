@@ -19,7 +19,7 @@ from moneybin.database import get_database
 from moneybin.mcp.tools.curation import (
     import_labels_set,
     register_curation_tools,
-    system_audit_list,
+    system_audit,
     transactions_create,
     transactions_notes_add,
     transactions_notes_delete,
@@ -112,7 +112,7 @@ class TestCurationToolRegistration:
             "transactions_tags_rename",
             "transactions_splits_set",
             "import_labels_set",
-            "system_audit_list",
+            "system_audit",
         } <= names
 
 
@@ -298,7 +298,7 @@ class TestSystemAuditList:
         await transactions_notes_add(transaction_id="TXN_AUDIT_1", text="hello")
 
         env = (
-            await system_audit_list(filters={"action_pattern": "tag.%"}, limit=50)
+            await system_audit(filters={"action_pattern": "tag.%"}, limit=50)
         ).to_dict()
         assert env["summary"]["sensitivity"] == "medium"
         events: list[dict[str, Any]] = list(env["data"])

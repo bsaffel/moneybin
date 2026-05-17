@@ -272,7 +272,7 @@ class TestCurationTools:
                     "transactions_tags_rename",
                     "transactions_splits_set",
                     "import_labels_set",
-                    "system_audit_list",
+                    "system_audit",
                 }
                 missing = expected - tool_names
                 assert not missing, f"Missing curation tools: {missing}"

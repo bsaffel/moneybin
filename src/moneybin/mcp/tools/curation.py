@@ -13,7 +13,7 @@ Sensitivity tiers (per ``.claude/rules/mcp-server.md``):
   inputs reference identifiers that — together with prior consent — let
   the caller mutate row-level data. Without ``mcp-data-sharing`` consent
   the privacy middleware degrades responses to aggregates without failing.
-- ``system_audit_list`` is also ``medium`` since audit rows can carry
+- ``system_audit`` is also ``medium`` since audit rows can carry
   before/after row-level deltas. Filters are passed through to the
   service.
 
@@ -270,7 +270,7 @@ def import_labels_set(import_id: str, labels: list[str]) -> ResponseEnvelope:
 
 
 @mcp_tool(sensitivity="medium")
-def system_audit_list(
+def system_audit(
     filters: dict[str, Any] | None = None, limit: int = 100
 ) -> ResponseEnvelope:
     """List audit events. Filter by actor, ``action_pattern`` (LIKE), target, or time.
@@ -375,7 +375,7 @@ def register_curation_tools(mcp: FastMCP) -> None:
     )
     register(
         mcp,
-        system_audit_list,
-        "system_audit_list",
+        system_audit,
+        "system_audit",
         "List audit events with filters (actor, action_pattern, target, time, limit).",
     )
