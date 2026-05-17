@@ -77,7 +77,7 @@ Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, sim
 | Database access | `get_database()` → `Database` | `duckdb.connect()` |
 | Configuration | `get_settings()` → `MoneyBinSettings` | `os.getenv()`, hardcoded values |
 | Secrets/keys | `SecretStore` | `os.getenv()`, plain `str` fields |
-| Table references | `TableRef.FCT_TRANSACTIONS`, etc. | Hardcoded table name strings |
+| Table references | `from moneybin.tables import FCT_TRANSACTIONS`, etc. | Hardcoded table name strings |
 | DataFrames | DuckDB > Polars > Pandas | Pandas (unless required for library compat — document why) |
 
 ## Code Standards
@@ -109,7 +109,7 @@ Full schema reference (including `meta`, `seeds`, `synthetic`, prefix convention
 2. **Multi-source union** — Core models `UNION ALL` from every staging source with `source_type` column.
 3. **Dedup in core** — `ROW_NUMBER()` windows for duplicates; mapping tables for cross-source dedup.
 4. **Accounting sign convention** — negative = expense, positive = income. `DECIMAL(18,2)` for amounts, `DATE` for dates.
-5. **Source-agnostic consumers** — MCP server, CLI use `TableRef` constants, never source-specific logic.
+5. **Source-agnostic consumers** — MCP server, CLI use `moneybin.tables` constants, never source-specific logic.
 
 ## Specs & Implementation Tracking
 

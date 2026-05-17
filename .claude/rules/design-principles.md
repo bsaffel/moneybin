@@ -1,3 +1,7 @@
+---
+description: "Durable path selection: heuristics for one-way-door decisions, public-contract triggers, coherence rule"
+---
+
 # Design Principles: Durable Path Selection
 
 Companion to AGENTS.md's "Guiding Principle." Defines what "durable" means
@@ -121,28 +125,23 @@ coherent and durable.
 
 ## Example: applying the protocol
 
-**Decision:** Adding a merchant attribute to `core.fct_transactions`.
-`merchant TEXT` (raw string on the fact table) vs `merchant_id VARCHAR`
-(FK to a new `core.dim_merchants`, populated with a truncated UUID4 per
-`.claude/rules/identifiers.md`)?
+**Decision:** Add a merchant attribute to `core.fct_transactions` —
+`merchant TEXT` on the fact table, or `merchant_id` FK to a new
+`core.dim_merchants`?
 
 **Classification:** One-way door. `core.fct_transactions` is exposed via
 MCP and CLI; consumers will write queries against this shape.
 
-**Option A (durable):** `merchant_id` + `dim_merchants`. Cost: ~3 extra
-days to build the dim table, dedup logic, and joins in `reports`. Locks
-the right shape — merchants are a real entity with attributes
-(normalized name, aliases, category) that will grow.
+**Option A (durable) — `merchant_id` + `dim_merchants`:** ~3 days. Locks
+the right shape; merchants are a real entity with attributes (aliases,
+category) that will grow.
 
-**Option B (fast):** `merchant TEXT`. Cost: ~half a day. Works for the
-M2B demo. Breaks the moment a second merchant attribute is needed —
-forcing a dim-table introduction later plus migration of every consumer
-query already written.
+**Option B (fast) — `merchant TEXT`:** ~½ day. Breaks the moment a
+second merchant attribute is needed — forces dim-table introduction
+later plus migration of every consumer query.
 
-**Recommend A.** Pays 3 days now to avoid a breaking migration of the
-public schema later. **No new ADR needed** — this applies the existing
-dim-table pattern from ADR-001. Capture in the merchants spec and PR
-description; reference ADR-001 for the dim/fact rationale.
+**Recommend A.** Applies the existing dim-table pattern from ADR-001;
+no new ADR. Capture in the merchants spec and PR description.
 
 ## Recording the outcome
 
