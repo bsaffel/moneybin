@@ -1127,11 +1127,12 @@ Financial health snapshot — high-level summary across all domains.
 Run the post-load refresh pipeline: cross-source matching, SQLMesh apply, deterministic categorization.
 
 - **Sensitivity:** `low` — counts and durations only.
-- **Unique parameters:** None.
+- **Unique parameters:**
+  - `steps: list[Literal["match", "transform", "categorize"]] | None = None` — subset of canonical steps to run; defaults to None (full cascade). Steps execute in canonical order (match → transform → categorize) regardless of input order; dependencies enforce it (categorize reads SQLMesh-built views). Pass `steps=["transform"]` to run SQLMesh apply alone — the granular form formerly exposed as the standalone `transform_apply` tool.
 - **Mutation surface:** rebuilds `core.*` and `reports.*` via SQLMesh; writes `app.transaction_categories` for newly-matched rules. No revert path — re-run after fixing inputs.
-- **Behavior:** Single user-facing entry point for the refresh domain. Idempotent; safe to retry after a failure. Matching and categorization steps are best-effort and log-only on failure — only SQLMesh apply errors surface in the response envelope. Returns `{applied, duration_seconds, error?}`. On apply failure, `actions[]` hints at `transform_plan` (per `mcp-server.md` infrastructure-verb carve-out) to inspect, or `refresh_run` to retry.
-- **Service:** `moneybin.services.refresh.refresh(db) -> RefreshResult`
-- **CLI:** `moneybin refresh [--output json] [-q]`
+- **Behavior:** Single user-facing entry point for the refresh domain. Idempotent; safe to retry after a failure. Matching and categorization steps are best-effort and log-only on failure — only SQLMesh apply errors surface in the response envelope. Returns `{applied, duration_seconds, error?}`. On apply failure, `actions[]` hints at `transform_plan` (per `mcp-server.md` infrastructure-verb carve-out) to inspect, or `refresh_run` to retry. When `steps` includes `match` but excludes `categorize`, `actions[]` includes a follow-up hint pointing at `refresh_run(steps=["categorize"])`. Unknown step names raise `UserError(code="UNKNOWN_REFRESH_STEP")`. Symmetric with `transactions_categorize_run(methods=...)`.
+- **Service:** `moneybin.services.refresh.refresh(db, *, steps=None) -> RefreshResult`
+- **CLI:** `moneybin refresh [--step STEP]... [--output json] [-q]`
 
 ---
 
@@ -1518,9 +1519,10 @@ Routine pipeline operations the AI legitimately needs (e.g., ensure pipeline is 
 | `transform_plan` | Preview pending SQLMesh changes (read-only) |
 | `transform_validate` | Check model SQL parses and resolves |
 | `transform_audit` | Run data quality assertions |
-| `transform_apply` | Execute SQLMesh changes |
 
 **CLI-only (operator-territory):** `transform_restate` — destructive force-recompute for a date range, used for bug fixes / late-data backfill / schema reinterpretation. Power-user / data-engineering territory; preceded by code changes the AI doesn't drive.
+
+**Folded into the refresh umbrella:** `transform_apply` was retired as a standalone MCP tool on 2026-05-17. The granular form is now `refresh_run(steps=["transform"])` on MCP and `moneybin refresh --step transform` on CLI. The `moneybin transform apply` CLI command remains as the operator-territory path for direct SQLMesh access.
 
 ### Judgment calls flagged for review
 
