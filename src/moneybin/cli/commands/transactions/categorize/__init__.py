@@ -145,6 +145,132 @@ def categorize_commit(
         raise typer.Exit(1)
 
 
+@app.command("run")
+def categorize_run(
+    methods: str = typer.Option(
+        "rules,merchants",
+        "--methods",
+        help="Comma-separated engines to run in order. Default: rules,merchants.",
+    ),
+    output: OutputFormat = output_option,
+) -> None:
+    """Run the categorization engine cascade over uncategorized transactions.
+
+    Engines available today: ``rules``, ``merchants``. Methods cascade in
+    order — a rule write blocks a merchant write at the same priority.
+
+      moneybin transactions categorize run
+      moneybin transactions categorize run --methods rules
+      moneybin transactions categorize run --methods rules,merchants --output json
+    """
+    from typing import Literal, cast
+
+    from moneybin.cli.output import render_or_json
+    from moneybin.protocol.envelope import build_envelope
+    from moneybin.services.categorization import CategorizationService
+
+    parsed_methods = [m.strip() for m in methods.split(",") if m.strip()]
+    valid = {"rules", "merchants"}
+    bad = [m for m in parsed_methods if m not in valid]
+    if bad:
+        typer.echo(
+            f"❌ Unknown method(s): {', '.join(bad)}. Valid: {', '.join(sorted(valid))}.",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    typed_methods = cast(list[Literal["rules", "merchants"]], parsed_methods)
+    with handle_cli_errors():
+        with get_database() as db:
+            data = CategorizationService(db).categorize_run(methods=typed_methods)
+
+    envelope = build_envelope(data=data, sensitivity="medium")
+
+    def _render_table(_: ResponseEnvelope) -> None:
+        breakdown = data["applied_by_method"]
+        for method, count in breakdown.items():
+            logger.info(f"  {method}: {count}")
+        logger.info(f"✅ Applied {data['total_applied']} total")
+
+    render_or_json(envelope, output, render_fn=_render_table)
+
+
+@app.command("assist")
+def categorize_assist(
+    limit: int = typer.Option(
+        100, "--limit", help="Maximum number of records to return (default 100)."
+    ),
+    account_filter: str | None = typer.Option(
+        None,
+        "--account-filter",
+        help="Comma-separated account IDs to restrict to.",
+    ),
+    date_range: str | None = typer.Option(
+        None,
+        "--date-range",
+        help="Date range as START,END (ISO dates, inclusive).",
+    ),
+    output: OutputFormat = output_option,
+) -> None:
+    """Return uncategorized transactions as redacted records for LLM categorization.
+
+    Outputs the same redacted shape as the MCP tool transactions_categorize_assist:
+    description and memo are redacted; no amount, date, or account ID is included.
+
+      moneybin transactions categorize assist --limit 50 --output json | jq '.data[0]'
+      moneybin transactions categorize assist --account-filter acct_a,acct_b --output json
+
+    Pipe the JSON output into an LLM workflow; commit decisions back via
+    `moneybin transactions categorize commit`.
+    """
+    from moneybin.cli.output import render_or_json
+    from moneybin.protocol.envelope import build_envelope
+    from moneybin.services.categorization import CategorizationService
+
+    accounts: list[str] | None = (
+        [a.strip() for a in account_filter.split(",") if a.strip()]
+        if account_filter
+        else None
+    )
+    date_tuple: tuple[str, str] | None = None
+    if date_range:
+        parts = [p.strip() for p in date_range.split(",")]
+        if len(parts) != 2:
+            typer.echo("❌ --date-range must be START,END (ISO dates).", err=True)
+            raise typer.Exit(2)
+        date_tuple = (parts[0], parts[1])
+
+    with handle_cli_errors():
+        with get_database(read_only=True) as db:
+            redacted = CategorizationService(db).categorize_assist(
+                limit=limit,
+                account_filter=accounts,
+                date_range=date_tuple,
+            )
+
+    data = [
+        {
+            "transaction_id": r.transaction_id,
+            "description_redacted": r.description_redacted,
+            "memo_redacted": r.memo_redacted,
+            "source_type": r.source_type,
+            "transaction_type": r.transaction_type,
+            "check_number": r.check_number,
+            "is_transfer": r.is_transfer,
+            "transfer_pair_id": r.transfer_pair_id,
+            "payment_channel": r.payment_channel,
+            "amount_sign": r.amount_sign,
+        }
+        for r in redacted
+    ]
+    envelope = build_envelope(data=data, sensitivity="medium")
+
+    def _render_table(_: ResponseEnvelope) -> None:
+        logger.info(f"Returned {len(data)} redacted record(s).")
+
+    render_or_json(envelope, output, render_fn=_render_table)
+
+
 @app.command("stats")
 def stats(
     output: OutputFormat = output_option,
