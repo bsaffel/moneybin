@@ -52,21 +52,21 @@ async def test_system_status_envelope_has_transforms_block(mcp_db: object) -> No
 
 @pytest.mark.unit
 async def test_pending_state_adds_action_hint(mcp_db: object) -> None:
-    """When pending=True, actions includes a transform_apply hint."""
+    """When pending=True, actions includes a refresh_run hint."""
     _seed_pending_import()
     env = await system_status()
     parsed = env.to_dict()
     assert parsed["data"]["transforms"]["pending"] is True
-    assert any("transform_apply" in a for a in parsed["actions"])
+    assert any("refresh_run" in a for a in parsed["actions"])
 
 
 @pytest.mark.unit
 async def test_not_pending_omits_action_hint(mcp_db: object) -> None:
-    """No pending imports → no transform_apply hint."""
+    """No pending imports → no refresh_run hint."""
     env = await system_status()
     parsed = env.to_dict()
     assert parsed["data"]["transforms"]["pending"] is False
-    assert not any("transform_apply" in a for a in parsed["actions"])
+    assert not any("refresh_run" in a for a in parsed["actions"])
 
 
 @pytest.mark.unit

@@ -60,13 +60,13 @@ def system_status() -> ResponseEnvelope:
             "remediation": "moneybin transform apply",
         }
         actions.append(
-            "Run transform_apply to rebuild stale models — "
+            "Run refresh_run to rebuild stale models — "
             f"{len(status.schema_drift)} core table(s) drifted"
         )
 
     if status.transforms_pending:
         actions.append(
-            "Run transform_apply to refresh derived tables "
+            "Run refresh_run to refresh derived tables "
             "(raw imports are newer than the last refresh)"
         )
 
