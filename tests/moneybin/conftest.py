@@ -158,7 +158,8 @@ def schema_catalog_db(
         "CAST(NULL AS VARCHAR) AS plaid_detailed, "
         "CAST(NULL AS BOOLEAN) AS is_default, "
         "CAST(NULL AS BOOLEAN) AS is_active, "
-        "CAST(NULL AS TIMESTAMP) AS created_at "
+        "CAST(NULL AS TIMESTAMP) AS created_at, "
+        "CAST(NULL AS TIMESTAMP) AS updated_at "
         "WHERE FALSE"
     )
     database.execute(

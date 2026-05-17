@@ -95,7 +95,8 @@ CREATE TABLE IF NOT EXISTS core.fct_transactions (
     tag_count INTEGER,
     splits STRUCT(split_id VARCHAR, amount DECIMAL(18, 2), category VARCHAR, subcategory VARCHAR, note VARCHAR)[],
     split_count INTEGER,
-    has_splits BOOLEAN
+    has_splits BOOLEAN,
+    updated_at TIMESTAMP
 );
 """
 
@@ -137,7 +138,8 @@ SELECT
     CURRENT_DATE AS balance_date,
     0.00::DECIMAL(18, 2) AS balance,
     'ofx'::VARCHAR AS source_type,
-    'placeholder'::VARCHAR AS source_ref
+    'placeholder'::VARCHAR AS source_ref,
+    CURRENT_TIMESTAMP AS updated_at
 WHERE FALSE;
 """
 

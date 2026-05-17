@@ -35,34 +35,9 @@ def populated_db(tmp_path: Path) -> Generator[Database, None, None]:
     )
     create_core_tables_raw(database.conn)
     apply_core_table_comments(database)
-    # The shared test DDL in tests/moneybin/db_helpers.py doesn't include
-    # the `updated_at` column on these relations, but the production
-    # SQLMesh models do (see sqlmesh/models/core/fct_balances.sql and
-    # fct_transactions.sql, both reference docs/specs/core-updated-at-
-    # convention.md). Add them here so the registry's source-of-truth
-    # entries match the test universe without mutating the shared helper.
-    # core.fct_balances is a view in the test helper; rebuild it with the
-    # extra column. core.fct_transactions is a table; ALTER works.
-    # Remove these statements once `tests/moneybin/db_helpers.py` grows
-    # `updated_at` on both relations.
-    database.execute(
-        "CREATE OR REPLACE VIEW core.fct_balances AS "
-        "SELECT 'placeholder'::VARCHAR AS account_id, "
-        "CURRENT_DATE AS balance_date, "
-        "0.00::DECIMAL(18, 2) AS balance, "
-        "'ofx'::VARCHAR AS source_type, "
-        "'placeholder'::VARCHAR AS source_ref, "
-        "CURRENT_TIMESTAMP AS updated_at "
-        "WHERE FALSE"
-    )
-    database.execute(
-        "ALTER TABLE core.fct_transactions ADD COLUMN IF NOT EXISTS "
-        "updated_at TIMESTAMP"
-    )
     # core.dim_categories / core.dim_merchants are SQLMesh-managed views in
     # production. Stub them here with the column shape the registry expects
-    # so the completeness check covers them too. Shape mirrors
-    # schema_catalog_db in tests/moneybin/conftest.py.
+    # so the completeness check covers them too.
     database.execute(
         "CREATE OR REPLACE VIEW core.dim_categories AS "
         "SELECT CAST(NULL AS VARCHAR) AS category_id, "
