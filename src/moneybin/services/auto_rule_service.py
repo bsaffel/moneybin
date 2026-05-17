@@ -604,11 +604,18 @@ class AutoRuleService:
                         sample_ids,
                     ],
                 )
+                # Phase 1 dual-write: resolve the audit-trail FK alongside
+                # the text snapshot. Orphaned text is permitted — the join to
+                # dim_categories simply won't resolve for rows whose target
+                # category was later deleted.
+                new_category_id = resolve_category_id(
+                    self._db, new_category, new_subcategory
+                )
                 self._db.execute(
                     f"""
                     INSERT INTO {RULE_DEACTIVATIONS.full_name}
-                    (deactivation_id, rule_id, reason, override_count, new_category, new_subcategory)
-                    VALUES (?, ?, 'override_threshold', ?, ?, ?)
+                    (deactivation_id, rule_id, reason, override_count, new_category, new_subcategory, new_category_id)
+                    VALUES (?, ?, 'override_threshold', ?, ?, ?, ?)
                     """,
                     [
                         uuid.uuid4().hex[:12],
@@ -616,6 +623,7 @@ class AutoRuleService:
                         total_overrides,
                         new_category,
                         new_subcategory,
+                        new_category_id,
                     ],
                 )
                 self._db.commit()

@@ -509,3 +509,49 @@ class TestPromoteProposedRuleDualWrite:
             [rule_id],
         ).fetchone()
         assert row == ("PromoteMe", cat_id)
+
+
+class TestRuleDeactivationDualWrite:
+    """Phase 1 dual-write: override-threshold deactivation records new_category_id."""
+
+    def test_deactivation_row_carries_new_category_id(
+        self, real_db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MONEYBIN_CATEGORIZATION__AUTO_RULE_OVERRIDE_THRESHOLD", "2")
+        clear_settings_cache()
+        monkeypatch.setattr(config_module, "_current_profile", None)
+        monkeypatch.setattr(config_module, "_current_settings", None)
+        set_current_profile("test")
+
+        # Pre-create the converged category so we can assert on its ID.
+        groceries_id = CategorizationService(real_db).create_category("Groceries")
+
+        # Approve an auto-rule for STARBUCKS -> Food & Drink.
+        _seed_transaction(real_db, "t1")
+        svc = AutoRuleService(real_db)
+        pid = svc.record_categorization("t1", "Food & Drink")
+        assert pid is not None
+        svc.accept(accept=[pid])
+
+        # Two user overrides correcting STARBUCKS to Groceries — meets the
+        # threshold and triggers the deactivation path that writes
+        # rule_deactivations.
+        for tid in ("t10", "t11"):
+            real_db.execute(
+                "INSERT INTO core.fct_transactions (transaction_id, account_id, transaction_date, amount, description, source_type) "
+                "VALUES (?, 'a1', DATE '2026-01-03', -8.00, 'STARBUCKS RESERVE', 'csv')",
+                [tid],
+            )
+            real_db.execute(
+                "INSERT INTO app.transaction_categories (transaction_id, category, categorized_at, categorized_by) "
+                "VALUES (?, 'Groceries', CURRENT_TIMESTAMP, 'user')",
+                [tid],
+            )
+
+        assert svc.check_overrides() == 1
+
+        row = real_db.execute(
+            "SELECT new_category, new_subcategory, new_category_id "
+            "FROM app.rule_deactivations"
+        ).fetchone()
+        assert row == ("Groceries", None, groceries_id)
