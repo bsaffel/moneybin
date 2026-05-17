@@ -1,7 +1,7 @@
-"""Round-trip integration tests: export-uncategorized → apply-from-file.
+"""Round-trip integration tests: export-uncategorized → commit-from-file.
 
 Tests the full CLI bridge workflow:
-  export-uncategorized → simulate LLM decisions → apply-from-file
+  export-uncategorized → simulate LLM decisions → commit-from-file
 """
 
 # ruff: noqa: S101
@@ -92,7 +92,7 @@ def _invoke_categorize(
 ) -> object:
     """Invoke the categorize subcommand app with the database pre-wired."""
     import moneybin.cli.commands.transactions.categorize as _categorize_mod
-    import moneybin.cli.commands.transactions.categorize.apply_from_file as _apply_mod
+    import moneybin.cli.commands.transactions.categorize.commit_from_file as _apply_mod
     import moneybin.cli.commands.transactions.categorize.export as _export_mod
 
     @contextmanager
@@ -107,7 +107,7 @@ def _invoke_categorize(
 
 
 class TestExportApplyRoundTrip:
-    """Export uncategorized → simulate LLM → apply-from-file round trip."""
+    """Export uncategorized → simulate LLM → commit-from-file round trip."""
 
     def test_export_apply_round_trip(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -149,7 +149,7 @@ class TestExportApplyRoundTrip:
             monkeypatch,
             db,
             store,
-            ["apply-from-file", str(apply_file), "--output", "json"],
+            ["commit-from-file", str(apply_file), "--output", "json"],
         )
         assert result.exit_code == 0, result.output  # type: ignore[union-attr]
         envelope = json.loads(result.output)  # type: ignore[union-attr]
@@ -182,7 +182,7 @@ class TestExportApplyRoundTrip:
             monkeypatch,
             db,
             store,
-            ["apply-from-file", "-", "--output", "json"],
+            ["commit-from-file", "-", "--output", "json"],
             input=payload,
         )
         assert result.exit_code == 0, result.output  # type: ignore[union-attr]

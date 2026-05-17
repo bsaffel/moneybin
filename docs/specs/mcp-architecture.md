@@ -469,7 +469,7 @@ def spending_summary_cmd(
 | **Error handling** | Structured error in response envelope | `logger.error` + `typer.Exit(1)` |
 | **Discoverability** | Tool descriptions + `actions` array | `--help` + command group structure |
 
-The `transactions_categorize_apply` MCP tool has CLI parity via `moneybin transactions categorize apply`. Both surfaces share the same `CategorizationService.categorize_items` implementation, validated through the same `CategorizationItem` Pydantic model at every boundary.
+The `transactions_categorize_commit` MCP tool has CLI parity via `moneybin transactions categorize commit`. Both surfaces share the same `CategorizationService.categorize_items` implementation, validated through the same `CategorizationItem` Pydantic model at every boundary.
 
 ### What symmetry does NOT mean
 

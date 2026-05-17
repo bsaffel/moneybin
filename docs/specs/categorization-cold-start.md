@@ -35,7 +35,7 @@ Three commitments:
 2. **LLM as long-tail solver, not primary.** When LLM-assist runs, it categorizes what deterministic solvers couldn't — and every categorization seeds auto-rules and merchants that handle the same patterns automatically next time.
 3. **Privacy-by-architecture.** The LLM never sees amounts, dates, or accounts. Descriptions are redacted via a typed contract that makes accidental leakage a compile-time impossibility.
 
-The snowball is implemented as auto-apply post-commit: `transactions_categorize_apply` invokes `categorize_pending()` after writes commit, fanning newly-created merchants and exemplars out to remaining uncategorized rows in the same dataset. See [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) §Apply order.
+The snowball is implemented as auto-apply post-commit: `transactions_categorize_commit` invokes `categorize_pending()` after writes commit, fanning newly-created merchants and exemplars out to remaining uncategorized rows in the same dataset. See [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) §Apply order.
 
 ## The three jobs / mental model
 
@@ -184,10 +184,10 @@ User-level stickiness is handled by the existing priority ladder:
 ## Requirements
 
 1. New MCP tool `transactions_categorize_assist` returns redacted uncategorized transactions with candidate categories. Sensitivity `medium`. Consent gate `mcp-data-sharing`.
-2. Existing `transactions_categorize_bulk_apply` MCP tool renamed to `transactions_categorize_apply`. CLI parity `moneybin transactions categorize apply`.
+2. Existing `transactions_categorize_bulk_apply` MCP tool renamed to `transactions_categorize_commit`. CLI parity `moneybin transactions categorize apply`.
 3. Existing `transactions_categorize_auto_confirm` MCP tool renamed to `transactions_categorize_auto_accept`. The `approve` parameter becomes `accept`. CLI parity follows.
 4. New MCP tool returns invalid-category errors with structured `did_you_mean` field listing closest valid categories (Levenshtein/substring match).
-5. New CLI commands: `moneybin categorize export-uncategorized`, `moneybin categorize apply-from-file`, `moneybin privacy redact`. JSON I/O via stdin/stdout, Unix conventions.
+5. New CLI commands: `moneybin categorize export-uncategorized`, `moneybin categorize commit-from-file`, `moneybin privacy redact`. JSON I/O via stdin/stdout, Unix conventions.
 6. New `redact_for_llm()` function in `src/moneybin/services/_text.py` strips card last-fours, emails, phones, P2P recipient names from descriptions. Type-enforced via `RedactedTransaction` dataclass that excludes amount/date/account fields.
 7. **(retired 2026-05-15)** Three SQLMesh seed models (`seeds.merchants_global/us/ca`) were originally introduced here; they are removed. See amendment at top.
 8. `app.merchants` is retired in favor of the `core.dim_merchants` view, which is a thin select over `app.user_merchants` (every merchant is user-created or system-created on the user's behalf).
@@ -263,7 +263,7 @@ After every import, the categorization pipeline reports its uncategorized count.
 | Tool | Purpose | Sensitivity | Direction of data |
 |---|---|---|---|
 | `transactions_categorize_assist` | Returns redacted uncategorized transactions + candidate categories | `medium` | MoneyBin → LLM |
-| `transactions_categorize_apply` (renamed from `_bulk_apply`) | Applies user-confirmed categorizations | `low` | LLM → MoneyBin |
+| `transactions_categorize_commit` (renamed from `_bulk_apply`) | Applies user-confirmed categorizations | `low` | LLM → MoneyBin |
 
 The propose/commit split is conceptual. `categorize_assist` returns proposals; `categorize_apply` commits them. Two single-purpose tools, each with a clear privacy profile.
 
@@ -287,7 +287,7 @@ sequenceDiagram
     Note over L: LLM reviews; user sees redacted descriptions in client UI
     L->>U: Here are my proposals (grouped by merchant)
     U->>L: Accept all
-    L->>M: transactions_categorize_apply(items=[{txn_id, category, subcategory, categorized_by='ai'}, ...])
+    L->>M: transactions_categorize_commit(items=[{txn_id, category, subcategory, categorized_by='ai'}, ...])
     M->>DB: Write transaction_categories, create merchants, fire auto-rule learning
     M-->>L: Applied 42; created 18 merchants; 14 auto-rule proposals generated
     L->>U: Done. 14 new rule proposals — review them?
@@ -314,7 +314,7 @@ When the LLM proposes a category not in `app.categories`, the server validates a
 | Failure | Handling |
 |---|---|
 | LLM proposes invalid category | Server validates, returns structured error with `did_you_mean` |
-| User accepts only some items | `transactions_categorize_apply` accepts a subset; un-accepted txns stay uncategorized |
+| User accepts only some items | `transactions_categorize_commit` accepts a subset; un-accepted txns stay uncategorized |
 | Merchant creation fails for one item | Partial commit — successful items applied, failures returned with reasons |
 | Connection lost mid-workflow | Propose is read-only. Apply is idempotent on `transaction_id` (INSERT OR REPLACE) |
 
@@ -329,7 +329,7 @@ flowchart LR
     B --> M2[Mode 2: Manual<br/>Human + any LLM<br/>export to file → LLM → apply file]
     B --> M3[Mode 3: Agent CLI<br/>AI drives shell directly<br/>export → reason → apply]
 
-    M1 --> C[transactions_categorize_apply<br/>writes categorized_by='ai']
+    M1 --> C[transactions_categorize_commit<br/>writes categorized_by='ai']
     M2 --> C
     M3 --> C
 ```
@@ -453,7 +453,7 @@ User-facing: `moneybin privacy audit --tool transactions_categorize_assist`.
 - ~~`src/moneybin/sql/schema/app_merchant_overrides.sql`~~ (retired 2026-05-15)
 - `src/moneybin/mcp/tools/transactions_categorize_assist.py` — new MCP tool
 - `src/moneybin/cli/commands/categorize/export.py` — `export-uncategorized` command
-- `src/moneybin/cli/commands/categorize/apply_from_file.py` — `apply-from-file` command
+- `src/moneybin/cli/commands/transactions/categorize/commit_from_file.py` — `commit-from-file` command
 - `src/moneybin/cli/commands/privacy/redact.py` — `redact` CLI command
 - `tests/moneybin/test_redact_for_llm.py` — unit tests for redactor
 - `tests/moneybin/test_redact_fuzz.py` — fuzz tests for PII non-leakage
@@ -476,7 +476,7 @@ User-facing: `moneybin privacy audit --tool transactions_categorize_assist`.
 - `src/moneybin/schema.py` — add new schema files to load order
 - `src/moneybin/database.py` — add migration step (move `app.merchants` rows to `app.user_merchants`, drop old table, create view)
 - `src/moneybin/mcp/tools/transactions_categorize.py`
-  - Rename `transactions_categorize_bulk_apply` → `transactions_categorize_apply`
+  - Rename `transactions_categorize_bulk_apply` → `transactions_categorize_commit`
   - Rename `transactions_categorize_auto_confirm` → `transactions_categorize_auto_accept`; rename `approve` parameter → `accept`
   - Register new `transactions_categorize_assist` tool
 - `src/moneybin/mcp/server.py` — update `FastMCP(instructions=...)` with first-run hint guidance
@@ -508,8 +508,8 @@ moneybin categorize export-uncategorized --output /tmp/uncat.json
 moneybin categorize export-uncategorized --account-filter acct_abc123 --limit 100
 
 # Apply categorizations from a JSON file or stdin
-moneybin categorize apply-from-file decisions.json
-cat decisions.json | moneybin categorize apply-from-file -
+moneybin categorize commit-from-file decisions.json
+cat decisions.json | moneybin categorize commit-from-file -
 
 # Trust-building / testing
 moneybin privacy redact "STARBUCKS #1234 SEATTLE WA 02/14"
@@ -520,7 +520,7 @@ Renamed:
 
 ```bash
 # Was: moneybin transactions categorize bulk
-moneybin transactions categorize apply --input cats.json
+moneybin transactions categorize commit --input cats.json
 ```
 
 JSON contracts:
@@ -564,7 +564,7 @@ Renamed:
 
 | From | To | Notes |
 |---|---|---|
-| `transactions_categorize_bulk_apply` | `transactions_categorize_apply` | Drops redundant `_bulk` suffix |
+| `transactions_categorize_bulk_apply` | `transactions_categorize_commit` | Drops redundant `_bulk` suffix |
 | `transactions_categorize_auto_confirm` | `transactions_categorize_auto_accept` | Aligns with proposal-acceptance vocabulary |
 | `approve` parameter on auto-accept | `accept` parameter | Same semantic shift |
 
@@ -650,12 +650,12 @@ This spec applies these surgical edits to the overview in the same PR:
 | Unit | Migration step idempotency: re-running migration on already-migrated DB is safe |
 | Fuzz | PII non-leakage: synthetic transactions with embedded last-4s, names, emails, phones — assert none appear in `categorize_assist` output |
 | Integration | `categorize_assist` end-to-end: load uncategorized, apply redaction, validate response shape |
-| Integration | `categorize export` ↔ `categorize apply-from-file` round-trip preserves transaction state |
+| Integration | `categorize export` ↔ `categorize commit-from-file` round-trip preserves transaction state |
 | Integration | Invalid category in apply returns structured error with `did_you_mean` |
 | Integration | Audit log entry created for every `categorize_assist` call with correct fields |
 | Integration | Migration: existing `app.merchants` rows survive split; `transaction_categories.merchant_id` references stay valid |
 | Scenario | `cold_start_first_import.yaml`: import 50 txns, simulate LLM-assist, verify auto-rule proposals generated and snowball reduces uncategorized count |
-| E2E | Renamed CLI commands work (`transactions categorize apply`, `auto-accept`); old names removed |
+| E2E | Renamed CLI commands work (`transactions categorize commit`, `auto-accept`); old names removed |
 
 ## Synthetic Data Requirements
 
@@ -702,7 +702,7 @@ Cross-cutting decisions deferred to implementation or future work.
 ### Non-functional
 
 - **`categorize_assist` server-side response time:** <500ms for batch of 100 (excludes LLM call latency)
-- **`categorize apply-from-file` server-side latency:** <2s for 100 transactions
+- **`categorize commit-from-file` server-side latency:** <2s for 100 transactions
 
 ### Auditability
 

@@ -113,7 +113,7 @@ class TransactionGetResult:
             actions=[
                 "Use transactions_get with the next_cursor value to fetch the next page",
                 "Use reports_spending for category breakdowns",
-                "Use transactions_categorize_apply to categorize uncategorized transactions",
+                "Use transactions_categorize_commit to categorize uncategorized transactions",
             ],
         )
 

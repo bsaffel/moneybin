@@ -71,7 +71,7 @@ flowchart TD
 
 Every step only operates on transactions not yet categorized by a higher-priority source. The pipeline is idempotent — running it twice produces the same result.
 
-**Pipeline triggers.** This pipeline runs after every import AND after every `transactions_categorize_apply` commit (the "snowball" auto-apply — see [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) §Apply order). When the LLM-assist batch creates new merchants or exemplars, `categorize_pending()` fires immediately so newly-learned patterns fan out to remaining uncategorized rows in the same dataset. Source-priority enforcement keeps user manual edits safe across re-runs.
+**Pipeline triggers.** This pipeline runs after every import AND after every `transactions_categorize_commit` commit (the "snowball" auto-apply — see [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) §Apply order). When the LLM-assist batch creates new merchants or exemplars, `categorize_pending()` fires immediately so newly-learned patterns fan out to remaining uncategorized rows in the same dataset. Source-priority enforcement keeps user manual edits safe across re-runs.
 
 ## Pillars
 
@@ -94,11 +94,11 @@ When a user categorizes a transaction, the system identifies the pattern and pro
 
 **Key design decisions** (full detail in [`categorization-auto-rules.md`](categorization-auto-rules.md)):
 
-- **Trigger:** After any categorization event (`transactions_categorize_apply` or CLI categorization), for each categorized transaction, check whether an active rule or merchant mapping already covers the pattern. If not, create or reinforce a proposal.
+- **Trigger:** After any categorization event (`transactions_categorize_commit` or CLI categorization), for each categorized transaction, check whether an active rule or merchant mapping already covers the pattern. If not, create or reinforce a proposal.
 - **Pattern extraction:** Merchant-first — use the canonical merchant name when a `merchant_id` exists, fall back to `normalize_description()` cleanup otherwise. Reuses the existing description normalization code.
 - **Proposal lifecycle:** `pending` → `approved` (promoted to `app.categorization_rules` with `created_by='auto_rule'`, `priority=200`) or `rejected` or `superseded` (when the user corrects the category).
 - **Correction handling:** Single user overrides don't affect the rule. After `auto_rule_override_threshold` (default 2) overrides, the rule is deactivated and a new proposal is created with the corrected category.
-- **UX:** Proposals accumulate silently. `transactions_categorize_apply` response includes a `rules_proposed` count and review hint. User reviews in batch via `transactions_categorize_auto_review` and `transactions_categorize_auto_confirm`. Approved rules take effect immediately against existing uncategorized transactions (synchronous promotion).
+- **UX:** Proposals accumulate silently. `transactions_categorize_commit` response includes a `rules_proposed` count and review hint. User reviews in batch via `transactions_categorize_auto_review` and `transactions_categorize_auto_confirm`. Approved rules take effect immediately against existing uncategorized transactions (synchronous promotion).
 - **Conflicting categorizations:** Amount/account-aware rule proposals are deferred to future enhancements (see Future Directions).
 
 ---
@@ -414,4 +414,4 @@ Decisions made during spec review, preserved for context.
 Cross-cutting decisions deferred to child specs or to resolve during implementation.
 - **Observability strategy.** Multiple sections of this spec stipulate logging (retraining events, threshold-tier shifts, auto-rule proposals, ML predictions dropped). A cross-cutting logging/observability design pass is needed to ensure a coherent approach across import summaries, per-transaction provenance, and system-level statistics. This is a concern shared with other specs (sync, matching) and should be addressed holistically rather than per-feature.
 - **Category mapping tables for migration.** The migration bootstrap strategy references "a one-time mapping table per source tool" but the mapping table schema is not designed. Needed before migration bootstrap can function.
-- **In-band LLM-assist for headless/automated CLI workflows.** Designed-out for v1; the cold-start manual-bridge (`moneybin categorize export-uncategorized` + `apply-from-file`) serves the common case, and agents driving the CLI directly use the same primitives. Revisit if usage data shows demand for direct LLM-API-calling commands like `moneybin categorize llm --provider claude`. See [`categorization-cold-start.md`](categorization-cold-start.md) Section 9.
+- **In-band LLM-assist for headless/automated CLI workflows.** Designed-out for v1; the cold-start manual-bridge (`moneybin transactions categorize export-uncategorized` + `commit-from-file`) serves the common case, and agents driving the CLI directly use the same primitives. Revisit if usage data shows demand for direct LLM-API-calling commands like `moneybin categorize llm --provider claude`. See [`categorization-cold-start.md`](categorization-cold-start.md) Section 9.

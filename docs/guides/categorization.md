@@ -130,7 +130,7 @@ Each merchant mapping specifies:
 All categorization operations support batch mode for efficient processing. These are designed for AI assistants that review and categorize many transactions in a single interaction turn.
 
 **Via MCP tools** (all batch-capable — single or many records per call):
-- `transactions_categorize_apply` — categorize one or many transactions (auto-creates merchant mappings)
+- `transactions_categorize_commit` — categorize one or many transactions (auto-creates merchant mappings)
 - `transactions_categorize_rules_create` — create one or many categorization rules
 - `merchants_create` — create one or many merchant mappings
 - `transactions_categorize_rules_delete` — remove a rule
@@ -138,8 +138,8 @@ All categorization operations support batch mode for efficient processing. These
 **Via CLI** — the categorize-apply tool has a CLI equivalent that accepts the same JSON shape from a file or stdin:
 
 ```bash
-moneybin transactions categorize apply --input cats.json
-cat cats.json | moneybin transactions categorize apply -
+moneybin transactions categorize commit --input cats.json
+cat cats.json | moneybin transactions categorize commit -
 ```
 
 Both surfaces share the same response envelope; pass `--output json` to get the structured result.
@@ -160,7 +160,7 @@ MoneyBin learns categorization patterns from how you (or your AI assistant) cate
 
 ### How learning works
 
-Every time `transactions_categorize_apply` writes a categorization (CLI, MCP, or AI agent), MoneyBin records the `(pattern, category)` pair. After enough independent transactions categorize the same way, the proposal moves from `tracking` to `pending` and shows up in `auto-review`. You decide whether to promote it to a real rule.
+Every time `transactions_categorize_commit` writes a categorization (CLI, MCP, or AI agent), MoneyBin records the `(pattern, category)` pair. After enough independent transactions categorize the same way, the proposal moves from `tracking` to `pending` and shows up in `auto-review`. You decide whether to promote it to a real rule.
 
 | Term | Meaning |
 |---|---|
@@ -231,7 +231,7 @@ A proposal is suppressed when an active rule or merchant mapping already produce
 ## Typical Workflow
 
 1. **Import data** — `moneybin import file transactions.csv` (defaults are already seeded by `db init`). Rules + merchants run automatically; uncategorized rows are surfaced in the summary.
-2. **Review uncategorized** — ask your AI assistant: *"Help me categorize my uncategorized transactions."* The assistant calls `transactions_categorize_assist`, proposes categories + merchant names, and commits via `transactions_categorize_apply`. Auto-fan-out kicks in after the commit, so duplicate patterns in the same dataset get categorized in the same session.
+2. **Review uncategorized** — ask your AI assistant: *"Help me categorize my uncategorized transactions."* The assistant calls `transactions_categorize_assist`, proposes categories + merchant names, and commits via `transactions_categorize_commit`. Auto-fan-out kicks in after the commit, so duplicate patterns in the same dataset get categorized in the same session.
 3. **Review auto-rule proposals** — `moneybin transactions categorize auto review`, then approve the ones that look right. Promoted auto-rules apply immediately to remaining uncategorized rows.
 4. **Subsequent imports** — exemplars, merchants, and rules from prior sessions catch most transactions at import time. LLM-assist handles the long tail.
 

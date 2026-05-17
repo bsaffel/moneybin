@@ -72,6 +72,9 @@ not-yet-built.
 | 11| Hard-delete a user-created category                              | `categories_delete`          | `categories delete`                                | —          | live                  |
 | 12| Create one or more categorization rules (single + batch)         | `transactions_categorize_rules_create` | `transactions categorize rules create` | —          | live                  |
 | 13| Soft-delete a categorization rule by ID                          | `transactions_categorize_rules_delete` | `transactions categorize rules delete` | —          | live                  |
+| 14| Commit externally-decided categorizations (LLM workflow's terminal step) | `transactions_categorize_commit`        | `transactions categorize commit`        | —          | live                  |
+| 15| Run the categorization engine cascade (rules + merchants)        | `transactions_categorize_run`            | `transactions categorize run`            | —          | live                  |
+| 16| Get redacted batch for LLM categorization                        | `transactions_categorize_assist`         | `transactions categorize assist`         | —          | live                  |
 
 *(Bootstrap rows only; full table populates incrementally as
 follow-up work closes the parity backlog. A prior row covering

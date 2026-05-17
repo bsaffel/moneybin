@@ -114,17 +114,17 @@ class TestCategorizeAssistMCPTool:
             assert "date" not in item
             assert "account_id" not in item
 
-    async def test_action_hints_point_at_apply_tool(
+    async def test_action_hints_point_at_commit_tool(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Response actions reference transactions_categorize_apply for commit."""
+        """Response actions reference transactions_categorize_commit for commit."""
         db, _store = _make_db(tmp_path)
         _seed_uncategorized_transactions(db, count=2)
         _wire_db_to_assist(monkeypatch, db)
 
         response = await transactions_categorize_assist(limit=10)
 
-        assert any("transactions_categorize_apply" in a for a in response.actions)
+        assert any("transactions_categorize_commit" in a for a in response.actions)
 
     async def test_account_filter_does_not_crash(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

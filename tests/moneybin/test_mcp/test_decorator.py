@@ -171,7 +171,7 @@ def test_find_list_params_single_list() -> None:
 
 @pytest.mark.unit
 def test_find_list_params_sequence() -> None:
-    """Sequence[Mapping[...]] is detected (transactions_categorize_apply shape)."""
+    """Sequence[Mapping[...]] is detected (transactions_categorize_commit shape)."""
     from collections.abc import Mapping, Sequence
 
     from moneybin.mcp.decorator import (

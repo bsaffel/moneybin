@@ -67,7 +67,7 @@ Batch tools with per-item error handling (`transactions_create`, `merchants_crea
 - **Form:** separate tools per strategy.
 - **NOT shape 4** when strategies share inputs and outputs and differ only in quality-of-service (latency, determinism, cost, privacy contract enforced by middleware). Those collapse into one tool with a methods parameter.
 
-**Sharpening note (verify against actual code).** "Different strategies for the same goal" is suspicious framing — check whether the strategies *really* have the same I/O. If one takes `(filter_params)` and returns `[redacted_rows]` while another takes `[explicit_categorizations]` and returns `applied_count`, those are not strategies of one operation — they are different operations that happen to live in the same domain. Categorize was initially framed as a methods-collapse case in the 2026-05-16 brainstorm; verifying against `transactions_categorize_apply` / `_assist` showed they fail this test (different inputs, different outputs, different read/write semantics). When in doubt, read the function signatures before classifying.
+**Sharpening note (verify against actual code).** "Different strategies for the same goal" is suspicious framing — check whether the strategies *really* have the same I/O. If one takes `(filter_params)` and returns `[redacted_rows]` while another takes `[explicit_categorizations]` and returns `applied_count`, those are not strategies of one operation — they are different operations that happen to live in the same domain. Categorize was initially framed as a methods-collapse case in the 2026-05-16 brainstorm; verifying against `transactions_categorize_commit` (the LLM-decided commit) / `_assist` (the redacted read) showed they fail this test (different inputs, different outputs, different read/write semantics). The engine-driven cascade *does* collapse — `transactions_categorize_run(methods=["rules","merchants"])` is the polymorphic tool that handles both engines under one shape. When in doubt, read the function signatures before classifying.
 
 Shape 4 is narrower than it first appears. Many "different strategies" cases are really one operation with a parameter — but many others are entirely different operations that just share a domain prefix.
 
@@ -109,7 +109,8 @@ Coherence requires that when a verb appears, it means the same thing everywhere.
 | `_set` | Idempotent state assertion (1a collection-set OR 1b entity upsert / partial update) | `budget_set`, `tags_set`, `accounts_set` |
 | `_create` | Strict create — errors if entity exists | `categories_create`, `transactions_create` |
 | `_delete` | Remove one entity by id or natural key | `budget_delete`, `categories_delete` |
-| `_run` | Execute a discrete batch/pipeline operation | `refresh_run` |
+| `_run` | Execute a discrete batch/pipeline operation | `refresh_run`, `transactions_categorize_run` |
+| `_commit` | Finalize externally-decided proposals (terminal step of propose→review→commit workflows) | `transactions_categorize_commit` |
 | `_refresh` | Rebuild derived state from raw inputs (refresh domain) | `refresh_run` (umbrella) |
 | `_get` | Fetch one entity by id | `transactions_get`, `accounts_get` |
 | `_status` | Status snapshot of a recent operation | `transform_status`, `transactions_categorize_status` |
@@ -120,7 +121,7 @@ Plus domain-specific discrete verbs (`_rename`, `_archive`, `_revert`, `_pull`, 
 
 **Verbs to avoid:**
 
-- `_apply` — was overloaded between refresh-domain ("apply transforms") and strategy-execution ("apply rules"). Both senses now route to `_run`. Currently zero callers after consolidation; OK to leave unused.
+- `_apply` — retired. Refresh-domain "apply transforms" now routes to `refresh_run` (PR #165). Strategy-execution "apply rules" now routes to `transactions_categorize_run(methods=["rules"])`. The previous LLM-categorize-commit caller (`transactions_categorize_apply`) has been renamed to `transactions_categorize_commit`. Zero current callers; do not reintroduce.
 - `_toggle` — too narrow (binary flip). Use `_set` with a typed field: `categories_set(category_id, is_active=...)` instead of `categories_toggle`.
 - `_update` — synonym of `_set` in this codebase. The rename pass picked `_set` (`accounts_settings_update` → `accounts_set`); follow that precedent.
 - `_list` suffix on read tools — drop it (noun-only). `transactions_recurring_list` is the canonical example to remove.

@@ -676,7 +676,7 @@ def test_categorize_items_returns_did_you_mean_on_invalid_category(
     assert "did_you_mean" in detail
     assert "Food & Dining" in detail["did_you_mean"]
     # `reason` is the human-readable summary the CLI table renderer
-    # (`apply` and `apply-from-file`) reads. Locking the contract.
+    # (`commit` and `commit-from-file`) reads. Locking the contract.
     assert "reason" in detail
     assert "FOOD" in detail["reason"]
 
