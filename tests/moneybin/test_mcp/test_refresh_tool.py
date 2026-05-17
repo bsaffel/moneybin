@@ -43,3 +43,9 @@ async def test_refresh_run_surfaces_apply_error() -> None:
         envelope = await refresh_run()
     assert envelope.data["applied"] is False
     assert envelope.data["error"] == "model boom"
+    # The recovery hint must reference tools that are actually registered.
+    # moneybin_discover was retired in #161; any reference to it would point
+    # an agent at an unknown tool exactly when guidance matters most.
+    assert envelope.actions, "apply failure must emit a recovery hint"
+    assert all("moneybin_discover" not in a for a in envelope.actions)
+    assert any("transform_plan" in a for a in envelope.actions)
