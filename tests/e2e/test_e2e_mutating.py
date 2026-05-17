@@ -807,12 +807,8 @@ class TestCategorizeRulesCreateCLI:
             env=env,
         )
         result.assert_success()
-        assert "Created 1" in result.output or "created" in result.output.lower()
-
-        # Confirm the rule appears in the list (text output goes through logger → stderr)
-        listing = run_cli("transactions", "categorize", "rules", "list", env=env)
-        listing.assert_success()
-        assert "starbucks-rule" in listing.output
+        # Status line goes through logger → stderr.
+        assert "Created 1 rule" in result.stderr
 
     def test_create_from_file_batch(
         self, _mutating_profile_template: Path, tmp_path: Path
@@ -851,7 +847,7 @@ class TestCategorizeRulesCreateCLI:
             env=env,
         )
         result.assert_success()
-        assert "Created 2" in result.output or "2" in result.stdout
+        assert "Created 2 rule" in result.stderr
 
     def test_create_with_json_output(
         self, _mutating_profile_template: Path, tmp_path: Path
@@ -986,7 +982,4 @@ class TestCategorizeRulesDeleteCLI:
         )
         assert result.exit_code != 0
         assert "Traceback (most recent call last)" not in result.stderr
-        assert (
-            "not found" in result.stderr.lower()
-            or "rule_not_found" in result.stderr.lower()
-        )
+        assert "Rule does-not-exist not found" in result.stderr

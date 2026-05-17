@@ -1,6 +1,8 @@
 """Rule management for categorization (list, apply, create, delete)."""
 
 import logging
+from enum import StrEnum
+from pathlib import Path
 
 import typer
 
@@ -13,6 +15,15 @@ from moneybin.cli.utils import emit_json, handle_cli_errors
 from moneybin.database import get_database
 
 logger = logging.getLogger(__name__)
+
+
+class MatchTypeChoice(StrEnum):
+    """Mirrors `services.categorization._shared.MatchType` for Typer choice validation."""
+
+    EXACT = "exact"
+    CONTAINS = "contains"
+    REGEX = "regex"
+
 
 app = typer.Typer(
     help="Rule management (list, apply, create, delete)",
@@ -101,8 +112,8 @@ def rules_create(
     subcategory: str | None = typer.Option(
         None, "--subcategory", help="Optional target subcategory"
     ),
-    match_type: str = typer.Option(
-        "contains", "--match-type", help="contains | exact | regex"
+    match_type: MatchTypeChoice = typer.Option(
+        MatchTypeChoice.CONTAINS, "--match-type", help="Pattern match strategy"
     ),
     priority: int = typer.Option(100, "--priority", help="Lower runs first"),
     min_amount: float | None = typer.Option(None, "--min-amount"),
@@ -110,7 +121,7 @@ def rules_create(
     account_id: str | None = typer.Option(
         None, "--account-id", help="Restrict to one account"
     ),
-    from_file: str | None = typer.Option(
+    from_file: Path | None = typer.Option(
         None, "--from-file", help="JSON file with a list of rule dicts"
     ),
     reapply: bool = typer.Option(
@@ -128,14 +139,21 @@ def rules_create(
     """
     import json  # noqa: PLC0415 — defer import; CLI cold-start hygiene
 
-    from moneybin.services.categorization import CategorizationService  # noqa: PLC0415
-    from moneybin.services.categorization._shared import (  # noqa: PLC0415
+    from moneybin.services.categorization import (  # noqa: PLC0415 — defer import; CLI cold-start hygiene
+        CategorizationService,
         validate_rule_items,
     )
 
-    if from_file:
-        with open(from_file, encoding="utf-8") as f:
-            loaded = json.load(f)
+    if from_file is not None:
+        try:
+            with from_file.open(encoding="utf-8") as f:
+                loaded = json.load(f)
+        except FileNotFoundError as e:
+            typer.echo(f"❌ File not found: {from_file}", err=True)
+            raise typer.Exit(2) from e
+        except json.JSONDecodeError as e:
+            typer.echo(f"❌ Invalid JSON in {from_file}: {e}", err=True)
+            raise typer.Exit(1) from e
         if not isinstance(loaded, list):
             raise typer.BadParameter(
                 "--from-file must point at a JSON list of rule dicts"
@@ -153,7 +171,7 @@ def rules_create(
                 "merchant_pattern": pattern,
                 "category": category,
                 "subcategory": subcategory,
-                "match_type": match_type,
+                "match_type": str(match_type),
                 "priority": priority,
                 "min_amount": min_amount,
                 "max_amount": max_amount,
@@ -167,10 +185,8 @@ def rules_create(
             result = CategorizationService(db).create_rules(validated, reapply=reapply)
         result.merge_parse_errors(parse_errors)
 
-    envelope = result.to_envelope(len(rules))
-
     if output == OutputFormat.JSON:
-        emit_json("rules_create", envelope.data)
+        emit_json("rules_create", result.to_envelope(len(rules)).data)
         return
 
     if not quiet:
@@ -196,9 +212,12 @@ def rules_delete(
     strip categorizations written by this rule and re-evaluate those rows
     against remaining active matchers.
     """
-    from moneybin.errors import UserError  # noqa: PLC0415
-    from moneybin.protocol.envelope import build_envelope  # noqa: PLC0415
-    from moneybin.services.categorization import CategorizationService  # noqa: PLC0415
+    from moneybin.errors import (
+        UserError,  # noqa: PLC0415 — defer import; CLI cold-start hygiene
+    )
+    from moneybin.services.categorization import (  # noqa: PLC0415 — defer import; CLI cold-start hygiene
+        CategorizationService,
+    )
 
     with handle_cli_errors():
         with get_database() as db:
@@ -208,13 +227,8 @@ def rules_delete(
         if not deactivated:
             raise UserError(f"Rule {rule_id} not found", code="RULE_NOT_FOUND")
 
-    envelope = build_envelope(
-        data={"rule_id": rule_id, "action": "deactivated"},
-        sensitivity="low",
-    )
-
     if output == OutputFormat.JSON:
-        emit_json("rules_delete", envelope.data)
+        emit_json("rules_delete", {"rule_id": rule_id, "action": "deactivated"})
         return
 
     logger.info(f"✅ Rule {rule_id} deactivated")
