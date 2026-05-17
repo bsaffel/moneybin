@@ -84,11 +84,11 @@ class TestCategorizeToolRegistration:
         } <= names
 
 
-class TestToggleCategoryWritePath:
+class TestCategorySetWritePath:
     """categories_set routes writes to the right backing table."""
 
     @pytest.mark.unit
-    async def test_toggle_default_category_writes_override(self, mcp_db: Path) -> None:
+    async def test_set_default_category_writes_override(self, mcp_db: Path) -> None:
         with get_database() as db:
             seed_categories_view(db)
 
@@ -101,7 +101,7 @@ class TestToggleCategoryWritePath:
         assert rows == [("FND", False)]
 
     @pytest.mark.unit
-    async def test_toggle_user_category_updates_user_categories(
+    async def test_set_user_category_updates_user_categories(
         self, mcp_db: Path
     ) -> None:
         with get_database() as db:
@@ -119,7 +119,7 @@ class TestToggleCategoryWritePath:
                 "SELECT is_active FROM app.user_categories WHERE category_id = ?",
                 ["CUSTOM1"],
             ).fetchall()
-            # Override table is for defaults only — user toggles must not write here.
+            # Override table is for defaults only — user category updates must not write here.
             override_count = db.execute(
                 "SELECT COUNT(*) FROM app.category_overrides"
             ).fetchone()
