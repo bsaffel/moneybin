@@ -128,14 +128,48 @@ CLI_ONLY_ALLOWED: frozenset[str] = frozenset({
     "synthetic_reset",
     "transform_seed",
     "transform_restate",
+    # Category 3 — Typer-idiomatic `<group> list` subcommands whose MCP
+    # sibling uses the noun-only shape-5 form. Intentional surface-idiom
+    # divergence per `.claude/rules/surface-design.md` §CLI.
+    "categories_list",
+    "merchants_list",
+    "import_formats_list",
+    "system_audit_list",
+    "accounts_list",
+    "accounts_balance_list",
+    "accounts_balance_assertions_list",
+    "transactions_categorize_rules_list",
+    "transactions_categorize_pending_list",
+    # `import_inbox_list` is OMITTED: see MCP_ONLY_ALLOWED note below —
+    # the `moneybin import inbox` group is callable bare, so its bare
+    # canonical name matches the MCP noun-only `import_inbox` directly.
 })
 
 # MCP-only by design — tools that implement MCP-protocol-specific
-# mechanisms with no CLI semantic. Empty today; kept as a documented
-# extension point. Client-driven progressive disclosure (and its
+# mechanisms with no CLI semantic, OR where MCP uses the noun-only
+# (shape 5) read form and the CLI uses its Typer-idiomatic `<group> list`
+# subcommand. The noun-only / `_list` split is intentional surface-idiom
+# divergence per `.claude/rules/surface-design.md` §CLI ("CLI has
+# subgroup nesting MCP doesn't"); see `.claude/rules/surface-design.md`
+# Shape 5 verb conventions. Client-driven progressive disclosure (and its
 # ``moneybin_discover`` meta-tool) was retired 2026-05-17, see
 # ``docs/specs/mcp-architecture.md`` §3.
-MCP_ONLY_ALLOWED: frozenset[str] = frozenset()
+MCP_ONLY_ALLOWED: frozenset[str] = frozenset({
+    # Shape 5 noun-only read tools paired with CLI `<group> list`:
+    "categories",
+    "merchants",
+    "import_formats",
+    "system_audit",
+    "accounts",
+    "accounts_balances",
+    "accounts_balance_assertions",
+    "transactions_categorize_rules",
+    "transactions_categorize_pending",
+    # `import_inbox` is intentionally OMITTED: the CLI group `moneybin
+    # import inbox` is `invoke_without_command=True`, so the bare
+    # canonical name `import_inbox` is also emitted by the CLI walker.
+    # That makes the MCP/CLI names match natively; no allowlist needed.
+})
 
 
 def _collect_mcp_tool_names() -> set[str]:
