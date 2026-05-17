@@ -14,9 +14,10 @@ WITH normalized AS (
     t.transaction_date,
     t.account_id
   FROM core.fct_transactions AS t
-  INNER JOIN core.dim_accounts AS a ON t.account_id = a.account_id
-  WHERE NOT t.is_transfer
-    AND NOT a.archived
+  INNER JOIN core.dim_accounts AS a
+    ON t.account_id = a.account_id
+  WHERE
+    NOT t.is_transfer AND NOT a.archived
 )
 SELECT
   merchant_normalized, /* Normalized merchant string; '(unknown)' when source merchant is NULL */
@@ -28,8 +29,11 @@ SELECT
   MEDIAN(amount) AS median_amount, /* Median signed amount */
   MIN(transaction_date) AS first_seen, /* Earliest transaction */
   MAX(transaction_date) AS last_seen, /* Most recent transaction */
-  COUNT(DISTINCT date_trunc('month', transaction_date)) AS active_months, /* Distinct year-month count */
-  MODE() WITHIN GROUP (ORDER BY category) AS top_category, /* Modal category text; NULL if all uncategorized */
+  COUNT(DISTINCT DATE_TRUNC('MONTH', transaction_date)) AS active_months, /* Distinct year-month count */
+  MODE(
+  ORDER BY
+    category) AS top_category, /* Modal category text; NULL if all uncategorized */
   COUNT(DISTINCT account_id) AS account_count /* Distinct accounts on which this merchant appears */
 FROM normalized
-GROUP BY merchant_normalized
+GROUP BY
+  merchant_normalized

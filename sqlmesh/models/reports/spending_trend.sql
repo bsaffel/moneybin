@@ -8,16 +8,18 @@ MODEL (
 
 WITH monthly AS (
   SELECT
-    strftime(date_trunc('month', t.transaction_date), '%Y-%m') AS year_month,
+    STRFTIME(DATE_TRUNC('MONTH', t.transaction_date), '%Y-%m') AS year_month,
     t.category,
     SUM(ABS(t.amount)) AS total_spend,
     COUNT(*) AS txn_count
   FROM core.fct_transactions AS t
-  INNER JOIN core.dim_accounts AS a ON t.account_id = a.account_id
-  WHERE t.amount < 0
-    AND NOT t.is_transfer
-    AND NOT a.archived
-  GROUP BY date_trunc('month', t.transaction_date), t.category
+  INNER JOIN core.dim_accounts AS a
+    ON t.account_id = a.account_id
+  WHERE
+    t.amount < 0 AND NOT t.is_transfer AND NOT a.archived
+  GROUP BY
+    DATE_TRUNC('MONTH', t.transaction_date),
+    t.category
 )
 SELECT
   m.year_month, /* Calendar month as 'YYYY-MM' */
@@ -28,20 +30,23 @@ SELECT
   m.total_spend - LAG(m.total_spend, 1) OVER (PARTITION BY m.category ORDER BY m.year_month) AS mom_delta, /* total_spend - prev_month_spend */
   CASE
     WHEN LAG(m.total_spend, 1) OVER (PARTITION BY m.category ORDER BY m.year_month) > 0
-      THEN (m.total_spend - LAG(m.total_spend, 1) OVER (PARTITION BY m.category ORDER BY m.year_month))
-        / LAG(m.total_spend, 1) OVER (PARTITION BY m.category ORDER BY m.year_month)
+    THEN (
+      m.total_spend - LAG(m.total_spend, 1) OVER (PARTITION BY m.category ORDER BY m.year_month)
+    ) / LAG(m.total_spend, 1) OVER (PARTITION BY m.category ORDER BY m.year_month)
     ELSE NULL
   END AS mom_pct, /* mom_delta / prev_month_spend; NULL when prev = 0 */
   LAG(m.total_spend, 12) OVER (PARTITION BY m.category ORDER BY m.year_month) AS prev_year_spend, /* Spend in the same calendar month one year prior */
   m.total_spend - LAG(m.total_spend, 12) OVER (PARTITION BY m.category ORDER BY m.year_month) AS yoy_delta, /* total_spend - prev_year_spend */
   CASE
     WHEN LAG(m.total_spend, 12) OVER (PARTITION BY m.category ORDER BY m.year_month) > 0
-      THEN (m.total_spend - LAG(m.total_spend, 12) OVER (PARTITION BY m.category ORDER BY m.year_month))
-        / LAG(m.total_spend, 12) OVER (PARTITION BY m.category ORDER BY m.year_month)
+    THEN (
+      m.total_spend - LAG(m.total_spend, 12) OVER (PARTITION BY m.category ORDER BY m.year_month)
+    ) / LAG(m.total_spend, 12) OVER (PARTITION BY m.category ORDER BY m.year_month)
     ELSE NULL
   END AS yoy_pct, /* yoy_delta / prev_year_spend; NULL when prev_year = 0 */
   AVG(m.total_spend) OVER (
-    PARTITION BY m.category ORDER BY m.year_month
+    PARTITION BY m.category
+    ORDER BY m.year_month
     ROWS BETWEEN 2 PRECEDING AND CURRENT ROW
   ) AS trailing_3mo_avg /* Rolling 3-month average ending this month, same category */
 FROM monthly AS m

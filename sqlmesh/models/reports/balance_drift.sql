@@ -15,19 +15,26 @@ SELECT
   ba.balance - fbd.balance AS drift, /* asserted_balance - computed_balance */
   ABS(ba.balance - fbd.balance) AS drift_abs, /* For default sort */
   CASE
-    WHEN ba.balance != 0 THEN (ba.balance - fbd.balance) / ba.balance
+    WHEN ba.balance <> 0
+    THEN (
+      ba.balance - fbd.balance
+    ) / ba.balance
     ELSE NULL
   END AS drift_pct, /* drift / asserted_balance */
-  CAST(current_date - ba.assertion_date AS INTEGER) AS days_since_assertion, /* today - assertion_date */
+  CAST(CURRENT_DATE - ba.assertion_date AS INT) AS days_since_assertion, /* today - assertion_date */
   CASE
-    WHEN fbd.balance IS NULL THEN 'no-data'
-    WHEN ABS(ba.balance - fbd.balance) < 1.00 THEN 'clean'
-    WHEN ABS(ba.balance - fbd.balance) < 10.00 THEN 'warning'
+    WHEN fbd.balance IS NULL
+    THEN 'no-data'
+    WHEN ABS(ba.balance - fbd.balance) < 1.00
+    THEN 'clean'
+    WHEN ABS(ba.balance - fbd.balance) < 10.00
+    THEN 'warning'
     ELSE 'drift'
   END AS status /* clean (<$1) | warning (<$10) | drift (>=$10) | no-data (computed_balance NULL) */
 FROM app.balance_assertions AS ba
-INNER JOIN core.dim_accounts AS a ON ba.account_id = a.account_id
+INNER JOIN core.dim_accounts AS a
+  ON ba.account_id = a.account_id
 LEFT JOIN core.fct_balances_daily AS fbd
-  ON ba.account_id = fbd.account_id
-  AND ba.assertion_date = fbd.balance_date
-WHERE NOT a.archived
+  ON ba.account_id = fbd.account_id AND ba.assertion_date = fbd.balance_date
+WHERE
+  NOT a.archived

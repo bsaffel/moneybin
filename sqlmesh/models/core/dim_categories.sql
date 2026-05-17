@@ -18,7 +18,8 @@ SELECT
   NULL::TIMESTAMP AS created_at, /* NULL for seeded categories; populated for user_categories below */
   o.updated_at AS updated_at /* Latest of all per-row input timestamps contributing to this row's current values. NULL for pure-seed rows; query meta.model_freshness for seed model freshness. */
 FROM seeds.categories AS s
-LEFT JOIN app.category_overrides AS o USING (category_id)
+LEFT JOIN app.category_overrides AS o
+  USING (category_id)
 UNION
 SELECT
   category_id,

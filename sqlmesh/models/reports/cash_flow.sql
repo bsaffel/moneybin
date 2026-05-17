@@ -6,7 +6,7 @@ MODEL (
 );
 
 SELECT
-  strftime(date_trunc('month', t.transaction_date), '%Y-%m') AS year_month, /* Calendar month as 'YYYY-MM' */
+  STRFTIME(DATE_TRUNC('MONTH', t.transaction_date), '%Y-%m') AS year_month, /* Calendar month as 'YYYY-MM' */
   t.account_id, /* Owning account (joinable to core.dim_accounts) */
   a.display_name AS account_name, /* Account display name (resolved from app.account_settings if overridden) */
   t.category, /* Spending category text from core.fct_transactions; NULL for uncategorized */
@@ -15,7 +15,12 @@ SELECT
   SUM(t.amount) AS net, /* inflow + outflow */
   COUNT(*) AS txn_count /* Number of non-transfer transactions in this cell */
 FROM core.fct_transactions AS t
-INNER JOIN core.dim_accounts AS a ON t.account_id = a.account_id
-WHERE NOT t.is_transfer
-  AND NOT a.archived
-GROUP BY date_trunc('month', t.transaction_date), t.account_id, a.display_name, t.category
+INNER JOIN core.dim_accounts AS a
+  ON t.account_id = a.account_id
+WHERE
+  NOT t.is_transfer AND NOT a.archived
+GROUP BY
+  DATE_TRUNC('MONTH', t.transaction_date),
+  t.account_id,
+  a.display_name,
+  t.category
