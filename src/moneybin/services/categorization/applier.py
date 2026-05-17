@@ -685,6 +685,28 @@ class MatchApplier:
         # them, and cascade must not touch budgets when deleting a subcategory.
         check_budgets = subcategory_name is None
 
+        # Phase 1 text-FK guard: with force=True, cascade DELETEs match
+        # referencing rows by (category, subcategory) text. If another taxonomy
+        # row (a seeded default or a second user_category) shares the same text,
+        # we would silently uncategorize transactions and budgets that belong to
+        # it. Refuse to cascade when ambiguity exists; the Phase 2 category_id
+        # FK migration removes this risk (see private/plans/2026-05-17-
+        # category-id-fk-migration.md).
+        if force:
+            collision_row = self._db.execute(
+                f"SELECT COUNT(*) FROM {CATEGORIES.full_name} "  # noqa: S608  # TableRef constant
+                f"WHERE category = ? AND subcategory IS NOT DISTINCT FROM ? "
+                f"  AND category_id != ?",
+                [category_name, subcategory_name, category_id],
+            ).fetchone()
+            if collision_row and collision_row[0]:
+                raise UserError(
+                    f"Cannot force-delete category {category_id}: another "
+                    f"taxonomy row shares the same (category, subcategory) "
+                    f"text. Cascade would clobber unrelated references.",
+                    code="CATEGORY_TEXT_COLLISION",
+                )
+
         if not force:
             refs_row = self._db.execute(
                 f"SELECT "
@@ -712,20 +734,22 @@ class MatchApplier:
                     code="CATEGORY_HAS_REFERENCES",
                 )
 
-        self._db.execute(
-            f"DELETE FROM {TRANSACTION_CATEGORIES.full_name} "  # noqa: S608  # TableRef constant
-            f"WHERE category = ? AND subcategory IS NOT DISTINCT FROM ?",
-            [category_name, subcategory_name],
-        )
-        if check_budgets:
+        with self._transaction():
+            if force:
+                self._db.execute(
+                    f"DELETE FROM {TRANSACTION_CATEGORIES.full_name} "  # noqa: S608  # TableRef constant
+                    f"WHERE category = ? AND subcategory IS NOT DISTINCT FROM ?",
+                    [category_name, subcategory_name],
+                )
+                if check_budgets:
+                    self._db.execute(
+                        f"DELETE FROM {BUDGETS.full_name} WHERE category = ?",  # noqa: S608  # TableRef constant
+                        [category_name],
+                    )
             self._db.execute(
-                f"DELETE FROM {BUDGETS.full_name} WHERE category = ?",  # noqa: S608  # TableRef constant
-                [category_name],
+                f"DELETE FROM {USER_CATEGORIES.full_name} WHERE category_id = ?",  # noqa: S608  # TableRef constant
+                [category_id],
             )
-        self._db.execute(
-            f"DELETE FROM {USER_CATEGORIES.full_name} WHERE category_id = ?",  # noqa: S608  # TableRef constant
-            [category_id],
-        )
 
     # -- Guarded categorization write --
 

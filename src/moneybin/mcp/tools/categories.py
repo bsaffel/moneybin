@@ -86,7 +86,7 @@ def categories_set(
     )
 
 
-@mcp_tool(sensitivity="low", read_only=False)
+@mcp_tool(sensitivity="low", read_only=False, destructive=True)
 def categories_delete(
     category_id: str,
     force: bool = False,

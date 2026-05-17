@@ -747,6 +747,16 @@ class TestCategoriesDeleteCommand:
         result.assert_success()
         assert "deleted" in result.output.lower()
 
+        verify = run_cli(
+            "db",
+            "query",
+            "SELECT COUNT(*) AS n FROM app.user_categories "
+            "WHERE category_id = 'E2EDEL000001'",
+            env=env,
+        )
+        verify.assert_success()
+        assert "0" in verify.output, f"row still present after delete:\n{verify.output}"
+
     def test_delete_unknown_category_exits_nonzero(
         self, _mutating_profile_template: Path, tmp_path: Path
     ) -> None:
