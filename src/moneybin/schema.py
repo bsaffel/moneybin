@@ -29,6 +29,8 @@ import sqlglot
 import sqlglot.expressions as exp
 
 from moneybin.database import escape_sql_literal
+from moneybin.privacy.comment_sync import sync_classification_comments
+from moneybin.privacy.taxonomy import strip_sigil
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +79,12 @@ _SCHEMA_FILES: list[str] = [
 ]
 
 
-def _apply_comments(conn: duckdb.DuckDBPyConnection, sql: str) -> None:
+def _apply_comments(
+    conn: duckdb.DuckDBPyConnection,
+    sql: str,
+    table_snapshot: dict[tuple[str, str], str | None],
+    column_snapshot: dict[tuple[str, str, str], str | None],
+) -> None:
     """Parse SQL with sqlglot and apply table and column comments to DuckDB catalog.
 
     sqlglot attaches SQL comments to adjacent AST nodes during parsing:
@@ -92,9 +99,11 @@ def _apply_comments(conn: duckdb.DuckDBPyConnection, sql: str) -> None:
     Tables that do not exist yet (e.g. core tables before SQLMesh has run) are
     silently skipped.
 
-    Args:
-        conn: An active read-write DuckDB connection.
-        sql: Full SQL text of a schema file.
+    The snapshots are pre-loop catalog reads (``duckdb_tables()`` /
+    ``duckdb_columns()``) so the comparison is a dict lookup, not a
+    per-column ``SELECT``. A row whose human-prefix already matches the
+    DDL comment is skipped so the privacy sigil suffix written by
+    ``sync_classification_comments`` survives across startups.
     """
     for statement in sqlglot.parse(sql, dialect="duckdb"):
         if not isinstance(statement, exp.Create) or statement.kind != "TABLE":
@@ -104,13 +113,18 @@ def _apply_comments(conn: duckdb.DuckDBPyConnection, sql: str) -> None:
         if table is None:
             continue
         table_name = table.sql(dialect="duckdb")
+        schema_str = table.args["db"].name if table.args.get("db") else None
+        table_str = table.name
+        if schema_str is None:
+            continue
 
         # Table-level comment: /* description */ on the line before CREATE TABLE.
         # Use [-1] (the closest comment) to match SQLMesh's own pattern and avoid
         # picking up unrelated -- notes that may also precede the /* */ block.
         if statement.comments:
             description = statement.comments[-1].strip()
-            if description:
+            existing = table_snapshot.get((schema_str, table_str))
+            if description and strip_sigil(existing or "") != description:
                 try:
                     safe_desc = escape_sql_literal(description)
                     conn.execute(f"COMMENT ON TABLE {table_name} IS '{safe_desc}'")
@@ -126,6 +140,9 @@ def _apply_comments(conn: duckdb.DuckDBPyConnection, sql: str) -> None:
                 continue
             comment = col_def.comments[-1].strip()
             if not comment:
+                continue
+            existing = column_snapshot.get((schema_str, table_str, col_def.name))
+            if strip_sigil(existing or "") == comment:
                 continue
             try:
                 safe_comment = escape_sql_literal(comment)
@@ -143,12 +160,35 @@ def _apply_comments(conn: duckdb.DuckDBPyConnection, sql: str) -> None:
                 )
 
 
+def _snapshot_catalog_comments(
+    conn: duckdb.DuckDBPyConnection,
+) -> tuple[
+    dict[tuple[str, str], str | None],
+    dict[tuple[str, str, str], str | None],
+]:
+    """Read every table and column comment in one pair of queries."""
+    table_rows = conn.execute(
+        "SELECT schema_name, table_name, comment FROM duckdb_tables()"
+    ).fetchall()
+    column_rows = conn.execute(
+        "SELECT schema_name, table_name, column_name, comment FROM duckdb_columns()"
+    ).fetchall()
+    table_snapshot: dict[tuple[str, str], str | None] = {
+        (s, t): c for s, t, c in table_rows
+    }
+    column_snapshot: dict[tuple[str, str, str], str | None] = {
+        (s, t, col): c for s, t, col, c in column_rows
+    }
+    return table_snapshot, column_snapshot
+
+
 def init_schemas(conn: duckdb.DuckDBPyConnection) -> None:
     """Create all database schemas and tables, then apply inline comments.
 
     Args:
         conn: An active read-write DuckDB connection.
     """
+    table_snapshot, column_snapshot = _snapshot_catalog_comments(conn)
     for sql_file in _SCHEMA_FILES:
         sql_path = _SQL_DIR / sql_file
         if not sql_path.exists():
@@ -156,7 +196,17 @@ def init_schemas(conn: duckdb.DuckDBPyConnection) -> None:
             continue
         sql = sql_path.read_text()
         conn.execute(sql)
-        _apply_comments(conn, sql)
+        _apply_comments(conn, sql, table_snapshot, column_snapshot)
         logger.debug(f"Executed {sql_file}")
 
     logger.debug(f"Executed {len(_SCHEMA_FILES)} schema files from {_SQL_DIR}")
+
+    # Mirror the DataClass registry into the catalog (suffix comments
+    # with `[class: ...]`).
+    try:
+        sync_classification_comments(conn)
+    except duckdb.CatalogException:
+        # Core tables managed by SQLMesh may not exist yet on a fresh
+        # DB — they appear after the first `sqlmesh run`. The sync
+        # runs again from sqlmesh_context() once those tables land.
+        logger.debug("Skipping classification sync — core tables not yet present")
