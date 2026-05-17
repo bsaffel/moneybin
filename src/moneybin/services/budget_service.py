@@ -16,6 +16,7 @@ from typing import Any, Literal
 
 from moneybin.database import Database
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.services.categorization._shared import resolve_category_id
 from moneybin.tables import BUDGETS, FCT_TRANSACTIONS, TRANSACTION_CATEGORIES
 
 logger = logging.getLogger(__name__)
@@ -149,14 +150,18 @@ class BudgetService:
         else:
             # Create new budget
             budget_id = uuid.uuid4().hex[:12]
+            # Phase 1 dual-write: resolve the FK alongside the text snapshot.
+            # Budgets are top-level only (no subcategory column), so pass
+            # None on the subcategory axis to match the top-level dim row.
+            category_id = resolve_category_id(self._db, category, None)
             insert_sql = f"""
                 INSERT INTO {BUDGETS.full_name}
-                    (budget_id, category, monthly_amount, start_month)
-                VALUES (?, ?, ?, ?)
+                    (budget_id, category, category_id, monthly_amount, start_month)
+                VALUES (?, ?, ?, ?, ?)
             """
             self._db.execute(
                 insert_sql,
-                [budget_id, category, monthly_amount, start_month],
+                [budget_id, category, category_id, monthly_amount, start_month],
             )
             action = "created"
 
