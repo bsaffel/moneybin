@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 
 @mcp_tool(sensitivity="low", domain="categorize")
-def transactions_categorize_rules_list() -> ResponseEnvelope:
+def transactions_categorize_rules() -> ResponseEnvelope:
     """List all categorization rules.
 
     Returns rule ID, name, pattern, match type, category, priority,
@@ -270,8 +270,8 @@ def register_transactions_categorize_tools(mcp: FastMCP) -> None:
     """Register all transactions categorize namespace tools with the FastMCP server."""
     register(
         mcp,
-        transactions_categorize_rules_list,
-        "transactions_categorize_rules_list",
+        transactions_categorize_rules,
+        "transactions_categorize_rules",
         "List all active categorization rules.",
     )
     register(

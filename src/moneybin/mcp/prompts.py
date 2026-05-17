@@ -105,7 +105,7 @@ def review_auto_rules() -> str:
         - transactions_categorize_auto_stats — pending proposal count and rule health
         - transactions_categorize_auto_review — list pending proposals with samples
         - transactions_categorize_auto_accept — batch approve/reject proposals by ID
-        - transactions_categorize_rules_list — review currently active rules
+        - transactions_categorize_rules — review currently active rules
 
         **Workflow:**
         1. Check transactions_categorize_auto_stats for pending proposal count

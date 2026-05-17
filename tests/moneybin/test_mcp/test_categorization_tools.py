@@ -49,7 +49,7 @@ class TestCategorizeToolRegistration:
     async def test_all_categorize_tools_register(self) -> None:
         names = await _registered_names()
         assert "categories" in names
-        assert "transactions_categorize_rules_list" in names
+        assert "transactions_categorize_rules" in names
         assert "merchants" in names
         assert "transactions_categorize_stats" in names
         assert "transactions_categorize_pending_list" in names

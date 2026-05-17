@@ -86,7 +86,7 @@ class CategorizationResult:
             sensitivity="medium",
             total_count=input_count,
             actions=[
-                "Use transactions_categorize_rules_list to review auto-created rules",
+                "Use transactions_categorize_rules to review auto-created rules",
                 "Use transactions_categorize_pending_list to fetch the next batch",
             ],
         )
