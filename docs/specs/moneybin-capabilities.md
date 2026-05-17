@@ -68,6 +68,7 @@ not-yet-built.
 | 7 | Summarize an account's activity                                  | `accounts_summary`           | — *(pending-build)*                                | —          | pending-build (CLI)   |
 | 8 | Rotate the database encryption key                               | — *(cat 1 — secret material)*| `db_key_rotate`                                    | —          | live                  |
 | 9 | Run the MCP server                                               | — *(cat 2 — operator)*       | `mcp_serve`                                        | —          | live                  |
+| 10 | Hard-delete a user-created category                              | `categories_delete`          | `categories delete`                                | —          | live                  |
 
 *(Bootstrap rows only; full table populates incrementally as
 follow-up work closes the parity backlog. Row 10 — "Discover

@@ -184,8 +184,8 @@ moneybin [--profile NAME] [--verbose] [--output json|table] [--yes]
 +-- categories                     -- Category taxonomy (reference data)
 |   +-- list
 |   +-- create <name> [--parent] [--icon]
-|   +-- toggle <category_id>       -- Enable / disable
-|   +-- delete <category_id>
+|   +-- set <category_id> --active/--inactive
+|   +-- delete <category_id> [--force]
 |
 +-- merchants                      -- Merchant mappings (reference data)
 |   +-- list
@@ -509,7 +509,7 @@ This is a hard cut. No aliases, no deprecation period. v1 paths break in the sam
 | `track investments *` | `accounts investments *` | Holdings as account-typed entity |
 | `matches *` | `transactions matches *` | Workflow on transactions |
 | `categorize *` (workflow + rules + auto + ml) | `transactions categorize *` | Workflow on transactions |
-| `categorize categories / create-category / toggle-category` | `categories list / create / toggle / delete` | Reference-data taxonomy → top-level entity group |
+| `categorize categories / create-category / toggle-category` | `categories list / create / set / delete` | Reference-data taxonomy → top-level entity group |
 | `categorize merchants / create-merchants` | `merchants list / create` | Reference-data taxonomy → top-level entity group |
 | (none) | `accounts list / show / rename / include` | New entity ops |
 | (none) | `transactions list / show / search` | New entity ops |

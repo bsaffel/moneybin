@@ -866,6 +866,18 @@ Update a category's settings (currently only `is_active`).
 - **Service:** `CategorizationService.toggle_category() -> ToggleResult`
 - **CLI:** `moneybin categories set CATEGORY_ID --active/--inactive`
 
+### `categories_delete`
+
+Hard-delete a user-created category.
+
+- **Sensitivity:** `low`
+- **Unique parameters:** `category_id: str` (required), `force: bool = false`.
+- **Behavior:** Refuses by default if the category is referenced by any rows in `app.transaction_categories` (matched on `(category, subcategory)`) or `app.budgets` (top-level `category` text). With `force=true`, deletes referencing transaction and budget rows before removing the `app.user_categories` row; affected transactions return to the uncategorized state. Default (seeded) categories cannot be hard-deleted — use `categories_set` with `is_active=false` to preserve the canonical taxonomy row.
+- **Mutation surface:** deletes the `app.user_categories` row. With `force=true`, also deletes referencing `app.transaction_categories` rows and matching `app.budgets` rows. No revert path — recreate with `categories_create`.
+- **Errors:** `CATEGORY_NOT_FOUND` (no such ID), `CATEGORY_IS_DEFAULT` (seeded default cannot be hard-deleted), `CATEGORY_HAS_REFERENCES` (`force=false` and references exist).
+- **Service:** `CategorizationService.delete_category() -> None`
+- **CLI:** `moneybin categories delete CATEGORY_ID [--force]`
+
 ### `transactions_categorize_stats`
 
 Categorization coverage statistics.
