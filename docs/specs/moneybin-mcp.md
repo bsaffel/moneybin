@@ -1439,7 +1439,7 @@ Categories are reference data that transactions reference, not a workflow on tra
 |---|---|
 | `categorize_categories` | `categories_list` |
 | `categorize_create_category` | `categories_create` |
-| `categorize_toggle_category` | `categories_set` | renamed twice (via `categories_toggle`) |
+| `categorize_toggle_category` | `categories_set` (renamed twice; v1 → `categories_toggle` → `categories_set`) |
 | (new) | `categories_delete` |
 
 ### `merchants_*` (new top-level — merchant mapping reference data)
