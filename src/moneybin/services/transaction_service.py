@@ -21,6 +21,7 @@ from moneybin.database import Database
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services._validators import validate_note_text, validate_slug
 from moneybin.services.audit_service import AuditService
+from moneybin.services.categorization._shared import resolve_category_id
 from moneybin.tables import (
     DIM_ACCOUNTS,
     FCT_TRANSACTIONS,
@@ -994,12 +995,20 @@ class TransactionService:
                 [transaction_id],
             ).fetchone()
             next_ord = int(ord_row[0]) if ord_row is not None else 0
+            # Phase 1 dual-write: resolve the FK alongside the text snapshot.
+            # `None` is a permitted write — splits often carry no category.
+            category_id = (
+                resolve_category_id(self._db, category, subcategory)
+                if category
+                else None
+            )
             params: list[Any] = [
                 split_id,
                 transaction_id,
                 amount,
                 category,
                 subcategory,
+                category_id,
                 note,
                 next_ord,
                 actor,
@@ -1008,8 +1017,8 @@ class TransactionService:
                 """
                 INSERT INTO app.transaction_splits
                     (split_id, transaction_id, amount, category, subcategory,
-                     note, ord, created_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                     category_id, note, ord, created_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 params,
             )
@@ -1177,19 +1186,29 @@ class TransactionService:
                 )
             for ord_idx, s in enumerate(prepared):
                 split_id = uuid.uuid4().hex[:12]
+                # Phase 1 dual-write: resolve per row; each split may have its
+                # own category (or none — splits often carry no category).
+                row_category = s["category"]
+                row_subcategory = s["subcategory"]
+                category_id = (
+                    resolve_category_id(self._db, row_category, row_subcategory)
+                    if row_category
+                    else None
+                )
                 self._db.conn.execute(
                     """
                     INSERT INTO app.transaction_splits
                         (split_id, transaction_id, amount, category, subcategory,
-                         note, ord, created_by)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                         category_id, note, ord, created_by)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     [
                         split_id,
                         transaction_id,
                         s["amount"],
-                        s["category"],
-                        s["subcategory"],
+                        row_category,
+                        row_subcategory,
+                        category_id,
                         s["note"],
                         ord_idx,
                         actor,
