@@ -109,7 +109,7 @@ Coherence requires that when a verb appears, it means the same thing everywhere.
 | `_set` | Idempotent state assertion (1a collection-set OR 1b entity upsert / partial update) | `budget_set`, `tags_set`, `accounts_set` |
 | `_create` | Strict create — errors if entity exists | `categories_create`, `transactions_create` |
 | `_delete` | Remove one entity by id or natural key | `budget_delete`, `categories_delete` |
-| `_run` | Execute a discrete batch/pipeline operation | `categorize_run`, `refresh_run` |
+| `_run` | Execute a discrete batch/pipeline operation | `refresh_run` |
 | `_refresh` | Rebuild derived state from raw inputs (refresh domain) | `refresh_run` (umbrella) |
 | `_get` | Fetch one entity by id | `transactions_get`, `accounts_get` |
 | `_status` | Status snapshot of a recent operation | `transform_status`, `transactions_categorize_status` |
@@ -137,7 +137,7 @@ Method-parameter polymorphism (`tool(method=...)`) is **acceptable** when all fo
 3. Differences are quality-of-service: latency, determinism, cost, privacy contract enforced by middleware (not by the agent).
 4. The cascade has a natural default behavior.
 
-**Acceptable example:** `transactions_categorize_run(methods=["rules","ml","assist"], transactions=None)`. Methods differ in QoS only; the cascade has a meaningful default.
+**Acceptable example (hypothetical):** `tool(methods=["rules","ml"], transactions=None)` where both methods take the same input shape (a transaction set) and produce the same output shape (applied categorizations) — differing only in QoS (rules deterministic and fast; ML probabilistic and bulk). A method that returns a structurally different output (e.g. redacted rows for human review) fails criterion 2 and belongs in a separate tool, not in this `methods=` list — see the Shape 4 sharpening note above.
 
 Polymorphism is **rejected** when:
 
@@ -151,23 +151,23 @@ Polymorphism is **rejected** when:
 
 MoneyBin's surface mixes three audiences:
 
-| Audience | Examples | Default treatment |
+| Audience | Examples | Positioning |
 |---|---|---|
-| **User-intent** | `reports_spending`, `accounts_summary`, `transactions_search` | Always-visible |
-| **Mid-CRUD** | `transactions_tags_set`, `budget_set`, `categories_set` | Always-visible |
-| **Infrastructure** | `transform_apply`, `sql_query`, `system_doctor`, `system_audit_list` | Discover-gated via `moneybin_discover('admin')` |
+| **User-intent** | `reports_spending`, `accounts_summary`, `transactions_search` | Surfaced prominently in the `instructions` field, in user-facing tools' `actions[]` hints, and in docs |
+| **Mid-CRUD** | `transactions_tags_set`, `budget_set`, `categories_set` | Surfaced as the agent's hands — referenced by user-intent tools' `actions[]` and in workflow examples |
+| **Operator territory** | `transform_apply`, `sql_query`, `system_doctor`, `system_audit_list` | Visible but deprioritized: description prose calls out the operator audience; not promoted in `instructions` enumeration; reached via specific `actions[]` hints when relevant |
 
-The agent attention budget is set by always-visible surface size (see `mcp-server.md` "Progressive disclosure"). Discover-gating infrastructure doesn't remove capability — it removes attention cost from the default working set.
+**Per `docs/specs/mcp-architecture.md` §3 ("Tool disclosure: full surface, taxonomy-led"):** the full registered tool surface is visible at connect — client-driven progressive disclosure was retired 2026-05-17. Audience positioning happens through three levers MoneyBin controls end-to-end: the FastMCP `instructions` field, prefix-grouped tool names with sharp descriptions, and surface discipline (tools register only when their backing spec reaches `in-progress`/`implemented`, per `mcp-server.md` "Surface change discipline"). The `@mcp_tool(domain=...)` markers stay as dormant metadata for a future first-party client that can implement schema injection in the style of Claude Code's `tool_search`.
 
-**Test:** if a tool's primary caller is a human operator (or a power-user agent explicitly inspecting internals), it belongs behind discover. If the primary caller is an agent helping a user with their finances, it stays always-visible.
+**Test:** if a tool's primary caller is a human operator (or a power-user agent explicitly inspecting internals), the tool's description should say so, it should NOT be cited in user-facing tools' `actions[]` hints, and it should NOT appear in the `instructions` field's top-level enumeration. If the primary caller is an agent helping a user with their finances, the opposite — surface it prominently across those three levers.
 
-**Umbrella pattern:** when re-layering removes a tool from the default surface, a higher-level tool often fills the slot. `transform_apply` moves behind discover; `refresh_run` becomes the always-visible umbrella over the refresh pipeline (match + transform + categorize) that the discover-gated tools compose.
+**Umbrella pattern:** when an operator-territory tool also serves a user-relevant capability, an umbrella tool exposes the capability at the user-intent layer. Example: `refresh_run` is the always-visible umbrella over the refresh pipeline (match + transform + categorize); `transform_apply` and friends remain registered for operators but are not promoted in user-facing `actions[]` or in `instructions`. Both layers stay visible — the difference is positioning, not gating.
 
 ## Surface implications
 
 ### MCP
 
-The five shapes and verb vocabulary above are MCP-native. Audience layering uses `moneybin_discover('admin')` for infrastructure; user-intent and mid-CRUD stay always-visible. Progressive disclosure (`mcp-server.md` §"Progressive disclosure") is the long-term mechanism once client support stabilizes.
+The five shapes and verb vocabulary above are MCP-native. The full registered tool surface is always visible per `mcp-architecture.md` §3; audience positioning happens via the `instructions` field, description prose, `actions[]` hint placement, and the surface-discipline rule that gates registration on backing-spec maturity (see "Audience layering" above).
 
 ### CLI
 
@@ -209,7 +209,7 @@ Defended exceptions are legitimate but must be **documented in the tool's MCP de
 - `_get` / `_list` suffix on collection or summary reads — drop them (noun-only).
 - Pluralization drift (`_rule_delete` vs `_rules_create`).
 - Duplicate tools where one is strictly richer (`transactions_recurring_list` vs `reports_recurring`).
-- Infrastructure tools always-visible alongside user-intent tools.
+- Operator-territory tools promoted in `instructions` or in user-intent tools' `actions[]` hints alongside user-intent tools (full surface stays visible, but positioning matters — see Audience layering).
 - New entity-mutation tools when `<entity>_set` already covers the field.
 
 ## Applying this rule
@@ -218,7 +218,7 @@ When adding or modifying a tool / command / endpoint:
 
 1. Identify the operation shape using the flowchart.
 2. Apply the verb vocabulary for that shape.
-3. Place it in the correct audience layer; discover-gate if infrastructure.
+3. Place it in the correct audience layer; if operator territory, position via description prose and keep it out of user-facing `actions[]` hints and the `instructions` enumeration (full surface stays visible per `mcp-architecture.md` §3).
 4. Verify CLI and (future) REST symmetry inherits the shape.
 5. If proposing a defended exception, document the "why" inline in the tool description.
 

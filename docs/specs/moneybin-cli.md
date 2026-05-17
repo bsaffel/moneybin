@@ -576,12 +576,12 @@ Restructure-only. Move and rename existing commands to the new tree; rename MCP 
 
 | Change | Scope |
 |---|---|
-| Create `accounts` group with `list`, `get`, `rename`, `include` (thin entity ops) | New CLI module |
+| Create `accounts` group with `list`, `get`, `set`, `resolve` (thin entity ops); `rename`/`include`/`archive`/`unarchive` fold into `accounts set` flags per #164 | New CLI module |
 | Move `track balance` → `accounts balance` (preserve subcommands as stubs where they were) | Rename + reparent |
 | Move `track networth` → `reports networth` (preserve subcommands as stubs) | Rename + reparent into reports group |
 | Add top-level `assets` group (placeholder; workflows owned by `asset-tracking.md`) | New CLI module, all stubs |
 | Keep `tax` top-level (not nested in `reports`) | Stub initially; tools added by `tax-*.md` specs |
-| Create `transactions` group with `list`, `show`, `search` (thin entity ops) | New CLI module |
+| Create `transactions` group with `list`, `get`, `search` (thin entity ops) | New CLI module |
 | Move `matches` → `transactions matches` (existing functionality preserved) | Reparent + update tests |
 | Move `categorize` → `transactions categorize` (workflow tools + rules + auto + ml) | Reparent + update tests |
 | Pull `categorize categories *` and `categorize create-category` / `categorize toggle-category` → top-level `categories` group | Promote to entity group |
