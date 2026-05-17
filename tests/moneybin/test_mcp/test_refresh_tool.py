@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastmcp import FastMCP
 
+from moneybin.mcp.adapters.refresh_adapters import REFRESH_CATEGORIZE_FOLLOWUP_HINT
 from moneybin.mcp.tools.refresh import refresh_run, register_refresh_tools
 
 
@@ -89,9 +90,7 @@ async def test_refresh_run_emits_followup_hint_when_match_without_categorize() -
     ):
         get_db.return_value.__enter__.return_value = MagicMock()
         envelope = await refresh_run(steps=["match", "transform"])
-    assert any("categorize" in a and "refresh_run" in a for a in envelope.actions), (
-        envelope.actions
-    )
+    assert REFRESH_CATEGORIZE_FOLLOWUP_HINT in envelope.actions
 
 
 @pytest.mark.unit
@@ -104,9 +103,7 @@ async def test_refresh_run_no_followup_hint_when_categorize_included() -> None:
     ):
         get_db.return_value.__enter__.return_value = MagicMock()
         envelope = await refresh_run()
-    assert not any(
-        "categorize" in a and "refresh_run" in a for a in envelope.actions
-    ), envelope.actions
+    assert REFRESH_CATEGORIZE_FOLLOWUP_HINT not in envelope.actions
 
 
 @pytest.mark.unit

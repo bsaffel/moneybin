@@ -9,6 +9,7 @@ import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.main import app
+from moneybin.mcp.adapters.refresh_adapters import REFRESH_CATEGORIZE_FOLLOWUP_HINT
 
 
 @pytest.fixture
@@ -106,8 +107,9 @@ def test_refresh_step_repeatable(runner: CliRunner) -> None:
             app, ["refresh", "--step", "match", "--step", "categorize"]
         )
 
-    # applied=False (because transform is skipped) → exit 1 per the existing CLI contract.
-    assert result.exit_code == 1
+    # applied=False with error=None (transform deliberately skipped) → exit 0.
+    # The user got what they asked for; only genuine errors fail the command.
+    assert result.exit_code == 0
     assert svc.call_args.kwargs == {"steps": ["match", "categorize"]}
 
 
@@ -129,9 +131,7 @@ def test_refresh_step_json_partial_cascade(runner: CliRunner) -> None:
     assert payload["data"]["duration_seconds"] == 0.7
     # No follow-up hint because transform was requested without match
     # (the hint fires only on match-without-categorize).
-    assert not any(
-        "categorize" in a and "refresh_run" in a for a in payload["actions"]
-    ), payload["actions"]
+    assert REFRESH_CATEGORIZE_FOLLOWUP_HINT not in payload["actions"]
 
 
 def test_refresh_step_match_without_categorize_emits_followup_hint(
@@ -146,12 +146,10 @@ def test_refresh_step_match_without_categorize_emits_followup_hint(
         get_db.return_value.__enter__.return_value = MagicMock()
         result = runner.invoke(app, ["refresh", "--step", "match", "--output", "json"])
 
-    # match-only → no transform → applied=False → exit 1.
-    assert result.exit_code == 1
+    # match-only → no transform but no error → exit 0.
+    assert result.exit_code == 0
     payload = json.loads(result.stdout)
-    assert any("categorize" in a and "refresh_run" in a for a in payload["actions"]), (
-        payload["actions"]
-    )
+    assert REFRESH_CATEGORIZE_FOLLOWUP_HINT in payload["actions"]
 
 
 def test_refresh_unknown_step_raises_user_error(runner: CliRunner) -> None:

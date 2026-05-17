@@ -38,7 +38,9 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Literal
 
 from moneybin.database import Database
 from moneybin.services.transform_service import TransformService
@@ -60,7 +62,18 @@ class RefreshResult:
     error: str | None = None
 
 
-_CANONICAL_STEPS: tuple[str, ...] = ("match", "transform", "categorize")
+RefreshStep = Literal["match", "transform", "categorize"]
+CANONICAL_STEPS: tuple[RefreshStep, ...] = ("match", "transform", "categorize")
+
+
+def expand_steps(steps: Sequence[str] | None) -> frozenset[str]:
+    """Resolve a steps list (or None) to the canonical frozenset.
+
+    None expands to all canonical steps; a list narrows to its elements.
+    Used by surfaces to decide which follow-up hints to emit without
+    re-deriving the membership rule from the service's internal logic.
+    """
+    return frozenset(CANONICAL_STEPS) if steps is None else frozenset(steps)
 
 
 def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
@@ -100,17 +113,15 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
     from moneybin.matching.priority import seed_source_priority  # noqa: PLC0415
 
     if steps is not None:
-        unknown = [s for s in steps if s not in _CANONICAL_STEPS]
+        unknown = [s for s in steps if s not in CANONICAL_STEPS]
         if unknown:
             raise UserError(
                 f"Unknown refresh step(s): {', '.join(unknown)}",
                 code="UNKNOWN_REFRESH_STEP",
-                hint=f"known steps: {', '.join(_CANONICAL_STEPS)}",
+                hint=f"known steps: {', '.join(CANONICAL_STEPS)}",
             )
 
-    requested: frozenset[str] = (
-        frozenset(_CANONICAL_STEPS) if steps is None else frozenset(steps)
-    )
+    requested = expand_steps(steps)
 
     if "match" in requested:
         try:

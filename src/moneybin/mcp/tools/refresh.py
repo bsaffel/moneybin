@@ -14,22 +14,19 @@ registered as infrastructure verbs per the carve-out in
 
 from __future__ import annotations
 
-from typing import Literal
-
 from fastmcp import FastMCP
 
 from moneybin.database import get_database
 from moneybin.mcp._registration import register
+from moneybin.mcp.adapters.refresh_adapters import refresh_envelope
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
-from moneybin.services.refresh import refresh
-
-_RefreshStep = Literal["match", "transform", "categorize"]
+from moneybin.protocol.envelope import ResponseEnvelope
+from moneybin.services.refresh import RefreshStep, expand_steps, refresh
 
 
 @mcp_tool(sensitivity="low", read_only=False)
 def refresh_run(
-    steps: list[_RefreshStep] | None = None,
+    steps: list[RefreshStep] | None = None,
 ) -> ResponseEnvelope:
     """Run the post-load refresh pipeline: matching → SQLMesh apply → categorization.
 
@@ -53,34 +50,9 @@ def refresh_run(
     both accept a list parameter to scope which sub-operations execute,
     both default to the full set, both raise on unknown member names.
     """
-    # Widen Literal["match", "transform", "categorize"] to str at the service
-    # boundary — list is invariant, so the narrower element type doesn't
-    # implicitly fit list[str].
-    widened: list[str] | None = list(steps) if steps is not None else None
     with get_database() as db:
-        result = refresh(db, steps=widened)
-    data: dict[str, object] = {
-        "applied": result.applied,
-        "duration_seconds": result.duration_seconds,
-    }
-    if result.error is not None:
-        data["error"] = result.error
-
-    actions: list[str] = []
-    if not result.applied and result.error is not None:
-        actions.append(
-            "SQLMesh apply failed — call transform_plan to inspect, "
-            "or refresh_run to retry."
-        )
-    requested: set[str] = (
-        {"match", "transform", "categorize"} if steps is None else set(steps)
-    )
-    if "match" in requested and "categorize" not in requested:
-        actions.append(
-            "Run refresh_run(steps=['categorize']) to apply rules/merchants "
-            "to newly-matched rows."
-        )
-    return build_envelope(data=data, sensitivity="low", actions=actions)
+        result = refresh(db, steps=list(steps) if steps is not None else None)
+    return refresh_envelope(result, requested=expand_steps(steps))
 
 
 def register_refresh_tools(mcp: FastMCP) -> None:
