@@ -1384,11 +1384,7 @@ Per [`moneybin-cli.md`](moneybin-cli.md) v2. Hard cut: rename in place, no alias
 | (new) | `accounts_balance_assertion_delete` | |
 | (new) | `reports_networth_history` | Moved out of `accounts_*` |
 | (new — `account-management.md`) | `accounts_summary` | Cross-account summary view |
-| (new) | `accounts_rename` | Rename an account |
-| (new) | `accounts_include` | Toggle include_in_net_worth |
-| (new) | `accounts_archive` | Mark archived; cascades exclude from net worth |
-| (new) | `accounts_unarchive` | Clear archived flag |
-| (new) | `accounts_set` | Metadata update (subtype, holder category, currency, credit limit, last four, official name) |
+| (new) | `accounts_set` | Partial update of an account's settings — structural (subtype, holder category, currency, credit limit, last_four, official_name) and behavioral (`display_name`, `include_in_net_worth`, `is_archived`). Archiving cascades `include_in_net_worth=False` atomically. Replaces the formerly-separate `accounts_rename` / `accounts_include` / `accounts_archive` / `accounts_unarchive` tools. |
 
 ### `transactions_*` (entity ops)
 
