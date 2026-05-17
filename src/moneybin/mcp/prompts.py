@@ -133,7 +133,7 @@ def onboarding() -> str:
 
         **Relevant tools:**
         - import_files — import one or more financial data files
-        - import_formats_list — see supported formats
+        - import_formats — see supported formats
         - accounts_list — verify imported accounts
         - transactions_categorize_stats — check categorization coverage
         - reports_spending — first look at their data
