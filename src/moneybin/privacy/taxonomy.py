@@ -102,8 +102,8 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "occurred_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "parent_audit_id": DataClass.RECORD_ID,
         "target_id": DataClass.RECORD_ID,
-        "target_schema": DataClass.TXN_TYPE,
-        "target_table": DataClass.TXN_TYPE,
+        "target_schema": DataClass.RECORD_ID,
+        "target_table": DataClass.RECORD_ID,
     },
     ("app", "balance_assertions"): {
         "account_id": DataClass.ACCOUNT_IDENTIFIER,
@@ -294,9 +294,9 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
     ("app", "versions"): {
         "component": DataClass.TXN_TYPE,
         "installed_at": DataClass.TIMESTAMP_OBSERVABILITY,
-        "previous_version": DataClass.RECORD_ID,
+        "previous_version": DataClass.AGGREGATE,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
-        "version": DataClass.RECORD_ID,
+        "version": DataClass.AGGREGATE,
     },
     ("core", "bridge_transfers"): {
         "amount": DataClass.TXN_AMOUNT,
@@ -394,7 +394,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "authorized_date": DataClass.TXN_DATE,
         "categorized_by": DataClass.TXN_TYPE,
         "category": DataClass.CATEGORY,
-        "check_number": DataClass.DESCRIPTION,
+        "check_number": DataClass.INSTITUTION_ACCOUNT_NUMBER,
         "currency_code": DataClass.CURRENCY,
         "description": DataClass.DESCRIPTION,
         "has_splits": DataClass.AGGREGATE,

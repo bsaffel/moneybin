@@ -132,6 +132,8 @@ beyond what the schema files declare.
 | (app, account_settings) | official_name | INSTITUTION | mirrors Plaid `official_name` (e.g. "Adv Plus Banking") — institution-side branding for the account, not a number; not actionable as an account-lookup key. |
 | (app, audit_log) | before_value, after_value | TXN_AMOUNT | JSON snapshots of mutated rows; can carry amounts, balances, descriptions — classified by the highest-sensitivity content they may contain. HIGH tier is conservative; revisit if a tighter scoping per-action emerges. |
 | (app, audit_log) | context_json | DESCRIPTION | freeform JSON for AI-call provenance and operational extras; treated as MEDIUM free-text. |
+| (app, audit_log) | target_schema | RECORD_ID | catalog identifier (`'app'`, `'core'`), not a transaction type. |
+| (app, audit_log) | target_table | RECORD_ID | catalog identifier (e.g., `'fct_transactions'`), not a transaction type. |
 | (app, balance_assertions) | notes | USER_NOTE | optional free-text note attached to a balance assertion. |
 | (app, budgets) | monthly_amount | TXN_AMOUNT | budget target dollar amount; not a transaction per se but matches the same HIGH-tier monetary sensitivity. |
 | (app, categorization_rules) | merchant_pattern | MERCHANT_NAME | pattern matched against transaction description; reveals which merchants the user tracks. Same on `proposed_rules` and `user_merchants.raw_pattern`. |
@@ -144,15 +146,47 @@ beyond what the schema files declare.
 | (app, transaction_splits) | amount | TXN_AMOUNT | per-split signed amount; rule 3 (`*_amount` on transaction tables). |
 | (app, transaction_splits) | note | USER_NOTE | optional per-split free-text note. |
 | (app, transaction_tags) | tag | USER_NOTE | user-authored slug; treated as USER_NOTE rather than CATEGORY since tags are not the canonical taxonomy. |
-| (app, versions) | component, version, previous_version | TXN_TYPE / RECORD_ID | system bookkeeping; `component` is a categorical identifier (`'moneybin'`, `'sqlmesh'`), version strings are opaque internal refs. |
+| (app, versions) | component | TXN_TYPE | categorical identifier (`'moneybin'`, `'sqlmesh'`); low-cardinality bookkeeping label. |
+| (app, versions) | version | AGGREGATE | configuration value, not a record identifier; unified with `schema_migrations.version`. |
+| (app, versions) | previous_version | AGGREGATE | same reasoning as `version`. |
 | (core, dim_accounts) | institution_fid | INSTITUTION | OFX financial-institution identifier; identifies the institution, not the account. |
 | (core, dim_accounts) | source_file | RECORD_ID | path of the source file; internal provenance, not an external identifier. |
 | (core, dim_categories) | description, plaid_detailed | CATEGORY | category metadata (definition text, Plaid PFC mapping); travels with the category, not with user transactions. |
-| (core, fct_transactions) | check_number | DESCRIPTION | identifies a payment instrument; not an account number, but reveals transaction detail beyond a type code — DESCRIPTION (MEDIUM) sits between low-tier types and account-bound IDs. |
+| (core, fct_transactions) | check_number | INSTITUTION_ACCOUNT_NUMBER | conservative classification: identifies a specific account-bound payment instrument. The class name is imperfect (check numbers aren't strictly account numbers); a future `PAYMENT_INSTRUMENT` class would be more accurate. Listed as PR 2 follow-up. |
 | (core, fct_transactions) | location_* (address, city, region, postal_code, country, latitude, longitude) | MERCHANT_NAME | merchant geographic detail; classified under MERCHANT_NAME because they describe the merchant the user transacted with, and inherit the same MEDIUM sensitivity. |
 | (core, fct_transactions) | memo | DESCRIPTION | additional source-provided notes on the transaction; rule 6 (free-text on transaction tables). |
 | (core, fct_transactions) | splits | TXN_AMOUNT | LIST of split STRUCTs; contains per-split `amount` (HIGH-tier). Classify by the highest-sensitivity component. |
 | (core, fct_transactions) | notes, tags | USER_NOTE | nested LIST aggregations of `app.transaction_notes` / `transaction_tags`; carry user-authored content. |
+
+### Follow-ups for PR 2
+
+The audit surfaced several class-shape gaps that PR 1 punts on. None
+affect privacy correctness (tiers are conservative), but the class
+names are misleading enough that PR 2's redaction logic should
+introduce new members before locking in formatting behavior:
+
+- **`BOOLEAN_FLAG`** (LOW) — for `is_active`, `is_pending`, `archived`,
+  `is_observed`, `is_default`, `include_in_net_worth`, `success`,
+  `multi_account`. Currently routed to `TXN_TYPE`.
+- **`STATE_ENUM`** (LOW) — for `status`, `match_status`, `match_tier`,
+  `metric_type`, `reason`, `action` (audit log). Currently `TXN_TYPE`.
+- **`ACTOR` / `PROVENANCE`** (LOW) — for `actor`, `author`, `*_by`
+  columns across `audit_log`, `transaction_notes`, `transaction_tags`,
+  `match_decisions`, `proposed_rules`, `categorization_rules`,
+  `imports`, `transaction_categories`, `fct_transactions`,
+  `transaction_splits`, `user_merchants`, `dim_merchants`. These are
+  principal identifiers and may be free-text emails or agent names;
+  they need distinct redaction from generic transaction-type enums.
+  Currently `TXN_TYPE`.
+- **`JSON_SNAPSHOT`** (HIGH) — for `audit_log.before_value` /
+  `after_value` (mixed-content blobs). Currently `TXN_AMOUNT` (correct
+  tier, wrong class — PR 2's redaction will format these as money).
+- **`PAYMENT_INSTRUMENT`** (CRITICAL) — for `check_number`. Currently
+  routed to `INSTITUTION_ACCOUNT_NUMBER` as the closest existing class.
+- **`LOCATION`** (MEDIUM or HIGH) — for `fct_transactions.location_*`
+  (especially `location_latitude`/`location_longitude`). Currently
+  `MERCHANT_NAME` (tier is right; semantic is off — geolocation
+  reveals movement patterns).
 
 ## Implementation Plan
 
