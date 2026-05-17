@@ -932,6 +932,18 @@ def sqlmesh_context(
             gateway=_DATABASE_ALIAS,
         )
         yield ctx
+        # After the caller's SQLMesh plan/run has written
+        # register_comments output to core.*, append the privacy
+        # classification sigils. Idempotent — short-circuits when the
+        # catalog already matches the registry. Wrapped in a broad
+        # except so privacy-sync failures never break the SQLMesh
+        # workflow.
+        from moneybin.privacy.comment_sync import sync_classification_comments
+
+        try:
+            sync_classification_comments(conn)
+        except Exception:  # noqa: BLE001 — sync errors must not break sqlmesh flows
+            logger.exception("Privacy classification sync after sqlmesh_context failed")
     finally:
         BaseDuckDBConnectionConfig._data_file_to_adapter.pop(cache_key, None)  # type: ignore[reportPrivateUsage]  # cleanup matches injection above
 
