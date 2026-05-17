@@ -548,7 +548,7 @@ Full account details including routing/account numbers.
 - **Unique parameters:** `account_id: str` (required — single account, not a list; this is an exception to the batch-first principle because requesting full PII details for multiple accounts in one call is not a natural workflow and would complicate audit logging).
 - **Behavior:** Returns single account object with all fields including masked `routing_number` and `account_number` (e.g., `...1234`). Unmasked only in verified-local mode with `LOCAL_UNMASK_CRITICAL`. Degraded response returns the `accounts_list` view for that account (metadata only).
 - **Service:** `AccountService.details() -> AccountDetail`
-- **CLI:** `moneybin accounts show --account-id ID`
+- **CLI:** `moneybin accounts get <account_id>`
 
 ### `accounts_resolve`
 

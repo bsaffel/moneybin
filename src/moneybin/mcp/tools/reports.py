@@ -97,7 +97,7 @@ def reports_networth(
         data=snapshot.to_dict(),
         sensitivity="medium",
         actions=[
-            "Use reports_networth_history_get(from_date, to_date) for the time series",
+            "Use reports_networth_history(from_date, to_date) for the time series",
             "Use accounts_balance_history(account_id=...) to drill into one account",
             "Use accounts_list to see archived / excluded accounts not counted here",
         ],
@@ -128,7 +128,7 @@ def reports_networth_history(
         data=rows,
         sensitivity="medium",
         actions=[
-            "Use reports_networth_get(as_of_date=...) for a single-date snapshot with per-account breakdown",
+            "Use reports_networth(as_of_date=...) for a single-date snapshot with per-account breakdown",
             "Switch `interval` to 'daily' or 'weekly' for finer resolution",
         ],
     )
@@ -166,8 +166,8 @@ def reports_spending(
         )
     actions = [
         "Filter to one category with category='<name>' (see categories_list)",
-        "Use reports_cashflow_get for inflow/outflow/net (includes income; spending excludes it)",
-        "Use reports_recurring_get to find subscription-like patterns",
+        "Use reports_cashflow for inflow/outflow/net (includes income; spending excludes it)",
+        "Use reports_recurring to find subscription-like patterns",
     ]
     if defaulted:
         actions.insert(
@@ -210,7 +210,7 @@ def reports_cashflow(
         )
     actions = [
         "Switch `by` to 'account', 'category', or 'account-and-category' to regroup",
-        "Use reports_spending_get for outflow-only trend with MoM/YoY deltas",
+        "Use reports_spending for outflow-only trend with MoM/YoY deltas",
     ]
     if defaulted:
         actions.insert(

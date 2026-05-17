@@ -200,7 +200,7 @@ class TestReportsNetworthTools:
     async def test_reports_view_backed_tools_registered(
         self, mcp_env: dict[str, str]
     ) -> None:
-        """The seven new reports_*_get tools backed by reports.* views are registered."""
+        """The seven view-backed `reports_*` tools (recipe library) are registered."""
         from mcp import ClientSession
         from mcp.client.stdio import StdioServerParameters, stdio_client
 
@@ -231,7 +231,6 @@ class TestReportsNetworthTools:
                 # v1 tools removed
                 assert "reports_spending_summary" not in tool_names
                 assert "reports_spending_by_category" not in tool_names
-                assert "reports_networth_history" not in tool_names
 
 
 class TestCurationTools:

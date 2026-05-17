@@ -58,7 +58,7 @@ mcp = FastMCP(
 
         Read surface:
         - transactions_get — primary transaction read tool. Filter parameters: `accounts` (list of IDs or display names), `date_from` / `date_to` ('YYYY-MM-DD'), `categories` (list), `amount_min` / `amount_max` (decimal strings), `description` (case-insensitive pattern), `uncategorized_only` (bool). Returns notes/tags/splits. Cursor pagination via `cursor` + `next_cursor`.
-        - reports_spending_get, reports_cashflow_get — monthly aggregates. Bounds are `from_month` / `to_month` as 'YYYY-MM' (defaults to the last 12 months when both are omitted).
+        - reports_spending, reports_cashflow — monthly aggregates. Bounds are `from_month` / `to_month` as 'YYYY-MM' (defaults to the last 12 months when both are omitted).
 
         Curation surface (visible at connect):
         - transactions_create — bulk manual entry (1..100 atomic)

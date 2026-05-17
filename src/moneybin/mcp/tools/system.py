@@ -97,7 +97,9 @@ def system_doctor() -> ResponseEnvelope:
 
     actions: list[str] = []
     if failing > 0:
-        actions.append("Run moneybin doctor --verbose for affected transaction IDs")
+        actions.append(
+            "Run moneybin system doctor --verbose for affected transaction IDs"
+        )
 
     return build_envelope(
         data={

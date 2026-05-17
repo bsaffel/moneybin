@@ -1,4 +1,4 @@
-# Feature: moneybin doctor
+# Feature: moneybin system doctor
 
 ## Status
 
@@ -6,13 +6,13 @@ implemented
 
 ## Goal
 
-Provide a single command — `moneybin doctor` — that asserts MoneyBin's pipeline invariants and produces a trust artifact: "✅ N invariants passing across M transactions." The command checks the pipeline, not the user's data. It replaces the dropped `verified` curator flag as MoneyBin's integrity-by-construction signal.
+Provide a single command — `moneybin system doctor` — that asserts MoneyBin's pipeline invariants and produces a trust artifact: "✅ N invariants passing across M transactions." The command checks the pipeline, not the user's data. It replaces the dropped `verified` curator flag as MoneyBin's integrity-by-construction signal.
 
 ## Background
 
 The `verified` flag was dropped from `transaction-curation.md` (PR #120) because per-row user assertions conflict with the brand promise that MoneyBin's data is trustworthy by construction. The replacement is a system-asserted check: MoneyBin proves its own pipeline is self-consistent.
 
-`moneybin doctor` is the entry point for that proof. It is read-only, zero-argument (no date ranges, no filters), and produces a clear pass/fail summary. The longer-form ETL reconciliation vision (row accounting, amount sums, temporal coverage) lives in `data-reconciliation.md` and is out of scope here.
+`moneybin system doctor` is the entry point for that proof. It is read-only, zero-argument (no date ranges, no filters), and produces a clear pass/fail summary. The longer-form ETL reconciliation vision (row accounting, amount sums, temporal coverage) lives in `data-reconciliation.md` and is out of scope here.
 
 Related specs:
 - [`transaction-curation.md`](transaction-curation.md) §"Dropped: verified flag" — original motivation
@@ -82,7 +82,7 @@ class DoctorReport:
 Top-level command, parallel to `moneybin transform`:
 
 ```
-moneybin doctor [--verbose] [--output text|json]
+moneybin system doctor [--verbose] [--output text|json]
 ```
 
 **Human output (default):**

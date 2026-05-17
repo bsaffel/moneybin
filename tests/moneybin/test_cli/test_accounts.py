@@ -165,8 +165,8 @@ class TestAccountsList:
         )
 
 
-class TestAccountsShow:
-    """Tests for the accounts show command."""
+class TestAccountsGet:
+    """Tests for the accounts get command."""
 
     @pytest.mark.unit
     @patch("moneybin.cli.commands.accounts.get_database")

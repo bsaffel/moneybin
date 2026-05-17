@@ -115,7 +115,7 @@ moneybin accounts list [--include-archived] [--type TYPE] [--output json|table] 
 - `--include-archived` adds archived rows with an `[archived]` annotation in the `included` column.
 
 ```
-moneybin accounts show <account_id_or_display_name> [--output json|table]
+moneybin accounts get <account_id_or_display_name> [--output json|table]
 ```
 - Resolves either an `account_id` or a unique `display_name`; ambiguous match prints disambiguation and exits non-zero.
 - Reports the full settings row, source-derived fields from `dim_accounts`, last balance observation (from `core.fct_balances_daily`, when present), transaction count, date range.
@@ -262,7 +262,7 @@ This spec ships a new doc explaining the project-wide identifier conventions, si
 ### Tier 3 — E2E (`tests/e2e/`)
 
 - `test_e2e_help.py` — `--help` for `accounts` and every subcommand.
-- `test_e2e_readonly.py` — `accounts list`, `accounts show`, `accounts list --include-archived`.
+- `test_e2e_readonly.py` — `accounts list`, `accounts get`, `accounts list --include-archived`.
 - `test_e2e_mutating.py` — full lifecycle: import → `set` metadata → `rename` → `include --no` → `archive` → assert `dim_accounts.archived = TRUE` and `include_in_net_worth = FALSE` → `unarchive` → assert `archived` flipped, `include` did NOT.
 
 ### Tier 4 — Scenario (`tests/scenarios/scenario_account_settings.yaml`)
@@ -270,8 +270,8 @@ This spec ships a new doc explaining the project-wide identifier conventions, si
 Synthetic persona with multiple account types. Hand-derived expectations:
 - `accounts list` row count == `persona.account_count`.
 - After archiving 2 accounts: `accounts list` count == `count - 2`; `agg_net_worth` excludes those 2 (both via the `include_in_net_worth` cascade and the `archived` filter).
-- After `accounts set --credit-limit` on a credit card, `accounts show` returns the asserted limit.
-- Soft-validation: `accounts set --subtype xyz --yes` writes the value; subsequent `accounts show` returns it; `accounts_set` MCP call returns the warning.
+- After `accounts set --credit-limit` on a credit card, `accounts get` returns the asserted limit.
+- Soft-validation: `accounts set --subtype xyz --yes` writes the value; subsequent `accounts get` returns it; `accounts_set` MCP call returns the warning.
 - **Negative invariants:**
   - Archiving an account does NOT mutate `core.fct_transactions` for it (transactions remain queryable, just account is hidden in default UI).
   - Unarchiving does NOT cause `agg_net_worth` to include the account if `include_in_net_worth` is still FALSE.

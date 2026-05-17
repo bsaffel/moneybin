@@ -73,7 +73,7 @@ Eight models in v1. Each section: purpose, grain, source, columns (with comments
 
 ### `reports.net_worth`
 
-**Purpose:** Daily cross-account net worth snapshot, replacing `core.agg_net_worth`. Powers `reports networth show` (point-in-time) and `reports networth history` (time series).
+**Purpose:** Daily cross-account net worth snapshot, replacing `core.agg_net_worth`. Powers `reports networth` (point-in-time) and `reports networth-history` (time series).
 
 **Grain:** One row per `balance_date`. Aggregates across all accounts where `include_in_net_worth = TRUE AND archived = FALSE`.
 
@@ -89,12 +89,12 @@ Eight models in v1. Each section: purpose, grain, source, columns (with comments
 | `total_liabilities` | `DECIMAL(18,2)` | Sum of negative balances (kept negative) |
 | `account_count` | `INTEGER` | Number of accounts contributing on this date |
 
-CLI: `moneybin reports networth show [--as-of DATE]`, `moneybin reports networth history [--from DATE] [--to DATE] [--interval daily|weekly|monthly]`.
+CLI: `moneybin reports networth [--as-of DATE]`, `moneybin reports networth-history [--from DATE] [--to DATE] [--interval daily|weekly|monthly]`.
 MCP: `reports_networth` (point-in-time), `reports_networth_history` (time series). Tier 1.
 
 ### `reports.cash_flow`
 
-**Purpose:** Monthly inflow/outflow/net per account × category. Powers `reports cashflow show` and any drill-down the consumer wants (by account, by category, totals).
+**Purpose:** Monthly inflow/outflow/net per account × category. Powers `reports cashflow` and any drill-down the consumer wants (by account, by category, totals).
 
 **Grain:** One row per `(year_month, account_id, category)`. Wide-grain — consumers `GROUP BY` further, or aggregate over the whole table for a single net number.
 
@@ -113,7 +113,7 @@ MCP: `reports_networth` (point-in-time), `reports_networth_history` (time series
 | `net` | `DECIMAL(18,2)` | inflow + outflow |
 | `txn_count` | `INTEGER` | Number of non-transfer transactions in this cell |
 
-CLI: `moneybin reports cashflow show [--from MONTH] [--to MONTH] [--by account|category|account-and-category]`.
+CLI: `moneybin reports cashflow [--from MONTH] [--to MONTH] [--by account|category|account-and-category]`.
 MCP: `reports_cashflow`. Tier 1.
 
 ### `reports.spending_trend`
@@ -140,7 +140,7 @@ MCP: `reports_cashflow`. Tier 1.
 | `yoy_pct` | `DECIMAL(8,4)` | yoy_delta / prev_year_spend; NULL if prev_year_spend = 0 |
 | `trailing_3mo_avg` | `DECIMAL(18,2)` | Rolling 3-month average ending this month, same category |
 
-CLI: `moneybin reports spending show [--from MONTH] [--to MONTH] [--category SLUG] [--compare yoy|mom|trailing]`.
+CLI: `moneybin reports spending [--from MONTH] [--to MONTH] [--category SLUG] [--compare yoy|mom|trailing]`.
 MCP: `reports_spending`. Tier 1.
 
 ### `reports.recurring_subscriptions`
@@ -194,7 +194,7 @@ MCP: `reports_spending`. Tier 1.
 
 **Posture:** `reports.recurring_subscriptions` is a **candidate generator**, not authoritative state. The acceptance/rejection loop (where users confirm "yes this is a subscription, track it") belongs to a future spec — see [Out of Scope](#out-of-scope).
 
-CLI: `moneybin reports recurring show [--min-confidence FLOAT] [--status active|inactive|all] [--cadence weekly|biweekly|monthly|quarterly|yearly]`.
+CLI: `moneybin reports recurring [--min-confidence FLOAT] [--status active|inactive|all] [--cadence weekly|biweekly|monthly|quarterly|yearly]`.
 MCP: `reports_recurring`. Tier 1.
 
 ### `reports.uncategorized_queue`
@@ -223,7 +223,7 @@ MCP: `reports_recurring`. Tier 1.
 
 CLI default sort: `ORDER BY priority_score DESC`. The view does not bake the sort in — SQL/MCP consumers can re-rank by recency, by amount, by account, etc.
 
-CLI: `moneybin reports uncategorized show [--min-amount DECIMAL] [--account NAME] [--limit N]`.
+CLI: `moneybin reports uncategorized [--min-amount DECIMAL] [--account NAME] [--limit N]`.
 MCP: `reports_uncategorized`. Tier 1.
 
 ### `reports.merchant_activity`
@@ -251,7 +251,7 @@ MCP: `reports_uncategorized`. Tier 1.
 | `top_category` | `VARCHAR` | Mode of category text across this merchant's transactions; NULL if all uncategorized |
 | `account_count` | `INTEGER` | Distinct accounts on which this merchant appears |
 
-CLI: `moneybin reports merchants show [--top N] [--sort spend|count|recent]`.
+CLI: `moneybin reports merchants [--top N] [--sort spend|count|recent]`.
 MCP: `reports_merchants`. Tier 1.
 
 ### `reports.large_transactions`
@@ -280,7 +280,7 @@ MCP: `reports_merchants`. Tier 1.
 
 CLI default: `ORDER BY ABS(amount) DESC LIMIT 25`, with z-scores shown as columns for context. CLI flags expose anomaly mode: `--anomaly account` filters to `amount_zscore_account > 2.5`; `--anomaly category` analogous.
 
-CLI: `moneybin reports large-transactions show [--top N] [--anomaly account|category|none]`.
+CLI: `moneybin reports large-transactions [--top N] [--anomaly account|category|none]`.
 MCP: `reports_large_transactions`. Tier 1.
 
 ### `reports.balance_drift`
@@ -308,7 +308,7 @@ MCP: `reports_large_transactions`. Tier 1.
 
 Thresholds (`$1`, `$10`) are hardcoded in v1 with a docstring noting they are intentional defaults; future iterations may move them to `MoneyBinSettings.reports.balance_drift_thresholds`.
 
-CLI: `moneybin reports balance-drift show [--account NAME] [--status drift|warning|clean|no-data] [--since DATE]`.
+CLI: `moneybin reports balance-drift [--account NAME] [--status drift|warning|clean|no-data] [--since DATE]`.
 MCP: `reports_balance_drift`. Tier 1.
 
 `moneybin doctor` (next spec) will read this view to compute its reconciliation traffic-light: any row with `status = 'drift'` flips the doctor section red.
