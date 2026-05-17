@@ -683,6 +683,104 @@ class TestResolveCategoryId:
         assert resolve_category_id(db, "HasSub", None) is None
 
 
+class TestWriteCategorizationDualWrite:
+    """Phase 1 dual-write: write_categorization + set_category_in_active_txn populate category_id."""
+
+    @pytest.mark.unit
+    def test_write_categorization_populates_category_id(self, db: Database) -> None:
+        svc = CategorizationService(db)
+        cat_id = svc.create_category("Dual")
+        db.execute(
+            "INSERT INTO core.fct_transactions (transaction_id, amount, transaction_date) "
+            "VALUES ('txn-dual', -50, '2026-05-01')"
+        )
+        svc.write_categorization(
+            transaction_id="txn-dual",
+            category="Dual",
+            subcategory=None,
+            categorized_by="user",
+        )
+        row = db.execute(
+            "SELECT category_id FROM app.transaction_categories "
+            "WHERE transaction_id = 'txn-dual'"
+        ).fetchone()
+        assert row == (cat_id,)
+
+    @pytest.mark.unit
+    def test_write_categorization_orphan_text_stays_null(self, db: Database) -> None:
+        """Unresolvable category text writes a row with category_id IS NULL."""
+        svc = CategorizationService(db)
+        db.execute(
+            "INSERT INTO core.fct_transactions (transaction_id, amount, transaction_date) "
+            "VALUES ('txn-orphan', -25, '2026-05-01')"
+        )
+        svc.write_categorization(
+            transaction_id="txn-orphan",
+            category="NeverDefined",
+            subcategory=None,
+            categorized_by="ai",
+            confidence=0.5,
+        )
+        row = db.execute(
+            "SELECT category_id, category FROM app.transaction_categories "
+            "WHERE transaction_id = 'txn-orphan'"
+        ).fetchone()
+        assert row == (None, "NeverDefined")
+
+    @pytest.mark.unit
+    def test_write_categorization_updates_category_id_on_conflict(
+        self, db: Database
+    ) -> None:
+        """ON CONFLICT DO UPDATE must replace category_id alongside text."""
+        svc = CategorizationService(db)
+        svc.create_category("First")
+        second = svc.create_category("Second")
+        db.execute(
+            "INSERT INTO core.fct_transactions (transaction_id, amount, transaction_date) "
+            "VALUES ('txn-conflict', -10, '2026-05-01')"
+        )
+        svc.write_categorization(
+            transaction_id="txn-conflict",
+            category="First",
+            subcategory=None,
+            categorized_by="ai",
+            confidence=0.4,
+        )
+        svc.write_categorization(
+            transaction_id="txn-conflict",
+            category="Second",
+            subcategory=None,
+            categorized_by="user",
+        )
+        row = db.execute(
+            "SELECT category, category_id FROM app.transaction_categories "
+            "WHERE transaction_id = 'txn-conflict'"
+        ).fetchone()
+        assert row == ("Second", second)
+
+    @pytest.mark.unit
+    def test_set_category_in_active_txn_populates_category_id(
+        self, db: Database
+    ) -> None:
+        svc = CategorizationService(db)
+        cat_id = svc.create_category("ActiveTxn")
+        db.execute(
+            "INSERT INTO core.fct_transactions (transaction_id, amount, transaction_date) "
+            "VALUES ('txn-active', -75, '2026-05-01')"
+        )
+        svc.set_category(
+            "txn-active",
+            category="ActiveTxn",
+            subcategory=None,
+            actor="test-user",
+        )
+        row = db.execute(
+            "SELECT category_id FROM app.transaction_categories "
+            "WHERE transaction_id = 'txn-active'"
+        ).fetchone()
+        assert row == (cat_id,)
+
+
 class TestDeleteCategory:
     """CategorizationService.delete_category — hard-delete with refuse/cascade."""
 

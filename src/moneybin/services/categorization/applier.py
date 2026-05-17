@@ -45,6 +45,7 @@ from moneybin.services.categorization._shared import (
     CategorizationRuleInput,
     InternalMatchType,
     priority_case_sql,
+    resolve_category_id,
 )
 from moneybin.tables import (
     BUDGETS,
@@ -188,19 +189,24 @@ class MatchApplier:
         non-user write must route through :meth:`write_categorization`.
         """
         prior = self._fetch_category_row(transaction_id)
+        # Phase 1 dual-write: resolve the FK alongside the text snapshot.
+        # `None` is a permitted write — orphaned text is a real state during
+        # the dual-write window.
+        category_id = resolve_category_id(self._db, category, subcategory)
         self._db.conn.execute(
             f"""
             INSERT INTO {TRANSACTION_CATEGORIES.full_name}
-              (transaction_id, category, subcategory,
+              (transaction_id, category, subcategory, category_id,
                categorized_at, categorized_by)
-            VALUES (?, ?, ?, NOW(), ?)
+            VALUES (?, ?, ?, ?, NOW(), ?)
             ON CONFLICT (transaction_id) DO UPDATE SET
                 category = EXCLUDED.category,
                 subcategory = EXCLUDED.subcategory,
+                category_id = EXCLUDED.category_id,
                 categorized_at = NOW(),
                 categorized_by = EXCLUDED.categorized_by
             """,  # noqa: S608  # TRANSACTION_CATEGORIES is a TableRef constant
-            [transaction_id, category, subcategory, categorized_by],
+            [transaction_id, category, subcategory, category_id, categorized_by],
         )
         after = {
             "category": category,
@@ -787,15 +793,22 @@ class MatchApplier:
         existing_table = TRANSACTION_CATEGORIES.full_name
         excluded_priority = priority_case_sql("EXCLUDED.categorized_by")
         existing_priority = priority_case_sql(f"{existing_table}.categorized_by")
+        # Phase 1 dual-write: resolve the FK alongside the text snapshot.
+        # `None` is a permitted write — orphaned text is a real state during
+        # the dual-write window. The FK is paired with the text on the same
+        # precedence terms: same WHERE guard admits both, same conflict
+        # overwrites both.
+        category_id = resolve_category_id(self._db, category, subcategory)
         cursor = self._db.execute(
             f"""
             INSERT INTO {existing_table}
-                (transaction_id, category, subcategory, categorized_at,
-                 categorized_by, merchant_id, rule_id, confidence)
-            VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?)
+                (transaction_id, category, subcategory, category_id,
+                 categorized_at, categorized_by, merchant_id, rule_id, confidence)
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?)
             ON CONFLICT (transaction_id) DO UPDATE SET
                 category = EXCLUDED.category,
                 subcategory = EXCLUDED.subcategory,
+                category_id = EXCLUDED.category_id,
                 categorized_at = EXCLUDED.categorized_at,
                 categorized_by = EXCLUDED.categorized_by,
                 merchant_id = EXCLUDED.merchant_id,
@@ -808,6 +821,7 @@ class MatchApplier:
                 transaction_id,
                 category,
                 subcategory,
+                category_id,
                 categorized_by,
                 merchant_id,
                 rule_id,
