@@ -2,7 +2,7 @@
 """Accounts namespace tools — v2 per docs/specs/account-management.md + net-worth.md.
 
 Read tools (entity):
-  - accounts_list (medium / low with redacted=True)
+  - accounts (medium / low with redacted=True)
   - accounts_get (medium)
   - accounts_summary (low)
 
@@ -41,7 +41,7 @@ from moneybin.services.balance_service import BalanceService
 
 
 @mcp_tool(sensitivity="medium")
-def accounts_list(
+def accounts(
     include_archived: bool = False,
     type_filter: str | None = None,
     redacted: bool = False,
@@ -364,7 +364,7 @@ def accounts_resolve(query: str, limit: int = 5) -> ResponseEnvelope:
     actions: list[str] = []
     if not matches:
         actions.append(
-            "No accounts matched the query. Try a broader query or use accounts_list."
+            "No accounts matched the query. Try a broader query or use accounts."
         )
     elif matches[0].confidence < threshold:
         actions.append(
@@ -384,8 +384,8 @@ def register_accounts_tools(mcp: FastMCP) -> None:
     """Register all v2 accounts namespace tools with the FastMCP server."""
     register(
         mcp,
-        accounts_list,
-        "accounts_list",
+        accounts,
+        "accounts",
         "List accounts (default hides archived; supports type filter and redacted mode). "
         "Amounts are in the currency named by `summary.display_currency`.",
     )

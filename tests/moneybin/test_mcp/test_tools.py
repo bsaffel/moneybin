@@ -13,7 +13,7 @@ import pytest
 from fastmcp import FastMCP
 
 from moneybin.database import get_database
-from moneybin.mcp.tools.accounts import accounts_list, register_accounts_tools
+from moneybin.mcp.tools.accounts import accounts, register_accounts_tools
 from moneybin.mcp.tools.reports import register_reports_tools
 from moneybin.mcp.tools.sql import register_sql_tools, sql_query, sql_schema
 
@@ -65,7 +65,7 @@ class TestToolRegistration:
         register_accounts_tools(srv)
         names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
         # v2 entity tools (rename/include/archive/unarchive folded into accounts_set)
-        assert "accounts_list" in names
+        assert "accounts" in names
         assert "accounts_get" in names
         assert "accounts_summary" in names
         assert "accounts_set" in names
@@ -80,7 +80,7 @@ class TestToolRegistration:
     @pytest.mark.unit
     async def test_accounts_list_returns_envelope(self, mcp_db: object) -> None:
 
-        result = await accounts_list()
+        result = await accounts()
         parsed = result.to_dict()
         assert "summary" in parsed
         assert "data" in parsed
@@ -91,7 +91,7 @@ class TestToolRegistration:
     async def test_accounts_list_redacted_returns_low_sensitivity(
         self, mcp_db: object
     ) -> None:
-        result = await accounts_list(redacted=True)
+        result = await accounts(redacted=True)
         parsed = result.to_dict()
         assert parsed["summary"]["sensitivity"] == "low"
         # Redacted mode omits last_four and credit_limit

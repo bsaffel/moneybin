@@ -39,7 +39,7 @@ def transactions_get(
 
     Args:
         accounts: Account IDs or display names to filter by. Accepts exact
-            account_id values or fuzzy display names — use accounts_list to
+            account_id values or fuzzy display names — use accounts to
             discover IDs. Multiple values are OR-combined.
         date_from: ISO 8601 start date, inclusive (e.g. '2026-01-01').
         date_to: ISO 8601 end date, inclusive.
@@ -113,7 +113,7 @@ def register_transactions_tools(mcp: FastMCP) -> None:
         "curation fields (notes, tags, splits). "
         "Amounts use the accounting convention: negative = expense, positive = income; "
         "transfers exempt. Amounts are in the currency named by `summary.display_currency`. "
-        "`accounts` accepts display names or exact account IDs — use `accounts_list` to "
+        "`accounts` accepts display names or exact account IDs — use `accounts` to "
         "discover IDs. Pass `next_cursor` from a previous response to fetch the next page.",
     )
     register(

@@ -62,7 +62,7 @@ class TestMCPServerBoot:
                 # Tools that should always be present (v2 names) — full surface
                 # is visible at connect (mcp-architecture.md §3).
                 assert "reports_spending" in tool_names
-                assert "accounts_list" in tool_names
+                assert "accounts" in tool_names
                 assert "system_status" in tool_names
                 # Formerly extended-namespace tools must also be visible at connect:
                 assert "transactions_categorize_commit" in tool_names
@@ -121,7 +121,7 @@ class TestMCPServerBoot:
                 tool_names = {t.name for t in tools_result.tools}
 
                 v2_accounts_tools = {
-                    "accounts_list",
+                    "accounts",
                     "accounts_get",
                     "accounts_summary",
                     "accounts_set",

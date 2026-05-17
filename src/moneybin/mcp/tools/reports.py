@@ -99,7 +99,7 @@ def reports_networth(
         actions=[
             "Use reports_networth_history(from_date, to_date) for the time series",
             "Use accounts_balance_history(account_id=...) to drill into one account",
-            "Use accounts_list to see archived / excluded accounts not counted here",
+            "Use accounts to see archived / excluded accounts not counted here",
         ],
     )
 
