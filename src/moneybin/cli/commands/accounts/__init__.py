@@ -1,8 +1,10 @@
 """Accounts top-level command group.
 
-Owns account entity operations (list, show, rename, include, archive,
-unarchive, set) and per-account workflows (balance, investments) per
-moneybin-cli.md v2 + account-management.md.
+Owns account entity operations (list, get, set, resolve) and per-account
+workflows (balance, investments) per moneybin-cli.md v2 +
+account-management.md. `set` is the single partial-update entry point —
+display_name, include_in_net_worth, and is_archived fold in via flags
+(see `accounts set --help`).
 """
 
 from __future__ import annotations
@@ -97,71 +99,6 @@ def accounts_get(
         typer.echo(f"  {k}: {v}")
 
 
-@app.command("rename")
-def accounts_rename(
-    account_id: str = typer.Argument(..., help="Account ID"),
-    display_name: str = typer.Argument(
-        ..., help="New display name (empty string clears)"
-    ),
-    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),  # noqa: ARG001 — accepted for forward compat; no confirmation prompt today, but scripts pass --yes defensively
-) -> None:
-    """Rename an account. Empty string clears the override."""
-    with handle_cli_errors():
-        with get_database() as db:
-            result = AccountService(db).rename(account_id, display_name)
-    name = result.display_name or "<cleared>"
-    typer.echo(f"✅ Renamed {account_id} → {name}", err=True)
-
-
-@app.command("include")
-def accounts_include(
-    account_id: str = typer.Argument(..., help="Account ID"),
-    no: bool = typer.Option(False, "--no", help="Set include_in_net_worth=FALSE"),
-    yes: bool = typer.Option(False, "--yes", "-y"),  # noqa: ARG001 — accepted for forward compat; no confirmation prompt today, but scripts pass --yes defensively
-) -> None:
-    """Toggle account inclusion in net worth (default TRUE; --no to exclude)."""
-    include = not no
-    with handle_cli_errors():
-        with get_database() as db:
-            result = AccountService(db).set_include_in_net_worth(account_id, include)
-    state = "included in" if result.include_in_net_worth else "excluded from"
-    typer.echo(f"✅ Account {account_id} {state} net worth", err=True)
-
-
-@app.command("archive")
-def accounts_archive(
-    account_id: str = typer.Argument(..., help="Account ID"),
-    yes: bool = typer.Option(False, "--yes", "-y"),  # noqa: ARG001 — accepted for forward compat; no confirmation prompt today, but scripts pass --yes defensively
-) -> None:
-    """Archive an account. Cascades exclude_from_net_worth in the same write."""
-    with handle_cli_errors():
-        with get_database() as db:
-            AccountService(db).archive(account_id)
-    typer.echo(
-        f"✅ Archived account {account_id} (also excluded from net worth)",
-        err=True,
-    )
-
-
-@app.command("unarchive")
-def accounts_unarchive(
-    account_id: str = typer.Argument(..., help="Account ID"),
-    yes: bool = typer.Option(False, "--yes", "-y"),  # noqa: ARG001 — accepted for forward compat; no confirmation prompt today, but scripts pass --yes defensively
-) -> None:
-    """Unarchive an account. Does NOT restore include_in_net_worth."""
-    with handle_cli_errors():
-        with get_database() as db:
-            result = AccountService(db).unarchive(account_id)
-    if not result.include_in_net_worth:
-        typer.echo(
-            f"✅ Unarchived account {account_id} "
-            f"(still excluded from net worth — use 'moneybin accounts include' to re-enable)",
-            err=True,
-        )
-    else:
-        typer.echo(f"✅ Unarchived account {account_id}", err=True)
-
-
 def _maybe_prompt_soft_validation(
     field_name: str,
     value: str,
@@ -230,12 +167,28 @@ def accounts_set(
     credit_limit: str | None = typer.Option(
         None, "--credit-limit", help="Credit limit (for credit cards / lines)"
     ),
+    display_name: str | None = typer.Option(
+        None,
+        "--display-name",
+        help="Custom display name override (use --clear-display-name to clear)",
+    ),
+    include_in_net_worth: bool | None = typer.Option(
+        None,
+        "--include/--exclude",
+        help="Include or exclude this account from net worth",
+    ),
+    is_archived: bool | None = typer.Option(
+        None,
+        "--archive/--unarchive",
+        help="Archive (cascades --exclude) or unarchive (does not auto-restore include)",
+    ),
     clear_official_name: bool = typer.Option(False, "--clear-official-name"),
     clear_last_four: bool = typer.Option(False, "--clear-last-four"),
     clear_subtype: bool = typer.Option(False, "--clear-subtype"),
     clear_holder_category: bool = typer.Option(False, "--clear-holder-category"),
     clear_currency: bool = typer.Option(False, "--clear-currency"),
     clear_credit_limit: bool = typer.Option(False, "--clear-credit-limit"),
+    clear_display_name: bool = typer.Option(False, "--clear-display-name"),
     yes: bool = typer.Option(
         False,
         "--yes",
@@ -243,7 +196,14 @@ def accounts_set(
         help="Skip soft-validation prompt for non-canonical values",
     ),
 ) -> None:
-    """Update structural metadata fields. At least one --field flag required."""
+    """Update account settings (structural + behavioral fields).
+
+    Structural: --official-name, --last-four, --subtype, --holder-category,
+    --currency, --credit-limit (each clearable via --clear-FIELD).
+    Behavioral: --display-name, --include/--exclude, --archive/--unarchive.
+    Archive cascades --exclude in the same write; unarchive does NOT restore
+    include. At least one field flag required.
+    """
     diff: dict[str, object] = {}
 
     def _add(field: str, value: object | None, clear: bool) -> None:
@@ -257,6 +217,11 @@ def accounts_set(
     _add("account_subtype", subtype, clear_subtype)
     _add("holder_category", holder_category, clear_holder_category)
     _add("iso_currency_code", currency, clear_currency)
+    _add("display_name", display_name, clear_display_name)
+    if include_in_net_worth is not None:
+        diff["include_in_net_worth"] = include_in_net_worth
+    if is_archived is not None:
+        diff["archived"] = is_archived
 
     if not diff and credit_limit is None and not clear_credit_limit:
         typer.echo(
@@ -291,8 +256,9 @@ def accounts_set(
             _, warnings = AccountService(db).settings_update(account_id, **diff)  # type: ignore[arg-type]  # dynamic settings_update kwargs
     for w in warnings:
         typer.echo(f"⚠️  {w.get('message', w)}", err=True)
+    cascade_note = " (also excluded from net worth)" if is_archived is True else ""
     typer.echo(
-        f"✅ Updated settings for {account_id}: fields={sorted(diff.keys())}",
+        f"✅ Updated settings for {account_id}: fields={sorted(diff.keys())}{cascade_note}",
         err=True,
     )
 

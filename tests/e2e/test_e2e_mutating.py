@@ -544,42 +544,47 @@ class TestAccountsEntityOps:
 
     _ACCOUNT = _OFX_ACCOUNT_ID
 
-    def test_accounts_rename_persists(
+    def test_accounts_set_display_name_persists(
         self, _accounts_with_data_template: Path, tmp_path: Path
     ) -> None:
-        """Accounts rename writes; accounts list reflects the new name."""
+        """`accounts set --display-name` writes; no traceback."""
         env = make_workflow_env_fast(
             tmp_path, "acct-rename", _accounts_with_data_template
         )
         result = run_cli(
-            "accounts", "rename", self._ACCOUNT, "My Test Account", env=env
+            "accounts",
+            "set",
+            self._ACCOUNT,
+            "--display-name",
+            "My Test Account",
+            env=env,
         )
         result.assert_success()
-        # Confirm no traceback
         assert "Traceback" not in result.output
 
-    def test_accounts_include_exclude_round_trip(
+    def test_accounts_set_include_exclude_round_trip(
         self, _accounts_with_data_template: Path, tmp_path: Path
     ) -> None:
-        """Accounts include --no excludes; accounts include re-includes."""
+        """`accounts set --exclude` then `--include` round-trip both succeed."""
         env = make_workflow_env_fast(
             tmp_path, "acct-include", _accounts_with_data_template
         )
-        result = run_cli("accounts", "include", self._ACCOUNT, "--no", env=env)
+        result = run_cli("accounts", "set", self._ACCOUNT, "--exclude", env=env)
         result.assert_success()
-        result = run_cli("accounts", "include", self._ACCOUNT, env=env)
+        result = run_cli("accounts", "set", self._ACCOUNT, "--include", env=env)
         result.assert_success()
 
-    def test_accounts_archive_then_unarchive(
+    def test_accounts_set_archive_then_unarchive(
         self, _accounts_with_data_template: Path, tmp_path: Path
     ) -> None:
-        """Accounts archive + unarchive round-trip both succeed."""
+        """`accounts set --archive` then `--unarchive` round-trip; cascade message present on archive."""
         env = make_workflow_env_fast(
             tmp_path, "acct-archive", _accounts_with_data_template
         )
-        result = run_cli("accounts", "archive", self._ACCOUNT, env=env)
+        result = run_cli("accounts", "set", self._ACCOUNT, "--archive", env=env)
         result.assert_success()
-        result = run_cli("accounts", "unarchive", self._ACCOUNT, env=env)
+        assert "excluded from net worth" in result.output
+        result = run_cli("accounts", "set", self._ACCOUNT, "--unarchive", env=env)
         result.assert_success()
 
     def test_accounts_set_canonical_subtype(

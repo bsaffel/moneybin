@@ -526,50 +526,42 @@ class AccountService:
         )
 
     def rename(self, account_id: str, display_name: str) -> AccountSettings:
-        """Set or clear display_name. Empty string clears the override."""
-        self._assert_account_exists(account_id)
-        current = self._load_or_default(account_id)
-        new_name: str | None = display_name if display_name else None
-        updated = dataclasses.replace(current, display_name=new_name)
-        self._settings_repo.upsert(updated)
-        logger.info(
-            f"Renamed account {account_id}: display_name "
-            f"{'cleared' if new_name is None else 'set'}"
-        )
-        return updated
+        """Set or clear display_name. Empty string clears the override.
+
+        Deprecated: prefer ``settings_update(display_name=...)``. Kept as a
+        thin delegate for internal callers that haven't migrated.
+        """
+        # Empty-string-clears semantics live in this delegate; settings_update
+        # uses the CLEAR sentinel for nullable text fields.
+        new_value: str | object = display_name if display_name else CLEAR
+        settings, _ = self.settings_update(account_id, display_name=new_value)
+        return settings
 
     def set_include_in_net_worth(
         self, account_id: str, include: bool
     ) -> AccountSettings:
-        """Toggle include_in_net_worth flag. Idempotent."""
-        self._assert_account_exists(account_id)
-        current = self._load_or_default(account_id)
-        updated = dataclasses.replace(current, include_in_net_worth=include)
-        self._settings_repo.upsert(updated)
-        logger.info(f"Updated account {account_id}: include_in_net_worth={include}")
-        return updated
+        """Toggle include_in_net_worth flag. Idempotent.
+
+        Deprecated: prefer ``settings_update(include_in_net_worth=...)``.
+        """
+        settings, _ = self.settings_update(account_id, include_in_net_worth=include)
+        return settings
 
     def archive(self, account_id: str) -> AccountSettings:
-        """Set archived=TRUE; cascades include_in_net_worth=FALSE in the same write."""
-        self._assert_account_exists(account_id)
-        current = self._load_or_default(account_id)
-        updated = dataclasses.replace(
-            current, archived=True, include_in_net_worth=False
-        )
-        self._settings_repo.upsert(updated)
-        logger.info(
-            f"Archived account {account_id} (cascaded include_in_net_worth=False)"
-        )
-        return updated
+        """Set archived=TRUE; cascades include_in_net_worth=FALSE in the same write.
+
+        Deprecated: prefer ``settings_update(archived=True)``.
+        """
+        settings, _ = self.settings_update(account_id, archived=True)
+        return settings
 
     def unarchive(self, account_id: str) -> AccountSettings:
-        """Set archived=FALSE; does NOT restore include_in_net_worth (per spec)."""
-        self._assert_account_exists(account_id)
-        current = self._load_or_default(account_id)
-        updated = dataclasses.replace(current, archived=False)
-        self._settings_repo.upsert(updated)
-        logger.info(f"Unarchived account {account_id}")
-        return updated
+        """Set archived=FALSE; does NOT restore include_in_net_worth (per spec).
+
+        Deprecated: prefer ``settings_update(archived=False)``.
+        """
+        settings, _ = self.settings_update(account_id, archived=False)
+        return settings
 
     def settings_update(
         self,
@@ -581,17 +573,33 @@ class AccountService:
         holder_category: str | None | object = None,
         iso_currency_code: str | None | object = None,
         credit_limit: Decimal | None | object = None,
+        display_name: str | None | object = None,
+        include_in_net_worth: bool | None = None,
+        archived: bool | None = None,
     ) -> tuple[AccountSettings, list[dict[str, str]]]:
-        """Partial update of structural metadata.
+        """Partial update of structural and user-state metadata.
 
-        None means "no change", CLEAR sentinel means "set to NULL", any other
-        value writes that value. Returns the updated settings and a list of
-        soft-validation warnings (empty if all values are canonical).
+        None means "no change", CLEAR sentinel means "set to NULL" (only valid
+        for nullable text fields), any other value writes that value. Returns
+        the updated settings and a list of soft-validation warnings (empty if
+        all values are canonical).
+
+        Cascade: ``archived=True`` forces ``include_in_net_worth=False`` in the
+        same write to preserve the invariant that archived accounts never
+        contribute to net worth. ``archived=False`` does NOT auto-restore
+        ``include_in_net_worth`` — matches the prior ``unarchive()`` contract;
+        callers re-enable inclusion explicitly when intended.
         """
         self._assert_account_exists(account_id)
         current = self._load_or_default(account_id)
         diff: dict[str, object] = {}
         warnings: list[dict[str, str]] = []
+
+        # Archive forces include_in_net_worth=False in the same write —
+        # resolved before _resolve() so an explicit caller value is
+        # overridden by the cascade.
+        if archived is True:
+            include_in_net_worth = False
 
         def _resolve(field_name: str, new: object) -> None:
             if new is None:
@@ -607,6 +615,12 @@ class AccountService:
         _resolve("holder_category", holder_category)
         _resolve("iso_currency_code", iso_currency_code)
         _resolve("credit_limit", credit_limit)
+        _resolve("display_name", display_name)
+        # Non-null booleans: pass-through when set, no CLEAR semantics.
+        if include_in_net_worth is not None:
+            diff["include_in_net_worth"] = include_in_net_worth
+        if archived is not None:
+            diff["archived"] = archived
 
         subtype = diff.get("account_subtype")
         if isinstance(subtype, str) and not is_canonical_subtype(subtype):

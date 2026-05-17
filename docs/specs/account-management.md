@@ -19,7 +19,7 @@ The metadata schema mirrors **Plaid's account model** (Plaid Parity), so when [`
 
 Related specs and docs:
 - [`net-worth.md`](net-worth.md) — consumes `app.account_settings.include_in_net_worth` and `archived` for `agg_net_worth`; ships bundled with this spec
-- [`moneybin-cli.md`](moneybin-cli.md) v2 — defines the `accounts` top-level group; this spec extends with `archive` / `unarchive` / `set` (moneybin-cli.md amendment landed alongside)
+- [`moneybin-cli.md`](moneybin-cli.md) v2 — defines the `accounts` top-level group; this spec extends with the unified `accounts set` (moneybin-cli.md amendment landed alongside)
 - [`moneybin-mcp.md`](moneybin-mcp.md) v2 — `accounts_list` / `accounts_get` already enumerated; this spec adds the entity-mutation tools and `accounts_summary`
 - [`privacy-data-protection.md`](privacy-data-protection.md) — settings table encrypted at rest; `last_four` and `credit_limit` are PII-adjacent and require sensitivity-tier handling
 - [`database-migration.md`](database-migration.md) — migration infrastructure for new tables
@@ -36,11 +36,11 @@ Related specs and docs:
    - **MCP:** write always succeeds; response envelope includes a `warnings: [...]` array with field, message, and suggestion. The agent decides whether to retry.
 7. **`core.dim_accounts` is the single source of truth.** The dim model joins `app.account_settings` directly so `display_name`, `archived`, `include_in_net_worth`, and the metadata fields are always available to consumers without per-consumer join logic. This pattern is codified into [`.claude/rules/database.md`](#) by this spec — see [Files to Modify](#files-to-modify).
 8. **Display name resolution chain:** `app.account_settings.display_name` → derived default (`institution_name + account_type + …last_four(account_id)`) → bare `account_id`. First non-empty wins. Materialized inside `core.dim_accounts.display_name`.
-9. **CLI surface (taxonomy C):** named verbs for the four high-frequency operations (`rename`, `include`, `archive`, `unarchive`); a single `set` command for the structural metadata fields (`--official-name`, `--last-four`, `--subtype`, `--holder-category`, `--currency`, `--credit-limit`, `--clear-FIELD`). See [CLI Interface](#cli-interface).
-10. **MCP surface:** mirrors CLI — five write tools (`accounts_rename`, `accounts_include`, `accounts_archive`, `accounts_unarchive`, `accounts_set`) plus three read tools (`accounts_list`, `accounts_get`, `accounts_summary`) and one resource (`accounts://summary`). The summary tool exists alongside the resource because many MCP clients don't render resources.
+9. **CLI surface:** a single `accounts set` command is the partial-update entry point for every settings field. Structural metadata (`--official-name`, `--last-four`, `--subtype`, `--holder-category`, `--currency`, `--credit-limit`, plus `--clear-FIELD` for each) sits alongside behavioral flags (`--display-name`, `--include/--exclude`, `--archive/--unarchive`). Archiving cascades `--exclude` atomically; unarchiving does NOT auto-restore include. See [CLI Interface](#cli-interface). The formerly-separate `accounts rename`, `accounts include`, `accounts archive`, `accounts unarchive` commands are folded into `accounts set` flags.
+10. **MCP surface:** mirrors CLI — one write tool (`accounts_set`) plus three read tools (`accounts_list`, `accounts_get`, `accounts_summary`) and one resource (`accounts://summary`). The summary tool exists alongside the resource because many MCP clients don't render resources. The MCP-side boolean parameter for archive is `is_archived` (Pythonic prefix preferred for agent-facing names); the response data emits `archived` (the underlying dataclass field).
 11. **Sensitivity tiers:** `accounts_summary` is `low` (aggregates only). `accounts_list` defaults to `medium` because the response carries `last_four` and `credit_limit`; supports `redacted: true` to drop those fields and downgrade to `low`. `accounts_get` is `medium`. All write tools are `medium` and require confirmation per MCP write-tool conventions.
 12. **All commands support `--output json`** and the standard read-only flags (`-o`, `-q`) per `.claude/rules/cli.md`.
-13. **Idempotent settings writes.** `accounts rename`, `accounts include`, `accounts archive`, `accounts set` always upsert into `app.account_settings`. Setting the same value twice is a no-op (no error).
+13. **Idempotent settings writes.** `accounts set` always upserts into `app.account_settings`. Setting the same value twice is a no-op (no error).
 14. **PII handling for `last_four` and `credit_limit`.** `last_four` is a 4-digit string (validated `^[0-9]{4}$`). `credit_limit` is `DECIMAL(18,2)`. Neither flows through logger output (logger only records the `account_id` and the affected fields by name). The full account number never enters the system.
 
 ## Data Model
@@ -120,41 +120,20 @@ moneybin accounts get <account_id_or_display_name> [--output json|table]
 - Resolves either an `account_id` or a unique `display_name`; ambiguous match prints disambiguation and exits non-zero.
 - Reports the full settings row, source-derived fields from `dim_accounts`, last balance observation (from `core.fct_balances_daily`, when present), transaction count, date range.
 
-### Mutation commands — named verbs
-
-```
-moneybin accounts rename <account_id> <display_name> [--yes]
-```
-- Upserts `display_name`. Empty string clears the override.
-- Length-validates against the 1–80 constraint at the service boundary.
-
-```
-moneybin accounts include <account_id> [--no] [--yes]
-```
-- Toggles `include_in_net_worth`. Bare = TRUE, `--no` = FALSE. Idempotent.
-
-```
-moneybin accounts archive <account_id> [--yes]
-```
-- Sets `archived = TRUE`. **Cascades** `include_in_net_worth = FALSE` in the same write.
-- Logs both effects: `"✅ Archived account <display_name> (also excluded from net worth)"`.
-
-```
-moneybin accounts unarchive <account_id> [--yes]
-```
-- Sets `archived = FALSE`. Does **NOT** restore `include_in_net_worth` — the user runs `accounts include <id>` if they want it back.
-- Logs: `"✅ Unarchived account <display_name> (still excluded from net worth — use 'moneybin accounts include' to re-enable)"` when the include flag is FALSE.
-
 ### Mutation command — `set`
 
 ```
 moneybin accounts set <account_id>
-    [--official-name "..."]
+    [--display-name "..."]            # behavioral
+    [--include | --exclude]           # behavioral (Optional[bool], Typer flag pair)
+    [--archive | --unarchive]         # behavioral (Optional[bool], Typer flag pair)
+    [--official-name "..."]           # structural
     [--last-four NNNN]
     [--subtype X]
     [--holder-category personal|business|joint]
     [--currency USD]
     [--credit-limit AMOUNT]
+    [--clear-display-name]
     [--clear-official-name]
     [--clear-last-four]
     [--clear-subtype]
@@ -163,9 +142,10 @@ moneybin accounts set <account_id>
     [--clear-credit-limit]
     [--yes]
 ```
-- At least one `--field` flag required (else exit `2` with usage error).
-- `--clear-FIELD` writes NULL.
-- Per-field service-boundary validation (see Data Model constraints).
+- At least one field flag required (else exit `2` with usage error).
+- `--clear-FIELD` writes NULL for nullable text fields. Booleans (`include_in_net_worth`, `archived`) are not clearable — pass the explicit value.
+- Per-field service-boundary validation (see Data Model constraints). `display_name` is length-validated against the 1–80 constraint.
+- **Archive cascade.** `--archive` flips `archived = TRUE` AND `include_in_net_worth = FALSE` in the same write. The CLI confirmation appends `(also excluded from net worth)` when `--archive` is passed. `--unarchive` flips `archived = FALSE` but does NOT restore `include_in_net_worth` — pass `--include` in the same or a subsequent invocation to re-include.
 - **Soft validation on `--subtype` / `--holder-category`:** if value is not in the canonical Plaid list and stdin is a TTY, prompt:
   ```
   ⚠️  'chequing' is not a known Plaid subtype (did you mean 'checking'?)
@@ -189,11 +169,7 @@ Naming follows [`moneybin-mcp.md`](moneybin-mcp.md) v2 (path-prefix-verb-suffix)
 
 | Tool | Params | Returns |
 |---|---|---|
-| `accounts_rename` | `account_id`, `display_name` (empty string clears) | updated settings row |
-| `accounts_include` | `account_id`, `include` (bool, default TRUE) | updated settings row |
-| `accounts_archive` | `account_id` | updated settings row + `cascaded_include_in_net_worth: false` |
-| `accounts_unarchive` | `account_id` | updated settings row (no auto-restore of include) |
-| `accounts_set` | `account_id`; any of `official_name`, `last_four`, `account_subtype`, `holder_category`, `iso_currency_code`, `credit_limit`. Explicit `null` clears. | updated settings row + optional `warnings: [...]` |
+| `accounts_set` | `account_id`; behavioral: `display_name`, `include_in_net_worth` (bool), `is_archived` (bool); structural: `official_name`, `last_four`, `account_subtype`, `holder_category`, `iso_currency_code`, `credit_limit`. Pass `None` to leave unchanged; include the field name in `clear_fields` to clear (text fields only — booleans are not clearable). `is_archived=True` cascades `include_in_net_worth=False` atomically; unarchive does NOT auto-restore include. | updated settings row + optional `warnings: [...]`; data includes `cascaded_include_in_net_worth: false` when `is_archived=True` was the cause. Response data emits `archived` (not `is_archived`) as the field name. |
 
 ### Soft-validation in MCP
 
@@ -242,28 +218,29 @@ This spec ships a new doc explaining the project-wide identifier conventions, si
 
 ### Tier 1 — Unit (`tests/moneybin/test_services/test_account_service.py`)
 
-- Settings upsert idempotence: `rename(A, "Foo")` twice produces one row with the latest `updated_at`.
+- Settings upsert idempotence: `settings_update(A, display_name="Foo")` twice produces one row with the latest `updated_at`.
 - Display name resolution chain: settings override → derived default → bare `account_id`. One test per branch.
-- Archive cascade: `archive(A)` flips `include_in_net_worth` to FALSE in the same write; `unarchive(A)` does NOT restore it.
-- Inclusion / archive orthogonality: `include(A, false)` does not touch `archived`; `unarchive(A)` does not touch `include_in_net_worth`.
+- Archive cascade: `settings_update(A, archived=True)` flips `include_in_net_worth` to FALSE in the same write; `settings_update(A, archived=False)` does NOT restore it.
+- Inclusion / archive orthogonality: `settings_update(A, include_in_net_worth=False)` does not touch `archived`; `settings_update(A, archived=False)` does not touch `include_in_net_worth`.
 - Soft-validation classifier: `is_canonical_subtype("checking")` TRUE, `is_canonical_subtype("chequing")` FALSE, `suggest_subtype("chequing") == "checking"`.
 - Field length / format constraints: writes exceeding bounds raise typed errors at the service boundary (each constraint gets a test).
+- Backward-compat delegates: `rename` / `set_include_in_net_worth` / `archive` / `unarchive` still exist as thin one-line delegates to `settings_update` for internal callers; tests of the delegates assert the cascade is reached through the unified path.
 
 ### Tier 2 — CLI (`tests/moneybin/test_cli/test_accounts.py`)
 
 - `accounts list` default hides archived; `--include-archived` shows them with the annotation.
-- `accounts archive` cascade prints both effect lines.
-- `accounts unarchive` does not restore `include`; prints the "still excluded" hint when applicable.
+- `accounts set --archive` cascade prints `(also excluded from net worth)`.
+- `accounts set --unarchive` does not restore `include`; the cascade note is absent.
 - `accounts set --subtype chequing` (TTY mock) triggers the prompt; `--yes` skips it; `--subtype checking` does not prompt.
 - `accounts set --subtype chequing` (non-TTY, no `--yes`) exits `2` with the warning text.
-- `accounts rename <id> ""` clears the override.
+- `accounts set --clear-display-name` clears the override.
 - `--output json` matches the text branch's data exactly.
 
 ### Tier 3 — E2E (`tests/e2e/`)
 
 - `test_e2e_help.py` — `--help` for `accounts` and every subcommand.
 - `test_e2e_readonly.py` — `accounts list`, `accounts get`, `accounts list --include-archived`.
-- `test_e2e_mutating.py` — full lifecycle: import → `set` metadata → `rename` → `include --no` → `archive` → assert `dim_accounts.archived = TRUE` and `include_in_net_worth = FALSE` → `unarchive` → assert `archived` flipped, `include` did NOT.
+- `test_e2e_mutating.py` — full lifecycle: import → `accounts set --subtype …` → `accounts set --display-name "…"` → `accounts set --exclude` → `accounts set --archive` → assert `dim_accounts.archived = TRUE` and `include_in_net_worth = FALSE` → `accounts set --unarchive` → assert `archived` flipped, `include` did NOT.
 
 ### Tier 4 — Scenario (`tests/scenarios/scenario_account_settings.yaml`)
 
@@ -313,7 +290,7 @@ Schema + migrations:
 - `src/moneybin/sql/migrations/V00N__create_app_account_settings.sql` — first-time creation in existing databases (next available version)
 
 CLI commands:
-- `src/moneybin/cli/commands/accounts.py` — top-level `accounts` group with `list`, `show`, `rename`, `include`, `archive`, `unarchive`, `set`. Net-worth ships the `balance` sub-app inside this same module.
+- `src/moneybin/cli/commands/accounts/` — top-level `accounts` group with `list`, `get`, `set`, `resolve`. The `set` command is the partial-update entry point covering display_name, include/exclude, archive/unarchive, plus structural metadata. Net-worth ships the `balance` sub-app inside this same package.
 
 Documentation:
 - `docs/architecture/account-identifiers.md` — `account_id` vs `account_number` vs `last_four` vs `routing_number`, masking story (per Requirement 14 and §Identifier and PII Documentation)
@@ -332,11 +309,11 @@ Tests:
 - `src/moneybin/cli/main.py` — register the new top-level `accounts` group; remove the legacy `track` registration if [`net-worth.md`](net-worth.md) hasn't already (the two specs split the cleanup)
 - `src/moneybin/cli/commands/stubs.py` — drop `track_app` and its sub-stubs (replaced by real `accounts` and `reports` groups; `recurring`, `investments`, `budget` stubs move to their v2 homes per `moneybin-cli.md` v2)
 - `sqlmesh/models/core/dim_accounts.sql` — add `LEFT JOIN app.account_settings`; add the new columns per [Modified SQLMesh model](#modified-sqlmesh-model-coredim_accounts)
-- `src/moneybin/mcp/tools/__init__.py` (and per-tool registry) — register `accounts_summary`, `accounts_rename`, `accounts_include`, `accounts_archive`, `accounts_unarchive`, `accounts_set`; extend `accounts_list` with `redacted` param and revised sensitivity
+- `src/moneybin/mcp/tools/__init__.py` (and per-tool registry) — register `accounts_summary` and `accounts_set` (single write tool covering structural + behavioral fields after the Group 13 collapse); extend `accounts_list` with `redacted` param and revised sensitivity
 - `src/moneybin/mcp/resources/` — add `accounts://summary` resource
 - `src/moneybin/protocol/sensitivity.py` (or equivalent) — register sensitivity tiers
-- `docs/specs/moneybin-cli.md` — amend the `accounts` subtree to include `archive` / `unarchive` / `set`
-- `docs/specs/moneybin-mcp.md` — add the new `accounts_*` write tools and `accounts_summary` to the surface tables
+- `docs/specs/moneybin-cli.md` — amend the `accounts` subtree to describe the unified `accounts set` (folds in display_name, include/exclude, archive/unarchive)
+- `docs/specs/moneybin-mcp.md` — add `accounts_set` and `accounts_summary` to the surface tables (the Group 13 collapse leaves a single write tool)
 - `docs/specs/INDEX.md` — flip status to `in-progress` on entry; flip to `implemented` when shipped
 - `.claude/rules/database.md` — strengthen with a new rule: "core dimensions are the single source of truth for entity attributes — when app-layer metadata refines or overrides a dim, join it into the core dim model itself, never duplicate join logic in consumers." Cite this spec as the precedent.
 
