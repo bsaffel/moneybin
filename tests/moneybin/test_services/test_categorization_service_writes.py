@@ -635,3 +635,127 @@ class TestToggleCategory:
         with pytest.raises(UserError) as exc_info:
             CategorizationService(db).toggle_category("NOPE", is_active=False)
         assert exc_info.value.code == "CATEGORY_NOT_FOUND"
+
+
+class TestDeleteCategory:
+    """CategorizationService.delete_category — hard-delete with refuse/cascade."""
+
+    @pytest.mark.unit
+    def test_deletes_unreferenced_user_category(self, db: Database) -> None:
+        svc = CategorizationService(db)
+        cat_id = svc.create_category("TestCat")
+        svc.delete_category(cat_id)
+
+        rows = db.execute(
+            "SELECT 1 FROM app.user_categories WHERE category_id = ?", [cat_id]
+        ).fetchall()
+        assert rows == []
+
+    @pytest.mark.unit
+    def test_refuses_when_referenced_by_transactions(self, db: Database) -> None:
+        svc = CategorizationService(db)
+        cat_id = svc.create_category("LinkedCat")
+        db.execute(
+            "INSERT INTO app.transaction_categories "
+            "(transaction_id, category, categorized_by) "
+            "VALUES (?, ?, 'user')",
+            ["txn-test", "LinkedCat"],
+        )
+        with pytest.raises(UserError) as exc_info:
+            svc.delete_category(cat_id)
+        assert exc_info.value.code == "CATEGORY_HAS_REFERENCES"
+
+    @pytest.mark.unit
+    def test_refuses_when_referenced_by_budget(self, db: Database) -> None:
+        svc = CategorizationService(db)
+        cat_id = svc.create_category("BudgetCat")
+        db.execute(
+            "INSERT INTO app.budgets "
+            "(budget_id, category, monthly_amount, start_month) "
+            "VALUES (?, ?, ?, ?)",
+            ["bdg-test", "BudgetCat", "200.00", "2026-01"],
+        )
+        with pytest.raises(UserError) as exc_info:
+            svc.delete_category(cat_id)
+        assert exc_info.value.code == "CATEGORY_HAS_REFERENCES"
+
+    @pytest.mark.unit
+    def test_force_cascades_transaction_references(self, db: Database) -> None:
+        svc = CategorizationService(db)
+        cat_id = svc.create_category("ForceCat")
+        db.execute(
+            "INSERT INTO app.transaction_categories "
+            "(transaction_id, category, categorized_by) "
+            "VALUES (?, ?, 'user')",
+            ["txn-force", "ForceCat"],
+        )
+        svc.delete_category(cat_id, force=True)
+
+        assert (
+            db.execute(
+                "SELECT 1 FROM app.user_categories WHERE category_id = ?", [cat_id]
+            ).fetchall()
+            == []
+        )
+        assert (
+            db.execute(
+                "SELECT 1 FROM app.transaction_categories WHERE transaction_id = ?",
+                ["txn-force"],
+            ).fetchall()
+            == []
+        )
+
+    @pytest.mark.unit
+    def test_force_cascades_budget_references(self, db: Database) -> None:
+        svc = CategorizationService(db)
+        cat_id = svc.create_category("BudgetForceCat")
+        db.execute(
+            "INSERT INTO app.budgets "
+            "(budget_id, category, monthly_amount, start_month) "
+            "VALUES (?, ?, ?, ?)",
+            ["bdg-force", "BudgetForceCat", "100.00", "2026-01"],
+        )
+        svc.delete_category(cat_id, force=True)
+
+        assert (
+            db.execute(
+                "SELECT 1 FROM app.budgets WHERE budget_id = ?", ["bdg-force"]
+            ).fetchall()
+            == []
+        )
+
+    @pytest.mark.unit
+    def test_subcategory_match_is_exact(self, db: Database) -> None:
+        """Deleting (Childcare/Daycare) must not touch (Childcare/Preschool) refs."""
+        svc = CategorizationService(db)
+        cat_id = svc.create_category("Childcare", subcategory="Daycare")
+        svc.create_category("Childcare", subcategory="Preschool")
+
+        db.execute(
+            "INSERT INTO app.transaction_categories "
+            "(transaction_id, category, subcategory, categorized_by) "
+            "VALUES (?, ?, ?, 'user')",
+            ["txn-preschool", "Childcare", "Preschool"],
+        )
+        svc.delete_category(cat_id)
+
+        assert (
+            db.execute(
+                "SELECT 1 FROM app.transaction_categories WHERE transaction_id = ?",
+                ["txn-preschool"],
+            ).fetchall()
+            == [(1,)]
+        )
+
+    @pytest.mark.unit
+    def test_refuses_default_category(self, db: Database) -> None:
+        seed_categories_view(db)
+        with pytest.raises(UserError) as exc_info:
+            CategorizationService(db).delete_category("FND")
+        assert exc_info.value.code == "CATEGORY_IS_DEFAULT"
+
+    @pytest.mark.unit
+    def test_raises_for_unknown_category(self, db: Database) -> None:
+        with pytest.raises(UserError) as exc_info:
+            CategorizationService(db).delete_category("does-not-exist")
+        assert exc_info.value.code == "CATEGORY_NOT_FOUND"

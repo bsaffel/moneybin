@@ -47,6 +47,7 @@ from moneybin.services.categorization._shared import (
     priority_case_sql,
 )
 from moneybin.tables import (
+    BUDGETS,
     CATEGORIES,
     CATEGORIZATION_RULES,
     CATEGORY_OVERRIDES,
@@ -627,6 +628,107 @@ class MatchApplier:
                 f"WHERE category_id = ?",
                 [is_active, category_id],
             )
+
+    def delete_category(self, category_id: str, *, force: bool = False) -> None:
+        """Hard-delete a user-created category.
+
+        Refuses by default if the category is referenced by any rows in
+        ``app.transaction_categories`` (matched on the same
+        ``(category, subcategory)`` pair) or ``app.budgets`` (top-level
+        ``category`` text match — only relevant when deleting a top-level
+        user category). With ``force=True``, deletes referencing rows in
+        both tables before removing the ``app.user_categories`` row;
+        affected transactions return to the uncategorized state (no row
+        in ``app.transaction_categories``), mirroring ``clear_category``.
+
+        Default (seeded) categories cannot be hard-deleted — operators
+        disable them via :meth:`toggle_category` so that
+        ``app.category_overrides`` records the deactivation without
+        destroying the canonical taxonomy row.
+
+        Args:
+            category_id: ID of the user-created category to delete.
+            force: If True, cascade-delete referencing transaction and
+                budget rows; if False, refuse when references exist.
+
+        Raises:
+            UserError(code="CATEGORY_NOT_FOUND"): no category with this ID.
+            UserError(code="CATEGORY_IS_DEFAULT"): seeded default
+                categories cannot be hard-deleted; use ``toggle_category``.
+            UserError(code="CATEGORY_HAS_REFERENCES"): force=False and the
+                category is referenced by transactions or budgets.
+        """
+        existing = self._db.execute(
+            f"SELECT category, subcategory FROM {USER_CATEGORIES.full_name} "  # noqa: S608  # TableRef constant
+            f"WHERE category_id = ?",
+            [category_id],
+        ).fetchone()
+        if not existing:
+            default = self._db.execute(
+                f"SELECT 1 FROM {CATEGORIES.full_name} "  # noqa: S608  # TableRef constant
+                f"WHERE category_id = ? AND is_default = TRUE",
+                [category_id],
+            ).fetchone()
+            if default:
+                raise UserError(
+                    f"Default category {category_id} cannot be deleted "
+                    f"(use categories_set with is_active=False to disable)",
+                    code="CATEGORY_IS_DEFAULT",
+                )
+            raise UserError(
+                f"Category {category_id} not found",
+                code="CATEGORY_NOT_FOUND",
+            )
+        category_name, subcategory_name = existing
+
+        # NULL subcategory matches the user_categories row only when the
+        # transaction_categories row's subcategory IS NULL too.
+        if subcategory_name is None:
+            txn_where = "category = ? AND subcategory IS NULL"
+            txn_params: list[object] = [category_name]
+        else:
+            txn_where = "category = ? AND subcategory = ?"
+            txn_params = [category_name, subcategory_name]
+
+        # Budgets only carry top-level category; subcategory-scoped user
+        # categories cannot block a budget delete.
+        check_budgets = subcategory_name is None
+
+        if not force:
+            txn_row = self._db.execute(
+                f"SELECT COUNT(*) FROM {TRANSACTION_CATEGORIES.full_name} "  # noqa: S608  # TableRef constant
+                f"WHERE {txn_where}",
+                txn_params,
+            ).fetchone()
+            txn_count = txn_row[0] if txn_row else 0
+            budget_count = 0
+            if check_budgets:
+                budget_row = self._db.execute(
+                    f"SELECT COUNT(*) FROM {BUDGETS.full_name} WHERE category = ?",  # noqa: S608  # TableRef constant
+                    [category_name],
+                ).fetchone()
+                budget_count = budget_row[0] if budget_row else 0
+            if txn_count or budget_count:
+                raise UserError(
+                    f"Category has {txn_count} transaction reference(s) "
+                    f"and {budget_count} budget reference(s); "
+                    f"pass force=True to cascade-delete.",
+                    code="CATEGORY_HAS_REFERENCES",
+                )
+
+        self._db.execute(
+            f"DELETE FROM {TRANSACTION_CATEGORIES.full_name} WHERE {txn_where}",  # noqa: S608  # TableRef constant
+            txn_params,
+        )
+        if check_budgets:
+            self._db.execute(
+                f"DELETE FROM {BUDGETS.full_name} WHERE category = ?",  # noqa: S608  # TableRef constant
+                [category_name],
+            )
+        self._db.execute(
+            f"DELETE FROM {USER_CATEGORIES.full_name} WHERE category_id = ?",  # noqa: S608  # TableRef constant
+            [category_id],
+        )
 
     # -- Guarded categorization write --
 
