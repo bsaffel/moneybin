@@ -940,6 +940,29 @@ class TestCategorizeRulesCreateCLI:
         )
         assert result.exit_code == 1
         assert "Traceback (most recent call last)" not in result.stderr
+        # Text mode surfaces per-row failure reason so the user knows what failed.
+        assert "bad-rule" in result.stderr
+        assert "⚠️" in result.stderr
+
+    def test_create_from_file_directory_path_errors_cleanly(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """Passing a directory to --from-file yields a clean error, not a traceback."""
+        env = make_workflow_env_fast(
+            tmp_path, "rulescreate-dir", _mutating_profile_template
+        )
+        result = run_cli(
+            "transactions",
+            "categorize",
+            "rules",
+            "create",
+            "--from-file",
+            str(tmp_path),
+            env=env,
+        )
+        assert result.exit_code == 2
+        assert "Traceback (most recent call last)" not in result.stderr
+        assert "Cannot read" in result.stderr
 
 
 class TestCategorizeRulesDeleteCLI:

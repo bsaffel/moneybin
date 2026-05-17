@@ -175,6 +175,10 @@ def rules_create(
         except json.JSONDecodeError as e:
             typer.echo(f"❌ Invalid JSON in {from_file}: {e}", err=True)
             raise typer.Exit(1) from e
+        except OSError as e:
+            # PermissionError, IsADirectoryError, broken-mount OSError, etc.
+            typer.echo(f"❌ Cannot read {from_file}: {e}", err=True)
+            raise typer.Exit(2) from e
         if not isinstance(loaded, list):
             raise typer.BadParameter(
                 "--from-file must point at a JSON list of rule dicts"
@@ -213,6 +217,10 @@ def rules_create(
             f"✅ Created {result.created} rule(s); "
             f"existing {result.existing}, skipped {result.skipped}"
         )
+        for err in result.error_details:
+            logger.warning(
+                f"⚠️  {err.get('name', '(unknown)')}: {err.get('reason', 'failed')}"
+            )
 
     if result.skipped > 0:
         raise typer.Exit(1)
