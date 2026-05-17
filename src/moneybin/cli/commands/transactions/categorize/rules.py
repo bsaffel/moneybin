@@ -171,7 +171,7 @@ def rules_create(
                 "merchant_pattern": pattern,
                 "category": category,
                 "subcategory": subcategory,
-                "match_type": str(match_type),
+                "match_type": match_type.value,
                 "priority": priority,
                 "min_amount": min_amount,
                 "max_amount": max_amount,

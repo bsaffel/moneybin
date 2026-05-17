@@ -168,9 +168,9 @@ moneybin [--profile NAME] [--verbose] [--output json|table] [--yes]
 |   |   +-- stats                  -- Coverage metrics
 |   |   +-- rules                  -- Rule management (list, create, apply, delete)
 |   |   |   +-- list
-|   |   |   +-- create <name> --pattern X --category Y [--subcategory] [--match-type]
-|   |   |   |                     [--priority] [--min-amount] [--max-amount] [--account-id]
-|   |   |   |                     [--from-file rules.json] [--reapply]
+|   |   |   +-- create <name> [--pattern --category --subcategory --match-type
+|   |   |   |                  --priority --min-amount --max-amount --account-id
+|   |   |   |                  --from-file --reapply]
 |   |   |   +-- apply               -- Run rules against uncategorized
 |   |   |   +-- delete <rule_id> [--reapply]
 |   |   +-- auto                    -- Auto-rule proposals workflow

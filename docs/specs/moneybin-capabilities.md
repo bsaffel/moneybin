@@ -74,11 +74,12 @@ not-yet-built.
 | 13| Soft-delete a categorization rule by ID                          | `transactions_categorize_rules_delete` | `transactions_categorize_rules_delete` | —          | live                  |
 
 *(Bootstrap rows only; full table populates incrementally as
-follow-up work closes the parity backlog. The "Discover
-currently-hidden MCP tools" capability was removed 2026-05-17 when
-client-driven progressive disclosure was retired; see
-[`mcp-architecture.md`](mcp-architecture.md) §3. Rows 12–13
-added 2026-05-17 with the rules-CLI parity work.)*
+follow-up work closes the parity backlog. A prior row covering
+"Discover currently-hidden MCP tools" was removed 2026-05-17
+when client-driven progressive disclosure was retired (see
+[`mcp-architecture.md`](mcp-architecture.md) §3); the current
+rows 12–13 are unrelated and were added 2026-05-17 with the
+rules-CLI parity work.)*
 
 ## Exemption categories
 

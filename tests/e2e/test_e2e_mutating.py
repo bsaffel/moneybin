@@ -8,6 +8,7 @@ other tests. Tests that need a fresh MONEYBIN_HOME use tmp_path
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -807,14 +808,11 @@ class TestCategorizeRulesCreateCLI:
             env=env,
         )
         result.assert_success()
-        # Status line goes through logger → stderr.
         assert "Created 1 rule" in result.stderr
 
     def test_create_from_file_batch(
         self, _mutating_profile_template: Path, tmp_path: Path
     ) -> None:
-        import json
-
         env = make_workflow_env_fast(
             tmp_path, "rulescreate-batch", _mutating_profile_template
         )
@@ -852,8 +850,6 @@ class TestCategorizeRulesCreateCLI:
     def test_create_with_json_output(
         self, _mutating_profile_template: Path, tmp_path: Path
     ) -> None:
-        import json
-
         env = make_workflow_env_fast(
             tmp_path, "rulescreate-json", _mutating_profile_template
         )
@@ -896,8 +892,6 @@ class TestCategorizeRulesDeleteCLI:
     def test_delete_existing_rule(
         self, _mutating_profile_template: Path, tmp_path: Path
     ) -> None:
-        import json
-
         env = make_workflow_env_fast(
             tmp_path, "rulesdel-ok", _mutating_profile_template
         )
@@ -929,8 +923,6 @@ class TestCategorizeRulesDeleteCLI:
     def test_delete_existing_rule_json_output(
         self, _mutating_profile_template: Path, tmp_path: Path
     ) -> None:
-        import json
-
         env = make_workflow_env_fast(
             tmp_path, "rulesdel-json", _mutating_profile_template
         )
