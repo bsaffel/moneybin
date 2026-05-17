@@ -114,6 +114,8 @@ _NAMESPACE_DESCRIPTIONS: dict[str, str] = {
     "system": "Data status, audit log, schema health",
     "tax": "W-2 data, deductible expense search",
     "transactions": "Search, corrections, annotations, categorization, recurring",
+    # forward-looking — populated when the match-review surface lands; today's
+    # transactions_review routes to ``transactions`` via first-underscore split.
     "transactions_matches": "Match review workflow",
     "transform": "Apply/plan/validate SQLMesh transforms (refresh derived tables)",
 }
@@ -144,7 +146,7 @@ async def resource_tools() -> str:
     """
     logger.info("Resource read: moneybin://tools")
 
-    tools = await mcp._list_tools()  # noqa: SLF001  # fastmcp internal — preferred over public list_tools() for index stability  # pyright: ignore[reportPrivateUsage]
+    tools = await mcp._list_tools()  # noqa: SLF001  # fastmcp internal — kept as defense against accidental Visibility re-introduction  # pyright: ignore[reportPrivateUsage]
 
     counts: dict[str, int] = {}
     for tool in tools:
