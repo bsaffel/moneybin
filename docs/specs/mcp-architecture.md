@@ -136,55 +136,52 @@ Tools use a hybrid namespace that reflects the most natural way an AI or user wo
 - **Verb = action.** `categorize_apply`, `transactions_correct`, `import_file` — mutates state.
 - **Underscore separator.** `spending_summary`, `categorize_apply`. The MCP spec (rev 2025-11-25) and SEP-986 permit dot-separated namespaces (e.g. `spending.summary`), and dots were the original convention here. **Anthropic's and OpenAI's first-party clients enforce a stricter `^[a-zA-Z0-9_-]{1,64}$` regex** ([issue #1063](https://github.com/modelcontextprotocol/modelcontextprotocol/issues/1063)) and reject dots, so the portable subset is `[A-Za-z0-9_-]`. Reconsider if/when major clients align with SEP-986.
 
-### Progressive disclosure via per-session visibility
+### Tool disclosure: full surface, taxonomy-led
 
-> **Current state (2026-05-10):** This mechanism is wired and tested, but `MoneyBinSettings.mcp.progressive_disclosure` defaults `False` because `tools/list_changed` client support is unreliable in the wild — Claude Desktop's implementation has been spotty, and only Claude Code reliably honors the notification. In default deployment the full registered tool surface (~65 tools) is visible at connect; the `tags={domain}` markers on extended-namespace tools are dormant metadata. Treat this section as a description of the **desired future state**, not the operational present. **Design implication for new tools:** assume the full tool surface is always visible to the agent; do not rely on progressive disclosure to keep a tool out of the context window. The agent-attention budget for tool descriptions and schemas is set by the total registered surface. Each tool's description, parameter schema, and namespace placement must justify itself against the full-surface bar. The mechanism remains wired so that as client support matures (or for clients we control more directly), the flag can be flipped on without re-architecting.
+> **Decision (2026-05-17, supersedes the 2026-05-10 "wired but disabled" stance):** Client-driven progressive disclosure is retired as a strategy. The full registered tool surface is visible at connect. Orientation is delivered through the FastMCP `instructions` field in the `initialize` response and through prefix-grouped tool names with crisp descriptions — both surfaces MoneyBin controls end-to-end. `moneybin_discover`, `MoneyBinSettings.mcp.progressive_disclosure`, and the `Visibility(False, tags={domain})` transforms have been removed. The `tags={domain}` markers on tools (still set via `@mcp_tool(domain=...)`) are kept as dormant metadata, in case a future first-party client (M3D Web UI, or anything driving the Anthropic API directly) can implement prompt-level schema injection in the style of Claude Code's `tool_search`.
 
-The full tool surface (46+ tools across 10+ namespaces) exceeds the practical limit for AI tool selection accuracy (~20-30 tools). LLM performance degrades when tool descriptions overlap or when the schema payload consumes too much context. Rather than consolidating tools (which trades tool count for schema complexity and loses the "one tool does one thing" clarity), the server uses **per-session, tag-based visibility**.
+#### Why retire client-driven disclosure
 
-**Core namespaces** are visible at connection time. A namespace is core if the AI would need it in **nearly every session** — orientation, common queries, primary data entry. Extended namespaces serve **specific workflows** the user enters intentionally (categorization triage, tax prep, match review) and start hidden.
+`tools/list_changed` is part of the MCP spec, but client support is too uneven to design against — Claude Desktop is unreliable, VS Code Copilot and most generic MCP clients ignore it, and Claude Code's reliable handling is a property of the harness rather than the protocol. Building MoneyBin's disclosure story on a capability most clients lack means the agent silently never sees the extended tools because the client never re-fetches the list. That failure mode is worse than the soft cost of an above-sweet-spot tool count, because the soft cost is recoverable through three levers MoneyBin controls entirely:
 
-The default core set keeps the initial tool count under ~20:
+1. **`instructions` field as the AI's elevator pitch.** ~200–400 tokens at session start enumerating top-level domains, the response envelope shape, sensitivity tier legend, and "where to look first" pointers. Already wired and treated as load-bearing (see `.claude/rules/mcp-server.md` "Server Instructions Field").
+2. **Prefix-grouped names + sharp descriptions.** The taxonomy *is* the discovery UI. A model that cannot pick the right tool from a well-named full surface will not be rescued by progressive disclosure either.
+3. **Surface discipline.** A tool may be registered only when its backing spec in `docs/specs/INDEX.md` reaches `in-progress` or `implemented`. No stubs on the public surface. Codified in `.claude/rules/mcp-server.md` "Surface change discipline".
 
-| Namespace | Tools | Why core |
-|---|---|---|
-| `overview.*` | 2 | Orientation — the AI's first call |
-| `spending.*` | 4 | Most common user intent |
-| `cashflow.*` | 2 | Complements spending |
-| `accounts.*` | 4 | Foundational context |
-| `transactions.*` | 4 | Universal query + corrections (excludes `matches` sub-domain) |
-| `import.*` | 2–4 | Primary data entry (core subset: `file`, `status`) |
-| `sql.*` | 1 | Power-user escape hatch |
+#### Tool namespaces (all visible at connect)
 
-**Extended namespaces** are revealed per-session via the `moneybin_discover` meta-tool:
+| Namespace | Purpose |
+|---|---|
+| `overview.*` | Orientation, data status, financial health snapshot |
+| `spending.*` | Expense analysis, trends, category breakdowns |
+| `cashflow.*` | Income vs outflows, income sources |
+| `accounts.*` | Account listing, balances, net worth |
+| `transactions.*` | Universal query, corrections, annotations, categorization (incl. rules, merchants, ML, auto-rule review), recurring |
+| `transactions_matches.*` | Match review workflow |
+| `import.*` | File import, status, format detection, AI-assisted parsing |
+| `transform.*` | Apply/plan/validate SQLMesh transforms (refresh derived tables) |
+| `budget.*` | Targets, status, rollovers |
+| `tax.*` | W-2, deductible expense search |
+| `privacy.*` | Consent, grants, revocations, audit log |
+| `sql.*` | Power-user escape hatch |
 
-| Namespace | Tools | When needed |
-|---|---|---|
-| `categorize.*` | 6–15 | Categorization workflow |
-| `budget.*` | 4 | Budget tracking |
-| `tax.*` | 2 | Tax prep |
-| `privacy.*` | 4 | Privacy management |
-| `transactions_matches.*` | 6 | Match review workflow |
-| `import.*` (extended) | 3 | AI parsing, folder import |
+The registered set at any moment is bounded by the surface-discipline rule. Tools whose backing spec has not reached `in-progress` are not registered — the dependency tracker in `moneybin-mcp.md` §17 reflects current status.
 
-**The core set is fixed by the server, not user-configured.** Per-session `moneybin_discover` covers the dynamic case — if the AI needs a budget or tax tool, it discovers the namespace mid-conversation. Static per-user "what loads at connect" config has no realistic value for a single-user app and was removed; the AI does the disclosing, not the user.
+#### Design implications for new tools
 
-**How it works:**
+- Assume every registered tool is always visible to the agent. Its description, parameter schema, and namespace placement compete for the same finite attention budget as every other tool.
+- The description string carries everything the agent needs at tool-selection time — sign convention, currency, mutation surface, preconditions. See `.claude/rules/mcp-server.md` "Description requirements".
+- The `actions` array in response envelopes is the only remaining "what to call next" affordance. When a tool returns `actions`, those tools are already registered and callable — no discover step in between.
+- When proposing a new tool, ask: does the work it does justify ~50–150 tokens of permanent model attention forever? If not, fold it into an adjacent tool (a parameter, a `detail` level) or drop it.
 
-1. **All tools are registered at boot**, but extended-namespace tools carry a `tags={domain}` marker (e.g. `tags={"categorize"}`). A server-level `Visibility(False, tags={domain})` transform hides each extended domain by default.
-2. **At connection time:** Each client sees only core (untagged) tools plus `moneybin_discover`. The `moneybin://tools` resource lists every available domain with one-line descriptions, so the AI knows what's available without seeing every schema.
-3. **On `moneybin_discover(domain="categorize")`:** The server calls `enable_components(ctx, tags={"categorize"})`, which flips visibility for that tag in the **calling session only**. fastmcp emits `tools/list_changed` automatically; other connected clients are unaffected.
-4. **Once revealed, tools stay revealed** for that session. No unloading — the AI might reference a revealed tool later.
-5. **Hidden tools are uncallable.** Calling a tool from a domain that has not been discovered raises `ToolError: Unknown tool`, so visibility doubles as access control.
-6. **The `actions` array** in response envelopes serves as lightweight progressive disclosure within a session — when `spending_summary` suggests "Use spending_by_category for breakdown", the AI already has that tool (core). When a tool suggests one from an extended domain, the AI calls `discover` first.
+#### When this could be revisited
 
-**Design constraints:**
+Two conditions would warrant reopening:
 
-- **`moneybin_discover` is always visible.** It's the only tool outside of core that's available at connection time.
-- **No tool consolidation.** Each tool does one thing with a clean schema. The visibility pattern handles scale; individual tools stay simple.
-- **Per-session, not per-process.** Each client connection gets its own visibility state — a previous session's discovery does not bleed into a fresh one.
-- **Graceful fallback.** Clients that ignore `tools/list_changed` will not see newly-revealed tools, but core tools remain available throughout. Per-session disclosure is an optimization, not a requirement for correctness.
-- **Prompts reference tools by name.** When a prompt references a tool from an extended domain, the prompt template includes a discover step.
+1. **Client convergence on reliable disclosure.** If `tools/list_changed` becomes universally honored across the major clients MoneyBin targets, the dormant tag metadata can be re-activated without re-architecting.
+2. **First-party MoneyBin client.** A MoneyBin-owned Web UI (M3D) or direct Anthropic API host could implement prompt-level schema injection in the style of Claude Code's `tool_search`. Worth re-evaluating once M3D is concrete.
+
+Neither condition is on the near-term path. The full-surface decision is the operating reality through launch.
 
 ### Multi-currency as a crosscutting concern
 
@@ -617,7 +614,7 @@ These decisions and their rationale should be documented in the 12-month plan.
 | **Service layer formalization** | Explicit shared services consumed by both MCP and CLI, returning typed Python objects |
 | **Response envelope** | Consistent `{summary, data, actions}` shape across all tools |
 | **Sensitivity declarations** | Static per-tool sensitivity tier driving automatic privacy enforcement |
-| **Progressive disclosure** | Namespace-based tool registration with `moneybin_discover` meta-tool; core namespaces at connection, extended on demand via `tools/list_changed` |
+| **Tool disclosure** | Full registered surface visible at connect; orientation via FastMCP `instructions` field and prefix-grouped taxonomy. Client-driven progressive disclosure (`tools/list_changed` + `moneybin_discover`) retired 2026-05-17 — see §3. |
 
 ---
 
@@ -652,4 +649,4 @@ These decisions and their rationale should be documented in the 12-month plan.
 - **Prompt count.** Four prompts: `monthly-review`, `categorization-organize`, `onboarding`, `tax-prep`. Defined in [`moneybin-mcp.md`](moneybin-mcp.md) §14.
 - **Service layer packaging.** All services live in `src/moneybin/services/` (flat directory, one file per service class). This directory already exists with `categorization_service.py` and `import_service.py`. New services (`spending_service.py`, `transaction_service.py`, etc.) follow the same pattern. Revisit if adding major new domains makes the flat structure unwieldy.
 - **Privacy middleware implementation.** Decorator-based (`@mcp_tool(sensitivity="medium")`) that delegates to a middleware class. Decorator for ergonomics at the tool definition site; class for testability of the consent/audit/redaction logic.
-- **Tool count strategy.** Progressive disclosure via namespace-based registration, not tool consolidation. The full surface (46+ tools) exceeds practical limits for AI tool selection (~20-30 tools). Consolidation (merging CRUD operations into action-parameter tools) was rejected because it trades tool count for schema complexity without reducing cognitive load on the model. Instead: core namespaces (~19 tools) registered at connection time, extended namespaces loaded on demand via `moneybin_discover` meta-tool and `tools/list_changed` notification. Each tool stays clean and single-purpose. See §3 "Progressive disclosure via namespace registration" and [`moneybin-mcp.md`](moneybin-mcp.md) §15b.
+- **Tool count strategy.** Full registered surface visible at connect, taxonomy-led discovery, surface-discipline rule caps growth. Consolidation (merging CRUD operations into action-parameter tools) was rejected because it trades tool count for schema complexity without reducing cognitive load on the model. Client-driven progressive disclosure (the earlier strategy: core namespaces registered at connection, extended namespaces loaded on demand via `moneybin_discover` and `tools/list_changed`) was retired 2026-05-17 because `tools/list_changed` client support is too uneven to design against. The replacement is a three-lever approach MoneyBin controls end-to-end: load-bearing `instructions` field, prefix-grouped taxonomy, and a stub-gating rule that allows registration only when a tool's backing spec reaches `in-progress` or `implemented`. See §3 "Tool disclosure: full surface, taxonomy-led" and `.claude/rules/mcp-server.md` "Surface change discipline".

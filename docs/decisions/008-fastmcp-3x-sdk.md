@@ -3,6 +3,19 @@
 ## Status
 accepted
 
+> **Update 2026-05-17 — progressive-disclosure aspect retired.** This ADR's
+> rationale for adopting FastMCP 3.x stands (unified error handling,
+> middleware composition, sensitivity-tier ergonomics). The
+> progressive-disclosure motivation cited below — `moneybin_discover` +
+> `Visibility(False, tags={domain})` + `tools/list_changed` — was retired
+> because `tools/list_changed` client support is too uneven (Claude Desktop
+> unreliable, most generic clients ignore). The `Visibility` transform and
+> the meta-tool were removed; the `@mcp_tool(domain=...)` tag is preserved
+> as dormant metadata. See [`docs/specs/mcp-architecture.md`](../specs/mcp-architecture.md)
+> §3 "Tool disclosure: full surface, taxonomy-led" for the replacement
+> strategy. The FastMCP 3.x upgrade itself was the correct call regardless
+> — every other benefit from the original rationale shipped.
+
 ## Context
 
 MoneyBin's MCP server is already built on FastMCP — we import `FastMCP` from `mcp.server.fastmcp` (pinned via `mcp[cli]>=1.9.0`). What's not always obvious is that **the FastMCP bundled inside the official `mcp` Python SDK is a 2024 snapshot of FastMCP v1**, not an independent reimplementation. FastMCP 1.0 was incorporated into the SDK in 2024; the original project (now under `PrefectHQ/fastmcp`) kept developing and is currently at **3.1.x stable**. Per the project README, "some version of FastMCP powers 70% of MCP servers across all languages." Anthropic donated MCP itself to the Linux Foundation in December 2025; there is no stated commitment to keep the bundled `mcp.server.fastmcp` in feature-parity with the standalone codebase.

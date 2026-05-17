@@ -46,11 +46,7 @@ Tools use underscore-joined names: `domain_action_or_view`. The MCP spec / SEP-9
 
 Naming: **noun = query** (`spending_summary`), **verb = action** (`categorize_apply`). No CRUD naming.
 
-**Progressive disclosure** is a desired future state, not the current operational reality. The mechanism (tag-based visibility + `moneybin_discover` meta-tool + `tools/list_changed` notification) is wired and tested, but **`MoneyBinSettings.mcp.progressive_disclosure` defaults `False`** because client support for `tools/list_changed` is unreliable in practice (Claude Desktop has spotty support; only Claude Code reliably honors it). In default deployment **every registered tool is visible at connect** — the `tags={domain}` markers on extended-namespace tools are dormant metadata until the flag is flipped on.
-
-**Design implication:** When adding a new MCP tool, assume the **full tool surface is always visible** to the agent. Do not rely on progressive disclosure to keep a tool out of the context window. The agent-attention budget for tool descriptions and schemas is set by the total registered surface, not by any "core vs. extended" split. Each tool's description, parameter schema, and namespace placement must justify itself against the full-surface bar.
-
-See `mcp-architecture.md` §3 for the design rationale and `MoneyBinSettings.mcp.progressive_disclosure` field description for the current flag state.
+**Tool disclosure: full surface, taxonomy-led.** Every registered tool is visible at connect. Orientation lives in the FastMCP `instructions` field (see below) and in prefix-grouped tool names with sharp descriptions — not in a runtime discovery tool. Client-driven progressive disclosure was retired 2026-05-17; see `mcp-architecture.md` §3 for rationale and revisit conditions. Each new tool's description, parameter schema, and namespace placement must justify itself against the full-surface bar.
 
 ## Response Envelope
 
@@ -128,6 +124,8 @@ All tools use `get_database()` from `src/moneybin/database.py`. Each call return
 - **Minimize data in errors** — no account numbers, balances, or PII in error messages. Privacy enforcement (consent, redaction, audit) is handled by the middleware, not tool code.
 
 ## Surface change discipline
+
+**Stub gate.** Register an `@mcp_tool` only when its backing spec in `docs/specs/INDEX.md` is `in-progress` or `implemented`. No stubs on the public surface — tools whose dependency is `draft`, `ready`, or unwritten stay unregistered until the spec advances. Tracked in `moneybin-mcp.md` §17 "Dependency tracker".
 
 Any PR that adds, renames, or removes a tool (MCP) or command (CLI) MUST update **two** specs in the same change:
 

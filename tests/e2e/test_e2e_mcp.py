@@ -59,11 +59,14 @@ class TestMCPServerBoot:
 
                 assert len(tool_names) > 0, "No tools registered"
 
-                # Core tools that should always be present (v2 names)
+                # Tools that should always be present (v2 names) — full surface
+                # is visible at connect (mcp-architecture.md §3).
                 assert "reports_spending" in tool_names
                 assert "accounts_list" in tool_names
                 assert "system_status" in tool_names
-                assert "moneybin_discover" in tool_names
+                # Formerly extended-namespace tools must also be visible at connect:
+                assert "transactions_categorize_apply" in tool_names
+                assert "budget_set" in tool_names
 
     async def test_server_invokes_tool(self, mcp_env: dict[str, str]) -> None:
         """MCP server can invoke a tool and return a valid response envelope."""
@@ -81,10 +84,9 @@ class TestMCPServerBoot:
             async with ClientSession(read, write) as session:
                 await session.initialize()
 
-                # Call moneybin_discover — always works, no data needed
-                result = await session.call_tool(
-                    "moneybin_discover", {"domain": "categorize"}
-                )
+                # Call system_status — read-only, no inputs, exercises the
+                # envelope contract end-to-end.
+                result = await session.call_tool("system_status", {})
 
                 assert not result.isError, f"Tool returned error: {result.content}"
                 assert len(result.content) > 0
@@ -96,8 +98,6 @@ class TestMCPServerBoot:
                 assert "data" in envelope
                 assert "actions" in envelope
                 assert envelope["summary"]["sensitivity"] == "low"
-                assert envelope["data"]["domain"] == "categorize"
-                assert envelope["actions"], "discover should return next-step hints"
 
     async def test_accounts_v2_tools_registered(self, mcp_env: dict[str, str]) -> None:
         """All 14 v2 accounts namespace tools are registered on the server."""
