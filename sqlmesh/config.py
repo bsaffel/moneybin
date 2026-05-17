@@ -27,19 +27,25 @@ if "MONEYBIN_HOME" not in os.environ:
     os.environ["MONEYBIN_HOME"] = _project_root
 
 from moneybin.config import (  # noqa: E402 — must follow sys.path setup above
+    get_current_profile,
     get_database_path,
     get_settings,
     set_current_profile,
 )
 
-# Non-CLI entry points (SQLMesh VSCode extension, direct `sqlmesh` shell
-# invocations, the language server) never run moneybin's CLI callback, so the
-# profile resolver is never registered and get_settings() would raise. Honor
-# MONEYBIN_PROFILE here — the same env var the CLI consults — so config.py is
-# self-sufficient for every entry point. The CLI path is unaffected: it sets
-# the profile before SQLMesh loads config.py, and set_current_profile() is a
-# no-op when the name matches.
-set_current_profile(os.environ.get("MONEYBIN_PROFILE", "default"))
+# Initialize a profile only when none is set in-process. This keeps config.py
+# self-sufficient for non-CLI entry points (SQLMesh VSCode extension, direct
+# `sqlmesh` shell invocations, the language server) which never run moneybin's
+# CLI callback, while preserving the CLI-selected profile. The CLI sets the
+# profile via --profile before SQLMesh loads config.py; SQLMesh then re-executes
+# this file on every Context creation (see comment below), so the gate must be
+# idempotent — set_current_profile() invalidates caches whenever the name
+# differs, so blindly calling it would clobber the CLI's profile back to
+# "default" mid-process.
+try:
+    get_current_profile(auto_resolve=False)
+except RuntimeError:
+    set_current_profile(os.environ.get("MONEYBIN_PROFILE", "default"))
 
 _sqlmesh_dir = os.path.dirname(os.path.abspath(__file__))
 
