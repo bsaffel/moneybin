@@ -191,7 +191,7 @@ Per [`moneybin-cli.md`](moneybin-cli.md) §"Cross-Interface Taxonomy":
 
 | Concept | CLI | MCP | HTTP (future) |
 |---|---|---|---|
-| List accounts | `accounts list` | `accounts_list` | `GET /accounts` |
+| List accounts | `accounts list` | `accounts` | `GET /accounts` |
 | Net worth report | `reports networth` | `reports_networth` | `GET /reports/networth` |
 | Confirm a match | `transactions matches confirm <id>` | `transactions_matches_confirm` | `POST /transactions/matches/{id}/confirm` |
 

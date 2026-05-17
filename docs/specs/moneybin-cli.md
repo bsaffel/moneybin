@@ -296,9 +296,9 @@ The same hierarchy expresses across CLI, MCP, and (future) HTTP. Each protocol e
 
 | Concept | CLI | MCP | HTTP |
 |---|---|---|---|
-| List accounts | `accounts list` | `accounts_list` | `GET /accounts` |
+| List accounts | `accounts list` | `accounts` | `GET /accounts` |
 | Show one account | `accounts get <id>` | `accounts_get` | `GET /accounts/{id}` |
-| Show current balances | `accounts balance show` | `accounts_balance_list` | `GET /accounts/balances` |
+| Show current balances | `accounts balance show` | `accounts_balances` | `GET /accounts/balances` |
 | Assert a balance | `accounts balance assert ...` | `accounts_balance_assert` | `POST /accounts/{id}/balances` |
 | Balance history | `accounts balance history` | `accounts_balance_history` | `GET /accounts/{id}/balances/history` |
 | Net worth now | `reports networth` | `reports_networth` | `GET /reports/networth` |
@@ -322,7 +322,7 @@ The structural symmetry (entity → sub-resource → action ordering) holds acro
 
 Three justifications:
 
-1. **Learn-once-use-everywhere.** A user who knows `accounts balance list` already knows `accounts_balance_list` and `GET /accounts/balances`. Web UI navigation maps the same way. One mental model across four surfaces.
+1. **Learn-once-use-everywhere.** A user who knows `accounts balance list` already knows `accounts_balances` and `GET /accounts/balances`. Web UI navigation maps the same way. One mental model across four surfaces.
 2. **Discoverability scales with catalog.** As MoneyBin's MCP catalog grows beyond ~30 tools, prefix-clustered names (`accounts_balance_*`, `transactions_matches_*`) sort related operations together in `mcp list-tools` output, helping both humans and LLMs scan the surface.
 3. **Future HTTP is a free win.** When MoneyBin adds an HTTP layer (web UI backend, third-party integrations), the URL paths are already designed.
 
@@ -527,8 +527,8 @@ MCP tool names migrate to the path-prefix-verb-suffix convention. As with CLI, h
 |---|---|
 | `get_net_worth` | `accounts_networth_get` |
 | `get_net_worth_history` | `accounts_networth_history` |
-| `get_balances` | `accounts_balance_list` |
-| `get_balance_assertions` | `accounts_balance_assertions_list` |
+| `get_balances` | `accounts_balances` |
+| `get_balance_assertions` | `accounts_balance_assertions` |
 | (existing transaction tools) | `transactions_*` prefix |
 | (existing match tools) | `transactions_matches_*` prefix |
 | (existing categorize tools) | `transactions_categorize_*` prefix |
@@ -672,9 +672,9 @@ These existing specs define CLI commands that need updates to reflect v2's taxon
 
 | Spec | CLI change needed (v2) | MCP change needed (v2) |
 |---|---|---|
-| `net-worth.md` | `track balance` → `accounts balance`. `track networth` → `reports networth` (cross-domain rollup, accounts + assets). `reconciliation show` → `accounts balance reconcile`. | `get_balances` → `accounts_balance_list`, etc. `get_net_worth` → `reports_networth`. |
+| `net-worth.md` | `track balance` → `accounts balance`. `track networth` → `reports networth` (cross-domain rollup, accounts + assets). `reconciliation show` → `accounts balance reconcile`. | `get_balances` → `accounts_balances`, etc. `get_net_worth` → `reports_networth`. |
 | `asset-tracking.md` | CLI namespace: top-level `assets` group (parallel to `accounts`). Net worth contribution flows through `core.agg_net_worth` consumed by `reports networth`. | Asset MCP tools take `assets_*` prefix (path-prefix-verb-suffix per v2). |
-| `account-management.md` (planned) | Owns the `accounts` namespace entity ops (`list`, `get`, `set`, `resolve`). Settings updates (display name, include/exclude, archive/unarchive) fold into `accounts set` flags. Balance subcommands stay nested per `net-worth.md`. | Owns `accounts_list`, `accounts_get`, `accounts_set` (folds display_name / include / archive), `accounts_resolve`. |
+| `account-management.md` (planned) | Owns the `accounts` namespace entity ops (`list`, `get`, `set`, `resolve`). Settings updates (display name, include/exclude, archive/unarchive) fold into `accounts set` flags. Balance subcommands stay nested per `net-worth.md`. | Owns `accounts`, `accounts_get`, `accounts_set` (folds display_name / include / archive), `accounts_resolve`. |
 | `matching-same-record-dedup.md` / `matching-transfer-detection.md` | `matches *` → `transactions matches *` | Match-related tools take `transactions_matches_*` prefix |
 | `categorization-overview.md` / `categorization-auto-rules.md` / `categorize-bulk.md` | `categorize *` workflow → `transactions categorize *`. Pull category-taxonomy and merchant-mapping commands to top-level `categories *` and `merchants *` groups | Categorize workflow tools take `transactions_categorize_*` prefix; category and merchant CRUD become `categories_*` / `merchants_*` top-level |
 | `budget-tracking.md` | `track budget *` → `budget *`; budget-vs-actual report goes under `reports budget` | When MCP tools are added, follow new naming |

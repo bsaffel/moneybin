@@ -315,7 +315,7 @@ Every tool declares its **maximum data sensitivity** — the highest sensitivity
 
 | Sensitivity | Data characteristics | Consent required | Example tools |
 |---|---|---|---|
-| `low` | Aggregates, counts, category labels, structural metadata | None | `spending_summary`, `overview_status`, `accounts_list` |
+| `low` | Aggregates, counts, category labels, structural metadata | None | `spending_summary`, `overview_status`, `accounts` |
 | `medium` | Row-level data: descriptions, amounts, dates, merchant names | `mcp-data-sharing` (tier-2, persistent) | `transactions_search`, `spending_merchants`, `categorize_uncategorized` |
 | `high` | Responses that include critical-tier fields (account numbers, routing numbers) — masked for cloud backends, unmaskable only in verified-local mode | `mcp-data-sharing` (tier-2) + masking invariant | `accounts_details` |
 

@@ -20,7 +20,7 @@ The metadata schema mirrors **Plaid's account model** (Plaid Parity), so when [`
 Related specs and docs:
 - [`net-worth.md`](net-worth.md) — consumes `app.account_settings.include_in_net_worth` and `archived` for `agg_net_worth`; ships bundled with this spec
 - [`moneybin-cli.md`](moneybin-cli.md) v2 — defines the `accounts` top-level group; this spec extends with the unified `accounts set` (moneybin-cli.md amendment landed alongside)
-- [`moneybin-mcp.md`](moneybin-mcp.md) v2 — `accounts_list` / `accounts_get` already enumerated; this spec adds the entity-mutation tools and `accounts_summary`
+- [`moneybin-mcp.md`](moneybin-mcp.md) v2 — `accounts` / `accounts_get` already enumerated; this spec adds the entity-mutation tools and `accounts_summary`
 - [`privacy-data-protection.md`](privacy-data-protection.md) — settings table encrypted at rest; `last_four` and `credit_limit` are PII-adjacent and require sensitivity-tier handling
 - [`database-migration.md`](database-migration.md) — migration infrastructure for new tables
 
@@ -30,15 +30,15 @@ Related specs and docs:
 2. **Plaid Parity metadata fields:** `display_name`, `official_name`, `last_four`, `account_subtype`, `holder_category`, `iso_currency_code`, `credit_limit`. These mirror Plaid's account object structure so future Plaid sync (`sync-plaid.md`) can populate them automatically.
 3. **Lifecycle flags:** `archived` (BOOLEAN, default FALSE) and `include_in_net_worth` (BOOLEAN, default TRUE).
 4. **Archive cascades, unarchive does not restore.** Setting `archived = TRUE` automatically sets `include_in_net_worth = FALSE` in the same write. Setting `archived = FALSE` does NOT touch `include_in_net_worth` — the user must re-include explicitly. Rationale: archive expresses "this account is retired," and forcing the user to also flip the net worth flag is a footgun; restoring it on unarchive would silently re-include accounts the user might have intentionally excluded for unrelated reasons.
-5. **Default list hides archived accounts.** `accounts list` (and `accounts_list`) omit accounts with `archived = TRUE`. `--include-archived` (CLI) and `include_archived: true` (MCP) reveal them with an explicit annotation.
+5. **Default list hides archived accounts.** `accounts list` (and `accounts`) omit accounts with `archived = TRUE`. `--include-archived` (CLI) and `include_archived: true` (MCP) reveal them with an explicit annotation.
 6. **Open vocabulary for `account_subtype` and `holder_category` with soft validation.** Any string accepted at the SQL layer. The service maintains a canonical Plaid list and warns on non-canonical values:
    - **CLI:** interactive `[y/N]` prompt in TTY mode; `--yes` skips. Suggestions for near-misses ("did you mean 'checking'?").
    - **MCP:** write always succeeds; response envelope includes a `warnings: [...]` array with field, message, and suggestion. The agent decides whether to retry.
 7. **`core.dim_accounts` is the single source of truth.** The dim model joins `app.account_settings` directly so `display_name`, `archived`, `include_in_net_worth`, and the metadata fields are always available to consumers without per-consumer join logic. This pattern is codified into [`.claude/rules/database.md`](#) by this spec — see [Files to Modify](#files-to-modify).
 8. **Display name resolution chain:** `app.account_settings.display_name` → derived default (`institution_name + account_type + …last_four(account_id)`) → bare `account_id`. First non-empty wins. Materialized inside `core.dim_accounts.display_name`.
 9. **CLI surface:** a single `accounts set` command is the partial-update entry point for every settings field. Structural metadata (`--official-name`, `--last-four`, `--subtype`, `--holder-category`, `--currency`, `--credit-limit`, plus `--clear-FIELD` for each) sits alongside behavioral flags (`--display-name`, `--include/--exclude`, `--archive/--unarchive`). Archiving cascades `--exclude` atomically; unarchiving does NOT auto-restore include. See [CLI Interface](#cli-interface). The formerly-separate `accounts rename`, `accounts include`, `accounts archive`, `accounts unarchive` commands are folded into `accounts set` flags.
-10. **MCP surface:** mirrors CLI — one write tool (`accounts_set`) plus three read tools (`accounts_list`, `accounts_get`, `accounts_summary`) and one resource (`accounts://summary`). The summary tool exists alongside the resource because many MCP clients don't render resources. The MCP-side boolean parameter for archive is `is_archived` (Pythonic prefix preferred for agent-facing names); the response data emits `archived` (the underlying dataclass field).
-11. **Sensitivity tiers:** `accounts_summary` is `low` (aggregates only). `accounts_list` defaults to `medium` because the response carries `last_four` and `credit_limit`; supports `redacted: true` to drop those fields and downgrade to `low`. `accounts_get` is `medium`. All write tools are `medium` and require confirmation per MCP write-tool conventions.
+10. **MCP surface:** mirrors CLI — one write tool (`accounts_set`) plus three read tools (`accounts`, `accounts_get`, `accounts_summary`) and one resource (`accounts://summary`). The summary tool exists alongside the resource because many MCP clients don't render resources. The MCP-side boolean parameter for archive is `is_archived` (Pythonic prefix preferred for agent-facing names); the response data emits `archived` (the underlying dataclass field).
+11. **Sensitivity tiers:** `accounts_summary` is `low` (aggregates only). `accounts` defaults to `medium` because the response carries `last_four` and `credit_limit`; supports `redacted: true` to drop those fields and downgrade to `low`. `accounts_get` is `medium`. All write tools are `medium` and require confirmation per MCP write-tool conventions.
 12. **All commands support `--output json`** and the standard read-only flags (`-o`, `-q`) per `.claude/rules/cli.md`.
 13. **Idempotent settings writes.** `accounts set` always upserts into `app.account_settings`. Setting the same value twice is a no-op (no error).
 14. **PII handling for `last_four` and `credit_limit`.** `last_four` is a 4-digit string (validated `^[0-9]{4}$`). `credit_limit` is `DECIMAL(18,2)`. Neither flows through logger output (logger only records the `account_id` and the affected fields by name). The full account number never enters the system.
@@ -161,7 +161,7 @@ Naming follows [`moneybin-mcp.md`](moneybin-mcp.md) v2 (path-prefix-verb-suffix)
 
 | Tool | Sensitivity | Notes |
 |---|---|---|
-| `accounts_list` | `medium` (default) / `low` (with `redacted: true`) | Per-account rows. `redacted: true` drops `last_four` and `credit_limit` and downgrades to `low`. Optional params: `include_archived` (bool, default FALSE), `type` (filter), `redacted` (bool, default FALSE). |
+| `accounts` | `medium` (default) / `low` (with `redacted: true`) | Per-account rows. `redacted: true` drops `last_four` and `credit_limit` and downgrades to `low`. Optional params: `include_archived` (bool, default FALSE), `type` (filter), `redacted` (bool, default FALSE). |
 | `accounts_get` | `medium` | Single-account detail. Returns full settings row + dim fields + last balance observation. |
 | `accounts_summary` | `low` | Aggregate rollup, no per-account rows, no PII. Same data shape as the `accounts://summary` resource. |
 
@@ -255,8 +255,8 @@ Synthetic persona with multiple account types. Hand-derived expectations:
 
 ### Tier 5 — MCP integration (`tests/e2e/test_e2e_mcp.py`)
 
-- `accounts_list` returns the resolved view including `display_name`.
-- `accounts_list` with `redacted: true` omits `last_four` and `credit_limit`; sensitivity tier downgrades to `low`.
+- `accounts` returns the resolved view including `display_name`.
+- `accounts` with `redacted: true` omits `last_four` and `credit_limit`; sensitivity tier downgrades to `low`.
 - `accounts_set` with non-canonical `account_subtype` returns `warnings` field; write succeeds.
 - `accounts_summary` returns the aggregate shape; no per-account leakage.
 - `accounts://summary` resource returns the same shape as `accounts_summary` tool (asserted via response equality).
@@ -309,7 +309,7 @@ Tests:
 - `src/moneybin/cli/main.py` — register the new top-level `accounts` group; remove the legacy `track` registration if [`net-worth.md`](net-worth.md) hasn't already (the two specs split the cleanup)
 - `src/moneybin/cli/commands/stubs.py` — drop `track_app` and its sub-stubs (replaced by real `accounts` and `reports` groups; `recurring`, `investments`, `budget` stubs move to their v2 homes per `moneybin-cli.md` v2)
 - `sqlmesh/models/core/dim_accounts.sql` — add `LEFT JOIN app.account_settings`; add the new columns per [Modified SQLMesh model](#modified-sqlmesh-model-coredim_accounts)
-- `src/moneybin/mcp/tools/__init__.py` (and per-tool registry) — register `accounts_summary` and `accounts_set` (single write tool covering structural + behavioral fields after the Group 13 collapse); extend `accounts_list` with `redacted` param and revised sensitivity
+- `src/moneybin/mcp/tools/__init__.py` (and per-tool registry) — register `accounts_summary` and `accounts_set` (single write tool covering structural + behavioral fields after the Group 13 collapse); extend `accounts` with `redacted` param and revised sensitivity
 - `src/moneybin/mcp/resources/` — add `accounts://summary` resource
 - `src/moneybin/protocol/sensitivity.py` (or equivalent) — register sensitivity tiers
 - `docs/specs/moneybin-cli.md` — amend the `accounts` subtree to describe the unified `accounts set` (folds in display_name, include/exclude, archive/unarchive)
@@ -326,6 +326,6 @@ Tests:
 5. **Open vocabulary for `account_subtype` / `holder_category` with soft validation.** Closed enums age badly; soft validation surfaces typos without blocking legitimate non-canonical values.
 6. **Soft validation differs by surface.** CLI: TTY prompt, `--yes` skips, non-TTY without `--yes` exits 2. MCP: writes succeed, warnings on the envelope.
 7. **`accounts_summary` exists alongside `accounts://summary` resource.** Many MCP clients don't surface resources; the tool form is universally accessible.
-8. **`accounts_list` defaults to `medium` sensitivity** because `last_four` and `credit_limit` are PII-adjacent. `redacted: true` downgrades to `low`.
+8. **`accounts` defaults to `medium` sensitivity** because `last_four` and `credit_limit` are PII-adjacent. `redacted: true` downgrades to `low`.
 9. **Account merge deferred.** v1 ships archive as the only lifecycle terminator. Merge requires recomputing consumer views of `account_id` and is not in scope.
 10. **Bundled landing with `net-worth.md`.** Shared `accounts` namespace and `app.account_settings` cross-reference. See [`net-worth.md` §Coordination](net-worth.md#coordination-with-account-managementmd).
