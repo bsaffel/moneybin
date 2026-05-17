@@ -5,11 +5,8 @@ from __future__ import annotations
 import pytest
 
 from moneybin.database import Database
-from moneybin.privacy.comment_sync import (
-    _SIGIL_RE,  # pyright: ignore[reportPrivateUsage]  # tested directly
-    sync_classification_comments,
-)
-from moneybin.privacy.taxonomy import CLASSIFICATION, DataClass
+from moneybin.privacy.comment_sync import sync_classification_comments
+from moneybin.privacy.taxonomy import CLASSIFICATION, SIGIL_RE, DataClass
 
 
 def _get_comment(db: Database, schema: str, table: str, column: str) -> str | None:
@@ -53,13 +50,13 @@ def _pick_classified_column(
 
 def test_sigil_regex_strips_only_the_sigil() -> None:
     assert (
-        _SIGIL_RE.sub("", "Account id [class: account_identifier]").rstrip()
+        SIGIL_RE.sub("", "Account id [class: account_identifier]").rstrip()
         == "Account id"
     )
-    assert _SIGIL_RE.sub("", "no sigil here") == "no sigil here"
+    assert SIGIL_RE.sub("", "no sigil here") == "no sigil here"
     # Only the trailing sigil is stripped; an interior one is left as-is.
     assert (
-        _SIGIL_RE.sub("", "Mixed [class: foo] middle [class: bar]")
+        SIGIL_RE.sub("", "Mixed [class: foo] middle [class: bar]")
         == "Mixed [class: foo] middle"
     )
 

@@ -29,6 +29,7 @@ import sqlglot
 import sqlglot.expressions as exp
 
 from moneybin.database import escape_sql_literal
+from moneybin.privacy.taxonomy import strip_sigil
 
 logger = logging.getLogger(__name__)
 
@@ -104,13 +105,17 @@ def _apply_comments(conn: duckdb.DuckDBPyConnection, sql: str) -> None:
         if table is None:
             continue
         table_name = table.sql(dialect="duckdb")
+        schema_str = table.args["db"].name if table.args.get("db") else None
+        table_str = table.name
 
         # Table-level comment: /* description */ on the line before CREATE TABLE.
         # Use [-1] (the closest comment) to match SQLMesh's own pattern and avoid
         # picking up unrelated -- notes that may also precede the /* */ block.
-        if statement.comments:
+        if statement.comments and schema_str is not None:
             description = statement.comments[-1].strip()
-            if description:
+            if description and not _table_comment_matches(
+                conn, schema_str, table_str, description
+            ):
                 try:
                     safe_desc = escape_sql_literal(description)
                     conn.execute(f"COMMENT ON TABLE {table_name} IS '{safe_desc}'")
@@ -125,7 +130,11 @@ def _apply_comments(conn: duckdb.DuckDBPyConnection, sql: str) -> None:
             if not col_def.comments:
                 continue
             comment = col_def.comments[-1].strip()
-            if not comment:
+            if not comment or schema_str is None:
+                continue
+            if _column_comment_matches(
+                conn, schema_str, table_str, col_def.name, comment
+            ):
                 continue
             try:
                 safe_comment = escape_sql_literal(comment)
@@ -141,6 +150,55 @@ def _apply_comments(conn: duckdb.DuckDBPyConnection, sql: str) -> None:
                     f"Skipping column comment for {table_name}.{col_def.name}"
                     " — column or table does not exist yet"
                 )
+
+
+def _table_comment_matches(
+    conn: duckdb.DuckDBPyConnection, schema: str, table: str, expected: str
+) -> bool:
+    """Return True iff the catalog table comment matches ``expected``.
+
+    Compares after stripping any privacy sigil suffix. Skipping the write
+    when True preserves the sigil applied by
+    ``sync_classification_comments`` across startups. Table comments
+    don't currently carry sigils, but the same semantics apply for
+    symmetry with columns and future-proofing.
+    """
+    row = conn.execute(
+        """
+        SELECT comment FROM duckdb_tables()
+        WHERE schema_name = ? AND table_name = ?
+        """,
+        [schema, table],
+    ).fetchone()
+    if row is None or row[0] is None:
+        return False
+    return strip_sigil(row[0]) == expected
+
+
+def _column_comment_matches(
+    conn: duckdb.DuckDBPyConnection,
+    schema: str,
+    table: str,
+    column: str,
+    expected: str,
+) -> bool:
+    """Return True iff the catalog column comment matches ``expected``.
+
+    Compares after stripping any privacy sigil suffix. Skipping the write
+    preserves the sigil applied by ``sync_classification_comments`` so
+    that startups don't churn ~200 redundant ``COMMENT ON COLUMN``
+    statements.
+    """
+    row = conn.execute(
+        """
+        SELECT comment FROM duckdb_columns()
+        WHERE schema_name = ? AND table_name = ? AND column_name = ?
+        """,
+        [schema, table, column],
+    ).fetchone()
+    if row is None or row[0] is None:
+        return False
+    return strip_sigil(row[0]) == expected
 
 
 def init_schemas(conn: duckdb.DuckDBPyConnection) -> None:

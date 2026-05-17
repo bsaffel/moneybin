@@ -11,7 +11,23 @@ section) is load-bearing.
 
 from __future__ import annotations
 
+import re
 from enum import IntEnum, StrEnum
+
+# Trailing-anchored `[class: <name>]` sigil. The catalog stores the human
+# description as the prefix and the sigil as the suffix; this regex strips
+# the suffix so the prefix can be compared / restored. Public so
+# `schema._apply_comments` can recognize sigils written by the privacy sync.
+SIGIL_RE = re.compile(r"\s*\[class:\s*[a-z0-9_]+\s*\]\s*$")
+
+
+def strip_sigil(comment: str | None) -> str:
+    """Return ``comment`` with any trailing ``[class: ...]`` sigil removed.
+
+    Whitespace before the sigil is consumed. An input of ``None`` becomes
+    the empty string.
+    """
+    return SIGIL_RE.sub("", comment or "").rstrip()
 
 
 class Tier(IntEnum):

@@ -19,13 +19,12 @@ suffix.
 from __future__ import annotations
 
 import logging
-import re
 from typing import Protocol
 
 import sqlglot.expressions as exp
 
 from moneybin.database import escape_sql_literal
-from moneybin.privacy.taxonomy import CLASSIFICATION, DataClass
+from moneybin.privacy.taxonomy import CLASSIFICATION, DataClass, strip_sigil
 
 
 class _SupportsExecute(Protocol):
@@ -45,17 +44,13 @@ class _SupportsExecute(Protocol):
 
 logger = logging.getLogger(__name__)
 
-# Matches ` [class: word_chars]` with optional leading whitespace so a
-# previously-applied sigil can be stripped before reapplication.
-_SIGIL_RE = re.compile(r"\s*\[class:\s*[a-z0-9_]+\s*\]\s*$")
-
 
 def _quote(ident: str) -> str:
     return exp.to_identifier(ident, quoted=True).sql(dialect="duckdb")
 
 
 def _desired_comment(human: str | None, cls: DataClass) -> str:
-    base = _SIGIL_RE.sub("", human or "").rstrip()
+    base = strip_sigil(human)
     sigil = f"[class: {cls.value}]"
     return f"{base} {sigil}".strip() if base else sigil
 
@@ -91,8 +86,7 @@ def sync_classification_comments(db: _SupportsExecute) -> int:
     for (schema, table, col), comment in current.items():
         cls = CLASSIFICATION.get((schema, table), {}).get(col)
         if cls is None:
-            stripped = _SIGIL_RE.sub("", comment or "").rstrip()
-            desired: str | None = stripped or None
+            desired: str | None = strip_sigil(comment) or None
         else:
             desired = _desired_comment(comment, cls)
         # "" and NULL both mean "no comment" in DuckDB's catalog — treat
