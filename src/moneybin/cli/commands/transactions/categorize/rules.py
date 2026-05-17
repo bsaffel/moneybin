@@ -1,5 +1,6 @@
 """Rule management for categorization (list, apply, create, delete)."""
 
+import json
 import logging
 from enum import StrEnum
 from pathlib import Path
@@ -13,6 +14,7 @@ from moneybin.cli.output import (
 )
 from moneybin.cli.utils import emit_json, handle_cli_errors
 from moneybin.database import get_database
+from moneybin.errors import UserError
 
 logger = logging.getLogger(__name__)
 
@@ -112,10 +114,12 @@ def rules_create(
     subcategory: str | None = typer.Option(
         None, "--subcategory", help="Optional target subcategory"
     ),
-    match_type: MatchTypeChoice = typer.Option(
-        MatchTypeChoice.CONTAINS, "--match-type", help="Pattern match strategy"
+    match_type: MatchTypeChoice | None = typer.Option(
+        None, "--match-type", help="Pattern match strategy (default: contains)"
     ),
-    priority: int = typer.Option(100, "--priority", help="Lower runs first"),
+    priority: int | None = typer.Option(
+        None, "--priority", help="Lower runs first (default: 100)"
+    ),
     min_amount: float | None = typer.Option(None, "--min-amount"),
     max_amount: float | None = typer.Option(None, "--max-amount"),
     account_id: str | None = typer.Option(
@@ -137,14 +141,31 @@ def rules_create(
     Single rule: pass NAME positionally with --pattern and --category.
     Batch: pass --from-file pointing at a JSON list of rule dicts.
     """
-    import json  # noqa: PLC0415 — defer import; CLI cold-start hygiene
-
     from moneybin.services.categorization import (  # noqa: PLC0415 — defer import; CLI cold-start hygiene
         CategorizationService,
         validate_rule_items,
     )
 
     if from_file is not None:
+        single_rule_flags = {
+            "NAME": name,
+            "--pattern": pattern,
+            "--category": category,
+            "--subcategory": subcategory,
+            "--match-type": match_type,
+            "--priority": priority,
+            "--min-amount": min_amount,
+            "--max-amount": max_amount,
+            "--account-id": account_id,
+        }
+        conflicting = [
+            flag for flag, val in single_rule_flags.items() if val is not None
+        ]
+        if conflicting:
+            raise typer.BadParameter(
+                f"--from-file is mutually exclusive with single-rule flags: "
+                f"{', '.join(conflicting)}"
+            )
         try:
             with from_file.open(encoding="utf-8") as f:
                 loaded = json.load(f)
@@ -171,8 +192,8 @@ def rules_create(
                 "merchant_pattern": pattern,
                 "category": category,
                 "subcategory": subcategory,
-                "match_type": match_type.value,
-                "priority": priority,
+                "match_type": (match_type or MatchTypeChoice.CONTAINS).value,
+                "priority": priority if priority is not None else 100,
                 "min_amount": min_amount,
                 "max_amount": max_amount,
                 "account_id": account_id,
@@ -187,13 +208,14 @@ def rules_create(
 
     if output == OutputFormat.JSON:
         emit_json("rules_create", result.to_envelope(len(rules)).data)
-        return
-
-    if not quiet:
+    elif not quiet:
         logger.info(
             f"✅ Created {result.created} rule(s); "
             f"existing {result.existing}, skipped {result.skipped}"
         )
+
+    if result.skipped > 0:
+        raise typer.Exit(1)
 
 
 @app.command("delete")
@@ -205,6 +227,7 @@ def rules_delete(
         help="Re-evaluate transactions previously categorized by this rule",
     ),
     output: OutputFormat = output_option,
+    quiet: bool = quiet_option,
 ) -> None:
     """Soft-delete (deactivate) a categorization rule by ID.
 
@@ -212,9 +235,6 @@ def rules_delete(
     strip categorizations written by this rule and re-evaluate those rows
     against remaining active matchers.
     """
-    from moneybin.errors import (
-        UserError,  # noqa: PLC0415 — defer import; CLI cold-start hygiene
-    )
     from moneybin.services.categorization import (  # noqa: PLC0415 — defer import; CLI cold-start hygiene
         CategorizationService,
     )
@@ -231,4 +251,5 @@ def rules_delete(
         emit_json("rules_delete", {"rule_id": rule_id, "action": "deactivated"})
         return
 
-    logger.info(f"✅ Rule {rule_id} deactivated")
+    if not quiet:
+        logger.info(f"✅ Rule {rule_id} deactivated")

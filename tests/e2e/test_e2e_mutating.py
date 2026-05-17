@@ -884,6 +884,62 @@ class TestCategorizeRulesCreateCLI:
         result = run_cli("transactions", "categorize", "rules", "create", env=env)
         assert result.exit_code != 0
         assert "Traceback (most recent call last)" not in result.stderr
+        assert "Single-rule mode requires" in result.stderr
+
+    def test_create_from_file_with_single_rule_flag_errors(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """`--from-file` alongside any single-rule flag is rejected, not silently ignored."""
+        env = make_workflow_env_fast(
+            tmp_path, "rulescreate-mutex", _mutating_profile_template
+        )
+        rules_file = tmp_path / "rules.json"
+        rules_file.write_text(json.dumps([]))
+        result = run_cli(
+            "transactions",
+            "categorize",
+            "rules",
+            "create",
+            "--from-file",
+            str(rules_file),
+            "--pattern",
+            "OOPS",
+            env=env,
+        )
+        assert result.exit_code != 0
+        assert "mutually exclusive" in result.stderr
+        assert "--pattern" in result.stderr
+
+    def test_create_exits_nonzero_when_rows_skipped(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """Batch with at least one malformed row exits 1 even though good rows are created."""
+        env = make_workflow_env_fast(
+            tmp_path, "rulescreate-partial", _mutating_profile_template
+        )
+        rules_file = tmp_path / "rules.json"
+        # Missing required `merchant_pattern` field on the second rule.
+        rules_file.write_text(
+            json.dumps([
+                {
+                    "name": "good-rule",
+                    "merchant_pattern": "GOOD",
+                    "category": "Other",
+                },
+                {"name": "bad-rule", "category": "Other"},
+            ])
+        )
+        result = run_cli(
+            "transactions",
+            "categorize",
+            "rules",
+            "create",
+            "--from-file",
+            str(rules_file),
+            env=env,
+        )
+        assert result.exit_code == 1
+        assert "Traceback (most recent call last)" not in result.stderr
 
 
 class TestCategorizeRulesDeleteCLI:
