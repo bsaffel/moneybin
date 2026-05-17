@@ -66,8 +66,8 @@ introduction:
   ``transactions_categorize_assist``,
   ``transactions_categorize_pending_list``,
   ``transactions_categorize_rules_delete``,
-  ``transactions_categorize_rules_create``, ``transactions_get``,
-  ``transactions_recurring_list``. ``moneybin_discover`` is MCP-only by
+  ``transactions_categorize_rules_create``, ``transactions_get``.
+  ``moneybin_discover`` is MCP-only by
   design (visibility-disclosure mechanism) and lives in
   ``MCP_ONLY_ALLOWED`` rather than the drift backlog.
 """
