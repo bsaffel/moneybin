@@ -297,12 +297,19 @@ class MatchApplier:
         # DuckDB binds Python lists to VARCHAR[]. An empty list keeps the
         # column default semantics intact for non-exemplar merchants.
         exemplars_param: list[str] = list(exemplars) if exemplars else []
+        # Phase 1 dual-write: resolve the FK alongside the text snapshot.
+        # `category=None` is a permitted write — both an unset category and
+        # unresolvable text land NULL.
+        category_id = (
+            resolve_category_id(self._db, category, subcategory) if category else None
+        )
         self._db.execute(
             f"""
             INSERT INTO {USER_MERCHANTS.full_name}
             (merchant_id, raw_pattern, match_type, canonical_name,
-             category, subcategory, created_by, exemplars, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+             category, subcategory, category_id, created_by, exemplars,
+             updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             """,  # noqa: S608  # USER_MERCHANTS is a TableRef constant, not user input
             [
                 merchant_id,
@@ -311,6 +318,7 @@ class MatchApplier:
                 canonical_name,
                 category,
                 subcategory,
+                category_id,
                 created_by,
                 exemplars_param,
             ],

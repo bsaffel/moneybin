@@ -781,6 +781,68 @@ class TestWriteCategorizationDualWrite:
         assert row == (cat_id,)
 
 
+class TestCreateMerchantDualWrite:
+    """Phase 1 dual-write: create_merchant populates category_id on user_merchants."""
+
+    @pytest.mark.unit
+    def test_create_merchant_populates_category_id(self, db: Database) -> None:
+        svc = CategorizationService(db)
+        cat_id = svc.create_category("Coffee")
+        merchant_id = svc.create_merchant(
+            raw_pattern="STARBUCKS",
+            canonical_name="Starbucks",
+            match_type="contains",
+            category="Coffee",
+            subcategory=None,
+            created_by="user",
+        )
+        row = db.execute(
+            "SELECT category_id FROM app.user_merchants WHERE merchant_id = ?",
+            [merchant_id],
+        ).fetchone()
+        assert row == (cat_id,)
+
+    @pytest.mark.unit
+    def test_create_merchant_without_category_leaves_fk_null(
+        self, db: Database
+    ) -> None:
+        """Merchants created without a default category have NULL text and NULL FK."""
+        svc = CategorizationService(db)
+        merchant_id = svc.create_merchant(
+            raw_pattern="UNCATEGORIZED PATTERN",
+            canonical_name="No-Category Merchant",
+            match_type="contains",
+            created_by="user",
+        )
+        row = db.execute(
+            "SELECT category, category_id FROM app.user_merchants "
+            "WHERE merchant_id = ?",
+            [merchant_id],
+        ).fetchone()
+        assert row == (None, None)
+
+    @pytest.mark.unit
+    def test_create_merchant_with_unresolved_text_leaves_fk_null(
+        self, db: Database
+    ) -> None:
+        """Unresolvable category text stores the text snapshot with category_id NULL."""
+        svc = CategorizationService(db)
+        merchant_id = svc.create_merchant(
+            raw_pattern="MYSTERY MERCHANT",
+            canonical_name="Mystery Merchant",
+            match_type="contains",
+            category="NeverDefined",
+            subcategory=None,
+            created_by="ai",
+        )
+        row = db.execute(
+            "SELECT category, category_id FROM app.user_merchants "
+            "WHERE merchant_id = ?",
+            [merchant_id],
+        ).fetchone()
+        assert row == ("NeverDefined", None)
+
+
 class TestDeleteCategory:
     """CategorizationService.delete_category — hard-delete with refuse/cascade."""
 
