@@ -1,8 +1,9 @@
 /* Category assignments for transactions; written by the rules engine, AI model, or user; one record per transaction */
 CREATE TABLE IF NOT EXISTS app.transaction_categories (
     transaction_id VARCHAR PRIMARY KEY, -- Foreign key to core.fct_transactions; one categorization record per transaction
-    category VARCHAR NOT NULL, -- Assigned spending category
-    subcategory VARCHAR, -- Assigned spending subcategory; NULL if categorized at top level only
+    category VARCHAR NOT NULL, -- DEPRECATED in V014 (Phase 1 dual-write): display snapshot; category_id is the canonical reference
+    subcategory VARCHAR, -- DEPRECATED in V014 (Phase 1 dual-write): display snapshot; category_id is the canonical reference
+    category_id VARCHAR, -- Foreign key to core.dim_categories.category_id; NULL only for orphaned legacy rows
     categorized_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- Timestamp when this categorization was last written
     categorized_by VARCHAR DEFAULT 'ai', -- How the category was assigned: rule (categorization rule match), ai (LLM), or user (manual)
     merchant_id VARCHAR, -- Foreign key to core.dim_merchants if this transaction was matched to a known merchant; NULL otherwise

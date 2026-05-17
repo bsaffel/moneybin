@@ -369,7 +369,13 @@ class TestApplyRules:
         db = db_with_transactions
         # Two rules match TXN003 (Amazon), but lower priority wins
         db.execute("""
-            INSERT INTO app.categorization_rules VALUES
+            INSERT INTO app.categorization_rules
+              (rule_id, name, merchant_pattern, match_type,
+               min_amount, max_amount, account_id,
+               category, subcategory,
+               priority, is_active, created_by,
+               created_at, updated_at)
+            VALUES
             ('R001', 'Amazon General', 'AMZN', 'contains', NULL, NULL,
              NULL, 'Shopping', 'Other Shopping', 100, true, 'user',
              CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
