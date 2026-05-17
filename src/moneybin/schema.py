@@ -29,6 +29,7 @@ import sqlglot
 import sqlglot.expressions as exp
 
 from moneybin.database import escape_sql_literal
+from moneybin.privacy.comment_sync import sync_classification_comments
 from moneybin.privacy.taxonomy import strip_sigil
 
 logger = logging.getLogger(__name__)
@@ -201,10 +202,7 @@ def init_schemas(conn: duckdb.DuckDBPyConnection) -> None:
     logger.debug(f"Executed {len(_SCHEMA_FILES)} schema files from {_SQL_DIR}")
 
     # Mirror the DataClass registry into the catalog (suffix comments
-    # with `[class: ...]`). Imported lazily so this module doesn't pull
-    # in the privacy package during very-early bootstrap paths.
-    from moneybin.privacy.comment_sync import sync_classification_comments
-
+    # with `[class: ...]`).
     try:
         sync_classification_comments(conn)
     except duckdb.CatalogException:
