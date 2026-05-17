@@ -261,7 +261,7 @@ def transactions_categorize_run(
         sensitivity="medium",
         actions=[
             "Use transactions_categorize_stats to check resulting coverage",
-            "Use transactions_categorize_pending_list to see remaining uncategorized rows",
+            "Use transactions_categorize_pending to see remaining uncategorized rows",
         ],
     )
 
