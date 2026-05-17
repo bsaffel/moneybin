@@ -559,21 +559,26 @@ class MatchApplier:
     ) -> str:
         """Create a custom user category (active by default).
 
-        Duplicate-text detection is performed in the service layer using
-        ``IS NOT DISTINCT FROM`` for NULL-symmetric equality on
-        ``subcategory``. V015 relaxed ``app.user_categories``'s
-        ``UNIQUE (category, subcategory)`` constraint — the
-        ``category_id`` PK is now the sole DB-enforced uniqueness
-        contract.
+        Duplicate-text detection scans the full resolved taxonomy in
+        ``core.dim_categories`` (seeds ∪ ``app.user_categories``), not just
+        ``app.user_categories``, so a user cannot create a row whose
+        ``(category, subcategory)`` text collides with a seeded default.
+        Permitting such a collision would make ``resolve_category_id`` pick
+        between two equally-matching dim rows arbitrarily, binding writer
+        FKs to one or the other across calls. V015 relaxed
+        ``app.user_categories``'s ``UNIQUE (category, subcategory)``
+        constraint — the ``category_id`` PK is now the sole DB-enforced
+        uniqueness contract; the cross-source check happens here.
 
         Raises:
             UserError(code="CATEGORY_ALREADY_EXISTS"): the
                 ``(category, subcategory)`` pair is already present in
-                ``app.user_categories``.
+                ``core.dim_categories`` (either as a seeded default or a
+                prior user-created row).
         """
         existing = self._db.execute(
             f"""
-            SELECT 1 FROM {USER_CATEGORIES.full_name}
+            SELECT 1 FROM {CATEGORIES.full_name}
             WHERE category = ? AND subcategory IS NOT DISTINCT FROM ?
             LIMIT 1
             """,  # noqa: S608  # TableRef constant, no user input interpolated

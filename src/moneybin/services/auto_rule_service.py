@@ -274,13 +274,18 @@ class AutoRuleService:
                 # ``pending`` without genuinely new evidence.
                 new_count = count if already_counted else count + 1
                 new_status = "pending" if new_count >= threshold else "tracking"
+                # Re-resolve to heal rows whose FK was NULL at V014 backfill
+                # time (target category created after the proposal first
+                # landed) — without this, later FK-based cascades miss them.
+                category_id = resolve_category_id(self._db, category, subcategory)
                 self._db.execute(
                     f"""
                     UPDATE {PROPOSED_RULES.full_name}
-                    SET trigger_count = ?, sample_txn_ids = ?, status = ?
+                    SET trigger_count = ?, sample_txn_ids = ?, status = ?,
+                        category_id = ?
                     WHERE proposed_rule_id = ?
                     """,
-                    [new_count, new_samples, new_status, proposed_rule_id],
+                    [new_count, new_samples, new_status, category_id, proposed_rule_id],
                 )
                 return proposed_rule_id
             # Different category: supersede the old proposal, fall through to create a new one

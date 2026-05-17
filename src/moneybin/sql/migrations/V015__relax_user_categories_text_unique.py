@@ -20,7 +20,7 @@ from typing import cast
 
 logger = logging.getLogger(__name__)
 
-_TARGET_UNIQUE_COLUMNS = ["category", "subcategory"]
+_TARGET_UNIQUE_COLUMNS = sorted(["category", "subcategory"])
 
 
 def migrate(conn: object) -> None:
@@ -33,7 +33,9 @@ def migrate(conn: object) -> None:
             "AND constraint_type = 'UNIQUE'"
         ).fetchall(),
     )
-    has_unique = any(list(cols) == _TARGET_UNIQUE_COLUMNS for (cols,) in constraints)
+    # Sort both sides so the match doesn't depend on DuckDB's declaration-order
+    # promise in duckdb_constraints.constraint_column_names.
+    has_unique = any(sorted(cols) == _TARGET_UNIQUE_COLUMNS for (cols,) in constraints)
     if not has_unique:
         logger.info("V015: UNIQUE constraint absent; skipping rebuild")
         return
