@@ -17,13 +17,8 @@ from moneybin.services.reports_service import SPENDING_COMPARES, ReportsService
 
 logger = logging.getLogger(__name__)
 
-spending_app = typer.Typer(
-    help="Spending trend with MoM/YoY/trailing deltas", no_args_is_help=True
-)
 
-
-@spending_app.command("show")
-def reports_spending_show(
+def reports_spending(
     from_month: str | None = typer.Option(None, "--from", help="ISO date YYYY-MM-01"),
     to_month: str | None = typer.Option(None, "--to", help="ISO date YYYY-MM-01"),
     category: str | None = typer.Option(

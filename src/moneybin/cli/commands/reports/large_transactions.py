@@ -17,14 +17,8 @@ from moneybin.services.reports_service import LARGE_TXN_ANOMALIES, ReportsServic
 
 logger = logging.getLogger(__name__)
 
-large_transactions_app = typer.Typer(
-    help="Anomaly-flavored transaction lens (top-N + z-score)",
-    no_args_is_help=True,
-)
 
-
-@large_transactions_app.command("show")
-def reports_large_transactions_show(
+def reports_large_transactions(
     top: int = typer.Option(25, "--top", help="Top N by ABS(amount)"),
     anomaly: str = typer.Option("none", "--anomaly", help="account | category | none"),
     output: OutputFormat = output_option,

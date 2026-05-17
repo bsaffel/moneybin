@@ -42,7 +42,7 @@ def transactions_categorize_rules_list() -> ResponseEnvelope:
         sensitivity="low",
         actions=[
             "Use transactions_categorize_rules_create to add new rules",
-            "Use transactions_categorize_rule_delete to soft-delete a rule",
+            "Use transactions_categorize_rules_delete to soft-delete a rule",
         ],
     )
 
@@ -154,7 +154,7 @@ def transactions_categorize_rules_create(
 
 
 @mcp_tool(sensitivity="low", domain="categorize", read_only=False)
-def transactions_categorize_rule_delete(
+def transactions_categorize_rules_delete(
     rule_id: str, reapply: bool = False
 ) -> ResponseEnvelope:
     """Soft-delete a categorization rule by setting it inactive.
@@ -273,12 +273,12 @@ def register_transactions_categorize_tools(mcp: FastMCP) -> None:
         "active rules by matcher+output (merchant_pattern, match_type, "
         "min/max_amount, account_id, category, subcategory); name and "
         "priority are metadata. Retries return the existing rule_id. "
-        "Writes app.categorization_rules; revert with transactions_categorize_rule_delete (soft-delete sets active=False).",
+        "Writes app.categorization_rules; revert with transactions_categorize_rules_delete (soft-delete sets active=False).",
     )
     register(
         mcp,
-        transactions_categorize_rule_delete,
-        "transactions_categorize_rule_delete",
+        transactions_categorize_rules_delete,
+        "transactions_categorize_rules_delete",
         "Soft-delete a categorization rule (set inactive). "
         "Updates app.categorization_rules.active=False; the rule row is preserved and can be reactivated by re-creating with the same fields (no built-in reactivate tool).",
     )
@@ -295,7 +295,7 @@ def register_transactions_categorize_tools(mcp: FastMCP) -> None:
         "Batch accept/reject auto-rule proposals. Accepted "
         "proposals become active rules and immediately categorize "
         "matching transactions. "
-        "Writes app.categorization_rules and app.transaction_categories; revert accepted rules with transactions_categorize_rule_delete (rejected proposals cannot be un-rejected).",
+        "Writes app.categorization_rules and app.transaction_categories; revert accepted rules with transactions_categorize_rules_delete (rejected proposals cannot be un-rejected).",
     )
     register(
         mcp,

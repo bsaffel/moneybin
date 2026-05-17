@@ -27,7 +27,14 @@ class TestAccountsBalanceHelp:
     def test_balance_help_lists_subcommands(self, runner: CliRunner) -> None:
         result = runner.invoke(app, ["accounts", "balance", "--help"])
         assert result.exit_code == 0
-        for cmd in ["show", "history", "assert", "list", "delete", "reconcile"]:
+        for cmd in [
+            "show",
+            "history",
+            "assert",
+            "list",
+            "assertion-delete",
+            "reconcile",
+        ]:
             assert cmd in result.stdout
 
 
@@ -208,11 +215,11 @@ class TestAccountsBalanceList:
         assert "data" in payload
 
 
-class TestAccountsBalanceDelete:
-    """Tests for `accounts balance delete`."""
+class TestAccountsBalanceAssertionDelete:
+    """Tests for `accounts balance assertion-delete`."""
 
     @pytest.mark.unit
-    def test_delete_calls_service(self, runner: CliRunner) -> None:
+    def test_assertion_delete_calls_service(self, runner: CliRunner) -> None:
         with (
             patch("moneybin.cli.commands.accounts.balance.get_database"),
             patch(
@@ -221,7 +228,14 @@ class TestAccountsBalanceDelete:
         ):
             result = runner.invoke(
                 app,
-                ["accounts", "balance", "delete", "acct_a", "2026-01-31", "--yes"],
+                [
+                    "accounts",
+                    "balance",
+                    "assertion-delete",
+                    "acct_a",
+                    "2026-01-31",
+                    "--yes",
+                ],
             )
         assert result.exit_code == 0, result.stderr
         mock_service_class.return_value.delete_assertion.assert_called_once()

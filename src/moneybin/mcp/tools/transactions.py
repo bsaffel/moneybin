@@ -4,7 +4,7 @@
 Tools:
     - transactions_get — Fetch transactions with filters (medium sensitivity)
     - transactions_recurring_list — Detect recurring patterns (medium sensitivity)
-    - transactions_review_status — Pending counts across queues (low)
+    - transactions_review — Pending counts across queues (low)
 """
 
 from __future__ import annotations
@@ -90,7 +90,7 @@ def transactions_recurring_list(
 
 
 @mcp_tool(sensitivity="low")
-def transactions_review_status() -> ResponseEnvelope:
+def transactions_review() -> ResponseEnvelope:
     """Return counts of pending reviews across both queues.
 
     Orientation tool: call this to decide which queue to drain first.
@@ -146,8 +146,8 @@ def register_transactions_tools(mcp: FastMCP) -> None:
     )
     register(
         mcp,
-        transactions_review_status,
-        "transactions_review_status",
+        transactions_review,
+        "transactions_review",
         "Return pending counts for matches and categorize queues. "
         "Call this to orient before fetching specific queue contents.",
     )

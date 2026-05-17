@@ -20,27 +20,21 @@ def runner() -> CliRunner:
 
 
 class TestReportsHelp:
-    """Verify reports group and networth sub-group wire up in help."""
+    """Verify reports group lists the networth leaf commands."""
 
     @pytest.mark.unit
     def test_reports_help_lists_networth(self, runner: CliRunner) -> None:
         result = runner.invoke(app, ["reports", "--help"])
         assert result.exit_code == 0
         assert "networth" in result.stdout
+        assert "networth-history" in result.stdout
+
+
+class TestReportsNetworth:
+    """Tests for `reports networth`."""
 
     @pytest.mark.unit
-    def test_reports_networth_help_lists_subcommands(self, runner: CliRunner) -> None:
-        result = runner.invoke(app, ["reports", "networth", "--help"])
-        assert result.exit_code == 0
-        assert "show" in result.stdout
-        assert "history" in result.stdout
-
-
-class TestReportsNetworthShow:
-    """Tests for `reports networth show`."""
-
-    @pytest.mark.unit
-    def test_show_returns_snapshot(self, runner: CliRunner) -> None:
+    def test_returns_snapshot(self, runner: CliRunner) -> None:
         per_account = [
             {
                 "account_id": "acct_a",
@@ -66,26 +60,24 @@ class TestReportsNetworthShow:
             "per_account": per_account,
         }
         with (
-            patch("moneybin.cli.commands.reports.get_database"),
+            patch("moneybin.cli.commands.reports.networth.get_database"),
             patch(
-                "moneybin.cli.commands.reports.NetworthService"
+                "moneybin.cli.commands.reports.networth.NetworthService"
             ) as mock_service_class,
         ):
             mock_service_class.return_value.current.return_value = mock_snapshot
-            result = runner.invoke(
-                app, ["reports", "networth", "show", "--output", "json"]
-            )
+            result = runner.invoke(app, ["reports", "networth", "--output", "json"])
         assert result.exit_code == 0, result.stderr
         payload = json.loads(result.stdout)
         assert payload["status"] == "ok"
         assert payload["data"]["account_count"] == 3
 
     @pytest.mark.unit
-    def test_show_as_of_date(self, runner: CliRunner) -> None:
+    def test_as_of_date(self, runner: CliRunner) -> None:
         with (
-            patch("moneybin.cli.commands.reports.get_database"),
+            patch("moneybin.cli.commands.reports.networth.get_database"),
             patch(
-                "moneybin.cli.commands.reports.NetworthService"
+                "moneybin.cli.commands.reports.networth.NetworthService"
             ) as mock_service_class,
         ):
             mock_snap = MagicMock(
@@ -110,7 +102,6 @@ class TestReportsNetworthShow:
                 [
                     "reports",
                     "networth",
-                    "show",
                     "--as-of",
                     "2026-01-01",
                     "--output",
@@ -122,11 +113,11 @@ class TestReportsNetworthShow:
         assert call_kwargs.get("as_of_date") == date(2026, 1, 1)
 
     @pytest.mark.unit
-    def test_show_account_filter(self, runner: CliRunner) -> None:
+    def test_account_filter(self, runner: CliRunner) -> None:
         with (
-            patch("moneybin.cli.commands.reports.get_database"),
+            patch("moneybin.cli.commands.reports.networth.get_database"),
             patch(
-                "moneybin.cli.commands.reports.NetworthService"
+                "moneybin.cli.commands.reports.networth.NetworthService"
             ) as mock_service_class,
         ):
             mock_service_class.return_value.current.return_value = MagicMock(
@@ -142,7 +133,6 @@ class TestReportsNetworthShow:
                 [
                     "reports",
                     "networth",
-                    "show",
                     "--account",
                     "acct_a",
                     "--account",
@@ -151,20 +141,19 @@ class TestReportsNetworthShow:
             )
         assert result.exit_code == 0, result.stderr
         call_kwargs = mock_service_class.return_value.current.call_args.kwargs
-        # Either as_of_date or account_ids; one of them carries the list
         assert call_kwargs.get("account_ids") == ["acct_a", "acct_b"]
 
 
 class TestReportsNetworthHistory:
-    """Tests for `reports networth history`."""
+    """Tests for `reports networth-history`."""
 
     @pytest.mark.unit
-    def test_history_requires_from_to(self, runner: CliRunner) -> None:
-        result = runner.invoke(app, ["reports", "networth", "history"])
+    def test_requires_from_to(self, runner: CliRunner) -> None:
+        result = runner.invoke(app, ["reports", "networth-history"])
         assert result.exit_code == 2
 
     @pytest.mark.unit
-    def test_history_returns_series(self, runner: CliRunner) -> None:
+    def test_returns_series(self, runner: CliRunner) -> None:
         mock_rows = [
             {
                 "period": "2026-01-01",
@@ -180,9 +169,9 @@ class TestReportsNetworthHistory:
             },
         ]
         with (
-            patch("moneybin.cli.commands.reports.get_database"),
+            patch("moneybin.cli.commands.reports.networth.get_database"),
             patch(
-                "moneybin.cli.commands.reports.NetworthService"
+                "moneybin.cli.commands.reports.networth.NetworthService"
             ) as mock_service_class,
         ):
             mock_service_class.return_value.history.return_value = mock_rows
@@ -190,8 +179,7 @@ class TestReportsNetworthHistory:
                 app,
                 [
                     "reports",
-                    "networth",
-                    "history",
+                    "networth-history",
                     "--from",
                     "2026-01-01",
                     "--to",
@@ -206,11 +194,11 @@ class TestReportsNetworthHistory:
         assert len(payload["data"]) == 2
 
     @pytest.mark.unit
-    def test_history_default_interval_monthly(self, runner: CliRunner) -> None:
+    def test_default_interval_monthly(self, runner: CliRunner) -> None:
         with (
-            patch("moneybin.cli.commands.reports.get_database"),
+            patch("moneybin.cli.commands.reports.networth.get_database"),
             patch(
-                "moneybin.cli.commands.reports.NetworthService"
+                "moneybin.cli.commands.reports.networth.NetworthService"
             ) as mock_service_class,
         ):
             mock_service_class.return_value.history.return_value = []
@@ -218,8 +206,7 @@ class TestReportsNetworthHistory:
                 app,
                 [
                     "reports",
-                    "networth",
-                    "history",
+                    "networth-history",
                     "--from",
                     "2026-01-01",
                     "--to",
@@ -228,11 +215,9 @@ class TestReportsNetworthHistory:
             )
         assert result.exit_code == 0, result.stderr
         call_kwargs = mock_service_class.return_value.history.call_args.kwargs
-        # interval may be positional or kw — check both
         if "interval" in call_kwargs:
             assert call_kwargs["interval"] == "monthly"
         else:
-            # positional args: from_date, to_date, interval
             args = mock_service_class.return_value.history.call_args.args
             if len(args) >= 3:
                 assert args[2] == "monthly"

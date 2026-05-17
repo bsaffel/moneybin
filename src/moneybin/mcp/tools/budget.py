@@ -3,7 +3,7 @@
 Tools:
     - budget_set — Create or update a budget target (low sensitivity)
 
-Note: reports_budget_status (read) lives in reports.py per the v2 read/write split.
+Note: reports_budget (read) lives in reports.py per the v2 read/write split.
 """
 
 from __future__ import annotations

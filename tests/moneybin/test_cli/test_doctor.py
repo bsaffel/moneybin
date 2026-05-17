@@ -40,43 +40,43 @@ _FAILING_REPORT = DoctorReport(
 
 @pytest.mark.unit
 def test_doctor_help_exits_cleanly() -> None:
-    result = runner.invoke(app, ["doctor", "--help"])
+    result = runner.invoke(app, ["system", "doctor", "--help"])
     assert result.exit_code == 0
     assert "--verbose" in result.output
     assert "--output" in result.output
 
 
-@patch("moneybin.cli.commands.doctor.get_database")
-@patch("moneybin.cli.commands.doctor.DoctorService")
+@patch("moneybin.cli.commands.system.doctor.get_database")
+@patch("moneybin.cli.commands.system.doctor.DoctorService")
 def test_doctor_exits_0_when_all_pass(
     mock_svc_cls: MagicMock, mock_get_db: MagicMock
 ) -> None:
     mock_get_db.return_value = MagicMock()
     mock_svc_cls.return_value.run_all.return_value = _PASSING_REPORT
-    result = runner.invoke(app, ["doctor"])
+    result = runner.invoke(app, ["system", "doctor"])
     assert result.exit_code == 0
     assert "✅" in result.output
 
 
-@patch("moneybin.cli.commands.doctor.get_database")
-@patch("moneybin.cli.commands.doctor.DoctorService")
+@patch("moneybin.cli.commands.system.doctor.get_database")
+@patch("moneybin.cli.commands.system.doctor.DoctorService")
 def test_doctor_exits_1_when_any_fail(
     mock_svc_cls: MagicMock, mock_get_db: MagicMock
 ) -> None:
     mock_get_db.return_value = MagicMock()
     mock_svc_cls.return_value.run_all.return_value = _FAILING_REPORT
-    result = runner.invoke(app, ["doctor"])
+    result = runner.invoke(app, ["system", "doctor"])
     assert result.exit_code == 1
 
 
-@patch("moneybin.cli.commands.doctor.get_database")
-@patch("moneybin.cli.commands.doctor.DoctorService")
+@patch("moneybin.cli.commands.system.doctor.get_database")
+@patch("moneybin.cli.commands.system.doctor.DoctorService")
 def test_doctor_json_output_shape(
     mock_svc_cls: MagicMock, mock_get_db: MagicMock
 ) -> None:
     mock_get_db.return_value = MagicMock()
     mock_svc_cls.return_value.run_all.return_value = _PASSING_REPORT
-    result = runner.invoke(app, ["doctor", "--output", "json"])
+    result = runner.invoke(app, ["system", "doctor", "--output", "json"])
     assert result.exit_code == 0
     envelope = json.loads(result.stdout)
     assert "summary" in envelope
@@ -90,19 +90,19 @@ def test_doctor_json_output_shape(
     assert len(data["invariants"]) == 5
 
 
-@patch("moneybin.cli.commands.doctor.get_database")
-@patch("moneybin.cli.commands.doctor.DoctorService")
+@patch("moneybin.cli.commands.system.doctor.get_database")
+@patch("moneybin.cli.commands.system.doctor.DoctorService")
 def test_doctor_verbose_passes_flag_to_service(
     mock_svc_cls: MagicMock, mock_get_db: MagicMock
 ) -> None:
     mock_get_db.return_value = MagicMock()
     mock_svc_cls.return_value.run_all.return_value = _PASSING_REPORT
-    runner.invoke(app, ["doctor", "--verbose"])
+    runner.invoke(app, ["system", "doctor", "--verbose"])
     mock_svc_cls.return_value.run_all.assert_called_once_with(verbose=True)
 
 
-@patch("moneybin.cli.commands.doctor.get_database")
-@patch("moneybin.cli.commands.doctor.DoctorService")
+@patch("moneybin.cli.commands.system.doctor.get_database")
+@patch("moneybin.cli.commands.system.doctor.DoctorService")
 def test_doctor_warn_only_exits_0(
     mock_svc_cls: MagicMock, mock_get_db: MagicMock
 ) -> None:
@@ -115,12 +115,12 @@ def test_doctor_warn_only_exits_0(
     )
     mock_get_db.return_value = MagicMock()
     mock_svc_cls.return_value.run_all.return_value = warn_report
-    result = runner.invoke(app, ["doctor"])
+    result = runner.invoke(app, ["system", "doctor"])
     assert result.exit_code == 0
 
 
-@patch("moneybin.cli.commands.doctor.get_database")
-@patch("moneybin.cli.commands.doctor.DoctorService")
+@patch("moneybin.cli.commands.system.doctor.get_database")
+@patch("moneybin.cli.commands.system.doctor.DoctorService")
 def test_doctor_json_verbose_includes_affected_ids(
     mock_svc_cls: MagicMock, mock_get_db: MagicMock
 ) -> None:
@@ -134,7 +134,7 @@ def test_doctor_json_verbose_includes_affected_ids(
     )
     mock_get_db.return_value = MagicMock()
     mock_svc_cls.return_value.run_all.return_value = verbose_report
-    result = runner.invoke(app, ["doctor", "--output", "json", "--verbose"])
+    result = runner.invoke(app, ["system", "doctor", "--output", "json", "--verbose"])
     assert result.exit_code == 1
     envelope = json.loads(result.stdout)
     inv = envelope["data"]["invariants"][0]

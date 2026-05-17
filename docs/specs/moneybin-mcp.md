@@ -96,7 +96,7 @@ These apply to all tools that accept them and are not repeated per tool:
 Path-prefix-verb-suffix. Tool names mirror the CLI hierarchy with underscores instead of spaces, ending in an explicit verb.
 
 - **Pattern:** `<entity_or_domain>[_<sub_resource>]_<verb>`
-- **Examples:** `accounts_list`, `accounts_balance_list`, `accounts_balance_assert`, `reports_networth_get`, `transactions_matches_confirm`, `reports_spending_summary`
+- **Examples:** `accounts_list`, `accounts_balance_list`, `accounts_balance_assert`, `reports_networth`, `transactions_matches_confirm`, `reports_spending_summary`
 - **Verbs:** `_list` (collection get), `_get` (single instance), `_assert`, `_confirm`, `_reject`, `_apply`, `_delete`, `_create`, `_update`, plus domain-natural verbs (`_reconcile`, `_run`, `_train`).
 - **Pluralization:** singular for resource types (`balance`, `networth`, `category`); plural for relationship collections (`matches`); verb-suffix carries the list/single distinction so the noun stays consistent.
 - **Encoding constraint:** lowercase ASCII with underscores, ≤64 chars (`^[a-zA-Z0-9_-]{1,64}$` per Anthropic and OpenAI MCP client regex).
@@ -376,7 +376,7 @@ class TransactionService:
 ```
 
 - **Pagination:** `next_cursor` appears at the top level of the envelope when more pages exist. Pass it back as `cursor` to fetch the next page. Absent when all results fit in one page.
-- **Actions:** `["Use transactions_get with the next_cursor value to fetch the next page", "Use reports_spending_get for category breakdowns", "Use transactions_categorize_apply to categorize uncategorized transactions"]`
+- **Actions:** `["Use transactions_get with the next_cursor value to fetch the next page", "Use reports_spending for category breakdowns", "Use transactions_categorize_apply to categorize uncategorized transactions"]`
 
 **CLI command**
 
@@ -563,7 +563,7 @@ Free-text → account-ID resolution for natural-language references.
 - **CLI:** `moneybin accounts resolve "<query>"` (`--output json` returns the same envelope)
 - **Reference:** `agigante80/actual-mcp-server` ships an analogous `actual_get_id_by_name` for the same agent-ergonomic reason.
 
-### `reports_networth_get`
+### `reports_networth`
 
 Net worth across all accounts over time.
 
@@ -740,7 +740,7 @@ Preview a tabular file's headers and sample rows before importing. Format-agnost
 - **Service:** `ImportService.file_preview() -> FilePreview`
 - **CLI:** `moneybin import file-preview PATH`
 
-### `import_list_formats`
+### `import_formats_list`
 
 List available tabular import formats.
 
@@ -816,7 +816,7 @@ Create one or more categorization rules.
 
 Same matcher with a *divergent* category output — e.g. one active rule `AMZN → Shopping` and a new request `AMZN → Business` — is currently treated as a brand-new rule, not a conflict. Both rules coexist; whichever has lower `priority` fires first. A future iteration should detect this case at write time and let the caller pick: keep both (current behavior), supersede the older rule, or refuse the write. Tracked as a deferred follow-up because the right resolution UX is unclear and depends on the categorization workflow's overall ergonomics.
 
-### `transactions_categorize_rule_delete`
+### `transactions_categorize_rules_delete`
 
 Delete a categorization rule.
 
@@ -979,7 +979,7 @@ Create or update a monthly budget for a category.
 - **Service:** `BudgetService.set() -> Budget`
 - **CLI:** `moneybin budget set --category NAME --amount N [--start-month YYYY-MM]`
 
-### `reports_budget_status`
+### `reports_budget`
 
 Budget vs actual spending comparison for a month.
 
@@ -1108,7 +1108,7 @@ Pipeline integrity check — confirms the data pipeline is self-consistent befor
 - **Unique parameters:** None.
 - **Behavior:** Runs all SQLMesh named audits (FK integrity, sign convention, transfer balance) plus two hardcoded checks (staging coverage, categorization coverage). Returns pass/fail/warn per invariant and total transaction count. Always runs with `verbose=False` — agents can query `core.fct_transactions` or `core.bridge_transfers` directly for drill-down. Exit is informational only (no exception on fail).
 - **Service:** `DoctorService.run_all(verbose=False) -> DoctorReport`
-- **CLI:** `moneybin doctor [--verbose] [--output json]`
+- **CLI:** `moneybin system doctor [--verbose] [--output json]`
 
 ### `reports_health`
 
@@ -1155,7 +1155,7 @@ Four goal-oriented workflow templates. Each defines the goal, relevant tools, gu
 
 **Parameters:** `month: str?` (YYYY-MM, defaults to current month).
 
-**Relevant tools:** `reports_spending_summary`, `reports_spending_by_category`, `reports_spending_compare`, `reports_cashflow_summary`, `reports_budget_status`, `transactions_recurring_list`, `reports_health`
+**Relevant tools:** `reports_spending_summary`, `reports_spending_by_category`, `reports_spending_compare`, `reports_cashflow_summary`, `reports_budget`, `transactions_recurring_list`, `reports_health`
 
 **Guardrails:**
 
@@ -1191,7 +1191,7 @@ Four goal-oriented workflow templates. Each defines the goal, relevant tools, gu
 
 **Goal:** Guide a first-time user from empty database to imported, transformed, and categorized data.
 
-**Relevant tools:** `system_status`, `import_files`, `import_file_preview`, `import_list_formats`, `transactions_categorize_stats`
+**Relevant tools:** `system_status`, `import_files`, `import_file_preview`, `import_formats_list`, `transactions_categorize_stats`
 
 **Guardrails:**
 
@@ -1252,7 +1252,7 @@ Cross-account summary: list of accounts with display name, type, institution, cu
 
 ### `net-worth://summary`
 
-Current net worth snapshot: total net worth, assets vs liabilities breakdown, and per-account balance contributions. Refreshed on each connection. Lets the AI answer "what's my net worth?" from ambient context without calling `reports_networth_get`.
+Current net worth snapshot: total net worth, assets vs liabilities breakdown, and per-account balance contributions. Refreshed on each connection. Lets the AI answer "what's my net worth?" from ambient context without calling `reports_networth`.
 
 ### `moneybin://tools`
 
@@ -1346,7 +1346,7 @@ Clean break — old tool names stop working when v1 ships. MoneyBin is pre-1.0; 
 | `get_spending_by_category` | `spending_by_category` | |
 | `find_recurring_transactions` | `transactions_recurring` | |
 | `csv_preview_file` | `import_csv_preview` | |
-| `csv_list_profiles` | `import_list_formats` | |
+| `csv_list_profiles` | `import_formats_list` | |
 | `csv_save_profile` | Absorbed into `import_files` via `save_format` flag | |
 
 ### Prototype prompts
@@ -1376,7 +1376,7 @@ Per [`moneybin-cli.md`](moneybin-cli.md) v2. Hard cut: rename in place, no alias
 | `accounts_list` | `accounts_list` | Unchanged |
 | `accounts_details` | `accounts_get` | Single-instance get |
 | `accounts_balances` | `accounts_balance_list` | Singular type + explicit `_list` |
-| `accounts_networth` | `reports_networth_get` | **Moves to `reports_*`** — cross-domain rollup (accounts + assets), no longer scoped to `accounts` namespace |
+| `accounts_networth` | `reports_networth` | **Moves to `reports_*`** — cross-domain rollup (accounts + assets), no longer scoped to `accounts` namespace |
 | (new — `net-worth.md`) | `accounts_balance_assert` | |
 | (new) | `accounts_balance_history` | |
 | (new) | `accounts_balance_reconcile` | |
@@ -1388,7 +1388,7 @@ Per [`moneybin-cli.md`](moneybin-cli.md) v2. Hard cut: rename in place, no alias
 | (new) | `accounts_include` | Toggle include_in_net_worth |
 | (new) | `accounts_archive` | Mark archived; cascades exclude from net worth |
 | (new) | `accounts_unarchive` | Clear archived flag |
-| (new) | `accounts_settings_update` | Metadata update (subtype, holder category, currency, credit limit, last four, official name) |
+| (new) | `accounts_set` | Metadata update (subtype, holder category, currency, credit limit, last four, official name) |
 
 ### `transactions_*` (entity ops)
 
@@ -1398,7 +1398,7 @@ Per [`moneybin-cli.md`](moneybin-cli.md) v2. Hard cut: rename in place, no alias
 | `transactions_correct` | `transactions_correct` | Verb already trailing |
 | `transactions_annotate` | `transactions_annotate` | Verb already trailing |
 | `transactions_recurring` | `transactions_recurring_list` | Add explicit `_list` |
-| (new) | `transactions_review_status` | Returns counts of both review queues (matches pending + categorize pending). Orientation tool for "anything to review?" check; AI then calls `transactions_matches_pending` or `transactions_categorize_pending_list` to fetch items |
+| (new) | `transactions_review` | Returns counts of both review queues (matches pending + categorize pending). Orientation tool for "anything to review?" check; AI then calls `transactions_matches_pending` or `transactions_categorize_pending_list` to fetch items |
 
 ### `transactions_matches_*` (workflow under transactions)
 
@@ -1422,7 +1422,7 @@ Workflow tools that operate on transaction state stay nested under `transactions
 | `categorize_apply_rules` | `transactions_categorize_rules_apply` |
 | `categorize_rules` | `transactions_categorize_rules_list` |
 | `categorize_create_rules` | `transactions_categorize_rules_create` |
-| `categorize_delete_rule` | `transactions_categorize_rule_delete` |
+| `categorize_delete_rule` | `transactions_categorize_rules_delete` |
 | `categorize_stats` | `transactions_categorize_stats` |
 | `categorize_auto_review` | `transactions_categorize_auto_review` |
 | `categorize_auto_confirm` | `transactions_categorize_auto_confirm` |
@@ -1465,9 +1465,9 @@ Merchants are reference data (canonical names + default categories). Same logic 
 | `spending_compare` | `reports_spending_compare` |
 | `cashflow_summary` | `reports_cashflow_summary` |
 | `cashflow_income` | `reports_cashflow_income` |
-| `budget_status` | `reports_budget_status` |
+| `budget_status` | `reports_budget` |
 | `budget_summary` | `reports_budget_summary` |
-| `accounts_networth` (v1: `accounts_networth`, then proposed `accounts_networth_get`) | `reports_networth_get` |
+| `accounts_networth` (v1: `accounts_networth`, then proposed `accounts_networth_get`) | `reports_networth` |
 | (new) | `reports_networth_history` |
 | (new) | `reports_health` (was `overview_health`) |
 

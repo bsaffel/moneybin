@@ -11,7 +11,7 @@ Write tools (entity, all medium):
   - accounts_include
   - accounts_archive
   - accounts_unarchive
-  - accounts_settings_update
+  - accounts_set
 
 Read tools (balance, contributed by net-worth.md):
   - accounts_balance_list (medium)
@@ -185,7 +185,7 @@ _CLEARABLE_FIELDS: frozenset[str] = frozenset({
 
 
 @mcp_tool(sensitivity="medium", read_only=False)
-def accounts_settings_update(
+def accounts_set(
     account_id: str,
     official_name: str | None = None,
     last_four: str | None = None,
@@ -465,8 +465,8 @@ def register_accounts_tools(mcp: FastMCP) -> None:
     )
     register(
         mcp,
-        accounts_settings_update,
-        "accounts_settings_update",
+        accounts_set,
+        "accounts_set",
         "Partial update of Plaid-parity metadata (subtype, holder_category, currency, credit_limit, etc.). "
         "Writes app.account_settings; revert by calling again with the prior values (no built-in undo). "
         "Amounts are in the currency named by `summary.display_currency`.",

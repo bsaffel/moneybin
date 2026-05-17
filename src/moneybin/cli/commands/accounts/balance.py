@@ -150,8 +150,8 @@ def accounts_balance_list(
         )
 
 
-@app.command("delete")
-def accounts_balance_delete(
+@app.command("assertion-delete")
+def accounts_balance_assertion_delete(
     account_id: str = typer.Argument(...),
     assertion_date: str = typer.Argument(..., help="ISO date (YYYY-MM-DD)"),
     yes: bool = typer.Option(False, "--yes", "-y"),  # noqa: ARG001 — accepted for forward compat; no confirmation prompt today, but scripts pass --yes defensively

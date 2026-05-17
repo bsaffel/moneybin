@@ -17,14 +17,8 @@ from moneybin.services.reports_service import MERCHANTS_SORTS, ReportsService
 
 logger = logging.getLogger(__name__)
 
-merchants_app = typer.Typer(
-    help="Per-merchant lifetime activity totals",
-    no_args_is_help=True,
-)
 
-
-@merchants_app.command("show")
-def reports_merchants_show(
+def reports_merchants(
     top: int = typer.Option(25, "--top", help="Limit to top N merchants"),
     sort: str = typer.Option("spend", "--sort", help="spend | count | recent"),
     output: OutputFormat = output_option,

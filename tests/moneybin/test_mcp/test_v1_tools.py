@@ -15,9 +15,9 @@ import pytest
 
 from moneybin.database import Database, get_database
 from moneybin.mcp.tools.reports import (
-    reports_balance_drift_get,
-    reports_recurring_get,
-    reports_uncategorized_get,
+    reports_balance_drift,
+    reports_recurring,
+    reports_uncategorized,
 )
 from moneybin.protocol.envelope import ResponseEnvelope
 
@@ -58,7 +58,7 @@ class TestReportsRecurringGet:
     @pytest.mark.unit
     async def test_default_filters_active_high_confidence(self, mcp_db: Path) -> None:
         self._install_view()
-        result = await reports_recurring_get()
+        result = await reports_recurring()
         assert isinstance(result, ResponseEnvelope)
         parsed = result.to_dict()
         # Aggregate per-merchant rollup — sensitivity is "low" per mcp-server.md.
@@ -71,7 +71,7 @@ class TestReportsRecurringGet:
     @pytest.mark.unit
     async def test_status_all_keeps_inactive(self, mcp_db: Path) -> None:
         self._install_view()
-        parsed = (await reports_recurring_get(status="all")).to_dict()
+        parsed = (await reports_recurring(status="all")).to_dict()
         merchants = {row["merchant_normalized"] for row in parsed["data"]}
         # min_confidence=0.5 still drops WeakSignal but keeps OldGym (inactive).
         assert merchants == {"Netflix", "OldGym"}
@@ -81,14 +81,14 @@ class TestReportsRecurringGet:
         # ValueError raised inside the tool is classified by the @mcp_tool
         # decorator as a UserError(invalid_input) and surfaced as an error
         # envelope rather than re-raised.
-        result = await reports_recurring_get(status="bogus")
+        result = await reports_recurring(status="bogus")
         parsed = result.to_dict()
         assert parsed["error"]["code"] == "invalid_input"
         assert "Unknown status" in parsed["error"]["message"]
 
     @pytest.mark.unit
     async def test_unknown_cadence_returns_error_envelope(self, mcp_db: object) -> None:
-        result = await reports_recurring_get(cadence="hourly")
+        result = await reports_recurring(cadence="hourly")
         parsed = result.to_dict()
         assert parsed["error"]["code"] == "invalid_input"
         assert "Unknown cadence" in parsed["error"]["message"]
@@ -127,7 +127,7 @@ class TestReportsUncategorizedGet:
     @pytest.mark.unit
     async def test_returns_all_rows_by_default(self, mcp_db: Path) -> None:
         self._install_view()
-        parsed = (await reports_uncategorized_get()).to_dict()
+        parsed = (await reports_uncategorized()).to_dict()
         assert parsed["summary"]["sensitivity"] == "medium"
         ids = [row["transaction_id"] for row in parsed["data"]]
         # Sorted by priority_score DESC.
@@ -136,23 +136,21 @@ class TestReportsUncategorizedGet:
     @pytest.mark.unit
     async def test_min_amount_filters_low_value(self, mcp_db: Path) -> None:
         self._install_view()
-        parsed = (await reports_uncategorized_get(min_amount=20.0)).to_dict()
+        parsed = (await reports_uncategorized(min_amount=20.0)).to_dict()
         ids = {row["transaction_id"] for row in parsed["data"]}
         assert ids == {"T1", "T2"}
 
     @pytest.mark.unit
     async def test_account_filter_narrows_results(self, mcp_db: Path) -> None:
         self._install_view()
-        parsed = (
-            await reports_uncategorized_get(account="Other Bank Savings")
-        ).to_dict()
+        parsed = (await reports_uncategorized(account="Other Bank Savings")).to_dict()
         ids = [row["transaction_id"] for row in parsed["data"]]
         assert ids == ["T3"]
 
     @pytest.mark.unit
     async def test_limit_caps_rows(self, mcp_db: Path) -> None:
         self._install_view()
-        parsed = (await reports_uncategorized_get(limit=1)).to_dict()
+        parsed = (await reports_uncategorized(limit=1)).to_dict()
         assert len(parsed["data"]) == 1
         # Highest priority wins.
         assert parsed["data"][0]["transaction_id"] == "T2"
@@ -193,7 +191,7 @@ class TestReportsBalanceDriftGet:
     @pytest.mark.unit
     async def test_default_returns_all_statuses(self, mcp_db: Path) -> None:
         self._install_view()
-        parsed = (await reports_balance_drift_get()).to_dict()
+        parsed = (await reports_balance_drift()).to_dict()
         assert parsed["summary"]["sensitivity"] == "medium"
         # Sorted by drift_abs DESC.
         statuses = [row["status"] for row in parsed["data"]]
@@ -202,14 +200,14 @@ class TestReportsBalanceDriftGet:
     @pytest.mark.unit
     async def test_status_filter_drift_only(self, mcp_db: Path) -> None:
         self._install_view()
-        parsed = (await reports_balance_drift_get(status="drift")).to_dict()
+        parsed = (await reports_balance_drift(status="drift")).to_dict()
         statuses = [row["status"] for row in parsed["data"]]
         assert statuses == ["drift"]
 
     @pytest.mark.unit
     async def test_since_filter(self, mcp_db: Path) -> None:
         self._install_view()
-        parsed = (await reports_balance_drift_get(since="2026-01-01")).to_dict()
+        parsed = (await reports_balance_drift(since="2026-01-01")).to_dict()
         # The 2025-12-01 row should be excluded.
         assert all(
             row["assertion_date"].isoformat() >= "2026-01-01" for row in parsed["data"]
@@ -219,15 +217,13 @@ class TestReportsBalanceDriftGet:
     @pytest.mark.unit
     async def test_account_filter(self, mcp_db: Path) -> None:
         self._install_view()
-        parsed = (
-            await reports_balance_drift_get(account="Other Bank Savings")
-        ).to_dict()
+        parsed = (await reports_balance_drift(account="Other Bank Savings")).to_dict()
         account_ids = [row["account_id"] for row in parsed["data"]]
         assert account_ids == ["ACC002"]
 
     @pytest.mark.unit
     async def test_unknown_status_returns_error_envelope(self, mcp_db: object) -> None:
-        result = await reports_balance_drift_get(status="bogus")
+        result = await reports_balance_drift(status="bogus")
         parsed = result.to_dict()
         assert parsed["error"]["code"] == "invalid_input"
         assert "Unknown status" in parsed["error"]["message"]

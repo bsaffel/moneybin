@@ -60,7 +60,7 @@ class TestMCPServerBoot:
                 assert len(tool_names) > 0, "No tools registered"
 
                 # Core tools that should always be present (v2 names)
-                assert "reports_spending_get" in tool_names
+                assert "reports_spending" in tool_names
                 assert "accounts_list" in tool_names
                 assert "system_status" in tool_names
                 assert "moneybin_discover" in tool_names
@@ -124,7 +124,7 @@ class TestMCPServerBoot:
                     "accounts_include",
                     "accounts_archive",
                     "accounts_unarchive",
-                    "accounts_settings_update",
+                    "accounts_set",
                     "accounts_balance_list",
                     "accounts_balance_history",
                     "accounts_balance_reconcile",
@@ -194,8 +194,8 @@ class TestReportsNetworthTools:
                 tools_result = await session.list_tools()
                 tool_names = {t.name for t in tools_result.tools}
 
-                assert "reports_networth_get" in tool_names
-                assert "reports_networth_history_get" in tool_names
+                assert "reports_networth" in tool_names
+                assert "reports_networth_history" in tool_names
 
     async def test_reports_view_backed_tools_registered(
         self, mcp_env: dict[str, str]
@@ -217,13 +217,13 @@ class TestReportsNetworthTools:
                 tool_names = {t.name for t in tools_result.tools}
 
                 expected = {
-                    "reports_spending_get",
-                    "reports_cashflow_get",
-                    "reports_recurring_get",
-                    "reports_merchants_get",
-                    "reports_uncategorized_get",
-                    "reports_large_transactions_get",
-                    "reports_balance_drift_get",
+                    "reports_spending",
+                    "reports_cashflow",
+                    "reports_recurring",
+                    "reports_merchants",
+                    "reports_uncategorized",
+                    "reports_large_transactions",
+                    "reports_balance_drift",
                 }
                 missing = expected - tool_names
                 assert not missing, f"Missing reports view-backed tools: {missing}"

@@ -182,7 +182,7 @@ def transform_apply() -> ResponseEnvelope: ...
 
 The `transforms` action appears only when `pending=true`. The `schema_drift` action appears only when drift is detected.
 
-**Failure mode of schema drift.** When the materialized snapshot of a core table lacks columns that current service code SELECTs (e.g., `AccountService.list_accounts()` references `display_name`/`last_four`/`archived` after a model revision), DuckDB raises a binder error and `accounts_list` / `reports_networth_get` / `accounts_resolve` all fail with opaque "Error calling tool …" envelopes. Drift detection makes the problem loud and actionable at boot rather than surfacing as one-off tool failures.
+**Failure mode of schema drift.** When the materialized snapshot of a core table lacks columns that current service code SELECTs (e.g., `AccountService.list_accounts()` references `display_name`/`last_four`/`archived` after a model revision), DuckDB raises a binder error and `accounts_list` / `reports_networth` / `accounts_resolve` all fail with opaque "Error calling tool …" envelopes. Drift detection makes the problem loud and actionable at boot rather than surfacing as one-off tool failures.
 
 ## Data Flow
 

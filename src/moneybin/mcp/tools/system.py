@@ -48,8 +48,8 @@ def system_status() -> ResponseEnvelope:
     }
 
     actions = [
-        "Use transactions_review_status for per-queue review counts",
-        "Use reports_spending_get for a monthly spending trend snapshot",
+        "Use transactions_review for per-queue review counts",
+        "Use reports_spending for a monthly spending trend snapshot",
     ]
     if status.schema_drift:
         data["schema_drift"] = {

@@ -6,7 +6,7 @@ Tools:
     - import_preview — Preview a tabular file without importing (low sensitivity)
     - import_status — List past import batches (low sensitivity)
     - import_revert — Undo an import batch by import_id (low sensitivity)
-    - import_list_formats — List available tabular import formats (low sensitivity)
+    - import_formats_list — List available tabular import formats (low sensitivity)
 """
 
 from __future__ import annotations
@@ -173,7 +173,7 @@ def import_preview(file_path: str) -> ResponseEnvelope:
         sensitivity="low",
         actions=[
             "Use import_files to import after reviewing the preview",
-            "Use import_list_formats for available named formats",
+            "Use import_formats_list for available named formats",
         ],
     )
 
@@ -245,7 +245,7 @@ def import_revert(import_id: str) -> ResponseEnvelope:
 
 
 @mcp_tool(sensitivity="low")
-def import_list_formats() -> ResponseEnvelope:
+def import_formats_list() -> ResponseEnvelope:
     """List all available tabular import formats (built-in and user-saved).
 
     Returns format name, institution, sign convention, date format, and
@@ -324,7 +324,7 @@ def register_import_tools(mcp: FastMCP) -> None:
     )
     register(
         mcp,
-        import_list_formats,
-        "import_list_formats",
+        import_formats_list,
+        "import_formats_list",
         "List all available tabular import formats (built-in and user-saved).",
     )

@@ -112,7 +112,7 @@ class TransactionGetResult:
             next_cursor=self.next_cursor,
             actions=[
                 "Use transactions_get with the next_cursor value to fetch the next page",
-                "Use reports_spending_get for category breakdowns",
+                "Use reports_spending for category breakdowns",
                 "Use transactions_categorize_apply to categorize uncategorized transactions",
             ],
         )

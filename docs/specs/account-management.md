@@ -37,7 +37,7 @@ Related specs and docs:
 7. **`core.dim_accounts` is the single source of truth.** The dim model joins `app.account_settings` directly so `display_name`, `archived`, `include_in_net_worth`, and the metadata fields are always available to consumers without per-consumer join logic. This pattern is codified into [`.claude/rules/database.md`](#) by this spec — see [Files to Modify](#files-to-modify).
 8. **Display name resolution chain:** `app.account_settings.display_name` → derived default (`institution_name + account_type + …last_four(account_id)`) → bare `account_id`. First non-empty wins. Materialized inside `core.dim_accounts.display_name`.
 9. **CLI surface (taxonomy C):** named verbs for the four high-frequency operations (`rename`, `include`, `archive`, `unarchive`); a single `set` command for the structural metadata fields (`--official-name`, `--last-four`, `--subtype`, `--holder-category`, `--currency`, `--credit-limit`, `--clear-FIELD`). See [CLI Interface](#cli-interface).
-10. **MCP surface:** mirrors CLI — five write tools (`accounts_rename`, `accounts_include`, `accounts_archive`, `accounts_unarchive`, `accounts_settings_update`) plus three read tools (`accounts_list`, `accounts_get`, `accounts_summary`) and one resource (`accounts://summary`). The summary tool exists alongside the resource because many MCP clients don't render resources.
+10. **MCP surface:** mirrors CLI — five write tools (`accounts_rename`, `accounts_include`, `accounts_archive`, `accounts_unarchive`, `accounts_set`) plus three read tools (`accounts_list`, `accounts_get`, `accounts_summary`) and one resource (`accounts://summary`). The summary tool exists alongside the resource because many MCP clients don't render resources.
 11. **Sensitivity tiers:** `accounts_summary` is `low` (aggregates only). `accounts_list` defaults to `medium` because the response carries `last_four` and `credit_limit`; supports `redacted: true` to drop those fields and downgrade to `low`. `accounts_get` is `medium`. All write tools are `medium` and require confirmation per MCP write-tool conventions.
 12. **All commands support `--output json`** and the standard read-only flags (`-o`, `-q`) per `.claude/rules/cli.md`.
 13. **Idempotent settings writes.** `accounts rename`, `accounts include`, `accounts archive`, `accounts set` always upsert into `app.account_settings`. Setting the same value twice is a no-op (no error).
@@ -193,7 +193,7 @@ Naming follows [`moneybin-mcp.md`](moneybin-mcp.md) v2 (path-prefix-verb-suffix)
 | `accounts_include` | `account_id`, `include` (bool, default TRUE) | updated settings row |
 | `accounts_archive` | `account_id` | updated settings row + `cascaded_include_in_net_worth: false` |
 | `accounts_unarchive` | `account_id` | updated settings row (no auto-restore of include) |
-| `accounts_settings_update` | `account_id`; any of `official_name`, `last_four`, `account_subtype`, `holder_category`, `iso_currency_code`, `credit_limit`. Explicit `null` clears. | updated settings row + optional `warnings: [...]` |
+| `accounts_set` | `account_id`; any of `official_name`, `last_four`, `account_subtype`, `holder_category`, `iso_currency_code`, `credit_limit`. Explicit `null` clears. | updated settings row + optional `warnings: [...]` |
 
 ### Soft-validation in MCP
 
@@ -271,7 +271,7 @@ Synthetic persona with multiple account types. Hand-derived expectations:
 - `accounts list` row count == `persona.account_count`.
 - After archiving 2 accounts: `accounts list` count == `count - 2`; `agg_net_worth` excludes those 2 (both via the `include_in_net_worth` cascade and the `archived` filter).
 - After `accounts set --credit-limit` on a credit card, `accounts show` returns the asserted limit.
-- Soft-validation: `accounts set --subtype xyz --yes` writes the value; subsequent `accounts show` returns it; `accounts_settings_update` MCP call returns the warning.
+- Soft-validation: `accounts set --subtype xyz --yes` writes the value; subsequent `accounts show` returns it; `accounts_set` MCP call returns the warning.
 - **Negative invariants:**
   - Archiving an account does NOT mutate `core.fct_transactions` for it (transactions remain queryable, just account is hidden in default UI).
   - Unarchiving does NOT cause `agg_net_worth` to include the account if `include_in_net_worth` is still FALSE.
@@ -280,7 +280,7 @@ Synthetic persona with multiple account types. Hand-derived expectations:
 
 - `accounts_list` returns the resolved view including `display_name`.
 - `accounts_list` with `redacted: true` omits `last_four` and `credit_limit`; sensitivity tier downgrades to `low`.
-- `accounts_settings_update` with non-canonical `account_subtype` returns `warnings` field; write succeeds.
+- `accounts_set` with non-canonical `account_subtype` returns `warnings` field; write succeeds.
 - `accounts_summary` returns the aggregate shape; no per-account leakage.
 - `accounts://summary` resource returns the same shape as `accounts_summary` tool (asserted via response equality).
 
@@ -332,7 +332,7 @@ Tests:
 - `src/moneybin/cli/main.py` — register the new top-level `accounts` group; remove the legacy `track` registration if [`net-worth.md`](net-worth.md) hasn't already (the two specs split the cleanup)
 - `src/moneybin/cli/commands/stubs.py` — drop `track_app` and its sub-stubs (replaced by real `accounts` and `reports` groups; `recurring`, `investments`, `budget` stubs move to their v2 homes per `moneybin-cli.md` v2)
 - `sqlmesh/models/core/dim_accounts.sql` — add `LEFT JOIN app.account_settings`; add the new columns per [Modified SQLMesh model](#modified-sqlmesh-model-coredim_accounts)
-- `src/moneybin/mcp/tools/__init__.py` (and per-tool registry) — register `accounts_summary`, `accounts_rename`, `accounts_include`, `accounts_archive`, `accounts_unarchive`, `accounts_settings_update`; extend `accounts_list` with `redacted` param and revised sensitivity
+- `src/moneybin/mcp/tools/__init__.py` (and per-tool registry) — register `accounts_summary`, `accounts_rename`, `accounts_include`, `accounts_archive`, `accounts_unarchive`, `accounts_set`; extend `accounts_list` with `redacted` param and revised sensitivity
 - `src/moneybin/mcp/resources/` — add `accounts://summary` resource
 - `src/moneybin/protocol/sensitivity.py` (or equivalent) — register sensitivity tiers
 - `docs/specs/moneybin-cli.md` — amend the `accounts` subtree to include `archive` / `unarchive` / `set`

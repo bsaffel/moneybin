@@ -77,8 +77,8 @@ def accounts_list(
         typer.echo(f"  {display}  [{institution}]  {acct_type}")
 
 
-@app.command("show")
-def accounts_show(
+@app.command("get")
+def accounts_get(
     account_id: str = typer.Argument(..., help="Account ID"),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,  # noqa: ARG001

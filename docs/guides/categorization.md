@@ -133,7 +133,7 @@ All categorization operations support batch mode for efficient processing. These
 - `transactions_categorize_apply` — categorize one or many transactions (auto-creates merchant mappings)
 - `transactions_categorize_rules_create` — create one or many categorization rules
 - `merchants_create` — create one or many merchant mappings
-- `transactions_categorize_rule_delete` — remove a rule
+- `transactions_categorize_rules_delete` — remove a rule
 
 **Via CLI** — the categorize-apply tool has a CLI equivalent that accepts the same JSON shape from a file or stdin:
 

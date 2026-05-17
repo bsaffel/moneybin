@@ -295,14 +295,14 @@ The same hierarchy expresses across CLI, MCP, and (future) HTTP. Each protocol e
 | Concept | CLI | MCP | HTTP |
 |---|---|---|---|
 | List accounts | `accounts list` | `accounts_list` | `GET /accounts` |
-| Show one account | `accounts show <id>` | `accounts_get` | `GET /accounts/{id}` |
+| Show one account | `accounts get <id>` | `accounts_get` | `GET /accounts/{id}` |
 | Show current balances | `accounts balance show` | `accounts_balance_list` | `GET /accounts/balances` |
 | Assert a balance | `accounts balance assert ...` | `accounts_balance_assert` | `POST /accounts/{id}/balances` |
 | Balance history | `accounts balance history` | `accounts_balance_history` | `GET /accounts/{id}/balances/history` |
-| Net worth now | `accounts networth show` | `accounts_networth_get` | `GET /accounts/networth` |
+| Net worth now | `reports networth` | `reports_networth` | `GET /reports/networth` |
 | List matches | `transactions matches list` | `transactions_matches_list` | `GET /transactions/matches` |
 | Confirm a match | `transactions matches confirm <id>` | `transactions_matches_confirm` | `POST /transactions/matches/{id}/confirm` |
-| Spending report | `reports spending` | `reports_spending_get` | `GET /reports/spending` |
+| Spending report | `reports spending` | `reports_spending` | `GET /reports/spending` |
 
 ### Pluralization
 
@@ -499,11 +499,11 @@ This is a hard cut. No aliases, no deprecation period. v1 paths break in the sam
 | `track balance show` | `accounts balance show` | Same surface, new parent |
 | `track balance assert` | `accounts balance assert` | |
 | `track balance list` | `accounts balance list` | |
-| `track balance delete` | `accounts balance delete` | |
+| `track balance delete` | `accounts balance assertion-delete` | Renamed to clarify scope (deletes the assertion row, not the balance) |
 | `track balance reconcile` | `accounts balance reconcile` | |
 | `track balance history` | `accounts balance history` | |
-| `track networth show` | `reports networth show` | Cross-domain rollup (accounts + assets) — moved out of `accounts` to honor that it aggregates more than accounts |
-| `track networth history` | `reports networth history` | |
+| `track networth show` | `reports networth` | Cross-domain rollup (accounts + assets) — moved out of `accounts` to honor that it aggregates more than accounts |
+| `track networth history` | `reports networth-history` | |
 | `track budget *` | `budget *` | Top-level (mutation); reports → `reports budget` |
 | `track recurring *` | `transactions recurring *` | Pattern detection on transactions |
 | `track investments *` | `accounts investments *` | Holdings as account-typed entity |
@@ -592,7 +592,7 @@ Restructure-only. Move and rename existing commands to the new tree; rename MCP 
 | Dissolve `track` group | Delete CLI module |
 | Add `reports` group with stubbed subcommands (`spending`, `cashflow`, `tax`, `budget`) | New CLI module, all stubs |
 | Rename MCP tools to path-prefix-verb-suffix convention | Update tool registry, regenerate client configs via `mcp install` |
-| Collapse `transactions matches review` and `transactions categorize review` into unified `transactions review` (CLI). Add MCP `transactions_review_status` orientation tool | New CLI command + new MCP tool |
+| Collapse `transactions matches review` and `transactions categorize review` into unified `transactions review` (CLI). Add MCP `transactions_review` orientation tool | New CLI command + new MCP tool |
 | Rename `import_csv_preview` → `import_file_preview` (format-agnostic) | MCP tool rename + service method rename |
 | Expose `sync_*` to MCP (all except `sync_rotate_key`) — login, logout, connect, disconnect, pull, status, schedule_set/show/remove | New MCP tools wrapping existing CLI sync surface |
 | Expose `transform_*` to MCP (all except `transform_restate`) — status, plan, validate, audit, apply | New MCP tools wrapping existing CLI transform surface |
@@ -670,7 +670,7 @@ These existing specs define CLI commands that need updates to reflect v2's taxon
 
 | Spec | CLI change needed (v2) | MCP change needed (v2) |
 |---|---|---|
-| `net-worth.md` | `track balance` → `accounts balance`. `track networth` → `reports networth` (cross-domain rollup, accounts + assets). `reconciliation show` → `accounts balance reconcile`. | `get_balances` → `accounts_balance_list`, etc. `get_net_worth` → `reports_networth_get`. |
+| `net-worth.md` | `track balance` → `accounts balance`. `track networth` → `reports networth` (cross-domain rollup, accounts + assets). `reconciliation show` → `accounts balance reconcile`. | `get_balances` → `accounts_balance_list`, etc. `get_net_worth` → `reports_networth`. |
 | `asset-tracking.md` | CLI namespace: top-level `assets` group (parallel to `accounts`). Net worth contribution flows through `core.agg_net_worth` consumed by `reports networth`. | Asset MCP tools take `assets_*` prefix (path-prefix-verb-suffix per v2). |
 | `account-management.md` (planned) | Owns the `accounts` namespace entity ops (`list`, `show`, `rename`, `archive`, `include`). Balance subcommands stay nested per `net-worth.md`. Drafted as a separate spec to give per-account configuration, merging, and archival their own design space. | Owns `accounts_list`, `accounts_get`, `accounts_rename`, `accounts_archive`, `accounts_include`. |
 | `matching-same-record-dedup.md` / `matching-transfer-detection.md` | `matches *` → `transactions matches *` | Match-related tools take `transactions_matches_*` prefix |

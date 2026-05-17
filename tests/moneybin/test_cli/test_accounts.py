@@ -62,7 +62,7 @@ class TestAccountsHelp:
         result = runner.invoke(app, ["accounts", "--help"])
         assert result.exit_code == 0
         assert "list" in result.stdout
-        assert "show" in result.stdout
+        assert "get" in result.stdout
 
 
 class TestAccountsList:
@@ -186,7 +186,7 @@ class TestAccountsShow:
             "official_name": None,
         }
 
-        result = runner.invoke(app, ["accounts", "show", "acct_a", "--output", "json"])
+        result = runner.invoke(app, ["accounts", "get", "acct_a", "--output", "json"])
         assert result.exit_code == 0, result.stderr
         data = json.loads(result.stdout)
         assert data["status"] == "ok"
@@ -205,7 +205,7 @@ class TestAccountsShow:
         svc = mock_svc_cls.return_value
         svc.get_account.return_value = None
 
-        result = runner.invoke(app, ["accounts", "show", "missing"])
+        result = runner.invoke(app, ["accounts", "get", "missing"])
         assert result.exit_code == 1
         assert (
             "missing" in result.stderr.lower() or "not found" in result.stderr.lower()

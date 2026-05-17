@@ -7,7 +7,7 @@ from fastmcp import FastMCP
 
 from moneybin.mcp.tools.transactions import (
     register_transactions_tools,
-    transactions_review_status,
+    transactions_review,
 )
 
 pytestmark = pytest.mark.usefixtures("mcp_db")
@@ -15,8 +15,8 @@ pytestmark = pytest.mark.usefixtures("mcp_db")
 
 @pytest.mark.unit
 async def test_review_status_returns_envelope(mcp_db: object) -> None:
-    """transactions_review_status returns a valid ResponseEnvelope."""
-    parsed = (await transactions_review_status()).to_dict()
+    """transactions_review returns a valid ResponseEnvelope."""
+    parsed = (await transactions_review()).to_dict()
     assert "summary" in parsed
     assert "data" in parsed
     assert "actions" in parsed
@@ -26,7 +26,7 @@ async def test_review_status_returns_envelope(mcp_db: object) -> None:
 @pytest.mark.unit
 async def test_review_status_data_shape(mcp_db: object) -> None:
     """Data dict carries matches_pending, categorize_pending, and total."""
-    data = (await transactions_review_status()).to_dict()["data"]
+    data = (await transactions_review()).to_dict()["data"]
     assert "matches_pending" in data
     assert "categorize_pending" in data
     assert "total" in data
@@ -38,15 +38,15 @@ async def test_review_status_data_shape(mcp_db: object) -> None:
 @pytest.mark.unit
 async def test_review_status_actions_non_empty(mcp_db: object) -> None:
     """Tool provides next-step action hints."""
-    parsed = (await transactions_review_status()).to_dict()
+    parsed = (await transactions_review()).to_dict()
     assert len(parsed["actions"]) >= 1
 
 
 @pytest.mark.unit
 async def test_register_includes_review_status() -> None:
-    """register_transactions_tools registers transactions_review_status."""
+    """register_transactions_tools registers transactions_review."""
     srv = FastMCP("test")
     register_transactions_tools(srv)
     names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
-    assert "transactions_review_status" in names
+    assert "transactions_review" in names
     assert "transactions_recurring_list" in names
