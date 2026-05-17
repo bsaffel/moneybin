@@ -84,7 +84,7 @@ class BudgetStatusResult:
             sensitivity="low",
             period=self.month,
             actions=[
-                "Use budget_set to adjust a budget target",
+                "Use `moneybin budget set` (CLI) to adjust a budget target",
                 "Use reports_spending for detailed category breakdown",
             ],
         )

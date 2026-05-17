@@ -58,14 +58,25 @@ suggested change.
 improve the agent experience.
 ```
 
-## Reviewer responsibility
+## Reporting workflow
 
-PRs that ship MCP changes should include either a fresh agent-experience
-report in the PR description OR a link to the report from the originating
-session. Reviewers verify the report exists and that any blocker called out
-in a prior report is either fixed in this PR or has an open follow-up.
+AX reports are **session-internal** — they go to Brandon in the conversation,
+not into public artifacts. Workflow:
+
+1. At the end of any session that touched MoneyBin's MCP server, present the
+   report directly in chat using the structure above.
+2. Brandon triages each finding. Approved findings get filed as one-line
+   entries in `private/followups.md`; the rest are dropped.
+3. The PR shipping the underlying change describes the change only — **never
+   paste the AX report (or a link to it) into the PR body, commit message,
+   CHANGELOG, ADR, or any other checked-in artifact**.
+
+The report is raw feedback for prioritizing future work, not a deliverable.
+Brandon's filtering is what gives it signal value; surfacing every friction
+note publicly would invert that.
 
 This rule is paired with `mcp-server.md` (Architecture and Description
 Requirements) and with the `using-superpowers` skill's emphasis on
 intellectual honesty: report friction even when the change you shipped
-caused it.
+caused it. Honesty is the standard for the in-chat report — public artifacts
+remain scoped to what shipped.

@@ -215,7 +215,11 @@ def mcp_tool(
 
     Args:
         sensitivity: Sensitivity tier (low/medium/high).
-        domain: Optional progressive-disclosure tag.
+        domain: Optional namespace tag stored as a FastMCP tag. Dormant
+            metadata today — client-driven progressive disclosure was retired
+            2026-05-17 (see docs/specs/mcp-architecture.md §3). Preserved for a
+            possible future first-party client that does its own schema
+            injection.
         read_only: MCP readOnlyHint — default True (most MoneyBin tools are queries).
         destructive: MCP destructiveHint — irreversible state change.
         idempotent: MCP idempotentHint — safe to retry without side effects.
@@ -223,9 +227,7 @@ def mcp_tool(
         max_items: Per-tool override for ``MCPConfig.max_items``. ``None``
             disables the cap. Sentinel ``_UNSET`` inherits from settings.
 
-    Tools with a ``domain`` start hidden; ``moneybin_discover`` enables them
-    per-session via FastMCP tag visibility. Every tool is wrapped in a
-    wall-clock timeout guard — see module docstring.
+    Every tool is wrapped in a wall-clock timeout guard — see module docstring.
     """
     tier = Sensitivity(sensitivity)
 

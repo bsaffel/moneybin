@@ -570,7 +570,7 @@ Renamed:
 
 The `approve` framing is preserved for rule *promotion* (when an accepted proposal becomes an active rule).
 
-Both new and renamed tools live under the `categorize.*` namespace per `mcp-server.md`. `categorize.*` is an extended namespace, hidden by default and revealed via the `moneybin_discover` meta-tool. The MCP server `instructions` field's first-run hint mentions `moneybin_discover` when uncategorized transactions exist.
+Both new and renamed tools live under the `categorize.*` namespace per `mcp-server.md`. The namespace is visible at connect alongside all other registered tools — client-driven progressive disclosure (and its `moneybin_discover` meta-tool) was retired 2026-05-17; see [`mcp-architecture.md`](mcp-architecture.md) §3 "Tool disclosure: full surface, taxonomy-led". The agent reaches `transactions_categorize_assist` directly when uncategorized transactions exist (surfaced via `system_status` and via the `import_inbox_sync` envelope's `actions[]` hint).
 
 ## Forward compatibility
 

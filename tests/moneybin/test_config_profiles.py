@@ -411,3 +411,74 @@ def test_tabular_config_account_match_threshold_override() -> None:
 
     cfg = TabularConfig(account_match_threshold=0.85)
     assert cfg.account_match_threshold == 0.85
+
+
+class TestSqlmeshConfigProfileGating:
+    """Regression tests for the profile gate in ``sqlmesh/config.py``.
+
+    SQLMesh re-executes ``sqlmesh/config.py`` on every ``Context`` creation
+    (it clears the module from ``sys.modules``). The file must therefore
+    initialize a profile only when none is already set — otherwise it
+    would clobber the CLI's ``--profile`` selection back to ``default``
+    mid-process and invalidate the encryption-key cache.
+
+    Tests load ``sqlmesh/config.py`` via ``importlib`` so the actual file
+    is exercised. Side effects (log dir mkdir, SQLMesh ``Config`` build)
+    are bounded by the configured profile.
+    """
+
+    @staticmethod
+    def _load_sqlmesh_config() -> None:
+        """Execute sqlmesh/config.py fresh in this process."""
+        import importlib.util
+        import sys
+
+        repo_root = Path(__file__).resolve().parents[2]
+        config_path = repo_root / "sqlmesh" / "config.py"
+        # Discard any cached prior load so the file's top-level statements re-run.
+        sys.modules.pop("_sqlmesh_config_under_test", None)
+        spec = importlib.util.spec_from_file_location(
+            "_sqlmesh_config_under_test", config_path
+        )
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+    def test_preserves_already_set_profile(self) -> None:
+        """Re-execution must preserve an in-process profile.
+
+        When the CLI has set a profile (e.g. ``--profile alice``),
+        SQLMesh re-loading ``sqlmesh/config.py`` must not reset it to
+        ``default`` or to ``MONEYBIN_PROFILE``.
+        """
+        with temp_profile("alice"):
+            set_current_profile("alice")
+            assert get_current_profile() == "alice"
+
+            # Simulate a stale MONEYBIN_PROFILE env var the CLI never wrote.
+            os.environ["MONEYBIN_PROFILE"] = "default"
+            try:
+                self._load_sqlmesh_config()
+                assert get_current_profile() == "alice"
+            finally:
+                os.environ.pop("MONEYBIN_PROFILE", None)
+
+    def test_uses_env_var_when_no_profile_set(self, mocker: MockerFixture) -> None:
+        """Non-CLI entry point with MONEYBIN_PROFILE set → that name is used."""
+        with temp_profile("test"):
+            # Reset profile state so the gate's RuntimeError branch fires.
+            clear_settings_cache()
+            mocker.patch.dict(os.environ, {"MONEYBIN_PROFILE": "test"})
+
+            self._load_sqlmesh_config()
+            assert get_current_profile() == "test"
+
+    def test_defaults_when_no_profile_and_no_env(self, mocker: MockerFixture) -> None:
+        """Non-CLI entry point with no profile state and no env var → "default"."""
+        with temp_profile("default"):
+            clear_settings_cache()
+            mocker.patch.dict(os.environ, {}, clear=False)
+            os.environ.pop("MONEYBIN_PROFILE", None)
+
+            self._load_sqlmesh_config()
+            assert get_current_profile() == "default"

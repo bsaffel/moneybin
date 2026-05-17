@@ -47,7 +47,6 @@ Tool names follow the v2 path-prefix-verb-suffix convention (e.g., `accounts_bal
 | Tool | Description |
 |------|-------------|
 | `transactions_search` | Search with date, amount, payee, account, and category filters |
-| `transactions_recurring_list` | Detect subscriptions and regular charges |
 | `transactions_categorize_pending_list` | Find transactions needing categorization |
 | `transactions_categorize_apply` | Categorize many transactions in one call (auto-creates merchant mapping) |
 | `transactions_categorize_stats` | Categorization coverage statistics |
@@ -60,7 +59,7 @@ Tool names follow the v2 path-prefix-verb-suffix convention (e.g., `accounts_bal
 |------|-------------|
 | `categories_list` | List the category taxonomy (use `include_inactive=True` to see disabled) |
 | `categories_create` | Create a custom category or subcategory |
-| `categories_toggle` | Enable or disable a category |
+| `categories_set` | Update a category's settings (currently only `is_active`) |
 | `merchants_list` | List merchant name mappings |
 | `merchants_create` | Create one or many merchant mappings |
 
@@ -71,6 +70,7 @@ Tool names follow the v2 path-prefix-verb-suffix convention (e.g., `accounts_bal
 | `reports_spending_summary` | Income vs expenses summary by month |
 | `reports_spending_by_category` | Spending breakdown by category for a period |
 | `reports_budget` | Budget vs actual spending comparison |
+| `reports_recurring` | Detect recurring subscriptions and regular charges with confidence scores |
 
 ### import
 
@@ -81,17 +81,9 @@ Tool names follow the v2 path-prefix-verb-suffix convention (e.g., `accounts_bal
 | `import_formats_list` | Available tabular import formats and saved profiles |
 | `import_status` | Summary of all imported data |
 
-### budget
+### budget, tax (de-registered — re-register when backing spec lands)
 
-| Tool | Description |
-|------|-------------|
-| `budget_set` | Create or update a monthly budget for a category (read views: `reports_budget`) |
-
-### tax
-
-| Tool | Description |
-|------|-------------|
-| `tax_w2` | W-2 summary (wages, withholding, employer info) for a year |
+`budget_set` and `tax_w2` were de-registered 2026-05-17. Both functional implementations remain in the codebase (`src/moneybin/mcp/tools/budget.py`, `tools/tax.py`) and the CLI counterparts (`moneybin budget set`, `moneybin tax w2`, `moneybin tax deductions`) still work — only the MCP surface is gated until `budget-tracking.md` reaches `in-progress` and a tax spec lands per the stub-gating rule in `.claude/rules/mcp-server.md`.
 
 ### sync, transform (taxonomy stubs)
 
@@ -102,12 +94,6 @@ Tool names follow the v2 path-prefix-verb-suffix convention (e.g., `accounts_bal
 | Tool | Description |
 |------|-------------|
 | `sql_query` | Execute arbitrary read-only SQL (power user) |
-
-### moneybin
-
-| Tool | Description |
-|------|-------------|
-| `moneybin_discover` | Tool catalog and capability discovery for AI clients |
 
 ```bash
 # See all registered tools with full descriptions and schemas

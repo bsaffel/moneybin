@@ -1,8 +1,8 @@
 # src/moneybin/services/transaction_service.py
-"""Transaction search and recurring pattern service.
+"""Transaction search service.
 
-Business logic for transaction search, filtering, and recurring pattern
-detection. Consumed by both MCP tools and CLI commands.
+Business logic for transaction search and filtering.
+Consumed by both MCP tools and CLI commands.
 """
 
 from __future__ import annotations
@@ -119,45 +119,6 @@ class TransactionGetResult:
 
 
 @dataclass(frozen=True, slots=True)
-class RecurringTransaction:
-    """A detected recurring transaction pattern."""
-
-    description: str
-    avg_amount: Decimal
-    occurrence_count: int
-    first_seen: str
-    last_seen: str
-
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to a plain dict for JSON serialization."""
-        return {
-            "description": self.description,
-            "avg_amount": self.avg_amount,
-            "occurrence_count": self.occurrence_count,
-            "first_seen": self.first_seen,
-            "last_seen": self.last_seen,
-        }
-
-
-@dataclass(slots=True)
-class RecurringResult:
-    """Result of recurring transaction detection."""
-
-    transactions: list[RecurringTransaction]
-
-    def to_envelope(self) -> ResponseEnvelope:
-        """Build a ResponseEnvelope for MCP/CLI output."""
-        return build_envelope(
-            data=[t.to_dict() for t in self.transactions],
-            sensitivity="medium",
-            actions=[
-                "Use transactions_get to see individual occurrences",
-                "Use budget_set to create a budget for a recurring expense",
-            ],
-        )
-
-
-@dataclass(frozen=True, slots=True)
 class ManualEntryRawResult:
     """Raw-write outcome for a single manual entry.
 
@@ -215,14 +176,9 @@ class Note:
 
 
 class TransactionService:
-    """Transaction search, recurring patterns, notes, and tag operations.
+    """Transaction search, notes, and tag operations.
 
-    Search and recurring helpers return typed dataclasses with a
-    ``to_envelope()`` method. Note and tag operations wrap each mutation and
-    its audit event(s) in a single DuckDB transaction. Tag writes come in
-    imperative (``add_tags``/``remove_tags``) and declarative (``set_tags``)
-    flavors; ``rename_tag`` is the one bulk operation and emits a parent
-    ``tag.rename`` audit event with per-row ``tag.rename_row`` children.
+    Methods return typed dataclasses with a ``to_envelope()`` method.
     """
 
     def __init__(self, db: Database, *, audit: AuditService | None = None) -> None:
@@ -383,50 +339,6 @@ class TransactionService:
             f"transactions_get returned {len(transactions)} rows (offset={offset}, has_more={has_more})"
         )
         return TransactionGetResult(transactions=transactions, next_cursor=next_cursor)
-
-    def recurring(self, min_occurrences: int = 3) -> RecurringResult:
-        """Detect recurring expense transaction patterns (amount < 0).
-
-        Groups expense transactions by description and rounded absolute
-        amount to identify subscriptions and recurring charges.
-
-        Args:
-            min_occurrences: Minimum number of occurrences to consider
-                a transaction as recurring.
-
-        Returns:
-            RecurringResult with detected recurring patterns.
-        """
-        sql = f"""
-            SELECT
-                description,
-                AVG(amount) AS avg_amount,
-                COUNT(*) AS occurrence_count,
-                MIN(transaction_date) AS first_seen,
-                MAX(transaction_date) AS last_seen
-            FROM {FCT_TRANSACTIONS.full_name}
-            WHERE amount < 0
-            GROUP BY description, ROUND(ABS(amount), 0)
-            HAVING COUNT(*) >= ?
-            ORDER BY occurrence_count DESC, description
-        """
-
-        result = self._db.execute(sql, [min_occurrences])
-        rows = result.fetchall()
-
-        transactions = [
-            RecurringTransaction(
-                description=str(row[0]),
-                avg_amount=Decimal(str(row[1])),
-                occurrence_count=int(row[2]),
-                first_seen=str(row[3]),
-                last_seen=str(row[4]),
-            )
-            for row in rows
-        ]
-
-        logger.info(f"Found {len(transactions)} recurring patterns")
-        return RecurringResult(transactions=transactions)
 
     # ------------------------------------------------------------------
     # Manual entry — raw-write half (spec Req 1–6, Task 7a).

@@ -72,7 +72,7 @@ When write volume is low (e.g., import labels — once per batch, rarely edited)
 - **Symmetry contract**: any capability reachable from one surface is reachable from the other. The translation lives in the service layer, not in surface-specific business logic.
 - **When NOT to declarative-set**: when individual ops have distinct semantics that don't collapse into a target-state representation. Notes (`add`/`edit`/`delete` operate on individual `note_id`s with separate audit semantics) keep imperative verbs in both CLI and MCP.
 
-A follow-up audit pass on the existing MCP surface (Out-of-Scope §Follow-ups) is recommended for `moneybin-mcp.md` v2. Account-management toggles already consolidated into `accounts_set` (rename/include/archive/unarchive folded with a cascade rule). Remaining candidate: `categories_toggle`.
+An MCP-vocabulary audit pass on the existing surface (Out-of-Scope §Follow-ups) was completed for `moneybin-mcp.md` v2. Account-management toggles consolidated into `accounts_set` (rename/include/archive/unarchive folded with a cascade rule). `categories_toggle` renamed to `categories_set` in the 2026-05-17 vocabulary sweep — verb-only change; no consolidation needed.
 
 ## Requirements
 
@@ -758,6 +758,6 @@ Existing test file extended to cover the 9 new MCP tools, 2 prompts, 1 new resou
 
 ### Follow-ups
 
-- This spec establishes the curation storage/presentation pattern + CLI-imperative/MCP-declarative vocabulary contract for `architecture-shared-primitives.md` to lift. An MCP-vocabulary audit pass continues for `moneybin-mcp.md` v2's remaining work — account-management toggles already folded into `accounts_set`; `categories_toggle` is the remaining consolidation candidate.
+- This spec establishes the curation storage/presentation pattern + CLI-imperative/MCP-declarative vocabulary contract for `architecture-shared-primitives.md` to lift. The MCP-vocabulary audit pass for v2 closed: account-management toggles folded into `accounts_set`; `categories_toggle` renamed to `categories_set` (verb-only, no consolidation needed).
 - Future `mcp-ux-standards.md` (in `moneybin-cli.md`'s "Future Specs to Add") lifts the declarative-set principle from this spec's §Architectural Pattern.
 - Future `architecture-shared-primitives.md` formalizes the `app.*` schema layer in `AGENTS.md` and the LIST/STRUCT presentation pattern in `.claude/rules/database.md`.

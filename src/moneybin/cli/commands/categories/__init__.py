@@ -1,4 +1,4 @@
-"""Category taxonomy management (list, create, toggle, delete)."""
+"""Category taxonomy management (list, create, set, delete)."""
 
 import typer
 
@@ -25,11 +25,14 @@ def categories_create(
     _not_implemented("categorization-overview.md")
 
 
-@app.command("toggle")
-def categories_toggle(
-    category_id: str = typer.Argument(..., help="Category ID to enable/disable"),
+@app.command("set")
+def categories_set(
+    category_id: str = typer.Argument(..., help="Category ID to update"),
+    is_active: bool = typer.Option(
+        True, "--active/--inactive", help="Set category active or inactive"
+    ),
 ) -> None:
-    """Enable or disable a category."""
+    """Update a category's settings (is_active is the only modifiable field)."""
     _not_implemented("categorization-overview.md")
 
 
