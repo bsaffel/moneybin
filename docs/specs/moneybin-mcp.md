@@ -1119,7 +1119,7 @@ Run the post-load refresh pipeline: cross-source matching, SQLMesh apply, determ
 - **Mutation surface:** rebuilds `core.*` and `reports.*` via SQLMesh; writes `app.transaction_categories` for newly-matched rules. No revert path — re-run after fixing inputs.
 - **Behavior:** Single user-facing entry point for the refresh domain. Idempotent; safe to retry after a failure. Matching and categorization steps are best-effort and log-only on failure — only SQLMesh apply errors surface in the response envelope. Returns `{applied, duration_seconds, error?}`. On apply failure, `actions[]` hints at `transform_plan` (per `mcp-server.md` infrastructure-verb carve-out) to inspect, or `refresh_run` to retry.
 - **Service:** `moneybin.services.refresh.refresh(db) -> RefreshResult`
-- **CLI:** not yet built (tracked under `moneybin-capabilities.md`).
+- **CLI:** `moneybin refresh [--output json] [-q]`
 
 ---
 

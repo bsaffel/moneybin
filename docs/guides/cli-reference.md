@@ -86,6 +86,8 @@ moneybin
 ├── system           System-level orientation
 │   └── status       Data inventory + pending review queues
 │
+├── refresh          Refresh derived tables: matching, SQLMesh apply, categorization (leaf)
+│
 ├── transform        SQLMesh pipeline
 │   ├── apply        Apply pending changes
 │   ├── plan         Preview what will change
