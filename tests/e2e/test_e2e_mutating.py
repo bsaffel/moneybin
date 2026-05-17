@@ -233,6 +233,40 @@ class TestTransformMutating:
         result = run_cli("refresh", env=env, timeout=180)
         result.assert_success()
 
+    def test_refresh_step_transform_only(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """`moneybin refresh --step transform` runs only the transform step."""
+        env = make_workflow_env_fast(
+            tmp_path, "refresh-step-xform", _mutating_profile_template
+        )
+        result = run_cli("refresh", "--step", "transform", env=env, timeout=180)
+        result.assert_success()
+
+    def test_refresh_step_json_envelope_shape(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """`moneybin refresh --step transform --output json` returns the CLI/MCP envelope."""
+        import json as _json
+
+        env = make_workflow_env_fast(
+            tmp_path, "refresh-step-json", _mutating_profile_template
+        )
+        result = run_cli(
+            "refresh",
+            "--step",
+            "transform",
+            "--output",
+            "json",
+            env=env,
+            timeout=180,
+        )
+        result.assert_success()
+        payload = _json.loads(result.stdout)
+        assert payload["status"] == "ok"
+        assert payload["data"]["applied"] is True
+        assert "duration_seconds" in payload["data"]
+
     def test_transform_state_persists_across_processes(
         self, _mutating_profile_template: Path, tmp_path: Path
     ) -> None:
