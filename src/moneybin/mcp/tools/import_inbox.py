@@ -46,7 +46,7 @@ def inbox_sync(refresh: bool = True) -> ResponseEnvelope:
         refresh: When True (default), run the post-load refresh pipeline
             (matching + SQLMesh apply + categorization) once after all files
             have been imported. Set to False to defer — useful when chaining
-            several writes before invoking ``transform_apply`` or refresh
+            several writes before invoking ``refresh_run`` or refresh
             explicitly.
     """
     from moneybin.config import get_settings
@@ -95,7 +95,7 @@ def register_inbox_tools(mcp: FastMCP) -> None:
         "Drain the active profile's import inbox; move successes to "
         "processed/ and failures to failed/ with structured error sidecars. "
         "Runs the post-load refresh pipeline once at end-of-batch when any file succeeded; "
-        "pass refresh=false to defer the rebuild and call transform_apply or refresh later. "
+        "pass refresh=false to defer the rebuild and call refresh_run later. "
         "Writes to raw.* source tables and moves files within the inbox directory; revert by manually moving processed files back into inbox/<account-slug>/ and accepting that already-imported source rows are deduplicated on the next sync.",
     )
     register(

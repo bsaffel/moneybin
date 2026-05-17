@@ -174,7 +174,7 @@ def transactions_create(
         sensitivity="medium",
         actions=[
             "Use transactions_get to confirm the rows landed",
-            "Use transform_apply to materialize them into core.fct_transactions",
+            "Use refresh_run to materialize them into core.fct_transactions",
         ],
     )
 

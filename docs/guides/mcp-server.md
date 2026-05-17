@@ -81,6 +81,12 @@ Tool names follow the v2 path-prefix-verb-suffix convention (e.g., `accounts_bal
 | `import_formats_list` | Available tabular import formats and saved profiles |
 | `import_status` | Summary of all imported data |
 
+### refresh
+
+| Tool | Description |
+|------|-------------|
+| `refresh_run` | Run the post-load pipeline: matching, SQLMesh apply, categorization |
+
 ### budget, tax (de-registered — re-register when backing spec lands)
 
 `budget_set` and `tax_w2` were de-registered 2026-05-17. Both functional implementations remain in the codebase (`src/moneybin/mcp/tools/budget.py`, `tools/tax.py`) and the CLI counterparts (`moneybin budget set`, `moneybin tax w2`, `moneybin tax deductions`) still work — only the MCP surface is gated until `budget-tracking.md` reaches `in-progress` and a tax spec lands per the stub-gating rule in `.claude/rules/mcp-server.md`.

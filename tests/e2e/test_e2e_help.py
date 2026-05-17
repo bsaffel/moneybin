@@ -80,6 +80,7 @@ _HELP_COMMANDS: list[list[str]] = [
     ["system", "audit"],
     ["system", "audit", "list"],
     ["system", "audit", "show"],
+    ["refresh"],
     ["transform"],
     ["synthetic"],
     ["db"],

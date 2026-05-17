@@ -224,6 +224,14 @@ class TestTransformMutating:
         result = run_cli("transform", "apply", env=env, timeout=180)
         result.assert_success()
 
+    def test_refresh_runs_pipeline(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """`moneybin refresh` runs matching + SQLMesh apply + categorization."""
+        env = make_workflow_env_fast(tmp_path, "refresh", _mutating_profile_template)
+        result = run_cli("refresh", env=env, timeout=180)
+        result.assert_success()
+
     def test_transform_state_persists_across_processes(
         self, _mutating_profile_template: Path, tmp_path: Path
     ) -> None:

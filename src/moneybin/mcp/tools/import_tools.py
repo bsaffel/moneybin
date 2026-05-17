@@ -63,7 +63,7 @@ def import_files(
         refresh: Run the refresh pipeline once after the batch completes.
             Defaults to True. Pass False to import without refreshing core
             tables; the transforms_pending signal in system_status will
-            indicate the pending state, and a later transform_apply or
+            indicate the pending state, and a later refresh_run or
             refresh call will catch the data up.
         force: If True, re-import files already in the import log.
 
@@ -98,11 +98,9 @@ def import_files(
 
     actions: list[str] = []
     if not batch.transforms_applied and batch.imported_count > 0:
-        actions.append("Run transform_apply when ready to refresh derived tables")
+        actions.append("Run refresh_run when ready to refresh derived tables")
     if batch.transforms_error:
-        actions.append(
-            "Transform apply failed after import — call transform_apply to retry"
-        )
+        actions.append("Refresh failed after import — call refresh_run to retry")
     actions.append("Use system_status to confirm refreshed counts")
 
     data: dict[str, Any] = {

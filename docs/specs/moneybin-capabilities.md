@@ -66,12 +66,13 @@ not-yet-built.
 | 5 | Set the complete tag set on a transaction                        | `transactions_tags_set`      | `transactions_tags_{add,remove,list}` *(cat 3)*    | —          | live                  |
 | 6 | Sync the import inbox                                            | `import_inbox_sync`          | `import_inbox` (bare group call)                   | —          | live                  |
 | 7 | Summarize an account's activity                                  | `accounts_summary`           | — *(pending-build)*                                | —          | pending-build (CLI)   |
-| 8 | Rotate the database encryption key                               | — *(cat 1 — secret material)*| `db_key_rotate`                                    | —          | live                  |
-| 9 | Run the MCP server                                               | — *(cat 2 — operator)*       | `mcp_serve`                                        | —          | live                  |
+| 8 | Refresh derived tables after raw data changes                    | `refresh_run`                | `refresh`                                          | —          | live                  |
+| 9 | Rotate the database encryption key                               | — *(cat 1 — secret material)*| `db_key_rotate`                                    | —          | live                  |
+| 10| Run the MCP server                                               | — *(cat 2 — operator)*       | `mcp_serve`                                        | —          | live                  |
 
 *(Bootstrap rows only; full table populates incrementally as
-follow-up work closes the parity backlog. Row 10 — "Discover
-currently-hidden MCP tools" — was removed 2026-05-17 when
+follow-up work closes the parity backlog. The "Discover
+currently-hidden MCP tools" capability was removed 2026-05-17 when
 client-driven progressive disclosure was retired; see
 [`mcp-architecture.md`](mcp-architecture.md) §3.)*
 

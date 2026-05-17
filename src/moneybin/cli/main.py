@@ -29,6 +29,7 @@ from .commands import (
     migrate,
     privacy,
     profile,
+    refresh,
     reports,
     stats,
     sync,
@@ -147,6 +148,10 @@ app.add_typer(
 app.add_typer(budget_cmd.app, name="budget")
 app.add_typer(tax.app, name="tax")
 app.add_typer(system.app, name="system")
+app.command(
+    name="refresh",
+    help="Refresh derived tables: matching, SQLMesh apply, categorization (leaf)",
+)(refresh.refresh_command)
 app.add_typer(
     transform.app,
     name="transform",
