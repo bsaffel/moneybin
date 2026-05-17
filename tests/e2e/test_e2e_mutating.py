@@ -722,3 +722,37 @@ class TestBalanceAssertions:
         )
         result = run_cli("accounts", "balance", "list", "--output", "json", env=env)
         result.assert_success()
+
+
+class TestCategoriesDeleteCommand:
+    """`moneybin categories delete` — hard-delete with refuse/force semantics."""
+
+    def test_delete_unreferenced_user_category(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        env = make_workflow_env_fast(
+            tmp_path, "catdel-ok", _mutating_profile_template
+        )
+        insert_sql = (
+            "INSERT INTO app.user_categories "
+            "(category_id, category, subcategory, is_active) "
+            "VALUES ('E2EDEL000001', 'E2ECleanup', NULL, true)"
+        )
+        run_cli("db", "query", insert_sql, env=env).assert_success()
+
+        result = run_cli("categories", "delete", "E2EDEL000001", env=env)
+        result.assert_success()
+        assert "deleted" in result.output.lower()
+
+    def test_delete_unknown_category_exits_nonzero(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        env = make_workflow_env_fast(
+            tmp_path, "catdel-missing", _mutating_profile_template
+        )
+        result = run_cli("categories", "delete", "DOES-NOT-EXIST", env=env)
+        assert result.exit_code == 1, (
+            f"expected exit 1 on unknown category, got {result.exit_code}\n"
+            f"output: {result.output}"
+        )
+        assert "not found" in result.output.lower()
