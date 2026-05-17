@@ -964,6 +964,41 @@ class TestCategorizeRulesCreateCLI:
         assert "Traceback (most recent call last)" not in result.stderr
         assert "Cannot read" in result.stderr
 
+    def test_create_quiet_still_surfaces_failure_warnings(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """`--quiet` suppresses the success line but failure warnings are diagnostic, not informational."""
+        env = make_workflow_env_fast(
+            tmp_path, "rulescreate-quiet", _mutating_profile_template
+        )
+        rules_file = tmp_path / "rules.json"
+        rules_file.write_text(
+            json.dumps([
+                {
+                    "name": "good-quiet-rule",
+                    "merchant_pattern": "GQ",
+                    "category": "Other",
+                },
+                {"name": "bad-quiet-rule", "category": "Other"},
+            ])
+        )
+        result = run_cli(
+            "transactions",
+            "categorize",
+            "rules",
+            "create",
+            "--from-file",
+            str(rules_file),
+            "--quiet",
+            env=env,
+        )
+        assert result.exit_code == 1
+        # Success line IS suppressed by --quiet.
+        assert "✅ Created" not in result.stderr
+        # Failure warnings ARE NOT suppressed by --quiet.
+        assert "bad-quiet-rule" in result.stderr
+        assert "⚠️" in result.stderr
+
 
 class TestCategorizeRulesDeleteCLI:
     """`moneybin transactions categorize rules delete` — soft-delete by ID."""

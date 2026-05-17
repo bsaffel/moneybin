@@ -217,10 +217,12 @@ def rules_create(
             f"✅ Created {result.created} rule(s); "
             f"existing {result.existing}, skipped {result.skipped}"
         )
-        for err in result.error_details:
-            logger.warning(
-                f"⚠️  {err.get('name', '(unknown)')}: {err.get('reason', 'failed')}"
-            )
+
+    # Per-row failure warnings always surface — they're diagnostic, not informational.
+    for err in result.error_details:
+        logger.warning(
+            f"⚠️  {err.get('name', '(unknown)')}: {err.get('reason', 'failed')}"
+        )
 
     if result.skipped > 0:
         raise typer.Exit(1)
