@@ -14,26 +14,11 @@ import textwrap
 from pathlib import Path
 
 from fastmcp import FastMCP
-from fastmcp.server.transforms import Visibility
 
 from moneybin.mcp.middleware import ValidationErrorMiddleware
 from moneybin.tables import TableRef
 
 logger = logging.getLogger(__name__)
-
-
-# Extended-namespace domains. Each tool tagged with one of these starts hidden
-# by the Visibility transform installed in register_core_tools() and is
-# re-enabled per-session via moneybin_discover.
-EXTENDED_DOMAIN_DESCRIPTIONS: dict[str, str] = {
-    "categorize": "Rules, merchant mappings, categorization",
-    "budget": "Budget targets, status, rollovers",
-    "tax": "W-2 data, deductible expense search",
-    "privacy": "Consent status, grants, revocations, audit log",
-    "transactions_matches": "Match review workflow",
-}
-
-EXTENDED_DOMAINS: frozenset[str] = frozenset(EXTENDED_DOMAIN_DESCRIPTIONS)
 
 
 # Global server instance — tools/resources/prompts register against this
@@ -43,55 +28,20 @@ mcp = FastMCP(
         """\
         MoneyBin is a local-first personal finance platform. All data lives in DuckDB on the user's machine.
 
-        Top-level groups:
-        - accounts (balance) — financial accounts and per-account workflows
-        - transactions (matches, categorize) — transactions and workflows on them
-        - assets — physical assets (real estate, vehicles, valuables)
-        - categories, merchants — taxonomy reference data
-        - reports — cross-domain analytical and aggregation views (networth, spending, cashflow, financial health, budget vs actual)
-        - tax — tax forms, deductions, future capital gains
-        - system — data status
-        - import, sync — data ingestion (sync_pull/status/connect available; OAuth flows return URLs the client opens)
-        - privacy — consent and audit
+        Top-level domains:
+        - accounts, transactions (query/correct/annotate/match/categorize), assets (physical), reports (cross-domain analytics: networth, spending, cashflow, financial health, budget vs actual)
+        - categories, merchants (taxonomy reference data)
+        - tax (forms, deductions), system (status, audit), import, sync, privacy (consent, audit)
 
-        Tool names mirror the hierarchy with underscores, verb at end: accounts_balance_assert, transactions_matches_confirm, reports_networth, reports_spending.
+        Tool names: domain_<sub>_verb, verb at end — transactions_categorize_apply, reports_networth, accounts_balance_assert.
 
-        Read surface:
-        - transactions_get — primary transaction read tool. Filter parameters: `accounts` (list of IDs or display names), `date_from` / `date_to` ('YYYY-MM-DD'), `categories` (list), `amount_min` / `amount_max` (decimal strings), `description` (case-insensitive pattern), `uncategorized_only` (bool). Returns notes/tags/splits. Cursor pagination via `cursor` + `next_cursor`.
-        - reports_spending, reports_cashflow — monthly aggregates. Bounds are `from_month` / `to_month` as 'YYYY-MM' (defaults to the last 12 months when both are omitted).
+        Start with system_status — shows what data exists, freshness, pending review queues, and whether core.* tables need a refresh (system_status.data.transforms.pending → call transform_apply).
 
-        Curation surface (visible at connect):
-        - transactions_create — bulk manual entry (1..100 atomic)
-        - transactions_notes_{add,edit,delete} — note threads on a transaction
-        - transactions_tags_set, transactions_tags_rename — declarative tagging + global rename
-        - transactions_splits_set — declarative split replacement
-        - import_labels_set — declarative labels on an import_id
-        - system_audit_list — unified audit log (filter by actor, action_pattern, target, time)
+        Every tool returns {summary, data, actions}. Pagination via summary.has_more; actions[] suggests next steps and explains how to widen capped defaults. Prefer batch tools; list parameters are capped per-call.
 
-        Getting oriented:
-        - system_status — what data exists, freshness, pending review queues, transforms-pending signal
-        - reports_spending — monthly spending trend with MoM/YoY/trailing deltas
+        Money amounts are JSON numbers in `summary.display_currency`; negative = expense, positive = income (transfers exempt). Month-bucket fields (year_month, period) are 'YYYY-MM' strings.
 
-        Refreshing derived tables:
-        - import_files and import_inbox_sync apply transforms once at end of batch by default.
-        - When system_status.data.transforms.pending is true, call transform_apply to rebuild core.* tables.
-
-        Conventions:
-        - Every tool returns {summary, data, actions}. Check summary.has_more for pagination; actions[] suggests next steps and explains how to widen capped defaults.
-        - Money amounts are JSON numbers in `summary.display_currency`. Negative = expense, positive = income (transfers exempt).
-        - Month-bucket fields (year_month, period) are 'YYYY-MM' strings.
-        - When a tool rejects a kwarg with a Pydantic 'unexpected_keyword_argument' error, the error envelope (when present) lists accepted parameter names; otherwise call the tool with no arguments and read its docstring/schema.
-        - Prefer batch tools (transactions_categorize_apply, transactions_categorize_rules_create).
-        - Sensitivity tiers: low / medium / high. Without consent, tools degrade to aggregates — they never fail.
-
-        Cold-start workflow:
-        When the user has uncategorized transactions (visible via system_status or after
-        import_inbox_sync), use moneybin_discover('categorize') to enable the categorize.*
-        namespace. Then: transactions_categorize_assist returns redacted descriptions for
-        you to propose categories on; the user reviews; transactions_categorize_apply
-        commits accepted proposals. Privacy: assist sends only redacted descriptions —
-        no amounts, dates, or account IDs. Only invoke when uncategorized count is
-        non-trivial and the user has indicated interest in AI-assisted categorization.
+        Sensitivity tiers low/medium/high. Without consent, tools degrade to aggregates — they never fail.
         """
     ),
     # mask_error_details wraps unclassified exceptions in a generic ToolError.
@@ -225,10 +175,12 @@ def close_db() -> None:
 
 
 def register_core_tools() -> None:
-    """Register all MCP tools and install the extended-namespace visibility guard.
+    """Register all MCP tools.
 
-    Tools tagged with an extended-namespace domain are hidden globally by a
-    single Visibility transform; moneybin_discover re-enables them per-session.
+    Full registered surface is visible at connect — client-driven progressive
+    disclosure was retired 2026-05-17 (see docs/specs/mcp-architecture.md §3).
+    The ``@mcp_tool(domain=...)`` tag is preserved as dormant metadata for a
+    possible future first-party client.
 
     Idempotent — safe to call multiple times within a process.
     """
@@ -240,7 +192,6 @@ def register_core_tools() -> None:
     from moneybin.mcp.tools.budget import register_budget_tools
     from moneybin.mcp.tools.categories import register_categories_tools
     from moneybin.mcp.tools.curation import register_curation_tools
-    from moneybin.mcp.tools.discover import register_discover_tool
     from moneybin.mcp.tools.import_inbox import register_inbox_tools
     from moneybin.mcp.tools.import_tools import register_import_tools
     from moneybin.mcp.tools.merchants import register_merchants_tools
@@ -275,23 +226,6 @@ def register_core_tools() -> None:
     register_sync_prompts(mcp)
     register_transform_tools(mcp)
     register_sql_tools(mcp)
-    register_discover_tool(mcp)
 
-    from moneybin.config import get_settings
-
-    if get_settings().mcp.progressive_disclosure:
-        # Single Visibility transform with OR-match semantics across all extended
-        # domains: a tool tagged with ANY of these tags is hidden until enabled by
-        # moneybin_discover. Verified against fastmcp 3.1.x; see
-        # tests/moneybin/test_mcp/test_visibility.py::test_visibility_or_match_semantics
-        # which guards against an upstream change to AND-match.
-        mcp.add_transform(Visibility(False, tags=set(EXTENDED_DOMAINS)))
-        logger.info(
-            f"Registered tools; {len(EXTENDED_DOMAINS)} extended namespaces hidden by default"
-        )
-    else:
-        logger.info(
-            "Registered tools; progressive disclosure disabled — all namespaces visible"
-        )
-
+    logger.info("Registered MCP tools — full surface visible at connect")
     _tools_registered = True

@@ -103,12 +103,6 @@ Tool names follow the v2 path-prefix-verb-suffix convention (e.g., `accounts_bal
 |------|-------------|
 | `sql_query` | Execute arbitrary read-only SQL (power user) |
 
-### moneybin
-
-| Tool | Description |
-|------|-------------|
-| `moneybin_discover` | Tool catalog and capability discovery for AI clients |
-
 ```bash
 # See all registered tools with full descriptions and schemas
 moneybin mcp list-tools
