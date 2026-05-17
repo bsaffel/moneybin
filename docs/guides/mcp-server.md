@@ -26,7 +26,7 @@ After connecting, you can ask your AI assistant things like:
 
 Tools are organized into domain namespaces. Names are stable — AI clients call `<domain>.<action>`.
 
-Tool names follow the v2 path-prefix-verb-suffix convention (e.g., `accounts_balance_list`, `transactions_categorize_commit`).
+Tool names follow the v2 path-prefix-verb-suffix convention (e.g., `accounts_balances`, `transactions_categorize_commit`).
 
 ### system / orientation
 
@@ -39,28 +39,28 @@ Tool names follow the v2 path-prefix-verb-suffix convention (e.g., `accounts_bal
 
 | Tool | Description |
 |------|-------------|
-| `accounts_list` | All financial accounts with type and institution |
-| `accounts_balance_list` | Most recent balance for each account |
+| `accounts` | All financial accounts with type and institution |
+| `accounts_balances` | Most recent balance for each account |
 
 ### transactions
 
 | Tool | Description |
 |------|-------------|
 | `transactions_search` | Search with date, amount, payee, account, and category filters |
-| `transactions_categorize_pending_list` | Find transactions needing categorization |
+| `transactions_categorize_pending` | Find transactions needing categorization |
 | `transactions_categorize_commit` | Categorize many transactions in one call (auto-creates merchant mapping) |
 | `transactions_categorize_stats` | Categorization coverage statistics |
-| `transactions_categorize_rules_list` / `_create` / `_rule_delete` | Manage categorization rules |
+| `transactions_categorize_rules` / `_create` / `_rule_delete` | Manage categorization rules |
 | `transactions_categorize_auto_review` / `_auto_confirm` / `_auto_stats` | Auto-rule learning workflow |
 
 ### categories / merchants
 
 | Tool | Description |
 |------|-------------|
-| `categories_list` | List the category taxonomy (use `include_inactive=True` to see disabled) |
+| `categories` | List the category taxonomy (use `include_inactive=True` to see disabled) |
 | `categories_create` | Create a custom category or subcategory |
 | `categories_set` | Update a category's settings (currently only `is_active`) |
-| `merchants_list` | List merchant name mappings |
+| `merchants` | List merchant name mappings |
 | `merchants_create` | Create one or many merchant mappings |
 
 ### reports
@@ -78,7 +78,7 @@ Tool names follow the v2 path-prefix-verb-suffix convention (e.g., `accounts_bal
 |------|-------------|
 | `import_file` | Import a financial data file (auto-detects format) |
 | `import_preview` | Preview structure and column mapping (dry run) |
-| `import_formats_list` | Available tabular import formats and saved profiles |
+| `import_formats` | Available tabular import formats and saved profiles |
 | `import_status` | Summary of all imported data |
 
 ### refresh

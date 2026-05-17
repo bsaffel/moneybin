@@ -529,7 +529,7 @@ Nine new tools, two prompts, one new resource and two extended. Catalog grows fr
 | `transactions_tags_rename` | write | `(old_tag, new_tag) → {row_count, parent_audit_id}` — bulk rename |
 | `transactions_splits_set` | write | `(transaction_id, splits: list[SplitInput]) → list[Split]` — declarative |
 | `import_labels_set` | write | `(import_id, labels: list[str]) → list[str]` — declarative |
-| `system_audit_list` | medium | `(filters, limit) → list[AuditEvent]` — supports `audit_id` filter for show-equivalent (returns single-element list with full payload) |
+| `system_audit` | medium | `(filters, limit) → list[AuditEvent]` — supports `audit_id` filter for show-equivalent (returns single-element list with full payload) |
 | (read tools) | — | Dropped — curation data is on `core.fct_transactions` LIST/STRUCT columns; LLM uses SQL via `moneybin://schema` |
 
 **Why the read tools were cut:** after this spec ships, `notes`, `tags`, and `splits` are columns on `core.fct_transactions`. The LLM writes `SELECT notes, tags, splits FROM core.fct_transactions WHERE transaction_id = ?` via the schema catalog. Adding dedicated read tools would duplicate token surface without adding capability.
@@ -554,21 +554,21 @@ Nine new tools, two prompts, one new resource and two extended. Catalog grows fr
 | `moneybin://uncategorized-queue` (extended) | Existing planned resource. This spec adds `notes`, `tags` to the per-row payload so the LLM can see prior curator context when proposing categorizations. | medium |
 | `moneybin://schema` (extended) | Existing resource. This spec registers new curation columns and tables: `core.fct_transactions.{notes, note_count, tags, tag_count, splits, split_count, has_splits}`, `core.fct_transaction_lines`, `app.transaction_notes`, `app.transaction_tags`, `app.transaction_splits`, `app.imports`, `app.audit_log`. Includes example queries demonstrating LIST/STRUCT use (`'tax:business' = ANY(tags)`, `UNNEST(notes)`, `note_count > 0` rather than `len(notes) > 0`). | low |
 
-Per `feedback_mcp_resources_not_universal.md`, resources are enhancement-only. Critical reads have a tool path: `system_audit_list` is the tool equivalent of `moneybin://recent-curation`. The schema catalog has its `sql_schema` tool mirror per `mcp-sql-discoverability.md`.
+Per `feedback_mcp_resources_not_universal.md`, resources are enhancement-only. Critical reads have a tool path: `system_audit` is the tool equivalent of `moneybin://recent-curation`. The schema catalog has its `sql_schema` tool mirror per `mcp-sql-discoverability.md`.
 
 ### Prompts
 
 | Prompt | Purpose |
 |---|---|
 | `prompts/curate_recent_transactions` | Walks the user through last-N-days transactions, surfacing untagged/unnoted rows and offering to add curator state. Calls `transactions list` → `transactions_tags_set` / `transactions_notes_add` in a loop. |
-| `prompts/review_curation_history` | Summarizes recent audit events ("In the last week, you re-tagged 12 transactions, added 4 splits, and labeled the Q1 batch."). Read-only. Calls `system_audit_list`. |
+| `prompts/review_curation_history` | Summarizes recent audit events ("In the last week, you re-tagged 12 transactions, added 4 splits, and labeled the Q1 batch."). Read-only. Calls `system_audit`. |
 
 Pure prompt content; no schema work. These two prompts wrap the curation-specific tools and remain in scope on their own merit (curator-segment ritual surfaces); the broader "monthly-ritual prompt set" idea was retired 2026-05-16 in favor of a tool-first `reports-anomaly-detection.md` (internal roadmap review).
 
 ### Privacy and sensitivity
 
 - All write tools (`transactions_*` and `import_labels_set`) follow the existing write-tool confirmation convention per `mcp-architecture.md`.
-- Read tools surfacing row-level data (`system_audit_list` returning before/after JSON) inherit medium-sensitivity behavior: aggregate-only response without `mcp-data-sharing` consent, full data with consent.
+- Read tools surfacing row-level data (`system_audit` returning before/after JSON) inherit medium-sensitivity behavior: aggregate-only response without `mcp-data-sharing` consent, full data with consent.
 - Critical-tier fields (account numbers, full descriptions, amounts) embedded in audit `before_value` / `after_value` JSON follow the existing redaction rules — `SanitizedLogFormatter` handles log emission; the response itself returns full data when consent is granted, summary-only without.
 
 ## Audit Emission Contract

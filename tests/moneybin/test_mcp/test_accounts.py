@@ -110,7 +110,7 @@ class TestAccountsResolve:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """No matches → action hint suggests broadening or accounts_list.
+        """No matches → action hint suggests broadening or accounts.
 
         Uses an isolated empty DB rather than the mcp_db template (whose seed
         accounts have institution names that fuzzy-match almost anything via
@@ -139,9 +139,7 @@ class TestAccountsResolve:
         result = await accounts_resolve(query="anything")
         parsed = result.to_dict()
         assert parsed["data"] == []
-        assert any(
-            "accounts_list" in a or "broader" in a.lower() for a in parsed["actions"]
-        )
+        assert any("accounts" in a or "broader" in a.lower() for a in parsed["actions"])
 
     @pytest.mark.unit
     async def test_low_confidence_top_match_emits_verify_hint(

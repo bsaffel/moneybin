@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 
 @mcp_tool(sensitivity="low", domain="categorize")
-def transactions_categorize_rules_list() -> ResponseEnvelope:
+def transactions_categorize_rules() -> ResponseEnvelope:
     """List all categorization rules.
 
     Returns rule ID, name, pattern, match type, category, priority,
@@ -62,7 +62,7 @@ def transactions_categorize_stats() -> ResponseEnvelope:
 
 
 @mcp_tool(sensitivity="medium", domain="categorize")
-def transactions_categorize_pending_list(
+def transactions_categorize_pending(
     limit: int = 50,
 ) -> ResponseEnvelope:
     """Find transactions that have not been categorized yet.
@@ -261,7 +261,7 @@ def transactions_categorize_run(
         sensitivity="medium",
         actions=[
             "Use transactions_categorize_stats to check resulting coverage",
-            "Use transactions_categorize_pending_list to see remaining uncategorized rows",
+            "Use transactions_categorize_pending to see remaining uncategorized rows",
         ],
     )
 
@@ -270,8 +270,8 @@ def register_transactions_categorize_tools(mcp: FastMCP) -> None:
     """Register all transactions categorize namespace tools with the FastMCP server."""
     register(
         mcp,
-        transactions_categorize_rules_list,
-        "transactions_categorize_rules_list",
+        transactions_categorize_rules,
+        "transactions_categorize_rules",
         "List all active categorization rules.",
     )
     register(
@@ -283,8 +283,8 @@ def register_transactions_categorize_tools(mcp: FastMCP) -> None:
     )
     register(
         mcp,
-        transactions_categorize_pending_list,
-        "transactions_categorize_pending_list",
+        transactions_categorize_pending,
+        "transactions_categorize_pending",
         "Find transactions that have not been categorized yet. "
         "Amounts use the accounting convention: negative = expense, positive = income; transfers exempt. "
         "Amounts are in the currency named by `summary.display_currency`.",

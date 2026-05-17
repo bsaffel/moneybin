@@ -25,7 +25,7 @@ Together they replace the prototype-era MCP specs (read tools, write tools) with
 
 in-progress
 
-> **v2 revision (2026-05-02, in-progress):** Aligns MCP tool naming with the unified taxonomy in [`moneybin-cli.md`](moneybin-cli.md) v2. The convention is path-prefix-verb-suffix (`accounts_balance_list`), with cross-domain reports moving under a new `reports_*` namespace. v1 tool names existed before the cross-interface rule was settled and used noun-collection-as-list (`accounts_balances`) and standalone analytical domains (`spending_*`, `cashflow_*`, `tax_*`). v2 makes the verb explicit and groups analytical lenses under `reports`. Sync (9 tools) and transform (5 tools) gain MCP exposure under the v2 exposure principle. See [§16b. Rename Map (v1 → v2)](#16b-rename-map-v1--v2). Hard cut: no aliases. Implementation pass moves status `ready` → `in-progress`.
+> **v2 revision (2026-05-02, in-progress):** Aligns MCP tool naming with the unified taxonomy in [`moneybin-cli.md`](moneybin-cli.md) v2. The convention is path-prefix-verb-suffix (`accounts_balance_assert`), with cross-domain reports moving under a new `reports_*` namespace. v1 tool names existed before the cross-interface rule was settled and used noun-collection-as-list (`accounts_balances`) and standalone analytical domains (`spending_*`, `cashflow_*`, `tax_*`). v2 makes the verb explicit and groups analytical lenses under `reports`. Sync (9 tools) and transform (5 tools) gain MCP exposure under the v2 exposure principle. See [§16b. Rename Map (v1 → v2)](#16b-rename-map-v1--v2). Hard cut: no aliases. Implementation pass moves status `ready` → `in-progress`.
 
 ---
 
@@ -96,12 +96,12 @@ These apply to all tools that accept them and are not repeated per tool:
 Path-prefix-verb-suffix. Tool names mirror the CLI hierarchy with underscores instead of spaces, ending in an explicit verb.
 
 - **Pattern:** `<entity_or_domain>[_<sub_resource>]_<verb>`
-- **Examples:** `accounts_list`, `accounts_balance_list`, `accounts_balance_assert`, `reports_networth`, `transactions_matches_confirm`, `reports_spending_summary`
-- **Verbs:** `_list` (collection get), `_get` (single instance), `_assert`, `_confirm`, `_reject`, `_apply`, `_delete`, `_create`, `_update`, plus domain-natural verbs (`_reconcile`, `_run`, `_train`).
-- **Pluralization:** singular for resource types (`balance`, `networth`, `category`); plural for relationship collections (`matches`); verb-suffix carries the list/single distinction so the noun stays consistent.
+- **Examples:** `accounts`, `accounts_balances`, `accounts_balance_assert`, `reports_networth`, `transactions_matches_confirm`, `reports_spending_summary`
+- **Verbs:** noun-only for collection / summary / aggregate / time-series reads (shape 5 of `.claude/rules/surface-design.md`); `_get` (single instance by id); `_assert`, `_confirm`, `_reject`, `_delete`, `_create`, plus domain-natural verbs (`_reconcile`, `_run`, `_train`). `_set` for idempotent state assertions (shape 1a/1b). `_list` is forbidden on read tools.
+- **Pluralization:** singular for single-entity reads (`accounts_get`); noun-only for collection reads, pluralized to match the noun (`accounts`, `accounts_balances`, `merchants`, `system_audit`); singular for sub-resources inside compound names (`balance`, `networth`, `category`); plural for relationship collections (`matches`).
 - **Encoding constraint:** lowercase ASCII with underscores, ≤64 chars (`^[a-zA-Z0-9_-]{1,64}$` per Anthropic and OpenAI MCP client regex).
 
-This mirrors the CLI taxonomy in `moneybin-cli.md` v2. A user who knows `accounts balance list` already knows `accounts_balance_list` and `GET /accounts/balances`.
+This mirrors the CLI taxonomy in `moneybin-cli.md` v2. A user who knows `accounts balance list` already knows `accounts_balances` and `GET /accounts/balances`.
 
 ### Service layer convention
 
@@ -411,7 +411,7 @@ When `create_merchant_mappings` is true, the service normalizes each transaction
 **MCP tool**
 
 - **Name:** `transactions_categorize_commit`
-- **Description:** "Apply categories to multiple transactions at once. Pair with `transactions_categorize_pending_list` to fetch candidates first. Optionally auto-creates merchant mappings so future imports are categorized automatically."
+- **Description:** "Apply categories to multiple transactions at once. Pair with `transactions_categorize_pending` to fetch candidates first. Optionally auto-creates merchant mappings so future imports are categorized automatically."
 - **Sensitivity:** `medium` — reads transaction descriptions to create merchant mappings.
 - **Parameters:**
 
@@ -438,7 +438,7 @@ When `create_merchant_mappings` is true, the service normalizes each transaction
 Note: for write tools, `data` is a result object, not an array. The envelope still wraps it — `summary.total_count` reflects the input list size.
 
 - **Degraded response:** Write tools require consent unconditionally. If consent is not granted, the tool returns an error-style envelope with `summary.degraded: true` and an action pointing to the consent grant command. No partial execution.
-- **Actions:** `["Use transactions_categorize_rules_list to review auto-created rules", "Use transactions_categorize_pending_list to fetch the next batch"]`
+- **Actions:** `["Use transactions_categorize_rules to review auto-created rules", "Use transactions_categorize_pending to fetch the next batch"]`
 
 **CLI command**
 
@@ -520,7 +520,7 @@ Income sources breakdown for a period.
 
 **Service class:** `AccountService`
 
-### `accounts_list`
+### `accounts`
 
 List all known accounts with type and institution.
 
@@ -530,7 +530,7 @@ List all known accounts with type and institution.
 - **Service:** `AccountService.list() -> list[Account]`
 - **CLI:** `moneybin accounts list`
 
-### `accounts_balance_list`
+### `accounts_balances`
 
 Most recent balance for each account.
 
@@ -546,7 +546,7 @@ Full account details including routing/account numbers.
 
 - **Sensitivity:** `high` — contains critical PII fields.
 - **Unique parameters:** `account_id: str` (required — single account, not a list; this is an exception to the batch-first principle because requesting full PII details for multiple accounts in one call is not a natural workflow and would complicate audit logging).
-- **Behavior:** Returns single account object with all fields including masked `routing_number` and `account_number` (e.g., `...1234`). Unmasked only in verified-local mode with `LOCAL_UNMASK_CRITICAL`. Degraded response returns the `accounts_list` view for that account (metadata only).
+- **Behavior:** Returns single account object with all fields including masked `routing_number` and `account_number` (e.g., `...1234`). Unmasked only in verified-local mode with `LOCAL_UNMASK_CRITICAL`. Degraded response returns the `accounts` view for that account (metadata only).
 - **Service:** `AccountService.details() -> AccountDetail`
 - **CLI:** `moneybin accounts get <account_id>`
 
@@ -558,7 +558,7 @@ Free-text → account-ID resolution for natural-language references.
 - **Annotations:** `read_only=True`, `idempotent=True`, `destructive=False`, `open_world=False` — all decorator defaults; no override needed.
 - **Unique parameters:** `query: str` (the free-text fragment, e.g. "my Chase account", "checking", "schwab brokerage"); `limit: int = 5` (max alternatives returned).
 - **Behavior:** Returns the best-match account plus alternatives, with confidence scores. Implemented via fuzzy match (`difflib.SequenceMatcher` already used for tabular account matching) over `display_name`, `account_subtype`, and `institution_name` from `core.dim_accounts`. Empty result returns `data=[]` with a `low_confidence` action hint; top match below a low-confidence threshold gets an action hint to verify with the user.
-- **Why this exists:** without it, every conversation that starts with a natural account reference takes three turns — `accounts_list` → agent scans the result → agent picks an `account_id`. Single-tool resolution collapses that to one call. Agent ergonomic primitive, not a new capability.
+- **Why this exists:** without it, every conversation that starts with a natural account reference takes three turns — `accounts` → agent scans the result → agent picks an `account_id`. Single-tool resolution collapses that to one call. Agent ergonomic primitive, not a new capability.
 - **Service:** `AccountService.resolve(query: str, limit: int = 5) -> list[AccountResolution]` in `src/moneybin/services/account_service.py`. The `AccountResolution` frozen dataclass (fields: `account_id`, `display_name`, `account_subtype`, `institution_name`, `confidence: float`, plus `to_dict()`) lives in the same module — convention parallel to other service-typed return objects. The MCP tool wraps results via `build_envelope(data=[r.to_dict() for r in resolutions], sensitivity="low", actions=[...])`.
 - **CLI:** `moneybin accounts resolve "<query>"` (`--output json` returns the same envelope)
 - **Reference:** `agigante80/actual-mcp-server` ships an analogous `actual_get_id_by_name` for the same agent-ergonomic reason.
@@ -730,7 +730,7 @@ Preview a tabular file's headers and sample rows before importing. Format-agnost
 - **Service:** `ImportService.file_preview() -> FilePreview`
 - **CLI:** `moneybin import file-preview PATH`
 
-### `import_formats_list`
+### `import_formats`
 
 List available tabular import formats.
 
@@ -768,7 +768,7 @@ Confirm and execute AI-assisted parsing for a file.
 
 **Service class:** `CategorizationService`
 
-### `transactions_categorize_pending_list`
+### `transactions_categorize_pending`
 
 Fetch transactions that haven't been categorized yet. The read side of the categorize-then-apply workflow.
 
@@ -792,7 +792,7 @@ Run the categorization engine cascade over uncategorized transactions.
 - **Service:** `CategorizationService.categorize_run(methods=...) -> dict`
 - **CLI:** `moneybin transactions categorize run [--methods rules,merchants] [--output json]`
 
-### `transactions_categorize_rules_list`
+### `transactions_categorize_rules`
 
 List active categorization rules.
 
@@ -826,7 +826,7 @@ Delete a categorization rule.
 - **Service:** `CategorizationService.delete_rule() -> DeleteResult`
 - **CLI:** `moneybin transactions categorize rules delete --rule-id ID`
 
-### `merchants_list`
+### `merchants`
 
 List merchant name mappings.
 
@@ -846,7 +846,7 @@ Create one or more merchant name mappings.
 - **Service:** `CategorizationService.create_merchants() -> CreateResult`
 - **CLI:** `moneybin merchants create --file mappings.json`
 
-### `categories_list`
+### `categories`
 
 List the category taxonomy.
 
@@ -1195,7 +1195,7 @@ Four goal-oriented workflow templates. Each defines the goal, relevant tools, gu
 
 **Goal:** Work through uncategorized transactions in batches, applying categories, creating merchant mappings, and building rules so future imports require less manual work.
 
-**Relevant tools:** `transactions_categorize_stats`, `categories_list`, `transactions_categorize_pending_list`, `transactions_categorize_commit`, `transactions_categorize_rules_create`, `merchants_create`, `categories_create`
+**Relevant tools:** `transactions_categorize_stats`, `categories`, `transactions_categorize_pending`, `transactions_categorize_commit`, `transactions_categorize_rules_create`, `merchants_create`, `categories_create`
 
 **Guardrails:**
 
@@ -1214,7 +1214,7 @@ Four goal-oriented workflow templates. Each defines the goal, relevant tools, gu
 
 **Goal:** Guide a first-time user from empty database to imported, transformed, and categorized data.
 
-**Relevant tools:** `system_status`, `import_files`, `import_file_preview`, `import_formats_list`, `transactions_categorize_stats`
+**Relevant tools:** `system_status`, `import_files`, `import_file_preview`, `import_formats`, `transactions_categorize_stats`
 
 **Guardrails:**
 
@@ -1259,7 +1259,7 @@ Data freshness dashboard. Contains: row counts per source, date ranges, last imp
 
 ### `moneybin://accounts`
 
-Account list with types, institutions, and currencies. Lets the AI reference accounts by name and filter by type without calling `accounts_list` first. Excludes balances and account numbers.
+Account list with types, institutions, and currencies. Lets the AI reference accounts by name and filter by type without calling `accounts` first. Excludes balances and account numbers.
 
 ### `moneybin://privacy`
 
@@ -1312,7 +1312,7 @@ Clean break — old tool names stop working when v1 ships. MoneyBin is pre-1.0; 
 |---|---|---|
 | `list_tables` | `moneybin://schema` resource | Tool → resource |
 | `describe_table` | `moneybin://schema` resource | Tool → resource |
-| `list_accounts` | `accounts_list` | |
+| `list_accounts` | `accounts` | |
 | `get_account_balances` | `accounts_balances` | |
 | `query_transactions` | `transactions_get` | Richer filters, curation fields, cursor pagination |
 | `get_w2_summary` | `tax_w2` | |
@@ -1320,7 +1320,7 @@ Clean break — old tool names stop working when v1 ships. MoneyBin is pre-1.0; 
 | `list_categorization_rules` | `categorize_rules` | |
 | `list_merchants` | `categorize_merchants` | |
 | `get_categorization_stats` | `categorize_stats` | |
-| `list_institutions` | `accounts_list` | Institution is a field on account |
+| `list_institutions` | `accounts` | Institution is a field on account |
 | `run_read_query` | `sql_query` | |
 | `import_file` | `import_files` | Renamed; accepts list of paths |
 | `categorize_transaction` | `categorize_apply` | Single-item removed; use list of one |
@@ -1340,7 +1340,7 @@ Clean break — old tool names stop working when v1 ships. MoneyBin is pre-1.0; 
 | `get_spending_by_category` | `spending_by_category` | |
 | `find_recurring_transactions` | `transactions_recurring` | (removed) |
 | `csv_preview_file` | `import_csv_preview` | |
-| `csv_list_profiles` | `import_formats_list` | |
+| `csv_list_profiles` | `import_formats` | |
 | `csv_save_profile` | Absorbed into `import_files` via `save_format` flag | |
 
 ### Prototype prompts
@@ -1367,14 +1367,14 @@ Per [`moneybin-cli.md`](moneybin-cli.md) v2. Hard cut: rename in place, no alias
 
 | v1 | v2 | Notes |
 |---|---|---|
-| `accounts_list` | `accounts_list` | Unchanged |
+| `accounts_list` | `accounts` | Noun-only read tool |
 | `accounts_details` | `accounts_get` | Single-instance get |
-| `accounts_balances` | `accounts_balance_list` | Singular type + explicit `_list` |
+| `accounts_balances` | `accounts_balances` | Noun-only read tool; round-trips to v1 name |
 | `accounts_networth` | `reports_networth` | **Moves to `reports_*`** — cross-domain rollup (accounts + assets), no longer scoped to `accounts` namespace |
 | (new — `net-worth.md`) | `accounts_balance_assert` | |
 | (new) | `accounts_balance_history` | |
 | (new) | `accounts_balance_reconcile` | |
-| (new) | `accounts_balance_assertions_list` | |
+| (new) | `accounts_balance_assertions` | |
 | (new) | `accounts_balance_assertion_delete` | |
 | (new) | `reports_networth_history` | Moved out of `accounts_*` |
 | (new — `account-management.md`) | `accounts_summary` | Cross-account summary view |
@@ -1387,7 +1387,7 @@ Per [`moneybin-cli.md`](moneybin-cli.md) v2. Hard cut: rename in place, no alias
 | `transactions_get` | `transactions_get` | Verb already trailing |
 | `transactions_correct` | `transactions_correct` | Verb already trailing |
 | `transactions_annotate` | `transactions_annotate` | Verb already trailing |
-| (new) | `transactions_review` | Returns counts of both review queues (matches pending + categorize pending). Orientation tool for "anything to review?" check; AI then calls `transactions_matches_pending` or `transactions_categorize_pending_list` to fetch items |
+| (new) | `transactions_review` | Returns counts of both review queues (matches pending + categorize pending). Orientation tool for "anything to review?" check; AI then calls `transactions_matches_pending` or `transactions_categorize_pending` to fetch items |
 
 ### `transactions_matches_*` (workflow under transactions)
 
@@ -1406,10 +1406,10 @@ Workflow tools that operate on transaction state stay nested under `transactions
 
 | v1 | v2 |
 |---|---|
-| `categorize_uncategorized` | `transactions_categorize_pending_list` |
+| `categorize_uncategorized` | `transactions_categorize_pending` |
 | `categorize_bulk` | `transactions_categorize_commit` |
 | `categorize_apply_rules` | `transactions_categorize_rules_apply` |
-| `categorize_rules` | `transactions_categorize_rules_list` |
+| `categorize_rules` | `transactions_categorize_rules` |
 | `categorize_create_rules` | `transactions_categorize_rules_create` |
 | `categorize_delete_rule` | `transactions_categorize_rules_delete` |
 | `categorize_stats` | `transactions_categorize_stats` |
@@ -1426,7 +1426,7 @@ Categories are reference data that transactions reference, not a workflow on tra
 
 | v1 | v2 |
 |---|---|
-| `categorize_categories` | `categories_list` |
+| `categorize_categories` | `categories` |
 | `categorize_create_category` | `categories_create` |
 | `categorize_toggle_category` | `categories_set` (renamed twice; v1 → `categories_toggle` → `categories_set`) |
 | (new) | `categories_delete` |
@@ -1437,7 +1437,7 @@ Merchants are reference data (canonical names + default categories). Same logic 
 
 | v1 | v2 |
 |---|---|
-| `categorize_merchants` | `merchants_list` |
+| `categorize_merchants` | `merchants` |
 | `categorize_create_merchants` | `merchants_create` |
 
 ### `reports_*` (new namespace — cross-domain analytical and aggregation views)
@@ -1540,7 +1540,7 @@ A few renames make minor judgment calls. Flagged here so they can be revisited i
 2. **`transactions_matches_confirm` stays `_confirm`; CLI verb aligned to `confirm`.** Resolved. Both interfaces use `confirm` because it more accurately describes ratifying a system-proposed match (vs. picking from options).
 3. **`overview_*` split into `system_status` and `reports_health`.** v1 bundled operational meta and financial summary under one namespace. v2 separates them by content type. Resolved.
 4. **`tax_*` stays its own top-level domain.** Resolved. Tax is a workflow that crosses spending, income, deductions, and forms; future tools (1099, capital gains, estimates, carryforward) need a stable home. Two tools today, but the namespace is reserved for natural growth.
-5. **`categorize_uncategorized` → `transactions_categorize_pending_list`.** Resolved. Symmetry with `transactions_matches_pending` — both are review queues, both read the same shape.
+5. **`categorize_uncategorized` → `transactions_categorize_pending`.** Resolved. Symmetry with `transactions_matches_pending` — both are review queues, both read the same shape.
 
 ---
 

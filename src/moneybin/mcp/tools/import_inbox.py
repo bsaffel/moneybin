@@ -39,7 +39,7 @@ def _uncategorized_count() -> int:
 
 
 @mcp_tool(sensitivity="low", read_only=False, idempotent=False)
-def inbox_sync(refresh: bool = True) -> ResponseEnvelope:
+def import_inbox_sync(refresh: bool = True) -> ResponseEnvelope:
     """Drain the active profile's import inbox.
 
     Args:
@@ -75,8 +75,8 @@ def inbox_sync(refresh: bool = True) -> ResponseEnvelope:
 
 
 @mcp_tool(sensitivity="low")
-def inbox_list() -> ResponseEnvelope:
-    """Preview the active profile's inbox without moving anything."""
+def import_inbox_pending() -> ResponseEnvelope:
+    """Preview pending items in the active profile's import inbox."""
     service = InboxService.for_active_profile_no_db()
     result = dataclasses.asdict(service.enumerate())
     return build_envelope(
@@ -90,7 +90,7 @@ def register_inbox_tools(mcp: FastMCP) -> None:
     """Register the two inbox tools with the MCP server."""
     register(
         mcp,
-        inbox_sync,
+        import_inbox_sync,
         "import_inbox_sync",
         "Drain the active profile's import inbox; move successes to "
         "processed/ and failures to failed/ with structured error sidecars. "
@@ -100,7 +100,7 @@ def register_inbox_tools(mcp: FastMCP) -> None:
     )
     register(
         mcp,
-        inbox_list,
-        "import_inbox_list",
-        "Preview the active profile's import inbox without moving anything.",
+        import_inbox_pending,
+        "import_inbox_pending",
+        "Preview pending items in the active profile's import inbox without moving anything.",
     )

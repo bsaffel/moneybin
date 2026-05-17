@@ -124,7 +124,7 @@ Plus domain-specific discrete verbs (`_rename`, `_archive`, `_revert`, `_pull`, 
 - `_apply` — retired. Refresh-domain "apply transforms" now routes to `refresh_run` (PR #165). Strategy-execution "apply rules" now routes to `transactions_categorize_run(methods=["rules"])`. The previous LLM-categorize-commit caller (`transactions_categorize_apply`) has been renamed to `transactions_categorize_commit`. Zero current callers; do not reintroduce.
 - `_toggle` — too narrow (binary flip). Use `_set` with a typed field: `categories_set(category_id, is_active=...)` instead of `categories_toggle`.
 - `_update` — synonym of `_set` in this codebase. The rename pass picked `_set` (`accounts_settings_update` → `accounts_set`); follow that precedent.
-- `_list` suffix on read tools — drop it (noun-only). `transactions_recurring_list` is the canonical example to remove.
+- `_list` suffix on read tools — drop it (noun-only).
 - `manage_*` with action-polymorphism — rejected absolutely (see Polymorphism below).
 
 **Pluralization:** match the noun. Collection writes use plural even when operating on one element (`_rules_create`, `_rules_delete`). Singular `_rule_delete` is wrong even when deleting one rule.
@@ -156,7 +156,7 @@ MoneyBin's surface mixes three audiences:
 |---|---|---|
 | **User-intent** | `reports_spending`, `accounts_summary`, `transactions_search` | Surfaced prominently in the `instructions` field, in user-facing tools' `actions[]` hints, and in docs |
 | **Mid-CRUD** | `transactions_tags_set`, `budget_set`, `categories_set` | Surfaced as the agent's hands — referenced by user-intent tools' `actions[]` and in workflow examples |
-| **Operator territory** | `transform_apply`, `sql_query`, `system_doctor`, `system_audit_list` | Visible but deprioritized: description prose calls out the operator audience; not promoted in `instructions` enumeration; reached via specific `actions[]` hints when relevant |
+| **Operator territory** | `transform_apply`, `sql_query`, `system_doctor`, `system_audit` | Visible but deprioritized: description prose calls out the operator audience; not promoted in `instructions` enumeration; reached via specific `actions[]` hints when relevant |
 
 **Per `docs/specs/mcp-architecture.md` §3 ("Tool disclosure: full surface, taxonomy-led"):** the full registered tool surface is visible at connect — client-driven progressive disclosure was retired 2026-05-17. Audience positioning happens through three levers MoneyBin controls end-to-end: the FastMCP `instructions` field, prefix-grouped tool names with sharp descriptions, and surface discipline (tools register only when their backing spec reaches `in-progress`/`implemented`, per `mcp-server.md` "Surface change discipline"). The `@mcp_tool(domain=...)` markers stay as dormant metadata for a future first-party client that can implement schema injection in the style of Claude Code's `tool_search`.
 

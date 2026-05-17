@@ -34,7 +34,7 @@ Related specs and docs:
 8. **Manual balance assertions:** Users can assert a known balance via `moneybin accounts balance assert <account_id> <date> <amount>`. Stored in `app.balance_assertions`. Serves as an authoritative observation alongside institution-provided balances.
 9. **No balance without an anchor:** Accounts with zero balance observations produce no `fct_balances_daily` rows. The system does not estimate an opening balance from transactions alone.
 10. **CLI commands:** `moneybin reports networth`, `moneybin reports networth-history`, `moneybin accounts balance show`, `moneybin accounts balance history`, `moneybin accounts balance assert`, `moneybin accounts balance list`, `moneybin accounts balance assertion-delete`, `moneybin accounts balance reconcile`. The `accounts` parent group is registered by [`account-management.md`](account-management.md); this spec contributes the `balance` sub-group.
-11. **MCP tools** (per [`moneybin-mcp.md`](moneybin-mcp.md) v2): `reports_networth`, `reports_networth_history`, `accounts_balance_list`, `accounts_balance_history`, `accounts_balance_reconcile`, `accounts_balance_assertions_list`, `accounts_balance_assert` (write), `accounts_balance_assertion_delete` (write).
+11. **MCP tools** (per [`moneybin-mcp.md`](moneybin-mcp.md) v2): `reports_networth`, `reports_networth_history`, `accounts_balances`, `accounts_balance_history`, `accounts_balance_reconcile`, `accounts_balance_assertions`, `accounts_balance_assert` (write), `accounts_balance_assertion_delete` (write).
 12. **All commands support `--output json`** for non-interactive parity.
 13. **Cash-only v1.** Investment holdings and multi-currency conversion are future extensions (M3B and M3C respectively). Net worth v1 covers cash accounts only.
 
@@ -234,7 +234,7 @@ Tool naming follows [`moneybin-mcp.md`](moneybin-mcp.md) v2 (path-prefix-verb-su
 - Params: `from_date` (DATE), `to_date` (DATE), `interval` (daily|weekly|monthly, default monthly)
 - Returns: time series with net worth, period-over-period change (absolute and percentage), account count
 
-**`accounts_balance_list`** — Current balance per account.
+**`accounts_balances`** — Current balance per account.
 - Params: `account_ids` (optional list), `as_of_date` (optional DATE)
 - Returns: per-account balance with date of last observation and source attribution
 
@@ -246,7 +246,7 @@ Tool naming follows [`moneybin-mcp.md`](moneybin-mcp.md) v2 (path-prefix-verb-su
 - Params: `account_ids` (optional list), `threshold` (optional DECIMAL, default 0.01)
 - Returns: list of `{account_id, balance_date, observed_balance, transaction_derived_balance, delta, source_type}` for days where the delta exceeds the threshold
 
-**`accounts_balance_assertions_list`** — Manual balance assertions.
+**`accounts_balance_assertions`** — Manual balance assertions.
 - Params: `account_id` (optional VARCHAR)
 - Returns: list of assertions with dates, amounts, and notes
 

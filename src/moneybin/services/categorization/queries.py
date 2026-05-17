@@ -51,7 +51,7 @@ class CategorizationStats:
             data=data,
             sensitivity="low",
             actions=[
-                "Use transactions_categorize_pending_list to see uncategorized transactions"
+                "Use transactions_categorize_pending to see uncategorized transactions"
             ],
         )
 

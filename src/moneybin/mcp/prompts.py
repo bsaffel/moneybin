@@ -32,7 +32,7 @@ def monthly_review() -> str:
         - reports_spending — monthly spending trend with MoM/YoY deltas
         - reports_cashflow — inflow/outflow/net per account x category
         - reports_budget — budget vs actual comparison
-        - accounts_balance_list — current account balances
+        - accounts_balances — current account balances
         - reports_recurring — subscription/recurring charge review
 
         **Workflow:**
@@ -41,7 +41,7 @@ def monthly_review() -> str:
            specific ``category`` filter, or use reports_cashflow for an
            account-and-category breakdown
         3. Check reports_budget for any categories over budget
-        4. Review accounts_balance_list for current position
+        4. Review accounts_balances for current position
         5. Optionally check reports_recurring for subscription review
 
         **Guardrails:**
@@ -63,15 +63,15 @@ def categorization_organize() -> str:
 
         **Relevant tools:**
         - transactions_categorize_stats — check current categorization coverage
-        - transactions_categorize_pending_list — fetch uncategorized transactions
-        - categories_list — see available categories
+        - transactions_categorize_pending — fetch uncategorized transactions
+        - categories — see available categories
         - transactions_categorize_commit — commit accepted categorizations
         - transactions_categorize_rules_create — create rules for recurring patterns
         - merchants_create — map merchant names to categories
 
         **Workflow:**
         1. Check transactions_categorize_stats to see how many are uncategorized
-        2. Fetch a batch with transactions_categorize_pending_list (limit ~20)
+        2. Fetch a batch with transactions_categorize_pending (limit ~20)
         3. Group similar transactions by description pattern
         4. For repeating patterns, suggest a rule (transactions_categorize_rules_create)
         5. For one-offs, use transactions_categorize_commit directly
@@ -100,7 +100,7 @@ def review_auto_rules() -> str:
         - transactions_categorize_auto_stats — pending proposal count and rule health
         - transactions_categorize_auto_review — list pending proposals with samples
         - transactions_categorize_auto_accept — batch approve/reject proposals by ID
-        - transactions_categorize_rules_list — review currently active rules
+        - transactions_categorize_rules — review currently active rules
 
         **Workflow:**
         1. Check transactions_categorize_auto_stats for pending proposal count
@@ -128,15 +128,15 @@ def onboarding() -> str:
 
         **Relevant tools:**
         - import_files — import one or more financial data files
-        - import_formats_list — see supported formats
-        - accounts_list — verify imported accounts
+        - import_formats — see supported formats
+        - accounts — verify imported accounts
         - transactions_categorize_stats — check categorization coverage
         - reports_spending — first look at their data
 
         **Workflow:**
         1. Ask the user what files they have (OFX/QFX, CSV, PDF W-2s)
         2. Import the user's files in one call to import_files (pass a list of paths)
-        3. Verify with accounts_list that accounts were created
+        3. Verify with accounts that accounts were created
         4. Check transactions_categorize_stats — if many uncategorized, offer to help
         5. Show reports_spending as their first financial snapshot
 
@@ -162,11 +162,11 @@ def curate_recent_transactions() -> str:
         next analysis pass has consistent metadata.
 
         **Relevant tools:**
-        - transactions_get — fetch recent rows; pair with system_audit_list to
+        - transactions_get — fetch recent rows; pair with system_audit to
           spot gaps (no note.add / tag.add events on a transaction_id).
         - transactions_tags_set — declarative tag replacement (idempotent).
         - transactions_notes_add — append a curator note.
-        - system_audit_list — sanity check what already happened.
+        - system_audit — sanity check what already happened.
 
         **Workflow:**
         1. Call transactions_get with a recent date window (e.g., last 30 days,
@@ -174,7 +174,7 @@ def curate_recent_transactions() -> str:
         2. For each row, propose a small set of slug-pattern tags
            (^[a-z0-9_-]+(:[a-z0-9_-]+)?$) and an optional note. Keep tags short
            and reusable; reuse existing tags when possible (a prior
-           system_audit_list with action_pattern='tag.%' helps here).
+           system_audit with action_pattern='tag.%' helps here).
         3. Confirm the batch with the user before mutating.
         4. Apply: transactions_tags_set per row, transactions_notes_add for any
            row where a note adds context the description does not.
@@ -199,18 +199,18 @@ def review_curation_history() -> str:
         last week without forcing them to read raw audit rows.
 
         **Relevant tools:**
-        - system_audit_list — pull recent events. Call with limit=500 and
+        - system_audit — pull recent events. Call with limit=500 and
           filters['from'] set to seven days ago (ISO timestamp).
         - The result `data[]` already includes action, actor, target_table,
           target_id, before/after, parent_audit_id.
 
         **Workflow:**
-        1. Call system_audit_list with from = (now - 7 days) and limit=500.
+        1. Call system_audit with from = (now - 7 days) and limit=500.
         2. Group by `action_pattern` prefix: note.*, tag.*, split.*,
            import_label.*, manual.*, category.*.
         3. Report counts per group, top 3 actors, and any noteworthy
            outliers (parent tag.rename events, large split.clear bursts).
-        4. Offer drill-down via further system_audit_list calls
+        4. Offer drill-down via further system_audit calls
            (e.g., action_pattern='tag.rename') if the user asks.
 
         **Guardrails:**

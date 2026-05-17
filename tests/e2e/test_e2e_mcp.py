@@ -62,7 +62,7 @@ class TestMCPServerBoot:
                 # Tools that should always be present (v2 names) — full surface
                 # is visible at connect (mcp-architecture.md §3).
                 assert "reports_spending" in tool_names
-                assert "accounts_list" in tool_names
+                assert "accounts" in tool_names
                 assert "system_status" in tool_names
                 # Formerly extended-namespace tools must also be visible at connect:
                 assert "transactions_categorize_commit" in tool_names
@@ -121,22 +121,19 @@ class TestMCPServerBoot:
                 tool_names = {t.name for t in tools_result.tools}
 
                 v2_accounts_tools = {
-                    "accounts_list",
+                    "accounts",
                     "accounts_get",
                     "accounts_summary",
                     "accounts_set",
-                    "accounts_balance_list",
+                    "accounts_balances",
                     "accounts_balance_history",
                     "accounts_balance_reconcile",
-                    "accounts_balance_assertions_list",
+                    "accounts_balance_assertions",
                     "accounts_balance_assert",
                     "accounts_balance_assertion_delete",
                 }
                 missing = v2_accounts_tools - tool_names
                 assert not missing, f"Missing v2 accounts tools: {missing}"
-
-                # v1 tool removed — confirm it is gone
-                assert "accounts_balances" not in tool_names
 
                 # Narrow write tools folded into accounts_set — must be absent
                 for removed in (
@@ -149,10 +146,10 @@ class TestMCPServerBoot:
                         f"{removed} should be folded into accounts_set"
                     )
 
-    async def test_accounts_balance_assertions_list_invocable(
+    async def test_accounts_balance_assertions_invocable(
         self, mcp_env: dict[str, str]
     ) -> None:
-        """accounts_balance_assertions_list returns a valid medium-sensitivity envelope.
+        """accounts_balance_assertions returns a valid medium-sensitivity envelope.
 
         Uses the app.balance_assertions table (created at DB init, not SQLMesh),
         so this works on a fresh database and returns an empty list.
@@ -171,9 +168,9 @@ class TestMCPServerBoot:
             async with ClientSession(read, write) as session:
                 await session.initialize()
 
-                result = await session.call_tool("accounts_balance_assertions_list", {})
+                result = await session.call_tool("accounts_balance_assertions", {})
                 assert not result.isError, (
-                    f"accounts_balance_assertions_list returned error: {result.content}"
+                    f"accounts_balance_assertions returned error: {result.content}"
                 )
                 content = result.content[0]
                 assert isinstance(content, TextContent)
@@ -272,7 +269,7 @@ class TestCurationTools:
                     "transactions_tags_rename",
                     "transactions_splits_set",
                     "import_labels_set",
-                    "system_audit_list",
+                    "system_audit",
                 }
                 missing = expected - tool_names
                 assert not missing, f"Missing curation tools: {missing}"
