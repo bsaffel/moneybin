@@ -157,7 +157,6 @@ Reviewer responsibility on every PR adding or modifying an `@mcp_tool` decoratio
 
 Any session that touches MoneyBin's MCP server — testing, real use, or
 incidental lookup — must produce an agent-experience report per
-[`agent-experience.md`](agent-experience.md). PRs shipping MCP changes
-include the report (or a link) in the description; reviewers verify it
-exists and that prior-report blockers are either addressed here or have an
-open follow-up.
+[`agent-experience.md`](agent-experience.md). Reports are session-internal:
+present to Brandon in chat, never paste into PRs, commits, CHANGELOG, or
+ADRs. See `agent-experience.md` for the reporting workflow.

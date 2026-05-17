@@ -318,22 +318,27 @@ def register_curation_tools(mcp: FastMCP) -> None:
         mcp,
         transactions_notes_add,
         "transactions_notes_add",
-        "Append a note to a transaction. Writes app.transaction_notes; "
-        "revert with transactions_notes_delete (hard-delete).",
+        "Append a note to a transaction. Writes app.transaction_notes. "
+        "Each note carries a unique note_id used by transactions_notes_edit and "
+        "transactions_notes_delete — the canonical shape-2 lifecycle triad. "
+        "Revert with transactions_notes_delete (hard-delete).",
     )
     register(
         mcp,
         transactions_notes_edit,
         "transactions_notes_edit",
-        "Update an existing note's text. Writes app.transaction_notes; "
-        "every edit is captured in app.audit_log.",
+        "Edit the text of one note by note_id. Notes are shape-2 lifecycle "
+        "entities — use transactions_notes_add to create, transactions_notes_delete "
+        "to remove. Writes app.transaction_notes; every edit is captured in app.audit_log.",
     )
     register(
         mcp,
         transactions_notes_delete,
         "transactions_notes_delete",
-        "Delete a note by ID. Hard-deletes from app.transaction_notes — permanent, "
-        "no revert; re-create with transactions_notes_add.",
+        "Remove one note by note_id. Notes are shape-2 lifecycle entities — "
+        "use transactions_notes_add / transactions_notes_edit for the other "
+        "operations on the triad. Hard-deletes from app.transaction_notes — "
+        "permanent, no revert; re-create with transactions_notes_add.",
     )
     register(
         mcp,
@@ -347,8 +352,10 @@ def register_curation_tools(mcp: FastMCP) -> None:
         mcp,
         transactions_tags_rename,
         "transactions_tags_rename",
-        "Rename a tag globally; emits one parent + per-row child audit events. "
-        "Writes app.transaction_tags; revert by calling with old_tag and new_tag swapped.",
+        "Rename one tag globally across ALL transactions that carry it — "
+        "this is a multi-row mutation event, not a per-transaction operation. "
+        "Writes app.transaction_tags for every affected row; emits one parent + "
+        "per-row child audit entries. No undo tool — revert by renaming back.",
     )
     register(
         mcp,

@@ -399,8 +399,12 @@ def register_reports_tools(mcp: FastMCP) -> None:
         mcp,
         reports_balance_drift,
         "reports_balance_drift",
-        "Balance reconciliation drift: asserted vs computed per assertion date. "
-        "Reads from reports.balance_drift.",
+        "Per-assertion-date asserted-vs-computed reconciliation series with "
+        "categorical status (drift / warning / clean / no-data). Reads "
+        "reports.balance_drift. For a per-day point-in-time numeric threshold "
+        "filter on the precomputed reconciliation delta, use "
+        "accounts_balance_reconcile instead. "
+        "Amounts are in the currency named by `summary.display_currency`.",
     )
     register(
         mcp,

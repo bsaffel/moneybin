@@ -15,7 +15,7 @@ from fastmcp import FastMCP
 from moneybin.database import get_database
 from moneybin.mcp.tools.categories import (
     categories_list,
-    categories_toggle,
+    categories_set,
     register_categories_tools,
 )
 from moneybin.mcp.tools.merchants import register_merchants_tools
@@ -56,7 +56,7 @@ class TestCategorizeToolRegistration:
         assert "transactions_categorize_rules_delete" in names
         assert "merchants_create" in names
         assert "categories_create" in names
-        assert "categories_toggle" in names
+        assert "categories_set" in names
         assert "transactions_categorize_assist" in names
 
     @pytest.mark.unit
@@ -84,15 +84,15 @@ class TestCategorizeToolRegistration:
         } <= names
 
 
-class TestToggleCategoryWritePath:
-    """categories_toggle routes writes to the right backing table."""
+class TestCategorySetWritePath:
+    """categories_set routes writes to the right backing table."""
 
     @pytest.mark.unit
-    async def test_toggle_default_category_writes_override(self, mcp_db: Path) -> None:
+    async def test_set_default_category_writes_override(self, mcp_db: Path) -> None:
         with get_database() as db:
             seed_categories_view(db)
 
-        await categories_toggle(category_id="FND", is_active=False)
+        await categories_set(category_id="FND", is_active=False)
 
         with get_database() as db:
             rows = db.execute(
@@ -101,7 +101,7 @@ class TestToggleCategoryWritePath:
         assert rows == [("FND", False)]
 
     @pytest.mark.unit
-    async def test_toggle_user_category_updates_user_categories(
+    async def test_set_user_category_updates_user_categories(
         self, mcp_db: Path
     ) -> None:
         with get_database() as db:
@@ -112,14 +112,14 @@ class TestToggleCategoryWritePath:
                 VALUES ('CUSTOM1', 'Childcare', 'Daycare', true)
             """)
 
-        await categories_toggle(category_id="CUSTOM1", is_active=False)
+        await categories_set(category_id="CUSTOM1", is_active=False)
 
         with get_database() as db:
             rows = db.execute(
                 "SELECT is_active FROM app.user_categories WHERE category_id = ?",
                 ["CUSTOM1"],
             ).fetchall()
-            # Override table is for defaults only — user toggles must not write here.
+            # Override table is for defaults only — user category updates must not write here.
             override_count = db.execute(
                 "SELECT COUNT(*) FROM app.category_overrides"
             ).fetchone()

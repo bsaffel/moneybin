@@ -56,11 +56,24 @@ def categories_create(
 
 
 @mcp_tool(sensitivity="low", read_only=False)
-def categories_toggle(
+def categories_set(
     category_id: str,
     is_active: bool,
 ) -> ResponseEnvelope:
-    """Enable or disable a category. Existing categorizations are preserved."""
+    """Update a category's settings (currently only is_active).
+
+    Idempotent partial update — matches the shape-1b _set convention used
+    across MoneyBin (budget_set, accounts_set). Existing categorizations
+    are preserved when a category is disabled.
+
+    For lifecycle operations: use categories_create to add, categories_delete
+    to remove.
+
+    Args:
+        category_id: ID of the category to update.
+        is_active: Whether the category is selectable for new
+            categorizations.
+    """
     with get_database() as db:
         CategorizationService(db).toggle_category(
             category_id,
@@ -86,12 +99,17 @@ def register_categories_tools(mcp: FastMCP) -> None:
         categories_create,
         "categories_create",
         "Create a custom category or subcategory. "
-        "Writes app.user_categories; revert with categories_toggle (set is_active=False) — there is no hard-delete.",
+        "Writes app.user_categories; revert with categories_set (set is_active=False) or hard-remove with categories_delete.",
     )
     register(
         mcp,
-        categories_toggle,
-        "categories_toggle",
-        "Enable or disable a category in the taxonomy. "
-        "Writes app.user_categories.is_active for user-created categories or app.category_overrides for seeded ones; revert by calling again with the opposite is_active value.",
+        categories_set,
+        "categories_set",
+        "Update a category's settings (is_active is currently the only "
+        "modifiable field). Shape-1b partial-update tool matching the "
+        "budget_set / accounts_set convention. "
+        "Writes app.user_categories.is_active for user-created categories or "
+        "app.category_overrides for seeded ones; revert by calling again "
+        "with the opposite is_active value. "
+        "For category lifecycle: categories_create to add, categories_delete to remove.",
     )
