@@ -163,15 +163,23 @@ def categorize_run(
       moneybin transactions categorize run --methods rules
       moneybin transactions categorize run --methods rules,merchants --output json
     """
-    from typing import Literal, cast
+    from typing import Literal
 
     from moneybin.cli.output import render_or_json
     from moneybin.protocol.envelope import build_envelope
     from moneybin.services.categorization import CategorizationService
 
-    parsed_methods = [m.strip() for m in methods.split(",") if m.strip()]
-    valid = {"rules", "merchants"}
-    bad = [m for m in parsed_methods if m not in valid]
+    valid: set[str] = {"rules", "merchants"}
+    typed_methods: list[Literal["rules", "merchants"]] = []
+    bad: list[str] = []
+    for raw in methods.split(","):
+        name = raw.strip()
+        if not name:
+            continue
+        if name == "rules" or name == "merchants":
+            typed_methods.append(name)
+        else:
+            bad.append(name)
     if bad:
         typer.echo(
             f"❌ Unknown method(s): {', '.join(bad)}. Valid: {', '.join(sorted(valid))}.",
@@ -179,7 +187,6 @@ def categorize_run(
         )
         raise typer.Exit(2)
 
-    typed_methods = cast(list[Literal["rules", "merchants"]], parsed_methods)
     with handle_cli_errors():
         with get_database() as db:
             data = CategorizationService(db).categorize_run(methods=typed_methods)
@@ -224,6 +231,8 @@ def categorize_assist(
     `moneybin transactions categorize commit`.
     """
     from moneybin.cli.output import render_or_json
+    from moneybin.mcp.privacy import audit_log
+    from moneybin.metrics.registry import CATEGORIZE_ASSIST_CALLS_TOTAL
     from moneybin.protocol.envelope import build_envelope
     from moneybin.services.categorization import CategorizationService
 
@@ -248,21 +257,14 @@ def categorize_assist(
                 date_range=date_tuple,
             )
 
-    data = [
-        {
-            "transaction_id": r.transaction_id,
-            "description_redacted": r.description_redacted,
-            "memo_redacted": r.memo_redacted,
-            "source_type": r.source_type,
-            "transaction_type": r.transaction_type,
-            "check_number": r.check_number,
-            "is_transfer": r.is_transfer,
-            "transfer_pair_id": r.transfer_pair_id,
-            "payment_channel": r.payment_channel,
-            "amount_sign": r.amount_sign,
-        }
-        for r in redacted
-    ]
+    CATEGORIZE_ASSIST_CALLS_TOTAL.labels(surface="cli").inc()
+    audit_log(
+        tool="transactions_categorize_assist",
+        sensitivity="medium",
+        metadata={"txn_count": len(redacted), "account_filter": accounts},
+    )
+
+    data = [r.to_dict() for r in redacted]
     envelope = build_envelope(data=data, sensitivity="medium")
 
     def _render_table(_: ResponseEnvelope) -> None:

@@ -31,7 +31,7 @@ def _make_secret_store() -> MagicMock:
 def _make_db_with_uncategorized(tmp_path: Path) -> tuple[Database, MagicMock]:
     """Test DB with two uncategorized transactions, no categorizations recorded."""
     store = _make_secret_store()
-    db = Database(tmp_path / "test.duckdb", secret_store=store)
+    db = Database(tmp_path / "test.duckdb", secret_store=store, no_auto_upgrade=True)
     db.execute(  # noqa: S608  # test input, not executing SQL
         """
         CREATE TABLE IF NOT EXISTS core.fct_transactions (

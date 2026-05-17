@@ -70,21 +70,7 @@ def transactions_categorize_assist(
     )
 
     return build_envelope(
-        data=[
-            {
-                "transaction_id": r.transaction_id,
-                "description_redacted": r.description_redacted,
-                "memo_redacted": r.memo_redacted,
-                "source_type": r.source_type,
-                "transaction_type": r.transaction_type,
-                "check_number": r.check_number,
-                "is_transfer": r.is_transfer,
-                "transfer_pair_id": r.transfer_pair_id,
-                "payment_channel": r.payment_channel,
-                "amount_sign": r.amount_sign,
-            }
-            for r in redacted
-        ],
+        data=[r.to_dict() for r in redacted],
         sensitivity="medium",
         actions=[
             "Propose (category, subcategory, canonical_merchant_name) per item",

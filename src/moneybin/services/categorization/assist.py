@@ -48,6 +48,21 @@ class RedactedTransaction:
     payment_channel: str | None
     amount_sign: Literal["+", "-", "0"]
 
+    def to_dict(self) -> dict[str, object]:
+        """Serialize to the public wire shape (MCP/CLI envelope row)."""
+        return {
+            "transaction_id": self.transaction_id,
+            "description_redacted": self.description_redacted,
+            "memo_redacted": self.memo_redacted,
+            "source_type": self.source_type,
+            "transaction_type": self.transaction_type,
+            "check_number": self.check_number,
+            "is_transfer": self.is_transfer,
+            "transfer_pair_id": self.transfer_pair_id,
+            "payment_channel": self.payment_channel,
+            "amount_sign": self.amount_sign,
+        }
+
 
 def _amount_sign_label(amount: float | None) -> Literal["+", "-", "0"]:
     """Map a raw amount to the LLM-facing sign signal.

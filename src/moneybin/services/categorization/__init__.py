@@ -416,10 +416,14 @@ class CategorizationService:
             "applied_by_method": {},
             "total_applied": 0,
         }
-        # When the default cascade is requested, use the optimized shared-scan path.
-        if effective == ["rules", "merchants"]:
+        # Both engines requested → use the shared-scan path regardless of
+        # order. categorize_pending() shares one uncategorized-rows fetch
+        # across both engines and enforces rule-priority-wins ordering.
+        if set(effective) == {"rules", "merchants"}:
             breakdown = self._orchestrator.categorize_pending()
             # categorize_pending returns {"rule": N, "merchant": N, "total": N}
+            # — keys are singular; the public API exposes plural for symmetry
+            # with the methods=[...] parameter.
             result["applied_by_method"] = {
                 "rules": breakdown.get("rule", 0),
                 "merchants": breakdown.get("merchant", 0),

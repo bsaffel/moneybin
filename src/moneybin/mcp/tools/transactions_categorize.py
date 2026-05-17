@@ -244,11 +244,8 @@ def transactions_categorize_run(
 
     Each method runs a deterministic engine: ``rules`` applies active
     user-authored pattern rules; ``merchants`` applies the stored merchant
-    catalog. When multiple methods are given, they cascade in order — a
-    rule write blocks a merchant write at the same priority.
-
-    Methods differ in QoS (data source, latency) but share inputs and
-    outputs; this is method-parameter polymorphism. Amounts use the
+    catalog. When multiple methods are given, they cascade — a rule write
+    blocks a merchant write at the same priority. Amounts use the
     accounting convention: negative = expense, positive = income;
     transfers exempt.
 

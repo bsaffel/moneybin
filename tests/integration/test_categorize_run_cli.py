@@ -35,7 +35,7 @@ def _make_db(tmp_path: Path) -> tuple[Database, MagicMock]:
     the bare table the service reads from.
     """
     store = _make_secret_store()
-    db = Database(tmp_path / "test.duckdb", secret_store=store)
+    db = Database(tmp_path / "test.duckdb", secret_store=store, no_auto_upgrade=True)
     db.execute(
         """
         CREATE TABLE IF NOT EXISTS core.fct_transactions (
