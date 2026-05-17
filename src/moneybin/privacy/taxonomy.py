@@ -132,6 +132,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
     ("app", "budgets"): {
         "budget_id": DataClass.RECORD_ID,
         "category": DataClass.CATEGORY,
+        "category_id": DataClass.RECORD_ID,
         "created_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "end_month": DataClass.TXN_DATE,
         "monthly_amount": DataClass.TXN_AMOUNT,
@@ -141,6 +142,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
     ("app", "categorization_rules"): {
         "account_id": DataClass.ACCOUNT_IDENTIFIER,
         "category": DataClass.CATEGORY,
+        "category_id": DataClass.RECORD_ID,
         "created_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "created_by": DataClass.TXN_TYPE,
         "is_active": DataClass.TXN_TYPE,
@@ -197,6 +199,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
     },
     ("app", "proposed_rules"): {
         "category": DataClass.CATEGORY,
+        "category_id": DataClass.RECORD_ID,
         "decided_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "decided_by": DataClass.TXN_TYPE,
         "match_type": DataClass.TXN_TYPE,
@@ -213,6 +216,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "deactivated_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "deactivation_id": DataClass.RECORD_ID,
         "new_category": DataClass.CATEGORY,
+        "new_category_id": DataClass.RECORD_ID,
         "new_subcategory": DataClass.CATEGORY,
         "override_count": DataClass.AGGREGATE,
         "reason": DataClass.TXN_TYPE,
@@ -256,6 +260,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "categorized_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "categorized_by": DataClass.TXN_TYPE,
         "category": DataClass.CATEGORY,
+        "category_id": DataClass.RECORD_ID,
         "confidence": DataClass.AGGREGATE,
         "merchant_id": DataClass.RECORD_ID,
         "rule_id": DataClass.RECORD_ID,
@@ -272,6 +277,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
     ("app", "transaction_splits"): {
         "amount": DataClass.TXN_AMOUNT,
         "category": DataClass.CATEGORY,
+        "category_id": DataClass.RECORD_ID,
         "created_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "created_by": DataClass.TXN_TYPE,
         "note": DataClass.USER_NOTE,
@@ -298,6 +304,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
     ("app", "user_merchants"): {
         "canonical_name": DataClass.MERCHANT_NAME,
         "category": DataClass.CATEGORY,
+        "category_id": DataClass.RECORD_ID,
         "created_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "created_by": DataClass.TXN_TYPE,
         "exemplars": DataClass.MERCHANT_NAME,
