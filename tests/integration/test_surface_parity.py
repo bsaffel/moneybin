@@ -64,9 +64,9 @@ introduction:
 - **D. CLI gaps.** MCP tools that need a CLI sibling but lack one:
   ``accounts_summary``, ``import_inbox_sync``,
   ``transactions_categorize_assist``,
-  ``transactions_categorize_pending_list``,
-  ``transactions_categorize_rules_delete``,
-  ``transactions_categorize_rules_create``, ``transactions_get``.
+  ``transactions_categorize_pending``, ``transactions_get``.
+  ``transactions_categorize_rules_create`` and
+  ``transactions_categorize_rules_delete`` resolved via PR #167.
 """
 
 # ruff: noqa: S101
@@ -139,7 +139,9 @@ CLI_ONLY_ALLOWED: frozenset[str] = frozenset({
     "accounts_balance_list",
     "accounts_balance_assertions_list",
     "transactions_categorize_rules_list",
-    "transactions_categorize_pending_list",
+    # `transactions_categorize_pending_list` is OMITTED: no CLI subcommand
+    # exists (`moneybin transactions categorize pending` is a D-backlog gap,
+    # listed in the module docstring above).
     # `import_inbox_list` is OMITTED: see MCP_ONLY_ALLOWED note below —
     # the `moneybin import inbox` group is callable bare, so its bare
     # canonical name matches the MCP noun-only `import_inbox` directly.
