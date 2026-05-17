@@ -595,9 +595,9 @@ class AccountService:
         diff: dict[str, object] = {}
         warnings: list[dict[str, str]] = []
 
-        # Group 13 cascade: archiving forces include_in_net_worth=False in
-        # the same write. Resolved before _resolve() so an explicit caller
-        # value for include_in_net_worth is overridden by the cascade.
+        # Archive forces include_in_net_worth=False in the same write —
+        # resolved before _resolve() so an explicit caller value is
+        # overridden by the cascade.
         if archived is True:
             include_in_net_worth = False
 

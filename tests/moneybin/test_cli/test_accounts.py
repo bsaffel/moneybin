@@ -9,6 +9,7 @@ import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.main import app
+from moneybin.services.account_service import CLEAR
 
 
 @pytest.fixture
@@ -252,8 +253,6 @@ class TestAccountsSetBehavioralFlags:
         mock_get_db: MagicMock,
         runner: CliRunner,
     ) -> None:
-        from moneybin.services.account_service import CLEAR
-
         mock_get_db.return_value = MagicMock()
         mock_service = mock_svc_cls.return_value
         mock_service.settings_update.return_value = (
