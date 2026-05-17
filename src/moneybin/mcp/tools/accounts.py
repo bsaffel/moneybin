@@ -13,7 +13,7 @@ Read tools (balance, contributed by net-worth.md):
   - accounts_balances (medium)
   - accounts_balance_history (medium)
   - accounts_balance_reconcile (medium)
-  - accounts_balance_assertions_list (medium)
+  - accounts_balance_assertions (medium)
 
 Write tools (balance, all medium):
   - accounts_balance_assert
@@ -272,7 +272,7 @@ def accounts_balance_reconcile(
 
 
 @mcp_tool(sensitivity="medium")
-def accounts_balance_assertions_list(
+def accounts_balance_assertions(
     account_id: str | None = None,
 ) -> ResponseEnvelope:
     """List user-entered balance assertions.
@@ -445,8 +445,8 @@ def register_accounts_tools(mcp: FastMCP) -> None:
     )
     register(
         mcp,
-        accounts_balance_assertions_list,
-        "accounts_balance_assertions_list",
+        accounts_balance_assertions,
+        "accounts_balance_assertions",
         "List user-entered balance assertions. "
         "Amounts are in the currency named by `summary.display_currency`.",
     )

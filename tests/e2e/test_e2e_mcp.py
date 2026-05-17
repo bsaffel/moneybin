@@ -128,15 +128,12 @@ class TestMCPServerBoot:
                     "accounts_balances",
                     "accounts_balance_history",
                     "accounts_balance_reconcile",
-                    "accounts_balance_assertions_list",
+                    "accounts_balance_assertions",
                     "accounts_balance_assert",
                     "accounts_balance_assertion_delete",
                 }
                 missing = v2_accounts_tools - tool_names
                 assert not missing, f"Missing v2 accounts tools: {missing}"
-
-                # v1 tool removed — confirm it is gone
-                assert "accounts_balances" not in tool_names
 
                 # Narrow write tools folded into accounts_set — must be absent
                 for removed in (
@@ -149,10 +146,10 @@ class TestMCPServerBoot:
                         f"{removed} should be folded into accounts_set"
                     )
 
-    async def test_accounts_balance_assertions_list_invocable(
+    async def test_accounts_balance_assertions_invocable(
         self, mcp_env: dict[str, str]
     ) -> None:
-        """accounts_balance_assertions_list returns a valid medium-sensitivity envelope.
+        """accounts_balance_assertions returns a valid medium-sensitivity envelope.
 
         Uses the app.balance_assertions table (created at DB init, not SQLMesh),
         so this works on a fresh database and returns an empty list.
@@ -171,9 +168,9 @@ class TestMCPServerBoot:
             async with ClientSession(read, write) as session:
                 await session.initialize()
 
-                result = await session.call_tool("accounts_balance_assertions_list", {})
+                result = await session.call_tool("accounts_balance_assertions", {})
                 assert not result.isError, (
-                    f"accounts_balance_assertions_list returned error: {result.content}"
+                    f"accounts_balance_assertions returned error: {result.content}"
                 )
                 content = result.content[0]
                 assert isinstance(content, TextContent)

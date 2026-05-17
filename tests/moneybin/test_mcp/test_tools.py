@@ -73,7 +73,7 @@ class TestToolRegistration:
         assert "accounts_balances" in names
         assert "accounts_balance_history" in names
         assert "accounts_balance_reconcile" in names
-        assert "accounts_balance_assertions_list" in names
+        assert "accounts_balance_assertions" in names
         assert "accounts_balance_assert" in names
         assert "accounts_balance_assertion_delete" in names
 
