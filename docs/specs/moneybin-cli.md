@@ -511,8 +511,8 @@ This is a hard cut. No aliases, no deprecation period. v1 paths break in the sam
 | `categorize *` (workflow + rules + auto + ml) | `transactions categorize *` | Workflow on transactions |
 | `categorize categories / create-category / toggle-category` | `categories list / create / set / delete` | Reference-data taxonomy → top-level entity group |
 | `categorize merchants / create-merchants` | `merchants list / create` | Reference-data taxonomy → top-level entity group |
-| (none) | `accounts list / show / rename / include` | New entity ops |
-| (none) | `transactions list / show / search` | New entity ops |
+| (none) | `accounts list / get / set / resolve` | New entity ops; rename/include/archive/unarchive fold into `accounts set` flags per #164 |
+| (none) | `transactions list / get / search` | New entity ops |
 | (none) | `reports {spending, cashflow, tax, budget}` | New analytical group (subcommands future) |
 
 The `track` group is dissolved entirely.
@@ -576,7 +576,7 @@ Restructure-only. Move and rename existing commands to the new tree; rename MCP 
 
 | Change | Scope |
 |---|---|
-| Create `accounts` group with `list`, `show`, `rename`, `include` (thin entity ops) | New CLI module |
+| Create `accounts` group with `list`, `get`, `rename`, `include` (thin entity ops) | New CLI module |
 | Move `track balance` → `accounts balance` (preserve subcommands as stubs where they were) | Rename + reparent |
 | Move `track networth` → `reports networth` (preserve subcommands as stubs) | Rename + reparent into reports group |
 | Add top-level `assets` group (placeholder; workflows owned by `asset-tracking.md`) | New CLI module, all stubs |

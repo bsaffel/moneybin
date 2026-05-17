@@ -157,14 +157,14 @@ Always runs with `verbose=False` — affected IDs are omitted (agents can query 
 - `sqlmesh/audits/fct_transactions_sign_convention.sql`
 - `sqlmesh/audits/bridge_transfers_balanced.sql`
 - `src/moneybin/services/doctor_service.py` — `InvariantResult`, `DoctorService`
-- `src/moneybin/cli/commands/doctor.py` — top-level Typer command
+- `src/moneybin/cli/commands/system/doctor.py` — Typer command under the `system` group
 - `tests/moneybin/test_services/test_doctor_service.py`
 - `tests/moneybin/test_cli/test_doctor.py`
 - `tests/e2e/test_e2e_doctor.py`
 
 ## Files to Modify
 
-- `src/moneybin/cli/main.py` — register `doctor` command group
+- `src/moneybin/cli/commands/system/__init__.py` — register the `doctor` command on the existing `system` Typer group via `app.command(name="doctor")(_doctor.doctor_command)`
 - `src/moneybin/mcp/tools/system.py` — add `system_doctor`, register in `register_system_tools()`
 - `docs/specs/INDEX.md` — add this spec; update `data-reconciliation.md` entry with cross-reference
 - `docs/specs/moneybin-mcp.md` — document `system_doctor`

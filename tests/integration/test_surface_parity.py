@@ -35,14 +35,14 @@ the missing tool/command — caught by the functional-coverage check,
 not by this test). Categories captured from the diff at test
 introduction:
 
-- **A. Naming-pattern mismatches.** MCP ``*_get`` vs CLI ``*_show``
-  across the ``reports_*`` family (9 tools), ``accounts_get`` vs
-  ``accounts_show``, ``accounts_set`` vs ``accounts_set``,
-  ``transactions_review`` vs ``transactions_review``,
-  ``import_formats_list`` vs ``import_formats_list``, ``system_doctor``
-  vs top-level ``doctor``, ``reports_budget`` vs
-  ``reports_budget``, ``accounts_balance_assertion_delete`` vs
-  ``accounts_balance_delete``.
+- **A. Naming-pattern mismatches.** **RESOLVED 2026-05-17 (PR #159).** The
+  rename pass collapsed all entries in this category by adopting the
+  noun-only convention for read projections (``reports_*``,
+  ``accounts_get``), the ``_set`` verb for partial updates
+  (``accounts_set`` from ``accounts_settings_update``), and the ``system
+  doctor`` CLI placement under the existing ``system`` group. No active
+  Category A entries remain; the xfail marker stays until B, C, and D
+  also land per the PR description.
 - **B. Set-semantic vs verb-list split.** MCP collapses to ``*_set``
   while CLI splits into add/remove/list/clear:
   ``import_labels_set`` / ``import_labels_{add,remove,list}``,

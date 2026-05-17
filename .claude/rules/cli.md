@@ -5,6 +5,8 @@ paths: ["src/moneybin/cli/**", "src/moneybin/main.py"]
 
 # CLI Development
 
+**Surface-shape rules:** [`surface-design.md`](surface-design.md) — operation-shape taxonomy, verb vocabulary, audience layering. Cross-surface (governs CLI, MCP, and future REST endpoints). Consult before adding, renaming, or restructuring a command.
+
 ## Core Principle
 
 CLI commands are **thin wrappers** around tested business logic. Delegate complex work to business logic classes.

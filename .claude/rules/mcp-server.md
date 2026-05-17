@@ -7,6 +7,8 @@ paths: ["src/moneybin/mcp/**", "src/moneybin/services/**"]
 
 **Authoritative design:** [`docs/specs/mcp-architecture.md`](../../docs/specs/mcp-architecture.md)
 
+**Surface-shape rules:** [`surface-design.md`](surface-design.md) — operation-shape taxonomy, verb vocabulary, audience layering. Cross-surface (governs MCP, CLI, and future REST endpoints). Consult before adding, renaming, or restructuring a tool.
+
 ## Architecture
 
 MCP tools are thin wrappers around a shared service layer. They contain no business logic, no SQL, and no privacy enforcement — all of that lives below them.
