@@ -15,8 +15,8 @@ SELECT
   t.transaction_id, /* Foreign key to core.fct_transactions */
   COALESCE(s.split_id, 'whole') AS line_id, /* 'whole' for unsplit transactions; split_id for split children */
   COALESCE(s.amount, t.amount) AS line_amount, /* Per-line amount; equals parent.amount for unsplit rows */
-  COALESCE(s.category, t.category) AS line_category, /* Per-line category; falls through to parent for unsplit rows */
-  COALESCE(s.subcategory, t.subcategory) AS line_subcategory, /* Per-line subcategory; falls through to parent for unsplit rows */
+  COALESCE(s.category, t.category) AS line_category, /* Per-line category resolved via category_id FK to core.dim_categories (resolution happens inside fct_transactions.splits); falls through to parent for unsplit rows */
+  COALESCE(s.subcategory, t.subcategory) AS line_subcategory, /* Per-line subcategory; same FK resolution + parent fallback */
   s.note AS line_note, /* NULL on unsplit rows; per-split note when present */
   CASE WHEN s.split_id IS NULL THEN 'whole' ELSE 'split' END AS line_kind, /* 'whole' for unsplit transactions, 'split' for split children */
   t.account_id, /* Foreign key to core.dim_accounts */
@@ -33,6 +33,7 @@ SELECT
   t.transaction_year_month, /* YYYY-MM period grouping */
   t.transaction_year_quarter /* YYYY-QN period grouping */
 FROM core.fct_transactions AS t
-LEFT JOIN UNNEST(t.splits) AS u (s)
+LEFT JOIN UNNEST(t.splits) AS u(s)
   ON TRUE
-WHERE NOT t.has_splits OR NOT s.split_id IS NULL
+WHERE
+  NOT t.has_splits OR NOT s.split_id IS NULL

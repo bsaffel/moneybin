@@ -30,15 +30,17 @@ WITH notes_agg AS (
     transaction_id
 ), splits_agg AS (
   SELECT
-    transaction_id,
+    s.transaction_id,
     LIST(
-      {'split_id': split_id, 'amount': amount, 'category': category, 'subcategory': subcategory, 'note': note} ORDER BY ord, split_id
+      {'split_id': s.split_id, 'amount': s.amount, 'category': COALESCE(sdc.category, s.category), 'subcategory': COALESCE(sdc.subcategory, s.subcategory), 'note': s.note} ORDER BY s.ord, s.split_id
     ) AS splits,
     COUNT(*) AS split_count,
-    MAX(created_at) AS splits_latest
-  FROM app.transaction_splits
+    MAX(s.created_at) AS splits_latest
+  FROM app.transaction_splits AS s
+  LEFT JOIN core.dim_categories AS sdc
+    ON s.category_id = sdc.category_id
   GROUP BY
-    transaction_id
+    s.transaction_id
 ), enriched AS (
   SELECT
     t.transaction_id,
