@@ -16,6 +16,7 @@ from pathlib import Path
 from fastmcp import FastMCP
 from fastmcp.server.transforms import Visibility
 
+from moneybin.mcp.middleware import ValidationErrorMiddleware
 from moneybin.tables import TableRef
 
 logger = logging.getLogger(__name__)
@@ -56,7 +57,8 @@ mcp = FastMCP(
         Tool names mirror the hierarchy with underscores, verb at end: accounts_balance_assert, transactions_matches_confirm, reports_networth_get, reports_spending_get.
 
         Read surface:
-        - transactions_get — primary transaction read tool; filter by account, date, category, amount, description; returns notes/tags/splits; cursor pagination
+        - transactions_get — primary transaction read tool. Filter parameters: `accounts` (list of IDs or display names), `date_from` / `date_to` ('YYYY-MM-DD'), `categories` (list), `amount_min` / `amount_max` (decimal strings), `description` (case-insensitive pattern), `uncategorized_only` (bool). Returns notes/tags/splits. Cursor pagination via `cursor` + `next_cursor`.
+        - reports_spending_get, reports_cashflow_get — monthly aggregates. Bounds are `from_month` / `to_month` as 'YYYY-MM' (defaults to the last 12 months when both are omitted).
 
         Curation surface (visible at connect):
         - transactions_create — bulk manual entry (1..100 atomic)
@@ -75,7 +77,10 @@ mcp = FastMCP(
         - When system_status.data.transforms.pending is true, call transform_apply to rebuild core.* tables.
 
         Conventions:
-        - Every tool returns {summary, data, actions}. Check summary.has_more for pagination; actions[] suggests next steps.
+        - Every tool returns {summary, data, actions}. Check summary.has_more for pagination; actions[] suggests next steps and explains how to widen capped defaults.
+        - Money amounts are JSON numbers in `summary.display_currency`. Negative = expense, positive = income (transfers exempt).
+        - Month-bucket fields (year_month, period) are 'YYYY-MM' strings.
+        - When a tool rejects a kwarg with a Pydantic 'unexpected_keyword_argument' error, the error envelope (when present) lists accepted parameter names; otherwise call the tool with no arguments and read its docstring/schema.
         - Prefer batch tools (transactions_categorize_apply, transactions_categorize_rules_create).
         - Sensitivity tiers: low / medium / high. Without consent, tools degrade to aggregates — they never fail.
 
@@ -94,6 +99,11 @@ mcp = FastMCP(
     # envelopes before reaching this boundary.
     mask_error_details=True,
 )
+
+# Convert pydantic ValidationError on tool-arg binding into a friendly
+# response envelope so agents see "Accepted parameters: ..." instead of a
+# raw pydantic_core stack-string. Tool body code never sees the bad call.
+mcp.add_middleware(ValidationErrorMiddleware(server=mcp))
 
 
 _tools_registered = False

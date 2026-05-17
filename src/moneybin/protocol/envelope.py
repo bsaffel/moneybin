@@ -69,11 +69,18 @@ class SummaryMeta:
 
 
 class _DecimalEncoder(json.JSONEncoder):
-    """JSON encoder that serializes Decimal as string to avoid float imprecision."""
+    """JSON encoder that serializes Decimal as a JSON number.
+
+    MoneyBin holds money as `Decimal` internally for precision-safe arithmetic;
+    on the wire we emit JSON numbers so agents and JSON tooling consume them
+    as numerics, not strings that need re-parsing. `DECIMAL(18,2)` (amounts)
+    and `DECIMAL(18,8)` (prices, quantities, FX rates) both fit inside the
+    ~15.95 significant digits of float64 with room to spare.
+    """
 
     def default(self, o: object) -> Any:
         if isinstance(o, Decimal):
-            return str(o)
+            return float(o)
         return super().default(o)
 
 

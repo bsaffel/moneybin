@@ -8,7 +8,7 @@ MODEL (
 
 WITH monthly AS (
   SELECT
-    date_trunc('month', t.transaction_date) AS year_month,
+    strftime(date_trunc('month', t.transaction_date), '%Y-%m') AS year_month,
     t.category,
     SUM(ABS(t.amount)) AS total_spend,
     COUNT(*) AS txn_count
@@ -20,7 +20,7 @@ WITH monthly AS (
   GROUP BY date_trunc('month', t.transaction_date), t.category
 )
 SELECT
-  m.year_month, /* First-of-month */
+  m.year_month, /* Calendar month as 'YYYY-MM' */
   m.category, /* Spending category text; NULL for uncategorized */
   m.total_spend, /* Sum of absolute outflow this month in this category */
   m.txn_count, /* Outflow transaction count */

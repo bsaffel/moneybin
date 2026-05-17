@@ -13,6 +13,21 @@ each one is, where it lives, and how PII is masked across the project.
 | `routing_number` | ABA routing number | `core.dim_accounts.routing_number` | OFX `<BANKACCTFROM><BANKID>` or tabular | PII-adjacent (publicly listed but identifies institution); log only when essential for diagnostics |
 | `display_name` | Human-readable label | `core.dim_accounts.display_name` (resolved from `app.account_settings.display_name` → derived default) | User override or auto-derived | Yes — user-controlled label |
 
+## Known gap: `account_id` is not opaque for OFX-sourced accounts
+
+The table above describes `account_id` as "opaque, no PII." That is **true
+for Plaid-sourced accounts** (Plaid generates a synthetic `account_id`) and
+for tabular content-hash IDs, but **false for OFX-sourced accounts** —
+`src/moneybin/extractors/ofx_extractor.py` stores the raw OFX `<ACCTID>`
+field, which for retail banks is the actual bank account number. The
+"source-provided IDs are stored as-is" rule in
+[`.claude/rules/identifiers.md`](../../.claude/rules/identifiers.md) was
+followed correctly; the contradiction is between that rule and this doc's
+opacity claim. Fixing it requires a one-way-door schema decision (hashing
+breaks every `account_id` foreign key and persisted `app.account_settings`
+row) and is tracked as outstanding work — do not assume opacity when
+reasoning about MCP or log surface for OFX accounts until this is resolved.
+
 ## Why `account_number` is never stored
 
 Loaders extract only `last_four` from raw inputs. The full number is dropped at

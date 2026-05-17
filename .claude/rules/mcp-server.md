@@ -152,3 +152,12 @@ The MCP description string passed to `register(mcp, fn, name, description)` is t
 - **Mutation surface** — for tools with `read_only=False`: the `app.*` table written and the revert path (audit log reference, paired undo tool, or "permanent — no revert").
 
 Reviewer responsibility on every PR adding or modifying an `@mcp_tool` decoration. The `.claude/rules/database.md` and `AGENTS.md` files document these invariants for human contributors, but the agent never sees those — invariants the agent must apply correctly belong in the tool description itself.
+
+## Agent-experience reports
+
+Any session that touches MoneyBin's MCP server — testing, real use, or
+incidental lookup — must produce an agent-experience report per
+[`agent-experience.md`](agent-experience.md). PRs shipping MCP changes
+include the report (or a link) in the description; reviewers verify it
+exists and that prior-report blockers are either addressed here or have an
+open follow-up.

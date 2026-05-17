@@ -8,6 +8,8 @@ Tools:
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastmcp import FastMCP
 
 from moneybin.database import get_database
@@ -54,15 +56,78 @@ def sql_query(query: str) -> ResponseEnvelope:
 
 
 @mcp_tool(sensitivity="low")
-def sql_schema() -> ResponseEnvelope:
+def sql_schema(table: str | None = None) -> ResponseEnvelope:
     """Return the curated database schema for ad-hoc SQL composition.
 
     Equivalent to reading the ``moneybin://schema`` MCP resource. Provided
     as a tool for hosts that don't surface MCP resources to the model
-    (e.g. Claude.ai chat). Returns interface tables, columns, comments,
-    conventions, and example queries.
+    (e.g. Claude.ai chat).
+
+    Defaults to a compact catalog (table names + purposes + column counts)
+    so agents don't pay for the full ~50KB schema document on every call.
+    Pass ``table='<schema.name>'`` to get columns, comments, and example
+    queries for one table. Pass ``table='*'`` to get the full document.
+
+    Args:
+        table: ``None`` (default) returns the compact catalog; a full table
+            name like ``'core.fct_transactions'`` returns details for that
+            table; ``'*'`` returns the full schema document.
     """
-    return build_envelope(data=build_schema_doc(), sensitivity="low")
+    doc = build_schema_doc()
+    tables: list[dict[str, Any]] = doc["tables"]
+
+    if table is None:
+        compact = [
+            {
+                "name": t["name"],
+                "purpose": t["purpose"],
+                "column_count": len(t["columns"]),
+                "example_count": len(t["examples"]),
+            }
+            for t in tables
+        ]
+        return build_envelope(
+            data={
+                "version": doc["version"],
+                "generated_at": doc["generated_at"],
+                "conventions": doc["conventions"],
+                "tables": compact,
+            },
+            sensitivity="low",
+            actions=[
+                "Pass table='<schema.name>' (e.g. 'core.fct_transactions') to "
+                "fetch columns, comments, and example queries for one table.",
+                "Pass table='*' for the full schema document (~50KB).",
+            ],
+        )
+
+    if table == "*":
+        return build_envelope(data=doc, sensitivity="low")
+
+    matches = [t for t in tables if t["name"] == table]
+    if not matches:
+        known = ", ".join(t["name"] for t in tables)
+        return build_envelope(
+            data={
+                "version": doc["version"],
+                "generated_at": doc["generated_at"],
+                "conventions": doc["conventions"],
+                "tables": [],
+                "error": f"Unknown table: {table}",
+                "available_tables": [t["name"] for t in tables],
+            },
+            sensitivity="low",
+            actions=[f"Call again with table=<one of>: {known}"],
+        )
+    return build_envelope(
+        data={
+            "version": doc["version"],
+            "generated_at": doc["generated_at"],
+            "conventions": doc["conventions"],
+            "tables": matches,
+        },
+        sensitivity="low",
+    )
 
 
 def register_sql_tools(mcp: FastMCP) -> None:
@@ -80,7 +145,9 @@ def register_sql_tools(mcp: FastMCP) -> None:
         mcp,
         sql_schema,
         "sql_schema",
-        "Return the curated database schema: interface tables, columns, "
-        "comments, conventions, and example queries. Mirrors the "
-        "moneybin://schema resource for hosts that don't expose MCP resources.",
+        "Return the curated database schema. Default call returns a compact "
+        "catalog (table names + purposes + column counts). Pass "
+        "table='<schema.name>' for one table's columns/examples, or "
+        "table='*' for the full ~50KB document. Mirrors the moneybin://schema "
+        "resource for hosts that don't expose MCP resources.",
     )

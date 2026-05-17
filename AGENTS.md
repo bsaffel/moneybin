@@ -164,3 +164,4 @@ Files in `.claude/rules/` auto-load via Claude Code's `paths:` frontmatter — p
 | `shipping.md` | Post-implementation checklist: README updates, roadmap icons, `/simplify` pre-push pass |
 | `branching.md` | Branch prefix → PR label mapping, commit message style |
 | `sandboxing.md` | Bash invocation patterns: single commands, allowlisted pipelines, structured-output filtering, policy denials |
+| `agent-experience.md` | Required agent-experience report whenever you interact with MoneyBin's MCP server in a session |

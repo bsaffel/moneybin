@@ -19,6 +19,7 @@ Read tools:
 from __future__ import annotations
 
 from datetime import date as _date
+from datetime import datetime as _datetime
 from typing import Any, Literal
 
 from fastmcp import FastMCP
@@ -37,12 +38,30 @@ def _envelope(
     rows: list[tuple[Any, ...]],
     *,
     sensitivity: Literal["low", "medium", "high"] = "medium",
+    actions: list[str] | None = None,
+    period: str | None = None,
 ) -> ResponseEnvelope:
     """Wrap a (cols, rows) result as a response envelope at ``sensitivity``."""
     return build_envelope(
         data=[dict(zip(cols, r, strict=False)) for r in rows],
         sensitivity=sensitivity,
+        actions=actions,
+        period=period,
     )
+
+
+def _default_window(months: int = 12) -> tuple[str, str]:
+    """Return (from_month, to_month) as YYYY-MM strings covering the last N months."""
+    today = _datetime.now()
+    end = today.replace(day=1)
+    # Walk back `months - 1` calendar months to get an inclusive N-month window.
+    year = end.year
+    month = end.month - (months - 1)
+    while month <= 0:
+        month += 12
+        year -= 1
+    start = end.replace(year=year, month=month)
+    return start.strftime("%Y-%m"), end.strftime("%Y-%m")
 
 
 @mcp_tool(sensitivity="medium")
@@ -66,7 +85,15 @@ def reports_networth_get(
         snapshot = NetworthService(db).current(
             as_of_date=parsed_date, account_ids=account_ids
         )
-    return build_envelope(data=snapshot.to_dict(), sensitivity="medium")
+    return build_envelope(
+        data=snapshot.to_dict(),
+        sensitivity="medium",
+        actions=[
+            "Use reports_networth_history_get(from_date, to_date) for the time series",
+            "Use accounts_balance_history(account_id=...) to drill into one account",
+            "Use accounts_list to see archived / excluded accounts not counted here",
+        ],
+    )
 
 
 @mcp_tool(sensitivity="medium")
@@ -89,7 +116,14 @@ def reports_networth_history_get(
     parsed_to = _date.fromisoformat(to_date)
     with get_database(read_only=True) as db:
         rows = NetworthService(db).history(parsed_from, parsed_to, interval=interval)
-    return build_envelope(data=rows, sensitivity="medium")
+    return build_envelope(
+        data=rows,
+        sensitivity="medium",
+        actions=[
+            "Use reports_networth_get(as_of_date=...) for a single-date snapshot with per-account breakdown",
+            "Switch `interval` to 'daily' or 'weekly' for finer resolution",
+        ],
+    )
 
 
 @mcp_tool(sensitivity="low")
@@ -101,18 +135,45 @@ def reports_spending_get(
 ) -> ResponseEnvelope:
     """Monthly spending trend with MoM, YoY, and 3-month-trailing deltas.
 
+    Defaults to the last 12 calendar months when both bounds are omitted.
+    YoY columns are populated from the underlying view (which includes all
+    history), not from the windowed result — narrowing the window does not
+    null out yoy_pct.
+
     Args:
-        from_month: ISO date YYYY-MM-01; lower bound (inclusive).
-        to_month: ISO date YYYY-MM-01; upper bound (inclusive).
+        from_month: Lower bound (inclusive) as 'YYYY-MM' (also accepts
+            'YYYY-MM-DD' and ignores the day).
+        to_month: Upper bound (inclusive) as 'YYYY-MM' (also accepts
+            'YYYY-MM-DD' and ignores the day).
         category: Filter to a specific category text. None returns all.
         compare: yoy | mom | trailing — caller-side intent only; the view
             returns all three comparison columns regardless.
     """
+    defaulted = from_month is None and to_month is None
+    if defaulted:
+        from_month, to_month = _default_window(months=12)
     with get_database(read_only=True) as db:
         cols, rows = ReportsService(db).spending_trend(
             from_month=from_month, to_month=to_month, category=category, compare=compare
         )
-    return _envelope(cols, rows, sensitivity="low")
+    actions = [
+        "Filter to one category with category='<name>' (see categories_list)",
+        "Use reports_cashflow_get for inflow/outflow/net (includes income; spending excludes it)",
+        "Use reports_recurring_get to find subscription-like patterns",
+    ]
+    if defaulted:
+        actions.insert(
+            0,
+            "Showing the last 12 months — pass from_month='YYYY-MM' and/or "
+            "to_month='YYYY-MM' to widen or shift the window.",
+        )
+    return _envelope(
+        cols,
+        rows,
+        sensitivity="low",
+        actions=actions,
+        period=f"{from_month} to {to_month}" if from_month and to_month else None,
+    )
 
 
 @mcp_tool(sensitivity="low")
@@ -123,16 +184,39 @@ def reports_cashflow_get(
 ) -> ResponseEnvelope:
     """Monthly cash flow rollup: inflow/outflow/net per account x category.
 
+    Defaults to the last 12 calendar months when both bounds are omitted.
+
     Args:
-        from_month: ISO date YYYY-MM-01; lower bound (inclusive).
-        to_month: ISO date YYYY-MM-01; upper bound (inclusive).
+        from_month: Lower bound (inclusive) as 'YYYY-MM' (also accepts
+            'YYYY-MM-DD' and ignores the day).
+        to_month: Upper bound (inclusive) as 'YYYY-MM' (also accepts
+            'YYYY-MM-DD' and ignores the day).
         by: account | category | account-and-category — how to group.
     """
+    defaulted = from_month is None and to_month is None
+    if defaulted:
+        from_month, to_month = _default_window(months=12)
     with get_database(read_only=True) as db:
         cols, rows = ReportsService(db).cash_flow(
             from_month=from_month, to_month=to_month, by=by
         )
-    return _envelope(cols, rows, sensitivity="low")
+    actions = [
+        "Switch `by` to 'account', 'category', or 'account-and-category' to regroup",
+        "Use reports_spending_get for outflow-only trend with MoM/YoY deltas",
+    ]
+    if defaulted:
+        actions.insert(
+            0,
+            "Showing the last 12 months — pass from_month='YYYY-MM' and/or "
+            "to_month='YYYY-MM' to widen or shift the window.",
+        )
+    return _envelope(
+        cols,
+        rows,
+        sensitivity="low",
+        actions=actions,
+        period=f"{from_month} to {to_month}" if from_month and to_month else None,
+    )
 
 
 @mcp_tool(sensitivity="low")

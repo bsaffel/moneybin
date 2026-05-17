@@ -6,7 +6,7 @@ MODEL (
 );
 
 SELECT
-  date_trunc('month', t.transaction_date) AS year_month, /* First-of-month for the calendar month */
+  strftime(date_trunc('month', t.transaction_date), '%Y-%m') AS year_month, /* Calendar month as 'YYYY-MM' */
   t.account_id, /* Owning account (joinable to core.dim_accounts) */
   a.display_name AS account_name, /* Account display name (resolved from app.account_settings if overridden) */
   t.category, /* Spending category text from core.fct_transactions; NULL for uncategorized */
