@@ -71,8 +71,8 @@ not-yet-built.
 | 10| Run the MCP server                                               | — *(cat 2 — operator)*       | `mcp_serve`                                        | —          | live                  |
 
 *(Bootstrap rows only; full table populates incrementally as
-follow-up work closes the parity backlog. Row 10 — "Discover
-currently-hidden MCP tools" — was removed 2026-05-17 when
+follow-up work closes the parity backlog. The "Discover
+currently-hidden MCP tools" capability was removed 2026-05-17 when
 client-driven progressive disclosure was retired; see
 [`mcp-architecture.md`](mcp-architecture.md) §3.)*
 
