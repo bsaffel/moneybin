@@ -175,8 +175,8 @@ class TestCategoriesDeleteTool:
             )
             db.execute(
                 "INSERT INTO app.transaction_categories "
-                "(transaction_id, category, categorized_by) "
-                "VALUES ('txn-forced', 'Linked', 'user')"
+                "(transaction_id, category, category_id, categorized_by) "
+                "VALUES ('txn-forced', 'Linked', 'USERCAT2', 'user')"
             )
 
         envelope = (
