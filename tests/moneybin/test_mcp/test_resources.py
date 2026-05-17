@@ -177,16 +177,18 @@ class TestResourceTools:
         namespaces = {e["namespace"] for e in data["namespaces"]}
         # Promoted namespaces appear in the catalog. Categorization tools
         # live under `transactions_categorize_*` and surface under
-        # `transactions`. ``budget`` and ``transform`` are intentionally
-        # not promoted; ``privacy`` and ``transactions_matches`` are
-        # phantoms (no registered tools today) — both classes return when
-        # their first/next tool registers. See ``_NAMESPACE_DESCRIPTIONS``
-        # preamble in ``resources.py``.
+        # `transactions`. ``transform`` is a promotion carve-out (registered
+        # but not promoted). ``budget``, ``tax``, ``privacy``,
+        # ``transactions_matches`` are all phantoms today — no registered
+        # tools, backing specs not at ``in-progress``/``implemented``, so the
+        # namespace stays out per the stub-gating rule. Each returns when
+        # its first tool registers against a real spec.
         assert "reports" in namespaces
         assert "accounts" in namespaces
         assert "transactions" in namespaces
-        assert "tax" in namespaces
+        assert "sql" in namespaces
         assert "budget" not in namespaces
+        assert "tax" not in namespaces
         assert "transform" not in namespaces
         assert "privacy" not in namespaces
         assert "transactions_matches" not in namespaces

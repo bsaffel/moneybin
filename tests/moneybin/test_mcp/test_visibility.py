@@ -56,7 +56,10 @@ async def test_formerly_extended_tools_visible_at_connect() -> None:
 
     Belt-and-suspenders complement to ``test_full_surface_visible_at_connect``:
     asserts specific tools by name so a regression that drops one namespace
-    entirely (rather than hiding it) is caught.
+    entirely (rather than hiding it) is caught. ``budget_*`` and ``tax_*``
+    are intentionally NOT in this set — both are de-registered until their
+    backing specs reach ``in-progress``/``implemented`` (see
+    ``moneybin-mcp.md`` §17 "Dependency tracker").
     """
     from moneybin.mcp.server import mcp
 
@@ -65,11 +68,19 @@ async def test_formerly_extended_tools_visible_at_connect() -> None:
 
     expected = {
         "transactions_categorize_apply",
-        "budget_set",
-        "tax_w2",
+        "transactions_categorize_assist",
     }
     missing = expected - names
     assert not missing, f"Expected tools missing from connect-time surface: {missing}"
+
+    # Stub-gated tools must NOT appear (sibling guard to the stub-gate rule
+    # in ``.claude/rules/mcp-server.md``).
+    stub_gated = {"budget_set", "tax_w2", "tax_deductions"}
+    leaked = stub_gated & names
+    assert not leaked, (
+        f"Stub-gated tools leaked onto the public surface: {leaked}. "
+        "Backing spec must reach in-progress/implemented before re-register."
+    )
 
 
 async def test_every_tool_name_matches_anthropic_openai_pattern() -> None:

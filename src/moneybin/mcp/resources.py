@@ -105,17 +105,18 @@ def resource_schema() -> str:
 # under ``transactions_*`` (e.g. ``transactions_categorize_apply``) and surface
 # under the ``transactions`` namespace, not as a separate ``categorize`` entry.
 #
-# Intentionally NOT promoted as top-level namespaces here:
-#   - ``budget`` — held back until the broader budget-tracking feature ships per
-#     ``budget-tracking.md`` (today's ``budget_set`` is a partial slice).
+# Promotion carve-out — registered but intentionally not surfaced here:
 #   - ``transform`` — by consolidation agreement, ``transform_*`` tools are
-#     infrastructure verbs rather than a user-facing top-level domain.
-# Tools in those prefixes still register and appear via ``list_tools()``; they
-# just don't show up as namespaces in the ``moneybin://tools`` catalog.
+#     infrastructure verbs reached via ``system_status`` action hints rather
+#     than a user-facing top-level domain. Tools register and appear via
+#     ``list_tools()``; the namespace simply doesn't show up in this catalog.
 #
-# Phantom namespaces (no registered tools) — ``privacy``, ``transactions_matches`` —
-# are added in the same PR that registers their first tool. Listing them here
-# before tools exist creates an empty promise in the catalog.
+# Phantom namespaces — no registered tools today, backing spec not at
+# ``in-progress``/``implemented`` — ``privacy``, ``transactions_matches``,
+# ``budget`` (de-registered 2026-05-17 — backing ``budget-tracking.md`` is
+# ``draft``), ``tax`` (de-registered 2026-05-17 — no backing spec). Each
+# returns to this dict in the PR that registers its first tool against a
+# real spec (see ``moneybin-mcp.md`` §17 "Dependency tracker").
 _NAMESPACE_DESCRIPTIONS: dict[str, str] = {
     "accounts": "Account listing, balances, net worth",
     "categories": "Category taxonomy reference data",
@@ -125,7 +126,6 @@ _NAMESPACE_DESCRIPTIONS: dict[str, str] = {
     "sql": "Direct read-only SQL queries",
     "sync": "Provider sync (Plaid Transactions)",
     "system": "Data status, audit log, schema health",
-    "tax": "W-2 data, deductible expense search",
     "transactions": "Search, corrections, annotations, categorization, recurring",
 }
 
@@ -133,9 +133,12 @@ _NAMESPACE_DESCRIPTIONS: dict[str, str] = {
 def _namespace_for(tool_name: str) -> str:
     """Extract the namespace prefix from an underscore-joined tool name.
 
-    Multi-segment namespaces (``transactions_matches``) match via longest-prefix
-    lookup so tools like ``transactions_matches_pending`` group correctly.
-    Single-segment namespaces use first-underscore split.
+    Today every promoted namespace is single-segment (first-underscore split),
+    so the multi-segment branch is unreachable against the current dict. The
+    loop stays in place so the moment a multi-segment namespace re-enters
+    ``_NAMESPACE_DESCRIPTIONS`` (e.g. when the match-review surface lands and
+    registers ``transactions_matches_pending``), grouping under
+    ``transactions_matches`` works without code changes.
     """
     for ns in _NAMESPACE_DESCRIPTIONS:
         if "_" in ns and tool_name.startswith(f"{ns}_"):

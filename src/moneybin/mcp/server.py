@@ -31,7 +31,7 @@ mcp = FastMCP(
         Top-level domains:
         - accounts, transactions (query/correct/annotate/match/categorize), reports (cross-domain analytics: networth, spending, cashflow, financial health, budget vs actual)
         - categories, merchants (taxonomy reference data)
-        - tax (forms, deductions), system (status, audit), import, sync, sql (read-only escape hatch)
+        - system (status, audit), import, sync, sql (read-only escape hatch)
 
         Tool names: domain_<sub>_verb, verb at end — transactions_categorize_apply, reports_networth, accounts_balance_assert.
 
@@ -189,7 +189,6 @@ def register_core_tools() -> None:
         return
 
     from moneybin.mcp.tools.accounts import register_accounts_tools
-    from moneybin.mcp.tools.budget import register_budget_tools
     from moneybin.mcp.tools.categories import register_categories_tools
     from moneybin.mcp.tools.curation import register_curation_tools
     from moneybin.mcp.tools.import_inbox import register_inbox_tools
@@ -199,7 +198,6 @@ def register_core_tools() -> None:
     from moneybin.mcp.tools.sql import register_sql_tools
     from moneybin.mcp.tools.sync import register_sync_prompts, register_sync_tools
     from moneybin.mcp.tools.system import register_system_tools
-    from moneybin.mcp.tools.tax import register_tax_tools
     from moneybin.mcp.tools.transactions import register_transactions_tools
     from moneybin.mcp.tools.transactions_categorize import (
         register_transactions_categorize_tools,
@@ -208,6 +206,16 @@ def register_core_tools() -> None:
         register_transactions_categorize_assist_tools,
     )
     from moneybin.mcp.tools.transform import register_transform_tools
+
+    # Budget and tax tools are intentionally NOT registered today —
+    # ``budget-tracking.md`` is ``draft`` (today's ``budget_set`` is a partial
+    # slice of the planned set/status/delete + rollovers feature) and there is
+    # no backing tax spec at all. Per ``.claude/rules/mcp-server.md``
+    # "Surface change discipline" they re-register when their backing spec
+    # reaches ``in-progress`` or ``implemented``. The tool implementation
+    # files (``tools/budget.py``, ``tools/tax.py``) stay in place as building
+    # blocks; only the registration is gated. See ``moneybin-mcp.md`` §17
+    # "Dependency tracker".
 
     register_system_tools(mcp)
     register_reports_tools(mcp)
@@ -220,8 +228,6 @@ def register_core_tools() -> None:
     register_merchants_tools(mcp)
     register_import_tools(mcp)
     register_inbox_tools(mcp)
-    register_budget_tools(mcp)
-    register_tax_tools(mcp)
     register_sync_tools(mcp)
     register_sync_prompts(mcp)
     register_transform_tools(mcp)

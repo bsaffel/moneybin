@@ -1256,13 +1256,12 @@ Flat catalog of registered tool namespaces with one-line descriptions. All names
     {"namespace": "accounts", "tools": 4, "description": "Account listing, balances, net worth"},
     {"namespace": "transactions", "tools": 15, "description": "Universal query, corrections, annotations, categorization, recurring"},
     {"namespace": "import", "tools": 5, "description": "File import, status, format detection"},
-    {"namespace": "tax", "tools": 2, "description": "W-2, deductible expense search"},
     {"namespace": "sql", "tools": 1, "description": "Power-user escape hatch"}
   ]
 }
 ```
 
-Static for a given server build — namespace and tool counts reflect what is registered (bounded by the surface-discipline rule in `.claude/rules/mcp-server.md`). The `core`/`extended`/`loaded`/`discover_tool` shape from the earlier progressive-disclosure design is retired. Two classes of namespaces are intentionally absent from this catalog: (1) phantoms — `privacy.*`, `transactions_matches.*`, and any other prefix with no registered tools today — they re-enter when their first tool registers; (2) tools in prefixes not promoted as top-level domains — `budget_*` (held back until `budget-tracking.md` ships in full) and `transform_*` (infrastructure verbs reached via `system_status` action hints, not a user-facing domain) — still register and appear in `list_tools()` but do not surface here.
+Static for a given server build — namespace and tool counts reflect what is registered (bounded by the surface-discipline rule in `.claude/rules/mcp-server.md`). The `core`/`extended`/`loaded`/`discover_tool` shape from the earlier progressive-disclosure design is retired. Two classes of namespaces are absent from this catalog: (1) phantoms — `privacy.*`, `transactions_matches.*`, `budget.*`, `tax.*`, and any other prefix with no registered tools today — they re-enter when their first tool registers under a backing spec that is `in-progress` or `implemented`; (2) the one *promotion* carve-out — `transform_*` tools (infrastructure verbs reached via `system_status` action hints, not a user-facing domain) still register and appear in `list_tools()` but do not surface here.
 
 ---
 
@@ -1533,7 +1532,8 @@ Tools that depend on unbuilt subsystems are documented in the catalog with depen
 | **Smart Import (Pillar F) + Privacy** | Not written | `import_ai_preview`, `import_ai_parse` |
 | **Corrections table schema** | Not written | `transactions_correct` |
 | **Annotations table schema** | Not written | `transactions_annotate` |
-| **Budget tracking spec** | Draft | `reports_budget_summary` rollover behavior |
+| **Budget tracking spec** | Draft | `reports_budget_summary` rollover behavior; `budget_set` (de-registered 2026-05-17 — re-register when spec reaches `in-progress`) |
+| **Tax spec (none yet)** | Not written | `tax_w2`, `tax_deductions` (de-registered 2026-05-17 — re-register when a tax spec lands and reaches `in-progress`); `tax_prep` prompt (removed alongside) |
 
 ### Tools shippable without dependencies
 
@@ -1545,12 +1545,10 @@ These tools can be fully implemented with the current codebase and existing infr
 **`transactions.*`**: `search`
 **`import.*`**: `file`, `status`, `csv_preview`, `list_formats`
 **`categorize.*`**: `uncategorized`, `apply`, `rules`, `create_rules`, `delete_rule`, `merchants`, `create_merchants`, `categories`, `create_category`, `toggle_category`, `stats`
-**`budget.*`**: `set`, `status`, `delete`
-**`tax.*`**: `w2`
 **`overview.*`**: `status`, `health`
 **`sql.*`**: `query`
 
-This is a 34-domain-tool surface that can ship independently of any pending spec work. All 34 are visible at connect (see `mcp-architecture.md` §3 "Tool disclosure: full surface, taxonomy-led"). Tools blocked on dependencies above stay unregistered until their backing spec reaches `in-progress`.
+This is a 30-domain-tool surface that can ship independently of any pending spec work. All entries above are visible at connect (see `mcp-architecture.md` §3 "Tool disclosure: full surface, taxonomy-led"). Tools blocked on dependencies above stay unregistered until their backing spec reaches `in-progress`. `budget.*` and `tax.*` were previously listed as "shippable without dependencies" but moved to the blocked table 2026-05-17 — their backing specs have not yet reached `in-progress`/`implemented`, and a working implementation alone does not justify exposing the tool on the public surface.
 
 ---
 

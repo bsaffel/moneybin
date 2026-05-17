@@ -158,12 +158,11 @@ Tools use a hybrid namespace that reflects the most natural way an AI or user wo
 | `categories.*`, `merchants.*` | Taxonomy reference data |
 | `import.*`, `sync.*` | Data ingestion (files, providers) |
 | `system.*` | Orientation, data status, audit log, schema health |
-| `tax.*` | W-2, deductible expense search |
 | `sql.*` | Read-only escape hatch |
 
-A namespace appears in this table only when it has at least one registered tool today. The earlier v1 plan listed `overview.*`, `spending.*`, `cashflow.*`, `transactions_matches.*`, `privacy.*` — those folded into other namespaces or remain forward-looking (privacy, match-review). They re-enter the table in the PR that registers their first tool.
+A namespace appears in this table only when it has at least one registered tool today AND its backing spec is `in-progress` or `implemented` per the stub-gating rule in `.claude/rules/mcp-server.md`. The earlier v1 plan listed `overview.*`, `spending.*`, `cashflow.*`, `transactions_matches.*`, `privacy.*` — those folded into other namespaces or remain forward-looking. `budget.*` and `tax.*` previously appeared here but were de-registered 2026-05-17 (backing specs are `draft` / unwritten — see `moneybin-mcp.md` §17). Any of these re-enter the table in the PR that registers their first tool against a real spec.
 
-Intentionally not promoted as top-level namespaces, even though tools exist: `budget.*` (held back until the broader budget-tracking feature ships per `budget-tracking.md`) and `transform.*` (consolidation agreement — `transform_*` tools are infrastructure verbs the agent reaches via `system_status` action hints, not a user-facing domain). Tools in those prefixes still register and appear via `list_tools()`; they don't surface as namespaces in `moneybin://tools` or in the `instructions` orientation block.
+The one *promotion* carve-out: `transform.*` tools register and appear via `list_tools()`, but the namespace is intentionally not promoted in the orientation surfaces — by consolidation agreement, `transform_*` tools are infrastructure verbs the agent reaches via `system_status` action hints, not a user-facing domain.
 
 The registered set at any moment is bounded by the surface-discipline rule. Tools whose backing spec has not reached `in-progress` are not registered — the dependency tracker in `moneybin-mcp.md` §17 reflects current status.
 
