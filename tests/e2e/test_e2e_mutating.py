@@ -8,6 +8,7 @@ other tests. Tests that need a fresh MONEYBIN_HOME use tmp_path
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -777,3 +778,314 @@ class TestCategoriesDeleteCommand:
             f"output: {result.output}"
         )
         assert "not found" in result.output.lower()
+
+
+class TestCategorizeRulesCreateCLI:
+    """`moneybin transactions categorize rules create` — single and batch modes."""
+
+    def test_create_single_rule(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        env = make_workflow_env_fast(
+            tmp_path, "rulescreate-one", _mutating_profile_template
+        )
+        result = run_cli(
+            "transactions",
+            "categorize",
+            "rules",
+            "create",
+            "starbucks-rule",
+            "--pattern",
+            "STARBUCKS",
+            "--category",
+            "Food & Dining",
+            "--subcategory",
+            "Coffee Shops",
+            "--match-type",
+            "contains",
+            "--priority",
+            "100",
+            env=env,
+        )
+        result.assert_success()
+        assert "Created 1 rule" in result.stderr
+
+    def test_create_from_file_batch(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        env = make_workflow_env_fast(
+            tmp_path, "rulescreate-batch", _mutating_profile_template
+        )
+        rules_file = tmp_path / "rules.json"
+        rules_file.write_text(
+            json.dumps([
+                {
+                    "name": "amazon-rule",
+                    "merchant_pattern": "AMAZON",
+                    "category": "Shopping",
+                    "match_type": "contains",
+                    "priority": 100,
+                },
+                {
+                    "name": "uber-rule",
+                    "merchant_pattern": "UBER",
+                    "category": "Transportation",
+                    "match_type": "contains",
+                    "priority": 100,
+                },
+            ])
+        )
+        result = run_cli(
+            "transactions",
+            "categorize",
+            "rules",
+            "create",
+            "--from-file",
+            str(rules_file),
+            env=env,
+        )
+        result.assert_success()
+        assert "Created 2 rule" in result.stderr
+
+    def test_create_with_json_output(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        env = make_workflow_env_fast(
+            tmp_path, "rulescreate-json", _mutating_profile_template
+        )
+        result = run_cli(
+            "transactions",
+            "categorize",
+            "rules",
+            "create",
+            "test-json-rule",
+            "--pattern",
+            "TEST",
+            "--category",
+            "Other",
+            "--output",
+            "json",
+            env=env,
+        )
+        result.assert_success()
+        payload = json.loads(result.stdout)
+        assert "rules_create" in payload
+        data = payload["rules_create"]
+        assert data["created"] >= 1
+        assert isinstance(data.get("rule_ids"), list)
+
+    def test_create_requires_name_pattern_category_when_no_file(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """Bare `create` without name+pattern+category or --from-file is a usage error."""
+        env = make_workflow_env_fast(
+            tmp_path, "rulescreate-usage", _mutating_profile_template
+        )
+        result = run_cli("transactions", "categorize", "rules", "create", env=env)
+        assert result.exit_code != 0
+        assert "Traceback (most recent call last)" not in result.stderr
+        assert "Single-rule mode requires" in result.stderr
+
+    def test_create_from_file_with_single_rule_flag_errors(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """`--from-file` alongside any single-rule flag is rejected, not silently ignored."""
+        env = make_workflow_env_fast(
+            tmp_path, "rulescreate-mutex", _mutating_profile_template
+        )
+        rules_file = tmp_path / "rules.json"
+        rules_file.write_text(json.dumps([]))
+        result = run_cli(
+            "transactions",
+            "categorize",
+            "rules",
+            "create",
+            "--from-file",
+            str(rules_file),
+            "--pattern",
+            "OOPS",
+            env=env,
+        )
+        assert result.exit_code != 0
+        assert "mutually exclusive" in result.stderr
+        assert "--pattern" in result.stderr
+
+    def test_create_exits_nonzero_when_rows_skipped(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """Batch with at least one malformed row exits 1 even though good rows are created."""
+        env = make_workflow_env_fast(
+            tmp_path, "rulescreate-partial", _mutating_profile_template
+        )
+        rules_file = tmp_path / "rules.json"
+        # Missing required `merchant_pattern` field on the second rule.
+        rules_file.write_text(
+            json.dumps([
+                {
+                    "name": "good-rule",
+                    "merchant_pattern": "GOOD",
+                    "category": "Other",
+                },
+                {"name": "bad-rule", "category": "Other"},
+            ])
+        )
+        result = run_cli(
+            "transactions",
+            "categorize",
+            "rules",
+            "create",
+            "--from-file",
+            str(rules_file),
+            env=env,
+        )
+        assert result.exit_code == 1
+        assert "Traceback (most recent call last)" not in result.stderr
+        # Text mode surfaces per-row failure reason so the user knows what failed.
+        assert "bad-rule" in result.stderr
+        assert "⚠️" in result.stderr
+
+    def test_create_from_file_directory_path_errors_cleanly(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """Passing a directory to --from-file yields a clean error, not a traceback."""
+        env = make_workflow_env_fast(
+            tmp_path, "rulescreate-dir", _mutating_profile_template
+        )
+        result = run_cli(
+            "transactions",
+            "categorize",
+            "rules",
+            "create",
+            "--from-file",
+            str(tmp_path),
+            env=env,
+        )
+        assert result.exit_code == 2
+        assert "Traceback (most recent call last)" not in result.stderr
+        assert "Cannot read" in result.stderr
+
+    def test_create_quiet_still_surfaces_failure_warnings(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """`--quiet` suppresses the success line but failure warnings are diagnostic, not informational."""
+        env = make_workflow_env_fast(
+            tmp_path, "rulescreate-quiet", _mutating_profile_template
+        )
+        rules_file = tmp_path / "rules.json"
+        rules_file.write_text(
+            json.dumps([
+                {
+                    "name": "good-quiet-rule",
+                    "merchant_pattern": "GQ",
+                    "category": "Other",
+                },
+                {"name": "bad-quiet-rule", "category": "Other"},
+            ])
+        )
+        result = run_cli(
+            "transactions",
+            "categorize",
+            "rules",
+            "create",
+            "--from-file",
+            str(rules_file),
+            "--quiet",
+            env=env,
+        )
+        assert result.exit_code == 1
+        # Success line IS suppressed by --quiet.
+        assert "✅ Created" not in result.stderr
+        # Failure warnings ARE NOT suppressed by --quiet.
+        assert "bad-quiet-rule" in result.stderr
+        assert "⚠️" in result.stderr
+
+
+class TestCategorizeRulesDeleteCLI:
+    """`moneybin transactions categorize rules delete` — soft-delete by ID."""
+
+    def test_delete_existing_rule(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        env = make_workflow_env_fast(
+            tmp_path, "rulesdel-ok", _mutating_profile_template
+        )
+        create_result = run_cli(
+            "transactions",
+            "categorize",
+            "rules",
+            "create",
+            "delete-target",
+            "--pattern",
+            "DEL",
+            "--category",
+            "Other",
+            "--output",
+            "json",
+            env=env,
+        )
+        create_result.assert_success()
+        rule_ids = json.loads(create_result.stdout)["rules_create"]["rule_ids"]
+        assert rule_ids, "create did not return any rule_ids"
+        rule_id = rule_ids[0]
+
+        delete_result = run_cli(
+            "transactions", "categorize", "rules", "delete", rule_id, env=env
+        )
+        delete_result.assert_success()
+        assert "deactivated" in delete_result.output.lower()
+
+    def test_delete_existing_rule_json_output(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        env = make_workflow_env_fast(
+            tmp_path, "rulesdel-json", _mutating_profile_template
+        )
+        create_result = run_cli(
+            "transactions",
+            "categorize",
+            "rules",
+            "create",
+            "delete-target-json",
+            "--pattern",
+            "DELJ",
+            "--category",
+            "Other",
+            "--output",
+            "json",
+            env=env,
+        )
+        create_result.assert_success()
+        rule_id = json.loads(create_result.stdout)["rules_create"]["rule_ids"][0]
+
+        delete_result = run_cli(
+            "transactions",
+            "categorize",
+            "rules",
+            "delete",
+            rule_id,
+            "--output",
+            "json",
+            env=env,
+        )
+        delete_result.assert_success()
+        payload = json.loads(delete_result.stdout)
+        assert payload["rules_delete"]["rule_id"] == rule_id
+        assert payload["rules_delete"]["action"] == "deactivated"
+
+    def test_delete_nonexistent_rule_errors(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        env = make_workflow_env_fast(
+            tmp_path, "rulesdel-missing", _mutating_profile_template
+        )
+        result = run_cli(
+            "transactions",
+            "categorize",
+            "rules",
+            "delete",
+            "does-not-exist",
+            env=env,
+        )
+        assert result.exit_code != 0
+        assert "Traceback (most recent call last)" not in result.stderr
+        assert "Rule does-not-exist not found" in result.stderr

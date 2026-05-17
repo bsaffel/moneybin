@@ -70,12 +70,16 @@ not-yet-built.
 | 9 | Rotate the database encryption key                               | — *(cat 1 — secret material)*| `db_key_rotate`                                    | —          | live                  |
 | 10| Run the MCP server                                               | — *(cat 2 — operator)*       | `mcp_serve`                                        | —          | live                  |
 | 11| Hard-delete a user-created category                              | `categories_delete`          | `categories delete`                                | —          | live                  |
+| 12| Create one or more categorization rules (single + batch)         | `transactions_categorize_rules_create` | `transactions categorize rules create` | —          | live                  |
+| 13| Soft-delete a categorization rule by ID                          | `transactions_categorize_rules_delete` | `transactions categorize rules delete` | —          | live                  |
 
 *(Bootstrap rows only; full table populates incrementally as
-follow-up work closes the parity backlog. The "Discover
-currently-hidden MCP tools" capability was removed 2026-05-17 when
-client-driven progressive disclosure was retired; see
-[`mcp-architecture.md`](mcp-architecture.md) §3.)*
+follow-up work closes the parity backlog. A prior row covering
+"Discover currently-hidden MCP tools" was removed 2026-05-17
+when client-driven progressive disclosure was retired (see
+[`mcp-architecture.md`](mcp-architecture.md) §3); the current
+rows 12–13 are unrelated and were added 2026-05-17 with the
+rules-CLI parity work.)*
 
 ## Exemption categories
 

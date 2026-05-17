@@ -1,6 +1,9 @@
-"""Rule management for categorization (list, apply)."""
+"""Rule management for categorization (list, apply, create, delete)."""
 
+import json
 import logging
+from enum import StrEnum
+from pathlib import Path
 
 import typer
 
@@ -11,11 +14,21 @@ from moneybin.cli.output import (
 )
 from moneybin.cli.utils import emit_json, handle_cli_errors
 from moneybin.database import get_database
+from moneybin.errors import UserError
 
 logger = logging.getLogger(__name__)
 
+
+class MatchTypeChoice(StrEnum):
+    """Mirrors `services.categorization._shared.MatchType` for Typer choice validation."""
+
+    EXACT = "exact"
+    CONTAINS = "contains"
+    REGEX = "regex"
+
+
 app = typer.Typer(
-    help="Rule management (list, apply)",
+    help="Rule management (list, apply, create, delete)",
     no_args_is_help=True,
 )
 
@@ -87,3 +100,166 @@ def rules_apply() -> None:
                 logger.info(
                     "✅ No uncategorized transactions matched rules or merchants"
                 )
+
+
+@app.command("create")
+def rules_create(
+    name: str | None = typer.Argument(
+        None, help="Rule name (omit when --from-file is used)"
+    ),
+    pattern: str | None = typer.Option(
+        None, "--pattern", help="Merchant pattern to match"
+    ),
+    category: str | None = typer.Option(None, "--category", help="Target category"),
+    subcategory: str | None = typer.Option(
+        None, "--subcategory", help="Optional target subcategory"
+    ),
+    match_type: MatchTypeChoice | None = typer.Option(
+        None, "--match-type", help="Pattern match strategy (default: contains)"
+    ),
+    priority: int | None = typer.Option(
+        None, "--priority", help="Lower runs first (default: 100)"
+    ),
+    min_amount: float | None = typer.Option(None, "--min-amount"),
+    max_amount: float | None = typer.Option(None, "--max-amount"),
+    account_id: str | None = typer.Option(
+        None, "--account-id", help="Restrict to one account"
+    ),
+    from_file: Path | None = typer.Option(
+        None, "--from-file", help="JSON file with a list of rule dicts"
+    ),
+    reapply: bool = typer.Option(
+        False,
+        "--reapply",
+        help="Apply newly-created rules to uncategorized rows after insert",
+    ),
+    output: OutputFormat = output_option,
+    quiet: bool = quiet_option,
+) -> None:
+    """Create one or more categorization rules.
+
+    Single rule: pass NAME positionally with --pattern and --category.
+    Batch: pass --from-file pointing at a JSON list of rule dicts.
+    """
+    from moneybin.services.categorization import (  # noqa: PLC0415 — defer import; CLI cold-start hygiene
+        CategorizationService,
+        validate_rule_items,
+    )
+
+    if from_file is not None:
+        single_rule_flags = {
+            "NAME": name,
+            "--pattern": pattern,
+            "--category": category,
+            "--subcategory": subcategory,
+            "--match-type": match_type,
+            "--priority": priority,
+            "--min-amount": min_amount,
+            "--max-amount": max_amount,
+            "--account-id": account_id,
+        }
+        conflicting = [
+            flag for flag, val in single_rule_flags.items() if val is not None
+        ]
+        if conflicting:
+            raise typer.BadParameter(
+                f"--from-file is mutually exclusive with single-rule flags: "
+                f"{', '.join(conflicting)}"
+            )
+        try:
+            with from_file.open(encoding="utf-8") as f:
+                loaded = json.load(f)
+        except FileNotFoundError as e:
+            typer.echo(f"❌ File not found: {from_file}", err=True)
+            raise typer.Exit(2) from e
+        except json.JSONDecodeError as e:
+            typer.echo(f"❌ Invalid JSON in {from_file}: {e}", err=True)
+            raise typer.Exit(1) from e
+        except OSError as e:
+            # PermissionError, IsADirectoryError, broken-mount OSError, etc.
+            typer.echo(f"❌ Cannot read {from_file}: {e}", err=True)
+            raise typer.Exit(2) from e
+        if not isinstance(loaded, list):
+            raise typer.BadParameter(
+                "--from-file must point at a JSON list of rule dicts"
+            )
+        rules: list[dict[str, object]] = loaded
+    else:
+        if not (name and pattern and category):
+            raise typer.BadParameter(
+                "Single-rule mode requires NAME + --pattern + --category, "
+                "or use --from-file for batch."
+            )
+        rules = [
+            {
+                "name": name,
+                "merchant_pattern": pattern,
+                "category": category,
+                "subcategory": subcategory,
+                "match_type": (match_type or MatchTypeChoice.CONTAINS).value,
+                "priority": priority if priority is not None else 100,
+                "min_amount": min_amount,
+                "max_amount": max_amount,
+                "account_id": account_id,
+            }
+        ]
+
+    with handle_cli_errors():
+        validated, parse_errors = validate_rule_items(rules)
+        with get_database() as db:
+            result = CategorizationService(db).create_rules(validated, reapply=reapply)
+        result.merge_parse_errors(parse_errors)
+
+    if output == OutputFormat.JSON:
+        emit_json("rules_create", result.to_envelope(len(rules)).data)
+    elif not quiet:
+        logger.info(
+            f"✅ Created {result.created} rule(s); "
+            f"existing {result.existing}, skipped {result.skipped}"
+        )
+
+    # Per-row failure warnings always surface — they're diagnostic, not informational.
+    for err in result.error_details:
+        logger.warning(
+            f"⚠️  {err.get('name', '(unknown)')}: {err.get('reason', 'failed')}"
+        )
+
+    if result.skipped > 0:
+        raise typer.Exit(1)
+
+
+@app.command("delete")
+def rules_delete(
+    rule_id: str = typer.Argument(..., help="Rule ID to deactivate (soft-delete)"),
+    reapply: bool = typer.Option(
+        False,
+        "--reapply",
+        help="Re-evaluate transactions previously categorized by this rule",
+    ),
+    output: OutputFormat = output_option,
+    quiet: bool = quiet_option,
+) -> None:
+    """Soft-delete (deactivate) a categorization rule by ID.
+
+    The rule remains in the database with is_active=false. Use --reapply to
+    strip categorizations written by this rule and re-evaluate those rows
+    against remaining active matchers.
+    """
+    from moneybin.services.categorization import (  # noqa: PLC0415 — defer import; CLI cold-start hygiene
+        CategorizationService,
+    )
+
+    with handle_cli_errors():
+        with get_database() as db:
+            deactivated = CategorizationService(db).deactivate_rule(
+                rule_id, reapply=reapply
+            )
+        if not deactivated:
+            raise UserError(f"Rule {rule_id} not found", code="RULE_NOT_FOUND")
+
+    if output == OutputFormat.JSON:
+        emit_json("rules_delete", {"rule_id": rule_id, "action": "deactivated"})
+        return
+
+    if not quiet:
+        logger.info(f"✅ Rule {rule_id} deactivated")
