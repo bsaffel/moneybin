@@ -74,16 +74,17 @@ The CLI and MCP server are thin formatters around the service layer. The SQL lay
 
 ### MCP tools by domain
 
-About forty tools group into seven domains. Full enumeration in [`docs/guides/mcp-server.md`](guides/mcp-server.md).
+The MCP server registers around sixty tools across roughly a dozen domains. Full enumeration in [`docs/guides/mcp-server.md`](guides/mcp-server.md).
 
 | Domain | What it does | Representative tools |
 |---|---|---|
 | `accounts.*` | List, inspect, and resolve accounts across sources | `accounts`, `accounts_get`, `accounts_balances` |
-| `transactions.*` | Query and curate transactions; categorize; confirm matches | `transactions_search`, `transactions_get`, `transactions_categorize`, `transactions_matches_confirm` |
-| `reports.*` | Pre-built analytical views | `reports_networth`, `reports_cash_flow`, `reports_spending_trend` |
-| `refresh` | Run the matching → SQLMesh apply → categorization cascade | `refresh_run`, `refresh_status` |
-| `sync.*` | Pull from upstream providers (Plaid) and the inbox | `sync_run`, `import_inbox_sync` |
-| `categorize.*` / `merchants.*` | Manage rules, assist labeling, manage merchant identities | `categorize_assist`, `merchants`, `merchants_alias` |
+| `transactions.*` | Query and curate transactions; notes, tags, splits, manual entry | `transactions_get`, `transactions_review`, `transactions_create`, `transactions_notes_add`, `transactions_tags_set`, `transactions_splits_set` |
+| `transactions.categorize.*` | Categorization: rules, LLM-assist, commit, auto-review | `transactions_categorize_assist`, `transactions_categorize_commit`, `transactions_categorize_run`, `transactions_categorize_rules` |
+| `reports.*` | Pre-built analytical views | `reports_networth`, `reports_cashflow`, `reports_spending`, `reports_recurring`, `reports_uncategorized` |
+| `refresh` | Run the matching → SQLMesh apply → categorization cascade | `refresh_run` (single umbrella) |
+| `sync.*` | Pull from upstream providers (Plaid) and the inbox | `sync_pull`, `sync_connect`, `import_inbox_sync` |
+| `merchants.*` | Manage merchant identities | `merchants`, `merchants_create` |
 | `sql` | Read-only DuckDB query against the interface set | `sql_query` |
 
 Surface symmetry (same nouns, different verb position):
