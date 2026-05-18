@@ -238,3 +238,44 @@ None new. Uses existing `Database`, `duckdb_columns()`, sqlglot, pytest.
 - Per-tool consent granularity (schema supports, UX deferred).
 - Revisions to `privacy-and-ai-trust.md` (blocked on parallel MCP rename
   work; this PR does not touch the MCP layer).
+
+## Performance validation (PR 2)
+
+Privacy middleware introduces redaction + log-write overhead on every
+MCP/CLI egress. PR 2's acceptance gate caps the regression budget at
+≤50 ms p50, ≤200 ms p99, ≤20% total-flow wall-clock vs the
+pre-middleware baseline captured before introspection code landed.
+
+### Persona
+
+| Property | Value |
+|---|---|
+| Fixture | `family.yaml` |
+| Accounts | 4 |
+| Transactions (generated) | ~2700 over 3 years |
+| Total DB size after seeding | (filled in Task 0.4 after generation) |
+
+Generated via `moneybin synthetic generate family --seed 8229 --years 3`.
+
+The plan's original target of 5000+ transactions was relaxed to ~2700
+after enumerating the available persona library — `family.yaml` is the
+largest existing fixture and growing it was out of scope for this PR.
+The baseline is still load-bearing for the regression-budget gate;
+absolute latency values may be smaller than they would be on a denser
+fixture, but the delta-vs-baseline measurement is unaffected.
+
+### Measured flows
+
+Each flow runs ≥30 iterations to produce stable percentiles. Baseline
+stored at `tests/scenarios/fixtures/perf_baseline_pre_privacy.json`,
+post-middleware assertion at `tests/scenarios/test_privacy_middleware_perf.py`.
+
+| Tool / command | Service method | Tier | Shape |
+|---|---|---|---|
+| `transactions_get` | `TransactionService.get(limit=100)` | medium | ~100-row list |
+| `reports_spending` | `SpendingService.by_category()` | low | aggregate |
+| `accounts` | `AccountService.list_accounts()` | medium | ~4-row list (CRITICAL fields) |
+| `reports_budget` | `BudgetService.status()` | low | aggregate + per-budget rows |
+| `reports_networth_history` | `NetworthService.history()` | medium | time-series |
+
+Concrete numbers are populated by Phase 9 after the post-middleware run.
