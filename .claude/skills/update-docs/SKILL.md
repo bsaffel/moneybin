@@ -125,7 +125,21 @@ subagent verbatim. They keep accidentally regrowing:
 - **No private/ references in public docs.** Never cite `private/...` paths or phrasing like "the strategic review" / "the strategic audit named X" in README, CHANGELOG, CONTRIBUTING, or any `docs/` file. Restate substance directly. If you find existing violations, fix them in-pass.
 - **No `Co-Authored-By: Claude` trailers in any commit message produced by this skill.**
 - **Tagline preserved**: `Your finances, understood by AI.` — do not change unless the developer explicitly asks.
-- **Milestone names**: `M0`, `M1`, `M2A`, `M2B`, `M2C`, `M3A` (Plaid), `M3B` (investments), `M3C` (multi-currency + budgets), `M3D` (Web UI + Streamable HTTP), `M3E` (hosted launch). Don't invent new ones.
+- **No milestone or version codes in user-facing prose — pre-v1.** Milestone codes (`M2A`, `M3B`, etc.) are insider jargon. A new reader who lands on the docs doesn't know what they mean, and shouldn't have to. **They'll care about version numbers once there's a usable v1** — until then, the words "shipped," "planned," and "coming with X" carry every meaning a reader needs. Replace milestone codes with the user-visible thing they describe:
+  - "M3A shipped" → "Plaid sync is live"
+  - "blocked on M2B" → "lands with the architecture-reference write-up"
+  - "M3D persona" → "for users who want a polished web UI (planned)"
+  - "After M3E" → "once the hosted tier is live"
+  - "Pre-launch. M0/M1 shipped, M2A/B/C in flight, M3A Phase 1 shipped..." (status callout) → "Pre-v1. The CLI, MCP server, encrypted storage, and Plaid sync work today; web UI and the hosted tier are planned." Link to `docs/roadmap.md` for the milestone breakdown.
+
+  **Exceptions — milestone codes ARE allowed and expected in:**
+  - `docs/roadmap.md` (its structure IS milestones)
+  - `CHANGELOG.md` (sections are tagged by milestone)
+  - `docs/specs/`, `docs/decisions/` (internal — out of scope anyway)
+
+  When used in the exception files, the naming is fixed: `M0`, `M1`, `M2A`, `M2B`, `M2C`, `M3A` (Plaid), `M3B` (investments), `M3C` (multi-currency + budgets), `M3D` (Web UI + Streamable HTTP), `M3E` (hosted launch). Don't invent new ones.
+
+  **Post-v1:** this rule relaxes. Semantic versions (`v1.2`, `v2.0`) become meaningful to readers and can appear in user-facing prose ("new in v1.2"). Revisit this rule once v1 ships.
 
 ## Scope detection
 
