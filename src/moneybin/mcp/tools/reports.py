@@ -28,6 +28,11 @@ from fastmcp import FastMCP
 from moneybin.database import get_database
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.privacy.payloads.budget import BudgetStatusPayload
+from moneybin.privacy.payloads.networth import (
+    NetWorthHistoryPayload,
+    NetWorthSnapshotPayload,
+)
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.budget_service import BudgetService
 from moneybin.services.networth_service import NetworthService
@@ -76,7 +81,7 @@ def _default_window(months: int = 12) -> tuple[str, str]:
 def reports_networth(
     as_of_date: str | None = None,
     account_ids: list[str] | None = None,
-) -> ResponseEnvelope:
+) -> ResponseEnvelope[NetWorthSnapshotPayload]:
     """Current or as-of net worth snapshot with per-account breakdown.
 
     Net worth = sum of balances across accounts where include_in_net_worth=True
@@ -94,7 +99,7 @@ def reports_networth(
             as_of_date=parsed_date, account_ids=account_ids
         )
     return build_envelope(
-        data=snapshot.to_dict(),
+        data=snapshot,
         sensitivity="medium",
         actions=[
             "Use reports_networth_history(from_date, to_date) for the time series",
@@ -109,7 +114,7 @@ def reports_networth_history(
     from_date: str,
     to_date: str,
     interval: str = "monthly",
-) -> ResponseEnvelope:
+) -> ResponseEnvelope[NetWorthHistoryPayload]:
     """Net worth history time series with period-over-period change.
 
     Args:
@@ -123,9 +128,9 @@ def reports_networth_history(
     parsed_from = _date.fromisoformat(from_date)
     parsed_to = _date.fromisoformat(to_date)
     with get_database(read_only=True) as db:
-        rows = NetworthService(db).history(parsed_from, parsed_to, interval=interval)
+        payload = NetworthService(db).history(parsed_from, parsed_to, interval=interval)
     return build_envelope(
-        data=rows,
+        data=payload,
         sensitivity="medium",
         actions=[
             "Use reports_networth(as_of_date=...) for a single-date snapshot with per-account breakdown",
@@ -323,7 +328,7 @@ def reports_balance_drift(
 @mcp_tool(sensitivity="low", domain="budget")
 def reports_budget(
     month: str | None = None,
-) -> ResponseEnvelope:
+) -> ResponseEnvelope[BudgetStatusPayload]:
     """Get budget vs actual spending comparison for a month.
 
     Shows each budgeted category with its target, actual spending,
@@ -333,8 +338,16 @@ def reports_budget(
         month: Month to check (YYYY-MM). Defaults to current month.
     """
     with get_database(read_only=True) as db:
-        result = BudgetService(db).status(month=month)
-    return result.to_envelope()
+        payload = BudgetService(db).status(month=month)
+    return build_envelope(
+        data=payload,
+        sensitivity="low",
+        period=payload.month,
+        actions=[
+            "Use `moneybin budget set` (CLI) to adjust a budget target",
+            "Use reports_spending for detailed category breakdown",
+        ],
+    )
 
 
 def register_reports_tools(mcp: FastMCP) -> None:
