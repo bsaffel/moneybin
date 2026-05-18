@@ -84,20 +84,21 @@ class TestToolRegistration:
         parsed = result.to_dict()
         assert "summary" in parsed
         assert "data" in parsed
-        # Default (redacted=False) returns medium sensitivity (includes last_four, credit_limit)
         assert parsed["summary"]["sensitivity"] == "medium"
-        assert len(parsed["data"]) == 2  # 2 accounts from mcp_db fixture
+        # data is now a typed payload dict with a "rows" key
+        assert len(parsed["data"]["rows"]) == 2  # 2 accounts from mcp_db fixture
 
-    async def test_accounts_redacted_returns_low_sensitivity(
+    @pytest.mark.unit
+    async def test_accounts_includes_last_four_and_credit_limit(
         self, mcp_db: object
     ) -> None:
-        result = await accounts(redacted=True)
+        """Middleware handles CRITICAL masking; the service always returns full fields."""
+        result = await accounts()
         parsed = result.to_dict()
-        assert parsed["summary"]["sensitivity"] == "low"
-        # Redacted mode omits last_four and credit_limit
-        for account in parsed["data"]:
-            assert "last_four" not in account
-            assert "credit_limit" not in account
+        # All AccountSummary rows have last_four and credit_limit fields present
+        for account in parsed["data"]["rows"]:
+            assert "last_four" in account
+            assert "credit_limit" in account
 
     @pytest.mark.unit
     async def test_sql_query_returns_envelope(self, mcp_db: Path) -> None:

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from datetime import date as _date
 from decimal import Decimal
+from typing import Any
 
 from fastmcp import FastMCP
 
@@ -33,6 +34,13 @@ from moneybin.database import get_database
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.privacy.payloads.accounts import (
+    AccountDetail,
+    AccountListPayload,
+    AccountResolvePayload,
+    AccountSettingsPayload,
+    AccountSummaryStats,
+)
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.account_service import CLEAR, AccountService
 from moneybin.services.balance_service import BalanceService
@@ -44,57 +52,56 @@ from moneybin.services.balance_service import BalanceService
 def accounts(
     include_archived: bool = False,
     type_filter: str | None = None,
-    redacted: bool = False,
-) -> ResponseEnvelope:
+) -> ResponseEnvelope[AccountListPayload]:
     """List accounts in MoneyBin.
 
     Args:
         include_archived: Include archived accounts (default: hide them)
         type_filter: Match account_type or account_subtype (case-insensitive)
-        redacted: Omit last_four and credit_limit; downgrades response envelope
-            sensitivity to ``low``. NOTE: the tool-level ``@mcp_tool`` decorator
-            tier is a conservative upper bound (``medium``) for consent gates;
-            the actual per-call sensitivity is reported via
-            ``ResponseEnvelope.summary.sensitivity`` and varies with ``redacted``.
 
     Returns the resolved view from core.dim_accounts including display_name,
     institution_name, account_type, account_subtype, holder_category,
-    iso_currency_code, archived, include_in_net_worth, plus last_four and
-    credit_limit unless redacted.
+    iso_currency_code, archived, include_in_net_worth, last_four, and
+    credit_limit. CRITICAL-tier fields (last_four) are masked by the
+    middleware; the raw values never leave the service layer unredacted.
     """
     with get_database(read_only=True) as db:
         result = AccountService(db).list_accounts(
             include_archived=include_archived,
             type_filter=type_filter,
-            redacted=redacted,
         )
-    return result.to_envelope()
+    return build_envelope(
+        data=result,
+        sensitivity="medium",
+        actions=[
+            "Use accounts_balances for current balances",
+            "Use reports_spending with a category filter to drill in by account",
+        ],
+    )
 
 
 @mcp_tool(sensitivity="medium")
-def accounts_get(account_id: str) -> ResponseEnvelope:
+def accounts_get(account_id: str) -> ResponseEnvelope[AccountDetail]:
     """Single account record with full settings + dim record.
 
-    Always returns full fields including PII-adjacent values (last_four,
-    credit_limit, routing_number). Sensitivity is always medium.
+    Returns full fields including CRITICAL-tier values (last_four,
+    credit_limit, routing_number). CRITICAL fields are masked by the
+    middleware; sensitivity is always medium at the tool level.
 
     Args:
         account_id: The account ID to look up
 
-    Returns {"found": true, ...fields} if found, {"found": false, "account_id": ...} if not.
+    Returns the account record if found, or raises not_found if not.
     """
     with get_database(read_only=True) as db:
         record = AccountService(db).get_account(account_id)
     if record is None:
-        return build_envelope(
-            data={"found": False, "account_id": account_id},
-            sensitivity="medium",
-        )
-    return build_envelope(data={"found": True, **record}, sensitivity="medium")
+        raise UserError(f"Account not found: {account_id}", code="not_found")
+    return build_envelope(data=record, sensitivity="medium")
 
 
 @mcp_tool(sensitivity="low")
-def accounts_summary() -> ResponseEnvelope:
+def accounts_summary() -> ResponseEnvelope[AccountSummaryStats]:
     """Aggregate account snapshot: counts only, no per-account data, no PII.
 
     Useful as context for AI conversations about finances. Returns total counts,
@@ -102,8 +109,8 @@ def accounts_summary() -> ResponseEnvelope:
     and count with recent activity (last 30 days).
     """
     with get_database(read_only=True) as db:
-        summary = AccountService(db).summary()
-    return build_envelope(data=summary, sensitivity="low")
+        stats = AccountService(db).summary()
+    return build_envelope(data=stats, sensitivity="low")
 
 
 # ─── Write tools (entity) ──────────────────────────────────────────────────
@@ -133,7 +140,7 @@ def accounts_set(
     include_in_net_worth: bool | None = None,
     is_archived: bool | None = None,
     clear_fields: list[str] | None = None,
-) -> ResponseEnvelope:
+) -> ResponseEnvelope[AccountSettingsPayload]:
     """Partial update of an account's settings (structural + behavioral fields).
 
     Replaces the formerly-separate ``accounts_rename``, ``accounts_include``,
@@ -194,12 +201,22 @@ def accounts_set(
             account_id,
             **kwargs,  # type: ignore[arg-type]  # CLEAR sentinel + Optional unioned for partial update
         )
-    data = settings.to_dict()
-    if warnings:
-        data["warnings"] = warnings
-    if is_archived is True:
-        data["cascaded_include_in_net_worth"] = False
-    return build_envelope(data=data, sensitivity="medium")
+    d = settings.to_dict()
+    payload = AccountSettingsPayload(
+        account_id=str(d["account_id"]),
+        display_name=d.get("display_name"),  # type: ignore[arg-type]
+        official_name=d.get("official_name"),  # type: ignore[arg-type]
+        last_four=d.get("last_four"),  # type: ignore[arg-type]
+        account_subtype=d.get("account_subtype"),  # type: ignore[arg-type]
+        holder_category=d.get("holder_category"),  # type: ignore[arg-type]
+        iso_currency_code=d.get("iso_currency_code"),  # type: ignore[arg-type]
+        credit_limit=d.get("credit_limit"),  # type: ignore[arg-type]
+        include_in_net_worth=bool(d["include_in_net_worth"]),
+        archived=bool(d["archived"]),
+        warnings=[w.get("message", str(w)) for w in warnings] if warnings else [],
+        cascaded_include_in_net_worth=False if is_archived is True else None,
+    )
+    return build_envelope(data=payload, sensitivity="medium")
 
 
 # ─── Read tools (balance) ──────────────────────────────────────────────────
@@ -209,7 +226,7 @@ def accounts_set(
 def accounts_balances(
     account_ids: list[str] | None = None,
     as_of_date: str | None = None,
-) -> ResponseEnvelope:
+) -> ResponseEnvelope[Any]:
     """Most recent balance per account; optionally as-of an ISO date.
 
     Args:
@@ -231,7 +248,7 @@ def accounts_balance_history(
     account_id: str,
     from_date: str | None = None,
     to_date: str | None = None,
-) -> ResponseEnvelope:
+) -> ResponseEnvelope[Any]:
     """Per-account balance history (daily series with carry-forward + reconciliation deltas).
 
     Args:
@@ -254,7 +271,7 @@ def accounts_balance_history(
 def accounts_balance_reconcile(
     account_ids: list[str] | None = None,
     threshold: float = 0.01,
-) -> ResponseEnvelope:
+) -> ResponseEnvelope[Any]:
     """Show balance days with non-zero reconciliation delta above threshold.
 
     Args:
@@ -274,7 +291,7 @@ def accounts_balance_reconcile(
 @mcp_tool(sensitivity="medium")
 def accounts_balance_assertions(
     account_id: str | None = None,
-) -> ResponseEnvelope:
+) -> ResponseEnvelope[Any]:
     """List user-entered balance assertions.
 
     Args:
@@ -294,7 +311,7 @@ def accounts_balance_assert(
     assertion_date: str,
     balance: float,
     notes: str | None = None,
-) -> ResponseEnvelope:
+) -> ResponseEnvelope[Any]:
     """Insert or update a manual balance assertion.
 
     Args:
@@ -319,7 +336,7 @@ def accounts_balance_assert(
 def accounts_balance_assertion_delete(
     account_id: str,
     assertion_date: str,
-) -> ResponseEnvelope:
+) -> ResponseEnvelope[Any]:
     """Delete a manual balance assertion. Silent no-op if no row exists.
 
     Args:
@@ -339,7 +356,9 @@ def accounts_balance_assertion_delete(
 
 
 @mcp_tool(sensitivity="low")
-def accounts_resolve(query: str, limit: int = 5) -> ResponseEnvelope:
+def accounts_resolve(
+    query: str, limit: int = 5
+) -> ResponseEnvelope[AccountResolvePayload]:
     """Resolve a free-text account reference to an account_id.
 
     Fuzzy-matches against display_name, account_subtype, and institution_name
@@ -359,19 +378,19 @@ def accounts_resolve(query: str, limit: int = 5) -> ResponseEnvelope:
     from moneybin.config import get_settings
 
     with get_database(read_only=True) as db:
-        matches = AccountService(db).resolve(query=query, limit=limit)
+        payload = AccountService(db).resolve(query=query, limit=limit)
     threshold = get_settings().data.tabular.account_match_threshold
     actions: list[str] = []
-    if not matches:
+    if not payload.matches:
         actions.append(
             "No accounts matched the query. Try a broader query or call the `accounts` tool."
         )
-    elif matches[0].confidence < threshold:
+    elif payload.matches[0].confidence < threshold:
         actions.append(
             "Top match has low confidence; verify with the user before taking action."
         )
     return build_envelope(
-        data=[m.to_dict() for m in matches],
+        data=payload,
         sensitivity="low",
         actions=actions,
     )

@@ -97,12 +97,14 @@ class TestAccountsResolve:
         result = await accounts_resolve(query="chase")
         parsed = result.to_dict()
         assert parsed["summary"]["sensitivity"] == "low"
-        assert isinstance(parsed["data"], list)
-        assert len(parsed["data"]) >= 1
-        assert parsed["data"][0]["account_id"] == "a1"
-        # Data shape matches AccountResolution.to_dict
-        assert "confidence" in parsed["data"][0]
-        assert "display_name" in parsed["data"][0]
+        # data is now {"matches": [...]} from AccountResolvePayload serialization
+        assert isinstance(parsed["data"], dict)
+        matches = parsed["data"]["matches"]
+        assert len(matches) >= 1
+        assert matches[0]["account_id"] == "a1"
+        # Data shape matches AccountResolutionItem fields
+        assert "confidence" in matches[0]
+        assert "display_name" in matches[0]
 
     @pytest.mark.unit
     async def test_no_matches_returns_action_hint(
@@ -138,7 +140,8 @@ class TestAccountsResolve:
 
         result = await accounts_resolve(query="anything")
         parsed = result.to_dict()
-        assert parsed["data"] == []
+        # data is {"matches": []} — empty payload
+        assert parsed["data"]["matches"] == []
         assert any("accounts" in a or "broader" in a.lower() for a in parsed["actions"])
 
     @pytest.mark.unit
@@ -153,9 +156,10 @@ class TestAccountsResolve:
         )
         result = await accounts_resolve(query="qq")
         parsed = result.to_dict()
+        matches = parsed["data"]["matches"]
         # Either the match exists with low confidence and we get a hint,
         # or no matches at all (handled by other test). Skip if no matches.
-        if parsed["data"] and parsed["data"][0]["confidence"] < 0.6:
+        if matches and matches[0]["confidence"] < 0.6:
             assert any(
                 "verify" in a.lower() or "low confidence" in a.lower()
                 for a in parsed["actions"]
@@ -168,7 +172,7 @@ class TestAccountsResolve:
             _seed_named_account(f"acct_{i}", display_name=f"Account {i}")
         result = await accounts_resolve(query="account", limit=2)
         parsed = result.to_dict()
-        assert len(parsed["data"]) == 2
+        assert len(parsed["data"]["matches"]) == 2
 
 
 class TestAccountsSetExtended:
@@ -191,15 +195,15 @@ class TestAccountsSetExtended:
         assert parsed["data"]["display_name"] == "My Custom Name"
         assert parsed["data"]["include_in_net_worth"] is False
         assert parsed["data"]["archived"] is False
-        # No cascade unless is_archived=True was passed.
-        assert "cascaded_include_in_net_worth" not in parsed["data"]
+        # No cascade: cascaded_include_in_net_worth is None when is_archived != True.
+        assert parsed["data"]["cascaded_include_in_net_worth"] is None
 
     @pytest.mark.unit
     async def test_is_archived_cascades_to_include(self, mcp_db: Path) -> None:
         """is_archived=True translates to archived=True and cascades include_in_net_worth=False."""
         result = await accounts_set(account_id="ACC001", is_archived=True)
         parsed = result.to_dict()
-        # AccountSettings.to_dict() emits "archived", not "is_archived".
+        # AccountSettingsPayload emits "archived", not "is_archived".
         assert parsed["data"]["archived"] is True
         assert parsed["data"]["include_in_net_worth"] is False
         assert parsed["data"]["cascaded_include_in_net_worth"] is False
@@ -215,7 +219,8 @@ class TestAccountsSetExtended:
         assert parsed["data"]["archived"] is False
         # NOT restored — caller must opt back in explicitly.
         assert parsed["data"]["include_in_net_worth"] is False
-        assert "cascaded_include_in_net_worth" not in parsed["data"]
+        # No cascade for unarchive: cascaded_include_in_net_worth is None.
+        assert parsed["data"]["cascaded_include_in_net_worth"] is None
 
     @pytest.mark.unit
     async def test_clear_display_name(self, mcp_db: Path) -> None:

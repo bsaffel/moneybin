@@ -25,6 +25,9 @@ from moneybin.cli.output import (
 from moneybin.cli.utils import emit_json as emit_json
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
+from moneybin.privacy.payloads.accounts import (
+    AccountResolvePayload as AccountResolvePayload,
+)
 from moneybin.protocol.envelope import build_envelope
 from moneybin.services.account_service import (
     CLEAR,
@@ -68,14 +71,12 @@ def accounts_list(
                 include_archived=include_archived, type_filter=type_filter
             )
     if output == OutputFormat.JSON:
-        render_or_json(
-            build_envelope(data=result.accounts, sensitivity="medium"), output
-        )
+        render_or_json(build_envelope(data=result, sensitivity="medium"), output)
         return
-    for acct in result.accounts:
-        display = acct.get("display_name") or acct.get("account_id")
-        institution = acct.get("institution_name", "")
-        acct_type = acct.get("account_type", "")
+    for acct in result.rows:
+        display = acct.display_name or acct.account_id
+        institution = acct.institution_name or ""
+        acct_type = acct.account_type
         typer.echo(f"  {display}  [{institution}]  {acct_type}")
 
 
@@ -95,7 +96,9 @@ def accounts_get(
     if output == OutputFormat.JSON:
         render_or_json(build_envelope(data=record, sensitivity="medium"), output)
         return
-    for k, v in record.items():
+    import dataclasses
+
+    for k, v in dataclasses.asdict(record).items():
         typer.echo(f"  {k}: {v}")
 
 
@@ -286,25 +289,25 @@ def accounts_resolve(
     """
     with handle_cli_errors():
         with get_database(read_only=True) as db:
-            matches = AccountService(db).resolve(query=query, limit=limit)
+            payload = AccountService(db).resolve(query=query, limit=limit)
 
     if output == OutputFormat.JSON:
         render_or_json(
-            build_envelope(data=[m.to_dict() for m in matches], sensitivity="low"),
+            build_envelope(data=payload, sensitivity="low"),
             output,
         )
         return
 
-    if not matches:
+    if not payload.matches:
         if not quiet:
             typer.echo(f"No accounts matched '{query}'.", err=True)
         return
-    for m in matches:
+    for m in payload.matches:
         subtype = m.account_subtype or "-"
         institution = m.institution_name or "-"
         typer.echo(
             f"{m.account_id}\t{m.display_name}\t{subtype}\t{institution}\t"
-            f"{m.confidence:.3f}"
+            f"{round(m.confidence, 3):.3f}"
         )
 
 

@@ -9,6 +9,12 @@ import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.main import app
+from moneybin.privacy.payloads.accounts import (
+    AccountListPayload,
+    AccountResolutionItem,
+    AccountResolvePayload,
+    AccountSummary,
+)
 from moneybin.services.account_service import CLEAR
 
 
@@ -55,6 +61,26 @@ _ACCOUNT_ARCHIVED = _make_account(
 )
 
 
+def _as_account_summary(d: dict[str, object]) -> AccountSummary:
+    """Build an AccountSummary from the _make_account dict shape."""
+    from decimal import Decimal
+
+    credit = d.get("credit_limit")
+    return AccountSummary(
+        account_id=str(d["account_id"]),
+        display_name=d.get("display_name"),  # type: ignore[arg-type]
+        institution_name=d.get("institution_name"),  # type: ignore[arg-type]
+        account_type=str(d["account_type"]),
+        account_subtype=d.get("account_subtype"),  # type: ignore[arg-type]
+        holder_category=d.get("holder_category"),  # type: ignore[arg-type]
+        iso_currency_code=str(d.get("iso_currency_code", "USD")),
+        archived=bool(d.get("archived", False)),
+        include_in_net_worth=bool(d.get("include_in_net_worth", True)),
+        last_four=d.get("last_four"),  # type: ignore[arg-type]
+        credit_limit=Decimal(str(credit)) if credit is not None else None,
+    )
+
+
 class TestAccountsHelp:
     """Tests that accounts --help surfaces the expected subcommands."""
 
@@ -80,18 +106,17 @@ class TestAccountsList:
     ) -> None:
         mock_get_db.return_value = MagicMock()
         svc = mock_svc_cls.return_value
-        from moneybin.services.account_service import AccountListResult
-
-        svc.list_accounts.return_value = AccountListResult(
-            accounts=[_ACCOUNT_A, _ACCOUNT_B]
+        svc.list_accounts.return_value = AccountListPayload(
+            rows=[_as_account_summary(_ACCOUNT_A), _as_account_summary(_ACCOUNT_B)]
         )
 
         result = runner.invoke(app, ["accounts", "list", "--output", "json"])
         assert result.exit_code == 0, result.stderr
         data = json.loads(result.stdout)
         assert "data" in data
-        assert isinstance(data["data"], list)
-        assert len(data["data"]) == 2
+        # data is now {"rows": [...]} from AccountListPayload serialization
+        assert isinstance(data["data"]["rows"], list)
+        assert len(data["data"]["rows"]) == 2
 
     @pytest.mark.unit
     @patch("moneybin.cli.commands.accounts.get_database")
@@ -104,9 +129,9 @@ class TestAccountsList:
     ) -> None:
         mock_get_db.return_value = MagicMock()
         svc = mock_svc_cls.return_value
-        from moneybin.services.account_service import AccountListResult
-
-        svc.list_accounts.return_value = AccountListResult(accounts=[_ACCOUNT_A])
+        svc.list_accounts.return_value = AccountListPayload(
+            rows=[_as_account_summary(_ACCOUNT_A)]
+        )
 
         result = runner.invoke(app, ["accounts", "list", "--output", "json"])
         assert result.exit_code == 0
@@ -126,10 +151,12 @@ class TestAccountsList:
     ) -> None:
         mock_get_db.return_value = MagicMock()
         svc = mock_svc_cls.return_value
-        from moneybin.services.account_service import AccountListResult
-
-        svc.list_accounts.return_value = AccountListResult(
-            accounts=[_ACCOUNT_A, _ACCOUNT_B, _ACCOUNT_ARCHIVED]
+        svc.list_accounts.return_value = AccountListPayload(
+            rows=[
+                _as_account_summary(_ACCOUNT_A),
+                _as_account_summary(_ACCOUNT_B),
+                _as_account_summary(_ACCOUNT_ARCHIVED),
+            ]
         )
 
         result = runner.invoke(
@@ -139,7 +166,7 @@ class TestAccountsList:
         svc.list_accounts.assert_called_once_with(
             include_archived=True, type_filter=None
         )
-        ids = [a["account_id"] for a in json.loads(result.stdout)["data"]]
+        ids = [a["account_id"] for a in json.loads(result.stdout)["data"]["rows"]]
         assert "acct_archived" in ids
 
     @pytest.mark.unit
@@ -153,9 +180,9 @@ class TestAccountsList:
     ) -> None:
         mock_get_db.return_value = MagicMock()
         svc = mock_svc_cls.return_value
-        from moneybin.services.account_service import AccountListResult
-
-        svc.list_accounts.return_value = AccountListResult(accounts=[_ACCOUNT_A])
+        svc.list_accounts.return_value = AccountListPayload(
+            rows=[_as_account_summary(_ACCOUNT_A)]
+        )
 
         result = runner.invoke(
             app, ["accounts", "list", "--type", "CHECKING", "--output", "json"]
@@ -178,14 +205,27 @@ class TestAccountsGet:
         mock_get_db: MagicMock,
         runner: CliRunner,
     ) -> None:
+
+        from moneybin.privacy.payloads.accounts import AccountDetail
+
         mock_get_db.return_value = MagicMock()
         svc = mock_svc_cls.return_value
-        svc.get_account.return_value = {
-            **_ACCOUNT_A,
-            "source_type": "ofx",
-            "routing_number": "021000021",
-            "official_name": None,
-        }
+        svc.get_account.return_value = AccountDetail(
+            account_id="acct_a",
+            display_name="Chase Checking",
+            official_name=None,
+            institution_name="Chase",
+            account_type="CHECKING",
+            account_subtype="checking",
+            holder_category="personal",
+            iso_currency_code="USD",
+            last_four=None,
+            routing_number="021000021",
+            credit_limit=None,
+            archived=False,
+            include_in_net_worth=True,
+            source_type="ofx",
+        )
 
         result = runner.invoke(app, ["accounts", "get", "acct_a", "--output", "json"])
         assert result.exit_code == 0, result.stderr
@@ -610,18 +650,18 @@ class TestAccountsResolve:
     ) -> None:
         """Text mode prints account_id and display_name for each match."""
         mock_get_db.return_value = MagicMock()
-        from moneybin.services.account_service import AccountResolution
-
         svc = mock_svc_cls.return_value
-        svc.resolve.return_value = [
-            AccountResolution(
-                account_id="a1",
-                display_name="Chase Checking",
-                account_subtype="checking",
-                institution_name="Chase",
-                confidence=1.0,
-            )
-        ]
+        svc.resolve.return_value = AccountResolvePayload(
+            matches=[
+                AccountResolutionItem(
+                    account_id="a1",
+                    display_name="Chase Checking",
+                    account_subtype="checking",
+                    institution_name="Chase",
+                    confidence=1.0,
+                )
+            ]
+        )
         result = runner.invoke(app, ["accounts", "resolve", "chase"])
         assert result.exit_code == 0, result.stderr
         assert "a1" in result.stdout
@@ -638,26 +678,27 @@ class TestAccountsResolve:
     ) -> None:
         """`--output json` returns the same envelope shape MCP returns."""
         mock_get_db.return_value = MagicMock()
-        from moneybin.services.account_service import AccountResolution
-
         svc = mock_svc_cls.return_value
-        svc.resolve.return_value = [
-            AccountResolution(
-                account_id="a1",
-                display_name="Chase Checking",
-                account_subtype="checking",
-                institution_name="Chase",
-                confidence=1.0,
-            )
-        ]
+        svc.resolve.return_value = AccountResolvePayload(
+            matches=[
+                AccountResolutionItem(
+                    account_id="a1",
+                    display_name="Chase Checking",
+                    account_subtype="checking",
+                    institution_name="Chase",
+                    confidence=1.0,
+                )
+            ]
+        )
         result = runner.invoke(
             app, ["accounts", "resolve", "chase", "--output", "json"]
         )
         assert result.exit_code == 0, result.stderr
         payload = json.loads(result.stdout)
         assert payload["summary"]["sensitivity"] == "low"
-        assert payload["data"][0]["account_id"] == "a1"
-        assert payload["data"][0]["confidence"] == 1.0
+        # data is {"matches": [...]} from AccountResolvePayload serialization
+        assert payload["data"]["matches"][0]["account_id"] == "a1"
+        assert payload["data"]["matches"][0]["confidence"] == 1.0
 
     @pytest.mark.unit
     @patch("moneybin.cli.commands.accounts.get_database")
@@ -671,7 +712,7 @@ class TestAccountsResolve:
         """--limit caps the number of results requested from the service."""
         mock_get_db.return_value = MagicMock()
         svc = mock_svc_cls.return_value
-        svc.resolve.return_value = []
+        svc.resolve.return_value = AccountResolvePayload(matches=[])
         result = runner.invoke(app, ["accounts", "resolve", "account", "--limit", "1"])
         assert result.exit_code == 0
         svc.resolve.assert_called_once_with(query="account", limit=1)
@@ -688,7 +729,7 @@ class TestAccountsResolve:
         """No matches in text mode emits a stderr message and exits 0."""
         mock_get_db.return_value = MagicMock()
         svc = mock_svc_cls.return_value
-        svc.resolve.return_value = []
+        svc.resolve.return_value = AccountResolvePayload(matches=[])
         result = runner.invoke(app, ["accounts", "resolve", "zzz"])
         assert result.exit_code == 0
         assert "no accounts" in result.stderr.lower() or "zzz" in result.stderr

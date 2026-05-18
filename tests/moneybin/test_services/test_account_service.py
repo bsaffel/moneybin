@@ -6,18 +6,18 @@ from __future__ import annotations
 from collections.abc import Generator
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.privacy.payloads.accounts import AccountListPayload
+from moneybin.protocol.envelope import build_envelope
 from moneybin.services.account_service import (
     CLEAR,
     PLAID_CANONICAL_HOLDER_CATEGORIES,
     PLAID_CANONICAL_SUBTYPES,
-    AccountListResult,
     AccountService,
     AccountSettings,
     AccountSettingsRepository,
@@ -142,39 +142,45 @@ class TestListAccounts:
     """Tests for AccountService.list_accounts()."""
 
     @pytest.mark.unit
-    def test_returns_account_list_result(self, account_db: Database) -> None:
+    def test_returns_account_list_payload(self, account_db: Database) -> None:
         service = AccountService(account_db)
         result = service.list_accounts()
-        assert isinstance(result, AccountListResult)
-        assert len(result.accounts) == 2
+        assert isinstance(result, AccountListPayload)
+        assert len(result.rows) == 2
 
     @pytest.mark.unit
     def test_accounts_ordered_by_institution(self, account_db: Database) -> None:
         service = AccountService(account_db)
         result = service.list_accounts()
-        # accounts are now dicts after the AccountListResult shape change
-        names = [str(a["institution_name"]) for a in result.accounts]
+        names = [str(a.institution_name) for a in result.rows]
         assert names == sorted(names)
 
     @pytest.mark.unit
     def test_account_fields(self, account_db: Database) -> None:
         service = AccountService(account_db)
         result = service.list_accounts()
-        acct = result.accounts[0]
-        assert acct["account_id"] in ("ACC001", "ACC002")
-        assert acct["account_type"] in ("CHECKING", "SAVINGS")
+        acct = result.rows[0]
+        assert acct.account_id in ("ACC001", "ACC002")
+        assert acct.account_type in ("CHECKING", "SAVINGS")
 
     @pytest.mark.unit
-    def test_to_envelope_sensitivity_medium(self, account_db: Database) -> None:
-        # Default (non-redacted) list returns medium sensitivity since it
-        # includes institution names and account metadata.
+    def test_envelope_sensitivity_medium(self, account_db: Database) -> None:
+        # Default list returns medium sensitivity since it includes account metadata.
         service = AccountService(account_db)
         result = service.list_accounts()
-        envelope = result.to_envelope()
+        envelope = build_envelope(
+            data=result,
+            sensitivity="medium",
+            actions=[
+                "Use accounts_balances for current balances",
+                "Use reports_spending with a category filter to drill in by account",
+            ],
+        )
         d = envelope.to_dict()
         assert d["summary"]["sensitivity"] == "medium"
-        data: list[dict[str, Any]] = d["data"]
-        assert len(data) == 2
+        # total_count=1 because AccountListPayload is a single dataclass (no bare list)
+        # returned_count = len(rows) = 2 via _count_typed_payload
+        assert d["summary"]["total_count"] == 2
         actions: list[str] = d["actions"]
         assert len(actions) > 0
 
@@ -329,8 +335,8 @@ class TestEmptyResults:
     def test_list_accounts_empty_db(self, empty_db: Database) -> None:
         service = AccountService(empty_db)
         result = service.list_accounts()
-        assert isinstance(result, AccountListResult)
-        assert result.accounts == []
+        assert isinstance(result, AccountListPayload)
+        assert result.rows == []
 
 
 class TestAccountServiceMutators:
@@ -572,14 +578,14 @@ class TestAccountServiceListExtended:
         )
         svc = AccountService(extended_db)
         result = svc.list_accounts()
-        assert len(result.accounts) == 1
-        acct = result.accounts[0]
-        assert acct["account_id"] == "acct_ext1"
-        assert acct["display_name"] == "My Checking"
-        assert acct["account_subtype"] == "checking"
-        assert acct["holder_category"] == "personal"
-        assert acct["archived"] is False
-        assert acct["include_in_net_worth"] is True
+        assert len(result.rows) == 1
+        acct = result.rows[0]
+        assert acct.account_id == "acct_ext1"
+        assert acct.display_name == "My Checking"
+        assert acct.account_subtype == "checking"
+        assert acct.holder_category == "personal"
+        assert acct.archived is False
+        assert acct.include_in_net_worth is True
 
     @pytest.mark.unit
     def test_list_hides_archived_by_default(self, extended_db: Database) -> None:
@@ -589,7 +595,7 @@ class TestAccountServiceListExtended:
         )
         svc = AccountService(extended_db)
         result = svc.list_accounts()  # default: include_archived=False
-        ids = [a["account_id"] for a in result.accounts]
+        ids = [a.account_id for a in result.rows]
         assert "acct_active" in ids
         assert "acct_archived" not in ids
 
@@ -601,13 +607,20 @@ class TestAccountServiceListExtended:
         )
         svc = AccountService(extended_db)
         result = svc.list_accounts(include_archived=True)
-        ids = [a["account_id"] for a in result.accounts]
+        ids = [a.account_id for a in result.rows]
         assert "acct_active" in ids
         assert "acct_archived" in ids
         assert len(ids) == 2
 
     @pytest.mark.unit
-    def test_list_redacted_omits_pii_fields(self, extended_db: Database) -> None:
+    def test_list_always_includes_last_four_and_credit_limit(
+        self, extended_db: Database
+    ) -> None:
+        """list_accounts always returns last_four and credit_limit fields.
+
+        Middleware handles masking of CRITICAL-tier fields; the service no longer
+        accepts a ``redacted`` kwarg.
+        """
         _insert_dim_account(
             extended_db,
             "acct_pii",
@@ -615,14 +628,10 @@ class TestAccountServiceListExtended:
             credit_limit=Decimal("5000.00"),
         )
         svc = AccountService(extended_db)
-        result = svc.list_accounts(redacted=True)
-        acct = result.accounts[0]
-        assert "last_four" not in acct
-        assert "credit_limit" not in acct
-        # Sensitivity downgrades to low when redacted
-        envelope = result.to_envelope()
-        d = envelope.to_dict()
-        assert d["summary"]["sensitivity"] == "low"
+        result = svc.list_accounts()
+        acct = result.rows[0]
+        assert acct.last_four == "1234"
+        assert acct.credit_limit == Decimal("5000.00")
 
     @pytest.mark.unit
     def test_list_type_filter(self, extended_db: Database) -> None:
@@ -640,7 +649,7 @@ class TestAccountServiceListExtended:
         )
         svc = AccountService(extended_db)
         result = svc.list_accounts(type_filter="CHECKING")
-        ids = [a["account_id"] for a in result.accounts]
+        ids = [a.account_id for a in result.rows]
         assert "acct_checking" in ids
         assert "acct_savings" not in ids
         assert len(ids) == 1
@@ -658,10 +667,10 @@ class TestAccountServiceListExtended:
         svc = AccountService(extended_db)
         # User filter "checking" should match account_type "CHECKING"
         result = svc.list_accounts(type_filter="checking")
-        assert len(result.accounts) == 1
+        assert len(result.rows) == 1
         # User filter "CHECKING" should also match
         result_upper = svc.list_accounts(type_filter="CHECKING")
-        assert len(result_upper.accounts) == 1
+        assert len(result_upper.rows) == 1
 
 
 class TestAccountServiceGetAccount:
@@ -680,13 +689,13 @@ class TestAccountServiceGetAccount:
         svc = AccountService(extended_db)
         result = svc.get_account("acct_get1")
         assert result is not None
-        assert result["account_id"] == "acct_get1"
-        assert result["display_name"] == "Premium Checking"
-        assert result["last_four"] == "4321"
-        assert result["account_subtype"] == "checking"
-        assert result["institution_name"] == "First National"
-        assert result["archived"] is False
-        assert result["include_in_net_worth"] is True
+        assert result.account_id == "acct_get1"
+        assert result.display_name == "Premium Checking"
+        assert result.last_four == "4321"
+        assert result.account_subtype == "checking"
+        assert result.institution_name == "First National"
+        assert result.archived is False
+        assert result.include_in_net_worth is True
 
     @pytest.mark.unit
     def test_get_returns_none_for_missing(self, extended_db: Database) -> None:
@@ -725,20 +734,20 @@ class TestAccountServiceSummary:
         svc = AccountService(extended_db)
         result = svc.summary()
         # total_accounts counts all rows including archived
-        assert result["total_accounts"] == 3
+        assert result.total_accounts == 3
         # count_by_type excludes archived
-        assert result["count_by_type"] == {"CHECKING": 1, "SAVINGS": 1}
-        assert result["count_archived"] == 1
-        assert result["count_excluded_from_net_worth"] == 1
+        assert result.count_by_type == {"CHECKING": 1, "SAVINGS": 1}
+        assert result.count_archived == 1
+        assert result.count_excluded_from_net_worth == 1
         # recent activity is 0 (no transactions seeded)
-        assert result["count_with_recent_activity"] == 0
+        assert result.count_with_recent_activity == 0
 
     @pytest.mark.unit
     def test_summary_empty(self, extended_db: Database) -> None:
         svc = AccountService(extended_db)
         result = svc.summary()
-        assert result["total_accounts"] == 0
-        assert result["count_by_type"] == {}
+        assert result.total_accounts == 0
+        assert result.count_by_type == {}
 
 
 class TestMutatorAccountValidation:
@@ -853,10 +862,10 @@ class TestAccountServiceResolve:
             account_subtype="brokerage",
             institution_name="Schwab",
         )
-        matches = AccountService(extended_db).resolve("Chase Checking")
-        assert len(matches) >= 1
-        assert matches[0].account_id == "a1"
-        assert matches[0].confidence == 1.0
+        payload = AccountService(extended_db).resolve("Chase Checking")
+        assert len(payload.matches) >= 1
+        assert payload.matches[0].account_id == "a1"
+        assert payload.matches[0].confidence == 1.0
 
     @pytest.mark.unit
     def test_fuzzy_match_handles_typos(self, extended_db: Database) -> None:
@@ -868,16 +877,16 @@ class TestAccountServiceResolve:
             account_subtype="checking",
             institution_name="Chase",
         )
-        matches = AccountService(extended_db).resolve("Chse Chking")
-        assert len(matches) == 1
-        assert matches[0].account_id == "a1"
-        assert 0.5 < matches[0].confidence < 1.0
+        payload = AccountService(extended_db).resolve("Chse Chking")
+        assert len(payload.matches) == 1
+        assert payload.matches[0].account_id == "a1"
+        assert 0.5 < payload.matches[0].confidence < 1.0
 
     @pytest.mark.unit
-    def test_no_match_returns_empty_list(self, extended_db: Database) -> None:
-        """Query with no candidates returns empty list."""
-        matches = AccountService(extended_db).resolve("nonexistent")
-        assert matches == []
+    def test_no_match_returns_empty_payload(self, extended_db: Database) -> None:
+        """Query with no candidates returns a payload with empty matches."""
+        payload = AccountService(extended_db).resolve("nonexistent")
+        assert payload.matches == []
 
     @pytest.mark.unit
     def test_limit_caps_results(self, extended_db: Database) -> None:
@@ -886,12 +895,12 @@ class TestAccountServiceResolve:
         _insert_dim_account(extended_db, "a2", display_name="Account Two")
         _insert_dim_account(extended_db, "a3", display_name="Account Three")
         _insert_dim_account(extended_db, "a4", display_name="Account Four")
-        matches = AccountService(extended_db).resolve("account", limit=2)
-        assert len(matches) == 2
+        payload = AccountService(extended_db).resolve("account", limit=2)
+        assert len(payload.matches) == 2
 
     @pytest.mark.unit
     def test_negative_limit_returns_empty(self, extended_db: Database) -> None:
-        """Negative limit returns empty.
+        """Negative limit returns empty payload.
 
         Never the Python slice semantics ('all but the last N') that callers
         would not expect from a max-candidates parameter.
@@ -899,8 +908,8 @@ class TestAccountServiceResolve:
         _insert_dim_account(extended_db, "a1", display_name="Account One")
         _insert_dim_account(extended_db, "a2", display_name="Account Two")
         _insert_dim_account(extended_db, "a3", display_name="Account Three")
-        assert AccountService(extended_db).resolve("account", limit=-1) == []
-        assert AccountService(extended_db).resolve("account", limit=0) == []
+        assert AccountService(extended_db).resolve("account", limit=-1).matches == []
+        assert AccountService(extended_db).resolve("account", limit=0).matches == []
 
     @pytest.mark.unit
     def test_matches_against_subtype(self, extended_db: Database) -> None:
@@ -912,9 +921,9 @@ class TestAccountServiceResolve:
             account_subtype="checking",
             institution_name="Chase",
         )
-        matches = AccountService(extended_db).resolve("checking")
-        assert len(matches) == 1
-        assert matches[0].account_id == "a1"
+        payload = AccountService(extended_db).resolve("checking")
+        assert len(payload.matches) == 1
+        assert payload.matches[0].account_id == "a1"
 
     @pytest.mark.unit
     def test_matches_against_institution_name(self, extended_db: Database) -> None:
@@ -926,9 +935,9 @@ class TestAccountServiceResolve:
             account_subtype="checking",
             institution_name="Schwab Bank",
         )
-        matches = AccountService(extended_db).resolve("schwab")
-        assert len(matches) == 1
-        assert matches[0].account_id == "a1"
+        payload = AccountService(extended_db).resolve("schwab")
+        assert len(payload.matches) == 1
+        assert payload.matches[0].account_id == "a1"
 
     @pytest.mark.unit
     def test_results_sort_by_confidence_descending(self, extended_db: Database) -> None:
@@ -947,15 +956,15 @@ class TestAccountServiceResolve:
             account_subtype="checking",
             institution_name="BofA",
         )
-        matches = AccountService(extended_db).resolve("chase")
-        assert len(matches) >= 1
-        assert matches[0].account_id == "a1"  # better fuzzy match
-        if len(matches) > 1:
-            assert matches[0].confidence > matches[1].confidence
+        payload = AccountService(extended_db).resolve("chase")
+        assert len(payload.matches) >= 1
+        assert payload.matches[0].account_id == "a1"  # better fuzzy match
+        if len(payload.matches) > 1:
+            assert payload.matches[0].confidence > payload.matches[1].confidence
 
     @pytest.mark.unit
-    def test_empty_query_returns_empty_list(self, extended_db: Database) -> None:
-        """Whitespace-only or empty query short-circuits to empty list."""
+    def test_empty_query_returns_empty_payload(self, extended_db: Database) -> None:
+        """Whitespace-only or empty query short-circuits to empty payload."""
         _insert_dim_account(extended_db, "a1", display_name="Anything")
-        assert AccountService(extended_db).resolve("") == []
-        assert AccountService(extended_db).resolve("   ") == []
+        assert AccountService(extended_db).resolve("").matches == []
+        assert AccountService(extended_db).resolve("   ").matches == []

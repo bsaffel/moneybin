@@ -13,11 +13,18 @@ import re
 from dataclasses import dataclass
 from decimal import Decimal
 from difflib import SequenceMatcher, get_close_matches
-from typing import Any, Literal, cast
+from typing import Any, cast
 
 from moneybin.database import Database
 from moneybin.errors import UserError
-from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.privacy.payloads.accounts import (
+    AccountDetail,
+    AccountListPayload,
+    AccountResolutionItem,
+    AccountResolvePayload,
+    AccountSummary,
+    AccountSummaryStats,
+)
 from moneybin.tables import (
     ACCOUNT_SETTINGS,
     DIM_ACCOUNTS,
@@ -321,31 +328,6 @@ class AccountResolution:
         }
 
 
-@dataclass(frozen=True, slots=True)
-class AccountListResult:
-    """Result of account listing query.
-
-    ``accounts`` is a list of plain dicts matching the wire format the
-    MCP envelope expects — one key per queried column. ``sensitivity``
-    is ``"medium"`` by default; ``"low"`` when the caller requested
-    ``redacted=True`` (last_four and credit_limit omitted).
-    """
-
-    accounts: list[dict[str, object]]
-    sensitivity: Literal["low", "medium", "high"] = "medium"
-
-    def to_envelope(self) -> ResponseEnvelope:
-        """Build a ResponseEnvelope for MCP/CLI output."""
-        return build_envelope(
-            data=list(self.accounts),
-            sensitivity=self.sensitivity,
-            actions=[
-                "Use accounts_balances for current balances",
-                "Use reports_spending with a category filter to drill in by account",
-            ],
-        )
-
-
 def assert_account_exists(db: Database, account_id: str) -> None:
     """Raise UserError if account_id is not in core.dim_accounts.
 
@@ -364,7 +346,7 @@ def assert_account_exists(db: Database, account_id: str) -> None:
 class AccountService:
     """Account and balance operations.
 
-    All methods return typed dataclasses with a ``to_envelope()`` method.
+    All methods return typed payload dataclasses with Annotated field markers.
     """
 
     def __init__(self, db: Database) -> None:
@@ -381,9 +363,13 @@ class AccountService:
         *,
         include_archived: bool = False,
         type_filter: str | None = None,
-        redacted: bool = False,
-    ) -> AccountListResult:
-        """List accounts. Hides archived by default. Redacted mode omits PII-adjacent fields."""
+    ) -> AccountListPayload:
+        """List accounts. Hides archived by default.
+
+        The ``redacted`` kwarg is removed — the middleware handles CRITICAL field
+        masking uniformly via ``Annotated[T, DataClass.X]`` metadata on
+        ``AccountSummary``. All fields are always returned; middleware masks as needed.
+        """
         where_clauses: list[str] = []
         params: list[object] = []
         if not include_archived:
@@ -406,10 +392,9 @@ class AccountService:
             "iso_currency_code",
             "archived",
             "include_in_net_worth",
+            "last_four",
+            "credit_limit",
         ]
-        if not redacted:
-            fields.extend(["last_four", "credit_limit"])
-
         field_list = ", ".join(fields)
         sql = f"""
             SELECT {field_list}
@@ -418,20 +403,31 @@ class AccountService:
             ORDER BY institution_name, account_type, account_id
         """  # noqa: S608  # field list is allowlisted above (literal strings)
         rows = self._db.execute(sql, params).fetchall()
-        accounts: list[dict[str, object]] = [
-            dict(zip(fields, row, strict=True)) for row in rows
+        account_summaries = [
+            AccountSummary(
+                account_id=str(row[0]),
+                display_name=row[1],
+                institution_name=row[2],
+                account_type=str(row[3]),
+                account_subtype=row[4],
+                holder_category=row[5],
+                iso_currency_code=str(row[6]),
+                archived=bool(row[7]),
+                include_in_net_worth=bool(row[8]),
+                last_four=row[9],
+                credit_limit=row[10],
+            )
+            for row in rows
         ]
-        sensitivity: Literal["low", "medium"] = "low" if redacted else "medium"
-        logger.info(f"Listed {len(accounts)} accounts")
-        return AccountListResult(accounts=accounts, sensitivity=sensitivity)
+        logger.info(f"Listed {len(account_summaries)} accounts")
+        return AccountListPayload(rows=account_summaries)
 
-    def get_account(self, account_id: str) -> dict[str, object] | None:
+    def get_account(self, account_id: str) -> AccountDetail | None:
         """Single account record with full settings + dim record. None if not found.
 
-        Always returns full fields including PII-adjacent values (last_four,
-        credit_limit, routing_number). Sensitivity is always medium; there is no
-        redacted variant. Callers requiring a redacted view should use
-        list_accounts(redacted=True) instead and filter to the desired account.
+        Returns full fields including all CRITICAL-tier values (last_four,
+        credit_limit, routing_number). The middleware masks CRITICAL fields
+        via ``Annotated[T, DataClass.X]`` metadata on ``AccountDetail``.
         """
         fields = [
             "account_id",
@@ -460,9 +456,25 @@ class AccountService:
         ).fetchone()
         if row is None:
             return None
-        return dict(zip(fields, row, strict=True))
+        r = dict(zip(fields, row, strict=True))
+        return AccountDetail(
+            account_id=str(r["account_id"]),
+            display_name=r["display_name"],  # type: ignore[arg-type]
+            official_name=r["official_name"],  # type: ignore[arg-type]
+            institution_name=r["institution_name"],  # type: ignore[arg-type]
+            account_type=str(r["account_type"]),
+            account_subtype=r["account_subtype"],  # type: ignore[arg-type]
+            holder_category=r["holder_category"],  # type: ignore[arg-type]
+            iso_currency_code=str(r["iso_currency_code"]),
+            last_four=r["last_four"],  # type: ignore[arg-type]
+            routing_number=r["routing_number"],  # type: ignore[arg-type]
+            credit_limit=r["credit_limit"],  # type: ignore[arg-type]
+            archived=bool(r["archived"]),
+            include_in_net_worth=bool(r["include_in_net_worth"]),
+            source_type=r["source_type"],  # type: ignore[arg-type]
+        )
 
-    def summary(self) -> dict[str, object]:
+    def summary(self) -> AccountSummaryStats:
         """Aggregate snapshot for accounts_summary tool / accounts://summary resource."""
         row = self._db.execute(
             f"""
@@ -510,14 +522,14 @@ class AccountService:
         recent = recent_row[0] if recent_row is not None else 0  # pragma: no cover
 
         logger.info(f"Summary: {total} total accounts, {archived} archived")
-        return {
-            "total_accounts": total,
-            "count_by_type": by_type,
-            "count_by_subtype": by_subtype,
-            "count_archived": archived,
-            "count_excluded_from_net_worth": excluded,
-            "count_with_recent_activity": recent,
-        }
+        return AccountSummaryStats(
+            total_accounts=total,
+            count_by_type=by_type,
+            count_by_subtype=by_subtype,
+            count_archived=archived,
+            count_excluded_from_net_worth=excluded,
+            count_with_recent_activity=recent,
+        )
 
     def _load_or_default(self, account_id: str) -> AccountSettings:
         """Load existing settings or construct a default for the given account."""
@@ -644,20 +656,20 @@ class AccountService:
         )
         return updated, warnings
 
-    def resolve(self, query: str, limit: int = 5) -> list[AccountResolution]:
+    def resolve(self, query: str, limit: int = 5) -> AccountResolvePayload:
         """Fuzzy-match a free-text query against core.dim_accounts.
 
         Scores each account against display_name, account_subtype, and
         institution_name using difflib.SequenceMatcher. Returns the top-`limit`
         matches sorted by confidence descending. ``limit < 1`` returns an empty
-        list — slicing with a negative value would silently return "all but the
+        payload — slicing with a negative value would silently return "all but the
         last N" matches, which violates the documented max-candidates semantics.
 
         See docs/specs/moneybin-mcp.md §accounts_resolve.
         """
         query_clean = query.lower().strip()
         if not query_clean or limit < 1:
-            return []
+            return AccountResolvePayload(matches=[])
 
         rows = self._db.execute(
             f"""
@@ -666,7 +678,7 @@ class AccountService:
             """
         ).fetchall()
 
-        scored: list[AccountResolution] = []
+        scored: list[AccountResolutionItem] = []
         for account_id, display_name, account_subtype, institution_name in rows:
             best = 0.0
             for field_value in (display_name, account_subtype, institution_name):
@@ -678,7 +690,7 @@ class AccountService:
                         best = ratio
             if best > 0:
                 scored.append(
-                    AccountResolution(
+                    AccountResolutionItem(
                         account_id=account_id,
                         display_name=display_name,
                         account_subtype=account_subtype,
@@ -688,8 +700,9 @@ class AccountService:
                 )
 
         scored.sort(key=lambda r: r.confidence, reverse=True)
+        top = scored[:limit]
         logger.info(
             f"Resolved query (len={len(query_clean)}): "
-            f"{len(scored)} candidates, returning {min(limit, len(scored))}"
+            f"{len(scored)} candidates, returning {len(top)}"
         )
-        return scored[:limit]
+        return AccountResolvePayload(matches=top)
