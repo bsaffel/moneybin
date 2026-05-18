@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from moneybin.database import Database
+from moneybin.protocol.envelope import build_envelope
 from moneybin.services.tax_service import (
     TaxService,
     W2Result,
@@ -115,18 +116,17 @@ class TestW2:
     def test_to_envelope_sensitivity_high(self, tax_db: Database) -> None:
         service = TaxService(tax_db)
         result = service.w2()
-        envelope = result.to_envelope()
+        envelope = build_envelope(data=result, sensitivity="high")
         d = envelope.to_dict()
         assert d["summary"]["sensitivity"] == "high"
-        data: list[dict[str, Any]] = d["data"]
-        assert len(data) == 2
+        assert d["summary"]["total_count"] == 2
 
     @pytest.mark.unit
     def test_envelope_json_no_pii(self, tax_db: Database) -> None:
         """Verify the serialized JSON contains no SSN or EIN."""
         service = TaxService(tax_db)
         result = service.w2()
-        json_str = result.to_envelope().to_json()
+        json_str = build_envelope(data=result, sensitivity="high").to_json()
         assert "123-45-6789" not in json_str
         assert "98-7654321" not in json_str
         assert "11-2233445" not in json_str

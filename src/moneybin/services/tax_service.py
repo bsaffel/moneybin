@@ -11,10 +11,10 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any
+from typing import Annotated, Any
 
 from moneybin.database import Database
-from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.privacy.taxonomy import DataClass
 from moneybin.tables import W2_FORMS
 
 logger = logging.getLogger(__name__)
@@ -24,15 +24,15 @@ logger = logging.getLogger(__name__)
 class W2Summary:
     """W-2 form data with PII fields excluded."""
 
-    tax_year: int
-    employer_name: str
-    wages: Decimal
-    federal_income_tax: Decimal
-    social_security_wages: Decimal | None
-    social_security_tax: Decimal | None
-    medicare_wages: Decimal | None
-    medicare_tax: Decimal | None
-    state_local_info: Any  # JSON — list of state/local tax entries
+    tax_year: Annotated[int, DataClass.AGGREGATE]
+    employer_name: Annotated[str, DataClass.INSTITUTION]
+    wages: Annotated[Decimal, DataClass.INCOME_AMOUNT]
+    federal_income_tax: Annotated[Decimal, DataClass.INCOME_AMOUNT]
+    social_security_wages: Annotated[Decimal | None, DataClass.INCOME_AMOUNT]
+    social_security_tax: Annotated[Decimal | None, DataClass.INCOME_AMOUNT]
+    medicare_wages: Annotated[Decimal | None, DataClass.INCOME_AMOUNT]
+    medicare_tax: Annotated[Decimal | None, DataClass.INCOME_AMOUNT]
+    state_local_info: Annotated[Any, DataClass.DESCRIPTION]  # JSON — list of state/local tax entries
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to a plain dict for JSON serialization."""
@@ -57,25 +57,16 @@ class W2Summary:
 
 @dataclass(slots=True)
 class W2Result:
-    """Result of W-2 query."""
+    """Result of W-2 query — flows through MCP as ResponseEnvelope[W2Result]."""
 
     forms: list[W2Summary]
-
-    def to_envelope(self) -> ResponseEnvelope:
-        """Build a ResponseEnvelope for MCP/CLI output."""
-        return build_envelope(
-            data=[f.to_dict() for f in self.forms],
-            sensitivity="high",
-            actions=[
-                "Use reports_spending for spending overview",
-            ],
-        )
+    # NOTE: to_envelope() removed — tool calls build_envelope(data=service.w2(...))
 
 
 class TaxService:
     """Tax document operations.
 
-    All methods return typed dataclasses with a ``to_envelope()`` method.
+    All methods return typed dataclasses with Annotated field markers.
     PII fields (employee_ssn, employer_ein) are never included in results.
     """
 
