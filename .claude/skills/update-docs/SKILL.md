@@ -121,7 +121,8 @@ For "not yet for you" cases, point honestly to alternatives (`docs/audience.md` 
 These come from prior feedback memories and should be passed to every
 subagent verbatim. They keep accidentally regrowing:
 
-- **README anti-patterns**: in-README roadmap matrix; text-heavy comparison cells; feature inventories; License essays; "Wave"/"Level" terminology; 9-node pipeline Mermaid in the README. Comparison stays 7-wide with ✅/❌/🟡 emoji. How-It-Works Mermaid stays 3–4 nodes (sales-pitch, not architecture).
+- **README anti-patterns**: in-README roadmap matrix; text-heavy comparison cells; feature inventories; License essays; "Wave"/"Level" terminology; 9-node pipeline Mermaid in the README. Comparison cells are ✅/❌/🟡 emoji (no prose). How-It-Works Mermaid stays 3–4 nodes (sales-pitch, not architecture).
+- **Comparison table width** — prefer 7-wide for the README teaser and the `docs/comparison.md` table; the goal is scannable density on a phone, not exhaustive completeness. **Break the 7-wide guideline when honesty demands it**: if a major option for the page's primary persona is missing (precedent: Firefly III for the self-hoster persona, added as an 8th column with a one-line note above the table), go 8-wide. Don't break to 9+ without a written exception; if a 9th option is fighting to get in, retire a less-relevant column instead.
 - **No private/ references in public docs.** Never cite `private/...` paths or phrasing like "the strategic review" / "the strategic audit named X" in README, CHANGELOG, CONTRIBUTING, or any `docs/` file. Restate substance directly. If you find existing violations, fix them in-pass.
 - **No `Co-Authored-By: Claude` trailers in any commit message produced by this skill.**
 - **Tagline preserved**: `Your finances, understood by AI.` — do not change unless the developer explicitly asks.

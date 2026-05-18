@@ -1,87 +1,59 @@
+<!-- Last reviewed: 2026-05-17 -->
 # How MoneyBin Compares
 
-A wider comparison than the ✓/✗ summary in the README. The peer set is the personal-finance / local-first / open-source / AI-native landscape MoneyBin actually competes in.
+Choosing a personal-finance platform is a high-switching-cost decision: your data, your categorization history, the habits you build around the UI. This page is the honest comparison we'd write for ourselves. ✅ = yes, ❌ = no, 🟡 = partial, planned, or requires configuration.
 
-> The README's [Comparison](../README.md#comparison) section keeps a tight 5-row ✓/✗ table sized for any viewport. This page is the deeper dive for users evaluating MoneyBin against specific alternatives.
+## Comparison
 
-## Eight-way comparison
+The table is 8 columns wide rather than 7 because Firefly III is the most-deployed self-host finance tool and excluding it would misrepresent the landscape.
 
-|  | Beancount/Fava | Firefly III | Actual Budget | Maybe/Sure | Era / BankSync | Lunch Money | Wealthfolio | MoneyBin |
+|  | MoneyBin | Tiller | Lunch Money | Monarch / Copilot | Maybe / Sure | Firefly III | Beancount / hledger | YNAB / Actual |
 |---|---|---|---|---|---|---|---|---|
-| **Storage** | Plain-text ledger | MySQL/Postgres | Local SQLite | PostgreSQL | Hosted | Hosted | Local SQLite | Encrypted DuckDB |
-| **Encrypted at rest** | ✗ (OS only) | ✗ | ✗ | ✗ | server-side | server-side | ✗ | ✓ default |
-| **Bank sync** | OFX importers | Nordigen (6000+) | goCardless / SimpleFIN | Plaid / SimpleFIN | Plaid (hosted) | Plaid (hosted) | Manual + CSV | Designed (M3A) |
-| **AI / MCP** | Community wrappers | — | Community wrappers | — | Hosted MCP | Community wrapper | — | First-party local + hosted |
-| **SQL access** | — | API only | — | — | — | API only | — | DuckDB native |
-| **Web UI** | Fava (localhost) | Yes | Electron | Yes | Yes | Yes | Tauri desktop | M3D |
-| **Investments** | ✓ (lots, cost basis) | basic | basic | ✓ | — | basic | ✓ | M3B |
-| **Multi-currency** | ✓ | ✓ | ✗ (workaround) | ✓ | — | ✓ | ✓ | M3C |
-| **Open source** | ✓ | ✓ AGPL | ✓ MIT | ✓ AGPL | ✗ | ✗ | ✓ | ✓ AGPL |
-| **Self-host** | ✓ files | ✓ Docker | ✓ | ✓ | ✗ | ✗ | ✓ desktop | ✓ + M3E hosted parity |
-| **Maturity** | Years | Years | Years | Archived; "Sure" fork active | New (2026) | Years | Active | Pre-launch (M2 in flight) |
+| Local-first (data on your machine) | ✅ | ❌ Sheets-hosted | ❌ hosted | ❌ hosted | ✅ self-host⁽¹⁾ | ✅ self-host | ✅ | 🟡 Actual only⁽²⁾ |
+| Open source | ✅ AGPL-3.0 | ❌ | ❌ | ❌ | ✅ AGPL-3.0⁽¹⁾ | ✅ AGPL-3.0 | ✅ | 🟡 Actual MIT, YNAB ❌ |
+| Plain-text / VCS-friendly storage | ❌⁽³⁾ | ❌ | ❌ | ❌ | ❌ Postgres | ❌ MySQL/Postgres | ✅ git-diffable | ❌ |
+| Encrypted at rest by default | ✅ AES-256-GCM | ❌ | 🟡 server-side | 🟡 server-side | ❌⁽³⁾ | ❌ | ❌⁽³⁾ | 🟡 Actual E2E sync⁽⁶⁾ |
+| AI / MCP-native | ✅ first-party | ❌ | 🟡 community MCP | ❌ in-app only | ❌ | ❌ | ❌ | ❌ |
+| Direct SQL query access | ✅ DuckDB | ❌ | ❌ | ❌ | 🟡 Postgres | 🟡 MySQL/Postgres | ✅ BQL / hledger-query | 🟡 Actual SQLite⁽⁷⁾ |
+| Automated categorization | ✅ rules + LLM-assist | 🟡 manual + AutoCat | ✅ rules | ✅ rules + ML | ✅ rules | ✅ rules | ✅ smart_importer / --auto | ✅ rules |
+| Bank-direct sync | 🟡 Plaid | ❌ manual import | ✅ Plaid | ✅ Plaid | ✅ Plaid/SimpleFIN | ✅ SimpleFIN/Nordigen | ❌ | 🟡 YNAB only |
+| Import format coverage | ✅ CSV/OFX/QFX/Excel/Parquet | 🟡 CSV via Sheets | ✅ CSV/OFX | 🟡 CSV | ✅ CSV/OFX | ✅ CSV/OFX/camt | 🟡 CSV + plugins | 🟡 CSV/OFX |
+| Investment / cost-basis tracking | 🟡 planned⁽⁴⁾ | 🟡 add-on sheet | 🟡 basic | ✅ | ✅ lots | 🟡 basic | ✅ full | ❌ |
+| Multi-currency | 🟡 planned⁽⁴⁾ | 🟡 manual | ✅ | 🟡 limited | ✅ | ✅ | ✅ | 🟡 Actual partial |
+| Household / shared budget | ❌⁽⁵⁾ | ✅ | ✅ | ✅ | 🟡 self-host | 🟡 multi-user | ❌ | ✅ |
+| Open-format data export | ✅ DuckDB + CSV | ✅ Sheets-native | ✅ CSV | 🟡 CSV | ✅ Postgres | ✅ SQL + CSV | ✅ plain text | 🟡 CSV / Actual file |
+| Self-host posture⁽⁸⁾ | 🟡 CLI scriptable | ❌ N/A | ❌ N/A | ❌ N/A | ✅ Docker/Compose | ✅ Docker/Compose | 🟡 CLI scriptable | 🟡 Actual Docker |
+| Maturity / time-in-market | ❌ pre-v1 | ✅ since 2017 | ✅ since 2018 | ✅ since 2018 | 🟡 fork active 2024+ | ✅ since 2015 | ✅ 15+ years | ✅ 10+ years |
+| No telemetry by default | ✅ | ❌ | ❌ | ❌ | ✅ self-host | ✅ self-host | ✅ | 🟡 Actual ✅, YNAB ❌ |
 
-## Tier framing
+## Notes
 
-These categories help orient *why* a given tool feels close or distant.
+⁽¹⁾ **Maybe / Sure.** The original Maybe Finance company shut down in mid-2024; the codebase continues as AGPL-3.0, with the community fork **Sure** under active development and the path most self-hosters take today. Both are Postgres-backed and require you to run them yourself.
 
-### Tier 0 — Direct lane (AI-native + personal-finance vertical)
+⁽²⁾ **YNAB / Actual.** YNAB is hosted-only. Actual Budget is local-first (or self-hostable sync server), MIT-licensed, and uses SQLite under the hood. The combined cell reflects the union; individual cells call out which side wins.
 
-Same headline pitch ("AI-native personal finance via MCP") as MoneyBin.
+⁽³⁾ **At-rest encryption and plain-text trade-offs.** Beancount, hledger, Maybe/Sure, and Firefly III rely on whatever the host provides — full-disk encryption, ZFS-native encryption, `age`, or `git-crypt` over a ledger file are all common and fully sufficient. MoneyBin integrates AES-256-GCM into the DuckDB file by default; competing tools delegate the choice. The trade-off cuts both ways: MoneyBin's encrypted DuckDB file is **not** plain-text or `git diff`-able, which is the headline feature of Beancount/hledger. Different defaults, comparable end states for users who configure them deliberately.
 
-- **[Era](https://era.app/)** — hosted MCP, ~33 tools across 7 groups, OAuth 2.1.
-- **[BankSync](https://banksync.io/)** — hosted MCP at $7/mo, 36 tools, 10k+ banks.
-- **[Truthifi](https://truthifi.com/)** — read-only-by-architecture portfolio MCP.
-- **[Muntze](https://muntze.com/)** — crypto-only MCP co-pilot.
-- **OpenAI / Hiro Finance** (acquired April 2026) — vertical AI personal finance shipping inside ChatGPT.
+⁽⁴⁾ **Planned, not shipped.** Investment + cost-basis tracking and multi-currency support are on the roadmap but not in today's build. See [features.md](features.md) for what works now and [roadmap.md](roadmap.md) for the order of arrival.
 
-What separates MoneyBin: every Tier 0 competitor is hosted, closed-source, or both. None expose a SQL warehouse with lineage. None encrypt the user-owned database file at rest. None let the user "download your DuckDB and walk away."
+⁽⁵⁾ **MoneyBin is single-user.** No household-shared budget is planned for v1. If joint finances with a partner are a hard requirement today, Monarch, Tiller, or Lunch Money is the right answer — see below.
 
-### Tier 1 — Adjacent (one bet shared)
+⁽⁶⁾ **Actual E2E encrypted sync.** Actual Budget's sync server supports end-to-end encrypted sync with a user-supplied key, so the server never sees plaintext. The local SQLite file itself isn't encrypted at rest unless you arrange that yourself.
 
-Some overlap with MoneyBin's bet, but missing one of the legs.
+⁽⁷⁾ **Actual's SQLite is app-managed.** The schema is internal to Actual and changes between releases; querying it works for read-only analysis but is not a stable contract the way DuckDB or Postgres access is.
 
-- **[Fina Money](https://fina.money/)** — "Notion for finance," modular blocks with AI insights. Closest spiritual neighbor for the curator posture; cloud + closed.
-- **[Cleo](https://meetcleo.com/), [Copilot Money](https://copilot.money/), [Origin](https://useorigin.com/), [Monarch](https://www.monarchmoney.com/), [Rocket Money](https://www.rocketmoney.com/)** — AI-as-feature in closed cloud apps.
-- **[Lunch Money](https://lunchmoney.app/)** — indie cloud PFM with public API; a community MCP wrapper exists.
-- **[Wealthfolio](https://wealthfolio.app/)** — Tauri/Rust desktop investment tracker, true local-first, no AI angle.
-- **[Sure](https://github.com/we-promise/sure)** (Maybe community fork) — AGPLv3, active, full PFM + investments. Reference data model for `investment-tracking.md`.
+⁽⁸⁾ **Self-host posture** rolls up containerization, headless / cron-friendly operation, reverse-proxy ergonomics, and outbound network posture into one cell. ✅ = published container image with Compose example and no required external calls; 🟡 = scriptable but no first-party container, or some required egress; ❌ = not designed to be self-hosted. MoneyBin today is a Python CLI suitable for cron and headless use, but ships no container image and has no daemon mode — a self-host guide is on the roadmap.
 
-### Tier 2 — Conventional incumbents
+## Where MoneyBin is not the best fit
 
-Mainstream cloud PFM, where AI is bolted on.
+Honest mismatches matter more than feature checklists. If any of these describe you, the alternative is genuinely better today:
 
-- **[YNAB](https://www.ynab.com/), [Quicken Simplifi](https://www.quicken.com/products/simplifi/), [Empower](https://www.empower.com/personal-dashboard) (Personal Capital), [PocketSmith](https://www.pocketsmith.com/), [Banktivity](https://www.iggsoftware.com/banktivity/), [Tiller](https://www.tiller.com/).** AI is feature-checkbox, not interface.
+- **You need a polished mobile app.** Use [Copilot](https://copilot.money/), [Monarch](https://www.monarchmoney.com/), or [Lunch Money](https://lunchmoney.app/).
+- **You share a budget with a partner or household.** Use [Tiller](https://www.tiller.com/), [YNAB](https://www.ynab.com/), or [Monarch](https://www.monarchmoney.com/).
+- **You want pure envelope budgeting, no AI.** Use [YNAB](https://www.ynab.com/) or [Actual Budget](https://actualbudget.org/).
+- **You want plain-text, double-entry, git-diffable books.** Use [Beancount](https://beancount.github.io/) + [Fava](https://github.com/beancount/fava) or [hledger](https://hledger.org/).
+- **You want a finished investment-tracking workflow today** (FIFO lots, realized/unrealized gain/loss, 1099-B reconciliation). Use [Wealthfolio](https://wealthfolio.app/), [Beancount](https://beancount.github.io/), or [Portfolio Performance](https://www.portfolio-performance.info/) until MoneyBin's investment work lands.
+- **You need multi-currency today.** Use [Firefly III](https://www.firefly-iii.org/) or [Beancount](https://beancount.github.io/).
+- **You want a battle-tested self-host stack you can deploy this afternoon.** Use [Firefly III](https://www.firefly-iii.org/) or [Sure](https://github.com/we-promise/sure) — MoneyBin's container story is on the roadmap, not in the box.
 
-### Tier 3 — Plain-text accounting & ledgers
-
-Local, open, scriptable, but not AI-native.
-
-- **[Beancount](https://beancount.github.io/) + [Fava](https://github.com/beancount/fava), [hledger](https://hledger.org/), [GnuCash](https://www.gnucash.org/), [BeanHub](https://beanhub.io/), [Costflow](https://www.costflow.io/).**
-
-## Where MoneyBin lands
-
-The empty quadrant in this landscape is **local-first AND AI-native AND open-source AND encrypted-by-default.** Every Tier 0 competitor is hosted, closed, or both. Tier 1 each picks one or two of those four properties. Tier 2 picks none. Tier 3 has the local-first + open-source pair but lacks AI-native and is built on a different paradigm (double-entry plain-text ledger vs SQL data warehouse).
-
-MoneyBin is alone in the four-way intersection. The hosted tier (M3E) does not break this — same AGPL code anyone can self-host, zero-knowledge passphrase model, "download your DuckDB any time" walk-away guarantee.
-
-## Honest sequencing notes
-
-The comparison table reflects current state as of M2 in flight. Several rows that show "M3A" / "M3B" / etc. for MoneyBin will flip to ✓ at M3 close:
-
-- Bank sync: `Designed (M3A)` → `✓ Plaid` after M3A closes
-- Investments: `M3B` → `✓ FIFO lots, cost basis` after M3B closes
-- Multi-currency: `M3C` → `✓ Phase 1` after M3C closes
-- Web UI: `M3D` → `✓ local + hosted` after M3D closes
-
-This page should be kept current as those milestones close.
-
-## What MoneyBin doesn't try to be
-
-Listing the audiences MoneyBin is explicitly not for, so the comparison is honest:
-
-- **Mass-market mobile-first consumers.** Monarch, Copilot, and Rocket Money are well-funded and mobile-polished. MoneyBin is desktop-and-web; native mobile is post-launch at earliest.
-- **Professional accountants / CPAs.** Beancount and QuickBooks own this segment. The features they need (proper double-entry, tax-year-aware lot matching, audit trails for clients) are deep enough to warrant a different product.
-- **Pure envelope budgeters.** YNAB and Actual Budget are excellent at envelope. MoneyBin parks envelope budgeting (M3C ships traditional + rollovers, which covers the 80% case).
-- **Enterprise / B2B.** SOC 2 deferred. Self-host is the answer to "we need control."
-
-If you fit one of the above, the alternatives noted are where you should look.
+For the deeper persona-by-persona breakdown, see [audience.md](audience.md).
