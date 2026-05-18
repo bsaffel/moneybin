@@ -104,8 +104,8 @@ moneybin import files PATHS...
   -o, --output {text,json}           Output format (json mirrors MCP envelope)
   -q, --quiet                        Suppress informational output
 
-moneybin import inbox sync
-  --no-refresh              Skip end-of-batch transform apply
+moneybin import inbox
+  (sync is the default callback; refresh runs unconditionally — no --no-refresh flag)
   ... (existing flags unchanged)
 
 moneybin transform {status,plan,validate,audit,apply}

@@ -199,7 +199,7 @@ Match the full command-line string in priority order (first match wins):
 |---|---|
 | `moneybin mcp serve` | `"MCP server"` |
 | `moneybin transform apply` | `"transform pipeline"` |
-| `moneybin import inbox sync` | `"inbox sync"` |
+| `moneybin import inbox` | `"inbox sync"` |
 | `moneybin import` | `"import command"` |
 | `moneybin sync` | `"Plaid sync"` |
 | `moneybin web` or (`uvicorn` + `moneybin`) | `"Web UI server"` |
@@ -548,7 +548,7 @@ Writers do not need to publish identity explicitly. `moneybin db ps` (already im
 
 - `moneybin transform apply` — the only long-duration write-lock holder; fully identifiable by argv
 - `moneybin mcp serve` — short-lived per-tool-call writes in the new model; rarely visible during contention
-- `moneybin import inbox sync` — batch duration (1–3 s); argv identifies it
+- `moneybin import inbox` — batch duration (1–3 s); argv identifies it (sync is the default callback, no explicit subcommand)
 
 The `DatabaseLockError` message should include a hint: `"Another moneybin process may be writing. Check with 'moneybin db ps'."` No lockfile, no `setproctitle`, no new dependencies.
 

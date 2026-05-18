@@ -608,7 +608,7 @@ Orientation tool: pending counts across the review queues.
 
 - **Sensitivity:** `low` — counts only.
 - **Unique parameters:** None.
-- **Behavior:** Returns `{uncategorized: int, matches_pending: int, ...}` so the agent can answer "anything to review?" in one call. The agent then drills into `transactions_categorize_pending` or `transactions_matches_pending` for items.
+- **Behavior:** Returns `{matches_pending: int, categorize_pending: int, total: int}` so the agent can answer "anything to review?" in one call. The agent drills into `transactions_categorize_pending` for categorization items. Match-item review currently routes to CLI (`moneybin transactions review --type matches`) — the `transactions_matches_*` MCP namespace is blocked on `matching-overview.md` registration; the response envelope's `actions[]` surfaces that CLI hint until those tools register.
 - **Service:** `TransactionService.review_counts() -> ReviewCounts`
 - **CLI:** `moneybin transactions review`
 
@@ -625,7 +625,7 @@ Create 1..100 manual transactions atomically under one `import_id`.
 - **Behavior:** Whole batch shares one `import_id` (returned as `batch_id`). Validation runs over the full batch before any insert — a single bad row aborts the whole batch. Rows are exempt from the matcher.
 - **Mutation surface:** writes to `raw.manual_transactions` with a generated `import_id`. Revert via `import_revert(import_id=batch_id)`.
 - **Service:** `TransactionService.create_manual_batch()`
-- **CLI:** `moneybin transactions create --file transactions.json`
+- **CLI:** Per `.claude/rules/surface-design.md` "parity is functional, not nominal" — MCP exposes the batch shape `transactions_create(transactions=[...])`. CLI ships single-row imperative: `moneybin transactions create AMOUNT DESCRIPTION --account ID [--date YYYY-MM-DD] [--merchant NAME] [--memo TEXT] [--category SLUG] [--subcategory SLUG]`. Agents that need batch entry call the MCP tool; humans add one row at a time at the shell. A future `--file BATCH.json` flag could mirror the MCP shape — tracked as a follow-up.
 
 #### `transactions_notes_add` / `transactions_notes_edit` / `transactions_notes_delete`
 
@@ -646,7 +646,7 @@ Shape-1a declarative target-state for one transaction's tags.
 - **Behavior:** Service diffs supplied list against current state and emits one `tag.add` / `tag.remove` per change in a single DuckDB transaction. No paired `_delete` — omit the tag to remove it.
 - **Mutation surface:** `app.transaction_tags`. Revert via another `_set` with the prior list (audit trail in `app.audit_log`).
 - **Service:** `TransactionService.set_tags()`
-- **CLI:** `moneybin transactions tags set TRANSACTION_ID --tag T [--tag T...]`
+- **CLI:** Per "parity is functional, not nominal" — MCP exposes shape-1a `transactions_tags_set(transaction_id, tags=[...])` (collection state-set, omission = remove). CLI ships as shape-2 lifecycle ops: `moneybin transactions tags add TRANSACTION_ID TAG`, `transactions tags remove TRANSACTION_ID TAG`, `transactions tags list TRANSACTION_ID`, `transactions tags rename OLD NEW`. Same user outcomes; same underlying `TransactionService.set_tags()` primitive.
 
 #### `transactions_tags_rename`
 
@@ -668,7 +668,7 @@ Shape-1a declarative replace of a transaction's splits.
 - **Behavior:** Clears existing splits then adds the new sequence; order preserved.
 - **Mutation surface:** `app.transaction_splits`. Revert via another `_set` with prior list.
 - **Service:** `TransactionService.set_splits()`
-- **CLI:** `moneybin transactions splits set TRANSACTION_ID --file splits.json`
+- **CLI:** Per "parity is functional, not nominal" — MCP exposes shape-1a `transactions_splits_set(transaction_id, splits=[...])` (collection state-set). CLI ships as shape-2 lifecycle ops: `moneybin transactions splits add TRANSACTION_ID AMOUNT [--category SLUG]`, `transactions splits list TRANSACTION_ID`, `transactions splits remove SPLIT_ID`, `transactions splits clear TRANSACTION_ID`. Same user outcomes; same underlying primitive.
 
 #### `import_labels_set`
 
@@ -821,7 +821,7 @@ Sweep the inbox directory: import any new files, archive them on success, surfac
 - **Unique parameters:** `refresh: bool = True` — run the refresh pipeline once at end-of-sweep when at least one file imported.
 - **Behavior:** Returns `dataclasses.asdict(InboxSyncResult)`: `{processed: [...], failed: [...], skipped: [...], ignored: [...], transforms_applied, transforms_duration_seconds, transforms_error}` — per-file lists bucketed by disposition, plus end-of-batch refresh hook state. Idempotent: rerunning over the same inbox is a no-op once files are archived.
 - **Service:** `InboxService.sync()`
-- **CLI:** `moneybin import inbox sync [--no-refresh]`
+- **CLI:** `moneybin import inbox` (sync is the default callback; no `sync` subcommand and no `--no-refresh` flag — `InboxService.sync()` accepts `refresh: bool=True` internally but the CLI calls it with the default; agents that need to skip refresh use the MCP tool with `refresh=False`).
 
 ### `import_inbox_pending`
 
@@ -1258,45 +1258,45 @@ Financial health snapshot — high-level summary across all domains.
 Recurring transaction detection — surfaces likely subscriptions, autopay, and other repeating charges.
 
 - **Sensitivity:** `low` — aggregates and merchant labels.
-- **Unique parameters:** Shared date/months window.
-- **Behavior:** Returns array of `{merchant, cadence, avg_amount, last_seen, occurrences}`.
-- **CLI:** `moneybin reports recurring`
+- **Unique parameters:** `min_confidence: float = 0.5`, `status: str = "active"` (`active` | `inactive` | `all`), `cadence: str | None = None` (`weekly` | `biweekly` | `monthly` | `quarterly` | `yearly` | `irregular`).
+- **Behavior:** Returns `reports.recurring_subscriptions` rows filtered by the above (merchant, cadence, avg_amount, confidence, etc.).
+- **CLI:** `moneybin reports recurring [--min-confidence N] [--status STATUS] [--cadence CADENCE]`
 
 ### `reports_merchants`
 
-Top merchants by spend over the selected window.
+Top merchants by lifetime activity.
 
 - **Sensitivity:** `low` — aggregates only.
-- **Unique parameters:** Shared date/months window, `limit`.
-- **Behavior:** Returns array of `{merchant, total_amount, transaction_count}` sorted by absolute total.
-- **CLI:** `moneybin reports merchants`
+- **Unique parameters:** `top: int = 25`, `sort: str = "spend"` (`spend` | `count` | `recent`).
+- **Behavior:** Returns `reports.merchant_activity` rows sorted per `sort`, limited to `top`.
+- **CLI:** `moneybin reports merchants [--top N] [--sort spend|count|recent]`
 
 ### `reports_uncategorized`
 
-List uncategorized transactions for review.
+Uncategorized transactions queue, ranked by curator-impact.
 
 - **Sensitivity:** `medium` — row-level transactions.
-- **Unique parameters:** Shared date/months window, `limit`.
-- **Behavior:** Returns array of `{transaction_id, date, amount, description, account_id}` for transactions in `core.fct_transactions` lacking categorization. Amounts use the accounting convention: negative = expense, positive = income.
-- **CLI:** `moneybin reports uncategorized`
+- **Unique parameters:** `min_amount: float = 0.0` (filter to `ABS(amount) >= min_amount`), `account: str | None = None` (filter by account name), `limit: int = 50`.
+- **Behavior:** Returns uncategorized rows from `reports.uncategorized_queue`. Amounts use the accounting convention: negative = expense, positive = income.
+- **CLI:** `moneybin reports uncategorized [--min-amount N] [--account NAME] [--limit N]`
 
 ### `reports_large_transactions`
 
-Outlier transactions over an absolute-amount threshold.
+Anomaly-flavored transaction lens — top-N by absolute amount, with optional per-account or per-category z-score filtering.
 
 - **Sensitivity:** `medium` — row-level transactions.
-- **Unique parameters:** Shared date/months window, `threshold` (decimal-string), `limit`.
-- **Behavior:** Returns array of `{transaction_id, date, amount, description, account_id, category}` for transactions where `|amount| >= threshold`.
-- **CLI:** `moneybin reports large-transactions [--threshold N]`
+- **Unique parameters:** `top: int = 25`, `anomaly: str = "none"` (`account` | `category` | `none`; non-`none` filters to z > 2.5 in the named scope).
+- **Behavior:** Returns top-N rows from `reports.large_transactions`, optionally filtered to anomalies.
+- **CLI:** `moneybin reports large-transactions [--top N] [--anomaly account|category|none]`
 
 ### `reports_balance_drift`
 
 Account-level reconciliation drift: difference between asserted balances and computed running totals.
 
 - **Sensitivity:** `medium` — balance amounts.
-- **Unique parameters:** None.
-- **Behavior:** Returns per-account `{account_id, asserted_balance, computed_balance, drift, last_asserted_at}`. Drift in `summary.display_currency`.
-- **CLI:** `moneybin reports balance-drift`
+- **Unique parameters:** `account: str | None = None` (filter by account name), `status: str = "all"` (`drift` | `warning` | `clean` | `no-data` | `all`), `since: str | None = None` (ISO date; only assertions on or after).
+- **Behavior:** Returns per-account drift rows from `reports.balance_drift`. Drift in `summary.display_currency`.
+- **CLI:** `moneybin reports balance-drift [--account NAME] [--status STATUS] [--since YYYY-MM-DD]`
 
 ### `refresh_run`
 
