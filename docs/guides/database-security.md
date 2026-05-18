@@ -107,7 +107,7 @@ For environments without an OS keychain — CI runners, headless Linux boxes, Do
 Type=oneshot
 User=moneybin
 EnvironmentFile=/etc/moneybin/secrets.env
-ExecStart=/usr/local/bin/moneybin import inbox sync
+ExecStart=/usr/local/bin/moneybin import inbox
 ```
 
 **Cron.** Put the export in a `chmod 0700` script, not the crontab itself (crontabs are world-readable):
@@ -116,7 +116,7 @@ ExecStart=/usr/local/bin/moneybin import inbox sync
 #!/usr/bin/env bash
 set -euo pipefail
 export MONEYBIN_DATABASE__ENCRYPTION_KEY="$(cat /home/moneybin/.moneybin-key)"  # chmod 0600
-exec /usr/local/bin/moneybin import inbox sync
+exec /usr/local/bin/moneybin import inbox
 ```
 
 **Docker.** Mount the data volume, pass the key via env:
@@ -125,7 +125,7 @@ exec /usr/local/bin/moneybin import inbox sync
 docker run --rm \
   -v ~/.moneybin:/root/.moneybin \
   -e MONEYBIN_DATABASE__ENCRYPTION_KEY="$(moneybin db key show)" \
-  moneybin:latest import inbox sync
+  moneybin:latest import inbox
 ```
 
 Most container images have no OS keyring running; the env var fallback is the supported path. `db init` refuses to mint a fresh key inside such a container — initialize the database on a machine that does have a keyring, capture the key with `db key show`, then move both the file and the env var to the container. The same applies to headless Debian, Alpine, or any Linux without GNOME Keyring / KWallet running: there is no fallback file-store, so unset env var + no keyring → every command fails with a clear "set `MONEYBIN_DATABASE__ENCRYPTION_KEY`" error.

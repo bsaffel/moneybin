@@ -74,7 +74,7 @@ The CLI and MCP server are thin formatters around the service layer. The SQL lay
 
 ### MCP tools by domain
 
-The MCP server registers around sixty tools across roughly a dozen domains. Full enumeration in [`docs/guides/mcp-server.md`](guides/mcp-server.md).
+The MCP server registers around seventy tools across roughly a dozen domains. Full enumeration in [`docs/guides/mcp-server.md`](guides/mcp-server.md).
 
 | Domain | What it does | Representative tools |
 |---|---|---|

@@ -11,7 +11,7 @@ Five runtime components plus three cross-cutting concerns. The data they share i
 |---|---|---|---|
 | **Local DuckDB store** | Storage | One encrypted file per profile under `~/.moneybin/profiles/<name>/moneybin.duckdb`. Holds `raw → prep → core → reports` plus the `app.*` overlay. | [`database-security.md`](../guides/database-security.md), [`data-model.md`](data-model.md) |
 | **CLI** | Runtime (per-invocation) | Typer-based command surface (Typer is the argparse-style CLI framework); first-class agent peer to MCP. Every command supports `--output json` and returns the same response envelope as the matching MCP tool. | [`cli-reference.md`](../guides/cli-reference.md) |
-| **MCP server** | Runtime (per session) | FastMCP-based local server (FastMCP is the Python MCP server library). Registers around 30+ tools across roughly a dozen domains. Stdio transport today; Streamable HTTP planned. | [`mcp-server.md`](../guides/mcp-server.md) |
+| **MCP server** | Runtime (per session) | FastMCP-based local server (FastMCP is the Python MCP server library). Registers around seventy tools across roughly a dozen domains. Stdio transport today; Streamable HTTP planned. | [`mcp-server.md`](../guides/mcp-server.md) |
 | **SQLMesh pipeline** | Runtime (on-demand) | Compiles and runs the `raw → prep → core → reports` transformations. SQLMesh owns every write to `prep.*`, `core.*`, `reports.*`, `meta.*`, and `seeds.*`. | [`data-pipeline.md`](../guides/data-pipeline.md) |
 | **Sync client** | Runtime (on-demand) | Talks to `moneybin-server` to broker Plaid pulls. The server is opaque — the client only knows the API surface. | [`server-api-contract.md`](server-api-contract.md) |
 | **Privacy middleware** | Cross-cutting | Tool decorator (`@mcp_tool`) plus FastMCP middleware that enforces sensitivity tiers, redaction, and the read/write allowlist for every MCP call. DDL is rejected; managed writes target `app.*` and `raw.*` only. | [`docs/specs/mcp-architecture.md`](../specs/mcp-architecture.md) |
@@ -106,7 +106,7 @@ moneybin import files my_export.csv
 
 # 4. Run the pipeline (matching → SQLMesh apply → categorization).
 #    Most commands trigger refresh automatically; you rarely run it by hand.
-moneybin refresh run
+moneybin refresh
 
 # 5. Query the result.
 moneybin reports networth          # canned report
@@ -117,7 +117,7 @@ Once `db init` completes, the keychain (or your passphrase) holds the key; subse
 
 ## Surfaces
 
-The three peer surfaces (CLI, MCP, SQL) and the planned Web UI all read from the same `core.*` / `reports.*` interface set and the same `app.*` overlay. Writes are restricted to `app.*` (user state) and `raw.*` (imports and manual entry) by the same privacy middleware on every path; the SQL surface is read-only by default.
+The three peer surfaces (CLI, MCP, SQL) and the planned Web UI all read from the same `core.*` / `reports.*` interface set and the same `app.*` overlay. Writes from MCP are restricted to `app.*` (user state) and `raw.*` (imports and manual entry) by the privacy middleware, and the MCP `sql_query` tool enforces read-only via SQL parsing. The CLI's `moneybin db shell` and `moneybin db query` attach the database **writable** — the convention forbids writes to `core.*` and `reports.*`, but the middleware does not run on those paths, so ad-hoc SQL is on you.
 
 ### CLI
 
@@ -125,7 +125,7 @@ Workflow-ordered command groups (`import`, `sync`, `refresh`, `transactions`, `r
 
 ### MCP server
 
-Around 30+ tools across roughly a dozen domains (`accounts.*`, `transactions.*`, `transactions.categorize.*`, `reports.*`, `refresh`, `sync.*`, `merchants.*`, `sql`, and a handful more). Stdio transport today; Streamable HTTP is planned alongside the web UI. Supported in eight clients today — see [`mcp-clients.md`](../guides/mcp-clients.md). Every tool declares a sensitivity tier (`low` / `medium` / `high`); the middleware surfaces the tier in each response envelope. → [`mcp-server.md`](../guides/mcp-server.md)
+Around seventy tools across roughly a dozen domains (`accounts.*`, `transactions.*`, `transactions.categorize.*`, `reports.*`, `refresh`, `sync.*`, `merchants.*`, `sql`, and a handful more). Stdio transport today; Streamable HTTP is planned alongside the web UI. Supported in eight clients today — see [`mcp-clients.md`](../guides/mcp-clients.md). Every tool declares a sensitivity tier (`low` / `medium` / `high`); the middleware surfaces the tier in each response envelope. → [`mcp-server.md`](../guides/mcp-server.md)
 
 ### SQL
 

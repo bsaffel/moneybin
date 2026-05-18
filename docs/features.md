@@ -72,7 +72,7 @@ Curated `reports.*` SQLMesh views back both the CLI and MCP surfaces. Same query
 
 ## MCP server
 
-- **Wide tool catalog** — Around 30+ first-party tools across `accounts.*`, `transactions.*`, `reports.*`, `categorize.*`, `merchants.*`, `system.*`, `refresh`, `sync.*`, `transform.*`, and `import.*`. Full per-domain inventory: [MCP server guide](guides/mcp-server.md).
+- **Wide tool catalog** — Around seventy first-party tools across `accounts.*`, `transactions.*`, `reports.*`, `categorize.*`, `merchants.*`, `system.*`, `refresh`, `sync.*`, `transform.*`, and `import.*`. Full per-domain inventory: [MCP server guide](guides/mcp-server.md).
 - **Transport** — stdio today. Streamable HTTP transport ships with the web UI milestone (see [roadmap](roadmap.md)).
 - **Auth and session model** — Each MCP session inherits the profile unlocked by `moneybin db unlock`. Locking the profile (`moneybin db lock`) detaches all active sessions.
 - **Concurrency** — Reads coexist freely; writes are serialized per profile (single-writer rule). Two agents can read concurrently; only one can mutate at a time.

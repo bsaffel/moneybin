@@ -3,7 +3,7 @@
 
 MoneyBin's MCP server is what lets you ask an AI assistant questions like *"Where did I overspend last month?"* and have it run the multi-step pipeline that answers them — import the latest file, refresh derived tables, fetch the right report, then summarize. The agent picks the tools, chains them via action hints embedded in every response, and discovers parameter schemas at runtime. The same surface is reachable from the CLI for parity; this guide is about the chat-driven path.
 
-The server is built on [FastMCP](https://github.com/jlowin/fastmcp) and registers around 30+ tools across nine domains. Names are stable today but pre-1.0 — every rename lands in `CHANGELOG.md`.
+The server is built on [FastMCP](https://github.com/jlowin/fastmcp) and registers around seventy tools across roughly a dozen domains. Names are stable today but pre-1.0 — every rename lands in `CHANGELOG.md`.
 
 ## Install
 
