@@ -93,7 +93,7 @@ def _walk(tp: Any, found: set[DataClass], seen: set[Any]) -> None:
             _walk(hint, found, seen)
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def derive_tier(return_type: Any) -> Tier:
     """Return the max ``Tier`` across all classes found in ``return_type``.
 
