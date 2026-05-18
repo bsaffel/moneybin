@@ -7,9 +7,7 @@
 
 ## Purpose
 
-This spec defines every concrete tool, prompt, and resource in MoneyBin's MCP v1 surface, along with the service layer methods and CLI commands that back them. It is the "what we're building" companion to `mcp-architecture.md` (the "how we think about it" document).
-
-Together they replace the prototype-era MCP specs (read tools, write tools) with a production-grade design built for modern AI desktop applications.
+This spec defines every concrete tool, prompt, and resource in MoneyBin's MCP surface, along with the service layer methods and CLI commands that back them. It is the "what we're building" companion to `mcp-architecture.md` (the "how we think about it" document).
 
 ## How to read this spec
 
@@ -18,14 +16,14 @@ Together they replace the prototype-era MCP specs (read tools, write tools) with
 - **Sections 3-13 (Namespaces)** define every tool with signature and behavior. Patterns shown in the exemplars are not repeated.
 - **Section 14 (Prompts)** defines goal-oriented workflow templates.
 - **Section 15 (Resources)** defines ambient context endpoints.
-- **Section 16 (Migration)** maps prototype tool names to v1 names.
-- **Section 17 (Dependencies)** tracks which tools are blocked by unbuilt subsystems.
+- **Sections 16-17 (`sync_*`, `transform_*`)** document the provider-sync and pipeline namespaces.
+- **Section 17c (Dependency tracker)** tracks which tools are blocked by unbuilt subsystems.
 
 ## Status
 
 in-progress
 
-> **v2 revision (2026-05-02, in-progress):** Aligns MCP tool naming with the unified taxonomy in [`moneybin-cli.md`](moneybin-cli.md) v2. The convention is path-prefix-verb-suffix (`accounts_balance_assert`), with cross-domain reports moving under a new `reports_*` namespace. v1 tool names existed before the cross-interface rule was settled and used noun-collection-as-list (`accounts_balances`) and standalone analytical domains (`spending_*`, `cashflow_*`, `tax_*`). v2 makes the verb explicit and groups analytical lenses under `reports`. Sync (9 tools) and transform (5 tools) gain MCP exposure under the v2 exposure principle. See [§16b. Rename Map (v1 → v2)](#16b-rename-map-v1--v2). Hard cut: no aliases. Implementation pass moves status `ready` → `in-progress`.
+> **Naming convention:** path-prefix-verb-suffix (`accounts_balance_assert`). Cross-domain analytical views live under `reports_*` (§3, §4, §12); sync and transform are MCP-exposed (§16, §17). The unified taxonomy is shared with [`moneybin-cli.md`](moneybin-cli.md). See `.claude/rules/surface-design.md` for the operation-shape taxonomy and verb vocabulary the surface is built from.
 
 ---
 
@@ -49,7 +47,7 @@ Every tool returns:
     "display_currency": "USD"
   },
   "data": [ ... ],
-  "actions": ["Use reports_spending_by_category for category breakdown"]
+  "actions": ["Use reports_spending(category=\"<name>\") to drill into one category"]
 }
 ```
 
@@ -91,12 +89,12 @@ These apply to all tools that accept them and are not repeated per tool:
 
 `detail=summary` on a `medium` tool returns aggregates without triggering consent. Degraded responses use the same envelope with `summary.degraded: true`.
 
-### Namespace conventions (v2)
+### Namespace conventions
 
 Path-prefix-verb-suffix. Tool names mirror the CLI hierarchy with underscores instead of spaces, ending in an explicit verb.
 
 - **Pattern:** `<entity_or_domain>[_<sub_resource>]_<verb>`
-- **Examples:** `accounts`, `accounts_balances`, `accounts_balance_assert`, `reports_networth`, `transactions_matches_confirm`, `reports_spending_summary`
+- **Examples:** `accounts`, `accounts_balances`, `accounts_balance_assert`, `reports_networth`, `transactions_matches_confirm`, `reports_spending`
 - **Verbs:** noun-only for collection / summary / aggregate / time-series reads (shape 5 of `.claude/rules/surface-design.md`); `_get` (single instance by id); `_assert`, `_confirm`, `_reject`, `_delete`, `_create`, plus domain-natural verbs (`_reconcile`, `_run`, `_train`). `_set` for idempotent state assertions (shape 1a/1b). `_list` is forbidden on read tools.
 - **Pluralization:** singular for single-entity reads (`accounts_get`); noun-only for collection reads, pluralized to match the noun (`accounts`, `accounts_balances`, `merchants`, `system_audit`); singular for sub-resources inside compound names (`balance`, `networth`, `category`); plural for relationship collections (`matches`).
 - **Encoding constraint:** lowercase ASCII with underscores, ≤64 chars (`^[a-zA-Z0-9_-]{1,64}$` per Anthropic and OpenAI MCP client regex).
@@ -111,7 +109,7 @@ Each namespace maps to a service class. Tools and CLI commands are thin wrappers
 
 CLI mirrors MCP namespaces as command groups. `--output json` on any command returns the same response envelope as the MCP tool. Default output is human-readable (tables, summary lines, icons per `cli.md` rules).
 
-### When CLI-only is justified (v2 MCP exposure principle)
+### When CLI-only is justified
 
 Default: every operation is MCP-exposed. CLI-only status requires a justified exception. Acceptable exceptions are narrow:
 
@@ -135,7 +133,7 @@ Required content:
 - One-line product description (local-first, on-device DuckDB)
 - Top-level group enumeration with brief domain hint (entity groups, reference data, reports, system, pipeline, privacy)
 - Naming convention reminder (path-prefix-verb-suffix, with 2–3 examples)
-- Orientation pointers — which tool to call to "get oriented" for both new (`system_status`) and returning (`reports_health`) sessions
+- Orientation pointers — which tool to call to "get oriented" (`system_status` for data status; `transactions_review` for review queues; `reports_networth` + `reports_spending` for a quick financial pulse)
 - Response envelope shape (`{summary, data, actions}`) and pagination convention
 - Batch-tool preference
 - Sensitivity tiers and degraded-response behavior
@@ -230,84 +228,49 @@ Reference: `lunchmoney-mcp` ships 1–500 caps on its bulk writes (`update_trans
 
 These three tools demonstrate every pattern in full detail. Subsequent namespace sections use a compact format and reference these for shared patterns.
 
-### 2.1 `reports_spending_summary` — low sensitivity, time-series, no degradation
+### 2.1 `reports_spending` — low sensitivity, monthly trend with deltas
 
 **Service layer**
 
 ```python
-class SpendingService:
-    def summary(
+class ReportsService:
+    def spending_trend(
         self,
-        months: int = 3,
-        start_date: str | None = None,
-        end_date: str | None = None,
-        account_id: list[str] | None = None,
-        detail: str = "standard",
-    ) -> SpendingSummary: ...
+        *,
+        from_month: str | None,
+        to_month: str | None,
+        category: str | None,
+        compare: str,
+    ) -> tuple[list[str], list[tuple]]: ...
 ```
 
-`SpendingSummary` is a dataclass containing a list of `MonthlySpending` records (`period`, `income`, `expenses`, `net`, `transaction_count`) and summary metadata (total income, total expenses, date range).
+Reads `reports.spending_trend` (SQLMesh view). Returns `(columns, rows)` over a window of months with MoM, YoY, and 3-month-trailing deltas.
 
 **MCP tool**
 
-- **Name:** `reports_spending_summary`
-- **Description:** "Get income vs expense totals by month. Returns time-series data suitable for charting. Use `months` for recent history or `start_date`/`end_date` for a specific range."
-- **Sensitivity:** `low` — returns aggregates only, no row-level data at any detail level.
+- **Name:** `reports_spending`
+- **Description:** "Monthly spending trend with MoM, YoY, and 3-month-trailing deltas. Defaults to the last 12 calendar months."
+- **Sensitivity:** `low` — aggregates only.
 - **Parameters:**
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `months` | `int` | `3` | Number of recent months to include |
-| `start_date` | `str?` | — | ISO 8601 start date (overrides `months`) |
-| `end_date` | `str?` | — | ISO 8601 end date |
-| `account_id` | `list[str]?` | — | Filter to specific accounts |
-| `detail` | `str` | `"standard"` | `summary` (totals only), `standard` (monthly breakdown), `full` (adds per-account splits) |
+| `from_month` | `str?` | — | Lower bound (inclusive) as `YYYY-MM` |
+| `to_month` | `str?` | — | Upper bound (inclusive) as `YYYY-MM` |
+| `category` | `str?` | — | Filter to a specific category text |
+| `compare` | `str` | `"yoy"` | Caller-side intent only — the view returns all three comparison columns regardless |
 
-- **Response `data` shape:**
-
-```json
-[
-  {"period": "2026-04", "income": 5200.00, "expenses": 3847.32, "net": 1352.68, "transaction_count": 87},
-  {"period": "2026-03", "income": 5200.00, "expenses": 4102.15, "net": 1097.85, "transaction_count": 94},
-  {"period": "2026-02", "income": 5200.00, "expenses": 3654.90, "net": 1545.10, "transaction_count": 78}
-]
-```
-
-- **Degraded response:** N/A — this tool is `low` sensitivity and already returns aggregates. The response is identical regardless of consent status.
-- **Actions:** `["Use reports_spending_by_category for category breakdown", "Use reports_spending_compare to compare periods"]`
+- **Response `data` shape:** rows from `reports.spending_trend` — `{year_month, category, total_spend, txn_count, prev_month_spend, mom_delta, mom_pct, prev_year_spend, yoy_delta, yoy_pct, trailing_3mo_avg}`.
+- **Degraded response:** N/A — `low` sensitivity, already aggregates.
+- **Actions:** `["Use reports_spending(category=\"<name>\") to drill into one category", "Use reports_cashflow for inflow/outflow/net", "Use reports_recurring to find subscription-like patterns"]`
 
 **CLI command**
 
 ```
-moneybin reports spending summary [--months 3] [--start-date DATE] [--end-date DATE]
-                          [--account-id ID ...] [--detail standard] [--output json]
+moneybin reports spending [--from YYYY-MM] [--to YYYY-MM] [--category SLUG] [--compare yoy|mom|trailing] [-o text|json] [-q]
 ```
 
-Default output is a table with period, income, expenses, net, and count columns. `--output json` returns the response envelope.
-
-**Example response (full envelope):**
-
-```json
-{
-  "summary": {
-    "total_count": 3,
-    "returned_count": 3,
-    "has_more": false,
-    "period": "2026-02 to 2026-04",
-    "sensitivity": "low",
-    "display_currency": "USD"
-  },
-  "data": [
-    {"period": "2026-04", "income": 5200.00, "expenses": 3847.32, "net": 1352.68, "transaction_count": 87},
-    {"period": "2026-03", "income": 5200.00, "expenses": 4102.15, "net": 1097.85, "transaction_count": 94},
-    {"period": "2026-02", "income": 5200.00, "expenses": 3654.90, "net": 1545.10, "transaction_count": 78}
-  ],
-  "actions": [
-    "Use reports_spending_by_category for category breakdown",
-    "Use reports_spending_compare to compare periods"
-  ]
-}
-```
+Default output is a table with the comparison columns; `--output json` returns the response envelope.
 
 ---
 
@@ -450,69 +413,33 @@ The CLI accepts a JSON file (or stdin) since batch data doesn't work as flags. `
 
 ---
 
-## 3. `reports_spending_*` — Expense analysis (v2: moved into reports namespace)
+## 3. `reports_spending` — Monthly trend with deltas
 
-**Service class:** `SpendingService`
+*Exemplar — see §2.1 for full pattern. Catalog entry:*
 
-### `reports_spending_summary`
+**Service class:** `ReportsService`
 
-*Exemplar — see section 2.1.*
-
-### `reports_spending_by_category`
-
-Income vs expense totals broken down by category for a period. Requires transactions to be categorized.
-
+- **Name:** `reports_spending`
 - **Sensitivity:** `low`
-- **Unique parameters:** `top_n: int = 10` — limit to top N categories by total. `include_uncategorized: bool = true` — whether to include an "Uncategorized" rollup row.
-- **Behavior:** Returns array of `{category, subcategory, total, transaction_count, percent_of_total}` sorted by total descending. At `detail=full`, includes per-month breakdown within each category.
-- **Service:** `SpendingService.by_category() -> CategoryBreakdown`
-- **CLI:** `moneybin reports spending by-category [--top-n 10] [--include-uncategorized]`
+- **Parameters:** `from_month`, `to_month`, `category`, `compare` (see §2.1).
+- **Behavior:** Reads `reports.spending_trend` over the window; returns the MoM/YoY/trailing-3mo delta columns.
+- **CLI:** `moneybin reports spending` (flags per §2.1).
 
-### `reports_spending_merchants`
-
-Top merchants by spending for a period.
-
-- **Sensitivity:** `medium` — merchant names are row-level data derived from transaction descriptions.
-- **Unique parameters:** `top_n: int = 20`
-- **Behavior:** Returns array of `{merchant_name, total, transaction_count, category, last_seen}`. Merchants without mappings appear by raw description. Degraded response returns category totals instead.
-- **Service:** `SpendingService.merchants() -> MerchantBreakdown`
-- **CLI:** `moneybin reports spending merchants [--top-n 20]`
-
-### `reports_spending_compare`
-
-Compare spending between two periods (month-over-month, year-over-year).
-
-- **Sensitivity:** `low`
-- **Unique parameters:** `period_a: str` (required, YYYY-MM), `period_b: str` (required, YYYY-MM).
-- **Behavior:** Returns array of `{category, period_a_total, period_b_total, change_amount, change_percent}`. No `months`/`start_date`/`end_date` — this tool uses explicit period comparison. At `detail=summary`, returns only the overall totals for each period.
-- **Service:** `SpendingService.compare() -> PeriodComparison`
-- **CLI:** `moneybin reports spending compare --period-a 2026-03 --period-b 2026-04`
+> Category breakdown is reached via `reports_spending(category="<name>")`. Cross-period comparison is reached by widening the window — every row carries MoM and YoY deltas by default. The earlier `_by_category` / `_compare` / `_merchants` sub-tools were folded into this single tool + `reports_merchants` (see §12).
 
 ---
 
-## 4. `reports_cashflow_*` — Money movement (v2: moved into reports namespace)
+## 4. `reports_cashflow` — Monthly inflow / outflow / net
 
-**Service class:** `CashflowService`
+**Service class:** `ReportsService`
 
-### `reports_cashflow_summary`
-
-Net cash flow by period — income, outflows, and net position.
-
+- **Name:** `reports_cashflow`
 - **Sensitivity:** `low`
-- **Unique parameters:** None beyond shared conventions.
-- **Behavior:** Similar shape to `reports_spending_summary` but focused on the cash flow framing: `{period, inflows, outflows, net, running_balance}`. `running_balance` is cumulative net across the returned periods. Chart-ready time-series.
-- **Service:** `CashflowService.summary() -> CashflowSummary`
-- **CLI:** `moneybin reports cashflow summary`
+- **Parameters:** `from_month`, `to_month`, optional account / category filters per the shipped signature.
+- **Behavior:** Reads `reports.cash_flow` (SQLMesh view). Returns `{year_month, account_id, account_name, category, inflow, outflow, net, txn_count}` rows. Transfers are excluded (intra-portfolio movement, not cash flow); archived accounts are excluded.
+- **CLI:** `moneybin reports cashflow [--from YYYY-MM] [--to YYYY-MM] [--by account|category|account-and-category]`.
 
-### `reports_cashflow_income`
-
-Income sources breakdown for a period.
-
-- **Sensitivity:** `medium` — income source descriptions are row-level data.
-- **Unique parameters:** `top_n: int = 10`
-- **Behavior:** Returns array of `{source, total, transaction_count, frequency, last_seen}`. Groups by normalized description. Degraded response returns a single total income figure.
-- **Service:** `CashflowService.income() -> IncomeBreakdown`
-- **CLI:** `moneybin reports cashflow income [--top-n 10]`
+> Income breakdown is reached by filtering `inflow > 0` and grouping by `category` or by `description` via `reports_merchants` (§12).
 
 ---
 
@@ -579,7 +506,7 @@ Partial-update entry point for an account's settings.
 
 - **Sensitivity:** `medium` — settings changes are non-financial but reveal account metadata.
 - **Unique parameters:** `account_id: str` (required), plus optional structural fields (`account_subtype`, `holder_category`, `currency`, `credit_limit`, `last_four`, `official_name`) and behavioral fields (`display_name`, `include_in_net_worth`, `is_archived`).
-- **Behavior:** Shape-1b partial update — only supplied fields change. Archiving an account atomically cascades `include_in_net_worth=False`. Replaces the formerly-separate `accounts_rename` / `accounts_include` / `accounts_archive` / `accounts_unarchive` tools (PR #164).
+- **Behavior:** Shape-1b partial update — only supplied fields change. Archiving an account atomically cascades `include_in_net_worth=False`. Single entry point for every structural and behavioral field on an account.
 - **Mutation surface:** writes `app.account_settings`. Revert via a follow-up `accounts_set` with the prior values (audit trail in `app.audit_log`).
 - **Service:** `AccountService.settings_update() -> AccountSettings`
 - **CLI:** `moneybin accounts set <account_id> [--display-name TEXT] [--include/--exclude] [--archive/--unarchive] [--subtype TYPE] [--holder-category CAT] [--currency CODE] [--credit-limit N] [--last-four DIGITS] [--official-name TEXT] [--clear-display-name] [--clear-currency] [--yes]`
@@ -693,7 +620,7 @@ List audit events with filters.
 
 ### `transactions_matches.*` — Transaction matching sub-domain
 
-**Status:** blocked on [`matching-overview.md`](matching-overview.md) registration — all six `transactions_matches_*` tools below are documented for design alignment but NOT registered on the MCP surface today. See §17 dependency tracker.
+**Status:** blocked on [`matching-overview.md`](matching-overview.md) registration — all six `transactions_matches_*` tools below are documented for design alignment but NOT registered on the MCP surface today. See §17c dependency tracker.
 
 Match review is a distinct workflow within the transactions domain. These tools operate on match proposals — pairs of transactions that the matching engine believes represent the same real-world event (dedup) or two sides of a transfer.
 
@@ -881,7 +808,7 @@ Confirm and execute AI-assisted parsing for a file.
 
 ---
 
-## 8. `transactions_categorize_*`, `categories_*`, `merchants_*` — Categorization pipeline + reference data (v2: split into workflow + taxonomy + merchant mapping namespaces)
+## 8. `transactions_categorize_*`, `categories_*`, `merchants_*` — Categorization pipeline + reference data
 
 **Service class:** `CategorizationService`
 
@@ -1032,7 +959,7 @@ List auto-generated rules pending user approval.
 
 ### `transactions_categorize_auto_accept`
 
-Accept or reject proposed auto-generated rules. Renamed from `_auto_confirm` to `_auto_accept` in PR #171; signature simplified from a polymorphic `approvals=[{proposed_rule_id, action}]` list to two parallel ID lists.
+Accept or reject proposed auto-generated rules. Takes two parallel ID lists.
 
 - **Sensitivity:** `low`
 - **Unique parameters:** `accept: list[str]` (proposed_rule_ids to promote), `reject: list[str]` (proposed_rule_ids to refuse).
@@ -1094,7 +1021,7 @@ Run ML categorization at a given confidence threshold.
 
 ---
 
-## 9. `budget_*` (mutation) and `reports_budget_*` (vs-actual reads) — Budget tracking (v2: split)
+## 9. `budget_*` (mutation) and `reports_budget_*` (vs-actual reads) — Budget tracking
 
 **Service class:** `BudgetService`
 
@@ -1144,7 +1071,7 @@ Remove a budget for a category.
 
 **Service class:** `TaxService`
 
-**Status:** implemented but de-registered pending tax spec — `tax_w2` carries `@mcp_tool` decoration in `src/moneybin/mcp/tools/tax.py`, but `register_tax_tools` is not called from `register_core_tools()` in `src/moneybin/mcp/server.py`. `tax_deductions` is not implemented. Both surface when a tax spec lands and reaches `in-progress`. See §17 dependency tracker.
+**Status:** implemented but de-registered pending tax spec — `tax_w2` carries `@mcp_tool` decoration in `src/moneybin/mcp/tools/tax.py`, but `register_tax_tools` is not called from `register_core_tools()` in `src/moneybin/mcp/server.py`. `tax_deductions` is not implemented. Both surface when a tax spec lands and reaches `in-progress`. See §17c dependency tracker.
 
 ### `tax_w2`
 
@@ -1173,7 +1100,7 @@ Search transactions for potentially deductible expenses.
 
 **Service class:** `PrivacyService`
 
-**Status:** all four `privacy_*` tools below are blocked on the consent management spec — NONE are registered today. The catalog entries describe the target design; per the surface-discipline rule in `.claude/rules/mcp-server.md`, individual `privacy.*` tools surface only when their backing spec reaches `in-progress` or `implemented` in `docs/specs/INDEX.md`. See §17 dependency tracker.
+**Status:** all four `privacy_*` tools below are blocked on the consent management spec — NONE are registered today. The catalog entries describe the target design; per the surface-discipline rule in `.claude/rules/mcp-server.md`, individual `privacy.*` tools surface only when their backing spec reaches `in-progress` or `implemented` in `docs/specs/INDEX.md`. See §17c dependency tracker.
 
 **Dependency:** All `privacy.*` tools depend on the consent management spec, audit log spec, and provider profiles spec.
 
@@ -1219,7 +1146,7 @@ Query the AI audit log.
 
 ---
 
-## 12. `system_*` and `reports_health` — Data status meta-view + financial health snapshot (v2: split from `overview.*`)
+## 12. `system_*`, `reports_*`, `refresh_run` — Data status, reports projections, and the refresh umbrella
 
 **Service class:** `OverviewService`
 
@@ -1243,15 +1170,7 @@ Pipeline integrity check — confirms the data pipeline is self-consistent befor
 - **Service:** `DoctorService.run_all(verbose=False) -> DoctorReport`
 - **CLI:** `moneybin system doctor [--verbose] [--output json]`
 
-### `reports_health`
-
-**Status:** planned — NOT registered. The financial health snapshot is currently composed by the agent from `reports_networth` + `reports_spending` + `reports_cashflow` + `reports_budget`. Re-evaluate as a dedicated tool when the agent-experience reports show the composition friction outweighs the surface cost.
-
-Financial health snapshot — high-level summary across all domains.
-
-- **Sensitivity:** `low` — aggregates only.
-- **Unique parameters:** `months: int = 1` (period to summarize).
-- **Behavior:** Returns `{net_worth, monthly_income, monthly_expenses, monthly_net, savings_rate, top_spending_categories, budget_compliance, recurring_total}`. Designed as a conversation opener.
+> Note: a unified `reports_health` snapshot tool is **planned, not registered**. Today the agent composes the same view from `reports_networth` + `reports_spending` + `reports_cashflow` + `reports_budget`. Re-evaluate as a dedicated tool when agent-experience reports show the composition friction outweighs the surface cost.
 
 ### `reports_recurring`
 
@@ -1304,7 +1223,7 @@ Run the post-load refresh pipeline: cross-source matching, SQLMesh apply, determ
 
 - **Sensitivity:** `low` — counts and durations only.
 - **Unique parameters:**
-  - `steps: list[Literal["match", "transform", "categorize"]] | None = None` — subset of canonical steps to run; defaults to None (full cascade). Steps execute in canonical order (match → transform → categorize) regardless of input order; dependencies enforce it (categorize reads SQLMesh-built views). Pass `steps=["transform"]` to run SQLMesh apply alone — the granular form formerly exposed as the standalone `transform_apply` tool.
+  - `steps: list[Literal["match", "transform", "categorize"]] | None = None` — subset of canonical steps to run; defaults to None (full cascade). Steps execute in canonical order (match → transform → categorize) regardless of input order; dependencies enforce it (categorize reads SQLMesh-built views). Pass `steps=["transform"]` to run SQLMesh apply alone.
 - **Mutation surface:** rebuilds `core.*` and `reports.*` via SQLMesh; writes `app.transaction_categories` for newly-matched rules. No revert path — re-run after fixing inputs.
 - **Behavior:** Single user-facing entry point for the refresh domain. Idempotent; safe to retry after a failure. Matching and categorization steps are best-effort and log-only on failure — only SQLMesh apply errors surface in the response envelope. Returns `{applied, duration_seconds, error?}`. On apply failure, `actions[]` hints at `transform_plan` (per `mcp-server.md` infrastructure-verb carve-out) to inspect, or `refresh_run` to retry. When `steps` includes `match` but excludes `categorize`, `actions[]` includes a follow-up hint pointing at `refresh_run(steps=["categorize"])`. Unknown step names raise `UserError(code="UNKNOWN_REFRESH_STEP")`. Symmetric with `transactions_categorize_run(methods=...)`.
 - **Service:** `moneybin.services.refresh.refresh(db, *, steps=None) -> RefreshResult`
@@ -1354,7 +1273,7 @@ Four goal-oriented workflow templates. Each defines the goal, relevant tools, gu
 
 **Parameters:** `month: str?` (YYYY-MM, defaults to current month).
 
-**Relevant tools:** `reports_spending_summary`, `reports_spending_by_category`, `reports_spending_compare`, `reports_cashflow_summary`, `reports_budget`, `reports_recurring`, `reports_health`
+**Relevant tools:** `reports_spending` (with `category` filter for drill-down), `reports_cashflow`, `reports_budget`, `reports_recurring`, `reports_merchants`, `reports_networth`
 
 **Guardrails:**
 
@@ -1409,7 +1328,7 @@ Four goal-oriented workflow templates. Each defines the goal, relevant tools, gu
 
 **Parameters:** `tax_year: str` (defaults to prior year).
 
-**Relevant tools:** `tax_w2`, `tax_deductions`, `reports_spending_by_category`, `reports_cashflow_income`, `transactions_get`
+**Relevant tools:** `tax_w2`, `tax_deductions`, `reports_spending` (with category filters), `reports_cashflow`, `transactions_get`
 
 **Guardrails:**
 
@@ -1477,231 +1396,36 @@ Static for a given server build — namespace and tool counts reflect what is re
 
 ---
 
-## 15b. `moneybin_discover` — Retired
+## 16. `sync_*` — Provider sync (Plaid)
 
-> **Retired 2026-05-17.** Originally designed as a namespace-discovery meta-tool that fired `tools/list_changed` to reveal extended namespaces per-session. Retired because the underlying `tools/list_changed` capability has insufficient client support to make the disclosure mechanism reliable — clients that ignore the notification never see the revealed tools, producing a silent capability gap. Removed from the codebase together with `MoneyBinSettings.mcp.progressive_disclosure` and the `Visibility(False, tags={domain})` server transform. The `@mcp_tool(domain=...)` decorator argument and resulting `tags={domain}` markers on individual tools are retained as dormant metadata; see `mcp-architecture.md` §3 "Tool disclosure: full surface, taxonomy-led" for the replacement strategy and future-client rationale.
-
----
-
-## 16. Migration from prototype
-
-Clean break — old tool names stop working when v1 ships. MoneyBin is pre-1.0; breaking changes are expected.
-
-| Prototype tool | v1 equivalent | Notes |
-|---|---|---|
-| `list_tables` | `moneybin://schema` resource | Tool → resource |
-| `describe_table` | `moneybin://schema` resource | Tool → resource |
-| `list_accounts` | `accounts` | |
-| `get_account_balances` | `accounts_balances` | |
-| `query_transactions` | `transactions_get` | Richer filters, curation fields, cursor pagination |
-| `get_w2_summary` | `tax_w2` | |
-| `list_categories` | `categories` | |
-| `list_categorization_rules` | `transactions_categorize_rules` | |
-| `list_merchants` | `merchants` | |
-| `get_categorization_stats` | `transactions_categorize_stats` | |
-| `list_institutions` | `accounts` | Institution is a field on account |
-| `run_read_query` | `sql_query` | |
-| `import_file` | `import_files` | Renamed; accepts list of paths |
-| `categorize_transaction` | `transactions_categorize_commit` | Single-item removed; use list of one |
-| `get_uncategorized_transactions` | `transactions_categorize_pending` | |
-| `seed_categories` | _removed_ | Seeds run automatically via `db init` / `transform seed` |
-| `toggle_category` | `categories_set` (PR #162) | |
-| `create_category` | `categories_create` | |
-| `create_merchant_mapping` | `merchants_create` | Single → bulk |
-| `create_categorization_rule` | `transactions_categorize_rules_create` | Single → bulk |
-| `delete_categorization_rule` | `transactions_categorize_rules_delete` | |
-| `bulk_categorize` | `transactions_categorize_commit` | |
-| `bulk_create_categorization_rules` | `transactions_categorize_rules_create` | |
-| `bulk_create_merchant_mappings` | `merchants_create` | |
-| `set_budget` | `budget_set` | |
-| `get_budget_status` | `reports_budget` | |
-| `get_monthly_summary` | `reports_spending` | |
-| `get_spending_by_category` | `reports_spending` | One tool with `by=category` projection |
-| `find_recurring_transactions` | `reports_recurring` | |
-| `csv_preview_file` | `import_preview` | format-agnostic; tabular and OFX/QFX/QBO supported |
-| `csv_list_profiles` | `import_formats` | |
-| `csv_save_profile` | Absorbed into `import_files` via `save_format` flag | |
-
-### Prototype prompts
-
-All prototype prompts are replaced by the four v1 prompts. The prototype's step-by-step prompts are superseded by goal-oriented templates.
-
-### Prototype resources
-
-| Prototype resource | v1 equivalent | Notes |
-|---|---|---|
-| `moneybin://schema/tables` | `moneybin://schema` | Consolidated |
-| `moneybin://schema/{table_name}` | `moneybin://schema` | Consolidated |
-| `moneybin://accounts/summary` | `moneybin://accounts` | Simplified |
-| `moneybin://transactions/recent` | Removed | Too dynamic for ambient context; use `transactions_get` |
-| `moneybin://w2/{tax_year}` | Removed | Parameterized data belongs as a tool (`tax_w2`) |
-
----
-
-## 16b. Rename Map (v1 → v2)
-
-Per [`moneybin-cli.md`](moneybin-cli.md) v2. Hard cut: rename in place, no aliases. Update the tool registry, regenerate `mcp install` output for all client configs, and update any AI agent prompts or external references.
-
-### `accounts_*`
-
-| v1 | v2 | Notes |
-|---|---|---|
-| `accounts_list` | `accounts` | Noun-only read tool |
-| `accounts_details` | `accounts_get` | Single-instance get |
-| `accounts_balances` | `accounts_balances` | Noun-only read tool; round-trips to v1 name |
-| `accounts_networth` | `reports_networth` | **Moves to `reports_*`** — cross-domain rollup (accounts + assets), no longer scoped to `accounts` namespace |
-| (new — `net-worth.md`) | `accounts_balance_assert` | |
-| (new) | `accounts_balance_history` | |
-| (new) | `accounts_balance_reconcile` | |
-| (new) | `accounts_balance_assertions` | |
-| (new) | `accounts_balance_assertion_delete` | |
-| (new) | `reports_networth_history` | Moved out of `accounts_*` |
-| (new — `account-management.md`) | `accounts_summary` | Cross-account summary view |
-| (new) | `accounts_set` | Partial update of an account's settings — structural (subtype, holder category, currency, credit limit, last_four, official_name) and behavioral (`display_name`, `include_in_net_worth`, `is_archived`). Archiving cascades `include_in_net_worth=False` atomically. Replaces the formerly-separate `accounts_rename` / `accounts_include` / `accounts_archive` / `accounts_unarchive` tools. |
-
-### `transactions_*` (entity ops)
-
-| v1 | v2 | Notes |
-|---|---|---|
-| `transactions_get` | `transactions_get` | Verb already trailing |
-| `transactions_correct` | `transactions_correct` | Verb already trailing |
-| `transactions_annotate` | `transactions_annotate` | Verb already trailing |
-| (new) | `transactions_review` | Returns counts of both review queues (matches pending + categorize pending). Orientation tool for "anything to review?" check; AI then calls `transactions_matches_pending` or `transactions_categorize_pending` to fetch items |
-
-### `transactions_matches_*` (workflow under transactions)
-
-| v1 | v2 | Notes |
-|---|---|---|
-| `transactions_matches_pending` | `transactions_matches_pending` | Unchanged — kept specialized; review queue is the dominant call. See judgment call #1 |
-| `transactions_matches_confirm` | `transactions_matches_confirm` | Unchanged. CLI v2 also uses `matches confirm` for symmetry — see judgment call #2 |
-| `transactions_matches_reject` | `transactions_matches_reject` | Unchanged |
-| `transactions_matches_revoke` | `transactions_matches_undo` | Align verb with CLI (`matches undo`) |
-| `transactions_matches_log` | `transactions_matches_log` | Noun "log" reads as the resource; keep |
-| `transactions_matches_run` | `transactions_matches_run` | Unchanged |
-
-### `transactions_categorize_*` (was `categorize_*` workflow + rules + auto + ml)
-
-Workflow tools that operate on transaction state stay nested under `transactions_categorize_*`. Reference-data tools (categories, merchants) split into their own top-level groups — see `categories_*` and `merchants_*` below.
-
-| v1 | v2 |
-|---|---|
-| `categorize_uncategorized` | `transactions_categorize_pending` |
-| `categorize_bulk` | `transactions_categorize_commit` |
-| `categorize_apply_rules` | `transactions_categorize_run(methods=["rules"])` (retired: `_rules_apply` was folded into the cascade umbrella per PR #171) |
-| `categorize_rules` | `transactions_categorize_rules` |
-| `categorize_create_rules` | `transactions_categorize_rules_create` |
-| `categorize_delete_rule` | `transactions_categorize_rules_delete` |
-| `categorize_stats` | `transactions_categorize_stats` |
-| `categorize_auto_review` | `transactions_categorize_auto_review` |
-| `categorize_auto_confirm` | `transactions_categorize_auto_accept` (renamed twice: prototype `categorize_auto_confirm` → v2 `transactions_categorize_auto_confirm` → final `_auto_accept` per PR #171) |
-| `categorize_auto_stats` | `transactions_categorize_auto_stats` |
-| `categorize_ml_status` | `transactions_categorize_ml_status` |
-| `categorize_ml_train` | `transactions_categorize_ml_train` |
-| `categorize_ml_apply` | `transactions_categorize_ml_apply` |
-
-### `categories_*` (new top-level — taxonomy reference data)
-
-Categories are reference data that transactions reference, not a workflow on transactions. Promoted to a top-level entity group so taxonomy management is independent of the categorization workflow.
-
-| v1 | v2 |
-|---|---|
-| `categorize_categories` | `categories` |
-| `categorize_create_category` | `categories_create` |
-| `categorize_toggle_category` | `categories_set` (renamed twice; v1 → `categories_toggle` → `categories_set`) |
-| (new) | `categories_delete` |
-
-### `merchants_*` (new top-level — merchant mapping reference data)
-
-Merchants are reference data (canonical names + default categories). Same logic as categories: promoted to a top-level entity group.
-
-| v1 | v2 |
-|---|---|
-| `categorize_merchants` | `merchants` |
-| `categorize_create_merchants` | `merchants_create` |
-
-### `reports_*` (new namespace — cross-domain analytical and aggregation views)
-
-`spending_*` and `cashflow_*` tools move under `reports_*`. Read-only `budget_*` tools also move; mutation `budget_*` tools stay top-level. `accounts_networth_*` moves here too — net worth aggregates across accounts + assets, so it's structurally a cross-domain report.
-
-`tax_*` does **not** move here — see "Unchanged top-level domains" below.
-
-| v1 | v2 |
-|---|---|
-| `spending_summary` | `reports_spending_summary` |
-| `spending_by_category` | `reports_spending_by_category` |
-| `spending_merchants` | `reports_spending_merchants` |
-| `spending_compare` | `reports_spending_compare` |
-| `cashflow_summary` | `reports_cashflow_summary` |
-| `cashflow_income` | `reports_cashflow_income` |
-| `budget_status` | `reports_budget` |
-| `budget_summary` | `reports_budget_summary` |
-| `accounts_networth` (v1: `accounts_networth`, then proposed `accounts_networth_get`) | `reports_networth` |
-| (new) | `reports_networth_history` |
-| (new) | `reports_health` (was `overview_health`) |
-
-### `budget_*` (mutation, stays top-level)
-
-| v1 | v2 |
-|---|---|
-| `budget_set` | `budget_set` |
-| `budget_delete` | `budget_delete` |
-
-### `system_*` and split of `overview_*`
-
-The v1 `overview_*` namespace bundled two conceptually different tools:
-- `overview_status` — operational meta-view: data freshness, counts, pending queues
-- `overview_health` — analytical financial summary (net worth + spending + budget compliance)
-
-v2 splits them by their actual content. Status is a system meta-view; health is a cross-domain financial report.
-
-| v1 | v2 | Rationale |
-|---|---|---|
-| `overview_status` | `system_status` | Operational/system meta — distinct from analytical reports |
-| `overview_health` | `reports_health` | Cross-domain financial summary — sibling of `reports_spending_summary` |
-
-`system_*` is a new top-level namespace for system meta-information. Currently a single tool; future system observability or diagnostics tools can land here.
-
-### Unchanged top-level domains
-
-| Namespace | Tools | Rationale |
-|---|---|---|
-| `import_*` | `import_csv_preview` → `import_preview` (format-agnostic); `import_file` → `import_files` (batch); other tools unchanged | Pipeline action, not entity-scoped |
-| `privacy_*` | All 4 privacy tools unchanged | Cross-cutting consent/audit domain |
-| `sql_*` | `sql_query` unchanged | Infrastructure escape hatch |
-| `tax_*` | `tax_w2`, `tax_deductions` unchanged | Tax is its own domain — workflow that crosses spending, income, deductions, forms. Future tools (`tax_1099`, `tax_capital_gains`, `tax_estimate`) land here. |
-
-### `assets_*` (new top-level — physical assets)
-
-Reserved namespace for `asset-tracking.md`. Workflows (registration, valuation, liability linking, staleness) defined there. Per the surface-discipline rule, no `assets_*` tools are registered until `asset-tracking.md` reaches `in-progress`; the namespace is documented here for forward-looking taxonomy alignment only.
-
-### `sync_*` (new MCP exposure — was CLI-only)
-
-Per the v2 MCP exposure principle, sync becomes nearly fully MCP-exposed. The AI may want to proactively pull recent data, check sync status, or initiate a connection — these are legitimate user-workflow operations. OAuth flows return redirect URLs; the client opens them.
+Per the MCP exposure principle, sync is fully MCP-exposed except for credential-handling commands. OAuth flows return redirect URLs; the client opens them.
 
 | Tool | Sensitivity | Behavior |
 |---|---|---|
 | `sync_connect [institution]` | medium | Initiates Plaid Hosted Link flow. Returns `{session_id, link_url, expiration}`. `link_url` is a one-time bearer credential — treat as medium sensitivity. Pass `institution` to re-authenticate (Plaid update mode). |
 | `sync_connect_status <session_id>` | low | Single-shot check of a connect session. Returns `{session_id, status, provider_item_id, institution_name, error, expiration}`. Does NOT poll internally — the agent invokes this when the user signals completion. |
 | `sync_disconnect <institution>` | medium | Removes institution by name. No revert path. |
-| `sync_pull [institution] [force] [refresh=true]` | medium | Triggers sync for one or all institutions; loads raw.plaid_* and propagates through SQLMesh. Amounts follow MoneyBin convention (negative = expense). When `refresh` (default true) and the sync changes raw state, the post-load refresh pipeline (matching + SQLMesh apply + categorization) runs once at end-of-pull so `core.dim_accounts` reflects new data before returning. Result envelope adds `transforms_applied`, `transforms_duration_seconds`, `transforms_error` (SQLMesh-step outcome — matching and categorization are log-only on failure). |
+| `sync_pull [institution] [force] [refresh=true]` | medium | Triggers sync for one or all institutions; loads `raw.plaid_*` and propagates through SQLMesh. Amounts follow MoneyBin convention (negative = expense). When `refresh` (default true) and the sync changes raw state, the post-load refresh pipeline (matching + SQLMesh apply + categorization) runs once at end-of-pull so `core.dim_accounts` reflects new data before returning. Result envelope adds `transforms_applied`, `transforms_duration_seconds`, `transforms_error` (SQLMesh-step outcome — matching and categorization are log-only on failure). |
 | `sync_status` | low | Read-only: connected institutions, last-sync times, guidance for error states. |
 | `sync_schedule_set --time HH:MM` | low | Stub — installs daily sync (launchd/cron). |
 | `sync_schedule_show` | low | Stub — read-only schedule details. |
 | `sync_schedule_remove` | low | Stub — uninstalls scheduled job. |
 
-**CLI-only (security-justified):** `sync_login`, `sync_logout` (browser interaction + credential handling routed through LLM context is a security model violation); `sync_rotate_key` — passphrase material through LLM context window is a security model violation.
+**CLI-only (security-justified):** `sync_login`, `sync_logout` (browser interaction + credential handling routed through LLM context is a security-model violation); `sync_rotate_key` — passphrase material through LLM context is a security-model violation.
 
-**Prompts (FastMCP):**
+**Prompts:**
 
 | Prompt | Behavior |
 |---|---|
-| `sync_review` | Agent-driven health check. Walks the agent through `sync_status` + optional `spending_summary` to flag errored institutions, stale connections (last_sync > 7 days), and volume anomalies. Output is constrained to counts/dates/status codes/institution names — no PII (account numbers, balances, descriptions, merchant names). |
+| `sync_review` | Agent-driven health check. Walks the agent through `sync_status` + a quick `reports_spending` pulse to flag errored institutions, stale connections (last_sync > 7 days), and volume anomalies. Output is constrained to counts / dates / status codes / institution names — no PII. |
 
-### `transform_*`
+---
 
-Routine pipeline operations the AI legitimately needs (e.g., ensure pipeline is up to date after a manual data change). Full surface except `_restate`. See [smart-import-transform.md](smart-import-transform.md).
+## 17. `transform_*` — SQLMesh pipeline operations
 
-| v2 tool | Behavior |
+Read-only pipeline introspection. The mutating refresh path is `refresh_run` (§12); `transform_apply` was retired as a standalone MCP tool in favor of `refresh_run(steps=["transform"])`. See [`smart-import-transform.md`](smart-import-transform.md).
+
+| Tool | Behavior |
 |---|---|
 | `transform_status` | Current model state, environment |
 | `transform_plan` | Preview pending SQLMesh changes (read-only) |
@@ -1710,21 +1434,15 @@ Routine pipeline operations the AI legitimately needs (e.g., ensure pipeline is 
 
 **CLI-only (operator-territory):** `transform_restate` — destructive force-recompute for a date range, used for bug fixes / late-data backfill / schema reinterpretation. Power-user / data-engineering territory; preceded by code changes the AI doesn't drive.
 
-**Folded into the refresh umbrella:** `transform_apply` was retired as a standalone MCP tool on 2026-05-17. The granular form is now `refresh_run(steps=["transform"])` on MCP and `moneybin refresh --step transform` on CLI. The `moneybin transform apply` CLI command remains as the operator-territory path for direct SQLMesh access.
+---
 
-### Judgment calls flagged for review
+## 17b. Forward namespace: `assets_*`
 
-A few renames make minor judgment calls. Flagged here so they can be revisited if needed:
-
-1. **`transactions_matches_pending` → `transactions_matches_list` + `status` param.** Consolidates a status-filter into a parameter. Alternative: keep `_pending` as a specialized tool. Pro-consolidation: matches the v2 rule (one list operation per sub-resource). Pro-specialized: `pending` is the dominant query in practice and a dedicated tool reads cleaner.
-2. **`transactions_matches_confirm` stays `_confirm`; CLI verb aligned to `confirm`.** Resolved. Both interfaces use `confirm` because it more accurately describes ratifying a system-proposed match (vs. picking from options).
-3. **`overview_*` split into `system_status` and `reports_health`.** v1 bundled operational meta and financial summary under one namespace. v2 separates them by content type. Resolved.
-4. **`tax_*` stays its own top-level domain.** Resolved. Tax is a workflow that crosses spending, income, deductions, and forms; future tools (1099, capital gains, estimates, carryforward) need a stable home. Two tools today, but the namespace is reserved for natural growth.
-5. **`categorize_uncategorized` → `transactions_categorize_pending`.** Resolved. Symmetry with `transactions_matches_pending` — both are review queues, both read the same shape.
+Reserved for [`asset-tracking.md`](asset-tracking.md). Workflows (registration, valuation, liability linking, staleness) are defined there. Per the surface-discipline rule in `.claude/rules/mcp-server.md`, no `assets_*` tools register until the backing spec reaches `in-progress`; this entry exists so reviewers can confirm the namespace is reserved.
 
 ---
 
-## 17. Dependency tracker
+## 17c. Dependency tracker
 
 Tools that depend on unbuilt subsystems are documented in the catalog with dependency markers but **are not registered on the MCP surface until their backing spec reaches `in-progress` or `implemented`** in `docs/specs/INDEX.md`. The "Blocked tools" column below names the future tool set; today only entries whose dependency is `in-progress`/`implemented` are live. See `.claude/rules/mcp-server.md` "Surface change discipline" for the rule.
 

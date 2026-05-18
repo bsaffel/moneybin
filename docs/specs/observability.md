@@ -255,7 +255,7 @@ The MCP server calls `setup_observability(stream="mcp")` at startup.
 
 ```
 2026-04-20 14:23:01 - moneybin.mcp - INFO - Server started, database: ~/.moneybin/data/default.db
-2026-04-20 14:23:05 - moneybin.mcp - INFO - Tool spending_summary called
+2026-04-20 14:23:05 - moneybin.mcp - INFO - Tool reports_spending called
 2026-04-20 14:23:05 - moneybin.mcp - INFO - Consent not granted, returning degraded response
 ```
 
@@ -289,7 +289,7 @@ $ moneybin stats
 Import Records:     12,847 total (247 today)
 Import Duration:    p50=0.8s  p95=2.1s
 Auto-categorized:   78% of transactions
-MCP Tool Calls:     1,203 total (top: spending_summary, transactions_search)
+MCP Tool Calls:     1,203 total (top: reports_spending, transactions_get)
 Dedup Matches:      1,891 records merged
 ```
 

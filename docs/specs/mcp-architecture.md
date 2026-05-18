@@ -134,7 +134,7 @@ Tools use a hybrid namespace that reflects the most natural way an AI or user wo
 
 - **Noun = query.** `reports_spending`, `accounts_balances`, `transactions_review` — returns data. No `_list` suffix (PR #172); `_get` is reserved for single-entity-by-id reads (`accounts_get(account_id)`). See `.claude/rules/surface-design.md` "Verb conventions". `transactions_get` is a defended exception: filtered/paginated collection query rather than single-entity — the name was kept for "fetch the transactions I care about" intent over strict shape conformance; documented inline in its description.
 - **Verb = action.** `transactions_categorize_commit`, `refresh_run`, `import_files` — mutates state.
-- **Underscore separator.** `spending_summary`, `categorize_apply`. The MCP spec (rev 2025-11-25) and SEP-986 permit dot-separated namespaces (e.g. `spending.summary`), and dots were the original convention here. **Anthropic's and OpenAI's first-party clients enforce a stricter `^[a-zA-Z0-9_-]{1,64}$` regex** ([issue #1063](https://github.com/modelcontextprotocol/modelcontextprotocol/issues/1063)) and reject dots, so the portable subset is `[A-Za-z0-9_-]`. Reconsider if/when major clients align with SEP-986.
+- **Underscore separator.** `reports_spending`, `transactions_categorize_commit`. The MCP spec (rev 2025-11-25) and SEP-986 permit dot-separated namespaces (e.g. `reports.spending`), and dots were the original convention here. **Anthropic's and OpenAI's first-party clients enforce a stricter `^[a-zA-Z0-9_-]{1,64}$` regex** ([issue #1063](https://github.com/modelcontextprotocol/modelcontextprotocol/issues/1063)) and reject dots, so the portable subset is `[A-Za-z0-9_-]`. Reconsider if/when major clients align with SEP-986.
 
 ### Tool disclosure: full surface, taxonomy-led
 
@@ -393,7 +393,7 @@ MCP prompts are guided workflows — structured templates that help the AI walk 
 
 **Design principles:**
 
-1. **Workflow-oriented, not tool-oriented.** A prompt represents a user goal ("review my monthly finances"), not a tool wrapper ("call spending_summary with these params"). The prompt orchestrates multiple tools.
+1. **Workflow-oriented, not tool-oriented.** A prompt represents a user goal ("review my monthly finances"), not a tool wrapper ("call reports_spending with these params"). The prompt orchestrates multiple tools.
 2. **Opinionated sequence.** Each prompt defines the order of operations, what data to gather, what to present, and when to ask the user for input. The AI follows the script rather than improvising.
 3. **Composable with tools.** Prompts reference tools by name. When tools evolve (new parameters, richer responses), prompts automatically benefit.
 4. **Few, high-value.** Prompts exist for workflows that are common enough to standardize and complex enough that an AI might not discover the right tool composition on its own.

@@ -317,7 +317,7 @@ Per `observability.md`, every spec touching app code wires metrics. New metrics:
 | `categorize_match_outcome_total{outcome,shape}` | counter | `outcome` ∈ {`exemplar`, `exact`, `contains`, `regex`, `none`}; `shape` ∈ {`description_only`, `memo_only`, `both`} |
 | `merchant_exemplar_count` | gauge | Per-merchant exemplar set size; alarms triggered if any merchant exceeds 200 |
 | `categorize_write_skipped_precedence_total{src_existing,src_attempted}` | counter | Tracks how often precedence locks fire |
-| `categorize_apply_post_commit_duration_seconds` | histogram | Latency of the snowball apply triggered by `categorize_apply` |
+| `categorize_apply_post_commit_duration_seconds` | histogram | Latency of the snowball apply triggered by `transactions_categorize_commit`. Metric name retains the `categorize_apply_` prefix for Prometheus stability across the 2026-05 rename. |
 | `categorize_apply_post_commit_rows_affected` | histogram | How many rows the snowball fanned out to per batch |
 
 Existing metrics (`CATEGORIZE_BULK_*`, `CATEGORIZE_ASSIST_*`) remain unchanged.

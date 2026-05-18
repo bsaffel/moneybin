@@ -4,7 +4,7 @@
 implemented
 
 > Last updated: 2026-05-15
-> Companion: [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) — amends this spec's merchant-creation algorithm (exemplar accumulator replaces auto-generalized `contains` patterns), redaction contract (`v2` extends the LLM input to memo + structural fields), and apply order (auto-fan-out fires after every `categorize_apply` commit; this is the snowball mechanism the Vision section promises).
+> Companion: [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) — amends this spec's merchant-creation algorithm (exemplar accumulator replaces auto-generalized `contains` patterns), redaction contract (extends the LLM input to memo + structural fields), and apply order (auto-fan-out fires after every `transactions_categorize_commit` commit; this is the snowball mechanism the Vision section promises).
 >
 > **Amendment 2026-05-15:** seed merchant catalogs (`seeds.merchants_global/us/ca`) and the paired `app.merchant_overrides` table were removed. The "Seed merchant mappings" bootstrap strategy is retired; cold-start is now Plaid pass-through (when synced) + migration imports + LLM-assist. The catalogs never matched real bank-formatted strings well, and the LLM-assist pillar makes them redundant. References below have been updated; data-model and implementation-plan sections are kept as historical record but marked **(retired)**.
 
