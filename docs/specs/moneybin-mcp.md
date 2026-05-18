@@ -95,7 +95,7 @@ Path-prefix-verb-suffix. Tool names mirror the CLI hierarchy with underscores in
 
 - **Pattern:** `<entity_or_domain>[_<sub_resource>]_<verb>`
 - **Examples:** `accounts`, `accounts_balances`, `accounts_balance_assert`, `reports_networth`, `transactions_matches_confirm`, `reports_spending`
-- **Verbs:** noun-only for collection / summary / aggregate / time-series reads (shape 5 of `.claude/rules/surface-design.md`); `_get` (single instance by id); `_assert`, `_confirm`, `_reject`, `_delete`, `_create`, plus domain-natural verbs (`_reconcile`, `_run`, `_train`). `_set` for idempotent state assertions (shape 1a/1b). `_list` is forbidden on read tools.
+- **Verbs:** noun-only for collection / summary / aggregate / time-series reads (shape 5 of `.claude/rules/surface-design.md`); `_get` is reserved for single-entity-by-id reads (`accounts_get(account_id)`). `transactions_get` is a defended exception: filtered/paginated collection query rather than single-entity — the name was kept for "fetch the transactions I care about" intent over strict shape conformance; documented inline in its description. Also: `_assert`, `_confirm`, `_reject`, `_delete`, `_create`, plus domain-natural verbs (`_reconcile`, `_run`, `_train`). `_set` for idempotent state assertions (shape 1a/1b). `_list` is forbidden on read tools.
 - **Pluralization:** singular for single-entity reads (`accounts_get`); noun-only for collection reads, pluralized to match the noun (`accounts`, `accounts_balances`, `merchants`, `system_audit`); singular for sub-resources inside compound names (`balance`, `networth`, `category`); plural for relationship collections (`matches`).
 - **Encoding constraint:** lowercase ASCII with underscores, ≤64 chars (`^[a-zA-Z0-9_-]{1,64}$` per Anthropic and OpenAI MCP client regex).
 
@@ -362,26 +362,24 @@ Default output is a table with date, description, amount, category, and account 
 class CategorizationService:
     def categorize_items(
         self,
-        categorizations: list[Categorization],
-        create_merchant_mappings: bool = True,
+        items: list[CategorizationItem],
     ) -> CategorizationResult: ...
 ```
 
-`Categorization` is a dataclass: `transaction_id`, `category`, `subcategory?`, `merchant_name?`. `CategorizationResult` contains applied/skipped/error counts and a list of error details.
+`CategorizationItem` is a Pydantic model (`src/moneybin/services/categorization/_shared.py`): `transaction_id`, `category`, `subcategory?`, `canonical_merchant_name?`. `CategorizationResult` contains applied/skipped/error counts and a list of error details.
 
-When `create_merchant_mappings` is true, the service normalizes each transaction's description and creates a merchant mapping if one doesn't already exist. This is a side-effect of categorization, not a separate tool call — it's how the system learns.
+The matcher auto-creates exemplar-only merchant mappings from each row's normalized `match_text` so future rows with the same `match_text` categorize automatically via the merchant matcher. When `canonical_merchant_name` is provided, multiple rows with different `match_text` values merge under one merchant identity by appending exemplars rather than spawning per-row merchants.
 
 **MCP tool**
 
 - **Name:** `transactions_categorize_commit`
-- **Description:** "Apply categories to multiple transactions at once. Pair with `transactions_categorize_pending` to fetch candidates first. Optionally auto-creates merchant mappings so future imports are categorized automatically."
-- **Sensitivity:** `medium` — reads transaction descriptions to create merchant mappings.
+- **Description:** "Commit externally-decided categorizations for a batch of transactions. Typical caller: an LLM that received redacted rows from `transactions_categorize_assist`, proposed categorizations, the user reviewed, and the LLM now persists the accepted decisions."
+- **Sensitivity:** `medium` — reads transaction descriptions and persists category writes.
 - **Parameters:**
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `categorizations` | `list[object]` | (required) | List of `{transaction_id, category, subcategory?, merchant_name?}` |
-| `create_merchant_mappings` | `bool` | `true` | Auto-create merchant mappings from descriptions |
+| `items` | `Sequence[Mapping[str, str \| None]]` | (required) | List of dicts with `transaction_id`, `category`, optional `subcategory`, optional `canonical_merchant_name`. Validated through `CategorizationItem` at the boundary. |
 
 - **Response `data` shape:**
 
@@ -406,10 +404,10 @@ Note: for write tools, `data` is a result object, not an array. The envelope sti
 **CLI command**
 
 ```
-moneybin transactions categorize commit --file categorizations.json [--no-merchant-mappings] [--output json]
+moneybin transactions categorize commit [--input PATH | -] [--output json]
 ```
 
-The CLI accepts a JSON file (or stdin) since batch data doesn't work as flags. `--no-merchant-mappings` disables the auto-create side-effect. Default output is a summary line: "Applied 48, skipped 0, errors 2, merchants created 12."
+The CLI accepts a JSON file via `--input PATH` or stdin (`-`); batch data doesn't fit as flags. Default output is a summary line: "Applied 48, skipped 0, errors 2, merchants created 12."
 
 ---
 
