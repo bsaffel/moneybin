@@ -1,0 +1,37 @@
+{
+  "accounts": {
+    "iterations": 30,
+    "name": "accounts",
+    "p50_ms": 16.901896,
+    "p95_ms": 18.5375,
+    "p99_ms": 19.009375
+  },
+  "reports_budget": {
+    "iterations": 30,
+    "name": "reports_budget",
+    "p50_ms": 57.702771,
+    "p95_ms": 58.81175,
+    "p99_ms": 58.902375
+  },
+  "reports_networth_history": {
+    "iterations": 30,
+    "name": "reports_networth_history",
+    "p50_ms": 18.328291999999998,
+    "p95_ms": 19.446,
+    "p99_ms": 19.618167
+  },
+  "reports_spending": {
+    "iterations": 30,
+    "name": "reports_spending",
+    "p50_ms": 57.3363955,
+    "p95_ms": 58.750208,
+    "p99_ms": 58.938209
+  },
+  "transactions_get": {
+    "iterations": 30,
+    "name": "transactions_get",
+    "p50_ms": 59.075583,
+    "p95_ms": 67.774541,
+    "p99_ms": 68.644583
+  }
+}

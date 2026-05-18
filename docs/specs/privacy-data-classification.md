@@ -253,7 +253,7 @@ pre-middleware baseline captured before introspection code landed.
 | Fixture | `family.yaml` |
 | Accounts | 4 |
 | Transactions (generated) | ~2700 over 3 years |
-| Total DB size after seeding | (filled in Task 0.4 after generation) |
+| Total DB size after seeding | ~8.1 MB |
 
 Generated via `moneybin synthetic generate family --seed 8229 --years 3`.
 
