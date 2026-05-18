@@ -203,7 +203,7 @@ def _build_timeout_envelope(
 
 def mcp_tool(
     *,
-    sensitivity: Literal["low", "medium", "high"],
+    sensitivity: Literal["low", "medium", "high", "critical"],
     domain: str | None = None,
     read_only: bool = True,
     destructive: bool = False,
@@ -214,7 +214,7 @@ def mcp_tool(
     """Mark a function as an MCP tool with a sensitivity tier and optional domain.
 
     Args:
-        sensitivity: Sensitivity tier (low/medium/high).
+        sensitivity: Sensitivity tier (low/medium/high/critical).
         domain: Optional namespace tag stored as a FastMCP tag. Dormant
             metadata today — client-driven progressive disclosure was retired
             2026-05-17 (see docs/specs/mcp-architecture.md §3). Preserved for a

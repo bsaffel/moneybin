@@ -45,7 +45,7 @@ class SummaryMeta:
     returned_count: int
     has_more: bool = False
     period: str | None = None
-    sensitivity: Literal["low", "medium", "high"] = "low"
+    sensitivity: Literal["low", "medium", "high", "critical"] = "low"
     display_currency: str = "USD"
     degraded: bool = False
     degraded_reason: str | None = None
@@ -144,7 +144,7 @@ class ResponseEnvelope:
 def build_envelope(
     *,
     data: list[dict[str, Any]] | dict[str, Any],
-    sensitivity: Literal["low", "medium", "high"],
+    sensitivity: Literal["low", "medium", "high", "critical"],
     total_count: int | None = None,
     next_cursor: str | None = None,
     period: str | None = None,
@@ -225,7 +225,7 @@ def not_implemented_envelope(
 def build_error_envelope(
     *,
     error: UserError,
-    sensitivity: Literal["low", "medium", "high"] = "low",
+    sensitivity: Literal["low", "medium", "high", "critical"] = "low",
     actions: list[str] | None = None,
 ) -> ResponseEnvelope:
     """Build a ResponseEnvelope carrying a classified user error.
