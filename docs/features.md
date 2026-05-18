@@ -76,7 +76,7 @@ Curated `reports.*` SQLMesh views back both the CLI and MCP surfaces. Same query
 - **Transport** — stdio today. Streamable HTTP transport ships with the web UI milestone (see [roadmap](roadmap.md)).
 - **Auth and session model** — Each MCP session inherits the profile unlocked by `moneybin db unlock`. Locking the profile (`moneybin db lock`) detaches all active sessions.
 - **Concurrency** — Reads coexist freely; writes are serialized per profile (single-writer rule). Two agents can read concurrently; only one can mutate at a time.
-- **Response envelope** — `{status, data, error, audit_id}` on every tool. Money fields are JSON numbers (not strings). Validation errors land as `invalid_arguments` envelopes with a hint listing accepted parameters. -> [MCP server guide](guides/mcp-server.md)
+- **Response envelope** — `{status, summary, data, actions, error?, next_cursor?}` on every tool. `summary` carries counts, sensitivity tier, and display currency; `actions` carries next-step hints (see below); `next_cursor` is the opaque pagination token. Money fields are JSON numbers (not strings). Validation errors land as `invalid_arguments` envelopes with a hint listing accepted parameters. -> [MCP server guide](guides/mcp-server.md)
 - **Tool annotations** — Protocol-standard `readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint` so clients can render confirmation UI for destructive operations.
 - **Sensitivity tiers** — Every tool is tagged `low` / `medium` / `high`. Today the tier drives logging and audit metadata; full consent enforcement (gating `high`-tier invocations on explicit OK) lands with the privacy-framework work. See [architecture](architecture.md) for the tier-by-domain breakdown.
 - **Action hints** — Successful responses include an `actions[]` array suggesting next-step tool calls (e.g., after a successful import, an action hint points at `refresh_run`), so agents can chain without prompt-side instructions for common flows. -> [MCP server guide](guides/mcp-server.md)
@@ -88,7 +88,7 @@ Curated `reports.*` SQLMesh views back both the CLI and MCP surfaces. Same query
 ## CLI
 
 - **Typer v2 taxonomy** — Path-prefix-verb-suffix naming; entity groups (`accounts`, `transactions`), reference-data groups (`categories`, `merchants`), `reports` for cross-domain rollups, `system` for orientation. -> [CLI reference](guides/cli-reference.md)
-- **`--output json` parity with MCP** — Every read command exposes `--output json` and returns the same `{status, data, error, audit_id}` envelope as the corresponding MCP tool, redacted by the same middleware. Agents driving the shell are first-class. -> [CLI reference](guides/cli-reference.md)
+- **`--output json` parity with MCP** — Every read command exposes `--output json` and returns the same `{status, summary, data, actions, error?, next_cursor?}` envelope as the corresponding MCP tool, redacted by the same middleware. Agents driving the shell are first-class. -> [CLI reference](guides/cli-reference.md)
 - **Structured error envelopes** — Runtime errors emit a machine-readable envelope to stdout when `--output json` is active.
 - **Field projection** — `--json-fields` on `moneybin transactions list` selects a subset of fields; other read-only commands will adopt progressively.
 - **Shell completion** — `moneybin --install-completion` / `--show-completion`.
