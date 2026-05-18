@@ -958,7 +958,7 @@ List merchant name mappings.
 Create one or more merchant name mappings.
 
 - **Sensitivity:** `low`
-- **Unique parameters:** `merchants: list[object]` (required) — list of `{raw_pattern, canonical_name, match_type?, category?, subcategory?, category_id?}`.
+- **Unique parameters:** `merchants: list[object]` (required) — list of `{raw_pattern, canonical_name, match_type?, category?, subcategory?}`. Note: `category_id` resolution is not yet wired — pass `category`/`subcategory` text and let the existing categorization path resolve to `core.dim_categories`.
 - **Behavior:** Returns `{created, skipped, errors, error_details}`.
 - **Service:** `CategorizationService.create_merchants() -> CreateResult`
 - **CLI:** `moneybin merchants create --file mappings.json`
@@ -1746,7 +1746,7 @@ Tools that depend on unbuilt subsystems are documented in the catalog with depen
 
 ### Tools shippable without dependencies
 
-> **Surface status (2026-05-18):** All entries in §16 (Migration) not marked "NOT registered" or de-registered above are live and visible at connect. See the dependency tracker above for the tools that remain blocked. `budget.*` and `tax.*` are registered-but-unwired pending their backing specs reaching `in-progress`/`implemented` (a working implementation alone does not justify exposing the tool on the public surface).
+> **Surface status (2026-05-18):** All entries in §16 (Migration) not marked "NOT registered" or de-registered above are live and visible at connect. See the dependency tracker above for the tools that remain blocked. `budget.*` and `tax.*` tool modules remain implemented but are **de-registered** in `src/moneybin/mcp/server.py:register_core_tools()` (matching the dependency-tracker rows above) — re-register when their backing specs reach `in-progress`/`implemented`. A working implementation alone does not justify exposing the tool on the public surface.
 
 ---
 
