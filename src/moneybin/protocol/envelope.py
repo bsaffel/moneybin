@@ -10,11 +10,12 @@ See ``mcp-architecture.md`` section 4 for design rationale.
 
 from __future__ import annotations
 
+import dataclasses
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, is_dataclass
 from decimal import Decimal
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from moneybin.errors import UserError
 
@@ -68,8 +69,12 @@ class SummaryMeta:
         return d
 
 
-class _DecimalEncoder(json.JSONEncoder):
-    """JSON encoder that serializes Decimal as a JSON number.
+class _PayloadEncoder(json.JSONEncoder):
+    """JSON encoder for envelope payloads.
+
+    Extends the original Decimal-to-float semantics to also handle typed
+    dataclass and Pydantic model payloads so ``to_json()`` works on both
+    bare-dict and typed-payload envelopes.
 
     MoneyBin holds money as `Decimal` internally for precision-safe arithmetic;
     on the wire we emit JSON numbers so agents and JSON tooling consume them
@@ -88,8 +93,20 @@ class _DecimalEncoder(json.JSONEncoder):
     """
 
     def default(self, o: object) -> Any:
+        # Existing: Decimal → float
         if isinstance(o, Decimal):
             return float(o)
+        # New: dataclass instances → asdict (recurses through nested dataclasses)
+        if is_dataclass(o) and not isinstance(o, type):
+            return dataclasses.asdict(o)
+        # New: Pydantic v2 models → model_dump
+        o_any: Any = o  # widen to Any for duck-typed attribute access
+        if hasattr(o_any, "model_dump") and callable(o_any.model_dump):
+            try:
+                return o_any.model_dump()
+            except Exception:  # noqa: BLE001,S110 — fall through to str()
+                pass
+        # Existing fallback: str(o) for datetime, UUID, Enum, etc.
         try:
             return super().default(o)
         except TypeError:
@@ -97,12 +114,18 @@ class _DecimalEncoder(json.JSONEncoder):
 
 
 @dataclass(slots=True)
-class ResponseEnvelope:
+class ResponseEnvelope[T]:
     """Standard response shape for all MCP tools.
+
+    Generic over the payload type ``T`` (a typed dataclass, Pydantic
+    model, TypedDict instance, or — for back-compat — a plain dict or
+    list of dicts). ``T`` carries field-level
+    ``Annotated[..., DataClass]`` metadata that the privacy middleware
+    reads to apply redaction.
 
     Sections:
     - ``summary``: metadata for the AI (counts, truncation, sensitivity)
-    - ``data``: the payload (list of objects or single result dict)
+    - ``data``: the payload — typed object or bare dict/list
     - ``actions``: contextual next-step hints
     - ``error``: populated when the tool failed with a classified user error;
       ``data`` is empty in this case
@@ -110,17 +133,31 @@ class ResponseEnvelope:
     """
 
     summary: SummaryMeta
-    data: list[dict[str, Any]] | dict[str, Any]
+    data: T
     actions: list[str] = field(default_factory=list)
     error: UserError | None = None
     next_cursor: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        """Convert to a plain dict suitable for JSON serialization."""
+        """Convert to a plain dict suitable for JSON serialization.
+
+        Typed payloads (dataclass, Pydantic) are recursively serialized
+        via ``dataclasses.asdict`` / ``model_dump``; bare dicts/lists pass
+        through unchanged.
+        """
+        data_serialized: Any
+        if is_dataclass(self.data) and not isinstance(self.data, type):
+            data_serialized = dataclasses.asdict(self.data)
+        elif hasattr(self.data, "model_dump") and callable(
+            cast(Any, self.data).model_dump
+        ):
+            data_serialized = cast(Any, self.data).model_dump()
+        else:
+            data_serialized = self.data
         d: dict[str, Any] = {
             "status": "error" if self.error is not None else "ok",
             "summary": self.summary.to_dict(),
-            "data": self.data,
+            "data": data_serialized,
             "actions": self.actions,
         }
         if self.error is not None:
@@ -130,20 +167,20 @@ class ResponseEnvelope:
         return d
 
     def to_json(self) -> str:
-        """Serialize to JSON string.
+        """Serialize to JSON string via _PayloadEncoder.
 
-        Uses ``_DecimalEncoder`` (which handles Decimal → float and falls
-        back to str for other non-serializable types). Do NOT pass
-        ``default=`` to ``json.dumps`` alongside ``cls=``: ``default=``
-        replaces the encoder's ``default()`` and silently breaks the
-        Decimal-to-number conversion.
+        Uses ``_PayloadEncoder`` (which handles Decimal → float, dataclass
+        → dict, and falls back to str for other non-serializable types). Do
+        NOT pass ``default=`` to ``json.dumps`` alongside ``cls=``:
+        ``default=`` replaces the encoder's ``default()`` and silently breaks
+        the Decimal-to-number conversion.
         """
-        return json.dumps(self.to_dict(), cls=_DecimalEncoder)
+        return json.dumps(self.to_dict(), cls=_PayloadEncoder)
 
 
 def build_envelope(
     *,
-    data: list[dict[str, Any]] | dict[str, Any],
+    data: Any,
     sensitivity: Literal["low", "medium", "high", "critical"],
     total_count: int | None = None,
     next_cursor: str | None = None,
@@ -152,11 +189,19 @@ def build_envelope(
     actions: list[str] | None = None,
     degraded: bool = False,
     degraded_reason: str | None = None,
-) -> ResponseEnvelope:
+) -> ResponseEnvelope[Any]:
     """Build a ResponseEnvelope with computed metadata.
 
+    ``data`` may be a typed dataclass / Pydantic model / TypedDict
+    (preferred — carries privacy classification metadata), or a bare
+    dict / list of dicts (back-compat). The middleware will derive
+    sensitivity from the tool's return type annotation; this
+    ``sensitivity`` parameter is the override-or-redundant-declaration
+    for non-decorated callers (CLI builders, error envelopes).
+
     Args:
-        data: The payload — list of records or a write-result dict.
+        data: The payload — typed dataclass/model, list of records, or a
+            write-result dict.
         sensitivity: Sensitivity tier of the response.
         total_count: Total matching records (if known and different from
             returned count). When None, inferred from data length.
@@ -171,8 +216,11 @@ def build_envelope(
     Returns:
         A fully populated ResponseEnvelope.
     """
-    if isinstance(data, list):
-        returned = len(data)
+    data_any: Any = data  # widen to Any to avoid union-narrowing issues below
+    if isinstance(data_any, list):
+        returned = len(cast(list[Any], data_any))
+    elif is_dataclass(data_any) and not isinstance(data_any, type):
+        returned = _count_typed_payload(data_any)
     else:
         returned = 1
 
@@ -192,10 +240,19 @@ def build_envelope(
 
     return ResponseEnvelope(
         summary=summary,
-        data=data,
+        data=cast(Any, data_any),
         actions=actions or [],
         next_cursor=next_cursor,
     )
+
+
+def _count_typed_payload(data: Any) -> int:
+    """For a typed payload, return the row count if a list-shaped field exists, else 1."""
+    for f in dataclasses.fields(data):
+        v: Any = getattr(data, f.name)
+        if isinstance(v, list):
+            return len(cast(list[Any], v))
+    return 1
 
 
 def not_implemented_envelope(
@@ -203,7 +260,7 @@ def not_implemented_envelope(
     action: str,
     spec: str,
     actions: list[str] | None = None,
-) -> ResponseEnvelope:
+) -> ResponseEnvelope[list[dict[str, Any]]]:
     """Build a stub envelope for taxonomy tools whose body isn't implemented yet.
 
     Used by tool surfaces (e.g., sync_*, transform_*) that exist for v2
@@ -227,7 +284,7 @@ def build_error_envelope(
     error: UserError,
     sensitivity: Literal["low", "medium", "high", "critical"] = "low",
     actions: list[str] | None = None,
-) -> ResponseEnvelope:
+) -> ResponseEnvelope[list[dict[str, Any]]]:
     """Build a ResponseEnvelope carrying a classified user error.
 
     ``data`` is an empty list — the ``error`` field is the canonical signal
