@@ -114,7 +114,7 @@ Transaction categorized
   v
 Has merchant_id in app.transaction_categories?
   |
-  +-- YES --> Use app.merchants.canonical_name as pattern
+  +-- YES --> Use core.dim_merchants.canonical_name as pattern
   |           match_type = 'contains'
   |
   +-- NO  --> Clean raw description:
@@ -154,7 +154,7 @@ After the categorization is written to `app.transaction_categories`:
 
 1. Extract pattern from the transaction (merchant-first strategy)
 2. Check `app.categorization_rules` — does an active rule already cover this pattern? -> skip
-3. Check `app.merchants` — does a merchant mapping already produce this category for this pattern? -> skip
+3. Check `core.dim_merchants` — does a merchant mapping already produce this category for this pattern? -> skip
 4. Check `app.proposed_rules` — does a pending proposal for this pattern + category exist? -> increment `trigger_count`
 5. Otherwise -> create new proposal
 
@@ -253,7 +253,7 @@ Env var overrides:
 
 ### Unit tests
 
-- **Pattern extraction (merchant path)**: given a transaction with `merchant_id`, verify pattern uses `canonical_name` from `app.merchants`
+- **Pattern extraction (merchant path)**: given a transaction with `merchant_id`, verify pattern uses `canonical_name` from `core.dim_merchants`
 - **Pattern extraction (description fallback)**: given a transaction without merchant match, verify description cleaning strips IDs, locations, prefixes
 - **Dedup — same pattern same category**: categorize same merchant twice same category -> one proposal with `trigger_count = 2`
 - **Dedup — same pattern different category**: categorize same merchant two different categories -> first proposal `superseded`, second created
@@ -279,7 +279,7 @@ Env var overrides:
 ## Dependencies
 
 - Existing rule engine (`app.categorization_rules`, rule evaluation logic)
-- Existing merchant normalization (`app.merchants`, canonical name resolution)
+- Existing merchant normalization (`core.dim_merchants`, canonical name resolution)
 - Existing categorization service layer (`CategorizationService.categorize_items()` in `src/moneybin/services/categorization/`, backing `transactions_categorize_commit` MCP tool — service was split into a facade + collaborators in PR #155)
 - Database migration system (`database-migration.md`) for `app.proposed_rules` table creation
 

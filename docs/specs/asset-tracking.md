@@ -14,8 +14,8 @@ Net worth is incomplete without physical assets. The [net worth spec](net-worth.
 The dividing line between assets and investments: **if the value comes from a market ticker, it's an investment. If it comes from an appraisal or estimate, it's an asset.** Gold ETFs, crypto, and brokerage holdings belong in the future `investment-tracking.md` spec. Houses, cars, and jewelry belong here.
 
 Related specs and docs:
-- [`net-worth.md`](net-worth.md) — balance tracking and `agg_net_worth`; this spec extends it to include physical assets
-- [`moneybin-cli.md`](moneybin-cli.md) v2 — assets are a **top-level command group** (`moneybin assets …`), parallel to `accounts`. The full asset workflow (registration, valuation, liability linking, staleness) is owned by this spec. Net worth contribution flows through `core.agg_net_worth`, surfaced via `reports networth`. CLI examples below already use the v2 path.
+- [`net-worth.md`](net-worth.md) — balance tracking and `reports.net_worth`; this spec extends it to include physical assets
+- [`moneybin-cli.md`](moneybin-cli.md) v2 — assets are a **top-level command group** (`moneybin assets …`), parallel to `accounts`. The full asset workflow (registration, valuation, liability linking, staleness) is owned by this spec. Net worth contribution flows through `reports.net_worth`, surfaced via `reports networth`. CLI examples below already use the v2 path.
 - [`privacy-data-protection.md`](privacy-data-protection.md) — asset data encrypted at rest via `Database` class
 - [`database-migration.md`](database-migration.md) — migration infrastructure for new tables
 - [`mcp-architecture.md`](mcp-architecture.md) — tool taxonomy and response envelope conventions
@@ -28,7 +28,7 @@ Related specs and docs:
 4. **External valuation sources (future).** External providers (Zillow, KBB, appraisal services) land in `raw.*` tables, flow through `prep.stg_*` views, and union into `core.fct_asset_valuations` alongside manual valuations. Not built in v1 — the architecture supports it without schema changes.
 5. **Union all valuation sources into `core.fct_asset_valuations`** — a SQLMesh VIEW that normalizes every valuation to a common shape: `(asset_id, valuation_date, value, source_type, source_ref)`.
 6. **Materialize `core.fct_asset_valuations_daily`** — a SQLMesh TABLE with one row per asset per day. Carries forward the latest valuation until a new one arrives. Simpler than account balance carry-forward — no transaction adjustments needed.
-7. **Extend `core.agg_net_worth`** to include asset valuations. Net worth = sum of account balances + sum of asset valuations. Disposed assets stop contributing after their disposal date.
+7. **Extend `reports.net_worth`** to include asset valuations. Net worth = sum of account balances + sum of asset valuations. Disposed assets stop contributing after their disposal date.
 8. **Liability linking.** An asset can optionally reference a liability account in `dim_accounts` (e.g., a mortgage for a house, an auto loan for a car). This link is informational — it enables equity display (`value - liability balance`) but is not used in net worth arithmetic. Both the asset value and the liability balance contribute to net worth independently.
 9. **Staleness warnings.** Each valuation in `fct_asset_valuations_daily` tracks days since the last real observation. Warnings surface in CLI output and MCP responses when a valuation exceeds its staleness threshold. Warnings are informational only — stale values are still included in net worth.
 10. **Staleness threshold resolution:** per-asset override → per-type default → global config default.
@@ -151,13 +151,13 @@ Only produces rows between the first valuation and either `disposal_date` (for d
 
 **Implementation note:** The date spine generation and carry-forward logic can use DuckDB's `generate_series` for the date spine and window functions with `IGNORE NULLS` for carry-forward, matching the approach in `fct_balances_daily`.
 
-### Extending `core.agg_net_worth`
+### Extending `reports.net_worth`
 
 The existing net worth view (defined in [`net-worth.md`](net-worth.md)) is extended to include asset valuations:
 
 ```sql
 MODEL (
-  name core.agg_net_worth,
+  name reports.net_worth,
   kind VIEW
 );
 
@@ -364,7 +364,7 @@ Deferred to v2, same as balance assertion write tools in the net worth spec. The
 
 ### Net worth tools (existing, extended)
 
-`reports_networth` and `reports_networth_history` from the net worth spec automatically include assets via the extended `agg_net_worth` view — no new tools needed. The response gains a `total_physical_assets` field alongside `total_assets` and `total_liabilities`.
+`reports_networth` and `reports_networth_history` from the net worth spec automatically include assets via the extended `reports.net_worth` view — no new tools needed. The response gains a `total_physical_assets` field alongside `total_assets` and `total_liabilities`.
 
 ## Testing Strategy
 
@@ -374,18 +374,18 @@ Deferred to v2, same as balance assertion write tools in the net worth spec. The
 - **Valuation set/unset:** Verify upsert semantics (set on new date inserts, set on existing date updates). Verify unset removes the correct row.
 - **Daily carry-forward:** Given known valuations, verify `fct_asset_valuations_daily` fills gaps correctly. Verify `days_since_observed` is accurate.
 - **Staleness threshold resolution:** Verify per-asset → per-type → global fallback chain.
-- **Net worth integration:** Verify `agg_net_worth` includes asset valuations. Verify disposed assets are excluded after disposal date. Verify `include_in_net_worth = FALSE` excludes an asset.
+- **Net worth integration:** Verify `reports.net_worth` includes asset valuations. Verify disposed assets are excluded after disposal date. Verify `include_in_net_worth = FALSE` excludes an asset.
 - **Liability linking:** Verify equity display calculation (asset value - linked liability balance) without affecting net worth arithmetic.
 - **Edge cases:**
   - Assets with no valuations → no `fct_asset_valuations_daily` rows
   - Assets with a single valuation → rows from that date to today (or disposal date)
   - Multiple valuation sources on the same date → precedence applies
   - Disposed asset → rows stop after disposal date
-  - Asset excluded from net worth → still in `fct_asset_valuations_daily`, absent from `agg_net_worth`
+  - Asset excluded from net worth → still in `fct_asset_valuations_daily`, absent from `reports.net_worth`
 
 ### Tier 2 — Synthetic data verification
 
-- Scenario tests under `tests/scenarios/` (run via `make test-scenarios`) that include assets with known valuations and verify `fct_asset_valuations_daily` and `agg_net_worth` match expected values.
+- Scenario tests under `tests/scenarios/` (run via `make test-scenarios`) that include assets with known valuations and verify `fct_asset_valuations_daily` and `reports.net_worth` match expected values.
 - Staleness scenarios: assets with old valuations trigger warnings at the correct thresholds.
 
 ### Tier 3 — Integration
@@ -397,7 +397,7 @@ Deferred to v2, same as balance assertion write tools in the net worth spec. The
 
 ## Dependencies
 
-- [`net-worth.md`](net-worth.md) — `agg_net_worth` view is extended; this spec cannot ship before or independently of net worth
+- [`net-worth.md`](net-worth.md) — `reports.net_worth` view is extended; this spec cannot ship before or independently of net worth
 - [`database-migration.md`](database-migration.md) — new tables (`app.assets`, `app.asset_valuations`) require migration infrastructure
 - [`privacy-data-protection.md`](privacy-data-protection.md) — asset data is sensitive; encrypted at rest via `Database` class
 - [`moneybin-cli.md`](moneybin-cli.md) — `assets` namespace defined by the CLI structure spec
@@ -431,7 +431,7 @@ Deferred to v2, same as balance assertion write tools in the net worth spec. The
 - `src/moneybin/cli/main.py` — register `assets` command group
 - `src/moneybin/sql/schema.py` — register new DDL files for `app.assets` and `app.asset_valuations`
 - `src/moneybin/config.py` — add `asset_staleness_default_days` to `MoneyBinSettings`
-- `sqlmesh/models/core/agg_net_worth.sql` — extend to include asset valuations (created by net worth spec, modified here)
+- `sqlmesh/models/reports/net_worth.sql` — extend to include asset valuations (created by net worth spec, modified here)
 - `src/moneybin/mcp/tools/` — add `assets.list`, `assets.detail`, `assets.summary` tools
 - `docs/specs/INDEX.md` — add entry for this spec
 

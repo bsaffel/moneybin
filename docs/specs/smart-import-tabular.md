@@ -1195,10 +1195,7 @@ def import_history(
 ### `import_revert` — undo an import batch
 
 ```python
-def import_revert(
-    import_id: str,
-    auto_confirm: bool = False,
-) -> RevertResult:
+def import_revert(import_id: str) -> RevertResult:
     # Returns: {"status": "reverted", "rows_deleted": 347, "accounts_affected": [...]}
     # or: {"status": "already_reverted", "reverted_at": "..."}
     # or: {"status": "not_found", "reason": "No import with ID ..."}

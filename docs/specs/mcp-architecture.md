@@ -189,7 +189,7 @@ Multi-currency is not a tool domain. It surfaces as:
 - A **parameter** on existing tools (e.g., `detail` level that includes native currency alongside home-currency amounts).
 - **Response metadata** (`display_currency`, `native_currencies` — see section 4).
 - A **service-layer concern** (conversion at query time using cached exchange rates).
-- **Rate overrides** handled via `transactions_correct` as a correction on a specific transaction.
+- **Rate overrides** handled via the curation taxonomy (a per-transaction note / split / tag, or a manual reversing transaction via `transactions_create`) — `transactions_correct` was retired in favor of the curation tools per `transaction-curation.md`.
 
 ---
 

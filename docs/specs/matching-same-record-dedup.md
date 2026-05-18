@@ -160,7 +160,7 @@ CREATE TABLE IF NOT EXISTS prep.seed_source_priority (
 ### Modified core model
 
 **`core.fct_transactions`** (modified) — grain changes to `transaction_id` (gold key). Becomes a thin enrichment layer over `int_transactions__merged`:
-- JOINs `app.transaction_categories` and `app.merchants` (same as today)
+- JOINs `app.transaction_categories` and `core.dim_merchants` (same as today; thin view over `app.user_merchants` post-migration)
 - Adds derived columns: `transaction_direction`, `amount_absolute`, date-part extractions (same as today)
 - New columns from merged layer: `canonical_source_type`, `source_count`, `match_confidence`
 
