@@ -42,7 +42,7 @@ class BudgetSetResult:
             "action": self.action,
         }
 
-    def to_envelope(self) -> ResponseEnvelope:
+    def to_envelope(self) -> ResponseEnvelope[Any]:
         """Build a ResponseEnvelope for MCP/CLI output."""
         return build_envelope(
             data=self.to_dict(),

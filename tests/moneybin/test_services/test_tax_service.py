@@ -6,7 +6,6 @@ from __future__ import annotations
 from collections.abc import Generator
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
 from unittest.mock import MagicMock
 
 import pytest

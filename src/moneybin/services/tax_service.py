@@ -32,7 +32,9 @@ class W2Summary:
     social_security_tax: Annotated[Decimal | None, DataClass.INCOME_AMOUNT]
     medicare_wages: Annotated[Decimal | None, DataClass.INCOME_AMOUNT]
     medicare_tax: Annotated[Decimal | None, DataClass.INCOME_AMOUNT]
-    state_local_info: Annotated[Any, DataClass.DESCRIPTION]  # JSON — list of state/local tax entries
+    state_local_info: Annotated[
+        Any, DataClass.DESCRIPTION
+    ]  # JSON — list of state/local tax entries
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to a plain dict for JSON serialization."""

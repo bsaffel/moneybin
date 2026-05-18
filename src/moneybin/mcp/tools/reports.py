@@ -46,7 +46,7 @@ def _envelope(
     sensitivity: Literal["low", "medium", "high"] = "medium",
     actions: list[str] | None = None,
     period: str | None = None,
-) -> ResponseEnvelope:
+) -> ResponseEnvelope[Any]:
     """Wrap a (cols, rows) result as a response envelope at ``sensitivity``."""
     return build_envelope(
         data=[dict(zip(cols, r, strict=False)) for r in rows],
@@ -145,7 +145,7 @@ def reports_spending(
     to_month: str | None = None,
     category: str | None = None,
     compare: str = "yoy",
-) -> ResponseEnvelope:
+) -> ResponseEnvelope[Any]:
     """Monthly spending trend with MoM, YoY, and 3-month-trailing deltas.
 
     Defaults to the last 12 calendar months when both bounds are omitted.
@@ -194,7 +194,7 @@ def reports_cashflow(
     from_month: str | None = None,
     to_month: str | None = None,
     by: str = "account-and-category",
-) -> ResponseEnvelope:
+) -> ResponseEnvelope[Any]:
     """Monthly cash flow rollup: inflow/outflow/net per account x category.
 
     Defaults to the last 12 calendar months when both bounds are omitted.
@@ -237,7 +237,7 @@ def reports_recurring(
     min_confidence: float = 0.5,
     status: str = "active",
     cadence: str | None = None,
-) -> ResponseEnvelope:
+) -> ResponseEnvelope[Any]:
     """Likely-recurring subscription candidates with confidence scores.
 
     Args:
@@ -257,7 +257,7 @@ def reports_recurring(
 def reports_merchants(
     top: int = 25,
     sort: str = "spend",
-) -> ResponseEnvelope:
+) -> ResponseEnvelope[Any]:
     """Per-merchant lifetime activity totals.
 
     Args:
@@ -274,7 +274,7 @@ def reports_uncategorized(
     min_amount: float = 0.0,
     account: str | None = None,
     limit: int = 50,
-) -> ResponseEnvelope:
+) -> ResponseEnvelope[Any]:
     """Uncategorized transactions queue, ranked by curator-impact.
 
     Args:
@@ -293,7 +293,7 @@ def reports_uncategorized(
 def reports_large_transactions(
     top: int = 25,
     anomaly: str = "none",
-) -> ResponseEnvelope:
+) -> ResponseEnvelope[Any]:
     """Anomaly-flavored transaction lens (top-N + per-account/category z-scores).
 
     Args:
@@ -310,7 +310,7 @@ def reports_balance_drift(
     account: str | None = None,
     status: str = "all",
     since: str | None = None,
-) -> ResponseEnvelope:
+) -> ResponseEnvelope[Any]:
     """Balance reconciliation drift: asserted vs computed.
 
     Args:

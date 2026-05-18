@@ -216,7 +216,10 @@ class TransactionService:
             service = AccountService(self._db)
             for entry in unmatched:
                 payload = service.resolve(entry, limit=1)
-                if payload.matches and payload.matches[0].confidence >= _MIN_ACCOUNT_FUZZY_CONFIDENCE:
+                if (
+                    payload.matches
+                    and payload.matches[0].confidence >= _MIN_ACCOUNT_FUZZY_CONFIDENCE
+                ):
                     resolved.append(payload.matches[0].account_id)
         return resolved
 
