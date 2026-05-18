@@ -951,7 +951,7 @@ List auto-generated rules pending user approval.
 - **Sensitivity:** `low`
 - **Unique parameters:** None.
 - **Behavior:** Returns array of `{proposed_rule_id, merchant_pattern, category, subcategory, source, trigger_count, sample_transactions}` where `source` indicates how the rule was generated (ml, pattern_detection).
-- **Service:** `CategorizationService.auto_review() -> list[ProposedRule]`
+- **Service:** `AutoRuleService.review() -> AutoReviewResult`
 - **CLI:** `moneybin transactions categorize auto review`
 - **Dependency:** [Categorization overview](categorization-overview.md) (Pillar E: auto-rule generation), [Auto-rule generation](categorization-auto-rules.md).
 
@@ -974,7 +974,7 @@ Auto-rule health metrics.
 - **Sensitivity:** `low`
 - **Unique parameters:** None.
 - **Behavior:** Returns `{active_rules, pending_proposals, rejected_proposals, override_rate, top_rules}` where `top_rules` is an array of the most-matched auto-rules with match counts. `override_rate` is the percentage of auto-rule categorizations that were later overridden by the user.
-- **Service:** `CategorizationService.auto_stats() -> AutoRuleStats`
+- **Service:** `AutoRuleService.stats() -> AutoStatsResult`
 - **CLI:** `moneybin transactions categorize auto stats`
 - **Dependency:** [Categorization overview](categorization-overview.md) (Pillar E: auto-rule generation), [Auto-rule generation](categorization-auto-rules.md).
 
