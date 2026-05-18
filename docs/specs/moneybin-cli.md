@@ -66,16 +66,16 @@ Sub-group names are the natural English name for the workflow or concept. Usuall
 
 ### Universal flags
 
-All commands support these flags (per `mcp-architecture.md` CLI symmetry):
+All commands support these flags (per `mcp-architecture.md` CLI symmetry). `--profile` and `--verbose` attach to the root callback in `src/moneybin/cli/main.py`; the remaining flags attach per-subcommand. Pass them in that position: `moneybin --profile NAME --verbose <command> --output json --quiet --yes ARGS...`.
 
-| Flag | Purpose |
-|---|---|
-| `--profile NAME` / `-p` | Specify active profile (ephemeral, does not change default) |
-| `--verbose` / `-v` | Enable debug logging |
-| `--output text\|json` (`-o`) | Output format (default: `text` for humans, `json` for AI/script consumers). `db query` extends this to `text\|json\|csv\|markdown\|box`. |
-| `--quiet` / `-q` | Suppress informational chatter on read-only commands (result data is never suppressed) |
-| `--json-fields FIELDS` | Comma-separated field projection for `--output json` (read-only commands only). Available fields documented per-command in `--help`. |
-| `--yes` / `-y` | Non-interactive mode — auto-accept confirmations |
+| Flag | Attaches to | Purpose |
+|---|---|---|
+| `--profile NAME` / `-p` | root | Specify active profile (ephemeral, does not change default) |
+| `--verbose` / `-v` | root | Enable debug logging |
+| `--output text\|json` (`-o`) | subcommand | Output format (default: `text` for humans, `json` for AI/script consumers). `db query` extends this to `text\|json\|csv\|markdown\|box`. |
+| `--quiet` / `-q` | subcommand | Suppress informational chatter on read-only commands (result data is never suppressed) |
+| `--json-fields FIELDS` | subcommand | Comma-separated field projection for `--output json` (read-only commands only). Available fields documented per-command in `--help`. |
+| `--yes` / `-y` | subcommand | Non-interactive mode — auto-accept confirmations |
 
 ### `--validate` not `--dry-run`
 
@@ -86,7 +86,9 @@ Import validation (`--validate`) parses the file, detects format, and reports wh
 ### Complete target surface
 
 ```
-moneybin [--profile NAME] [--verbose] [--output text|json] [--quiet] [--yes]
+moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [--yes] ...
+  # Note: --profile / --verbose attach to the root callback;
+  # --output / --quiet / --yes / --json-fields attach per-subcommand.
 |
 +-- profile
 |   +-- create <name>              -- Create profile + directory + DB + keychain

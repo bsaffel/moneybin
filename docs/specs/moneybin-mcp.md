@@ -582,7 +582,7 @@ Partial-update entry point for an account's settings.
 - **Behavior:** Shape-1b partial update — only supplied fields change. Archiving an account atomically cascades `include_in_net_worth=False`. Replaces the formerly-separate `accounts_rename` / `accounts_include` / `accounts_archive` / `accounts_unarchive` tools (PR #164).
 - **Mutation surface:** writes `app.account_settings`. Revert via a follow-up `accounts_set` with the prior values (audit trail in `app.audit_log`).
 - **Service:** `AccountService.settings_update() -> AccountSettings`
-- **CLI:** `moneybin accounts set <account_id> [--display-name TEXT] [--include/--exclude] [--archive/--unarchive] [--account-subtype TYPE] [--holder-category CAT] [--currency CODE] [--credit-limit N] [--last-four DIGITS] [--official-name TEXT] [--clear-display-name] [--clear-currency] [--yes]`
+- **CLI:** `moneybin accounts set <account_id> [--display-name TEXT] [--include/--exclude] [--archive/--unarchive] [--subtype TYPE] [--holder-category CAT] [--currency CODE] [--credit-limit N] [--last-four DIGITS] [--official-name TEXT] [--clear-display-name] [--clear-currency] [--yes]`
 
 ---
 
