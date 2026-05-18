@@ -1,58 +1,91 @@
+<!-- Last reviewed: 2026-05-17 -->
 # MoneyBin Documentation
 
-## Feature Guide
+Documentation for MoneyBin. The pages below are organized by what you're trying to do.
 
-Detailed per-feature documentation with usage examples and reference material.
+## Start here
 
-| Guide | Description |
-|-------|-------------|
-| [Data Import](guides/data-import.md) | OFX/QFX, CSV, TSV, Excel, Parquet, Feather, W-2 PDF |
-| [Data Pipeline](guides/data-pipeline.md) | Three-layer architecture, SQLMesh transforms |
-| [Categorization](guides/categorization.md) | Rule engine, merchants, bulk operations |
-| [Database & Security](guides/database-security.md) | Encryption, key management, migrations |
-| [Multi-Profile Support](guides/profiles.md) | Isolation boundaries, profile lifecycle |
-| [MCP Server](guides/mcp-server.md) | AI integration — tools, prompts, client setup |
-| [CLI Reference](guides/cli-reference.md) | Complete command tree |
-| [Observability](guides/observability.md) | Logging, metrics, instrumentation |
-| [Synthetic Data](guides/synthetic-data.md) | Test data generation — personas, ground truth |
-| [Direct SQL Access](guides/sql-access.md) | DuckDB shell, UI, key tables, example queries |
+Three recommended paths. Pick the row that matches you.
 
-## Decisions (ADRs)
+| You are... | Read in this order |
+|---|---|
+| **First-time visitor, deciding whether MoneyBin fits** | [`audience.md`](audience.md) → [`features.md`](features.md) → [top-level README Quick Start](../README.md#quick-start) |
+| **Power user setting up and running it daily** | [`guides/data-import.md`](guides/data-import.md) → [`guides/cli-reference.md`](guides/cli-reference.md) → [`guides/categorization.md`](guides/categorization.md) |
+| **Building agents on top of MoneyBin** | [`guides/mcp-server.md`](guides/mcp-server.md) (envelope, tool catalog, sensitivity tiers) → [`reference/prompts/`](reference/prompts/) (example prompts and workflows) → [`guides/mcp-clients.md`](guides/mcp-clients.md) (per-client install) |
 
-Architecture Decision Records.
+Use your browser's Ctrl/Cmd-F to search this index; every doc carries a `<!-- Last reviewed: YYYY-MM-DD -->` header at the top — if the date looks old relative to recent CHANGELOG entries, the doc may lag the code.
 
-| Document | Description |
-|----------|-------------|
-| [ADR-001: Medallion Data Layers](decisions/001-medallion-data-layers.md) | Raw/prep/core layer design |
-| [ADR-002: Privacy Tiers](decisions/002-privacy-tiers.md) | Local Only / Encrypted Sync / Managed custody models |
-| [ADR-003: MCP Primary Interface](decisions/003-mcp-primary-interface.md) | MCP server as main consumer interface |
-| [ADR-004: E2E Encryption](decisions/004-e2e-encryption.md) | Encryption design for Encrypted Sync tier (proposed) |
-| [ADR-005: Security Tradeoffs](decisions/005-security-tradeoffs.md) | Threat model and honest security analysis (proposed) |
-| [ADR-006: SQLMesh Replaces dbt](decisions/006-sqlmesh-replaces-dbt.md) | Transformation engine choice |
-| [ADR-007: JSON Over Parquet for Sync](decisions/007-json-over-parquet-for-sync.md) | Sync payload format |
+## By what you're trying to do
 
-## Feature Specs
+### Decide whether MoneyBin is for you
 
-Self-contained documents for driving feature development. See the [Spec Index](specs/INDEX.md) for full status tracking.
+- **[Audience](audience.md)** — Personas MoneyBin already serves well, personas it's being built toward, and personas it isn't for.
+- **[Comparison](comparison.md)** — How MoneyBin stacks up against Tiller, Lunch Money, Copilot, Monarch, Beancount, and other personal-finance tools.
+- **[Features](features.md)** — Capability snapshot of what works today, surface by surface.
+- **[Roadmap](roadmap.md)** — What's shipped, what's in flight, what's planned.
 
-## Reference
+### Install and first run
 
-Lookup material — not specs, not decisions.
+- **[Top-level README quick start](../README.md#quick-start)** — Clone, `make setup`, first import.
+- **[Data import](guides/data-import.md)** — All supported file formats (OFX/QFX/QBO, CSV, TSV, Excel, Parquet, Feather, W-2 PDF) and the inbox workflow. Covers migration from Tiller, Monarch, Copilot exports.
+- **[Profiles](guides/profiles.md)** — Isolation boundaries, profile lifecycle, per-profile config.
 
-| Document | Description |
-|----------|-------------|
-| [System Overview](reference/system-overview.md) | Consolidated system architecture, tech stack, directory structure |
-| [Data Model](reference/data-model.md) | Schema definitions, ER diagram, example queries |
-| [Data Sources](reference/data-sources.md) | Data source roadmap and priorities |
-| [MCP Prompts](reference/prompts/README.md) | 9 prompt templates for guided financial workflows |
+### Daily use
 
-## Coding Standards
+- **[CLI reference](guides/cli-reference.md)** — Complete command tree, every option, every JSON envelope.
+- **[Categorization](guides/categorization.md)** — Rule engine, merchant normalization, bulk edits, auto-rule learning.
+- **[Data pipeline](guides/data-pipeline.md)** — How files become canonical tables; the raw/staging/core layers and SQLMesh transforms.
+- **[Data model](reference/data-model.md)** — Every table you can read from — `core.*`, `reports.*`, `app.*`, `meta.*`, `seeds.*` — with grain, key columns, and meaning.
 
-Coding rules live in `.claude/rules/` and `CLAUDE.md`, not in docs. See:
+### AI and agent workflows
 
-- `CLAUDE.md` — Package manager, linting, type checking, architecture, security
-- `.claude/rules/cli.md` — CLI development patterns
-- `.claude/rules/testing.md` — Testing standards
-- `.claude/rules/mcp-server.md` — MCP server rules
-- `.claude/rules/database.md` — DuckDB and SQL standards
-- `.claude/rules/data-extraction.md` — Data extraction patterns
+For builders. The first two links are the developer surface; the third is for end-user client setup.
+
+- **[MCP server](guides/mcp-server.md)** — The builder doc. Tool catalog, response envelope, sensitivity tiers, latency and cost guidance for planning tool budgets.
+- **[Example prompts and workflows](reference/prompts/)** — Ready-to-use prompts (monthly review, anomaly detection, tax prep, transaction search) you can adapt for your own agent.
+- **[MCP clients](guides/mcp-clients.md)** — Per-client setup for Claude Desktop, Claude Code, Cursor, Windsurf, VS Code Copilot, Gemini CLI, Codex, ChatGPT Desktop, and more.
+- **Extending the server** — See [CONTRIBUTING § Adding a new MCP tool](../CONTRIBUTING.md#adding-a-new-mcp-tool) for the recipe (service, decorator, CLI peer, tests).
+
+### Security and operations
+
+- **[Database security](guides/database-security.md)** — AES-256-GCM encryption, Argon2id key derivation, key management, schema migrations.
+- **[Threat model](guides/threat-model.md)** — What MoneyBin defends against, what it doesn't, where the trust boundaries sit.
+- **[Observability](guides/observability.md)** — Structured logging, the metrics registry, redaction.
+
+### Query your data directly
+
+- **[Direct SQL access](guides/sql-access.md)** — Open the encrypted DuckDB file from the DuckDB CLI, a UI, or your own scripts.
+- **[Data model](reference/data-model.md)** — Schema reference (also linked under Daily use); use this when writing queries.
+- **[Data sources](reference/data-sources.md)** — Every supported import format and integration, what it preserves, where it lands.
+
+### Architecture orientation
+
+- **[System overview](reference/system-overview.md)** — Component map: what each major piece does, what runs when. Start here for "what are the pieces."
+- **[Architecture](architecture.md)** — The shared primitives — `Database`, `TableRef`, `SecretStore`, response envelopes, the medallion layers — and the invariants they enforce. Start here for "why does it work this way."
+
+### Testing and contributing
+
+- **[Synthetic data](guides/synthetic-data.md)** — Generated personas, merchants, and ground truth for end-to-end testing.
+- **[Scenario authoring](guides/scenario-authoring.md)** — How to write YAML scenarios that drive integration tests.
+- **[CONTRIBUTING](../CONTRIBUTING.md)** — How to file issues, propose changes, and run the dev loop.
+
+## Internals
+
+Deep mechanics — not required reading, but useful when you're debugging or extending.
+
+- **[Account identifiers and PII handling](architecture/account-identifiers.md)** — The identifiers MoneyBin uses for accounts and where PII is masked.
+- **[Server API contract](reference/server-api-contract.md)** — The HTTP surface the client expects from `moneybin-server` (Plaid broker).
+- **[Auto-rule pipeline](tech/auto-rule-pipeline.md)** — How edits become proposed rules, how proposals get promoted, how rollback works.
+- **[CLI startup flow](tech/cli-startup-flow.md)** — What happens between `moneybin <cmd>` and your code running.
+
+## Browse by directory
+
+`guides/` (how-tos) · `reference/` (lookup material, including [`reference/prompts/`](reference/prompts/)) · `architecture/` (focused architectural notes) · `tech/` (internal-mechanics deep-dives) · `specs/` (feature specs, indexed by [`specs/INDEX.md`](specs/INDEX.md)) · `decisions/` (ADRs) · `assets/` (images).
+
+## What changed when
+
+History of user-visible changes: [`../CHANGELOG.md`](../CHANGELOG.md).
+
+---
+
+[Licensing](licensing.md) — AGPL-3.0, what it means for self-hosters and the hosted tier, walk-away guarantees on your data.
