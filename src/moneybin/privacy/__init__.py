@@ -14,11 +14,13 @@ from moneybin.privacy.introspection import (
     extract_data_classes,
 )
 from moneybin.privacy.log import read_privacy_events, write_privacy_event
+from moneybin.privacy.redaction import ConsentSet, redact_typed
 from moneybin.privacy.seeding import REDACTION_KEY_NAME, get_redaction_key
 from moneybin.privacy.taxonomy import CLASSIFICATION, DataClass, Tier
 
 __all__ = [
     "CLASSIFICATION",
+    "ConsentSet",
     "DataClass",
     "PrivacyContractError",
     "REDACTION_KEY_NAME",
@@ -27,6 +29,7 @@ __all__ = [
     "extract_data_classes",
     "get_redaction_key",
     "read_privacy_events",
+    "redact_typed",
     "sync_classification_comments",
     "write_privacy_event",
 ]

@@ -1,0 +1,132 @@
+"""Per-class field redaction (PR 2: CRITICAL only)."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from decimal import Decimal
+from typing import Annotated
+
+import pytest
+
+from moneybin.privacy.redaction import (
+    ConsentSet,
+    _scrub_embedded_pii,  # pyright: ignore[reportPrivateUsage]
+    redact_typed,
+)
+from moneybin.privacy.taxonomy import DataClass
+
+
+@dataclass(frozen=True)
+class _AccountRow:
+    account_id: Annotated[str, DataClass.ACCOUNT_IDENTIFIER]
+    routing_number: Annotated[str | None, DataClass.ROUTING_NUMBER]
+    last_four: Annotated[str | None, DataClass.INSTITUTION_ACCOUNT_NUMBER]
+    balance: Annotated[Decimal, DataClass.BALANCE]
+    category: Annotated[str, DataClass.CATEGORY]
+
+
+@dataclass(frozen=True)
+class _AccountList:
+    rows: list[_AccountRow]
+    total_balance: Annotated[Decimal, DataClass.AGGREGATE]
+
+
+def _sample_row() -> _AccountRow:
+    return _AccountRow(
+        account_id="acct_1234567890",
+        routing_number="011000015",
+        last_four="4242",
+        balance=Decimal("1234.56"),
+        category="checking",
+    )
+
+
+def test_account_identifier_masked_to_last_four() -> None:
+    out = redact_typed(_sample_row(), consent=None)
+    assert out.account_id == "****7890"
+
+
+def test_account_identifier_short_value_fully_masked() -> None:
+    row = _AccountRow(
+        account_id="ab",
+        routing_number=None,
+        last_four=None,
+        balance=Decimal("0"),
+        category="checking",
+    )
+    out = redact_typed(row, consent=None)
+    assert out.account_id == "****"
+
+
+def test_routing_number_masked_to_constant() -> None:
+    out = redact_typed(_sample_row(), consent=None)
+    assert out.routing_number == "*****"
+
+
+def test_routing_number_none_passes_through() -> None:
+    row = _AccountRow(
+        account_id="acct_1234",
+        routing_number=None,
+        last_four=None,
+        balance=Decimal("0"),
+        category="checking",
+    )
+    out = redact_typed(row, consent=None)
+    assert out.routing_number is None
+
+
+def test_institution_account_number_uses_last_four_pattern() -> None:
+    out = redact_typed(_sample_row(), consent=None)
+    assert out.last_four == "****4242"
+
+
+def test_high_tier_balance_passes_through_in_pr2() -> None:
+    out = redact_typed(_sample_row(), consent=None)
+    assert out.balance == Decimal("1234.56")
+
+
+def test_low_tier_category_passes_through() -> None:
+    out = redact_typed(_sample_row(), consent=None)
+    assert out.category == "checking"
+
+
+def test_recurses_into_list_payload() -> None:
+    payload = _AccountList(
+        rows=[_sample_row(), _sample_row()], total_balance=Decimal("2469.12")
+    )
+    out = redact_typed(payload, consent=None)
+    assert all(r.account_id == "****7890" for r in out.rows)
+    assert out.total_balance == Decimal("2469.12")
+
+
+def test_idempotent_on_already_redacted() -> None:
+    once = redact_typed(_sample_row(), consent=None)
+    twice = redact_typed(once, consent=None)
+    assert once == twice
+
+
+def test_scrub_embedded_pii_is_identity_in_pr2() -> None:
+    text = "Account 1234567890 was charged $42 on 2026-05-17"
+    assert _scrub_embedded_pii(text) == text
+
+
+def test_consent_set_is_placeholder_dataclass() -> None:
+    # PR 2: ConsentSet exists for type signatures but has no fields.
+    cs = ConsentSet()
+    assert cs == ConsentSet()
+
+
+def test_unclassified_type_passes_through_with_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # A bare class without Annotated metadata — redact_typed should
+    # warn (PrivacyContractError handling happens at the @mcp_tool
+    # registration boundary, not inside the per-call redactor) and
+    # return the value unchanged.
+    @dataclass(frozen=True)
+    class _Untyped:
+        x: str
+
+    with caplog.at_level("WARNING", logger="moneybin.privacy.redaction"):
+        out = redact_typed(_Untyped(x="raw"), consent=None)
+    assert out.x == "raw"
