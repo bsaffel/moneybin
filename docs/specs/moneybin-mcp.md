@@ -581,8 +581,8 @@ Partial-update entry point for an account's settings.
 - **Unique parameters:** `account_id: str` (required), plus optional structural fields (`account_subtype`, `holder_category`, `currency`, `credit_limit`, `last_four`, `official_name`) and behavioral fields (`display_name`, `include_in_net_worth`, `is_archived`).
 - **Behavior:** Shape-1b partial update — only supplied fields change. Archiving an account atomically cascades `include_in_net_worth=False`. Replaces the formerly-separate `accounts_rename` / `accounts_include` / `accounts_archive` / `accounts_unarchive` tools (PR #164).
 - **Mutation surface:** writes `app.account_settings`. Revert via a follow-up `accounts_set` with the prior values (audit trail in `app.audit_log`).
-- **Service:** `AccountService.set_settings() -> AccountSettings`
-- **CLI:** `moneybin accounts set <account_id> [--display-name ...] [--include-in-net-worth/--no-include-in-net-worth] [--archive/--unarchive] ...`
+- **Service:** `AccountService.settings_update() -> AccountSettings`
+- **CLI:** `moneybin accounts set <account_id> [--display-name TEXT] [--include/--exclude] [--archive/--unarchive] [--account-subtype TYPE] [--holder-category CAT] [--currency CODE] [--credit-limit N] [--last-four DIGITS] [--official-name TEXT] [--clear-display-name] [--clear-currency] [--yes]`
 
 ---
 
@@ -1144,7 +1144,7 @@ Remove a budget for a category.
 
 **Service class:** `TaxService`
 
-**Status:** registered-but-unwired pending tax spec — `tax_w2` carries `@mcp_tool` decoration in `src/moneybin/mcp/tools/tax.py`, but `register_tax_tools` is not called from `src/moneybin/mcp/server.py`. `tax_deductions` is not implemented. Both surface when a tax spec lands and reaches `in-progress`. See §17 dependency tracker.
+**Status:** implemented but de-registered pending tax spec — `tax_w2` carries `@mcp_tool` decoration in `src/moneybin/mcp/tools/tax.py`, but `register_tax_tools` is not called from `register_core_tools()` in `src/moneybin/mcp/server.py`. `tax_deductions` is not implemented. Both surface when a tax spec lands and reaches `in-progress`. See §17 dependency tracker.
 
 ### `tax_w2`
 
@@ -1332,7 +1332,7 @@ Return the curated database schema for ad-hoc SQL composition. Equivalent to rea
 - **Sensitivity:** `low` — schema metadata, no row data.
 - **Unique parameters:** `table: str | None`. `None` (default) returns the compact catalog (table names + purposes + column counts). A full name like `'core.fct_transactions'` returns columns, comments, and example queries for that one table. `'*'` returns the full ~50KB schema document.
 - **Behavior:** Unknown `table` returns a `UserError(code='unknown_table')` with the available-tables list as a hint.
-- **CLI:** `moneybin sql schema [--table NAME]`
+- **CLI:** No direct CLI parity — the MCP tool wraps the same data the `moneybin://schema` resource exposes. CLI users get the schema via `moneybin db query "SELECT ..."` (or `\d`-style introspection via DuckDB's `information_schema`). A future `moneybin db schema` subcommand could mirror the MCP shape; tracked as a follow-up.
 
 ---
 
