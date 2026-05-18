@@ -1,6 +1,6 @@
 # Same-Record Dedup & Golden-Record Merge Rules
 
-> Last updated: 2026-04-26
+> Last updated: 2026-05-17 — CLI commands relocated to `moneybin transactions matches *` (PR #159); MCP names aligned to `transactions_matches_*` (phantom namespace per `moneybin-mcp.md` §17).
 > Status: implemented
 > Parent: [`matching-overview.md`](matching-overview.md) (pillars A + C)
 > Companions: `CLAUDE.md` "Architecture: Data Layers", `.claude/rules/database.md` (column naming, model prefixes)
@@ -270,40 +270,41 @@ Standard import commands gain matching output:
 ```
 ✅ Imported 142 transactions from chase_checking_2026-03.csv
 ⚙️  Matching: 8 auto-merged, 3 pending review
-👀 Run 'moneybin matches review' when ready
+👀 Run 'moneybin transactions review --type matches' when ready
 ```
 
 ### Match commands
 
 | Command | Description |
 |---|---|
-| `moneybin matches run` | Run matcher + SQLMesh without importing. For re-running after config changes or reviews. |
-| `moneybin matches review` | Interactive review of pending matches. `[a]ccept / [r]eject / [s]kip / [q]uit` |
-| `moneybin matches history` | Show recent match decisions (auto and user) |
-| `moneybin matches undo <match_id>` | Reverse a match decision. Sets `reversed_at`/`reversed_by`. |
-| `moneybin matches backfill` | One-time scan of all existing transactions for latent duplicates |
+| `moneybin transactions matches run` | Run matcher + SQLMesh without importing. For re-running after config changes or reviews. |
+| `moneybin transactions review --type matches` | Interactive review of pending matches. `[a]ccept / [r]eject / [s]kip / [q]uit` (interactive loop pending per `moneybin-cli.md` v2; `--status` works end-to-end). |
+| `moneybin transactions matches history` | Show recent match decisions (auto and user). |
+| `moneybin transactions matches undo <match_id>` | Reverse a match decision. Sets `reversed_at`/`reversed_by`. |
+| `moneybin transactions matches backfill` | One-time scan of all existing transactions for latent duplicates. |
 
 ### Backfill
 
-`moneybin matches backfill` runs the matcher against all existing prep rows. Same scoring and confidence tiers as import-time matching. Idempotent: already-decided pairs are skipped.
+`moneybin transactions matches backfill` runs the matcher against all existing prep rows. Same scoring and confidence tiers as import-time matching. Idempotent: already-decided pairs are skipped.
 
 ```
 ⚙️  Scanning 4,230 existing transactions for duplicates...
 ✅ Backfill complete: 47 auto-merged, 12 pending review
-👀 Run 'moneybin matches review' when ready
+👀 Run 'moneybin transactions review --type matches' when ready
 ```
 
 ## MCP Interface
 
-Designed alongside CLI. Implementation may be sequenced after CLI, but the data model and `app.match_decisions` schema support MCP from day one. These tools are shared with transfer detection (`matching-transfer-detection.md`) — a `match_type` filter distinguishes dedup from transfer proposals.
+Designed alongside CLI. Currently a phantom namespace per `moneybin-mcp.md` §17 "Dependency tracker" — the data model and `app.match_decisions` schema support MCP from day one, but no `transactions_matches_*` tool is registered yet. `transactions_review` returns aggregate counts only. These tools are shared with transfer detection (`matching-transfer-detection.md`) — a `match_type` filter distinguishes dedup from transfer proposals. Names follow the `transactions_matches_*` prefix defined in `moneybin-mcp.md` §6.
 
 | Tool | Type | Description |
 |---|---|---|
-| `list_pending_matches` | Read | Show pending match proposals with confidence scores. `match_type` filter for `dedup` or `transfer`. |
-| `confirm_match` | Write | Accept a pending match by `match_id` |
-| `reject_match` | Write | Reject a pending match by `match_id` |
-| `undo_match` | Write | Reverse a previously accepted match |
-| `get_match_log` | Read | Recent match decisions with signal breakdown. `match_type` and `match_status` filters. |
+| `transactions_matches_pending` | Read | List match proposals awaiting review. `match_type` filter for `dedup` or `transfer`. |
+| `transactions_matches_confirm` | Write | Accept one or more proposals by `match_ids`. |
+| `transactions_matches_reject` | Write | Reject one or more proposals by `match_ids`. `permanent` flag suppresses re-proposal. |
+| `transactions_matches_undo` | Write | Un-merge previously confirmed matches. |
+| `transactions_matches_log` | Read | Recent match decisions with signal breakdown. `match_type` and `decided_by` filters. |
+| `transactions_matches_run` | Write | Trigger the matching engine on-demand. |
 
 ### Prompt
 

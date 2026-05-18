@@ -7,8 +7,8 @@ draft
 Enable users to define monthly budgets by category and track spending against those budgets, with rollover support and status alerts.
 
 ## Background
-- [MCP Write Tools](archived/mcp-write-tools.md) -- `set_budget` and `get_budget_status` already implemented
-- [Transaction Categorization](transaction-categorization.md) -- Prerequisite for meaningful budgets
+- [`moneybin-mcp.md`](moneybin-mcp.md) -- `budget_set` and `reports_budget` (formerly `set_budget` / `get_budget_status`) already implemented
+- [`categorization-overview.md`](categorization-overview.md) -- Prerequisite for meaningful budgets (supersedes archived `transaction-categorization` spec)
 - App schema: `src/moneybin/sql/schema/app_schema.sql`
 
 ## Requirements
@@ -27,7 +27,7 @@ Enable users to define monthly budgets by category and track spending against th
 
 ```sql
 -- app.budgets (exists)
--- PK: budget_id, columns: category, monthly_amount, start_month, end_month, created_at, updated_at
+-- PK: budget_id, columns: category_id (FK to app.categories per PR #174), monthly_amount, start_month, end_month, created_at, updated_at
 ```
 
 ### New/modified tables
@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS app.budget_rollovers (
 - `tests/moneybin/test_services/test_budget_service.py`
 
 ### Files to modify
-- `src/moneybin/mcp/write_tools.py` -- Add budget tools
+- `src/moneybin/mcp/tools/` -- Add budget tools (per current MCP tool layout)
 - `tests/moneybin/test_mcp/test_tools.py` -- Add tool tests
 
 ### Key decisions
@@ -65,19 +65,19 @@ CREATE TABLE IF NOT EXISTS app.budget_rollovers (
 
 ### Existing tools (already implemented)
 
-- `set_budget` -- Create/update budget
-- `get_budget_status` -- Budget vs actual for a month
+- `budget_set` -- Create/update budget
+- `reports_budget` -- Budget vs actual for a month (formerly `get_budget_status`)
+- `budget_delete` -- Remove a budget
+- `reports_budget_summary` -- Total budgeted vs total spent across all categories
 
 ### New tools
 
 | Tool | Description |
 |------|-------------|
-| `budget_list` | List all active budgets |
-| `budget_history` | Budget performance trend over N months |
-| `budget_delete` | Remove a budget |
+| `budget` | List all active budgets (noun-only per Shape 5; `_list` suffix dropped per PR #172) |
+| `reports_budget_history` | Budget performance trend over N months |
 | `budget_copy_month` | Copy budgets from one month to another |
-| `budget_rollover` | Calculate and apply rollover for a month |
-| `budget_summary` | Total budgeted vs total spent across all categories |
+| `budget_rollover_run` | Calculate and apply rollover for a month (Shape 3 discrete verb) |
 
 ## Testing Strategy
 

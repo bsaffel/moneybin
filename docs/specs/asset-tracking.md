@@ -34,7 +34,7 @@ Related specs and docs:
 10. **Staleness threshold resolution:** per-asset override → per-type default → global config default.
 11. **Asset disposal.** Assets can be marked as sold with a date and sale amount. Disposed assets stop contributing to net worth but their history is preserved.
 12. **CLI commands** under `assets` (see CLI Interface section).
-13. **MCP tools:** `assets.list`, `assets.detail`, `assets.summary` (see MCP Interface section).
+13. **MCP tools:** `assets`, `assets_get`, `assets_summary` (see MCP Interface section).
 14. **All commands support `--output json`** for non-interactive parity.
 15. **Source precedence within a day.** When multiple valuation sources exist for the same asset on the same date: manual (user assertion) > appraisal > automated estimate (Zillow/KBB).
 
@@ -231,7 +231,7 @@ asset_staleness_default_days: int = (
 ### Where staleness surfaces
 
 - **`assets list`** — warning indicator next to stale assets with days since last valuation
-- **`track networth show`** — summary note: "N assets have stale valuations" with asset names
+- **`reports networth`** — summary note: "N assets have stale valuations" with asset names
 - **MCP tools** — `summary.warnings` array includes stale asset notices
 
 Staleness is informational only — never blocks queries or omits stale assets from net worth. The value is still included; the system tells you it might be outdated.
@@ -326,17 +326,17 @@ Net Worth: $347,250 as of 2025-04-23
 
 ### Tools
 
-**`assets.list`** — List assets with current valuations and staleness status.
+**`assets`** — List assets with current valuations and staleness status.
 - Params: `asset_type` (optional VARCHAR), `include_disposed` (optional BOOLEAN, default false)
 - Sensitivity: `medium` (asset names and values)
 - Returns: assets with latest valuation, days since valuation, staleness warning, linked liability balance
 
-**`assets.detail`** — Full detail for a single asset including valuation history.
+**`assets_get`** — Full detail for a single asset including valuation history.
 - Params: `asset_id` (VARCHAR)
 - Sensitivity: `medium` (individual asset details)
 - Returns: all asset fields, valuation history, linked liability info, gain/loss vs acquisition cost
 
-**`assets.summary`** — Aggregate asset value by type.
+**`assets_summary`** — Aggregate asset value by type.
 - Params: `as_of_date` (optional DATE)
 - Sensitivity: `low` (aggregates only)
 - Returns: total value, breakdown by type, count, stale asset warnings
@@ -354,7 +354,7 @@ Follows the standard envelope from [`mcp-architecture.md`](mcp-architecture.md):
     "warnings": ["1 asset has a stale valuation: 2021 Tesla Model 3 (234 days)"]
   },
   "data": [...],
-  "actions": ["Use assets.detail for full history", "Use 'assets value set' to update stale valuations"]
+  "actions": ["Use assets_get for full history", "Use 'assets value set' to update stale valuations"]
 }
 ```
 
@@ -364,7 +364,7 @@ Deferred to v2, same as balance assertion write tools in the net worth spec. The
 
 ### Net worth tools (existing, extended)
 
-`get_net_worth` and `get_net_worth_history` from the net worth spec automatically include assets via the extended `agg_net_worth` view — no new tools needed. The response gains a `total_physical_assets` field alongside `total_assets` and `total_liabilities`.
+`reports_networth` and `reports_networth_history` from the net worth spec automatically include assets via the extended `agg_net_worth` view — no new tools needed. The response gains a `total_physical_assets` field alongside `total_assets` and `total_liabilities`.
 
 ## Testing Strategy
 
@@ -390,7 +390,7 @@ Deferred to v2, same as balance assertion write tools in the net worth spec. The
 
 ### Tier 3 — Integration
 
-- End-to-end: `assets add` → `assets value set` → `sqlmesh run` → `track networth show` → verify asset included in net worth.
+- End-to-end: `assets add` → `assets value set` → `sqlmesh run` → `reports networth` → verify asset included in net worth.
 - Disposal flow: `assets sell` → `sqlmesh run` → verify asset excluded from net worth after disposal date.
 - Liability linking: add asset with `--liability-account-id` → `assets show` → verify equity display.
 - Staleness surfacing: set an old valuation → `assets list` → verify warning appears.

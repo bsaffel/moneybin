@@ -3,6 +3,15 @@
 ## Status
 implemented
 
+> **Migration note (2026-05-17):** The `core.agg_net_worth` SQLMesh model
+> described below was migrated to `reports.net_worth` as part of
+> [`reports-recipe-library.md`](reports-recipe-library.md) (PR landing the
+> inaugurating `reports.*` schema). `NetworthService` reads from
+> `reports.net_worth`; `TableRef.AGG_NET_WORTH` was replaced by
+> `TableRef.REPORTS_NET_WORTH`. Original section text below preserved for
+> historical context; the live model lives at
+> `sqlmesh/models/reports/net_worth.sql`.
+
 ## Goal
 
 Provide accurate, authoritative balance tracking per account and net worth computation over time. Balances are either sourced from authoritative observations (institution statements, Plaid snapshots, user assertions) or absent — never best-effort estimates from transaction sums alone.

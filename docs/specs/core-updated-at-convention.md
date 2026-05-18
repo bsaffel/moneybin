@@ -12,7 +12,7 @@ Make "how fresh is this row?" answerable from any `core.*` model with a single c
 
 ## Background
 
-A `private/followups.md` audit found that `updated_at` is present on `core.dim_accounts` (populated via `CURRENT_TIMESTAMP` at SQLMesh refresh) but absent from `core.fct_transactions`, `core.dim_categories`, and `core.dim_merchants`. The asymmetry creates two failure modes:
+An internal audit (tracked as follow-up work) found that `updated_at` is present on `core.dim_accounts` (populated via `CURRENT_TIMESTAMP` at SQLMesh refresh) but absent from `core.fct_transactions`, `core.dim_categories`, and `core.dim_merchants`. The asymmetry creates two failure modes:
 
 1. **Downstream tools assume a uniform per-row freshness column and fall back to per-table heuristics** (e.g., reading `loaded_at` here, `created_at` there). Each new consumer relearns the inventory.
 2. **The existing `dim_accounts.updated_at` works only by coincidence of materialization.** `CURRENT_TIMESTAMP` evaluates at write time when the model is `kind FULL`. If `dim_accounts` ever becomes incremental, the column silently stops meaning what its name says — every row would carry the latest partition's write time rather than the row's own change time. The same expression in a view (`fct_transactions`, `dim_categories`, `dim_merchants` are all `kind VIEW`) evaluates at `SELECT` time and is meaningless as a freshness signal.
@@ -121,7 +121,7 @@ The per-row formulas above require that every `app.*` reference table contributi
 | `app.user_categories` | Add `updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP`. |
 | `app.user_merchants` | Add `updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP`. |
 
-DuckDB has no `ON UPDATE` trigger, so services that write to these tables must set `updated_at = NOW()` on `UPDATE` (and `INSERT … ON CONFLICT DO UPDATE` statements). This is already the established pattern — see `account_service.py:276` and `categorization_service.py:1106`. The exact call sites needing updates are enumerated during plan execution.
+DuckDB has no `ON UPDATE` trigger, so services that write to these tables must set `updated_at = NOW()` on `UPDATE` (and `INSERT … ON CONFLICT DO UPDATE` statements). This is the established pattern — see `account_service.py` and the write paths in `src/moneybin/services/categorization/applier.py` (post-PR #155 split). The exact call sites are enumerated during plan execution.
 
 The DDL change ships as a SQL migration under `src/moneybin/sql/migrations/`. Backfill: existing rows take `CURRENT_TIMESTAMP` at migration time (via the default). This is a one-time approximation — pre-existing rows lose their true last-edit time, which the project does not track today anyway.
 
@@ -151,7 +151,7 @@ These ride along with the spec landing:
 
 1. **`architecture-shared-primitives.md` — `meta` schema row.** Update the "Purpose" column in the data-layer table from "Cross-source provenance. Tracks which source row(s) contributed to each canonical row in `core`." to "Provenance and pipeline metadata. Cross-source row lineage (`fct_*_provenance`) and model-level freshness (`model_freshness`)."
 2. **`architecture-shared-primitives.md` — column-comment convention.** Add a one-line note under "SQLMesh Layer Conventions" naming the `updated_at` convention so future model authors don't re-derive it.
-3. **`private/followups.md` — remove the `core-updated-at-consistency` entry.** Resolved by this spec.
+3. **Internal follow-up tracker — remove the `core-updated-at-consistency` entry.** Resolved by this spec.
 
 ## Documentation
 
@@ -169,7 +169,7 @@ Both consumers and reviewers should be able to read this without opening this sp
 | **SQLMesh model** | Each touched core model has an audit (or scenario assertion) that `updated_at` is non-`NULL` for rows whose inputs all have timestamps, and is `NULL` only where expected (pure-seed rows in `dim_categories`). |
 | **Migration** | DDL migration adds the column with the documented default; existing rows get `CURRENT_TIMESTAMP` at migration time. |
 | **Service** | Each updated write path sets `updated_at = NOW()` on UPDATE; verified by inspecting the row after edit. |
-| **Scenario** | One end-to-end scenario: edit a user-category, run `transform apply`, verify `core.dim_categories.updated_at` advances for that row and not for unrelated rows. |
+| **Scenario** | One end-to-end scenario: edit a user-category, run `refresh run --steps transform` (or call `refresh_run(steps=["transform"])`), verify `core.dim_categories.updated_at` advances for that row and not for unrelated rows. |
 | **`meta.model_freshness`** | Smoke test: applying the pipeline, then querying the view, returns a row per registered SQLMesh model with non-`NULL` `last_applied_at`. |
 
 ## Open verification — resolved

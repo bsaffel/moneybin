@@ -41,9 +41,9 @@ No schema changes. One new configuration field:
 ### Files to Modify
 
 - `src/moneybin/config.py` — add `tool_timeout_seconds` to the MCP settings group.
-- `src/moneybin/mcp/server.py` (or wherever tool dispatch lives) — wrap every registered tool handler in a timeout guard.
-- `src/moneybin/mcp/responses.py` (or equivalent envelope helper) — extend the error envelope schema to carry `kind`, `tool`, `elapsed_s`, `timeout_s`.
-- `src/moneybin/database.py` — expose a context manager that yields a connection and guarantees `interrupt()` + `close()` on cancellation.
+- `src/moneybin/mcp/decorator.py` — `@mcp_tool` wraps every registered tool handler with the timeout guard.
+- `src/moneybin/protocol/envelope.py` — `ResponseEnvelope` / `build_error_envelope` carry the `kind`, `tool`, `elapsed_s`, `timeout_s` fields on the timeout path.
+- `src/moneybin/database.py` — `interrupt_and_reset_database()` interrupts the active write connection on timeout; per-call connections from `get_database()` close in the context manager.
 
 ### Key Decisions
 

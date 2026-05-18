@@ -4,6 +4,11 @@
 <!-- draft | ready | in-progress | implemented -->
 implemented
 
+> **Shipped extensions** (post-initial implementation, not yet folded into the spec body):
+> - **Content-hash self-heal** — V013 added `app.schema_migrations.content_hash`; the runner can clear a stuck-but-unchanged migration row and retry on the next boot (PR #146 boot-time SQLMesh drift heal, PR #156 stuck-migration self-heal). See `MigrationRunner` and `src/moneybin/mcp/server.py:check_schema_at_boot`.
+> - **Populated-fixture test convention** — V010/V011 surfaced "Cannot create index with outstanding updates" only against populated tables. `.claude/rules/database.md` now mandates ≥3-row realistic fixtures and an enclosing `BEGIN`/`COMMIT` wrap for migrations that touch existing data (PR #148).
+> - **MCP boot-time drift recovery** — when a fresh MCP session detects stale `core.*` snapshots, the server runs one `TransformService.apply()` self-heal before raising `SchemaDriftError`, breaking the chicken-and-egg where the agent's recovery tool lived inside the server it could not start (PR #146).
+
 ## Goal
 Provide a seamless, automatic upgrade experience for MoneyBin's DuckDB databases
 so that schema changes across releases are applied transparently — the way modern
@@ -122,8 +127,8 @@ $ moneybin status
 3. `moneybin db init` auto-applies pending migrations after baseline schema creation;
    no manual step required for normal upgrades.
 4. First invocation after a package upgrade auto-applies pending migrations
-   transparently via an app-level callback. No separate command needed.
-5. A `moneybin data migrate` CLI group provides explicit control for power users:
+   transparently from inside `Database.__init__()`. No separate command needed.
+5. A `moneybin db migrate` CLI group provides explicit control for power users:
    - `apply [--dry-run]` — apply pending migrations or preview them
    - `status` — show applied, pending, and drifted migrations
 6. Migrations are transactional: each file is wrapped in `BEGIN`/`COMMIT`. A failed
@@ -158,7 +163,7 @@ $ moneybin status
 | | Any operation that needs a Python library |
 
 ### SQLMesh State Detection
-14. On every auto-upgrade check and on `data migrate apply`, detect when the installed
+14. On every auto-upgrade check and on `db migrate apply`, detect when the installed
     SQLMesh version differs from the version last recorded in `app.versions`.
 15. When a mismatch is detected, run `sqlmesh migrate` as part of the unified upgrade
     sequence (after schema migrations, before recording the new version).
@@ -236,7 +241,7 @@ Migrations may alter:
 - `src/moneybin/sql/schema/app_versions.sql` — version tracking table DDL
 - `src/moneybin/sql/schema/analytics_schema.sql` — analytics schema DDL
 - `src/moneybin/migrations.py` — `Migration` dataclass, `MigrationRunner` class
-- `src/moneybin/cli/commands/migrate.py` — `moneybin data migrate` commands
+- `src/moneybin/cli/commands/migrate.py` — `moneybin db migrate` commands (mounted as a sub-typer under `db`)
 - `tests/moneybin/test_migrations.py` — unit tests for MigrationRunner
 - `tests/moneybin/test_cli/test_migrate_command.py` — CLI tests
 - `docs/reference/migrations.md` — user-facing authoring guide
@@ -245,8 +250,7 @@ Migrations may alter:
 - `src/moneybin/schema.py` — add new schema files to `_SCHEMA_FILES`, add `analytics` schema
 - `src/moneybin/cli/commands/db.py` — `db init` delegates to `Database` class
   ([`privacy-data-protection.md`](privacy-data-protection.md)) which orchestrates init_schemas +
-  migrations + version recording
-- `src/moneybin/cli/commands/data.py` — register `migrate` subcommand group
+  migrations + version recording, and mounts the `migrate` sub-typer
 - `src/moneybin/cli/main.py` — no app-level callback needed; auto-upgrade runs inside
   `Database.__init__()` when any command calls `get_database()`
 
@@ -292,8 +296,8 @@ Upgrades apply transparently with a brief console summary. Disable with
 ### Explicit commands (power users / troubleshooting)
 
 ```
-moneybin data migrate apply [--dry-run]
-moneybin data migrate status
+moneybin db migrate apply [--dry-run]
+moneybin db migrate status
 ```
 
 - `apply`: apply all pending migrations in version order.

@@ -48,7 +48,7 @@ Each audit returns the offending `transaction_id` (or `debit_transaction_id` for
 
 ### DoctorService extras (hardcoded)
 
-**`staging_coverage`** — Cross-layer count check. `raw_total - core_count - known_dedup_secondaries` must be zero. Fails if any raw rows are unaccounted for. Marked `skipped` if the dedup secondary count is not queryable (schema verification required during implementation; see implementation note below).
+**`staging_coverage`** — Cross-layer count check. `raw_total - core_count - known_dedup_secondaries` must be zero. Fails if any raw rows are unaccounted for. **Implementation state (2026-05-17):** marked permanently `skipped` because `app.match_decisions` has no `is_primary` column yet — the dedup secondary count cannot be derived. Will flip to active once that column lands; see `_run_staging_coverage()` in `src/moneybin/services/doctor_service.py`.
 
 **`categorization_coverage`** — What percentage of non-transfer transactions have a category. Status is `warn` (not `fail`) when below 50%; `pass` otherwise. Never blocks exit 0 on its own.
 

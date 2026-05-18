@@ -1,6 +1,6 @@
 # Transaction Matching — Overview
 
-> Last updated: 2026-05-02 — promoted to implemented (v1)
+> Last updated: 2026-05-17 — refreshed CLI/MCP surface references to align with `transactions matches` command path (PR #159) and `transactions_matches_*` phantom namespace (per `moneybin-mcp.md` §17).
 > Status: Implemented — both v1 pillars shipped (same-record dedup PR #43/#46, transfer detection PR #47). Umbrella doc for the transaction-matching initiative. Child specs listed in [Pillars](#the-three-pillars) are written separately.
 > Companions: [`smart-import-overview.md`](smart-import-overview.md) (peer initiative), [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) (audit log shared), `CLAUDE.md` "Architecture: Data Layers"
 
@@ -46,7 +46,7 @@ The existing `raw` → `prep` → `core` architecture maps naturally to a layere
 |---|---|---|---|
 | `core.fct_transactions` (modified) | Fact | One real-world transaction | Gains: `is_transfer`, `transfer_pair_id`, `match_confidence`, `canonical_source_type`, `source_count` (number of raw rows that contributed to this gold record) |
 | `meta.fct_transaction_provenance` | Fact | One (canonical_txn, contributing_raw_row) pair | Full lineage: which raw rows from which sources contributed to each gold record |
-| `core.bridge_transfers` | Bridge | One transfer pair | Links two `fct_transactions` rows as a matched pair; carries direction, date offset, amount delta |
+| `core.bridge_transfers` | Bridge (VIEW) | One transfer pair | Links two `fct_transactions` rows as a matched pair; carries direction, date offset, amount delta. Rebuilt on every SQLMesh run from `app.match_decisions`. |
 
 Match decisions themselves — user confirmations, rejections, auto-merge logs — live in `app.*` (user-authored, mutable state). The provenance output derived from those decisions lives in `core.*` (model-derived, analytics-ready, rebuilt on every SQLMesh run).
 
@@ -81,8 +81,8 @@ Un-merge restores the previously separate gold rows and their individual provena
 
 ### Match review UX
 
-- **CLI** (v1, non-negotiable): `moneybin matches review` — shows pending matches one at a time: `[a]ccept / [r]eject / [s]kip / [q]uit`. `moneybin matches log` — shows recent decisions.
-- **MCP** (Phase 2): `list_pending_matches`, `confirm_match`, `reject_match` tools. Lets the AI surface review items conversationally.
+- **CLI** (v1, non-negotiable): `moneybin transactions review --type matches` — shows pending matches one at a time: `[a]ccept / [r]eject / [s]kip / [q]uit`. `moneybin transactions matches history` — shows recent decisions.
+- **MCP** (Phase 2): `transactions_matches_pending`, `transactions_matches_confirm`, `transactions_matches_reject` tools. Lets the AI surface review items conversationally. Currently CLI-only; the `transactions_matches.*` MCP surface is a phantom namespace per `moneybin-mcp.md` §17 "Dependency tracker".
 - **Match log for audit** (v1, non-negotiable): `app.match_decisions` records every auto-merge and user decision with reasoning. Foundation of the "reversible" promise.
 
 ## In scope
@@ -138,8 +138,8 @@ v2 (deferred): **learned promotions.** After the user confirms N matches of the 
 **Hybrid: deterministic sync, fuzzy batch.**
 
 - **Deterministic matches** — same-source re-import (identical `transaction_id`), Plaid retro-mutation (Plaid-provided `transaction_id`) — apply synchronously during the import that produced them. No queue, no review, because these are not decisions — they're mechanical identity matches.
-- **Fuzzy matches** — cross-source dedup, transfer pairs — run automatically after import completes. Results go to the match log: auto-merges above threshold are applied and logged; medium-confidence proposals queue for review. Import output reads: *"Import complete: 1,240 rows. Matching: 3 auto-merged, 5 pending review. Run `moneybin matches review` when ready."*
-- **Manual trigger** — `moneybin matches run` is always available for running the matcher on-demand, independent of import.
+- **Fuzzy matches** — cross-source dedup, transfer pairs — run automatically after import completes. Results go to the match log: auto-merges above threshold are applied and logged; medium-confidence proposals queue for review. Import output reads: *"Import complete: 1,240 rows. Matching: 3 auto-merged, 5 pending review. Run `moneybin transactions review --type matches` when ready."*
+- **Manual trigger** — `moneybin transactions matches run` is always available for running the matcher on-demand, independent of import.
 
 ## Adjacent initiatives
 
@@ -175,7 +175,7 @@ Cross-cutting decisions deferred to child specs or to resolve during implementat
 - **Canonical ID strategy.** Introduce a separate `canonical_transaction_id` (new synthetic key for the gold record) or overload the existing `transaction_id` with the "winning" source's ID? A new key is cleaner but changes every downstream query; overloading is simpler but conflates source identity with gold identity.
 - **Signal set for fuzzy matching.** Which columns feed the similarity score, and with what weights? (account, date ±N days, amount exact/near, description fuzzy via TF-IDF or edit distance, merchant if available.) Per-pillar decision in A and B child specs.
 - **Review queue persistence.** Does the queue live in `app.*` (user-authored state) or `core.*` (model-derived)? `app.*` is more natural for mutable user decisions but doesn't participate in SQLMesh refresh. Likely `app.*` for decisions, `core.*` for derived provenance.
-- **Backfill UX at release.** One-shot migration on first upgrade (automatic, potentially slow), or explicit `moneybin matches backfill` command (user-triggered, predictable)?
+- **Backfill UX at release.** One-shot migration on first upgrade (automatic, potentially slow), or explicit `moneybin transactions matches backfill` command (user-triggered, predictable)?
 - **Interaction with Smart Import pillar F.** AI-parsed transactions — should they enter matching with lower default confidence, or be treated the same as any other source?
 - **Match metadata on the fact table.** Resolved: analytics-relevant columns (`is_transfer`, `transfer_pair_id`, `match_confidence`, `canonical_source_type`, `source_count`) go directly on `core.fct_transactions` for query ergonomics. Detailed match metadata (decision logs, match reasons, signal scores, reversal history) lives in supplemental tables (`app.match_decisions`, `meta.fct_transaction_provenance`). Child specs define the exact column list per table.
 - **`source_type` taxonomy.** This spec owns the taxonomy. Renamed from `source_system` — `source_type` is neutral enough for both file formats and API/sync sources. Current values: `ofx` and `csv`. Smart tabular import adds format-specific values (`csv`, `tsv`, `excel`, `parquet`, `feather`, `pipe`) per `smart-import-tabular.md`. Plaid adds `plaid`. Future: `pdf_statement`, `pdf_ai_parsed`, `manual`. The canonical gold record carries `canonical_source_type` recording which source "won" the merge. See `.claude/rules/database.md` for the column naming rule.

@@ -148,7 +148,7 @@ CREATE TABLE IF NOT EXISTS raw.manual_transactions (
     transaction_date        DATE NOT NULL, -- Date of the transaction as the user reports it
     amount                  DECIMAL(18,2) NOT NULL, -- Signed; negative = expense, positive = income
     description             VARCHAR NOT NULL, -- User-supplied description (free text)
-    merchant_name           VARCHAR, -- Optional user-supplied merchant; resolved against app.merchants on next pipeline pass
+    merchant_name           VARCHAR, -- Optional user-supplied merchant; resolved against core.dim_merchants on next pipeline pass
     memo                    VARCHAR, -- Additional free-text memo
     category                VARCHAR, -- Optional user-supplied category at entry time
     subcategory             VARCHAR, -- Optional user-supplied subcategory
@@ -196,8 +196,9 @@ CREATE TABLE IF NOT EXISTS app.transaction_splits (
     split_id        VARCHAR PRIMARY KEY, -- Truncated UUID4 (12 hex)
     transaction_id  VARCHAR NOT NULL, -- FK to core.fct_transactions; the parent
     amount          DECIMAL(18,2) NOT NULL, -- Signed; sum across children should equal parent.amount but is not strictly enforced
-    category        VARCHAR, -- References category taxonomy (string for now; migrates with category_id introduction)
-    subcategory     VARCHAR, -- References subcategory taxonomy
+    category        VARCHAR, -- Display snapshot (DEPRECATED in V014 Phase 1 dual-write); `category_id` FK is canonical post-PR #174
+    subcategory     VARCHAR, -- Display snapshot (DEPRECATED in V014); resolved via `category_id` join to `core.dim_categories`
+    category_id     VARCHAR, -- Foreign key to core.dim_categories.category_id (added by PR #174); NULL only for orphaned legacy rows
     note            VARCHAR, -- Optional per-split note
     ord             INTEGER NOT NULL DEFAULT 0, -- Display order; ties broken by split_id
     created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -310,7 +311,7 @@ enriched AS (
     COALESCE(s.split_count, 0) > 0 AS has_splits
   FROM prep.int_transactions__merged AS t
   LEFT JOIN app.transaction_categories AS c ON t.transaction_id = c.transaction_id
-  LEFT JOIN app.merchants              AS m ON c.merchant_id    = m.merchant_id
+  LEFT JOIN core.dim_merchants         AS m ON c.merchant_id    = m.merchant_id  /* post-PR migration (reports-recipe-library): merchants resolution view moved from app.merchants to core.dim_merchants */
   LEFT JOIN core.bridge_transfers      AS bt_debit  ON t.transaction_id = bt_debit.debit_transaction_id
   LEFT JOIN core.bridge_transfers      AS bt_credit ON t.transaction_id = bt_credit.credit_transaction_id
   LEFT JOIN notes_agg  AS n  ON t.transaction_id = n.transaction_id
@@ -621,9 +622,9 @@ These edits to sibling specs are required follow-ups. They are **NOT** included 
 - `sqlmesh/models/prep/stg_manual__transactions.sql` — staging view feeding `int_transactions__unioned`
 - `sqlmesh/models/core/fct_transaction_lines.sql` — split-expanded grain
 - `src/moneybin/services/audit_service.py` — `AuditService.record_audit_event`, query methods
-- `src/moneybin/cli/transactions.py` (new commands) — `transactions_create`, `transactions_notes_*`, `transactions_tags_*`, `transactions_splits_*`, `transactions_audit`
-- `src/moneybin/cli/system.py` (new commands) — `system_audit_list`, `system_audit_show`
-- `src/moneybin/cli/import_.py` (new commands) — `import_labels_add`, `import_labels_remove`, `import_labels_list`
+- `src/moneybin/cli/commands/transactions/` (package) — `transactions_create`, `transactions_notes_*`, `transactions_tags_*`, `transactions_splits_*`, `transactions_audit`. (Shipped as a package, not a flat module — each subgroup is its own file inside the package.)
+- `src/moneybin/cli/commands/system/` (package) — `system_audit_list`, `system_audit_show`.
+- `src/moneybin/cli/commands/import_/` (package) — `import_labels_add`, `import_labels_remove`, `import_labels_list`.
 - `src/moneybin/mcp/tools/curation.py` — the 9 new MCP write/read tools
 - `src/moneybin/mcp/prompts/curate_recent_transactions.py`
 - `src/moneybin/mcp/prompts/review_curation_history.py`
@@ -748,7 +749,7 @@ Existing test file extended to cover the 9 new MCP tools, 2 prompts, 1 new resou
 - **Verified curator flag.** Per-transaction trusted-data markers (cleared / reconciled / curator-attested) are dropped from this spec. The primary reason is brand-narrative: a per-row `verified` flag creates an implicit "unverified" category that the user must worry about, undermining MoneyBin's "integrity by construction" claim. Manually grooming each row to assert correctness is also a poor workflow at any meaningful volume. The trust-narrative work belongs on system-asserted invariants surfaced through `moneybin doctor` (M2C) — continuous integrity checks (FK, sign convention, balanced transfers, reconciliation deltas) producing a "✅ N invariants passing across M transactions" artifact. The secondary reason for dropping the flag is overlap with future transaction-level reconciliation: when *that* spec is designed, decisions about "does cleared count as trusted?" / "do auto-rule training and re-cat protection ride on cleared, reconciled, or a separate curator badge?" should be made together with a different vocabulary (`reconciled` / `matched_to_statement`) that doesn't collide with the integrity-by-construction framing. Cross-link from `net-worth.md` Out of Scope. **Re-confirmed 2026-05-16** (internal roadmap review): the doctor pivot is the correct trust artifact; a verified flag would create a soft-gating UX problem that doctor sidesteps. Do not reverse.
 - **First-class splits.** `app.transaction_splits` and the `core.fct_transactions.splits LIST(STRUCT)` shape are designed to evolve into first-class splits without a schema fork. The evolution itself is its own spec — owned by whichever future work surfaces split-aware imports (e.g., Plaid line items) or split-aware budgeting.
 - **Transaction attachments / receipts.** Deferred until a UI surface exists. Receipt blob storage outside the encrypted DuckDB file is its own design problem.
-- **Category-id migration.** `app.transaction_splits.category` stays VARCHAR, matching how `app.transaction_categories` stores categories today. A future spec migrates both to `category_id` references when categories become first-class entities.
+- **Category-id migration.** ~~Future work.~~ **Shipped via PR #174 (2026-05-17):** `category_id` FK columns added to `app.transaction_categories`, `app.transaction_splits`, and five other app tables; the legacy `category` / `subcategory` VARCHAR columns are kept as display snapshots in dual-write mode (Phase 1). `core.dim_categories` is the canonical source.
 - **Tag normalization.** Current shape is single VARCHAR with `namespace:value` convention enforced at the service layer. Promotion to a normalized two-table model (`app.tags(tag_id, namespace, value)` + `app.transaction_tags(transaction_id, tag_id)`) is future work — triggered when tag rename/merge/autocomplete UX needs richer semantics.
 - **Bulk manual entry CLI.** CLI stays single-txn-per-call. Bulk lives only in MCP, where LLMs batch naturally. The `import file` flow remains the path for tabular bulk loads.
 - **Import history browser.** The bundle scope is *labeling* batches, not building a batch-history browser. Listing past imports is a real gap; `import status` (existing) covers health and SQL covers exotic queries. A future `import history` spec can land if the demand materializes.

@@ -9,13 +9,11 @@ Implement the first sync provider for MoneyBin: Plaid Transactions. Pull checkin
 
 ## Background
 - [`sync-overview.md`](sync-overview.md) — umbrella spec defining the interaction model, client infrastructure, CLI/MCP surface, encryption design, and provider contract this spec implements.
-- [`../moneybin-server/docs/architecture/api-contract.md`](../../moneybin-server/docs/architecture/api-contract.md) — authoritative server API surface including sync endpoints, data format, and error responses.
-- [`../moneybin-server/docs/specs/phase-2-plaid-sync.md`](../../moneybin-server/docs/specs/phase-2-plaid-sync.md) — server-side Plaid integration (cursor management, access token storage, job orchestration). The client does not depend on these details.
-- [`../moneybin-server/docs/architecture/system-overview.md`](../../moneybin-server/docs/architecture/system-overview.md) — ecosystem architecture and data flow.
+- Server contract (the moneybin-server HTTP API for `/sync/*` endpoints, data format, and error responses) is the authoritative integration surface; endpoint shapes are restated inline below where the client depends on them.
 - [ADR-007: JSON over Parquet](../decisions/007-json-over-parquet-for-sync.md) — why sync uses JSON instead of Parquet.
 - [`privacy-data-protection.md`](privacy-data-protection.md) — `Database` connection factory, encryption at rest. All writes go through `get_database()`.
 - [`matching-overview.md`](matching-overview.md) — transaction matching consumes Plaid data alongside OFX/CSV. `source_type = 'plaid'` feeds the matching engine's blocking and scoring pipeline.
-- Existing connector stub: `src/moneybin/connectors/plaid_sync.py` (to be replaced).
+- Implementation: `src/moneybin/loaders/plaid_loader.py`, `src/moneybin/connectors/sync_client.py`, `src/moneybin/services/sync_service.py`, `src/moneybin/cli/commands/sync.py`, `src/moneybin/mcp/tools/sync.py`.
 
 ## Requirements
 
@@ -277,7 +275,6 @@ No changes to core's dedup logic — cross-source dedup between Plaid and OFX/CS
 |---|---|
 | `sqlmesh/models/core/dim_accounts.sql` | Add `plaid_accounts` CTE + `UNION ALL` |
 | `sqlmesh/models/core/fct_transactions.sql` | Add `plaid_transactions` CTE + `UNION ALL` |
-| `src/moneybin/connectors/plaid_sync.py` | Replace stub with `SyncClient` usage (or remove if `SyncClient` fully replaces it) |
 | `src/moneybin/sql/schema/schema.py` | Register new raw table DDL files |
 
 ### Files created by the umbrella spec (shared infrastructure)
@@ -288,7 +285,8 @@ These are defined in `sync-overview.md` and shared across all providers:
 |---|---|
 | `src/moneybin/connectors/sync_client.py` | `SyncClient` HTTP client |
 | `src/moneybin/cli/commands/sync.py` | CLI commands (login, connect, pull, status, etc.) |
-| `src/moneybin/mcp/sync_tools.py` | MCP tools (sync.pull, sync.status, etc.) |
+| `src/moneybin/mcp/tools/sync.py` | MCP tools (`sync_pull`, `sync_status`, etc.) |
+| `src/moneybin/services/sync_service.py` | `SyncService` — business logic for pull/connect/status, called by both CLI and MCP |
 | `src/moneybin/sql/schema/app_sync_connections.sql` | DDL for `app.sync_connections` |
 
 ### Key decisions
@@ -541,4 +539,4 @@ These fixtures should be generated deterministically (seeded) and stored as gold
 | Offline queue for sync commands | If server is unreachable, fail with clear error. No local queue. |
 | MCP App UI for Plaid Link | Phase 2 MCP Apps initiative. Current flow uses browser. |
 | Cross-currency transaction handling | Single-currency only in v1. Multi-currency transactions deferred to `multi-currency.md`. |
-| Server-side Plaid behavior | Token encryption, cursor management, webhook handling — all in `../moneybin-server/docs/specs/`. |
+| Server-side Plaid behavior | Token encryption, cursor management, webhook handling — owned by the moneybin-server project; client treats the server as opaque per `sync-overview.md` scope boundary. |

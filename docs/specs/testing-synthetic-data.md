@@ -2,7 +2,7 @@
 
 ## Status
 <!-- draft | ready | in-progress | implemented -->
-implemented
+implemented (promoted from `src/moneybin/testing/synthetic/` to top-level `src/moneybin/synthetic/` via PR #135)
 
 ## Goal
 
@@ -80,9 +80,9 @@ YAML architecture that separates financial life definitions from engine logic.
 
 ### Configuration
 10. Load persona definitions from YAML config files shipped with the package
-    (`src/moneybin/testing/synthetic/data/personas/`).
+    (`src/moneybin/synthetic/data/personas/`).
 11. Load merchant catalogs from shared YAML files
-    (`src/moneybin/testing/synthetic/data/merchants/`). V1 ships ~200 real 2026 brand
+    (`src/moneybin/synthetic/data/merchants/`). V1 ships ~200 real 2026 brand
     names across ~14 categories.
 12. Validate all YAML config at load time via Pydantic models. Invalid config fails
     fast with clear error messages.
@@ -147,7 +147,7 @@ merchants/                 └─ TransferGenerator
 ### Package layout
 
 ```
-src/moneybin/testing/synthetic/
+src/moneybin/synthetic/
 ├── __init__.py
 ├── engine.py              # GeneratorEngine orchestrator
 ├── generators/
@@ -384,7 +384,7 @@ transfers:
 
 ### Pydantic validation
 
-All YAML is loaded through Pydantic models (`src/moneybin/testing/synthetic/models.py`).
+All YAML is loaded through Pydantic models (`src/moneybin/synthetic/models.py`).
 Validation catches errors at load time:
 
 - Unknown persona fields
@@ -791,13 +791,9 @@ patterns that can't be expressed declaratively.
 - Profile isolation: generating into profile `alice` has no effect on the default
   profile's database.
 
-### Regression tests (golden snapshots)
+### Regression tests (golden snapshots) — **deferred**
 
-- Committed baseline for `basic` persona with `seed=42`, `years=1`.
-- Assert exact row count, category distribution summary, and monthly spending totals.
-- Baseline updated deliberately when generator changes — the diff is the review
-  artifact. This is intentionally brittle: "when a snapshot breaks, you either fix the
-  regression or update the baseline" (per umbrella spec).
+The original plan called for a committed baseline (e.g. `tests/baselines/basic_seed42.json`) for the `basic` persona with `seed=42`, `years=1`, asserting exact row count, category distribution summary, and monthly spending totals. The deterministic seed contract is in place (unit tests in `tests/moneybin/test_synthetic/` exercise it), but the golden-snapshot tier itself has not shipped. Revisit when a regression in generator output is observed in practice.
 
 ---
 
@@ -816,8 +812,7 @@ Feature specs that introduce testable behavior should include a "Synthetic Data
 Requirements" section describing what the generator should produce to exercise that
 feature. This becomes the contract between feature authors and generator maintainers.
 
-The spec template (`_template.md`) includes this as an optional section. See
-`design.md` for an audit of which specs need and have this section.
+The spec template (`_template.md`) includes this as an optional section.
 
 ---
 
@@ -857,22 +852,21 @@ The spec template (`_template.md`) includes this as an optional section. See
 
 | File | Purpose |
 |---|---|
-| `src/moneybin/testing/synthetic/__init__.py` | Package init |
-| `src/moneybin/testing/synthetic/engine.py` | `GeneratorEngine` orchestrator |
-| `src/moneybin/testing/synthetic/seed.py` | `SeededRandom` wrapper |
-| `src/moneybin/testing/synthetic/models.py` | Pydantic models for YAML validation |
-| `src/moneybin/testing/synthetic/writer.py` | Raw table + ground truth writer |
-| `src/moneybin/testing/synthetic/generators/__init__.py` | Generator package init |
-| `src/moneybin/testing/synthetic/generators/income.py` | Income generation |
-| `src/moneybin/testing/synthetic/generators/recurring.py` | Recurring charge generation |
-| `src/moneybin/testing/synthetic/generators/spending.py` | Discretionary spending generation |
-| `src/moneybin/testing/synthetic/generators/transfers.py` | Transfer pair generation |
-| `src/moneybin/testing/synthetic/data/personas/*.yaml` | Three persona definitions |
-| `src/moneybin/testing/synthetic/data/merchants/*.yaml` | ~14 merchant catalogs |
+| `src/moneybin/synthetic/__init__.py` | Package init |
+| `src/moneybin/synthetic/engine.py` | `GeneratorEngine` orchestrator |
+| `src/moneybin/synthetic/seed.py` | `SeededRandom` wrapper |
+| `src/moneybin/synthetic/models.py` | Pydantic models for YAML validation |
+| `src/moneybin/synthetic/writer.py` | Raw table + ground truth writer |
+| `src/moneybin/synthetic/generators/__init__.py` | Generator package init |
+| `src/moneybin/synthetic/generators/income.py` | Income generation |
+| `src/moneybin/synthetic/generators/recurring.py` | Recurring charge generation |
+| `src/moneybin/synthetic/generators/spending.py` | Discretionary spending generation |
+| `src/moneybin/synthetic/generators/transfers.py` | Transfer pair generation |
+| `src/moneybin/synthetic/data/personas/*.yaml` | Three persona definitions |
+| `src/moneybin/synthetic/data/merchants/*.yaml` | ~14 merchant catalogs |
 | `src/moneybin/sql/schema/synthetic_ground_truth.sql` | DDL for `synthetic.ground_truth` |
 | `src/moneybin/cli/synthetic.py` | CLI commands (`generate`, `reset`) |
 | `tests/test_synthetic_generator.py` | Unit + integration tests |
-| `tests/baselines/basic_seed42.json` | Golden snapshot baseline |
 
 ### Files to Modify
 

@@ -3,6 +3,8 @@
 ## Status
 implemented
 
+> **Shipped**. Resource lives at `moneybin://schema`, built by `src/moneybin/services/schema_catalog.py:build_schema_doc()`. The privacy DataClass registry (PR #169) injects `[class: <DataClass>]` sigils into DuckDB column comments via `src/moneybin/privacy/comment_sync.py`, which then flow through this resource — so the LLM sees both the human comment and the sensitivity class on every column without a separate lookup. Both `duckdb_tables()` and `duckdb_views()` (SQLMesh-managed core.dim_* views) are unioned so view-backed interface objects appear.
+
 ## Goal
 
 Give the MCP-connected LLM enough schema context to write accurate `sql_query` calls on the first try, without spending round-trips on catalog reconnaissance. Restrict the curated surface to a small set of consumer-facing **interface tables** so the LLM doesn't reach into `raw`, `prep`, or `meta` schemas by default.

@@ -1,7 +1,7 @@
 # MCP Tool Surface
 
-> Last updated: 2026-04-17
-> Status: Ready
+> Last updated: 2026-05-17
+> Status: in-progress
 > Companion to: [`mcp-architecture.md`](mcp-architecture.md) (design philosophy, conventions, patterns)
 > Supersedes: [`archived/mcp-read-tools.md`](archived/mcp-read-tools.md), [`archived/mcp-write-tools.md`](archived/mcp-write-tools.md)
 
@@ -573,6 +573,17 @@ Net worth across all accounts over time.
 - **Service:** `AccountService.net_worth() -> NetWorthSeries`
 - **CLI:** `moneybin accounts net-worth`
 
+### `accounts_set`
+
+Partial-update entry point for an account's settings.
+
+- **Sensitivity:** `medium` — settings changes are non-financial but reveal account metadata.
+- **Unique parameters:** `account_id: str` (required), plus optional structural fields (`account_subtype`, `holder_category`, `currency`, `credit_limit`, `last_four`, `official_name`) and behavioral fields (`display_name`, `include_in_net_worth`, `is_archived`).
+- **Behavior:** Shape-1b partial update — only supplied fields change. Archiving an account atomically cascades `include_in_net_worth=False`. Replaces the formerly-separate `accounts_rename` / `accounts_include` / `accounts_archive` / `accounts_unarchive` tools (PR #164).
+- **Mutation surface:** writes `app.account_settings`. Revert via a follow-up `accounts_set` with the prior values (audit trail in `app.audit_log`).
+- **Service:** `AccountService.set_settings() -> AccountSettings`
+- **CLI:** `moneybin accounts set <account_id> [--display-name ...] [--include-in-net-worth/--no-include-in-net-worth] [--archive/--unarchive] ...`
+
 ---
 
 ## 6. `transactions.*` — Transaction-level operations (matches and categorize workflows nested)
@@ -591,29 +602,98 @@ Primary transaction read tool. Returns full transaction records with curation me
 - **CLI:** `moneybin transactions list`
 - **read_only:** true
 
-### `transactions_correct`
+### `transactions_review`
 
-Apply corrections to one or more transactions. Corrections are metadata overrides in the prep layer — the source record is preserved unchanged.
+Orientation tool: pending counts across the review queues.
+
+- **Sensitivity:** `low` — counts only.
+- **Unique parameters:** None.
+- **Behavior:** Returns `{uncategorized: int, matches_pending: int, ...}` so the agent can answer "anything to review?" in one call. The agent then drills into `transactions_categorize_pending` or `transactions_matches_pending` for items.
+- **Service:** `TransactionService.review_counts() -> ReviewCounts`
+- **CLI:** `moneybin transactions review`
+
+### Curation tools (`transactions_create`, notes / tags / splits, `import_labels_set`, `system_audit`)
+
+The v1 `transactions_correct` / `transactions_annotate` design was replaced by the curation taxonomy. Source records remain immutable; curation adds parallel mutable metadata. See [`transaction-curation.md`](transaction-curation.md) for the umbrella spec.
+
+#### `transactions_create`
+
+Create 1..100 manual transactions atomically under one `import_id`.
 
 - **Sensitivity:** `medium`
-- **Unique parameters:** `corrections: list[object]` (required) — list of `{transaction_id, field, original_value, corrected_value, reason?}`. `field` must be one of: `amount`, `date`, `description`.
-- **Behavior:** Each correction creates a record in the corrections table. On next `sqlmesh run`, the prep layer applies corrections and core tables reflect the updated values. Returns `{applied, skipped, errors, error_details}`. Validates that `transaction_id` exists and `field` is in the allowlist.
-- **Service:** `TransactionService.correct() -> CorrectionResult`
-- **CLI:** `moneybin transactions correct --file corrections.json`
-- **Dependency:** Corrections table schema (new).
+- **Unique parameters:** `transactions: list[object]` (required) — each `{account_id, amount, transaction_date, description, merchant_name?, memo?, payment_channel?, transaction_type?, check_number?, currency_code?, category?, subcategory?}`. Amounts use the accounting convention: negative = expense, positive = income; transfers exempt.
+- **Behavior:** Whole batch shares one `import_id` (returned as `batch_id`). Validation runs over the full batch before any insert — a single bad row aborts the whole batch. Rows are exempt from the matcher.
+- **Mutation surface:** writes to `raw.manual_transactions` with a generated `import_id`. Revert via `import_revert(import_id=batch_id)`.
+- **Service:** `TransactionService.create_manual_batch()`
+- **CLI:** `moneybin transactions create --file transactions.json`
 
-### `transactions_annotate`
+#### `transactions_notes_add` / `transactions_notes_edit` / `transactions_notes_delete`
 
-Add tags, notes, or cash breakdowns to transactions. Annotations are metadata — they don't create new transactions or modify amounts.
+Lifecycle on per-transaction notes. Each note has its own `note_id`.
+
+- **Sensitivity:** `medium` (add/edit), `medium` w/ `destructive=True` (delete).
+- **Parameters:** `_add(transaction_id, text)`, `_edit(note_id, text)`, `_delete(note_id)`.
+- **Mutation surface:** `app.transaction_notes`. Hard delete — no revert; audit trail in `app.audit_log`.
+- **Service:** `TransactionService.add_note() / edit_note() / delete_note()`
+- **CLI:** `moneybin transactions notes add|edit|delete ...`
+
+#### `transactions_tags_set`
+
+Shape-1a declarative target-state for one transaction's tags.
 
 - **Sensitivity:** `medium`
-- **Unique parameters:** `annotations: list[object]` (required) — list of `{transaction_id, tags?, note?, cash_breakdown?}`. `cash_breakdown` is a list of `{description, amount, category?}` that must sum to the transaction's amount.
-- **Behavior:** Tags are additive (new tags merge with existing). Notes replace previous notes. Cash breakdowns replace previous breakdowns. Returns `{applied, skipped, errors, error_details}`.
-- **Service:** `TransactionService.annotate() -> AnnotationResult`
-- **CLI:** `moneybin transactions annotate --file annotations.json`
-- **Dependency:** Annotations table schema (new).
+- **Unique parameters:** `transaction_id: str`, `tags: list[str]`.
+- **Behavior:** Service diffs supplied list against current state and emits one `tag.add` / `tag.remove` per change in a single DuckDB transaction. No paired `_delete` — omit the tag to remove it.
+- **Mutation surface:** `app.transaction_tags`. Revert via another `_set` with the prior list (audit trail in `app.audit_log`).
+- **Service:** `TransactionService.set_tags()`
+- **CLI:** `moneybin transactions tags set TRANSACTION_ID --tag T [--tag T...]`
+
+#### `transactions_tags_rename`
+
+Global tag rename. Shape-3 discrete-verb (mutates N rows under one parent audit event).
+
+- **Sensitivity:** `medium`
+- **Unique parameters:** `old_tag: str`, `new_tag: str`.
+- **Behavior:** Emits one parent + N child audit events. Returns `{row_count, parent_audit_id}`.
+- **Mutation surface:** `app.transaction_tags` across all rows. Revert via a reverse `_rename`.
+- **Service:** `TransactionService.rename_tag()`
+- **CLI:** `moneybin transactions tags rename OLD NEW`
+
+#### `transactions_splits_set`
+
+Shape-1a declarative replace of a transaction's splits.
+
+- **Sensitivity:** `medium`
+- **Unique parameters:** `transaction_id: str`, `splits: list[{amount, category?, subcategory?, note?}]`. Amounts use the accounting convention.
+- **Behavior:** Clears existing splits then adds the new sequence; order preserved.
+- **Mutation surface:** `app.transaction_splits`. Revert via another `_set` with prior list.
+- **Service:** `TransactionService.set_splits()`
+- **CLI:** `moneybin transactions splits set TRANSACTION_ID --file splits.json`
+
+#### `import_labels_set`
+
+Shape-1a declarative target-state for an import's labels.
+
+- **Sensitivity:** `medium`
+- **Unique parameters:** `import_id: str`, `labels: list[str]`.
+- **Behavior:** Computes diff against prior labels; emits one `import_label.add` / `import_label.remove` per change.
+- **Mutation surface:** `app.import_labels`. Revert via another `_set` with prior list.
+- **Service:** `ImportService.set_labels()`
+- **CLI:** `moneybin import labels set IMPORT_ID --label L [--label L...]`
+
+#### `system_audit`
+
+List audit events with filters.
+
+- **Sensitivity:** `medium` — actor/action/target metadata.
+- **Unique parameters:** `filters: {actor?, action_pattern?, target_table?, target_id?, from?, to?}`, `limit: int = 100`.
+- **Behavior:** Returns audit events newest-first. `action_pattern` accepts SQL `LIKE` patterns (e.g. `tag.%`). For the full chain of one event, use CLI `moneybin system audit show <audit_id>`.
+- **Service:** `AuditService.list_events()`
+- **CLI:** `moneybin system audit list [...]`
 
 ### `transactions_matches.*` — Transaction matching sub-domain
+
+**Status:** blocked on [`matching-overview.md`](matching-overview.md) registration — all six `transactions_matches_*` tools below are documented for design alignment but NOT registered on the MCP surface today. See §17 dependency tracker.
 
 Match review is a distinct workflow within the transactions domain. These tools operate on match proposals — pairs of transactions that the matching engine believes represent the same real-world event (dedup) or two sides of a transfer.
 
@@ -711,6 +791,8 @@ Show import history and data freshness per source.
 
 ### `import_folder`
 
+**Status:** blocked on Smart Import Pillar A — NOT registered.
+
 Batch import a directory of mixed file types. `import_files` now subsumes the variadic-paths case; `import_folder` remains the directory-walker variant.
 
 - **Sensitivity:** `medium`
@@ -720,7 +802,38 @@ Batch import a directory of mixed file types. `import_files` now subsumes the va
 - **CLI:** `moneybin import folder PATH [--account-id ID] [--recursive]`
 - **Dependency:** Smart Import Pillar A.
 
-### `import_file_preview`
+### `import_revert`
+
+Revert a previous import batch by `import_id`. Removes the imported rows from `raw.*` and triggers downstream re-materialization on the next refresh.
+
+- **Sensitivity:** `low` — counts only in the response.
+- **Annotations:** `read_only=False`, `destructive=True`, `idempotent=False`.
+- **Unique parameters:** `import_id: str` (required) — the batch identifier returned by `import_files` or `transactions_create`.
+- **Mutation surface:** deletes rows from the relevant `raw.*` table tagged with `import_id`. No revert — re-run the original import to restore.
+- **Service:** `ImportService.revert_import()`
+- **CLI:** `moneybin import revert IMPORT_ID`
+
+### `import_inbox_sync`
+
+Sweep the inbox directory: import any new files, archive them on success, surface failures.
+
+- **Sensitivity:** `low` — return envelope reports per-file counts and status, not content.
+- **Unique parameters:** `refresh: bool = True` — run the refresh pipeline once at end-of-sweep when at least one file imported.
+- **Behavior:** Returns `{processed_count, imported_count, failed_count, files: [...], transforms_applied, transforms_duration_seconds, uncategorized_count}`. Idempotent: rerunning over the same inbox is a no-op once files are archived.
+- **Service:** `InboxService.sync()`
+- **CLI:** `moneybin import inbox sync [--no-refresh]`
+
+### `import_inbox_pending`
+
+Show inbox status: files awaiting sync, archive contents, last-sync timestamp.
+
+- **Sensitivity:** `low`
+- **Unique parameters:** None.
+- **Behavior:** Returns `{pending_files: [...], archive_count, last_sync_at}`.
+- **Service:** `InboxService.pending()`
+- **CLI:** `moneybin import inbox pending`
+
+### `import_preview`
 
 Preview a tabular file's headers and sample rows before importing. Format-agnostic (CSV, Excel, etc.).
 
@@ -742,6 +855,8 @@ List available tabular import formats.
 
 ### `import_ai_preview`
 
+**Status:** blocked on Smart Import Pillar F + Privacy framework — NOT registered.
+
 Preview what data would be sent to AI for parsing, with redaction applied.
 
 - **Sensitivity:** `low` — shows redacted preview, not raw financial data.
@@ -752,6 +867,8 @@ Preview what data would be sent to AI for parsing, with redaction applied.
 - **Dependency:** Smart Import Pillar F + Privacy framework.
 
 ### `import_ai_parse`
+
+**Status:** blocked on Smart Import Pillar F + Privacy framework — NOT registered.
 
 Confirm and execute AI-assisted parsing for a file.
 
@@ -841,7 +958,7 @@ List merchant name mappings.
 Create one or more merchant name mappings.
 
 - **Sensitivity:** `low`
-- **Unique parameters:** `mappings: list[object]` (required) — list of `{raw_pattern, canonical_name, match_type?, category?, subcategory?}`.
+- **Unique parameters:** `merchants: list[object]` (required) — list of `{raw_pattern, canonical_name, match_type?, category?, subcategory?, category_id?}`.
 - **Behavior:** Returns `{created, skipped, errors, error_details}`.
 - **Service:** `CategorizationService.create_merchants() -> CreateResult`
 - **CLI:** `moneybin merchants create --file mappings.json`
@@ -900,14 +1017,7 @@ Categorization coverage statistics.
 
 ### `transactions_categorize_rules_apply`
 
-Run the rule engine against uncategorized transactions.
-
-- **Sensitivity:** `low`
-- **Unique parameters:** `dry_run: bool = false` — preview what would be categorized without applying.
-- **Behavior:** Applies active rules in priority order to uncategorized transactions. Returns `{applied, skipped, already_categorized}`. With `dry_run`, returns the proposed categorizations without applying them.
-- **Service:** `CategorizationService.apply_rules() -> RuleApplicationResult`
-- **CLI:** `moneybin transactions categorize rules apply [--dry-run]`
-- **Dependency:** Categorization umbrella spec.
+**Retired.** The standalone rule-engine apply tool is folded into the polymorphic engine cascade. Use `transactions_categorize_run(methods=["rules"])` (MCP) or `moneybin transactions categorize run --methods rules` (CLI) instead. See `transactions_categorize_run` above.
 
 ### `transactions_categorize_auto_review`
 
@@ -920,15 +1030,16 @@ List auto-generated rules pending user approval.
 - **CLI:** `moneybin transactions categorize auto review`
 - **Dependency:** [Categorization overview](categorization-overview.md) (Pillar E: auto-rule generation), [Auto-rule generation](categorization-auto-rules.md).
 
-### `transactions_categorize_auto_confirm`
+### `transactions_categorize_auto_accept`
 
-Approve or reject proposed auto-generated rules.
+Accept or reject proposed auto-generated rules. Renamed from `_auto_confirm` to `_auto_accept` in PR #171; signature simplified from a polymorphic `approvals=[{proposed_rule_id, action}]` list to two parallel ID lists.
 
 - **Sensitivity:** `low`
-- **Unique parameters:** `approvals: list[object]` (required) — list of `{proposed_rule_id, action}` where action is `approve` or `reject`.
-- **Behavior:** Approved rules are promoted to active categorization rules in `app.categorization_rules` with `created_by='auto_rule'` and immediately evaluated against uncategorized transactions. Rejected rules are not re-proposed for the same pattern. Returns `{approved, rejected, errors}`.
-- **Service:** `CategorizationService.auto_confirm() -> ActionResult`
-- **CLI:** `moneybin transactions categorize auto confirm --approve <id> [<id>...] --reject <id> [<id>...]`
+- **Unique parameters:** `accept: list[str]` (proposed_rule_ids to promote), `reject: list[str]` (proposed_rule_ids to refuse).
+- **Behavior:** Accepted rules are promoted to active categorization rules in `app.categorization_rules` with `created_by='auto_rule'` and immediately evaluated against uncategorized transactions. Rejected rules are not re-proposed for the same pattern. Returns `{accepted, rejected, errors}`.
+- **Mutation surface:** writes to `app.categorization_rules` (accept path) and `app.proposed_rules` (status transitions). Revert via `transactions_categorize_rules_delete` for promoted rules.
+- **Service:** `CategorizationService.auto_accept() -> ActionResult`
+- **CLI:** `moneybin transactions categorize auto accept --accept <id> [<id>...] --reject <id> [<id>...]`
 - **Dependency:** [Categorization overview](categorization-overview.md) (Pillar E: auto-rule generation), [Auto-rule generation](categorization-auto-rules.md).
 
 ### `transactions_categorize_auto_stats`
@@ -944,6 +1055,8 @@ Auto-rule health metrics.
 
 ### `transactions_categorize_ml_status`
 
+**Status:** blocked on [`categorization-ml.md`](categorization-ml.md) (planned) — NOT registered.
+
 ML model status and accuracy metrics.
 
 - **Sensitivity:** `low`
@@ -955,6 +1068,8 @@ ML model status and accuracy metrics.
 
 ### `transactions_categorize_ml_train`
 
+**Status:** blocked on [`categorization-ml.md`](categorization-ml.md) (planned) — NOT registered.
+
 Trigger model training or retraining on current categorization history.
 
 - **Sensitivity:** `low` — training data stays local.
@@ -965,6 +1080,8 @@ Trigger model training or retraining on current categorization history.
 - **Dependency:** [Categorization overview](categorization-overview.md) (Pillar D: ML categorization).
 
 ### `transactions_categorize_ml_apply`
+
+**Status:** blocked on [`categorization-ml.md`](categorization-ml.md) (planned) — NOT registered. The `"ml"` literal will be added to `transactions_categorize_run(methods=...)` when ML categorization implementation lands.
 
 Run ML categorization at a given confidence threshold.
 
@@ -1027,6 +1144,8 @@ Remove a budget for a category.
 
 **Service class:** `TaxService`
 
+**Status:** registered-but-unwired pending tax spec — `tax_w2` carries `@mcp_tool` decoration in `src/moneybin/mcp/tools/tax.py`, but `register_tax_tools` is not called from `src/moneybin/mcp/server.py`. `tax_deductions` is not implemented. Both surface when a tax spec lands and reaches `in-progress`. See §17 dependency tracker.
+
 ### `tax_w2`
 
 W-2 tax form data for one or all years.
@@ -1054,7 +1173,9 @@ Search transactions for potentially deductible expenses.
 
 **Service class:** `PrivacyService`
 
-**Dependency:** All `privacy.*` tools depend on the consent management spec, audit log spec, and provider profiles spec. Per the surface-discipline rule in `.claude/rules/mcp-server.md`, individual `privacy.*` tools are registered only when their backing spec reaches `in-progress` or `implemented` in `docs/specs/INDEX.md`. No stubbed tools are exposed on the MCP surface.
+**Status:** all four `privacy_*` tools below are blocked on the consent management spec — NONE are registered today. The catalog entries describe the target design; per the surface-discipline rule in `.claude/rules/mcp-server.md`, individual `privacy.*` tools surface only when their backing spec reaches `in-progress` or `implemented` in `docs/specs/INDEX.md`. See §17 dependency tracker.
+
+**Dependency:** All `privacy.*` tools depend on the consent management spec, audit log spec, and provider profiles spec.
 
 ### `privacy_status`
 
@@ -1124,13 +1245,58 @@ Pipeline integrity check — confirms the data pipeline is self-consistent befor
 
 ### `reports_health`
 
+**Status:** planned — NOT registered. The financial health snapshot is currently composed by the agent from `reports_networth` + `reports_spending` + `reports_cashflow` + `reports_budget`. Re-evaluate as a dedicated tool when the agent-experience reports show the composition friction outweighs the surface cost.
+
 Financial health snapshot — high-level summary across all domains.
 
 - **Sensitivity:** `low` — aggregates only.
 - **Unique parameters:** `months: int = 1` (period to summarize).
-- **Behavior:** Returns `{net_worth, monthly_income, monthly_expenses, monthly_net, savings_rate, top_spending_categories, budget_compliance, recurring_total}`. Designed as a conversation opener — gives the AI enough context to ask informed follow-up questions.
-- **Service:** `OverviewService.health() -> FinancialHealth`
-- **CLI:** `moneybin reports health [--months 1]`
+- **Behavior:** Returns `{net_worth, monthly_income, monthly_expenses, monthly_net, savings_rate, top_spending_categories, budget_compliance, recurring_total}`. Designed as a conversation opener.
+
+### `reports_recurring`
+
+Recurring transaction detection — surfaces likely subscriptions, autopay, and other repeating charges.
+
+- **Sensitivity:** `low` — aggregates and merchant labels.
+- **Unique parameters:** Shared date/months window.
+- **Behavior:** Returns array of `{merchant, cadence, avg_amount, last_seen, occurrences}`.
+- **CLI:** `moneybin reports recurring`
+
+### `reports_merchants`
+
+Top merchants by spend over the selected window.
+
+- **Sensitivity:** `low` — aggregates only.
+- **Unique parameters:** Shared date/months window, `limit`.
+- **Behavior:** Returns array of `{merchant, total_amount, transaction_count}` sorted by absolute total.
+- **CLI:** `moneybin reports merchants`
+
+### `reports_uncategorized`
+
+List uncategorized transactions for review.
+
+- **Sensitivity:** `medium` — row-level transactions.
+- **Unique parameters:** Shared date/months window, `limit`.
+- **Behavior:** Returns array of `{transaction_id, date, amount, description, account_id}` for transactions in `core.fct_transactions` lacking categorization. Amounts use the accounting convention: negative = expense, positive = income.
+- **CLI:** `moneybin reports uncategorized`
+
+### `reports_large_transactions`
+
+Outlier transactions over an absolute-amount threshold.
+
+- **Sensitivity:** `medium` — row-level transactions.
+- **Unique parameters:** Shared date/months window, `threshold` (decimal-string), `limit`.
+- **Behavior:** Returns array of `{transaction_id, date, amount, description, account_id, category}` for transactions where `|amount| >= threshold`.
+- **CLI:** `moneybin reports large-transactions [--threshold N]`
+
+### `reports_balance_drift`
+
+Account-level reconciliation drift: difference between asserted balances and computed running totals.
+
+- **Sensitivity:** `medium` — balance amounts.
+- **Unique parameters:** None.
+- **Behavior:** Returns per-account `{account_id, asserted_balance, computed_balance, drift, last_asserted_at}`. Drift in `summary.display_currency`.
+- **CLI:** `moneybin reports balance-drift`
 
 ### `refresh_run`
 
@@ -1158,6 +1324,15 @@ Execute an arbitrary read-only SQL query against DuckDB.
 - **Unique parameters:** `sql: str` (required).
 - **Behavior:** Validates query is read-only (SELECT, WITH, DESCRIBE, SHOW, PRAGMA, EXPLAIN). Blocks file-access functions (`read_csv`, `read_parquet`, etc.) and URL literals. Results capped at `MAX_ROWS` and `MAX_CHARS`. Returns results in the standard response envelope with column names as field keys. Degraded response rejects the query with a consent instruction — arbitrary SQL can't be meaningfully degraded to aggregates.
 - **CLI:** `moneybin sql query "SELECT ..." [--output json]`
+
+### `sql_schema`
+
+Return the curated database schema for ad-hoc SQL composition. Equivalent to reading the `moneybin://schema` MCP resource — provided as a tool for hosts that don't surface MCP resources to the model (e.g. Claude.ai chat).
+
+- **Sensitivity:** `low` — schema metadata, no row data.
+- **Unique parameters:** `table: str | None`. `None` (default) returns the compact catalog (table names + purposes + column counts). A full name like `'core.fct_transactions'` returns columns, comments, and example queries for that one table. `'*'` returns the full ~50KB schema document.
+- **Behavior:** Unknown `table` returns a `UserError(code='unknown_table')` with the available-tables list as a hint.
+- **CLI:** `moneybin sql schema [--table NAME]`
 
 ---
 
@@ -1215,7 +1390,7 @@ Four goal-oriented workflow templates. Each defines the goal, relevant tools, gu
 
 **Goal:** Guide a first-time user from empty database to imported, transformed, and categorized data.
 
-**Relevant tools:** `system_status`, `import_files`, `import_file_preview`, `import_formats`, `transactions_categorize_stats`
+**Relevant tools:** `system_status`, `import_files`, `import_preview`, `import_formats`, `transactions_categorize_stats`
 
 **Guardrails:**
 
@@ -1280,17 +1455,20 @@ Current net worth snapshot: total net worth, assets vs liabilities breakdown, an
 
 ### `moneybin://tools`
 
-Flat catalog of registered tool namespaces with one-line descriptions. All namespaces are visible at connect (see `mcp-architecture.md` §3 "Tool disclosure: full surface, taxonomy-led") — this resource is a cheaper-than-tool-listing way for the agent to scan the domain map without paying the schema-cost of every tool. Example:
+Flat catalog of registered tool namespaces with one-line descriptions. All namespaces are visible at connect (see `mcp-architecture.md` §3 "Tool disclosure: full surface, taxonomy-led") — this resource is a cheaper-than-tool-listing way for the agent to scan the domain map without paying the schema-cost of every tool. Example (illustrative; current counts vary):
 
 ```json
 {
   "namespaces": [
-    {"namespace": "overview", "tools": 2, "description": "Data status and financial health snapshot"},
-    {"namespace": "spending", "tools": 4, "description": "Expense analysis, trends, category breakdowns"},
-    {"namespace": "accounts", "tools": 4, "description": "Account listing, balances, net worth"},
-    {"namespace": "transactions", "tools": 15, "description": "Universal query, corrections, annotations, categorization, recurring"},
-    {"namespace": "import", "tools": 5, "description": "File import, status, format detection"},
-    {"namespace": "sql", "tools": 1, "description": "Power-user escape hatch"}
+    {"namespace": "system", "tools": 2, "description": "Data status, pipeline integrity"},
+    {"namespace": "reports", "tools": 10, "description": "Spending, cashflow, budget, net worth, recurring, merchants"},
+    {"namespace": "accounts", "tools": 11, "description": "Listing, balances, balance assertions, settings, net worth"},
+    {"namespace": "transactions", "tools": 12, "description": "Search, curation (notes/tags/splits), review, categorize workflow"},
+    {"namespace": "categories", "tools": 4, "description": "Taxonomy reference data"},
+    {"namespace": "merchants", "tools": 2, "description": "Merchant mapping reference data"},
+    {"namespace": "import", "tools": 7, "description": "File import, inbox sweep, preview, revert, formats"},
+    {"namespace": "sync", "tools": 5, "description": "Plaid connect, pull, status"},
+    {"namespace": "sql", "tools": 2, "description": "Power-user escape hatch + schema"}
   ]
 }
 ```
@@ -1317,30 +1495,30 @@ Clean break — old tool names stop working when v1 ships. MoneyBin is pre-1.0; 
 | `get_account_balances` | `accounts_balances` | |
 | `query_transactions` | `transactions_get` | Richer filters, curation fields, cursor pagination |
 | `get_w2_summary` | `tax_w2` | |
-| `list_categories` | `categorize_categories` | |
-| `list_categorization_rules` | `categorize_rules` | |
-| `list_merchants` | `categorize_merchants` | |
-| `get_categorization_stats` | `categorize_stats` | |
+| `list_categories` | `categories` | |
+| `list_categorization_rules` | `transactions_categorize_rules` | |
+| `list_merchants` | `merchants` | |
+| `get_categorization_stats` | `transactions_categorize_stats` | |
 | `list_institutions` | `accounts` | Institution is a field on account |
 | `run_read_query` | `sql_query` | |
 | `import_file` | `import_files` | Renamed; accepts list of paths |
-| `categorize_transaction` | `categorize_apply` | Single-item removed; use list of one |
-| `get_uncategorized_transactions` | `categorize_uncategorized` | |
+| `categorize_transaction` | `transactions_categorize_commit` | Single-item removed; use list of one |
+| `get_uncategorized_transactions` | `transactions_categorize_pending` | |
 | `seed_categories` | _removed_ | Seeds run automatically via `db init` / `transform seed` |
-| `toggle_category` | `categorize_toggle_category` | |
-| `create_category` | `categorize_create_category` | |
-| `create_merchant_mapping` | `categorize_create_merchants` | Single → bulk |
-| `create_categorization_rule` | `categorize_create_rules` | Single → bulk |
-| `delete_categorization_rule` | `categorize_delete_rule` | |
-| `bulk_categorize` | `categorize_apply` | |
-| `bulk_create_categorization_rules` | `categorize_create_rules` | |
-| `bulk_create_merchant_mappings` | `categorize_create_merchants` | |
+| `toggle_category` | `categories_set` (PR #162) | |
+| `create_category` | `categories_create` | |
+| `create_merchant_mapping` | `merchants_create` | Single → bulk |
+| `create_categorization_rule` | `transactions_categorize_rules_create` | Single → bulk |
+| `delete_categorization_rule` | `transactions_categorize_rules_delete` | |
+| `bulk_categorize` | `transactions_categorize_commit` | |
+| `bulk_create_categorization_rules` | `transactions_categorize_rules_create` | |
+| `bulk_create_merchant_mappings` | `merchants_create` | |
 | `set_budget` | `budget_set` | |
-| `get_budget_status` | `budget_status` | |
-| `get_monthly_summary` | `spending_summary` | |
-| `get_spending_by_category` | `spending_by_category` | |
-| `find_recurring_transactions` | `transactions_recurring` | (removed) |
-| `csv_preview_file` | `import_csv_preview` | |
+| `get_budget_status` | `reports_budget` | |
+| `get_monthly_summary` | `reports_spending` | |
+| `get_spending_by_category` | `reports_spending` | One tool with `by=category` projection |
+| `find_recurring_transactions` | `reports_recurring` | |
+| `csv_preview_file` | `import_preview` | format-agnostic; tabular and OFX/QFX/QBO supported |
 | `csv_list_profiles` | `import_formats` | |
 | `csv_save_profile` | Absorbed into `import_files` via `save_format` flag | |
 
@@ -1487,7 +1665,7 @@ v2 splits them by their actual content. Status is a system meta-view; health is 
 
 | Namespace | Tools | Rationale |
 |---|---|---|
-| `import_*` | `import_csv_preview` → `import_file_preview` (format-agnostic); `import_file` → `import_files` (batch); other tools unchanged | Pipeline action, not entity-scoped |
+| `import_*` | `import_csv_preview` → `import_preview` (format-agnostic); `import_file` → `import_files` (batch); other tools unchanged | Pipeline action, not entity-scoped |
 | `privacy_*` | All 4 privacy tools unchanged | Cross-cutting consent/audit domain |
 | `sql_*` | `sql_query` unchanged | Infrastructure escape hatch |
 | `tax_*` | `tax_w2`, `tax_deductions` unchanged | Tax is its own domain — workflow that crosses spending, income, deductions, forms. Future tools (`tax_1099`, `tax_capital_gains`, `tax_estimate`) land here. |
