@@ -1,186 +1,579 @@
+<!-- Last reviewed: 2026-05-17 -->
 # CLI Reference
 
-MoneyBin's CLI is organized by domain in workflow order. Every command supports `--help`.
+MoneyBin's CLI covers everything its MCP server does. Read commands return text or JSON with `--output json`; every interactive prompt has a flag equivalent so scripts and agents can drive the same commands. Parity is **functional, not nominal** — the same outcomes are reachable on both surfaces, but tool names don't always map 1:1 (e.g., `moneybin transactions list` reaches the MCP tool `transactions_get`). See [`mcp-server.md`](mcp-server.md) for the MCP catalog.
 
-## Global Options
+This page covers the full user-facing surface. Per-command flag detail lives in `moneybin <cmd> --help`. `--help` is always side-effect free — it does not touch profiles, open the database, or hit the network.
 
-| Option | Short | Description |
-|--------|-------|-------------|
-| `--profile` | `-p` | Use a specific profile for this command |
-| `--verbose` | `-v` | Enable debug logging |
+## Standard flags
 
-Most query/list commands also accept `--output json` for machine-readable parity with the MCP server.
+These flags appear on commands across every group. They are not repeated in the per-group tables below.
 
-## Command Tree
+| Flag | Scope | Description |
+|---|---|---|
+| `-p, --profile <name>` | Global (root) | Pick the profile to operate against. Overrides `MONEYBIN_PROFILE` and the saved default for one invocation. |
+| `-v, --verbose` | Global (root) | Enable debug logging on stderr. |
+| `-o, --output {text,json}` | All read commands | Output format. `text` is human-readable; `json` returns the standard response envelope (same shape as the MCP equivalent). |
+| `-q, --quiet` | All read commands | Suppress informational chatter (status lines, the trailing `✅`). Result rows are never suppressed — they are the data. |
+| `--json-fields a,b,c` | Read commands that opt in | Comma-separated field projection. Silently ignored unless `--output json` is active. Available fields are enumerated in the command's `--help`. |
+| `-y, --yes` | Mutating commands with prompts | Skip the confirmation prompt. Required for non-interactive use. |
 
-```
-moneybin
-├── profile          Profile lifecycle
-│   ├── create       Create a new profile
-│   ├── list         List all profiles (marks active)
-│   ├── switch       Change default profile
-│   ├── delete       Delete a profile and all data
-│   ├── show         Show resolved settings
-│   └── set          Set a config value
-│
-├── import           File import
-│   ├── file         Import a financial file (auto-detects type)
-│   ├── status       Summary of all imported data
-│   ├── history      List recent imports with batch details
-│   ├── preview      Preview file structure (dry run)
-│   ├── revert       Undo an import batch
-│   └── formats      Manage saved import formats
-│       ├── list     List all available formats
-│       ├── show     Show format details
-│       └── delete   Delete a user-saved format
-│
-├── sync             Bank sync via moneybin-server (📐 designed)
-│   ├── login / logout
-│   ├── connect / disconnect
-│   ├── pull / status
-│   ├── rotate-key
-│   └── schedule {set,show,remove}
-│
-├── accounts         Financial account entities + per-account workflows
-│   ├── list / show / rename / include  Entity ops (🗓️ account-management.md)
-│   ├── balance      Per-account balance tracking (📐 net-worth.md)
-│   │   ├── show / list / history
-│   │   ├── assert   Assert balance at a point in time
-│   │   ├── delete / reconcile
-│   └── investments  Holdings, cost basis (🗓️ investment-tracking.md)
-│       ├── show / list / holdings
-│
-├── transactions     Transactions + workflows on them
-│   ├── review       Unified review queue
-│   │   --status                         Counts pending matches + categorize
-│   │   --type {matches,categorize,all}  Pick a queue
-│   │   --confirm <id> / --reject <id>   Non-interactive item action
-│   │   --confirm-all / --limit N
-│   ├── matches      Dedup + transfer matching
-│   │   ├── run / history / undo / backfill
-│   └── categorize   Categorization workflow
-│       ├── apply    Assign categories from JSON
-│       ├── stats    Coverage statistics
-│       ├── rules    Manual rule sub-group {list, apply, create, delete}
-│       ├── auto     Auto-rule sub-group {review, confirm, rules, stats}
-│       └── ml       ML-suggested categorization (📐)
-│
-├── categories       Taxonomy reference data (top-level)
-│   └── list / create / toggle / delete
-│
-├── merchants        Merchant name mappings (top-level)
-│   └── list / create
-│
-├── reports          Cross-domain analytical views
-│   ├── networth     Replaces v1 `track networth` — show / history (📐)
-│   ├── spending / cashflow / budget / health (📐 owning specs)
-│
-├── assets           Physical assets (🗓️ asset-tracking.md)
-│
-├── tax              W-2 forms, deductions (🗓️ owning specs)
-│   └── w2 / deductions
-│
-├── budget           Budget mutation (🗓️ budget-tracking.md)
-│   └── set / delete    (read views live under `reports budget`)
-│
-├── system           System-level orientation
-│   └── status       Data inventory + pending review queues
-│
-├── refresh          Refresh derived tables: matching, SQLMesh apply, categorization (leaf)
-│
-├── transform        SQLMesh pipeline
-│   ├── apply        Apply pending changes
-│   ├── plan         Preview what will change
-│   ├── status       Current model state
-│   ├── validate     Check model SQL parses correctly
-│   ├── audit        Run data quality audits
-│   └── restate      Force recompute a model for a date range
-│
-├── stats            Lifetime metric aggregates (leaf)
-│
-├── export           Export to CSV/Excel/Sheets (🗓️ planned)
-│   └── run
-│
-├── mcp              MCP server
-│   ├── serve        Start the MCP server
-│   ├── list-tools   List all registered tools
-│   ├── list-prompts List all registered prompts
-│   └── config
-│       └── generate Generate client config (Claude Desktop, Cursor, Windsurf)
-│
-├── db               Database management
-│   ├── init         Create a new encrypted database
-│   ├── shell        Interactive DuckDB SQL shell
-│   ├── ui           DuckDB web UI (browser-based)
-│   ├── query        Run a SQL query
-│   ├── info         Database metadata (size, tables, encryption, versions)
-│   ├── backup       Create timestamped backup
-│   ├── restore      Restore from a backup file
-│   ├── lock / unlock
-│   ├── key          Print the encryption key
-│   ├── rotate-key   Re-encrypt with a new key
-│   ├── ps / kill    Inspect or kill processes holding the DB
-│   └── migrate {apply,status}
-│
-├── logs <stream>    View logs for cli/mcp/sqlmesh (leaf; --print-path, --prune)
-│
-└── synthetic        Test data + scenario verification
-    ├── generate     Generate synthetic data for a persona
-    ├── reset        Wipe and regenerate from scratch
-    └── verify       Run scenario suites (--list, --scenario, --all)
+**Leaf vs sub-group.** Leaf commands like `stats` and `logs` take action directly; sub-groups like `db`, `import`, and `transactions` require a subcommand (`moneybin db info`, not `moneybin db`).
+
+### Date and duration formats
+
+- **Date arguments** (`--from`, `--to`, `--as-of`, `--date`) are ISO 8601 `YYYY-MM-DD`. Month-grain commands like `reports cashflow` document `YYYY-MM-01` in their `--help`.
+- **Duration shortcuts** (`7d`, `24h`, `5m`) are accepted on `logs` (`--since`, `--until`) and `stats` (`--since`). They are **not** accepted on report or sync date filters — use absolute dates there.
+- Timestamps in JSON output are ISO 8601; dates are `YYYY-MM-DD` strings (not epoch seconds).
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Success. |
+| `1` | Runtime error: the operation ran and failed (file not found, database locked, upstream API 5xx, validation error on data already accepted, partial-batch error). Mutating commands also exit `1` when any item in a batch fails or is skipped (e.g., `transactions categorize commit` with one bad row). |
+| `2` | Usage error: missing argument, invalid flag value, unknown subcommand, bad combination of flags. |
+
+Diagnostic output goes to stderr (fd 2). Data output goes to stdout (fd 1). Pipes (`| jq`, `| less`) are safe in both modes.
+
+## Output envelopes
+
+`--output json` returns the response envelope documented in [`docs/architecture.md`](../architecture.md). Top-level keys:
+
+```json
+{
+  "status": "ok",
+  "summary": {
+    "total_count": 0,
+    "returned_count": 0,
+    "has_more": false,
+    "sensitivity": "low",
+    "display_currency": "USD"
+  },
+  "data": [],
+  "actions": []
+}
 ```
 
-Commands marked 📐 (designed) or 🗓️ (planned) reserve the namespace and print a pointer to the owning spec when invoked.
+`error` is present when `status` is `"error"`; `next_cursor` is present when more rows remain. Three concrete shapes follow — every other command's `data` payload is inferable by running it with `--output json` once. `Decimal` values serialize as JSON numbers, not strings.
 
-## Common Workflows
+**Read response — `transactions list`** (list payload):
+
+```json
+{
+  "status": "ok",
+  "summary": {"total_count": 2, "returned_count": 2, "has_more": false, "sensitivity": "medium", "display_currency": "USD"},
+  "data": [
+    {"transaction_id": "csv_a1b2c3d4e5f6a7b8", "account_id": "chk_001", "transaction_date": "2026-04-12", "amount": -42.17, "description": "STARBUCKS #1234", "memo": null, "source_type": "csv", "category": "Food & Drink", "subcategory": "Coffee", "notes": null, "tags": ["work"], "splits": null}
+  ],
+  "actions": []
+}
+```
+
+**Snapshot response — `reports networth`** (single-record payload):
+
+```json
+{
+  "status": "ok",
+  "summary": {"total_count": 1, "returned_count": 1, "has_more": false, "sensitivity": "low", "display_currency": "USD"},
+  "data": {
+    "balance_date": "2026-05-17",
+    "net_worth": 124530.42,
+    "total_assets": 198200.00,
+    "total_liabilities": 73669.58,
+    "account_count": 7,
+    "per_account": [{"display_name": "Chase Checking", "balance": 4210.18, "observation_source": "assertion"}]
+  },
+  "actions": []
+}
+```
+
+**Mutating response — `transactions categorize commit`** (write summary):
+
+```json
+{
+  "status": "ok",
+  "summary": {"total_count": 50, "returned_count": 1, "has_more": false, "sensitivity": "medium", "display_currency": "USD"},
+  "data": {"applied": 47, "skipped": 2, "errors": 1, "merchants_created": 3, "error_details": [{"transaction_id": "csv_xyz", "reason": "unknown category"}]},
+  "actions": ["Use transactions_categorize_rules to review auto-created rules"]
+}
+```
+
+`db query` is the exception: it extends `--output` to `text|json|csv|markdown|box` (DuckDB's native formats); its `json` is raw row data, **not** the envelope shape. Use other read commands when you need envelope parity.
+
+## Long-running commands
+
+`sync pull`, `refresh`, and `transform apply` can run for several seconds to minutes. Progress and status lines stream to **stderr** by default (visible interactively, hidden when redirected); `--output json` returns a single envelope at completion. There is no incremental JSON progress stream today — agents that need progress should poll `sync status` / `transform status` from a separate invocation.
+
+Concurrent invocations against the same profile contend for the database lock; cron-driven `sync pull` overlapping with an interactive session will fail fast with exit `1` rather than block. Use `db ps` to see who's holding the file and `db kill` if needed.
+
+## Which command for which task?
+
+The CLI has a few task-shaped overlaps; this section disambiguates the common ones.
+
+**"Review my transactions" — three candidates, pick by intent:**
+
+- **`transactions list`** — filtered scanning ("show me April groceries"). Supports `--account-id`, `--from`/`--to`, `--category`, `--uncategorized`, `--limit`. Returns raw rows; no workflow.
+- **`reports uncategorized`** — specifically hunting uncategorized rows for a categorization pass. Adds amount, age, and a `--min-amount` filter.
+- **`transactions review`** — the interactive curator queue: pending dedup/transfer matches plus uncategorized rows in one stream. Use `--type {matches,categorize,all}` and `--confirm`/`--reject` to drive it from a script.
+
+**"Refresh / transform / categorize run — which?"**
+
+- **`moneybin refresh`** — the right answer 99% of the time. Runs matching → SQLMesh apply → categorization in order; idempotent.
+- **`transform <verb>`** — drop here only for SQLMesh-only operator work (debugging a model, restating a date range, validating SQL).
+- **`transactions categorize run`** — drop here only when you want to re-run categorization engines without touching transforms (e.g., after editing rules).
+
+**Four `status` commands — which?**
+
+- **`system status`** — "Am I set up correctly? What does my data look like?" Run this first when in doubt.
+- **`import status`** — "What did my last imports load, and from where?"
+- **`sync status`** — "Where is each connected institution? When did it last pull?"
+- **`transform status`** — "Are my SQLMesh models current with their inputs?"
+
+## Setup and orientation
+
+### `profile`
+
+Per-user profile lifecycle. Each profile has an isolated encrypted database, config, and log directory.
+
+| Command | Purpose | Key flags |
+|---|---|---|
+| `profile create <name>` | Create a profile with directory layout, config, and encrypted database. | — |
+| `profile list` | List all profiles, marking the active one. | — |
+| `profile switch <name>` | Set a different profile as the active default. | — |
+| `profile show [<name>]` | Show resolved settings for a profile (defaults to active). | — |
+| `profile set <key> <value>` | Set a config value on a profile (e.g., `logging.level info`). | `--profile <name>` |
+| `profile delete <name>` | Delete a profile and ALL its data (database, logs, config). | `-y, --yes` |
+
+### `system`
+
+Top-level orientation: where the data lives, whether it's healthy, what the audit log says.
+
+| Command | Purpose |
+|---|---|
+| `system status` | Data inventory (account count, transaction count, date range, last import) plus pending review-queue counts. |
+| `system doctor` | Run pipeline integrity checks across all invariants. Exit non-zero on any check failure. |
+| `system audit list` | List audit-log events with filters (`--actor`, `--action`, `--target-table`, `--target-id`, `--from`, `--to`, `--limit`). |
+| `system audit show <audit-id>` | Show one audit event plus any chained children. |
+
+**Related guides:** [`profiles-and-multi-user.md`](profiles-and-multi-user.md).
+
+## Ingestion
+
+### `import`
+
+File imports and inbox drain. `import files` auto-detects type (CSV / OFX / QFX / PDF) and runs the refresh pipeline after.
+
+| Command | Purpose | Key flags |
+|---|---|---|
+| `import files <paths>...` | Import one or more financial files. Per-file overrides available. | `--account-name`, `--institution`, `--format-name`, `--refresh/--no-refresh` |
+| `import preview <path>` | Inspect file structure without importing (dry run, no DB writes). | — |
+| `import history` | List recent import batches with counts and timestamps. | `--limit` |
+| `import revert <batch-id>` | Undo an import batch (deletes rows from raw + downstream). | `-y, --yes` |
+| `import status` | Summary of all imported data by source. | — |
+| `import formats list` | List built-in and user-saved format definitions. | — |
+| `import formats show <name>` | Show a saved format's column mapping. | — |
+| `import formats delete <name>` | Delete a user-saved format. | `-y, --yes` |
+| `import inbox` | Drain the watched inbox: import everything in `inbox/`, move successes to `processed/`, failures to `failed/` with sidecars. Default action when invoked bare. | — |
+| `import inbox list` | Show what a drain would do without moving anything. | — |
+| `import inbox path` | Print the active profile's inbox parent directory (use with `$(...)` substitution). | — |
+| `import labels add <batch-id> <labels>...` | Apply labels to an import batch. | — |
+| `import labels remove <batch-id> <labels>...` | Remove labels from an import batch. | — |
+| `import labels list [<batch-id>]` | List labels on a batch (or all batches). | — |
+
+### `sync`
+
+Pull transactions from external services through the moneybin-server proxy. **`sync login` is required first** — most subcommands fail without a valid JWT.
+
+| Command | Purpose | Key flags |
+|---|---|---|
+| `sync login` | Authenticate with moneybin-server via Device Authorization Flow. | `--no-browser` |
+| `sync logout` | Clear the stored JWT. | — |
+| `sync connect [<institution>]` | Connect a new institution via Plaid Hosted Link. Prints URL to stderr and (optionally) opens the browser. | `--no-browser` |
+| `sync connect-status` | Show pending connection state (after `sync connect` started). | — |
+| `sync disconnect <item-id>` | Disconnect a linked institution. | `-y, --yes` |
+| `sync pull [<item-id>]` | Pull new transactions and run the refresh pipeline. Use without an item-id to pull every connected institution. | `--refresh/--no-refresh`, `--since`, `--full` |
+| `sync status` | Show last-sync timestamps and pending-cursor state per linked institution. | — |
+| `sync key rotate` | Rotate the sync server's encryption key. | — |
+| `sync schedule set <cron>` | Configure a scheduled sync job. | — |
+| `sync schedule show` | Show the active sync schedule. | — |
+| `sync schedule remove` | Disable scheduled sync. | — |
+
+**Related guides:** [`data-import.md`](data-import.md), [`watched-inbox.md`](watched-inbox.md), [`sync-server.md`](sync-server.md).
+
+## Refresh pipeline
+
+`refresh` is the always-visible umbrella entry point for the post-load pipeline: matching → SQLMesh apply → categorization. CLI peer of the `refresh_run` MCP tool.
+
+| Command | Purpose | Key flags |
+|---|---|---|
+| `refresh` | Run the full cascade. Idempotent — safe to retry. Matching and categorization are best-effort; only SQLMesh apply errors fail the command. | `--step {match,transform,categorize}` (repeatable; default = full cascade) |
+
+The `transform` group below is the lower-level operator path. Reach for `refresh` first.
+
+### `transform`
+
+Direct access to the SQLMesh pipeline. Use these when debugging models or restating a date range; for normal post-load refresh, use `moneybin refresh`.
+
+| Command | Purpose |
+|---|---|
+| `transform plan` | Preview SQLMesh changes without applying them. |
+| `transform apply` | Apply pending SQLMesh changes. |
+| `transform seed` | Refresh seed-only models. |
+| `transform status` | Current model state. |
+| `transform validate` | Check that model SQL parses correctly. |
+| `transform audit` | Run data-quality audits. |
+| `transform restate <model> <start> <end>` | Force-recompute a model for a date range. |
+
+## Curation: transactions
+
+### `transactions`
+
+Browsing transactions and per-transaction state (notes, tags, splits, manual entries, audit).
+
+| Command | Purpose | Key flags |
+|---|---|---|
+| `transactions list` | List transactions with filters. | `--account-id`, `--from`, `--to`, `--limit`, `--category`, `--uncategorized` |
+| `transactions create` | Create a manual transaction (no upstream source). | `--account-id`, `--date`, `--amount`, `--description`, `--category` |
+| `transactions audit <transaction-id>` | Show the audit chain for one transaction. | — |
+| `transactions review` | Unified review queue: pending matches and uncategorized rows. | `--status`, `--type {matches,categorize,all}`, `--confirm <id>`, `--reject <id>`, `--confirm-all`, `--limit` |
+
+### `transactions notes`
+
+Multi-note threads attached to a transaction.
+
+| Command | Purpose |
+|---|---|
+| `transactions notes add <transaction-id> <text>` | Append a note. |
+| `transactions notes list <transaction-id>` | List all notes on a transaction. |
+| `transactions notes edit <note-id> <text>` | Edit an existing note. |
+| `transactions notes delete <note-id>` | Delete a note. |
+
+### `transactions tags`
+
+Slug-flavored labels applied to a transaction.
+
+| Command | Purpose |
+|---|---|
+| `transactions tags add <transaction-id> <tags>...` | Apply one or more tags. |
+| `transactions tags remove <transaction-id> <tags>...` | Remove one or more tags. |
+| `transactions tags list [<transaction-id>]` | List tags on a transaction, or all tags in use. |
+| `transactions tags rename <old> <new>` | Rename a tag everywhere it appears. |
+
+### `transactions splits`
+
+Allocate one transaction across multiple categories. Non-zero residual is a warning, not an error.
+
+| Command | Purpose |
+|---|---|
+| `transactions splits add <transaction-id> <amount> <category>` | Add one split row. |
+| `transactions splits list <transaction-id>` | List splits on a transaction with residual. |
+| `transactions splits remove <split-id>` | Remove one split row. |
+| `transactions splits clear <transaction-id>` | Remove all splits on a transaction. |
+
+### `transactions matches`
+
+Dedup and transfer matching state.
+
+| Command | Purpose | Key flags |
+|---|---|---|
+| `transactions matches run` | Run the matcher against existing transactions. | `--skip-transform`, `--auto-accept-transfers` |
+| `transactions matches history` | List previously-confirmed matches. | `--limit`, `--type` |
+| `transactions matches undo <match-id>` | Revert one confirmed match. | — |
+| `transactions matches backfill` | Re-match historical rows after rule changes. | — |
+
+### `transactions categorize`
+
+Categorization workflow. Engines: deterministic rules + merchant mappings (local, no LLM). LLM-assist is exposed as `assist` (read) → `commit` (write). `commit` reads a JSON array of `{transaction_id, category, subcategory?}` objects.
+
+| Command | Purpose | Key flags |
+|---|---|---|
+| `transactions categorize run` | Run the engine cascade over uncategorized rows. Engines run in order; a rule write blocks a merchant write at the same priority. | `--methods rules,merchants` |
+| `transactions categorize assist` | Return uncategorized rows as redacted records for LLM categorization (description/memo redacted; no amount, date, or account). Same shape as the `transactions_categorize_assist` MCP tool. | `--limit`, `--account-filter`, `--date-range` |
+| `transactions categorize commit` | Commit externally-decided categorizations from a JSON array. | `--input <path>` or `-` (stdin) |
+| `transactions categorize commit-from-file <path>` | Convenience wrapper around `commit --input <path>`. | — |
+| `transactions categorize export-uncategorized` | Export uncategorized rows for offline review. | `--limit`, `--output` |
+| `transactions categorize stats` | Categorization coverage summary (total / categorized / pct / by-source breakdown). | — |
+| `transactions categorize rules list` | List active categorization rules. | — |
+| `transactions categorize rules create <name>` | Create a rule (single or `--from-file <path>` for batch). | `--pattern`, `--match-type {exact,contains,regex}`, `--category`, `--subcategory`, `--priority`, `--reapply` |
+| `transactions categorize rules apply` | Re-apply active rules to existing transactions. | `--reapply` |
+| `transactions categorize rules delete <rule-id>` | Delete a rule. | `--reapply` |
+| `transactions categorize auto review` | List pending auto-rule proposals with sample transactions. | `--limit` |
+| `transactions categorize auto accept <proposal-id>` | Accept one auto-rule proposal. | `--all` |
+| `transactions categorize auto rules` | List rules created from auto-proposals. | — |
+| `transactions categorize auto stats` | Auto-rule activity summary. | — |
+| `transactions categorize ml status` / `train` / `apply` | ML-assisted categorization (stub). | — |
+
+**Related guides:** [`categorization.md`](categorization.md).
+
+## Curation: reference data
+
+### `categories`
+
+Category taxonomy. Default (seeded) categories cannot be deleted — disable them with `set --inactive`.
+
+| Command | Purpose | Key flags |
+|---|---|---|
+| `categories list` 🚧 | List all categories (stub). | — |
+| `categories create <name>` 🚧 | Create a category (stub). | `--parent <name>` |
+| `categories set <category-id>` 🚧 | Update settings (today: `--active/--inactive` only) (stub). | `--active/--inactive` |
+| `categories delete <category-id>` | Hard-delete a user-created category. Refuses if referenced unless `--force`. | `--force` |
+
+### `merchants`
+
+Merchant name mappings.
+
+| Command | Purpose | Key flags |
+|---|---|---|
+| `merchants list` 🚧 | List merchant mappings (stub). | — |
+| `merchants create <pattern> <canonical>` 🚧 | Create a mapping (stub). | `--default-category` |
+
+## Accounts and balances
+
+### `accounts`
+
+Account entities (dim records) plus per-account workflows.
+
+| Command | Purpose | Key flags |
+|---|---|---|
+| `accounts list` | List accounts. Hides archived by default. | `--include-archived`, `--type <subtype>` |
+| `accounts get <account-id>` | Show one account's full dim record + settings. | — |
+| `accounts set <account-id>` | Update structural and behavioral fields. At least one field flag required. | `--official-name`, `--last-four`, `--subtype`, `--holder-category`, `--currency`, `--credit-limit`, `--display-name`, `--include/--exclude`, `--archive/--unarchive`, `--clear-FIELD`, `-y, --yes` |
+| `accounts resolve <query>` | Fuzzy-match a free-text reference (e.g., `"my Chase account"`) to ranked account-ID candidates. Use this before commands that need an account-id. | `-n, --limit` |
+| `accounts balance show <account-id>` | Current balance for one account. | `--as-of <date>` |
+| `accounts balance list` | Latest balance across all accounts. | — |
+| `accounts balance history <account-id>` | Balance history with daily carry-forward interpolation. | `--from`, `--to` |
+| `accounts balance assert <account-id> <amount>` | Record a point-in-time balance assertion (reconciles via delta row). | `--as-of <date>` |
+| `accounts balance assertion-delete <assertion-id>` | Delete one balance assertion. | `-y, --yes` |
+| `accounts balance reconcile <account-id>` | Recompute reconciliation deltas for an account. | — |
+| `accounts investments show <account-id>` 🚧 | Holdings + cost basis for an investment account (stub). | — |
+
+`accounts set` cascades atomically: `--archive` also sets `--exclude` for net-worth in the same write; `--unarchive` does NOT auto-restore `--include`.
+
+**Related guides:** [`account-management.md`](account-management.md).
+
+### `assets`
+
+Physical assets (real estate, vehicles, valuables). Group is reserved; commands ship with the asset-tracking spec.
+
+## Reports
+
+Cross-domain analytical views. All commands support `--output json` and return the standard envelope.
+
+| Command | Purpose | Key flags |
+|---|---|---|
+| `reports networth` | Current net worth snapshot. | `--as-of`, `--account` |
+| `reports networth-history` | Net worth over time with period-over-period change. | `--from`, `--to`, `--interval {daily,weekly,monthly}` |
+| `reports cashflow` | Income vs spending by period. | `--from`, `--to` (both `YYYY-MM-01`) |
+| `reports spending` | Spending trend by category. | `--from`, `--to`, `--category`, `--top` |
+| `reports recurring` | Detected recurring subscriptions with confidence and annualized cost. | `--status {active,cancelled,all}`, `--limit` |
+| `reports merchants` | Merchant activity rollup. | `--from`, `--to`, `--limit` |
+| `reports uncategorized` | Uncategorized queue with amount and age. | `--limit`, `--min-amount` |
+| `reports large-transactions` | Large transactions by amount threshold. | `--min-amount`, `--from`, `--to` |
+| `reports balance-drift` | Where computed balance diverges from asserted balance. | `--account-id`, `--threshold` |
+| `reports budget` 🚧 | Budget vs actual (stub). | — |
+| `reports health` 🚧 | Cross-domain financial health snapshot (stub). | `--months` |
+
+**Related guides:** [`reports.md`](reports.md).
+
+## Budget and tax
+
+Both groups reserve the CLI namespace; full implementations land with the owning specs.
+
+| Command | Purpose |
+|---|---|
+| `budget set <category> <amount>` 🚧 | Set or update a budget target (stub). |
+| `budget delete <category>` 🚧 | Delete a budget target (stub). |
+| `tax w2 <year>` 🚧 | Show W-2 form data for a tax year (stub). |
+| `tax deductions <year>` 🚧 | Show categorized deductible expenses (stub). |
+
+## Privacy
+
+| Command | Purpose |
+|---|---|
+| `privacy redact <text>` | Run the redaction pipeline against an input string. Used for debugging the redactor; same contract the MCP tools apply to PII-bearing fields. |
+
+## Database
+
+### `db`
+
+Lifecycle, exploration, and key management on the encrypted database.
+
+| Command | Purpose | Key flags |
+|---|---|---|
+| `db init` | Create a new encrypted database for the active profile. | `--force` |
+| `db info` | Database metadata: size, table list, encryption status, SQLMesh and migration versions. | — |
+| `db shell` | Interactive DuckDB SQL shell against the active profile's database. | — |
+| `db ui` | Open the DuckDB web UI in a browser. | — |
+| `db query <sql>` | Run one SQL query. Output formats: `text`, `json`, `csv`, `markdown`, `box`. JSON here is raw rows, not the envelope. | `-o, --output`, `--params` |
+| `db lock` | Lock the database (purge the cached key). | — |
+| `db unlock` | Unlock the database (load the key from keychain). | — |
+| `db backup` | Create a timestamped encrypted backup. | `--dest <path>` |
+| `db restore <backup-path>` | Restore from a backup file. | `-y, --yes` |
+| `db ps` | List processes currently holding the database file. | — |
+| `db kill <pid>` | Kill a process holding the database. | `-y, --yes` |
+| `db key show` | Print the encryption key to stderr (use with care). | — |
+| `db key rotate` | Re-encrypt with a new key. | `-y, --yes` |
+| `db key export <path>` | Export the key to a file (encrypted). | — |
+| `db key import <path>` | Import a key from a file. | — |
+| `db key verify` | Verify the cached key matches the database. | — |
+| `db migrate apply` | Apply pending schema migrations. | `--dry-run` |
+| `db migrate status` | Show applied migrations and pending ones. | — |
+
+**Related guides:** [`database-management.md`](database-management.md), [`threat-model.md`](threat-model.md).
+
+## Integrations
+
+### `mcp`
+
+MCP server lifecycle and client install.
+
+| Command | Purpose | Key flags |
+|---|---|---|
+| `mcp serve` | Start the MCP server. | `--transport {stdio,http}`, `--port`, `--host` |
+| `mcp install` | Install MoneyBin into an MCP client's config. Supported clients: claude-desktop, claude-code, codex, vscode, cursor, windsurf, gemini, chatgpt-desktop. | `-c, --client`, `-p, --profile`, `--print`, `-y, --yes` |
+| `mcp list-tools` | List every registered MCP tool with its sensitivity tier. | `-o, --output` |
+| `mcp list-prompts` | List every registered MCP prompt. | `-o, --output` |
+| `mcp config` | Show active MCP server configuration (profile, database path, max-rows, max-chars). | — |
+| `mcp config path` | Print an MCP client's config-file install path. Used by `make claude-mcp` and similar. | `-c, --client`, `-p, --profile` |
+
+**Related guides:** [`mcp-server.md`](mcp-server.md).
+
+### `export`
+
+CSV / Excel / Sheets export. Group is reserved; commands ship with `export.md`.
+
+| Command | Purpose |
+|---|---|
+| `export run` 🚧 | Export financial data to a file (stub). |
+
+## Diagnostics
+
+These are leaf commands (no subcommands).
+
+| Command | Purpose | Key flags |
+|---|---|---|
+| `logs <stream>` | View, follow, or filter logs for the active profile. Streams: `cli`, `mcp`, `sqlmesh`. | `-f, --follow`, `-n, --lines`, `--level`, `--since`, `--until`, `--grep`, `--print-path`, `--prune --older-than <duration>` |
+| `stats` | Lifetime metric aggregates from `app.metrics`. | `--since <duration>`, `--metric <family>` |
+
+The `stream` argument on `logs` is required unless `--print-path` or `--prune` is used (exit code 2 on misuse — convention of `docker logs`, `kubectl logs`).
+
+## Test data
+
+### `synthetic`
+
+Generate and manage synthetic financial data for testing and demos. Each profile is isolated, so synthetic data never collides with real data.
+
+| Command | Purpose | Key flags |
+|---|---|---|
+| `synthetic generate` | Generate synthetic data into a fresh profile. | `--persona`, `--months`, `--seed` |
+| `synthetic reset` | Wipe and regenerate from scratch. | `--persona`, `-y, --yes` |
+
+Whole-pipeline scenarios live under `tests/scenarios/` and are driven via `make test-scenarios` rather than a CLI command.
+
+## Common workflows
+
+### Monthly close (no JSON pipelines)
+
+```bash
+moneybin sync pull                          # latest from connected banks
+moneybin import files ~/Downloads/*.ofx     # any OFX files you downloaded
+moneybin refresh                            # run the post-load pipeline
+moneybin reports uncategorized              # see what's still uncategorized
+# ... categorize via transactions review or transactions categorize rules ...
+moneybin reports networth                   # this month's net worth
+moneybin reports cashflow                   # this month's income vs spending
+```
+
+Each step is idempotent — re-run safely if interrupted. `import files` auto-runs `refresh` after the load, so an OFX-only month can skip the explicit `refresh` call.
 
 ### First-time setup
 
 ```bash
 moneybin profile create personal
-moneybin import file ~/Downloads/checking.qfx
+moneybin import files ~/Downloads/checking.qfx
+moneybin transactions categorize run
+moneybin reports networth
 ```
 
-### Import, dedup, and categorize
+`categorize run` is a no-op until you have rules or merchant mappings — the auto-rule snowball kicks in after a few LLM-assist cycles.
+
+### Year-end / tax-prep
 
 ```bash
-moneybin import file ~/Downloads/chase_may.csv --account-name "Chase Checking"
-moneybin transactions review --status              # Counts pending matches + categorize
-moneybin transactions review --type matches        # Review pending dedup/transfer proposals
-moneybin transactions categorize rules apply       # Apply rules + merchants
-moneybin transactions categorize auto review       # Inspect auto-rule proposals
-moneybin transactions categorize auto confirm --approve-all
-moneybin transactions categorize stats
+moneybin reports cashflow --from 2026-01-01 --to 2026-12-01
+moneybin reports merchants --from 2026-01-01 --to 2026-12-31
+moneybin reports spending --from 2026-01-01 --to 2026-12-31 --top 20
 ```
 
-`import file` runs the matcher and rule-based categorization automatically. The explicit commands above are useful when reviewing pending work or tuning behavior.
+The `tax` group is reserved for future automated form-data extraction; for now, the reports above plus a `db query` against `core.fct_transactions` cover most tax-prep needs.
 
-### Query your data
+### Drain the watched inbox
 
 ```bash
-moneybin db query "SELECT category, SUM(amount) FROM core.fct_transactions GROUP BY 1"
-moneybin db shell
+cp ~/Downloads/*.qfx "$(moneybin import inbox path)/inbox/"
+moneybin import inbox            # drain; auto-refresh; processed/ + failed/ sidecars
+moneybin import inbox list       # preview without moving
+```
+
+### Categorize with an LLM, agent-driven
+
+```bash
+# 1. Pull redacted records out for the LLM.
+moneybin transactions categorize assist --limit 50 --output json > to_categorize.json
+
+# 2. Run your LLM workflow against to_categorize.json; produce decisions.json.
+# 3. Commit decisions back.
+moneybin transactions categorize commit --input decisions.json
+
+# Or stream end-to-end via stdin:
+moneybin transactions categorize assist --limit 50 --output json \
+  | your-llm-tool \
+  | moneybin transactions categorize commit -
+```
+
+### Find large uncategorized transactions for review
+
+```bash
+moneybin reports uncategorized --output json \
+  | jq '.data[] | select((.amount | tonumber | fabs) > 100)'
 ```
 
 ### Connect an AI assistant
 
 ```bash
-moneybin mcp install --client claude-desktop
+moneybin mcp install --client claude-desktop --yes
+moneybin mcp install --client claude-code --profile personal --yes
 ```
 
-### Verify the pipeline (developer)
-
-Whole-pipeline scenarios run as pytest tests under `tests/scenarios/`:
+### Query SQL directly
 
 ```bash
-make test-scenarios                                    # Run the full scenario suite
-uv run pytest tests/scenarios/ -m scenarios -v         # Same, via pytest directly
+moneybin db query "SELECT category, SUM(amount) FROM core.fct_transactions GROUP BY 1" --output csv
+moneybin db shell
 ```
 
-### Database maintenance
+### Database hygiene
 
 ```bash
-moneybin db backup
 moneybin db info
+moneybin db backup
 moneybin db migrate status
+moneybin system doctor
 ```
+
+### Status-check a long-running pipeline from a script
+
+```bash
+moneybin system status --output json | jq -e '.summary.total_count > 0' \
+  && echo "data present" \
+  || moneybin transactions categorize run
+```
+
+## See also
+
+- [`data-import.md`](data-import.md) — import formats and the import lifecycle
+- [`categorization.md`](categorization.md) — rules, merchants, LLM-assist
+- [`reports.md`](reports.md) — what each report shows
+- [`mcp-server.md`](mcp-server.md) — the MCP peer surface
+- [`database-management.md`](database-management.md) — encryption, backups, migrations

@@ -16,7 +16,7 @@ It is **not** a feature spec. There is no implementation plan. The two narrow na
 
 ## Background
 
-The strategic review of 2026-05-04 (`private/strategy/2026-05-04-strategic-review-engineering.md` §(b)) catalogued the convergence and recommended writing this doc before the next domain spec. The data-layer table in `AGENTS.md` is now a partial map of the schemas that actually exist (three rows; the codebase uses seven going on eight). The service-layer contract is consistent across ~18 services but never written down. The sensitivity decorator and response envelope have hardened but don't have a single-page reference.
+The strategic review of 2026-05-04 (`private/reviews/2026-05-04-strategic-review-engineering.md` §(b)) catalogued the convergence and recommended writing this doc before the next domain spec. The data-layer table in `AGENTS.md` is now a partial map of the schemas that actually exist (three rows; the codebase uses seven going on eight). The service-layer contract is consistent across ~18 services but never written down. The sensitivity decorator and response envelope have hardened but don't have a single-page reference.
 
 ### Related specs
 
@@ -202,7 +202,7 @@ Same noun ordering across all three; only the verb position and separators diffe
 
 1. **`@mcp_tool(sensitivity=...)`** decorates every MCP tool. Accepts `sensitivity` (`"low"` / `"medium"` / `"high"`) and optional `domain` (for progressive disclosure). Wraps the tool body in: privacy logging (`log_tool_call`), the 30s timeout guard, classified-exception → error-envelope conversion, and a final guard that the body returned a `ResponseEnvelope`. Source: `src/moneybin/mcp/decorator.py`.
 
-2. **`ResponseEnvelope`** is the common response shape across MCP tools and CLI `--output json`. Fields: `summary` (counts, truncation flag, sensitivity tier, display currency), `data` (list of records or single dict), `actions` (next-step hints), and optional `error` (classified `UserError`). Decimal values serialize as strings to avoid float imprecision. Source: `src/moneybin/protocol/envelope.py`. Constructors: `build_envelope()`, `build_error_envelope()`, `not_implemented_envelope()`.
+2. **`ResponseEnvelope`** is the common response shape across MCP tools and CLI `--output json`. Fields: `summary` (counts, truncation flag, sensitivity tier, display currency), `data` (list of records or single dict), `actions` (next-step hints), and optional `error` (classified `UserError`). Decimal values serialize as JSON numbers — `_DecimalEncoder.default()` returns `float(o)`, which is safe because float64's ~15.95 significant digits comfortably cover personal-finance magnitudes (the docstring on the encoder spells this out). Source: `src/moneybin/protocol/envelope.py`. Constructors: `build_envelope()`, `build_error_envelope()`, `not_implemented_envelope()`.
 
 3. **Privacy middleware** (`src/moneybin/mcp/privacy.py`) provides:
    - **Sensitivity tiers** — declared by every tool via the decorator. Per [`mcp-architecture.md`](mcp-architecture.md) §5, `low` requires no consent, `medium` requires `mcp-data-sharing` consent and degrades to aggregates without it, `high` requires consent + cloud masking. (V1 only logs; full consent enforcement lands in the privacy framework specs.)
@@ -434,7 +434,7 @@ Two narrow naming changes ride along with this spec landing. Both are mechanical
 
 ### Strategic context
 
-- `private/strategy/2026-05-04-strategic-review-engineering.md` §(b) — Architectural review that catalogued the 12 primitives and recommended this spec.
+- `private/reviews/2026-05-04-strategic-review-engineering.md` §(b) — Architectural review that catalogued the 12 primitives and recommended this spec.
 
 ### Source files (primitives)
 

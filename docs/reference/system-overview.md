@@ -1,133 +1,193 @@
+<!-- Last reviewed: 2026-05-17 -->
 # System Overview
 
-## Name and branding
+MoneyBin is a local-first, AI-native personal finance platform. This page is the orientation map — what each major piece does, how they fit together, and what runs when. For the architectural depth (primitives, contracts, layers, internal invariants), see [`docs/architecture.md`](../architecture.md). For column-level schema, see [`data-model.md`](data-model.md). For the full reference, see [`docs/specs/architecture-shared-primitives.md`](../specs/architecture-shared-primitives.md).
 
-The project name is **MoneyBin** (camel case, one word). This applies to all marketing, logos, documentation prose, and UI text. The name references Scrooge McDuck's Money Bin from DuckTales.
+## Components at a glance
 
-| Context | Form | Example |
-|---------|------|---------|
-| Branding / prose | MoneyBin | "MoneyBin is a local-first financial platform" |
-| CLI command | `moneybin` | `moneybin data extract ofx` |
-| Python package | `moneybin` | `import moneybin` |
-| GitHub repo | `moneybin` | `github.com/bsaffel/moneybin` |
+Five runtime components plus three cross-cutting concerns. The data they share is one encrypted DuckDB file per profile, organized into layers (`raw` → `prep` → `core` → `reports`) plus the `app.*` overlay — the user-state layer holding categorizations, notes, tags, manual corrections, and other locally-managed metadata.
 
-Lowercase forms (`moneybin`) are technical conventions (CLI, package, repo). The canonical marketing name is always **MoneyBin** with a capital B.
+| Component | Kind | What it does | Read more |
+|---|---|---|---|
+| **Local DuckDB store** | Storage | One encrypted file per profile under `~/.moneybin/profiles/<name>/moneybin.duckdb`. Holds `raw → prep → core → reports` plus the `app.*` overlay. | [`database-security.md`](../guides/database-security.md), [`data-model.md`](data-model.md) |
+| **CLI** | Runtime (per-invocation) | Typer-based command surface (Typer is the argparse-style CLI framework); first-class agent peer to MCP. Every command supports `--output json` and returns the same response envelope as the matching MCP tool. | [`cli-reference.md`](../guides/cli-reference.md) |
+| **MCP server** | Runtime (per session) | FastMCP-based local server (FastMCP is the Python MCP server library). Registers around seventy tools across roughly a dozen domains. Stdio transport today; Streamable HTTP planned. | [`mcp-server.md`](../guides/mcp-server.md) |
+| **SQLMesh pipeline** | Runtime (on-demand) | Compiles and runs the `raw → prep → core → reports` transformations. SQLMesh owns every write to `prep.*`, `core.*`, `reports.*`, `meta.*`, and `seeds.*`. | [`data-pipeline.md`](../guides/data-pipeline.md) |
+| **Sync client** | Runtime (on-demand) | Talks to `moneybin-server` to broker Plaid pulls. The server is opaque — the client only knows the API surface. | [`server-api-contract.md`](server-api-contract.md) |
+| **Privacy middleware** | Cross-cutting | Tool decorator (`@mcp_tool`) plus FastMCP middleware that enforces sensitivity tiers, redaction, and the read/write allowlist for every MCP call. DDL is rejected; managed writes target `app.*` and `raw.*` only. | [`docs/specs/mcp-architecture.md`](../specs/mcp-architecture.md) |
+| **Observability** | Cross-cutting | Structured logs through `SanitizedLogFormatter` (always on), Prometheus-style metrics persisted to `app.metrics`, daily-rotating log files per profile. | [`observability.md`](../guides/observability.md) |
+| **Migrations** | Cross-cutting | Forward-only versioned migrations in `app.schema_migrations`; self-heal stuck rows when the migration body changes; `no_auto_upgrade` gate for explicit operator control. Runs at every `Database` open. | [`docs/specs/architecture-shared-primitives.md`](../specs/architecture-shared-primitives.md) |
 
-## Overview
+`moneybin-server` is not listed here because it is not part of the client install — it runs separately, either self-hosted or as a hosted reference instance. The client reaches it only through the sync client.
 
-MoneyBin is an open-source, local-first personal financial analysis platform. Financial data flows from source files through extractors into DuckDB, is transformed by SQLMesh into canonical analytical tables, and is accessible through two parallel interfaces.
-
-## Architecture
+## Data flow
 
 ```mermaid
 flowchart LR
-    SF[Source Files] --> E[Extractors] --> RT[Raw Tables] --> SM[SQLMesh] --> CT[Core Tables]
-    CT --> MCP["MCP Server\n(AI-assisted analysis)"]
-    CT --> DT["Data Toolkit\nDuckDB / SQLMesh / Jupyter"]
+  sources["External sources<br/>files · Plaid · manual"]
+  client["MoneyBin client<br/>CLI · MCP server · SQLMesh"]
+  store["Local encrypted DuckDB<br/>raw · prep · core · app · reports"]
+  agents["AI assistants<br/>Claude · Cursor · Codex · …"]
+  server["moneybin-server<br/>Plaid broker"]
+  sql["SQL clients<br/>DuckDB shell · notebooks · BI"]
+
+  sources --> client
+  server --> client
+  client --> store
+  store --> client
+  client --> agents
+  store --> sql
 ```
 
-### Primary interface: MCP server
+The client is the only writer to the local store. Agents reach the data through MCP tools the client exposes; external SQL clients read the file directly (with the encryption key from `moneybin db key`). The sync client is the only outbound network path — it talks to `moneybin-server`, which talks to Plaid.
 
-The MCP server gives AI assistants (Claude, Cursor, etc.) secure access to financial data via tools across 11 domains. It runs locally via stdio -- not a remote service. See [ADR-003](../decisions/003-mcp-primary-interface.md).
+## How components fit together
 
-### Data toolkit
+The client is a single Python package. Every CLI command and MCP tool funnels through the same service layer, so the surface (CLI vs MCP) is decided at the edge and the work below it is identical.
 
-The same DuckDB database is directly accessible with standard data tools:
-- **DuckDB** -- `moneybin db shell` or any DuckDB client
-- **SQLMesh** -- `moneybin data transform apply` for staging and core models
-- **Jupyter** -- `make jupyter` for ad-hoc exploration
-- **Streamlit** -- Interactive dashboards (templates planned)
-- **Dagster** -- Optional orchestration for scheduled pipelines
+```mermaid
+flowchart TD
+  cli["CLI command<br/>(Typer entrypoint)"]
+  tool["MCP tool<br/>(@mcp_tool decorator)"]
+  mw["Privacy middleware<br/>(sensitivity, timeout,<br/>envelope, validation)"]
+  svc["Service layer<br/>src/moneybin/services/*"]
+  db["Database<br/>(encrypted DuckDB)"]
+  sm["SQLMesh pipeline"]
+  sync["Sync client"]
+  srv["moneybin-server"]
 
-## Data architecture
+  cli --> svc
+  tool --> mw --> svc
+  svc --> db
+  svc -->|refresh / transform| sm
+  sm --> db
+  svc -->|sync.* only| sync
+  sync --> srv
+```
 
-Data flows through three layers ([ADR-001](../decisions/001-medallion-data-layers.md)):
+Concretely:
 
-| Layer | Schema | Materialized | Purpose |
-|-------|--------|-------------|---------|
-| Raw | `raw` | Table | Source-specific tables preserved exactly as extracted |
-| Staging | `prep` | View | Light cleaning, type casting, column renaming (SQLMesh) |
-| Core | `core` | Table | Canonical fact and dimension tables unifying all sources |
+- **CLI and MCP both call the service layer.** Neither invokes the other. CLI commands import services directly (e.g., `from moneybin.services.transaction_service import TransactionService`); MCP tool bodies do the same. Same redaction, same audit log, same response envelope.
+- **The privacy middleware sits in front of every MCP call.** The `@mcp_tool` decorator wraps each tool body with sensitivity tagging, a wall-clock timeout, error classification, and envelope assembly; FastMCP's `ValidationErrorMiddleware` translates argument-validation failures into friendly error envelopes before the body runs. CLI commands skip the decorator (they reach the service layer directly) but emit the same audit primitives.
+- **The SQLMesh pipeline is invoked from the service layer**, never from CLI/MCP code directly. `services/refresh.py` and `services/transform_service.py` open a `sqlmesh_context(db)` from `moneybin.database` and apply plans against the open DuckDB connection.
+- **`moneybin-server` is reached only via the sync client** (`src/moneybin/connectors/sync_client.py`) when `moneybin sync *` commands or `sync_*` MCP tools fire. File-based imports (OFX, CSV, PDF) and inbox watch never touch the network.
+- **The categorization service** runs from three callers: the orchestrator during `refresh` (best-effort, after SQLMesh apply), the `transactions categorize *` CLI commands, and the `transactions_categorize_*` MCP tools.
+- **The migration runner** runs at process startup (inside `Database.__init__`, gated by `no_auto_upgrade`) and as a manual command (`db migrate apply`). Every process that opens the database checks the migration log first.
 
-See [Data Model](../reference/data-model.md) for schema definitions.
+## What's running when
 
-## Data sources
+There is no daemon and no background worker. Components are either always present in the file, on-demand per invocation, or on-demand per session.
 
-| Source | Status | Raw Tables | Import |
-|--------|--------|------------|--------|
-| OFX/QFX files | Implemented | `raw.ofx_*` | `moneybin data extract ofx` |
-| W-2 PDF forms | Implemented | `raw.w2_forms` | `moneybin data extract w2` |
-| CSV files | Planned | `raw.csv_*` | `moneybin data extract csv` |
-| Plaid API | Planned (Encrypted Sync) | `raw.plaid_*` | Automatic sync |
+- **Always on (in the file, not a process):** the encrypted DuckDB file, the `app.metrics` table, the audit log table, the daily-rotating log file.
+- **On-demand per CLI invocation:** the Typer entrypoint (one process per command), the service layer it imports, the DuckDB connection it opens, and — for `refresh` / `transform` — the SQLMesh adapter.
+- **On-demand per MCP session:** the MCP server child process, launched by the client when the session opens and torn down when it closes. The server holds one DuckDB connection open for the lifetime of the session.
+- **Optional / opt-in:** the sync client (only when `moneybin sync *` fires), the LLM-assist step in categorization (only when `transactions categorize assist` runs, and only the user's hosted LLM sees the prompt — amounts and account identifiers are stripped first).
+- **Never running locally:** `moneybin-server` itself runs separately (self-hosted or hosted reference instance). The client has no listener, no background sync, no scheduler.
 
-See [Data Sources](../reference/data-sources.md) for the full roadmap.
+A command runs, the relevant connection opens against the encrypted DuckDB file, work happens, the connection closes. That's the whole runtime model.
 
-## Technology stack
+## First run
 
-| Component | Technology | Purpose |
-|-----------|-----------|---------|
-| Database | DuckDB 1.4+ | Local analytical database |
-| MCP Server | FastMCP (mcp[cli]) | AI assistant integration |
-| Transformations | SQLMesh | Data modeling and transformation |
-| CLI | Typer | Command line interface |
-| Data Processing | Polars | DataFrame operations |
-| PDF Extraction | pdfplumber + pytesseract | W-2 and statement parsing |
-| File Parsing | ofxparse | OFX/QFX file parsing |
-| Validation | Pydantic | Data validation and settings |
-| Type Checking | Pyright | Static type analysis |
-| Linting | Ruff | Code formatting and linting |
+End-to-end on a fresh install:
 
-## Privacy tiers
+```bash
+# 1. Create a profile (writes ~/.moneybin/profiles/default/).
+moneybin profile create default
 
-The architecture supports three data custody models ([ADR-002](../decisions/002-privacy-tiers.md)):
+# 2. Initialize the encrypted database. Generates the AES-256-GCM key,
+#    persists it to the OS keychain (default), and writes the empty DB file.
+#    Use --passphrase to derive the key with Argon2id from a passphrase
+#    instead — the keychain is bypassed.
+moneybin db init
 
-| Tier | Data Location | Bank Sync | Status |
-|------|--------------|-----------|--------|
-| Local Only | Local DuckDB | Manual import | Implemented |
-| Encrypted Sync | Local + encrypted cloud | Plaid (E2E encrypted) | Proposed |
-| Managed | Cloud | Plaid (server-readable) | Future |
+# 3. Land your first data. Smart-import detects format (OFX, QFX, CSV,
+#    Beancount, PDF) and prompts for account assignment.
+moneybin import files my_export.csv
 
-## Directory structure
+# 4. Run the pipeline (matching → SQLMesh apply → categorization).
+#    Most commands trigger refresh automatically; you rarely run it by hand.
+moneybin refresh
+
+# 5. Query the result.
+moneybin reports networth          # canned report
+moneybin db shell                  # interactive SQL against core.* / reports.*
+```
+
+Once `db init` completes, the keychain (or your passphrase) holds the key; subsequent commands unlock the database transparently. See [`data-import.md`](../guides/data-import.md) for the deeper import story, [`profiles.md`](../guides/profiles.md) for multi-profile setup, and [`database-security.md`](../guides/database-security.md) for key management.
+
+## Surfaces
+
+The three peer surfaces (CLI, MCP, SQL) and the planned Web UI all read from the same `core.*` / `reports.*` interface set and the same `app.*` overlay. Writes from MCP are restricted to `app.*` (user state) and `raw.*` (imports and manual entry) by the privacy middleware, and the MCP `sql_query` tool enforces read-only via SQL parsing. The CLI's `moneybin db shell` and `moneybin db query` attach the database **writable** — the convention forbids writes to `core.*` and `reports.*`, but the middleware does not run on those paths, so ad-hoc SQL is on you.
+
+### CLI
+
+Workflow-ordered command groups (`import`, `sync`, `refresh`, `transactions`, `reports`, `accounts`, `categorize`, `system`, `profile`, `db`, `mcp`). Every command supports `--output json` for scripting and agent use; the JSON shape is the same `ResponseEnvelope` returned by the matching MCP tool. The CLI is built for agents driving the shell (Claude Code, Codex CLI) as much as for humans. → [`cli-reference.md`](../guides/cli-reference.md)
+
+### MCP server
+
+Around seventy tools across roughly a dozen domains (`accounts.*`, `transactions.*`, `transactions.categorize.*`, `reports.*`, `refresh`, `sync.*`, `merchants.*`, `sql`, and a handful more). Stdio transport today; Streamable HTTP is planned alongside the web UI. Supported in eight clients today — see [`mcp-clients.md`](../guides/mcp-clients.md). Every tool declares a sensitivity tier (`low` / `medium` / `high`); the middleware surfaces the tier in each response envelope. → [`mcp-server.md`](../guides/mcp-server.md)
+
+### SQL
+
+Read-only DuckDB query against the `core.*` and `reports.*` interface set. Reachable via `moneybin db shell`, the `sql_query` MCP tool, and any DuckDB-compatible client given the profile's encryption key. External clients (DBeaver, Datasette, the plain `duckdb` CLI, Python/R notebooks) need that key — `moneybin db key` prints it for the current profile. → [`sql-access.md`](../guides/sql-access.md)
+
+### Web UI
+
+Planned. A browser-based dashboard for net worth, spending, account management, balance reconciliation, and review queues. Will run against a local MoneyBin via the Streamable HTTP MCP transport, or against the hosted tier once it lands. Not a native mobile app — the web UI will work in a phone browser, but no native iOS/Android client is on the v1 roadmap. → [`roadmap.md`](../roadmap.md)
+
+## Lifecycle of an MCP tool call
+
+A single tool invocation, end-to-end:
+
+1. **Session opens.** The MCP client launches the `moneybin mcp serve` process; FastMCP advertises the registered tool catalog on `tools/list`. The server opens one DuckDB connection (decrypting with the profile's key) for the session lifetime.
+2. **Client invokes a tool** with arguments. FastMCP's `ValidationErrorMiddleware` runs first — Pydantic argument binding errors are translated into a friendly error envelope (`error.code = invalid_arguments`) and returned without ever reaching the tool body.
+3. **`@mcp_tool` decorator wraps the body.** It records the declared sensitivity tier, starts the wall-clock timeout guard (default 30s), and dispatches to the body via `asyncio.to_thread`.
+4. **Tool body delegates to the service layer.** It imports a service (e.g., `TransactionService`), runs SQL against the open DuckDB connection, and returns a typed dataclass.
+5. **Envelope wrap-up.** The decorator checks the return is a `ResponseEnvelope`, attaches sensitivity metadata, and lets the body's action hints (suggested next tools) ride along. Classified domain exceptions become error envelopes; timeouts become a `timed_out` envelope; anything unclassified propagates to FastMCP.
+6. **Audit + return.** The audit primitive logs `tool=<name> sensitivity=<tier> metadata=<...>`. FastMCP serializes the envelope and returns it to the client.
+
+Source: `src/moneybin/mcp/decorator.py`, `src/moneybin/mcp/middleware.py`, `src/moneybin/mcp/privacy.py`.
+
+## Storage
+
+One encrypted DuckDB file per profile: `~/.moneybin/profiles/<name>/moneybin.duckdb`. Encryption is AES-256-GCM at rest (the standard authenticated-encryption cipher used by TLS 1.3 and disk-encryption stacks); there is no plaintext "demo mode" path. Profile-isolated logs, backups, and temp files live alongside the database file:
 
 ```text
-moneybin/
-  src/moneybin/
-    mcp/                    # MCP server (primary interface)
-    cli/                    # Command line interface (Typer)
-    extractors/             # Source file parsers (OFX, PDF)
-    loaders/                # DuckDB data loaders
-    connectors/             # External API integrations
-    services/               # Business logic layer
-    sql/schema/             # DDL definitions
-    utils/                  # Shared utilities
-    config.py               # Centralized configuration
-  sqlmesh/                  # SQLMesh project
-    models/                 # Transformation models (prep + core)
-  data/{profile}/           # Profile-isolated data storage
-  tests/                    # Test suite
-  docs/                     # Documentation
+~/.moneybin/profiles/<name>/
+  moneybin.duckdb    # encrypted database
+  config.yaml        # profile configuration
+  logs/              # daily-rotating log files
+  backups/           # moneybin db backup output
+  temp/              # short-lived working files
 ```
 
-## Configuration
+The DuckDB file is the durable artifact — back it up like any other file. The unit of sync (Git, Syncthing, NextCloud, iCloud Drive) is this file. → [`database-security.md`](../guides/database-security.md), [`profiles.md`](../guides/profiles.md)
 
-### Profile system
+## Concurrency and isolation per profile
 
-Each profile gets isolated storage: `data/{profile}/moneybin.duckdb`, `data/{profile}/raw/`, `logs/{profile}/moneybin.log`.
+- **Profiles are isolated by file.** Each profile is its own encrypted DuckDB file, its own `logs/`, its own `backups/`, its own keychain entry (keyed by profile name), and its own `app.metrics` rows. No shared mutable state.
+- **DuckDB is single-writer per file.** Two `moneybin` processes writing to the same profile concurrently will conflict — one waits or fails. Multiple read-only attaches to the same file work concurrently.
+- **Per-machine, not per-cluster.** The encrypted DB file can be replicated across machines via Syncthing / iCloud / etc., but concurrent writes from two machines are not supported. Treat the file as owned by one host at a time.
+- **Two simultaneous CLI invocations against different profiles** are fully isolated — different files, different connections, different keychain entries.
+- **MCP sessions hold the write lock for their duration.** A long-running MCP session and a concurrent `moneybin import files ...` against the same profile will serialize.
 
-Resolution priority: CLI flag (`--profile=alice`) > env var (`MONEYBIN_PROFILE`) > saved default > interactive prompt.
+## Identity and auth
 
-### MCP server configuration
+Profile-based. Each profile has its own database, encryption key, and configuration. Two key modes:
 
-- `MONEYBIN_MCP_MAX_ROWS` -- Maximum rows per query result (default: 1000)
-- `MONEYBIN_MCP_MAX_CHARS` -- Maximum characters per result (default: 50000)
-- `MONEYBIN_MCP_ALLOWED_TABLES` -- Optional table allowlist (comma-separated)
+- **Auto-key mode** — the encryption key is held in the OS keychain. Unlock is transparent on a trusted machine.
+- **Passphrase mode** — the key is derived via Argon2id (the password-hashing standard, OWASP-recommended) from a passphrase you supply. The keychain is bypassed; `moneybin db unlock` opens the database for the session.
 
-## Related ADRs
+There is no user account, no login, and no remote identity provider. The profile is the boundary; the encryption key is the credential. → [`profiles.md`](../guides/profiles.md), [`database-security.md`](../guides/database-security.md)
 
-- [ADR-001: Medallion Data Layers](../decisions/001-medallion-data-layers.md)
-- [ADR-002: Privacy Tiers](../decisions/002-privacy-tiers.md)
-- [ADR-003: MCP Primary Interface](../decisions/003-mcp-primary-interface.md)
-- [ADR-004: E2E Encryption](../decisions/004-e2e-encryption.md)
-- [ADR-005: Security Tradeoffs](../decisions/005-security-tradeoffs.md)
-- [ADR-006: SQLMesh Replaces dbt](../decisions/006-sqlmesh-replaces-dbt.md)
-- [ADR-007: JSON Over Parquet for Sync](../decisions/007-json-over-parquet-for-sync.md)
+## Sync and external services
+
+The only outbound network path in the core product is the sync client talking to `moneybin-server`. The server brokers Plaid pulls and returns the transaction, balance, and account data the client lands in `raw.plaid_*`. The client/server boundary is documented in the API contract — providers behind the server (Plaid today; others later) are implementation details the client does not see. → [`server-api-contract.md`](server-api-contract.md)
+
+Import-only flows (files, inbox watch, manual entry) require no network access.
+
+## Extensibility
+
+- **Contributors** add MCP tools and CLI commands via the patterns documented in [`CONTRIBUTING.md`](../../CONTRIBUTING.md) and the relevant specs. The MCP architecture spec defines the tool registration pattern and sensitivity-tier requirements; the CLI spec defines the command-group taxonomy. New surfaces follow the existing patterns — coherence is the rule.
+- **Consumers** do not extend MoneyBin via plugins. There is no plugin system, no extension API, and none is planned for v1. The extension surface is **open SQL**: query `core.*` and `reports.*` from any DuckDB client, build your own Streamlit-style dashboards, or chain your own scripts against the CLI's JSON output. → [`sql-access.md`](../guides/sql-access.md)
+- **Replaceability of core dependencies is not a goal.** DuckDB, SQLMesh, FastMCP, and Typer are foundational — every model in `sqlmesh/models/`, every tool, every command would have to be rewritten to swap them. The stack is chosen to be the durable answer; see [`docs/architecture.md`](../architecture.md) for the rationale.
