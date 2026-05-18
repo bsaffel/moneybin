@@ -311,6 +311,7 @@ markers = [
     "unit: marks tests as unit tests",
     "e2e: marks tests as end-to-end subprocess tests",
     "scenarios: marks whole-pipeline scenario tests (slow, real DB, real SQLMesh)",
+    "perf: marks performance regression tests (require a fully-loaded persona DB)",
 ]
 filterwarnings = [
     # Ignore deprecation warnings from third-party libraries we don't control
