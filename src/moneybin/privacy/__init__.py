@@ -13,6 +13,7 @@ from moneybin.privacy.introspection import (
     derive_tier,
     extract_data_classes,
 )
+from moneybin.privacy.log import read_privacy_events, write_privacy_event
 from moneybin.privacy.taxonomy import CLASSIFICATION, DataClass, Tier
 
 __all__ = [
@@ -22,5 +23,7 @@ __all__ = [
     "Tier",
     "derive_tier",
     "extract_data_classes",
+    "read_privacy_events",
     "sync_classification_comments",
+    "write_privacy_event",
 ]
