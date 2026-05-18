@@ -963,7 +963,7 @@ Accept or reject proposed auto-generated rules. Takes two parallel ID lists.
 - **Unique parameters:** `accept: list[str]` (proposed_rule_ids to promote), `reject: list[str]` (proposed_rule_ids to refuse).
 - **Behavior:** Accepted rules are promoted to active categorization rules in `app.categorization_rules` with `created_by='auto_rule'` and immediately evaluated against uncategorized transactions. Rejected rules are not re-proposed for the same pattern. Returns `{accepted, rejected, errors}`.
 - **Mutation surface:** writes to `app.categorization_rules` (accept path) and `app.proposed_rules` (status transitions). Revert via `transactions_categorize_rules_delete` for promoted rules.
-- **Service:** `CategorizationService.auto_accept() -> ActionResult`
+- **Service:** `AutoRuleService.accept(accept=..., reject=...) -> ActionResult`
 - **CLI:** `moneybin transactions categorize auto accept --accept <id> [<id>...] --reject <id> [<id>...]`
 - **Dependency:** [Categorization overview](categorization-overview.md) (Pillar E: auto-rule generation), [Auto-rule generation](categorization-auto-rules.md).
 
