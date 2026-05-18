@@ -1,11 +1,9 @@
 <!-- Last reviewed: 2026-05-17 -->
 # Server API Contract
 
-`moneybin-server` is a thin HTTP service that brokers connections to upstream banking providers (Plaid today). The MoneyBin client treats it as opaque — this page documents the contract the client *expects*, so a self-hoster running their own `moneybin-server` (or anyone evaluating the architecture) can understand the surface from the client's perspective.
+`moneybin-server` is a thin HTTP service that brokers connections to upstream banking providers (Plaid today). The MoneyBin client treats it as opaque — this page documents the contract the client *expects*, so a self-hoster running their own `moneybin-server` (or anyone evaluating the architecture) can reason about the surface from the client's perspective.
 
-This is **not** a server implementation guide. It is the client-side contract: every endpoint listed here corresponds to a method on `SyncClient` (`src/moneybin/connectors/sync_client.py`); every response shape listed here corresponds to a Pydantic model in `src/moneybin/connectors/sync_models.py` that the client validates at the boundary. Anything not documented here is, by definition, not part of the contract — even if your `moneybin-server` happens to implement it.
-
-> **Pre-v1.** The contract may break before the first tagged release. Post-launch, the conventions in `docs/architecture.md` apply: additive changes preferred, deprecate-then-remove across two releases for anything else.
+This is **not** a server implementation guide. Every endpoint here corresponds to a method on `SyncClient` (`src/moneybin/connectors/sync_client.py`); every response shape corresponds to a Pydantic model in `src/moneybin/connectors/sync_models.py` that the client validates at the boundary. Anything not documented here is not part of the contract — even if your `moneybin-server` happens to implement it. See [Versioning](#versioning) for the pre-launch posture.
 
 ## Design philosophy
 
@@ -14,6 +12,14 @@ Three properties drive the shape of this contract:
 - **The client is offline-first.** The encrypted DuckDB profile holds your data. The server is invoked only when you connect a new bank or pull a sync. It is a broker, not a system of record.
 - **Raw credentials never touch the server.** The Plaid Link flow runs in your browser against Plaid's hosted UI. The server sees the short-lived `public_token` that Plaid returns *after* the user authorizes — not the bank password. The client never sees the long-lived `access_token` either; the server holds it encrypted on the user's behalf.
 - **The server is replaceable.** Because the contract is narrow (a handful of endpoints, JSON payloads only) and the client validates every response, a self-hoster can run their own `moneybin-server` against their own Plaid credentials. `moneybin-server` is a separate project; setup instructions live in its repository.
+
+## Local-only mode
+
+This entire surface is optional. MoneyBin runs end-to-end without ever contacting `moneybin-server` when you use file-based imports — OFX, QFX, QBO, CSV, and PDF paths never touch the network and never read `sync.server_url`.
+
+When `sync.server_url` is unset (the default), every `moneybin sync ...` command fails fast with a configuration error pointing at `MONEYBIN_SYNC__SERVER_URL`. Nothing else in the client probes the sync surface — startup, transforms, imports, and reports all proceed normally.
+
+Bank-direct sync via `moneybin-server` is an additive capability for users who want automated pulls. Skip it entirely and you skip every concern on this page.
 
 ## Identity and auth
 
@@ -25,10 +31,8 @@ The client authenticates to `moneybin-server` with a per-user OAuth2 access toke
 | Identity provider | The server is presumed to delegate to an external IdP (Auth0 in the reference deployment). The client never talks to the IdP directly. |
 | Token type | `Bearer` JWT — passed via `Authorization: Bearer <token>` on every authed request. |
 | Refresh | Rotating refresh tokens. On a 401, the client calls `POST /auth/refresh` once and retries. A second 401 clears both tokens and prompts re-login. |
-| Token storage (client) | OS keychain via the `keyring` library, with a `0o600` fallback file at `~/.moneybin/.sync_token` for environments without a keychain (headless Linux without Secret Service, some Docker setups). |
+| Token storage (client) | Client implementation detail; see `src/moneybin/connectors/sync_client.py`. Not part of the contract. |
 | Token storage (server) | Out of scope of this contract. The client treats stored Plaid `access_token`s as the server's problem. |
-
-Identity boundary, restated: the server sees your bank-connection authorization (Plaid `access_token`) and the JSON Plaid returns from sync calls. It does **not** see your bank password, your DuckDB encryption key, or any data that flows through OFX/CSV/PDF import paths.
 
 ## Endpoint catalog
 
@@ -46,11 +50,18 @@ Every endpoint below is exercised by `SyncClient`. Paths and methods are taken d
 | `POST` | `/sync/trigger` | bearer | Run a sync. Synchronous from the client's perspective — blocks until the server completes the pull. |
 | `GET` | `/sync/data` | bearer | One-shot read of the most recent sync payload by `job_id`. Server deletes from its TTL store after read. |
 
-Three properties hold across the catalog:
+Properties across the catalog: bearer-token auth everywhere except the device-flow bootstrap (no cookies, no sessions); JSON request and response bodies (errors included); synchronous semantics — `POST /sync/trigger` blocks until the server-side pull completes, then `GET /sync/data` returns the payload. No webhooks; polling exists only for the connect flow, where the user takes the wheel.
 
-- **Bearer-token auth everywhere except the device-flow bootstrap.** No cookies, no sessions. The CLI/MCP context has no browser to hold a cookie.
-- **JSON request and response bodies.** Errors included.
-- **Synchronous semantics from the client's side.** `POST /sync/trigger` blocks until the server-side pull completes, then `GET /sync/data` returns the payload. No webhooks, no polling for the trigger itself (only for the connect flow, where the user takes the wheel).
+### Sync sequence (canonical)
+
+1. Client calls `POST /sync/trigger`.
+2. Server runs the upstream provider pull synchronously (may take up to ~120 seconds for multi-institution syncs).
+3. Server stores the result in a short-lived TTL cache keyed by `job_id`.
+4. Server returns `200` with a sync summary (`job_id`, `status`, `transaction_count`).
+5. Client calls `GET /sync/data?job_id=<id>`.
+6. Server returns the payload and drops it from the TTL cache.
+
+The trigger blocks because the contract avoids a job-queue/webhook protocol — the client has no inbound port, and the CLI/MCP host is already waiting on the call.
 
 ## Request and response shapes
 
@@ -220,7 +231,7 @@ Begin a connect session. The response includes a hosted URL the user opens in a 
 | `institution_name` | string \| null | Populated once `status == "connected"`. |
 | `error` | string \| null | Populated when `status == "failed"`. |
 
-The client polls this endpoint at a 3-second cadence from `SyncClient.poll_connect_status`. `pending` → continue polling. `connected` → success. `failed` → raise `SyncConnectError(error)`. Hitting the client-side deadline (~120 s) raises `SyncTimeoutError`; the user likely abandoned the browser tab.
+`pending` → keep polling. `connected` → success. `failed` → surface `error` to the user. Polling cadence and overall deadline are client-side policy, not part of the contract.
 
 ### `POST /sync/trigger`
 
@@ -248,9 +259,7 @@ The client polls this endpoint at a 3-second cadence from `SyncClient.poll_conne
 }
 ```
 
-`status` reflects the terminal job state because the server completes the pull synchronously before responding. `transaction_count` is the total across all institutions in the job.
-
-The client passes a 120-second timeout on this call because multi-institution syncs can take 30–90 seconds. A timeout from the client side does not necessarily mean the server-side job failed — it means the response did not arrive in time. The cursor-based design means a subsequent `POST /sync/trigger` is safe to retry.
+`status` is always terminal — the server completes the pull synchronously before responding. `transaction_count` is the total across all institutions in the job. A client-side timeout does not mean the server-side job failed; cursor-based sync makes retry safe.
 
 ### `GET /sync/data`
 
@@ -308,9 +317,7 @@ The client passes a 120-second timeout on this call because multi-institution sy
 }
 ```
 
-`accounts[]`, `transactions[]`, `balances[]`, and `removed_transactions[]` are guaranteed to be present (possibly empty). `metadata` is always present.
-
-**One-shot read.** The server holds the payload in a short-lived TTL store and removes it after the client fetches it. If the client crashes between `POST /sync/trigger` and `GET /sync/data`, the recovery is to call `POST /sync/trigger` again — sync is idempotent against the server's cursor state.
+`accounts[]`, `transactions[]`, `balances[]`, and `removed_transactions[]` are guaranteed to be present (possibly empty). `metadata` is always present. This endpoint is a one-shot read — see [Failure semantics](#failure-semantics) for retry behavior.
 
 #### `accounts[]`
 
@@ -384,34 +391,29 @@ If a future provider arrives with a different native convention, the same rule h
 
 ## Error model
 
-The client distinguishes four error classes, mapped from HTTP status and response shape:
+What the server returns and how the client classifies it:
 
-| Client exception | When raised | What the user sees |
-|---|---|---|
-| `SyncAuthError` | Missing/invalid token, refresh failed, two consecutive 401s | "not authenticated — run `moneybin sync login`" / "session expired — run `moneybin sync login`" |
-| `SyncConnectError` | Connect session reached `status == "failed"` server-side | The `error` string from `ConnectStatusResponse`, surfaced verbatim |
-| `SyncTimeoutError` | Client-side deadline elapsed (connect-poll deadline, sync-trigger long timeout) | "connect flow timed out — user may have abandoned the browser" or similar |
-| `SyncAPIError` | Server unreachable, unexpected 4xx/5xx with no clearer match, malformed response | "sync server unreachable at <url>" or "<METHOD> <path> returned <status>: <truncated body>" |
+| Server signal | Client behavior |
+|---|---|
+| `401` on an authed call | Refresh once, retry. A second `401` clears tokens and prompts re-login. |
+| `403` on `/auth/device/token` | Treated as "user denied authorization." Re-login required. |
+| `400` on `/auth/device/token` | Treated as "device code expired." Re-login required. |
+| Connect session `status == "failed"` | Surfaces the server's `error` string verbatim to the user. |
+| Any other `>= 400` | Surfaces `<METHOD> <path> returned <status>: <truncated body>` to the user. |
+| Connection refused / DNS failure / TLS error | Surfaces "sync server unreachable at &lt;url&gt;". |
+| Client deadline elapsed (connect poll, trigger long timeout) | Surfaces a timeout message; the server-side job may still complete. |
 
-The contract does **not** mandate a uniform error envelope from the server — the client treats any `>=400` status with an unstructured message as `SyncAPIError`. A future revision may tighten this to a structured `{ "error": { "code": "...", "message": "..." } }` shape; until then, the client relies on Pydantic validation to catch malformed success responses and on HTTP status to gate refresh-and-retry behavior.
+The client wraps each of these into one of `SyncAuthError`, `SyncConnectError`, `SyncTimeoutError`, or `SyncAPIError` — the precise subclass hierarchy is a client implementation detail, defined in `src/moneybin/connectors/sync_errors.py`.
+
+The contract does **not** mandate a uniform error envelope. The client treats any `>= 400` status with an unstructured body as a generic API error. A future revision may tighten this to a structured `{ "error": { "code": "...", "message": "..." } }` shape; until then, the client relies on Pydantic validation to catch malformed success responses and on HTTP status to gate refresh-and-retry behavior.
 
 ### Provider error codes inside `metadata.institutions[]`
 
-Per-institution failures inside an otherwise-successful sync do **not** raise. They appear in `metadata.institutions[].error_code` and the client maps them to user guidance:
-
-| Provider code | Client guidance |
-|---|---|
-| `ITEM_LOGIN_REQUIRED` | "{institution} needs re-authentication — run `moneybin sync connect` to update your credentials." |
-| `ITEM_NOT_FOUND` | "{institution} connection was revoked. Run `moneybin sync connect` to reconnect." |
-| `INSTITUTION_NOT_RESPONDING` / `INSTITUTION_DOWN` | "{institution} is temporarily unavailable. Try again later." |
-| `TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION` | "Data changed during sync for {institution}. Re-running automatically..." (client retries) |
-| `RATE_LIMIT_EXCEEDED` | "Rate limit reached. Sync will resume automatically." (back off + retry) |
-| `PRODUCTS_NOT_READY` | "{institution} is still processing initial data. Try again in a few minutes." |
-| Unknown | Logged with the raw code; surfaced with generic "Unexpected error from {institution}" guidance. |
+Per-institution failures inside an otherwise-successful sync do **not** raise — they appear in `metadata.institutions[].error_code` (Plaid error codes, passed through verbatim) and the client maps them to user-facing guidance. The mapping (which codes prompt re-auth, which trigger automatic retry, which suggest "try again later") is a client-side policy detail; see `src/moneybin/connectors/sync_errors.py` for the current set.
 
 ## Webhooks
 
-**None today.** The contract is strictly request/response. The server does not push events to the client; the client never opens an inbound port. Real-time sync via provider webhooks is a server-side concern — if a future revision wants the client to react to push events, it will land as a server-sent stream over the same authed channel, not as a client-side listener.
+**None.** The contract is strictly request/response. The server does not push events to the client; the client never opens an inbound port. Provider webhooks are a server-side concern; if a future revision adds push semantics, it will be a server-sent stream over the same authed channel, not an inbound listener on the client.
 
 ## Privacy boundary
 
@@ -425,19 +427,49 @@ What stays on the client, what crosses to the server, and what never appears on 
 | Bank transaction data (amounts, descriptions, merchants) | Yes — in your encrypted DuckDB profile | Yes — transiently during the sync, then in a short-TTL store until you fetch it | After `GET /sync/data` the server drops the payload from its TTL store. |
 | DuckDB encryption key | Yes — OS keychain or passphrase | Never | The server has no way to read your local database. |
 | OFX / CSV / PDF imports | Yes | Never | The bank-direct sync server is irrelevant to file-based imports. |
-| MCP tool invocations and LLM prompts | Yes (and your chosen AI client) | Never | The MCP server is local; the sync server is not in that path. |
 
 The narrowest possible exposure on the server side is the design intent: the server holds the keys that let Plaid hand over your data, runs the pull, hands the payload to you, then forgets. The DuckDB file on your machine is where data persists.
 
-## Self-hosting `moneybin-server`
+## Self-host overview
 
-`moneybin-server` is a separate project. To run your own instance, see its repository for setup, configuration, and Plaid-account requirements. The client cares only about:
+`moneybin-server` is a separate project in the same GitHub organization as MoneyBin. Setup, configuration, conformance checklist, and the server-side threat model live in its own repository — consult its README directly.
 
-- The base URL it talks to (set via `MoneyBinSettings.sync.server_url`).
-- That the deployment honors the contract on this page.
+A self-hosted deployment needs, at a high level:
 
-A self-hoster bringing their own Plaid credentials gets full control of the provider relationship at the cost of operating a small HTTPS service with an OAuth2 issuer in front of it. A self-hoster who doesn't need bank-direct sync at all should ignore this entire surface — OFX, CSV, and PDF import paths never touch it.
+- A reachable HTTPS endpoint.
+- Plaid (or future-provider) credentials, scoped to your own account.
+- An OAuth2 IdP that issues the bearer JWTs the client expects (Auth0 is the reference IdP; any IdP speaking the Device Authorization Grant + JWT bearer pattern will do).
+- A database for the server's own state — connected institutions, encrypted upstream access tokens, sync cursors.
+
+The client points at it via `MoneyBinSettings.sync.server_url` (env var `MONEYBIN_SYNC__SERVER_URL`) and cares only that the deployment honors the contract on this page.
+
+## Operational expectations
+
+What the client assumes about the transport.
+
+| Concern | Behavior |
+|---|---|
+| TLS | HTTPS required. Client uses `httpx` defaults — system CA bundle via `certifi`; no certificate pinning; `SSL_CERT_FILE` / `SSL_CERT_DIR` env vars honored. |
+| Connection reuse | One persistent `httpx.Client` per `SyncClient`. Connect timeout 10 s; read timeout 15 s for most calls, 120 s for `/sync/trigger` and connect polling. |
+| Server-side rate limits | No specified `429` / `Retry-After` shape. The client does not handle `429` specially — it surfaces as a generic `SyncAPIError`. A future revision should pin this down. |
+| Server retention | `access_token`s persist until `DELETE /institutions/{id}`. Sync cursors live server-side and survive across syncs (incremental sync depends on this). The `/sync/data` TTL cache drops the payload after a successful read. Audit-log and metrics retention are server-policy concerns. |
+| Telemetry / egress | The contract requires nothing of the server beyond these endpoints. Any phone-home behavior is documented by the deployment, not by this contract. |
+| SLO / latency | None. The 120-second client timeout on `/sync/trigger` is client-side defense, not a server guarantee. |
+| Correlation IDs | Not implemented today — no request-ID header sent or parsed. A future revision may add `X-Request-Id` or similar. |
+
+## Failure semantics
+
+What the contract guarantees when things partially fail.
+
+- **TTL atomicity for `/sync/data`.** The contract intent is that the server drops the payload only after handing a complete `200` response to the client; a mid-read drop should leave the payload available for one retry. The exact mechanism is server-implementation detail and not pinned down today. **If the client lost the payload, the safe recovery is to call `POST /sync/trigger` again** — sync is idempotent against the cursor, so re-triggering re-pulls the same incremental window without double-counting.
+- **Concurrent `/sync/trigger` calls.** No `Idempotency-Key` header, no specified lock or queue model. The client never issues concurrent triggers; treat concurrent triggers as undefined behavior in any other client until the contract pins this down.
+- **Connect session reuse.** Opening `link_url` twice is provider-side behavior (Plaid Link manages its own session). The client treats whatever terminal state `/sync/connect/status` reports as authoritative.
+- **Payload size for `/sync/data`.** Single JSON body, no chunking, no documented maximum. Initial syncs with multi-year history can be large; the client validates the whole payload in memory. Servers emitting payloads above a few hundred MB will cause client-side memory pressure — a known sharp edge.
 
 ## Versioning
 
-Pre-v1. No `/v1/` URL prefix is implied. Breaking changes are possible before the first tagged release; post-launch the conventions in `docs/architecture.md` apply (additive preferred, deprecate-then-remove across two releases for breaking changes). The client validates every response with Pydantic at the boundary, so a contract drift that adds optional fields is silently ignored; a drift that removes or renames required fields surfaces as a `SyncAPIError` on the next call.
+Pre-launch. No `/v1/` URL prefix, no `MoneyBin-API-Version` header, no formal version negotiation. The contract evolves in lockstep with the client release cycle; the reference `moneybin-server` deployment is updated alongside the client.
+
+The post-launch versioning mechanism (header? path prefix? content-type?) is genuinely TBD. The intent stated in `docs/architecture.md` is additive changes preferred, deprecate-then-remove across two releases for anything breaking — but the wire-level handle for signalling a break hasn't been picked.
+
+Pydantic validation at the boundary is the only contract-drift signal the client offers today: extra fields pass silently; missing or renamed required fields surface as `SyncAPIError` on the next call.

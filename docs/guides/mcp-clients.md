@@ -37,6 +37,36 @@ If `--client` is omitted, `claude-desktop` is the default. To look up the instal
 moneybin mcp config path --client <name> [--profile <name>]
 ```
 
+### Preview the snippet
+
+`--print` emits the exact bytes the command would write, without touching any file. Useful for review before merging into a shared config, and the only sane workflow for clients without a programmatic install path (ChatGPT Desktop). The shape varies by client:
+
+```json
+// Claude Desktop / Cursor / Windsurf / Gemini CLI / Claude Code — JSON, "mcpServers" key
+{
+  "mcpServers": {
+    "MoneyBin": {
+      "command": "uv",
+      "args": ["run", "--directory", "/path/to/repo", "moneybin", "--profile", "default", "mcp", "serve"]
+    }
+  }
+}
+```
+
+VS Code uses `{"servers": {...}}` with an explicit `"type": "stdio"`. Codex uses TOML under `[mcp_servers.MoneyBin]`. If `MONEYBIN_HOME` is set when you run install, an `env` block pinning it lands inside the server entry so the client launches the server with the same home directory you used.
+
+Installing a non-default profile generates a distinct entry name (e.g. `MoneyBin (alice)`); see [Switching profiles](#switching-profiles) below.
+
+## Where data goes
+
+The MCP transport is local-only and the MoneyBin server itself does not phone home, but the **client** you connect to is almost certainly cloud-hosted. Be deliberate about which surface is which.
+
+- **`moneybin mcp serve` (the server side).** Makes no outbound network calls of its own — no telemetry, no update checks, no license pings, no merchant-enrichment fetches. It reads and writes only the local DuckDB profile. The egress posture is "zero by default."
+- **The MCP client (Claude Desktop, Cursor, Codex, ChatGPT Desktop, …).** Sends your prompt and the tool-result payloads MoneyBin returns to its own hosted LLM provider, per the client's privacy policy. When you ask "what did I spend on groceries?", the agent receives row-level transaction data from MoneyBin and forwards it upstream as ordinary tool-result context.
+- **Sensitivity tiers.** Every MoneyBin tool declares `low` / `medium` / `high` per [`mcp-server.md`](mcp-server.md). A consent gate that downgrades `medium`/`high` responses for cloud clients is planned but not yet enforced. Until it is, **treat anything you ask the agent as if you sent it directly to the model provider** — because effectively, you did.
+- **Other MoneyBin surfaces.** Plaid sync, OAuth, and any future hosted-server features do make outbound calls when you use them. Those flow through `moneybin-server`, not the MCP server — see [`docs/reference/server-api-contract.md`](../reference/server-api-contract.md) for that contract.
+- **Local-LLM clients.** No first-class MCP-compatible local-LLM agent is shipping today (Ollama doesn't expose MCP; LM Studio's support is experimental). When one becomes stable, MoneyBin will connect to it the same way it connects to Claude Desktop — the server side doesn't care which LLM is on the other end of the stdio pipe.
+
 ## Per-client setup
 
 ### Claude Desktop
@@ -53,32 +83,32 @@ moneybin mcp install --client claude-desktop -y
 - **Server lifecycle:** One server process per app instance, spawned at launch and reused across all chats. Opening "New chat" does not spawn another server.
 - **Confirmation UI:** Renders Claude's standard tool-call approval prompt. Tools marked `destructiveHint=true` (categorization commits, rule deletes, refresh runs) render with a more explicit confirmation than read-only tools.
 
-Verify the connection by asking: *"What's my account balance?"* — Claude should call `accounts_balances` and show the response.
+See [Verifying the connection](#verifying-the-connection) for a smoke test.
 
 ### Claude Code
 
-Anthropic's CLI agent.
+Anthropic's CLI agent. Unlike every other client here, MoneyBin's Claude Code config lives in the **MoneyBin profile directory** (`~/.moneybin/profiles/<profile>/claude-code-mcp.json` by default), not Claude Code's own MCP config. That way plain `claude` invocations in your repo don't load MoneyBin and don't take the database lock — MoneyBin only attaches when you launch a session that explicitly opts in.
 
 ```bash
 moneybin mcp install --client claude-code --profile <name> -y
 ```
 
-- **Config file:** `<base>/profiles/<profile>/claude-code-mcp.json` (a per-profile MoneyBin file under `~/.moneybin/profiles/<profile>/` by default, not Claude Code's own config).
+To launch Claude Code **with** MoneyBin attached, run one of:
+
+```bash
+make claude-mcp                       # active profile
+make claude-mcp PROFILE=<name>        # explicit profile
+./scripts/claude-mcp.sh <name>        # equivalent without Make
+```
+
+These resolve to `claude --strict-mcp-config --mcp-config <profile-config-path>`, telling Claude Code to ignore every other configured MCP server and load only MoneyBin for that one session.
+
+- **Config file:** `~/.moneybin/profiles/<profile>/claude-code-mcp.json`.
 - **Format:** JSON, under the `mcpServers` key.
-- **Per-session opt-in.** Claude Code is the only client today that supports launching with an MCP config override. We use that on purpose: plain `claude` invocations don't load MoneyBin, so the database lock isn't taken when you're doing unrelated work. To launch *with* MoneyBin, run one of:
-
-  ```bash
-  make claude-mcp                       # active profile
-  make claude-mcp PROFILE=<name>        # explicit profile
-  ./scripts/claude-mcp.sh <name>        # equivalent without Make
-  ```
-
-  These resolve to `claude --strict-mcp-config --mcp-config <profile-config-path>`, which tells Claude Code to ignore every other configured MCP server and load only MoneyBin for that one session.
-
-- **Restart required:** Each `make claude-mcp` invocation is a fresh session — no restart concept.
+- **Restart required:** None — each `make claude-mcp` invocation is a fresh session.
 - **Server lifecycle:** Per-invocation. Each new `make claude-mcp` launches a new MoneyBin server bound to that one session.
 
-Verify with the `/mcp` slash command in Claude Code, or ask the agent to call `system_status`.
+Inside a `make claude-mcp` session, the `/mcp` slash command shows MoneyBin's tool list as a quick sanity check.
 
 ### Cursor
 
@@ -92,9 +122,7 @@ moneybin mcp install --client cursor -y
 - **Format:** JSON, under the `mcpServers` key.
 - **Restart required:** Yes — quit Cursor and reopen. The MCP server list is read at launch.
 - **Server lifecycle:** One server process per Cursor instance.
-- **Confirmation UI:** Cursor surfaces tool calls in its agent chat panel. It honors `readOnlyHint` for the auto-approve UI but does not render distinct treatment for `destructiveHint`-flagged tools today — be deliberate with what you let it auto-approve.
-
-Verify with the Cursor settings panel under **MCP Servers**; MoneyBin should show up with its tool count populated.
+- **Confirmation UI:** Cursor surfaces tool calls in its agent chat panel. It honors `readOnlyHint` for the auto-approve UI but does not render distinct treatment for `destructiveHint`-flagged tools today — be deliberate with what you let it auto-approve. The Cursor **Settings → MCP Servers** panel shows MoneyBin with its tool count populated when the server starts cleanly.
 
 ### Windsurf
 
@@ -109,8 +137,6 @@ moneybin mcp install --client windsurf -y
 - **Restart required:** Yes — quit Windsurf and reopen.
 - **Server lifecycle:** One server process per Windsurf instance.
 - **Confirmation UI:** Tool-call approval is shown in the Cascade chat panel. Like Cursor, Windsurf reads `readOnlyHint` but doesn't currently distinguish `destructiveHint` in its UI.
-
-Verify by opening Cascade and asking it to list your accounts; it should call `accounts`.
 
 ### VS Code (Copilot Chat, agent mode)
 
@@ -129,8 +155,6 @@ moneybin mcp install --client vscode -y
 
 Note: this install path requires a git repo (`find_repo_root()` must resolve). Outside a repo, the command fails with a clear error — that's intentional, since `.vscode/mcp.json` is meaningful only in a workspace.
 
-Verify by opening the Copilot Chat agent panel, switching to "Agent" mode, and asking it to call `system_status`.
-
 ### Gemini CLI
 
 Google's `gemini` command-line agent.
@@ -144,8 +168,6 @@ moneybin mcp install --client gemini-cli -y
 - **Restart required:** No — `gemini` reads settings on each invocation.
 - **Server lifecycle:** Per-invocation. Every `gemini` command in any terminal will spawn MoneyBin and take the DB lock. If you keep two `gemini` sessions open on the same profile, the second will fail to acquire the lock — see [Concurrency](#concurrency-which-clients-share-a-server) below.
 - **Confirmation UI:** `gemini` prompts in the terminal before invoking tools by default. Tool annotations are not currently surfaced in the prompt text.
-
-Verify by running `gemini` and asking it to call `accounts`.
 
 ### Codex (CLI, Desktop app, IDE extension)
 
@@ -167,8 +189,6 @@ moneybin mcp install --client codex -y
 
 As an alternative install path, OpenAI also documents `codex mcp add` for managing servers from the CLI. The block `moneybin mcp install --client codex` writes is equivalent.
 
-Verify by running `codex` and asking it to call `system_status`, or by checking the Codex Desktop's MCP servers panel.
-
 ### ChatGPT Desktop
 
 ChatGPT Desktop adds MCP servers through **Settings → Connectors** (Developer Mode), not a JSON config file we can write programmatically.
@@ -183,8 +203,6 @@ This invocation always prints the canonical snippet plus a numbered Connector-se
 - **Restart required:** Yes — restart ChatGPT Desktop after adding the connector.
 - **Server lifecycle:** One server process per app instance.
 - **MCP support gating:** ChatGPT Desktop's MCP support depends on app version and account plan. If your build only accepts HTTP connectors, run `moneybin mcp serve --transport streamable-http` and register the resulting URL as a custom connector. (HTTP transport is supported by FastMCP today but is not the default install path — see [Transport](#transport) below.)
-
-Verify by opening the Connectors panel and confirming MoneyBin shows the registered tool count.
 
 ## Concurrency: which clients share a server
 
@@ -207,10 +225,25 @@ Practical guidance:
 
 After installing and restarting the client, run one low-risk tool:
 
-- `system_status` — returns the data inventory and freshness snapshot. Low sensitivity, no PII.
+- `system_status` — data inventory and freshness snapshot. Low sensitivity, no PII.
 - `accounts` — lists configured accounts.
 
-Both should return the standard envelope: `summary` (counts, sensitivity tier, currency), `data` (the payload), and `actions` (next-step hints). If the response is missing fields or returns a raw error, check that the server actually started (the client log usually surfaces stderr from `moneybin mcp serve`).
+Both return the standard MoneyBin envelope. `system_status` looks roughly like:
+
+```json
+{
+  "summary": {"sensitivity": "low", "display_currency": "USD", "degraded": false},
+  "data": {
+    "accounts": {"count": 6},
+    "transactions": {"count": 12483, "date_range": ["2023-01-04", "2026-05-14"], "last_import_at": "2026-05-17T09:12:33"},
+    "categorization": {"uncategorized": 17},
+    "transforms": {"pending": false, "last_apply_at": "2026-05-17T09:13:01"}
+  },
+  "actions": ["Use transactions_review for per-queue review counts", "Use reports_spending for a monthly spending trend snapshot"]
+}
+```
+
+If the response is missing fields, has `degraded: true` unexpectedly, or surfaces a raw error, check that the server actually started — each client writes its own log; consult that client's documentation for log paths, since MoneyBin's stderr is forwarded into the client's process logs.
 
 You can cross-check the same payload from the CLI:
 
@@ -221,15 +254,22 @@ moneybin accounts --output json
 
 The envelope shape is identical. See the [CLI reference](cli-reference.md) for the full command list.
 
-## Hand-testing without a client
+For direct stdio inspection without going through a client (useful for debugging tool schemas or reproducing client-side issues), run `moneybin mcp serve` in the foreground and drive it with the MCP inspector or any JSON-RPC client.
 
-To inspect the server directly without going through an AI client:
+## Uninstall and reset
 
-```bash
-moneybin mcp serve
-```
+There is no `moneybin mcp uninstall` command today — removal is a manual edit to the client's config file.
 
-This starts the server on stdio in the foreground; you can drive it with the MCP inspector or any JSON-RPC client. Useful for debugging tool schemas or reproducing a client-side issue against a known-good transport.
+1. Run `moneybin mcp config path --client <name>` to print the resolved config path.
+2. Open the file in an editor.
+3. For JSON clients (Claude Desktop, Cursor, Windsurf, VS Code, Gemini CLI), delete the `"MoneyBin"` (or `"MoneyBin (<profile>)"`) entry under `mcpServers` / `servers`. For Codex, delete the `[mcp_servers.MoneyBin]` table. For Claude Code, delete the per-profile MoneyBin config file under `~/.moneybin/profiles/<profile>/claude-code-mcp.json` outright — that file holds only MoneyBin's entry.
+4. Restart the client (per the per-client restart rules above).
+
+If `mcp install` previously errored out with `Cannot parse existing config`, the safe recovery is to rename the broken file to `<name>.bak` and re-run `moneybin mcp install --client <name> --print` to get a clean snippet, then merge your prior unrelated entries back by hand. Renaming preserves the original for forensics; the install path will create a fresh file alongside.
+
+## Switching profiles
+
+Re-running `moneybin mcp install` with a different `--profile <name>` adds a **second** entry to the client config (e.g. `MoneyBin` and `MoneyBin (alice)`) — it does not replace the previous one. The client sees both servers; some clients let you toggle them, others always start both. To switch which profile is "primary," uninstall the unwanted entry per the steps above. See the [profiles guide](profiles.md) for the durable model.
 
 ## Tool annotations and client rendering
 
@@ -250,9 +290,18 @@ Where the client doesn't render a distinct destructive-tool confirmation, treat 
 
 ## Transport
 
-Today MoneyBin's MCP server speaks **stdio only** for the install paths above — the client launches MoneyBin as a child process and communicates over stdin/stdout. This means one server process per client session, and the server's lifetime is bound to the client's.
+Today MoneyBin's MCP server speaks **stdio only** for the install paths above — the client launches MoneyBin as a child process and communicates over stdin/stdout. One server process per client session; the server's lifetime is bound to the client's.
 
-`moneybin mcp serve --transport streamable-http` is supported by the underlying FastMCP runtime today and is the path ChatGPT Desktop's HTTP-connector fallback uses, but the install snippets above all assume stdio. A fully-supported HTTP transport (with proper auth, tunneling, and a remote-client story) is planned alongside the web UI.
+`moneybin mcp serve --transport streamable-http` is supported by the underlying FastMCP runtime today and is the path ChatGPT Desktop's HTTP-connector fallback uses, but the install snippets above all assume stdio. A fully-supported HTTP transport (with proper auth, tunneling, and a remote-client story) is planned alongside the web UI but does not ship today.
+
+### Headless and daemon use
+
+Because the transport is stdio, "MoneyBin as a long-running daemon with remote clients connecting in" isn't a supported deployment shape yet — the client process needs to be on the same host so it can fork-and-pipe `moneybin mcp serve`. What works today on a headless box:
+
+- **Headless MCP clients on the same host.** Codex CLI, Gemini CLI, and Claude Code (via `make claude-mcp`) run without a GUI. Drop them in a tmux session on a NAS / homelab box and they'll spawn MoneyBin per invocation against the local DuckDB profile.
+- **Desktop client on a workstation, data on the same workstation.** Standard install path; no networking involved.
+
+What does not work today: running `moneybin mcp serve` as a systemd unit or Docker container with a Claude Desktop on a separate laptop connecting in. That requires the planned streamable-HTTP transport plus an auth model.
 
 ## Troubleshooting
 
@@ -260,16 +309,16 @@ Today MoneyBin's MCP server speaks **stdio only** for the install paths above �
 
 **Client doesn't see any tools.** Restart the client after install — most clients read MCP config only at launch. If the client is restarted and still empty, run `moneybin mcp config path --client <name>` to print the resolved config path, then verify the file exists and contains a `MoneyBin` entry under `mcpServers` (or `servers` for VS Code, `[mcp_servers.<name>]` for Codex).
 
-**Tools error with "no profile" or similar.** The install snippet embeds whichever profile was active when you ran `mcp install`. To change it, re-run with `--profile <name>`. Different profiles are added as separate entries (e.g. `MoneyBin (alice)` and `MoneyBin (bob)`); we don't auto-replace because silently losing access to a previous profile is worse than leaving it visible.
+**Tools error with "no profile" or similar.** The install snippet embeds whichever profile was active when you ran `mcp install`. To change it, re-run with `--profile <name>` (see [Switching profiles](#switching-profiles)).
 
 **"Database is locked" / server exits immediately.** Another process is holding the same profile's DB. Most common: (a) a desktop client is already running with the same profile installed; (b) a `moneybin` CLI command is still running in another terminal; (c) two `codex` / `gemini` / `make claude-mcp` invocations are racing. Quit the offender or switch profiles.
 
-**"Cannot parse existing config" on install.** The target file has invalid JSON or TOML. Fix the syntax in your editor and re-run.
+**"Cannot parse existing config" on install.** The target file has invalid JSON or TOML. Fix the syntax in your editor and re-run, or use the `<name>.bak` recovery path in [Uninstall and reset](#uninstall-and-reset).
 
 **Slow first call after launch.** Cold start imports the MCP runtime and loads settings. Subsequent calls in the same session reuse the connection.
 
 **`make claude-mcp` reports "No active profile and --profile not supplied".** Either run `moneybin profile create <name>` first, or pass `PROFILE=<name>` to the make target.
 
-## Stability
+## Stability and licensing
 
-MoneyBin is pre-v1. Tool names, parameter shapes, and envelope fields may change before the first tagged release — clients with cached tool lists may need to reconnect after a MoneyBin upgrade. Once v1 lands, the MCP surface locks under the deprecation rules in the design-principles guide.
+Stability of the MCP surface (tool names, parameter shapes, envelope fields) is documented alongside the protocol in the [MCP server guide](mcp-server.md). MoneyBin is AGPL-licensed; see [`docs/licensing.md`](../licensing.md) for what that means for your deployment.
