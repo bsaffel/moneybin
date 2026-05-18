@@ -679,7 +679,7 @@ Shape-1a declarative target-state for an import's labels.
 - **Behavior:** Computes diff against prior labels; emits one `import_label.add` / `import_label.remove` per change.
 - **Mutation surface:** `app.import_labels`. Revert via another `_set` with prior list.
 - **Service:** `ImportService.set_labels()`
-- **CLI:** `moneybin import labels set IMPORT_ID --label L [--label L...]`
+- **CLI:** Per `.claude/rules/surface-design.md` "parity is functional, not nominal" — MCP exposes shape 1a `import_labels_set(import_id, labels=[...])` (collection state-set, omission = delete). CLI ships as shape 2 lifecycle ops: `moneybin import labels add IMPORT_ID LABEL`, `moneybin import labels remove IMPORT_ID LABEL`, `moneybin import labels list IMPORT_ID`. Same user outcomes reachable on both surfaces; the underlying `ImportService.set_labels()` is the shared primitive.
 
 #### `system_audit`
 
@@ -819,7 +819,7 @@ Sweep the inbox directory: import any new files, archive them on success, surfac
 
 - **Sensitivity:** `low` — return envelope reports per-file counts and status, not content.
 - **Unique parameters:** `refresh: bool = True` — run the refresh pipeline once at end-of-sweep when at least one file imported.
-- **Behavior:** Returns `{processed_count, imported_count, failed_count, files: [...], transforms_applied, transforms_duration_seconds, uncategorized_count}`. Idempotent: rerunning over the same inbox is a no-op once files are archived.
+- **Behavior:** Returns `dataclasses.asdict(InboxSyncResult)`: `{processed: [...], failed: [...], skipped: [...], ignored: [...], transforms_applied, transforms_duration_seconds, transforms_error}` — per-file lists bucketed by disposition, plus end-of-batch refresh hook state. Idempotent: rerunning over the same inbox is a no-op once files are archived.
 - **Service:** `InboxService.sync()`
 - **CLI:** `moneybin import inbox sync [--no-refresh]`
 
@@ -829,9 +829,9 @@ Show inbox status: files awaiting sync, archive contents, last-sync timestamp.
 
 - **Sensitivity:** `low`
 - **Unique parameters:** None.
-- **Behavior:** Returns `{pending_files: [...], archive_count, last_sync_at}`.
-- **Service:** `InboxService.pending()`
-- **CLI:** `moneybin import inbox pending`
+- **Behavior:** Returns `dataclasses.asdict(InboxListResult)`: `{would_process: [...], ignored: [...]}` — dry-run preview of what a sync would touch.
+- **Service:** `InboxService.enumerate()`
+- **CLI:** `moneybin import inbox list` (bare `moneybin import inbox` runs sync; `list` is the dry-run preview).
 
 ### `import_preview`
 
@@ -1587,13 +1587,13 @@ Workflow tools that operate on transaction state stay nested under `transactions
 |---|---|
 | `categorize_uncategorized` | `transactions_categorize_pending` |
 | `categorize_bulk` | `transactions_categorize_commit` |
-| `categorize_apply_rules` | `transactions_categorize_rules_apply` |
+| `categorize_apply_rules` | `transactions_categorize_run(methods=["rules"])` (retired: `_rules_apply` was folded into the cascade umbrella per PR #171) |
 | `categorize_rules` | `transactions_categorize_rules` |
 | `categorize_create_rules` | `transactions_categorize_rules_create` |
 | `categorize_delete_rule` | `transactions_categorize_rules_delete` |
 | `categorize_stats` | `transactions_categorize_stats` |
 | `categorize_auto_review` | `transactions_categorize_auto_review` |
-| `categorize_auto_confirm` | `transactions_categorize_auto_confirm` |
+| `categorize_auto_confirm` | `transactions_categorize_auto_accept` (renamed twice: prototype `categorize_auto_confirm` → v2 `transactions_categorize_auto_confirm` → final `_auto_accept` per PR #171) |
 | `categorize_auto_stats` | `transactions_categorize_auto_stats` |
 | `categorize_ml_status` | `transactions_categorize_ml_status` |
 | `categorize_ml_train` | `transactions_categorize_ml_train` |
@@ -1736,7 +1736,7 @@ Tools that depend on unbuilt subsystems are documented in the catalog with depen
 | **Provider profiles spec** | Not written | Verified-local bypass; `privacy_status` backend info |
 | **Transaction matching (Pillars A+C)** | Draft (umbrella) | All `transactions_matches.*` tools |
 | **Transaction matching (Pillar B)** | Draft (umbrella) | `transactions_matches.*` transfer-type filtering |
-| **[Categorization overview](categorization-overview.md)** | Draft | `transactions_categorize_rules_apply`, `transactions_categorize_auto_review`, `transactions_categorize_auto_confirm`, `transactions_categorize_auto_stats`, `transactions_categorize_ml_status`, `transactions_categorize_ml_train`, `transactions_categorize_ml_apply` |
+| **[Categorization overview](categorization-overview.md)** | Draft | `transactions_categorize_ml_status`, `transactions_categorize_ml_train`, `transactions_categorize_ml_apply` (blocked on `categorization-ml.md`) |
 | **Smart Import (Pillar A)** | Not written | `import_folder` |
 | **Smart Import (Pillar F) + Privacy** | Not written | `import_ai_preview`, `import_ai_parse` |
 | **Corrections table schema** | Not written | `transactions_correct` |
@@ -1746,18 +1746,7 @@ Tools that depend on unbuilt subsystems are documented in the catalog with depen
 
 ### Tools shippable without dependencies
 
-These tools can be fully implemented with the current codebase and existing infrastructure:
-
-**`spending.*`**: `summary`, `by_category`, `merchants`, `compare`
-**`cashflow.*`**: `summary`, `income`
-**`accounts.*`**: `list`, `balances`, `networth`, `resolve`
-**`transactions.*`**: `search`
-**`import.*`**: `file`, `status`, `csv_preview`, `list_formats`
-**`categorize.*`**: `uncategorized`, `apply`, `rules`, `create_rules`, `delete_rule`, `merchants`, `create_merchants`, `categories`, `create_category`, `toggle_category`, `stats`
-**`overview.*`**: `status`, `health`
-**`sql.*`**: `query`
-
-This is a 30-domain-tool surface that can ship independently of any pending spec work. All entries above are visible at connect (see `mcp-architecture.md` §3 "Tool disclosure: full surface, taxonomy-led"). Tools blocked on dependencies above stay unregistered until their backing spec reaches `in-progress`. `budget.*` and `tax.*` were previously listed as "shippable without dependencies" but moved to the blocked table 2026-05-17 — their backing specs have not yet reached `in-progress`/`implemented`, and a working implementation alone does not justify exposing the tool on the public surface.
+> **Surface status (2026-05-18):** All entries in §16 (Migration) not marked "NOT registered" or de-registered above are live and visible at connect. See the dependency tracker above for the tools that remain blocked. `budget.*` and `tax.*` are registered-but-unwired pending their backing specs reaching `in-progress`/`implemented` (a working implementation alone does not justify exposing the tool on the public surface).
 
 ---
 
