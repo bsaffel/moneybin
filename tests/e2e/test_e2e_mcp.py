@@ -176,8 +176,9 @@ class TestMCPServerBoot:
                 assert isinstance(content, TextContent)
                 envelope = json.loads(content.text)
                 assert envelope["summary"]["sensitivity"] == "medium"
-                # Fresh DB has no assertions — empty list is correct
-                assert isinstance(envelope["data"], list)
+                # Fresh DB has no assertions — payload shape is {"assertions": []}
+                assert isinstance(envelope["data"], dict)
+                assert isinstance(envelope["data"]["assertions"], list)
 
 
 class TestReportsNetworthTools:

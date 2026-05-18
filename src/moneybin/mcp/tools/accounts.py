@@ -26,7 +26,6 @@ from __future__ import annotations
 
 from datetime import date as _date
 from decimal import Decimal
-from typing import Any
 
 from fastmcp import FastMCP
 
@@ -40,6 +39,12 @@ from moneybin.privacy.payloads.accounts import (
     AccountResolvePayload,
     AccountSettingsPayload,
     AccountSummaryStats,
+)
+from moneybin.privacy.payloads.balances import (
+    BalanceAssertionDeletePayload,
+    BalanceAssertionListPayload,
+    BalanceAssertionPayload,
+    BalanceObservationListPayload,
 )
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.account_service import CLEAR, AccountService
@@ -226,7 +231,7 @@ def accounts_set(
 def accounts_balances(
     account_ids: list[str] | None = None,
     as_of_date: str | None = None,
-) -> ResponseEnvelope[Any]:
+) -> ResponseEnvelope[BalanceObservationListPayload]:
     """Most recent balance per account; optionally as-of an ISO date.
 
     Args:
@@ -235,12 +240,10 @@ def accounts_balances(
     """
     parsed_date = _date.fromisoformat(as_of_date) if as_of_date else None
     with get_database(read_only=True) as db:
-        observations = BalanceService(db).current_balances(
+        result = BalanceService(db).current_balances(
             account_ids=account_ids, as_of_date=parsed_date
         )
-    return build_envelope(
-        data=[o.to_dict() for o in observations], sensitivity="medium"
-    )
+    return build_envelope(data=result, sensitivity="medium")
 
 
 @mcp_tool(sensitivity="medium")
@@ -248,7 +251,7 @@ def accounts_balance_history(
     account_id: str,
     from_date: str | None = None,
     to_date: str | None = None,
-) -> ResponseEnvelope[Any]:
+) -> ResponseEnvelope[BalanceObservationListPayload]:
     """Per-account balance history (daily series with carry-forward + reconciliation deltas).
 
     Args:
@@ -259,19 +262,17 @@ def accounts_balance_history(
     parsed_from = _date.fromisoformat(from_date) if from_date else None
     parsed_to = _date.fromisoformat(to_date) if to_date else None
     with get_database(read_only=True) as db:
-        observations = BalanceService(db).history(
+        result = BalanceService(db).history(
             account_id, from_date=parsed_from, to_date=parsed_to
         )
-    return build_envelope(
-        data=[o.to_dict() for o in observations], sensitivity="medium"
-    )
+    return build_envelope(data=result, sensitivity="medium")
 
 
 @mcp_tool(sensitivity="medium")
 def accounts_balance_reconcile(
     account_ids: list[str] | None = None,
     threshold: float = 0.01,
-) -> ResponseEnvelope[Any]:
+) -> ResponseEnvelope[BalanceObservationListPayload]:
     """Show balance days with non-zero reconciliation delta above threshold.
 
     Args:
@@ -280,26 +281,24 @@ def accounts_balance_reconcile(
     """
     parsed_threshold = Decimal(str(threshold))
     with get_database(read_only=True) as db:
-        observations = BalanceService(db).reconcile(
+        result = BalanceService(db).reconcile(
             account_ids=account_ids, threshold=parsed_threshold
         )
-    return build_envelope(
-        data=[o.to_dict() for o in observations], sensitivity="medium"
-    )
+    return build_envelope(data=result, sensitivity="medium")
 
 
 @mcp_tool(sensitivity="medium")
 def accounts_balance_assertions(
     account_id: str | None = None,
-) -> ResponseEnvelope[Any]:
+) -> ResponseEnvelope[BalanceAssertionListPayload]:
     """List user-entered balance assertions.
 
     Args:
         account_id: Optional filter to a single account
     """
     with get_database(read_only=True) as db:
-        assertions = BalanceService(db).list_assertions(account_id)
-    return build_envelope(data=[a.to_dict() for a in assertions], sensitivity="medium")
+        result = BalanceService(db).list_assertions(account_id)
+    return build_envelope(data=result, sensitivity="medium")
 
 
 # ─── Write tools (balance) ──────────────────────────────────────────────────
@@ -311,7 +310,7 @@ def accounts_balance_assert(
     assertion_date: str,
     balance: float,
     notes: str | None = None,
-) -> ResponseEnvelope[Any]:
+) -> ResponseEnvelope[BalanceAssertionPayload]:
     """Insert or update a manual balance assertion.
 
     Args:
@@ -329,14 +328,14 @@ def accounts_balance_assert(
             balance=parsed_balance,
             notes=notes,
         )
-    return build_envelope(data=result.to_dict(), sensitivity="medium")
+    return build_envelope(data=result, sensitivity="medium")
 
 
 @mcp_tool(sensitivity="medium", read_only=False, destructive=True)
 def accounts_balance_assertion_delete(
     account_id: str,
     assertion_date: str,
-) -> ResponseEnvelope[Any]:
+) -> ResponseEnvelope[BalanceAssertionDeletePayload]:
     """Delete a manual balance assertion. Silent no-op if no row exists.
 
     Args:
@@ -347,7 +346,11 @@ def accounts_balance_assertion_delete(
     with get_database() as db:
         BalanceService(db).delete_assertion(account_id, parsed_date)
     return build_envelope(
-        data={"account_id": account_id, "assertion_date": parsed_date.isoformat()},
+        data=BalanceAssertionDeletePayload(
+            account_id=account_id,
+            assertion_date=parsed_date,
+            deleted=True,
+        ),
         sensitivity="medium",
     )
 
