@@ -38,6 +38,7 @@ class TestReportsRecurringGet:
             db.conn.execute("""
                 CREATE OR REPLACE VIEW reports.recurring_subscriptions AS
                 SELECT
+                    CAST(NULL AS VARCHAR) AS merchant_id,
                     'Netflix' AS merchant_normalized,
                     'monthly' AS cadence,
                     CAST(15.99 AS DOUBLE) AS avg_amount,
@@ -48,10 +49,10 @@ class TestReportsRecurringGet:
                     CAST(191.88 AS DOUBLE) AS annualized_cost,
                     CAST(0.95 AS DOUBLE) AS confidence
                 UNION ALL SELECT
-                    'OldGym', 'monthly', 50.0, 6, DATE '2024-01-01',
+                    NULL, 'OldGym', 'monthly', 50.0, 6, DATE '2024-01-01',
                     DATE '2024-06-01', 'inactive', 600.0, 0.8
                 UNION ALL SELECT
-                    'WeakSignal', 'irregular', 7.0, 3, DATE '2025-12-01',
+                    NULL, 'WeakSignal', 'irregular', 7.0, 3, DATE '2025-12-01',
                     DATE '2026-04-01', 'active', 21.0, 0.3
             """)  # noqa: S608  # test input, not executing dynamic SQL
 
@@ -109,6 +110,7 @@ class TestReportsUncategorizedGet:
                     DATE '2026-04-01' AS txn_date,
                     CAST(-25.00 AS DECIMAL(18,2)) AS amount,
                     'COFFEE SHOP' AS description,
+                    CAST(NULL AS VARCHAR) AS merchant_id,
                     'Coffee Shop' AS merchant_normalized,
                     39 AS age_days,
                     CAST(975.0 AS DOUBLE) AS priority_score,
@@ -117,11 +119,11 @@ class TestReportsUncategorizedGet:
                 UNION ALL SELECT
                     'T2', 'ACC001', 'Test Bank Checking',
                     DATE '2026-04-10', CAST(-500.00 AS DECIMAL(18,2)),
-                    'BIG EXPENSE', 'Big Expense', 30, 15000.0, 'ofx', NULL
+                    'BIG EXPENSE', NULL, 'Big Expense', 30, 15000.0, 'ofx', NULL
                 UNION ALL SELECT
                     'T3', 'ACC002', 'Other Bank Savings',
                     DATE '2026-04-15', CAST(-5.00 AS DECIMAL(18,2)),
-                    'TINY', 'Tiny', 25, 125.0, 'ofx', NULL
+                    'TINY', NULL, 'Tiny', 25, 125.0, 'ofx', NULL
             """)  # noqa: S608  # test input, not executing dynamic SQL
 
     @pytest.mark.unit
@@ -142,8 +144,11 @@ class TestReportsUncategorizedGet:
 
     @pytest.mark.unit
     async def test_account_filter_narrows_results(self, mcp_db: Path) -> None:
+        # Filter via canonical account_id; the resolver resolves the
+        # reference against core.dim_accounts (the canonical source),
+        # not the stub view's free-text account_name column.
         self._install_view()
-        parsed = (await reports_uncategorized(account="Other Bank Savings")).to_dict()
+        parsed = (await reports_uncategorized(account="ACC002")).to_dict()
         ids = [row["transaction_id"] for row in parsed["data"]]
         assert ids == ["T3"]
 
@@ -216,8 +221,11 @@ class TestReportsBalanceDriftGet:
 
     @pytest.mark.unit
     async def test_account_filter(self, mcp_db: Path) -> None:
+        # Filter via canonical account_id; the resolver binds the
+        # resolved id to the SQL WHERE clause (not the stub view's
+        # free-text account_name).
         self._install_view()
-        parsed = (await reports_balance_drift(account="Other Bank Savings")).to_dict()
+        parsed = (await reports_balance_drift(account="ACC002")).to_dict()
         account_ids = [row["account_id"] for row in parsed["data"]]
         assert account_ids == ["ACC002"]
 

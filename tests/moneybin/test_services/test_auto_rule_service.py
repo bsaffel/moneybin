@@ -613,3 +613,103 @@ class TestProposedRulesDualWrite:
             "WHERE category = 'Groceries'"
         ).fetchone()
         assert row == ("Groceries", None, groceries_id)
+
+
+class TestSupersessionByRuleId:
+    """Proposal->rule linkage is FK-keyed via rule_id, not merchant_pattern.
+
+    When two approved proposals share a merchant_pattern (e.g. a rule
+    was approved, manually deactivated, and a new proposal with the
+    same pattern was approved later), supersession must touch only the
+    proposal tied to the deactivated rule — the rule_id binding makes
+    that an opaque-id comparison instead of a text match.
+    """
+
+    def test_approve_writes_rule_id_to_proposal(self, real_db: Database) -> None:
+        """approve() persists the minted rule_id back to its source proposal."""
+        _seed_transaction(real_db, "t1")
+        svc = AutoRuleService(real_db)
+        pid = svc.record_categorization("t1", "Food & Drink")
+        assert pid is not None
+
+        result = svc.accept(accept=[pid])
+        rule_id = result.rule_ids[0]
+
+        row = real_db.execute(
+            f"SELECT rule_id FROM {PROPOSED_RULES.full_name} WHERE proposed_rule_id = ?",  # noqa: S608  # TableRef constant
+            [pid],
+        ).fetchone()
+        assert row == (rule_id,)
+
+    def test_supersession_only_touches_linked_proposal_when_patterns_collide(
+        self, real_db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Verify FK-keyed supersession ignores stale same-pattern proposals.
+
+        When two approved proposals share a merchant_pattern, only the one
+        tied via rule_id to the deactivated rule should flip to superseded.
+        The other -- a residual approved proposal from some earlier
+        promotion -- must stay 'approved'.
+        """
+        monkeypatch.setenv("MONEYBIN_CATEGORIZATION__AUTO_RULE_OVERRIDE_THRESHOLD", "2")
+        clear_settings_cache()
+        monkeypatch.setattr(config_module, "_current_profile", None)
+        monkeypatch.setattr(config_module, "_current_settings", None)
+        set_current_profile("test")
+
+        # Approve an auto-rule for STARBUCKS -> Food & Drink. After this,
+        # the proposal carries rule_id = the new rule's id, set by
+        # approve(). This is the LINKED proposal.
+        _seed_transaction(real_db, "t1")
+        svc = AutoRuleService(real_db)
+        linked_pid = svc.record_categorization("t1", "Food & Drink")
+        assert linked_pid is not None
+        svc.accept(accept=[linked_pid])
+
+        # Plant a STALE approved proposal sharing the same merchant_pattern
+        # but rule_id NULL (a residual proposal from some earlier promotion
+        # whose rule was later manually deleted). Before V016/Phase 2 the
+        # supersession query targeted both rows via LOWER(merchant_pattern);
+        # after Phase 2 it targets WHERE rule_id = ?, so this row should
+        # remain 'approved'.
+        stale_pid = "prop-stale01"
+        real_db.execute(
+            f"""
+            INSERT INTO {PROPOSED_RULES.full_name}
+                (proposed_rule_id, merchant_pattern, match_type, category,
+                 subcategory, status, trigger_count, source, proposed_at,
+                 decided_at, decided_by, rule_id, sample_txn_ids)
+            VALUES (?, 'STARBUCKS', 'contains', 'Food & Drink', NULL,
+                    'approved', 5, 'pattern_detection',
+                    TIMESTAMP '2025-12-01 00:00:00',
+                    TIMESTAMP '2025-12-01 00:00:00', 'user', NULL, [])
+            """,  # noqa: S608  # TableRef constant
+            [stale_pid],
+        )
+
+        # Two user overrides correcting STARBUCKS to Groceries.
+        for tid in ("t10", "t11"):
+            real_db.execute(
+                "INSERT INTO core.fct_transactions (transaction_id, account_id, transaction_date, amount, description, source_type) "
+                "VALUES (?, 'a1', DATE '2026-01-03', -8.00, 'STARBUCKS RESERVE', 'csv')",
+                [tid],
+            )
+            real_db.execute(
+                "INSERT INTO app.transaction_categories (transaction_id, category, categorized_at, categorized_by) "
+                "VALUES (?, 'Groceries', CURRENT_TIMESTAMP, 'user')",
+                [tid],
+            )
+
+        assert svc.check_overrides() == 1
+
+        # Only the LINKED proposal flips to 'superseded'; the stale one
+        # remains 'approved' because rule_id linkage is FK-keyed now.
+        statuses = dict(
+            real_db.execute(
+                f"SELECT proposed_rule_id, status FROM {PROPOSED_RULES.full_name} "  # noqa: S608  # TableRef constant
+                "WHERE proposed_rule_id IN (?, ?)",
+                [linked_pid, stale_pid],
+            ).fetchall()
+        )
+        assert statuses[linked_pid] == "superseded"
+        assert statuses[stale_pid] == "approved"

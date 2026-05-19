@@ -15,6 +15,7 @@ WITH base AS (
     t.transaction_date AS txn_date,
     t.amount,
     t.description,
+    t.merchant_id,
     t.merchant_name AS merchant_normalized,
     t.category
   FROM core.fct_transactions AS t
@@ -76,7 +77,8 @@ SELECT
   b.txn_date, /* Transaction date */
   b.amount, /* Signed amount */
   b.description, /* Original description */
-  b.merchant_normalized, /* Normalized merchant string */
+  b.merchant_id, /* Foreign key to core.dim_merchants.merchant_id; NULL when no canonical merchant was resolved */
+  b.merchant_normalized, /* Normalized merchant string (display) */
   b.category, /* Spending category text; NULL if uncategorized */
   CASE
     WHEN pa.mad > 0

@@ -13,7 +13,8 @@ SELECT
   t.transaction_date AS txn_date, /* Transaction date */
   t.amount, /* Signed amount */
   t.description, /* Original description */
-  t.merchant_name AS merchant_normalized, /* Normalized merchant string */
+  t.merchant_id, /* Foreign key to core.dim_merchants.merchant_id; NULL when no canonical merchant was resolved */
+  t.merchant_name AS merchant_normalized, /* Normalized merchant string (display) */
   CAST(CURRENT_DATE - t.transaction_date AS INT) AS age_days, /* Days since txn_date */
   ABS(t.amount) * CAST(CURRENT_DATE - t.transaction_date AS INT) AS priority_score, /* Default sort key: amount * age */
   t.source_type, /* Source system that contributed this transaction */
