@@ -12,7 +12,6 @@ from moneybin.cli.output import OutputFormat, output_option
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
 from moneybin.errors import UserError
-from moneybin.protocol.envelope import ResponseEnvelope
 
 logger = logging.getLogger(__name__)
 
@@ -112,14 +111,24 @@ def categorize_commit_from_file(
 
     input_count = len(items) + len(parse_errors)
 
-    def _render_table(_: ResponseEnvelope) -> None:
+    from moneybin.protocol.envelope import build_envelope
+
+    def _render_table(_: object) -> None:
         logger.info(
             f"✅ Applied {result.applied} | skipped {result.skipped} | errors {result.errors}"
         )
         for err in result.error_details:
             logger.warning(f"⚠️  {err['transaction_id']}: {err['reason']}")
 
-    envelope = result.to_envelope(input_count)
+    envelope = build_envelope(
+        data=result.to_payload(),
+        sensitivity="medium",
+        total_count=input_count,
+        actions=[
+            "Use transactions_categorize_rules to review auto-created rules",
+            "Use transactions_categorize_pending to fetch the next batch",
+        ],
+    )
     if result.errors > 0:
         envelope = dataclasses.replace(
             envelope,

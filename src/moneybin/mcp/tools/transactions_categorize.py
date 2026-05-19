@@ -17,6 +17,18 @@ from moneybin.mcp.adapters.categorize_adapters import (
     auto_stats_envelope,
 )
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.privacy.payloads.categorize import (
+    AutoAcceptPayload,
+    AutoReviewPayload,
+    AutoStatsPayload,
+    CategorizeCommitPayload,
+    CategorizeRulesPayload,
+    CategorizeRunPayload,
+    CategorizeStatsPayload,
+    CatPendingPayload,
+    RulesCreatePayload,
+    RulesDeletePayload,
+)
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.auto_rule_service import AutoRuleService
 from moneybin.services.categorization import (
@@ -30,16 +42,16 @@ logger = logging.getLogger(__name__)
 
 
 @mcp_tool(sensitivity="low", domain="categorize")
-def transactions_categorize_rules() -> ResponseEnvelope:
+def transactions_categorize_rules() -> ResponseEnvelope[CategorizeRulesPayload]:
     """List all categorization rules.
 
     Returns rule ID, name, pattern, match type, category, priority,
     and active status. Rules are applied in priority order during import.
     """
     with get_database(read_only=True) as db:
-        data = CategorizationService(db).list_rules()
+        payload = CategorizationService(db).list_rules()
     return build_envelope(
-        data=data,
+        data=payload,
         sensitivity="low",
         actions=[
             "Use transactions_categorize_rules_create to add new rules",
@@ -49,7 +61,7 @@ def transactions_categorize_rules() -> ResponseEnvelope:
 
 
 @mcp_tool(sensitivity="low", domain="categorize")
-def transactions_categorize_stats() -> ResponseEnvelope:
+def transactions_categorize_stats() -> ResponseEnvelope[CategorizeStatsPayload]:
     """Get categorization coverage statistics.
 
     Returns total transactions, categorized count, uncategorized count,
@@ -58,13 +70,19 @@ def transactions_categorize_stats() -> ResponseEnvelope:
     """
     with get_database(read_only=True) as db:
         result = CategorizationService(db).stats()
-    return result.to_envelope()
+    return build_envelope(
+        data=result.to_payload(),
+        sensitivity="low",
+        actions=[
+            "Use transactions_categorize_pending to see uncategorized transactions"
+        ],
+    )
 
 
 @mcp_tool(sensitivity="medium", domain="categorize")
 def transactions_categorize_pending(
     limit: int = 50,
-) -> ResponseEnvelope:
+) -> ResponseEnvelope[CatPendingPayload]:
     """Find transactions that have not been categorized yet.
 
     Returns transaction details for uncategorized transactions,
@@ -75,17 +93,17 @@ def transactions_categorize_pending(
         limit: Maximum number of results (default 50, max 1000).
     """
     with get_database(read_only=True) as db:
-        records = CategorizationService(db).list_uncategorized_transactions(
+        payload = CategorizationService(db).list_uncategorized_transactions(
             limit=min(limit, 1000)
         )
-    if records is None:
+    if payload is None:
         return build_envelope(
-            data=[],
+            data=CatPendingPayload(transactions=[]),
             sensitivity="medium",
             actions=["Import data first using import_files"],
         )
     return build_envelope(
-        data=records,
+        data=payload,
         sensitivity="medium",
         actions=[
             "Use transactions_categorize_commit to commit categorizations for these transactions",
@@ -97,7 +115,7 @@ def transactions_categorize_pending(
 @mcp_tool(sensitivity="medium", domain="categorize", read_only=False)
 def transactions_categorize_commit(
     items: Sequence[Mapping[str, str | None]],
-) -> ResponseEnvelope:
+) -> ResponseEnvelope[CategorizeCommitPayload]:
     """Commit externally-decided categorizations for a batch of transactions.
 
     Each item should have ``transaction_id``, ``category``, and optionally
@@ -121,22 +139,37 @@ def transactions_categorize_commit(
             subcategory, and optional canonical_merchant_name.
     """
     if not items:
-        return CategorizationResult(
-            applied=0, skipped=0, errors=0, error_details=[]
-        ).to_envelope(0)
+        empty = CategorizationResult(applied=0, skipped=0, errors=0, error_details=[])
+        return build_envelope(
+            data=empty.to_payload(),
+            sensitivity="medium",
+            total_count=0,
+            actions=[
+                "Use transactions_categorize_rules to review auto-created rules",
+                "Use transactions_categorize_pending to fetch the next batch",
+            ],
+        )
 
     validated, parse_errors = validate_items(items)
     with get_database() as db:
         result = CategorizationService(db).categorize_items(validated)
     result.merge_parse_errors(parse_errors)
-    return result.to_envelope(len(items))
+    return build_envelope(
+        data=result.to_payload(),
+        sensitivity="medium",
+        total_count=len(items),
+        actions=[
+            "Use transactions_categorize_rules to review auto-created rules",
+            "Use transactions_categorize_pending to fetch the next batch",
+        ],
+    )
 
 
 @mcp_tool(sensitivity="low", domain="categorize", read_only=False)
 def transactions_categorize_rules_create(
     rules: list[dict[str, str | float | int | None]],
     reapply: bool = False,
-) -> ResponseEnvelope:
+) -> ResponseEnvelope[RulesCreatePayload]:
     """Create multiple categorization rules in one call.
 
     Each rule should have ``name``, ``merchant_pattern``, and ``category``.
@@ -153,13 +186,20 @@ def transactions_categorize_rules_create(
     with get_database() as db:
         result = CategorizationService(db).create_rules(validated, reapply=reapply)
     result.merge_parse_errors(parse_errors)
-    return result.to_envelope(len(rules))
+    return build_envelope(
+        data=result.to_payload(),
+        sensitivity="low",
+        total_count=len(rules),
+        actions=[
+            "Use transactions_categorize_rules to review all rules",
+        ],
+    )
 
 
 @mcp_tool(sensitivity="low", domain="categorize", read_only=False)
 def transactions_categorize_rules_delete(
     rule_id: str, reapply: bool = False
-) -> ResponseEnvelope:
+) -> ResponseEnvelope[RulesDeletePayload]:
     """Soft-delete a categorization rule by setting it inactive.
 
     The rule remains in the database but will no longer be applied
@@ -179,13 +219,15 @@ def transactions_categorize_rules_delete(
     if not deactivated:
         raise UserError(f"Rule {rule_id} not found", code="RULE_NOT_FOUND")
     return build_envelope(
-        data={"rule_id": rule_id, "action": "deactivated"},
+        data=RulesDeletePayload(rule_id=rule_id, action="deactivated"),
         sensitivity="low",
     )
 
 
 @mcp_tool(sensitivity="medium", domain="categorize")
-def transactions_categorize_auto_review(limit: int | None = None) -> ResponseEnvelope:
+def transactions_categorize_auto_review(
+    limit: int | None = None,
+) -> ResponseEnvelope[AutoReviewPayload]:
     """List pending auto-rule proposals.
 
     Returns proposed categorization rules awaiting review, including
@@ -206,7 +248,7 @@ def transactions_categorize_auto_review(limit: int | None = None) -> ResponseEnv
 def transactions_categorize_auto_accept(
     accept: list[str] | None = None,
     reject: list[str] | None = None,
-) -> ResponseEnvelope:
+) -> ResponseEnvelope[AutoAcceptPayload]:
     """Accept or reject auto-rule proposals by ID.
 
     Accepted proposals become active rules and immediately categorize
@@ -225,7 +267,7 @@ def transactions_categorize_auto_accept(
 
 
 @mcp_tool(sensitivity="low", domain="categorize")
-def transactions_categorize_auto_stats() -> ResponseEnvelope:
+def transactions_categorize_auto_stats() -> ResponseEnvelope[AutoStatsPayload]:
     """Auto-rule health metrics.
 
     Returns counts of active auto-rules, pending proposals, and
@@ -239,7 +281,7 @@ def transactions_categorize_auto_stats() -> ResponseEnvelope:
 @mcp_tool(sensitivity="medium", domain="categorize", read_only=False)
 def transactions_categorize_run(
     methods: list[Literal["rules", "merchants"]] | None = None,
-) -> ResponseEnvelope:
+) -> ResponseEnvelope[CategorizeRunPayload]:
     """Run the categorization engine cascade over uncategorized transactions.
 
     Each method runs a deterministic engine: ``rules`` applies active
@@ -256,8 +298,12 @@ def transactions_categorize_run(
     """
     with get_database() as db:
         data = CategorizationService(db).categorize_run(methods=methods)
+    payload = CategorizeRunPayload(
+        applied_by_method=data["applied_by_method"],
+        total_applied=data["total_applied"],
+    )
     return build_envelope(
-        data=data,
+        data=payload,
         sensitivity="medium",
         actions=[
             "Use transactions_categorize_stats to check resulting coverage",

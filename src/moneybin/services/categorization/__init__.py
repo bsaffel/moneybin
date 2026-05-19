@@ -110,6 +110,10 @@ from moneybin.services.categorization.orchestrator import (
     CategorizationOrchestrator,
     CategorizationResult,
 )
+from moneybin.privacy.payloads.categorize import (
+    CatPendingPayload as CatPendingPayload,
+    CategorizeRulesPayload as CategorizeRulesPayload,
+)
 from moneybin.services.categorization.queries import (
     CategorizationQueries,
     CategorizationStats,
@@ -457,7 +461,7 @@ class CategorizationService:
         """Get categories with consistent field shape including is_active."""
         return self._queries.get_all_categories(include_inactive=include_inactive)
 
-    def list_rules(self) -> list[dict[str, Any]]:
+    def list_rules(self) -> CategorizeRulesPayload:
         """List all categorization rules (active and inactive) ordered by priority."""
         return self._queries.list_rules()
 
@@ -467,7 +471,7 @@ class CategorizationService:
 
     def list_uncategorized_transactions(
         self, *, limit: int
-    ) -> list[dict[str, Any]] | None:
+    ) -> CatPendingPayload | None:
         """List uncategorized transactions ordered by date descending."""
         return self._queries.list_uncategorized_transactions(limit=limit)
 

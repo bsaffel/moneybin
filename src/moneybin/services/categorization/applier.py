@@ -38,7 +38,7 @@ from moneybin.metrics.registry import (
     CATEGORIZE_WRITE_SKIPPED_PRECEDENCE_TOTAL,
     MERCHANT_EXEMPLAR_COUNT,
 )
-from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.privacy.payloads.categorize import RulesCreatePayload
 from moneybin.services.audit_service import AuditService
 from moneybin.services.categorization._shared import (
     SOURCE_PRIORITY,
@@ -86,21 +86,14 @@ class RuleCreationResult:
     error_details: list[dict[str, str]]
     rule_ids: list[str]
 
-    def to_envelope(self, input_count: int) -> ResponseEnvelope:
-        """Build a ResponseEnvelope from this rule-creation result."""
-        return build_envelope(
-            data={
-                "created": self.created,
-                "existing": self.existing,
-                "skipped": self.skipped,
-                "rule_ids": self.rule_ids,
-                "error_details": self.error_details,
-            },
-            sensitivity="low",
-            total_count=input_count,
-            actions=[
-                "Use transactions_categorize_rules to review all rules",
-            ],
+    def to_payload(self) -> RulesCreatePayload:
+        """Return a typed payload for the MCP/CLI envelope boundary."""
+        return RulesCreatePayload(
+            created=self.created,
+            existing=self.existing,
+            skipped=self.skipped,
+            rule_ids=list(self.rule_ids),
+            error_details=list(self.error_details),
         )
 
     def merge_parse_errors(self, parse_errors: list[dict[str, str]]) -> None:

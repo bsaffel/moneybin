@@ -211,7 +211,15 @@ def rules_create(
         result.merge_parse_errors(parse_errors)
 
     if output == OutputFormat.JSON:
-        emit_json("rules_create", result.to_envelope(len(rules)).data)
+        from moneybin.protocol.envelope import build_envelope
+
+        envelope = build_envelope(
+            data=result.to_payload(),
+            sensitivity="low",
+            total_count=len(rules),
+            actions=["Use transactions_categorize_rules to review all rules"],
+        )
+        emit_json("rules_create", envelope.data)
     elif not quiet:
         logger.info(
             f"✅ Created {result.created} rule(s); "

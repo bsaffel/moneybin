@@ -225,6 +225,11 @@ def build_envelope(
         returned = 1
 
     actual_total = total_count if total_count is not None else returned
+    # For write-result payloads (aggregate dataclasses with no primary row list),
+    # _count_typed_payload returns 0 from an empty error_details field.  When the
+    # caller explicitly supplied total_count, treat all inputs as "returned".
+    if returned == 0 and total_count is not None and total_count > 0:
+        returned = actual_total
     has_more = next_cursor is not None or actual_total > returned
 
     summary = SummaryMeta(
