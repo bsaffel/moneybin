@@ -1,8 +1,10 @@
 /* Heuristic detection of likely-recurring outflows. Surfaces candidates with
    confidence scores; does NOT auto-classify. Algorithm (per spec):
-   group by (merchant_normalized, ROUND(amount, 0)) with >= 3 occurrences in
+   group by (merchant_id, ROUND(amount, 0)) with >= 3 occurrences in
    the last 18 months, infer cadence from interval mean+stddev, compute
-   confidence = clamp(0,1) of (occurrence_count/6) * (1 - stddev/14). */
+   confidence = clamp(0,1) of (occurrence_count/6) * (1 - stddev/14).
+   Transactions without a canonical merchant (merchant_id IS NULL) collapse
+   into a single '(uncategorized)' bucket per account. */
 MODEL (
   name reports.recurring_subscriptions,
   kind VIEW
@@ -11,7 +13,8 @@ MODEL (
 WITH eligible AS (
   SELECT
     t.account_id,
-    COALESCE(t.merchant_name, '(unknown)') AS merchant_normalized,
+    t.merchant_id,
+    CASE WHEN t.merchant_id IS NULL THEN '(uncategorized)' ELSE t.merchant_name END AS merchant_normalized,
     ROUND(t.amount, 0) AS amount_bucket,
     t.amount,
     t.transaction_date
@@ -29,21 +32,23 @@ WITH eligible AS (
      interleaving them would yield half-cadence intervals and misclassify
      stable monthly charges as biweekly or irregular. Household
      subscriptions split across cards will surface as two candidate rows;
-     the user can dedupe downstream. */
+     the user can dedupe downstream. PARTITION BY uses merchant_id (FK)
+     so two distinct merchants sharing a canonical_name don't accidentally
+     merge into one cadence cluster; the '(uncategorized)' bucket stays
+     keyed on the NULL merchant_id, treated as equal by GROUP/PARTITION. */
   SELECT
     account_id,
+    merchant_id,
     merchant_normalized,
     amount_bucket,
     amount,
     transaction_date,
-    transaction_date - LAG(transaction_date) OVER (
-      PARTITION BY account_id, merchant_normalized, amount_bucket
-      ORDER BY transaction_date
-    ) AS interval_days
+    transaction_date - LAG(transaction_date) OVER (PARTITION BY account_id, merchant_id, amount_bucket ORDER BY transaction_date) AS interval_days
   FROM eligible
 ), grouped AS (
   SELECT
-    merchant_normalized,
+    merchant_id,
+    ANY_VALUE(merchant_normalized) AS merchant_normalized,
     amount_bucket,
     AVG(ABS(amount)) AS avg_amount,
     AVG(interval_days) AS interval_days_avg,
@@ -54,13 +59,14 @@ WITH eligible AS (
   FROM with_intervals
   GROUP BY
     account_id,
-    merchant_normalized,
+    merchant_id,
     amount_bucket
   HAVING
     COUNT(*) >= 3
 )
 SELECT
-  merchant_normalized, /* Normalized merchant string */
+  merchant_id, /* Foreign key to core.dim_merchants.merchant_id; NULL for the '(uncategorized)' bucket */
+  merchant_normalized, /* Display label: dim_merchants.canonical_name for resolved merchants; '(uncategorized)' when merchant_id IS NULL */
   avg_amount, /* Mean absolute charge */
   CASE
     WHEN interval_days_avg BETWEEN 5 AND 9 AND interval_days_stddev < 2

@@ -45,6 +45,25 @@ class TestFctTransactionsCurationColumns:
         ):
             assert col in content, f"missing column declaration: {col}"
 
+    def test_fct_transactions_projects_merchant_id(self) -> None:
+        """SQLMesh model projects merchant_id from the dim_merchants join.
+
+        Audit Finding 1: dropping merchant_id at this view boundary forces
+        downstream reports to GROUP BY text, which silently re-buckets on
+        a canonical_name rename. Both the enriched CTE and the outer SELECT
+        must carry the FK so reports models can bind to it.
+        """
+        content = _MODEL_PATH.read_text()
+        # Final SELECT must project merchant_id with its comment so it
+        # reaches DuckDB's catalog (per .claude/rules/database.md
+        # "Column Comments" section).
+        assert "merchant_id," in content, (
+            "merchant_id missing from fct_transactions SELECT"
+        )
+        assert "core.dim_merchants.merchant_id" in content, (
+            "merchant_id column comment missing reference to dim_merchants"
+        )
+
     def test_fct_transactions_has_aggregation_ctes(self) -> None:
         """The three aggregation CTEs must be present in the model SQL."""
         content = _MODEL_PATH.read_text()

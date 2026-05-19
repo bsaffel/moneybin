@@ -159,8 +159,9 @@ class ReportsService:
         if cadence is not None and cadence not in RECURRING_CADENCES:
             raise ValueError(f"Unknown cadence: {cadence}")
         sql = f"""
-            SELECT merchant_normalized, cadence, avg_amount, occurrence_count,
-                   first_seen, last_seen, status, annualized_cost, confidence
+            SELECT merchant_id, merchant_normalized, cadence, avg_amount,
+                   occurrence_count, first_seen, last_seen, status,
+                   annualized_cost, confidence
             FROM {REPORTS_RECURRING_SUBSCRIPTIONS.full_name}
             WHERE confidence >= ?
         """  # noqa: S608  # TableRef interpolation
@@ -184,9 +185,10 @@ class ReportsService:
         if sort not in MERCHANTS_SORTS:
             raise ValueError(f"Unknown sort: {sort}")
         sql = f"""
-            SELECT merchant_normalized, total_spend, total_inflow, total_outflow,
-                   txn_count, avg_amount, median_amount, first_seen, last_seen,
-                   active_months, top_category, account_count
+            SELECT merchant_id, merchant_normalized, total_spend, total_inflow,
+                   total_outflow, txn_count, avg_amount, median_amount,
+                   first_seen, last_seen, active_months, top_category,
+                   account_count
             FROM {REPORTS_MERCHANT_ACTIVITY.full_name}
             ORDER BY {MERCHANTS_SORTS[sort]}
             LIMIT ?
@@ -203,8 +205,8 @@ class ReportsService:
         """Uncategorized transactions queue, ranked by curator-impact."""
         sql = f"""
             SELECT transaction_id, account_id, account_name, txn_date, amount,
-                   description, merchant_normalized, age_days, priority_score,
-                   source_type, source_id
+                   description, merchant_id, merchant_normalized, age_days,
+                   priority_score, source_type, source_id
             FROM {REPORTS_UNCATEGORIZED_QUEUE.full_name}
             WHERE ABS(amount) >= ?
         """  # noqa: S608  # TableRef interpolation
@@ -227,9 +229,9 @@ class ReportsService:
         if anomaly not in LARGE_TXN_ANOMALIES:
             raise ValueError(f"Unknown anomaly: {anomaly}")
         sql = f"""
-            SELECT transaction_id, account_name, txn_date, amount, description,
-                   merchant_normalized, category, amount_zscore_account,
-                   amount_zscore_category, is_top_100
+            SELECT transaction_id, account_id, account_name, txn_date, amount,
+                   description, merchant_id, merchant_normalized, category,
+                   amount_zscore_account, amount_zscore_category, is_top_100
             FROM {REPORTS_LARGE_TRANSACTIONS.full_name}
         """  # noqa: S608  # TableRef interpolation
         if anomaly == "account":

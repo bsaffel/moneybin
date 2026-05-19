@@ -155,11 +155,11 @@ class TestUncategorizedQueueTyping:
         db.execute("""
             CREATE OR REPLACE VIEW reports.uncategorized_queue AS
             SELECT * FROM (VALUES
-                ('T1', 'A1', 'Alpha', DATE '2026-04-01', -25.00, 'COFFEE', 'Coffee', 30, 750.0, 'ofx', NULL),
-                ('T2', 'A1', 'Alpha', DATE '2026-04-10', -500.00, 'BIG', 'Big', 20, 10000.0, 'ofx', NULL)
+                ('T1', 'A1', 'Alpha', DATE '2026-04-01', -25.00, 'COFFEE', NULL, 'Coffee', 30, 750.0, 'ofx', NULL),
+                ('T2', 'A1', 'Alpha', DATE '2026-04-10', -500.00, 'BIG', NULL, 'Big', 20, 10000.0, 'ofx', NULL)
             ) AS t(transaction_id, account_id, account_name, txn_date, amount,
-                   description, merchant_normalized, age_days, priority_score,
-                   source_type, source_id)
+                   description, merchant_id, merchant_normalized, age_days,
+                   priority_score, source_type, source_id)
         """)
 
     def test_min_amount_decimal(self, db: Database) -> None:
@@ -212,14 +212,14 @@ def _install_uncategorized_queue_with_accounts(db: Database) -> None:
         CREATE OR REPLACE VIEW reports.uncategorized_queue AS
         SELECT * FROM (VALUES
             ('T1', 'A1', 'Alpha', DATE '2026-04-01', -25.00,
-             'COFFEE', 'Coffee', 30, 750.0, 'ofx', NULL),
+             'COFFEE', NULL, 'Coffee', 30, 750.0, 'ofx', NULL),
             ('T2', 'A1', 'Alpha', DATE '2026-04-10', -500.00,
-             'BIG', 'Big', 20, 10000.0, 'ofx', NULL),
+             'BIG', NULL, 'Big', 20, 10000.0, 'ofx', NULL),
             ('T3', 'A2', 'Beta', DATE '2026-04-12', -50.00,
-             'GAS', 'Gas', 15, 200.0, 'ofx', NULL)
+             'GAS', NULL, 'Gas', 15, 200.0, 'ofx', NULL)
         ) AS t(transaction_id, account_id, account_name, txn_date, amount,
-               description, merchant_normalized, age_days, priority_score,
-               source_type, source_id)
+               description, merchant_id, merchant_normalized, age_days,
+               priority_score, source_type, source_id)
     """)
 
 

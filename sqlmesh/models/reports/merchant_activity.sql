@@ -1,6 +1,8 @@
 /* Per-merchant lifetime aggregations. Subsumes top_merchants — top-N is
-   ORDER BY total_spend DESC LIMIT N. NULL merchants bucketed into a single
-   '(unknown)' row to keep the view consumable. */
+   ORDER BY total_spend DESC LIMIT N. Aggregates on merchant_id (FK to
+   core.dim_merchants); transactions without a canonical merchant
+   (merchant_id IS NULL) collapse into a single '(uncategorized)'
+   bucket. */
 MODEL (
   name reports.merchant_activity,
   kind VIEW
@@ -8,7 +10,8 @@ MODEL (
 
 WITH normalized AS (
   SELECT
-    COALESCE(t.merchant_name, '(unknown)') AS merchant_normalized,
+    t.merchant_id,
+    CASE WHEN t.merchant_id IS NULL THEN '(uncategorized)' ELSE t.merchant_name END AS merchant_normalized,
     t.amount,
     t.category,
     t.transaction_date,
@@ -20,7 +23,8 @@ WITH normalized AS (
     NOT t.is_transfer AND NOT a.archived
 )
 SELECT
-  merchant_normalized, /* Normalized merchant string; '(unknown)' when source merchant is NULL */
+  merchant_id, /* Foreign key to core.dim_merchants.merchant_id; NULL for the '(uncategorized)' bucket aggregating transactions without a canonical merchant */
+  merchant_normalized, /* Display label: dim_merchants.canonical_name for resolved merchants; '(uncategorized)' when merchant_id IS NULL */
   SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END) AS total_spend, /* Lifetime absolute outflow */
   SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) AS total_inflow, /* Lifetime sum of positive amounts */
   SUM(CASE WHEN amount < 0 THEN amount ELSE 0 END) AS total_outflow, /* Lifetime sum of negative amounts (kept negative) */
@@ -36,4 +40,5 @@ SELECT
   COUNT(DISTINCT account_id) AS account_count /* Distinct accounts on which this merchant appears */
 FROM normalized
 GROUP BY
+  merchant_id,
   merchant_normalized
