@@ -59,3 +59,18 @@ class TestTransferSettings:
                     "keyword": 0.4,
                 }
             )
+
+    def test_transfer_signal_weights_rejects_legacy_keys(self) -> None:
+        # An upgraded env var still carrying the retired 4-signal shape sums
+        # to 1.0 and includes both required keys, so the older validator
+        # passed it — but compute_transfer_confidence only reads
+        # date_distance + keyword, silently capping max confidence below 1.0.
+        with pytest.raises(ValidationError, match="unrecognised keys"):
+            MatchingSettings(
+                transfer_signal_weights={
+                    "date_distance": 0.4,
+                    "keyword": 0.3,
+                    "roundness": 0.15,
+                    "pair_frequency": 0.15,
+                }
+            )

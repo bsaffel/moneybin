@@ -394,6 +394,9 @@ class MatchingSettings(BaseModel):
         missing = required - v.keys()
         if missing:
             raise ValueError(f"transfer_signal_weights missing keys: {missing}")
+        extra = v.keys() - required
+        if extra:
+            raise ValueError(f"transfer_signal_weights has unrecognised keys: {extra}")
         negative = {k: w for k, w in v.items() if w < 0}
         if negative:
             raise ValueError(f"transfer_signal_weights has negative values: {negative}")
