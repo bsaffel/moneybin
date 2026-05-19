@@ -17,6 +17,7 @@ See ``moneybin-mcp.md`` section 15.
 
 from __future__ import annotations
 
+import json
 import logging
 
 from moneybin.services.schema_catalog import build_schema_doc
@@ -29,8 +30,6 @@ logger = logging.getLogger(__name__)
 @mcp.resource("moneybin://schema")
 def resource_schema() -> str:
     """Curated schema for ad-hoc SQL: interface tables, columns, comments, example queries."""
-    import json
-
     logger.info("Resource read: moneybin://schema")
     doc = build_schema_doc()
     return json.dumps(doc, indent=2, default=str)
