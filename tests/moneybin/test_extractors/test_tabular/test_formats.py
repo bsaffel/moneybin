@@ -180,10 +180,12 @@ class TestFormatDBOperations:
         )
 
         builtins = load_builtin_formats()
+        # Override the real "tiller" builtin with a custom version — institution_name
+        # differs from the builtin ("Tiller") to confirm the user value wins.
         user = {
-            "chase_credit": TabularFormat(
-                name="chase_credit",
-                institution_name="Chase (custom)",
+            "tiller": TabularFormat(
+                name="tiller",
+                institution_name="Tiller (custom)",
                 header_signature=["Custom Date", "Custom Amount"],
                 field_mapping={
                     "transaction_date": "Custom Date",
@@ -194,4 +196,4 @@ class TestFormatDBOperations:
             )
         }
         merged = merge_formats(builtins, user)
-        assert merged["chase_credit"].institution_name == "Chase (custom)"
+        assert merged["tiller"].institution_name == "Tiller (custom)"
