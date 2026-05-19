@@ -439,7 +439,11 @@ The MCP server and CLI are co-equal consumers of the same service layer. The sym
 # Service layer (shared)
 class ReportsService:
     def spending_trend(
-        self, from_month: str | None, to_month: str | None, category: str | None, compare: str
+        self,
+        from_month: str | None,
+        to_month: str | None,
+        category: str | None,
+        compare: str,
     ) -> tuple[list[str], list[tuple]]: ...
 
 
@@ -452,7 +456,9 @@ def reports_spending(
     compare: str = "yoy",
 ) -> ResponseEnvelope:
     with get_database(read_only=True) as db:
-        cols, rows = ReportsService(db).spending_trend(from_month, to_month, category, compare)
+        cols, rows = ReportsService(db).spending_trend(
+            from_month, to_month, category, compare
+        )
     return envelope(cols, rows)
 
 
@@ -465,7 +471,9 @@ def reports_spending_cmd(
     compare: str = "yoy",
 ) -> None:
     with get_database(read_only=True) as db:
-        cols, rows = ReportsService(db).spending_trend(from_month, to_month, category, compare)
+        cols, rows = ReportsService(db).spending_trend(
+            from_month, to_month, category, compare
+        )
     render_table(cols, rows)
 ```
 
