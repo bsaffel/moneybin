@@ -206,8 +206,9 @@ def register_core_tools() -> None:
     from moneybin.mcp.tools.transactions_categorize_assist import (
         register_transactions_categorize_assist_tools,
     )
-    from moneybin.mcp.tools.transform import register_transform_tools
-
+    # Budget, tax, and transform tools are intentionally NOT registered today.
+    # transform_* functions remain CLI-accessible (operator territory, category 2
+    # per mcp-server.md); see src/moneybin/mcp/tools/transform.py module docstring.
     # Budget and tax tools are intentionally NOT registered today —
     # ``budget-tracking.md`` is ``draft`` (today's ``budget_set`` is a partial
     # slice of the planned set/status/delete + rollovers feature) and there is
@@ -232,7 +233,6 @@ def register_core_tools() -> None:
     register_sync_tools(mcp)
     register_sync_prompts(mcp)
     register_refresh_tools(mcp)
-    register_transform_tools(mcp)
     register_sql_tools(mcp)
 
     logger.info("Registered MCP tools — full surface visible at connect")

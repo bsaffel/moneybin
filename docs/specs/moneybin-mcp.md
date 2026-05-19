@@ -1186,7 +1186,7 @@ Run the post-load refresh pipeline: cross-source matching, SQLMesh apply, determ
 - **Unique parameters:**
   - `steps: list[Literal["match", "transform", "categorize"]] | None = None` — subset of canonical steps to run; defaults to None (full cascade). Steps execute in canonical order (match → transform → categorize) regardless of input order; dependencies enforce it (categorize reads SQLMesh-built views). Pass `steps=["transform"]` to run SQLMesh apply alone.
 - **Mutation surface:** rebuilds `core.*` and `reports.*` via SQLMesh; writes `app.transaction_categories` for newly-matched rules. No revert path — re-run after fixing inputs.
-- **Behavior:** Single user-facing entry point for the refresh domain. Idempotent; safe to retry after a failure. Matching and categorization steps are best-effort and log-only on failure — only SQLMesh apply errors surface in the response envelope. Returns `{applied, duration_seconds, error?}`. On apply failure, `actions[]` hints at `transform_plan` (per `mcp-server.md` infrastructure-verb carve-out) to inspect, or `refresh_run` to retry. When `steps` includes `match` but excludes `categorize`, `actions[]` includes a follow-up hint pointing at `refresh_run(steps=["categorize"])`. Unknown step names raise `UserError(code="UNKNOWN_REFRESH_STEP")`. Symmetric with `transactions_categorize_run(methods=...)`.
+- **Behavior:** Single user-facing entry point for the refresh domain. Idempotent; safe to retry after a failure. Matching and categorization steps are best-effort and log-only on failure — only SQLMesh apply errors surface in the response envelope. Returns `{applied, duration_seconds, error?}`. On apply failure, `actions[]` hints at `moneybin transform plan` (CLI operator tool) to inspect, or `refresh_run` to retry. When `steps` includes `match` but excludes `categorize`, `actions[]` includes a follow-up hint pointing at `refresh_run(steps=["categorize"])`. Unknown step names raise `UserError(code="UNKNOWN_REFRESH_STEP")`. Symmetric with `transactions_categorize_run(methods=...)`.
 - **Service:** `moneybin.services.refresh.refresh(db, *, steps=None) -> RefreshResult`
 - **CLI:** `moneybin refresh [--step STEP]... [--output json] [-q]`
 
@@ -1307,53 +1307,11 @@ Four goal-oriented workflow templates. Each defines the goal, relevant tools, gu
 
 ## 15. Resources
 
-Four ambient context endpoints loaded when the AI connects. Resources provide background context the AI needs to make informed first tool calls. They are read-only, compact, and change infrequently.
-
-### `moneybin://status`
-
-Data freshness dashboard. Contains: row counts per source, date ranges, last import timestamp, categorization coverage percentage, pending match count. Lets the AI know what data exists without a tool call.
-
-### `moneybin://accounts`
-
-Account list with types, institutions, and currencies. Lets the AI reference accounts by name and filter by type without calling `accounts` first. Excludes balances and account numbers.
-
-### `moneybin://privacy`
-
-Active consent grants, configured AI backend (name, type, is_local), consent mode. Lets the AI know what sensitivity tiers are available before hitting a consent wall. Ships with static defaults (no grants, no backend configured) until consent infrastructure lands.
+One ambient context endpoint: `moneybin://schema`. The seven resources removed in PR #177 (`moneybin://status`, `moneybin://accounts`, `moneybin://privacy`, `moneybin://tools`, `accounts://summary`, `moneybin://recent-curation`, `net-worth://summary`) were duplicates of tool responses and added context-window overhead without information gain. Their data remains available via the corresponding tools.
 
 ### `moneybin://schema`
 
-Core and app table schemas with column names, types, and descriptions. Lets the AI write accurate SQL for `sql_query` without calling a discovery tool first.
-
-### `accounts://summary`
-
-Cross-account summary: list of accounts with display name, type, institution, currency, include_in_net_worth flag, archived status, and last known balance. Mirrors the `accounts_summary` tool response — available as ambient context so the AI can reference accounts without an extra tool call.
-
-### `net-worth://summary`
-
-Current net worth snapshot: total net worth, assets vs liabilities breakdown, and per-account balance contributions. Refreshed on each connection. Lets the AI answer "what's my net worth?" from ambient context without calling `reports_networth`.
-
-### `moneybin://tools`
-
-Flat catalog of registered tool namespaces with one-line descriptions. All namespaces are visible at connect (see `mcp-architecture.md` §3 "Tool disclosure: full surface, taxonomy-led") — this resource is a cheaper-than-tool-listing way for the agent to scan the domain map without paying the schema-cost of every tool. Example (illustrative; current counts vary):
-
-```json
-{
-  "namespaces": [
-    {"namespace": "system", "tools": 2, "description": "Data status, pipeline integrity"},
-    {"namespace": "reports", "tools": 10, "description": "Spending, cashflow, budget, net worth, recurring, merchants"},
-    {"namespace": "accounts", "tools": 11, "description": "Listing, balances, balance assertions, settings, net worth"},
-    {"namespace": "transactions", "tools": 12, "description": "Search, curation (notes/tags/splits), review, categorize workflow"},
-    {"namespace": "categories", "tools": 4, "description": "Taxonomy reference data"},
-    {"namespace": "merchants", "tools": 2, "description": "Merchant mapping reference data"},
-    {"namespace": "import", "tools": 7, "description": "File import, inbox sweep, preview, revert, formats"},
-    {"namespace": "sync", "tools": 5, "description": "Plaid connect, pull, status"},
-    {"namespace": "sql", "tools": 2, "description": "Power-user escape hatch + schema"}
-  ]
-}
-```
-
-Static for a given server build — namespace and tool counts reflect what is registered (bounded by the surface-discipline rule in `.claude/rules/mcp-server.md`). The `core`/`extended`/`loaded`/`discover_tool` shape from the earlier progressive-disclosure design is retired. Two classes of namespaces are absent from this catalog: (1) phantoms — `privacy.*`, `transactions_matches.*`, `budget.*`, `tax.*`, and any other prefix with no registered tools today — they re-enter when their first tool registers under a backing spec that is `in-progress` or `implemented`; (2) the one *promotion* carve-out — `transform_*` tools (infrastructure verbs reached via `system_status` action hints, not a user-facing domain) still register and appear in `list_tools()` but do not surface here.
+Core and app table schemas with column names, types, and descriptions. Lets the AI write accurate SQL for `sql_query` without calling a discovery tool first. This resource has unique composition value: it provides a curated schema snapshot that is more useful for SQL generation than any single tool response.
 
 ---
 
@@ -1368,9 +1326,6 @@ Per the MCP exposure principle, sync is fully MCP-exposed except for credential-
 | `sync_disconnect <institution>` | medium | Removes institution by name. No revert path. |
 | `sync_pull [institution] [force] [refresh=true]` | medium | Triggers sync for one or all institutions; loads `raw.plaid_*` and propagates through SQLMesh. Amounts follow MoneyBin convention (negative = expense). When `refresh` (default true) and the sync changes raw state, the post-load refresh pipeline (matching + SQLMesh apply + categorization) runs once at end-of-pull so `core.dim_accounts` reflects new data before returning. Result envelope adds `transforms_applied`, `transforms_duration_seconds`, `transforms_error` (SQLMesh-step outcome — matching and categorization are log-only on failure). |
 | `sync_status` | low | Read-only: connected institutions, last-sync times, guidance for error states. |
-| `sync_schedule_set --time HH:MM` | low | Stub — installs daily sync (launchd/cron). |
-| `sync_schedule_show` | low | Stub — read-only schedule details. |
-| `sync_schedule_remove` | low | Stub — uninstalls scheduled job. |
 
 **CLI-only (security-justified):** `sync_login`, `sync_logout` (browser interaction + credential handling routed through LLM context is a security-model violation); `sync_rotate_key` — passphrase material through LLM context is a security-model violation.
 
@@ -1384,14 +1339,16 @@ Per the MCP exposure principle, sync is fully MCP-exposed except for credential-
 
 ## 17. `transform_*` — SQLMesh pipeline operations
 
-Read-only pipeline introspection. The mutating refresh path is `refresh_run` (§12); `transform_apply` was retired as a standalone MCP tool in favor of `refresh_run(steps=["transform"])`. See [`smart-import-transform.md`](smart-import-transform.md).
+**CLI-only (operator territory, category 2).** The `transform_*` functions are not registered on the MCP surface as of PR #177. They remain accessible via `moneybin transform <subcommand>` for operators performing hands-on SQLMesh introspection. The mutating refresh path is `refresh_run` (§12); on apply failure, `refresh_run` emits a hint pointing at `moneybin transform plan`.
 
-| Tool | Behavior |
+`transform_apply` was retired as a standalone MCP tool in favor of `refresh_run(steps=["transform"])`. See [`smart-import-transform.md`](smart-import-transform.md).
+
+| CLI command | Behavior |
 |---|---|
-| `transform_status` | Current model state, environment |
-| `transform_plan` | Preview pending SQLMesh changes (read-only) |
-| `transform_validate` | Check model SQL parses and resolves |
-| `transform_audit` | Run data quality assertions |
+| `moneybin transform status` | Current model state, environment |
+| `moneybin transform plan` | Preview pending SQLMesh changes (read-only) |
+| `moneybin transform validate` | Check model SQL parses and resolves |
+| `moneybin transform audit` | Run data quality assertions |
 
 **CLI-only (operator-territory):** `transform_restate` — destructive force-recompute for a date range, used for bug fixes / late-data backfill / schema reinterpretation. Power-user / data-engineering territory; preceded by code changes the AI doesn't drive.
 
@@ -1425,7 +1382,7 @@ Tools that depend on unbuilt subsystems are documented in the catalog with depen
 
 ### Tools shippable without dependencies
 
-> **Surface status (2026-05-18):** All entries in §16 (Migration) not marked "NOT registered" or de-registered above are live and visible at connect. See the dependency tracker above for the tools that remain blocked. `budget.*` and `tax.*` tool modules remain implemented but are **de-registered** in `src/moneybin/mcp/server.py:register_core_tools()` (matching the dependency-tracker rows above) — re-register when their backing specs reach `in-progress`/`implemented`. A working implementation alone does not justify exposing the tool on the public surface.
+> **Surface status (2026-05-19):** All entries in §16 not marked "NOT registered" or de-registered are live and visible at connect. See the dependency tracker above for tools that remain blocked. `budget.*`, `tax.*`, and `transform_*` tool modules remain implemented but are **de-registered** in `src/moneybin/mcp/server.py:register_core_tools()`. `budget.*` and `tax.*` re-register when their backing specs reach `in-progress`/`implemented`. `transform_*` are operator territory (category 2) and remain CLI-only; see §17. A working implementation alone does not justify exposing a tool on the public surface.
 
 ---
 

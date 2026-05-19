@@ -44,12 +44,10 @@ async def test_refresh_run_surfaces_apply_error() -> None:
         envelope = await refresh_run()
     assert envelope.data["applied"] is False
     assert envelope.data["error"] == "model boom"
-    # The recovery hint must reference tools that are actually registered.
-    # moneybin_discover was retired in #161; any reference to it would point
-    # an agent at an unknown tool exactly when guidance matters most.
+    # The recovery hint must reference valid paths, not retired MCP tools.
     assert envelope.actions, "apply failure must emit a recovery hint"
     assert all("moneybin_discover" not in a for a in envelope.actions)
-    assert any("transform_plan" in a for a in envelope.actions)
+    assert any("moneybin transform plan" in a for a in envelope.actions)
 
 
 @pytest.mark.unit
@@ -109,7 +107,9 @@ async def test_refresh_run_suppresses_followup_hint_on_transform_failure() -> No
         envelope = await refresh_run(steps=["match", "transform"])
     assert REFRESH_CATEGORIZE_FOLLOWUP_HINT not in envelope.actions
     # Apply-failed hint should still fire.
-    assert any("transform_plan" in a for a in envelope.actions), envelope.actions
+    assert any("moneybin transform plan" in a for a in envelope.actions), (
+        envelope.actions
+    )
 
 
 @pytest.mark.unit
@@ -123,20 +123,3 @@ async def test_refresh_run_no_followup_hint_when_categorize_included() -> None:
         get_db.return_value.__enter__.return_value = MagicMock()
         envelope = await refresh_run()
     assert REFRESH_CATEGORIZE_FOLLOWUP_HINT not in envelope.actions
-
-
-@pytest.mark.unit
-async def test_transform_apply_no_longer_registered() -> None:
-    """``transform_apply`` MCP tool removed in this PR — must not be in the registry."""
-    from moneybin.mcp.tools.transform import register_transform_tools
-
-    mcp = FastMCP("test")
-    register_transform_tools(mcp)
-    names = {tool.name for tool in await mcp._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
-    assert "transform_apply" not in names
-    assert {
-        "transform_status",
-        "transform_plan",
-        "transform_validate",
-        "transform_audit",
-    } <= names
