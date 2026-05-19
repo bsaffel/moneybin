@@ -48,6 +48,8 @@ class ImportResult:
     date_range: str = ""
     details: dict[str, int] = field(default_factory=dict)
     core_tables_rebuilt: bool = False
+    sign_correction_suggested: bool = False
+    """True if running balance suggests sign inversion; amounts were NOT auto-corrected."""
     import_id: str | None = None
     """UUID of the raw.import_log row this import created."""
 
@@ -936,6 +938,7 @@ class ImportService:
         result.accounts = len(unique_ids)
         result.transactions = rows_imported
         result.details = {"transactions": rows_imported, "accounts": len(unique_ids)}
+        result.sign_correction_suggested = transform_result.sign_correction_suggested
 
         if rows_imported > 0:
             result.date_range = self._query_date_range(

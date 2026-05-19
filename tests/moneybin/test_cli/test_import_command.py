@@ -88,3 +88,72 @@ def test_import_file_default_auto_accept_false(csv_path: Path) -> None:
 
     assert result.exit_code == 0, result.output
     assert captured.get("auto_accept") is False
+
+
+def test_import_file_surfaces_sign_correction_warning(csv_path: Path) -> None:
+    """When ImportResult.sign_correction_suggested=True, a warning goes to stderr."""
+
+    def fake_run_import(**kwargs: Any) -> ImportResult:
+        return ImportResult(
+            file_path=str(kwargs["file_path"]),
+            file_type="tabular",
+            sign_correction_suggested=True,
+        )
+
+    with (
+        patch(
+            "moneybin.cli.utils.handle_cli_errors",
+            _fake_db_ctx,
+        ),
+        patch(
+            "moneybin.database.get_database",
+            _fake_db_ctx,
+        ),
+        patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=fake_run_import,
+        ),
+    ):
+        result = runner.invoke(
+            app,
+            ["files", str(csv_path), "--account-name", "Test"],
+            catch_exceptions=False,
+        )
+
+    assert result.exit_code == 0, result.output
+    # typer.echo(..., err=True) goes to stderr; CliRunner mixes it into output
+    assert "Sign convention may be inverted" in result.output
+
+
+def test_import_file_no_sign_warning_when_not_suggested(csv_path: Path) -> None:
+    """When sign_correction_suggested=False, no warning is printed."""
+
+    def fake_run_import(**kwargs: Any) -> ImportResult:
+        return ImportResult(
+            file_path=str(kwargs["file_path"]),
+            file_type="tabular",
+            sign_correction_suggested=False,
+        )
+
+    with (
+        patch(
+            "moneybin.cli.utils.handle_cli_errors",
+            _fake_db_ctx,
+        ),
+        patch(
+            "moneybin.database.get_database",
+            _fake_db_ctx,
+        ),
+        patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=fake_run_import,
+        ),
+    ):
+        result = runner.invoke(
+            app,
+            ["files", str(csv_path), "--account-name", "Test"],
+            catch_exceptions=False,
+        )
+
+    assert result.exit_code == 0, result.output
+    assert "Sign convention" not in result.output
