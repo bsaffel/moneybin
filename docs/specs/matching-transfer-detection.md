@@ -330,7 +330,7 @@ class MatchingSettings(BaseModel):
 
 Env var overrides:
 
-- `MONEYBIN_MATCHING__TRANSFER_REVIEW_THRESHOLD=0.65`
+- `MONEYBIN_MATCHING__TRANSFER_REVIEW_THRESHOLD=0.65`  — raise above the 0.55 default to tighten (fewer false positives, more missed transfers); lower toward 0.50 to relax (more reviewed candidates, more false positives)
 - `MONEYBIN_MATCHING__DATE_WINDOW_DAYS=5`
 - `MONEYBIN_MATCHING__TRANSFER_SIGNAL_WEIGHTS='{"date_distance": 0.7, "keyword": 0.3}'`
 
