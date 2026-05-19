@@ -40,6 +40,48 @@ Tests run in parallel via `pytest-xdist` (`-n auto` in `pyproject.toml`).
 Pass `-n0` to disable parallelism when you need `pdb`, ordered output,
 or are debugging a flaky test that may have inter-test state leaks.
 
+## Memory budget for parallel runs
+
+The pyproject default of `-n auto` resolves to one worker per logical
+CPU (~12 on a typical M-series Mac). Each xdist worker is a full Python
+process that imports the entire dependency graph at session start
+(moneybin + sqlmesh + sqlglot + duckdb + polars + pandas + fastmcp + the
+test conftest chain), landing around **2.5–6 GB resident per worker**
+depending on which test modules it picks up. Twelve workers can
+therefore peak at **30–70 GB**, which exceeds RAM on a 32 GB machine and
+pushes the OS compressor + swap into the danger zone where macOS may
+panic WindowServer.
+
+When running pytest from a long-running interactive session — especially
+from an agent loop that is also holding context, or a subagent dispatch
+that already has a large in-memory working set — cap worker count and
+override the default explicitly:
+
+```bash
+uv run pytest <paths> \
+  -o addopts="-ra -q --strict-markers --strict-config --dist=loadscope" \
+  -n 2
+```
+
+Notes:
+
+- `-o addopts="..."` **replaces** the pyproject value entirely — there
+  is no merge. Re-list every default flag you want to keep, especially
+  `--dist=loadscope` (required by xdist for our test layout).
+- `-n 2` is the recommended floor for interactive use on a 32 GB
+  machine. CI may use a higher count when run in a dedicated container
+  with exclusive RAM.
+- `-n 0` is the safest single-process option but ~10× slower on the
+  full suite. Reserve for debugging or when memory headroom is unknown.
+- Do **not** combine `-p no:xdist` with `-n` — the pyproject default
+  passes `-n auto`, which fails to parse once xdist is plugin-disabled.
+
+If a single worker grows past ~6 GB during a run, that points to a real
+fixture leak (the baseline import overhead alone is ~2.5–3.5 GB).
+Capture with `pytest-memray` (`--memray
+--memray-bin-path=<dir>`) before treating it as a "just cap workers"
+problem.
+
 ## Mocking Strategy
 
 - **Mock external dependencies**: APIs, databases, file systems.
