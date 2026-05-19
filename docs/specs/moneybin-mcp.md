@@ -1240,7 +1240,7 @@ Execute an arbitrary read-only SQL query against DuckDB.
 - **Sensitivity:** `medium` — can return any row-level data from core tables.
 - **Unique parameters:** `sql: str` (required).
 - **Behavior:** Validates query is read-only (SELECT, WITH, DESCRIBE, SHOW, PRAGMA, EXPLAIN). Blocks file-access functions (`read_csv`, `read_parquet`, etc.) and URL literals. Results capped at `MAX_ROWS` and `MAX_CHARS`. Returns results in the standard response envelope with column names as field keys. Degraded response rejects the query with a consent instruction — arbitrary SQL can't be meaningfully degraded to aggregates.
-- **CLI:** `moneybin sql query "SELECT ..." [--output json]`
+- **CLI:** `moneybin db query "SELECT ..." [-o text|json|csv|markdown|box]`
 
 ### `sql_schema`
 
