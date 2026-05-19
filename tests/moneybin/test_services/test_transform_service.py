@@ -170,7 +170,7 @@ def test_apply_returns_apply_result_shape(
     def fake_sqlmesh_context(_db: Database):  # type: ignore[no-untyped-def]
         yield fake_ctx
 
-    def fake_seed(_db: object, _settings: object) -> None:
+    def fake_seed(_self: object) -> None:
         return None
 
     def fake_refresh(_db: object) -> None:
@@ -181,7 +181,7 @@ def test_apply_returns_apply_result_shape(
         fake_sqlmesh_context,
     )
     monkeypatch.setattr(
-        "moneybin.services.transform_service.seed_source_priority",
+        "moneybin.services.matching_service.MatchingService.seed_priority",
         fake_seed,
     )
     monkeypatch.setattr(
@@ -218,7 +218,7 @@ def test_apply_soft_fails_with_error_type_on_sqlmesh_exception(
         raise RuntimeError("plan exploded")
         yield  # unreachable; satisfies the contextmanager generator contract
 
-    def fake_seed(_db: object, _settings: object) -> None:
+    def fake_seed(_self: object) -> None:
         return None
 
     monkeypatch.setattr(
@@ -226,7 +226,7 @@ def test_apply_soft_fails_with_error_type_on_sqlmesh_exception(
         fake_sqlmesh_context,
     )
     monkeypatch.setattr(
-        "moneybin.services.transform_service.seed_source_priority",
+        "moneybin.services.matching_service.MatchingService.seed_priority",
         fake_seed,
     )
 

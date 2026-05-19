@@ -1,6 +1,6 @@
 """Unit tests for the refresh service-layer cascade.
 
-These tests mock the three dependent services (TransactionMatcher,
+These tests mock the three dependent services (MatchingService,
 TransformService, CategorizationService) and assert that ``refresh()``:
 
 - Runs the full cascade when ``steps=None`` (current default).
@@ -36,7 +36,6 @@ def patched_services() -> Iterator[dict[str, MagicMock]]:
     transform_apply = MagicMock(return_value=_make_apply_result(applied=True))
     categorize_pending = MagicMock(return_value={"total": 0, "rule": 0, "merchant": 0})
     auto_stats = MagicMock(return_value=MagicMock(pending_proposals=0))
-    seed_priority = MagicMock()
 
     # Patches target the consumer module (moneybin.services.refresh) where
     # each name is bound — refresh.py imports TransformService at module level
@@ -44,8 +43,8 @@ def patched_services() -> Iterator[dict[str, MagicMock]]:
     # modules wouldn't intercept the call paths used here.
     with (
         patch(
-            "moneybin.matching.engine.TransactionMatcher",
-            return_value=MagicMock(run=matcher_run),
+            "moneybin.services.matching_service.MatchingService.run",
+            matcher_run,
         ),
         patch(
             "moneybin.services.refresh.TransformService",
@@ -58,14 +57,6 @@ def patched_services() -> Iterator[dict[str, MagicMock]]:
         patch(
             "moneybin.services.auto_rule_service.AutoRuleService",
             return_value=MagicMock(stats=auto_stats),
-        ),
-        patch(
-            "moneybin.matching.priority.seed_source_priority",
-            seed_priority,
-        ),
-        patch(
-            "moneybin.config.get_settings",
-            return_value=MagicMock(matching=MagicMock()),
         ),
     ):
         yield {

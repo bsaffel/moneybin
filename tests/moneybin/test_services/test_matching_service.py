@@ -45,3 +45,40 @@ def test_uses_default_settings_when_omitted() -> None:
     args, kwargs = cls.call_args
     assert "MATCHING_SETTINGS" in args or kwargs.get("settings") == "MATCHING_SETTINGS"
     ssp.assert_called_once_with(db, "MATCHING_SETTINGS")
+
+
+def test_undo_delegates_to_undo_match() -> None:
+    """MatchingService.undo() should delegate to persistence.undo_match()."""
+    db = MagicMock()
+    with patch("moneybin.services.matching_service.undo_match") as fn:
+        MatchingService(db).undo("match-123", reversed_by="user")
+    fn.assert_called_once_with(db, "match-123", reversed_by="user")
+
+
+def test_undo_default_reversed_by_is_user() -> None:
+    """reversed_by defaults to 'user' when omitted."""
+    db = MagicMock()
+    with patch("moneybin.services.matching_service.undo_match") as fn:
+        MatchingService(db).undo("match-123")
+    fn.assert_called_once_with(db, "match-123", reversed_by="user")
+
+
+def test_get_log_delegates_to_get_match_log() -> None:
+    """MatchingService.get_log() should delegate to persistence.get_match_log()."""
+    db = MagicMock()
+    expected = [{"match_id": "m1"}]
+    with patch(
+        "moneybin.services.matching_service.get_match_log", return_value=expected
+    ) as fn:
+        result = MatchingService(db).get_log(limit=10, match_type="dedup")
+    fn.assert_called_once_with(db, limit=10, match_type="dedup")
+    assert result == expected
+
+
+def test_seed_priority_delegates_to_seed_source_priority() -> None:
+    """MatchingService.seed_priority() runs the seed step in isolation."""
+    db = MagicMock()
+    with patch("moneybin.services.matching_service.seed_source_priority") as fn:
+        MatchingService(db).seed_priority()
+    fn.assert_called_once()
+    assert fn.call_args.args[0] is db

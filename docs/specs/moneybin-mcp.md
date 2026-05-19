@@ -735,7 +735,7 @@ Revert a previous import batch by `import_id`. Removes the imported rows from `r
 - **Annotations:** `read_only=False`, `destructive=True`, `idempotent=False`.
 - **Unique parameters:** `import_id: str` (required) — the batch identifier returned by `import_files` or `transactions_create`.
 - **Mutation surface:** deletes rows from the relevant `raw.*` table tagged with `import_id`. No revert — re-run the original import to restore.
-- **Service:** `ImportService.revert_import()`
+- **Service:** `ImportService.revert()`
 - **CLI:** `moneybin import revert IMPORT_ID`
 
 ### `import_inbox_sync`

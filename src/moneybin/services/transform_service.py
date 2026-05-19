@@ -14,11 +14,10 @@ from datetime import UTC, datetime
 
 import duckdb
 
-from moneybin.config import get_settings
 from moneybin.database import Database, sqlmesh_context
-from moneybin.matching.priority import seed_source_priority
 from moneybin.metrics.registry import SQLMESH_RUN_DURATION_SECONDS
 from moneybin.seeds import refresh_views
+from moneybin.services.matching_service import MatchingService
 from moneybin.tables import DIM_ACCOUNTS, IMPORT_LOG
 
 logger = logging.getLogger(__name__)
@@ -120,7 +119,7 @@ class TransformService:
             # winners. Inside the try block so a seed failure (write error,
             # stale catalog) returns the structured ApplyResult envelope
             # instead of propagating raw to MCP/CLI callers.
-            seed_source_priority(self._db, get_settings().matching)
+            MatchingService(self._db).seed_priority()
             with sqlmesh_context(self._db) as ctx:
                 ctx.plan(auto_apply=True, no_prompts=True)
             # Full plan rebuilds seeds.* too, so refresh the views that read them.

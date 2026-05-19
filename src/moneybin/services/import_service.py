@@ -247,7 +247,7 @@ class ImportService:
         that exposes the lifecycle to callers (manual entry, future API
         connectors) that don't have a source file but still need an
         ``import_id`` to attribute their raw rows. ``source_type`` must be
-        in the loader's allowlist (see ``_REVERT_TABLES``); ``actor`` is
+        in the loader's allowlist (see ``REVERT_TABLES``); ``actor`` is
         recorded as the ``account_names`` payload so audit consumers can
         trace which surface (cli/mcp) initiated the batch.
         """
@@ -1237,6 +1237,115 @@ class ImportService:
             transforms_duration_seconds=duration_seconds,
             transforms_error=error,
         )
+
+    def revert(self, import_id: str) -> dict[str, str | int]:
+        """Revert an import batch by deleting its raw rows and flipping status.
+
+        Looks up source_type from raw.import_log to determine which tables to
+        delete from (via the ``REVERT_TABLES`` allowlist). Updates status to
+        'reverted'.
+
+        Args:
+            import_id: UUID of the import batch in ``raw.import_log``.
+
+        Returns:
+            ``{'status': 'reverted', 'rows_deleted': N}`` on success.
+            ``{'status': 'not_found', 'reason': ...}`` if import_id doesn't exist.
+            ``{'status': 'already_reverted'}`` if already reverted.
+            ``{'status': 'unsupported', 'reason': ...}`` if the source_type is
+            not in the revert allowlist.
+            ``{'status': 'superseded', 'reason': ...}`` if a later import for
+            the same source_file already overwrote the rows.
+        """
+        # REVERT_TABLES is owned by import_log because begin_import also consults it.
+        from moneybin.loaders.import_log import REVERT_TABLES  # noqa: PLC0415
+        from moneybin.tables import IMPORT_LOG  # noqa: PLC0415
+
+        row = self._db.execute(
+            f"SELECT source_type, status, source_file, started_at "
+            f"FROM {IMPORT_LOG.full_name} WHERE import_id = ?",
+            [import_id],
+        ).fetchone()
+
+        if row is None:
+            return {"status": "not_found", "reason": f"No import with ID {import_id}"}
+
+        src_type, status, source_file, started_at = row
+
+        if status == "reverted":
+            return {"status": "already_reverted"}
+
+        if src_type not in REVERT_TABLES:
+            return {
+                "status": "unsupported",
+                "reason": f"Cannot revert source_type {src_type!r}",
+            }
+
+        tables = REVERT_TABLES[src_type]
+
+        # Sum across every table the source_type populates. OFX statements with
+        # zero transactions but populated accounts/balances must still be
+        # detectable as live (not superseded) and reportable in rows_deleted.
+        rows_to_delete = 0
+        for table in tables:
+            result = self._db.execute(
+                f"SELECT COUNT(*) FROM {table.full_name} WHERE import_id = ?",
+                [import_id],
+            ).fetchone()
+            if result:
+                rows_to_delete += result[0]
+
+        if rows_to_delete == 0:
+            # If a later import upserted over this one's rows, surface that
+            # instead of a silent no-op revert.
+            reimport_row = self._db.execute(
+                f"""
+                SELECT import_id
+                FROM {IMPORT_LOG.full_name}
+                WHERE source_file = ?
+                  AND import_id != ?
+                  AND started_at > ?
+                  AND status NOT IN ('reverted', 'failed')
+                ORDER BY started_at DESC
+                LIMIT 1
+                """,
+                [source_file, import_id, started_at],
+            ).fetchone()
+            if reimport_row:
+                newer_id = reimport_row[0]
+                return {
+                    "status": "superseded",
+                    "reason": (
+                        f"File was re-imported as {newer_id[:8]}...; "
+                        f"revert that batch to remove the data."
+                    ),
+                }
+
+        self._db.begin()
+        try:
+            for table in tables:
+                self._db.execute(
+                    f"DELETE FROM {table.full_name} WHERE import_id = ?",
+                    [import_id],
+                )
+            self._db.execute(
+                f"""
+                UPDATE {IMPORT_LOG.full_name} SET
+                    status = 'reverted',
+                    reverted_at = CURRENT_TIMESTAMP
+                WHERE import_id = ?
+                """,
+                [import_id],
+            )
+            self._db.commit()
+        except Exception:
+            self._db.rollback()
+            raise
+
+        logger.info(
+            f"Reverted import {import_id[:8]}...: {rows_to_delete} rows deleted"
+        )
+        return {"status": "reverted", "rows_deleted": rows_to_delete}
 
     # ------------------------------------------------------------------
     # Import labels (spec Req 22–24).
