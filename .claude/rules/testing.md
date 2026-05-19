@@ -46,48 +46,43 @@ The pyproject default of `-n auto` resolves to one worker per logical
 CPU (~12 on a typical M-series Mac). Each xdist worker is a full Python
 process that imports the entire dependency graph at session start
 (moneybin + sqlmesh + sqlglot + duckdb + polars + pandas + fastmcp + the
-test conftest chain), landing around **2.5–6 GB resident per worker**
-depending on which test modules it picks up. Twelve workers can
-therefore peak at **30–70 GB**, which exceeds RAM on a 32 GB machine and
-pushes the OS compressor + swap into the danger zone where macOS may
-panic WindowServer.
+test conftest chain), landing around **2.5–6 GB resident per worker**.
+The full `tests/moneybin/` tree under `-n auto` runs in ~1 minute on a
+32 GB M1 Pro when it's the only large workload — that's the intended
+invocation for `make test` and for one-off main-session runs.
 
-**The `-n auto` default is not safe on a 32 GB development machine, even
-when nothing else of size is running.** Empirically the full
-`tests/moneybin/` tree under `-n auto` (12 workers) on a 32 GB M1 Pro
-saturates the compressor + swap so badly that the workers deadlock
-without ever writing a progress dot — observed twice in one session,
-each run sitting for 8+ hours doing nothing but swap IO until killed by
-hand. CI containers with exclusive RAM can use `-n auto`; interactive
-local dev should not.
+The footprint becomes a problem when **multiple pytest processes spawn
+in parallel**: a single subagent dispatch that runs `uv run pytest` is
+one Claude Code conversation already holding ~400 MB plus 12 xdist
+workers at 2.5–6 GB each. Two such subagents running concurrently
+double the worker count without doubling the RAM budget, and have
+empirically driven this machine into compressor + swap saturation.
 
-When running pytest from any local interactive session, cap worker count
-and override the default explicitly:
+The rule:
 
-```bash
-uv run pytest <paths> \
-  -o addopts="-ra -q --strict-markers --strict-config --dist=loadscope" \
-  -n 2
-```
+- **Main session:** use the project default. `uv run pytest <paths>`
+  with no override is correct.
+- **Subagent dispatch prompts:** cap workers at 2 by overriding addopts.
+  Bake the cap into the prompt so the subagent inherits it explicitly:
+
+  ```bash
+  uv run pytest <paths> \
+    -o addopts="-ra -q --strict-markers --strict-config --dist=loadscope" \
+    -n 2
+  ```
 
 Notes:
 
 - `-o addopts="..."` **replaces** the pyproject value entirely — there
   is no merge. Re-list every default flag you want to keep, especially
   `--dist=loadscope` (required by xdist for our test layout).
-- `-n 2` is the recommended floor for interactive use on a 32 GB
-  machine. CI may use a higher count when run in a dedicated container
-  with exclusive RAM.
-- `-n 0` is the safest single-process option but ~10× slower on the
-  full suite. Reserve for debugging or when memory headroom is unknown.
 - Do **not** combine `-p no:xdist` with `-n` — the pyproject default
   passes `-n auto`, which fails to parse once xdist is plugin-disabled.
-
-If a single worker grows past ~6 GB during a run, that points to a real
-fixture leak (the baseline import overhead alone is ~2.5–3.5 GB).
-Capture with `pytest-memray` (`--memray
---memray-bin-path=<dir>`) before treating it as a "just cap workers"
-problem.
+- If a single worker grows past ~6 GB during any run, that points to a
+  real fixture leak (the baseline import overhead alone is ~2.5–3.5
+  GB). Capture with `pytest-memray` (`--memray
+  --memray-bin-path=<dir>`) before treating it as a "just cap workers"
+  problem.
 
 ## Mocking Strategy
 
