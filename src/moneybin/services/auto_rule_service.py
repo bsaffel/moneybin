@@ -21,6 +21,7 @@ import duckdb
 from moneybin.config import get_settings
 from moneybin.database import Database
 from moneybin.services._text import build_match_inputs, normalize_description
+from moneybin.services.audit_service import AuditService
 from moneybin.services.categorization import (
     CategorizationService,
     Merchant,
@@ -32,7 +33,6 @@ from moneybin.tables import (
     FCT_TRANSACTIONS,
     MERCHANTS,
     PROPOSED_RULES,
-    RULE_DEACTIVATIONS,
     TRANSACTION_CATEGORIES,
 )
 
@@ -479,13 +479,11 @@ class AutoRuleService:
         An override = a transaction whose canonical match_text (description +
         memo, normalized) matches the auto-rule's pattern but is currently
         categorized by 'user' with a different category. When the threshold is
-        reached we deactivate the rule, mark its source proposal superseded,
-        create a new pending proposal with the most common override category,
-        and append a row to ``app.rule_deactivations`` for the audit trail.
+        reached, deactivate the rule and emit a ``rule_deactivated`` event to
+        ``app.audit_log``.
         """
         settings = get_settings().categorization
         threshold = settings.auto_rule_override_threshold
-        proposal_threshold = settings.auto_rule_proposal_threshold
         sample_cap = settings.auto_rule_sample_txn_cap
 
         # Fast-path: skip the override scan entirely when no auto-rules exist.
@@ -551,8 +549,9 @@ class AutoRuleService:
                 """,
                 [rule_created_at, rule_category, rule_subcategory],
             ).fetchall()
-            buckets: dict[tuple[str, str | None], list[str]] = {}
-            for txn_id, description, memo, c_cat, c_subcat, _at in candidate_rows:
+            override_count = 0
+            sample_ids: list[str] = []
+            for txn_id, description, memo, _c_cat, _c_subcat, _at in candidate_rows:
                 match_text, norm_desc, norm_memo = build_match_inputs(
                     str(description) if description else None,
                     str(memo) if memo else None,
@@ -562,85 +561,41 @@ class AutoRuleService:
                     matches_pattern(c, pattern, rule_match_type) for c in candidates
                 ):
                     continue
-                key = (str(c_cat), c_subcat if c_subcat is None else str(c_subcat))
-                buckets.setdefault(key, []).append(str(txn_id))
-            total_overrides = sum(len(v) for v in buckets.values())
-            if total_overrides < threshold:
+                override_count += 1
+                if len(sample_ids) < sample_cap:
+                    sample_ids.append(str(txn_id))
+            if override_count < threshold:
                 continue
 
-            # Pick the largest bucket as the corrected category.
-            (new_category, new_subcategory), winning_ids = max(
-                buckets.items(), key=lambda kv: len(kv[1])
-            )
-            winning_count = len(winning_ids)
-            sample_ids = winning_ids[:sample_cap]
-            # Re-proposal trigger_count reflects the winning bucket — total
-            # overrides may include unrelated minority buckets that should not
-            # inflate the new proposal's count.
-            new_status = (
-                "pending" if winning_count >= proposal_threshold else "tracking"
-            )
-            new_pid = uuid.uuid4().hex[:12]
-            # Phase 1 dual-write: resolve once, share across both writes so the
-            # re-proposal and the audit row agree on the FK in this transaction.
-            # Orphaned text is permitted — the join to dim_categories simply
-            # won't resolve for rows whose target category was later deleted.
-            new_category_id = resolve_category_id(
-                self._db, new_category, new_subcategory
-            )
-            # Wrap deactivate + supersede + re-propose + audit in a single
-            # transaction so a failure between steps cannot leave the rule
-            # deactivated with no replacement proposal.
+            # Deactivate + emit audit event in a single transaction.
+            # REVISIT when sophisticated-rule design lands: this path currently
+            # only deactivates; the supersede-and-re-propose logic (pick the
+            # winning override bucket, insert a new pattern_detection proposal)
+            # was removed because the system didn't yet have signal on what
+            # shape the replacement should take. Rebuilding informed by real
+            # usage is cheaper than maintaining speculative sophistication.
             self._db.begin()
             try:
                 self._db.execute(
-                    f"UPDATE {CATEGORIZATION_RULES.full_name} SET is_active = false, updated_at = CURRENT_TIMESTAMP WHERE rule_id = ?",
+                    f"UPDATE {CATEGORIZATION_RULES.full_name} "
+                    "SET is_active = false, updated_at = CURRENT_TIMESTAMP "
+                    "WHERE rule_id = ?",
                     [rule_id],
                 )
-                # Bind by rule_id so colliding merchant_patterns from
-                # prior promotions stay untouched; only the proposal that
-                # produced this rule flips to superseded.
-                self._db.execute(
-                    f"""
-                    UPDATE {PROPOSED_RULES.full_name}
-                    SET status = 'superseded'
-                    WHERE rule_id = ? AND status = 'approved'
-                    """,
-                    [rule_id],
-                )
-                self._db.execute(
-                    f"""
-                    INSERT INTO {PROPOSED_RULES.full_name}
-                    (proposed_rule_id, merchant_pattern, match_type, category, subcategory,
-                     category_id, status, trigger_count, source, sample_txn_ids)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pattern_detection', ?)
-                    """,
-                    [
-                        new_pid,
-                        pattern,
-                        rule_match_type,
-                        new_category,
-                        new_subcategory,
-                        new_category_id,
-                        new_status,
-                        winning_count,
-                        sample_ids,
-                    ],
-                )
-                self._db.execute(
-                    f"""
-                    INSERT INTO {RULE_DEACTIVATIONS.full_name}
-                    (deactivation_id, rule_id, reason, override_count, new_category, new_subcategory, new_category_id)
-                    VALUES (?, ?, 'override_threshold', ?, ?, ?, ?)
-                    """,
-                    [
-                        uuid.uuid4().hex[:12],
+                AuditService(self._db).record_audit_event(
+                    actor="auto_rule_service",
+                    action="rule_deactivated",
+                    target=(
+                        CATEGORIZATION_RULES.schema,
+                        CATEGORIZATION_RULES.name,
                         rule_id,
-                        total_overrides,
-                        new_category,
-                        new_subcategory,
-                        new_category_id,
-                    ],
+                    ),
+                    before=None,
+                    after={"is_active": False},
+                    context={
+                        "override_count": override_count,
+                        "sample_ids": sample_ids,
+                    },
                 )
                 self._db.commit()
             except Exception:

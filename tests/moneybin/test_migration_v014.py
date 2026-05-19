@@ -1,9 +1,10 @@
-"""V014: add category_id FK columns across seven tables with backfill.
+"""V014: add category_id FK columns across six (or seven) tables with backfill.
 
 Phase 1 of the category-text -> category_id FK migration. The migration adds
-a nullable ``category_id`` column (``new_category_id`` for
-``rule_deactivations``) to seven app tables and backfills from existing
-``(category, subcategory)`` text via JOIN against ``core.dim_categories``.
+a nullable ``category_id`` column to six app tables and also to
+``app.rule_deactivations`` when that table exists (it was dropped in V017).
+Backfills from existing ``(category, subcategory)`` text via JOIN against
+``core.dim_categories``.
 
 Populated-fixture pattern per ``.claude/rules/database.md``: V014 touches
 existing data (ADD COLUMN + UPDATE backfill), so each test seeds >=3 rows
@@ -228,9 +229,29 @@ class TestV014ProposedRules:
 
 @pytest.mark.unit
 class TestV014RuleDeactivations:
-    """V014 backfill for app.rule_deactivations.new_category_id."""
+    """V014 backfill for app.rule_deactivations.new_category_id (existing-install path).
+
+    app.rule_deactivations was dropped in V017. This test simulates an existing
+    install where the table exists before V014 runs, verifying the migration
+    correctly backfills new_category_id when the table is present.
+    """
 
     def test_backfills_new_category_id(self, v014_db: Database) -> None:
+        # Create the table manually — schema.py no longer includes it (dropped in V017).
+        # This simulates an existing install where the table was created before V017.
+        v014_db.execute(  # noqa: S608  # building test fixture DDL, not executing user SQL
+            """
+            CREATE TABLE IF NOT EXISTS app.rule_deactivations (
+                deactivation_id VARCHAR PRIMARY KEY,
+                rule_id VARCHAR NOT NULL,
+                reason VARCHAR NOT NULL,
+                override_count INTEGER,
+                new_category VARCHAR,
+                new_subcategory VARCHAR,
+                deactivated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
         v014_db.execute(
             "INSERT INTO app.rule_deactivations "
             "(deactivation_id, rule_id, reason, override_count, "
