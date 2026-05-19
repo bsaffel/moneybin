@@ -15,6 +15,7 @@ without a circular dependency.
 
 import logging
 from collections.abc import Sequence
+from decimal import Decimal
 from typing import Any, Literal
 
 from moneybin.config import get_settings as get_settings
@@ -469,8 +470,8 @@ class CategorizationService:
         self,
         *,
         limit: int,
-        sort: str = "date",
-        min_amount: float = 0.0,
+        sort: Literal["date", "impact"] = "date",
+        min_amount: Decimal = Decimal("0"),
         account_id: str | None = None,
     ) -> list[dict[str, Any]] | None:
         """List uncategorized transactions from the curator-impact view.

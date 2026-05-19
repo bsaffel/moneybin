@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any
+from decimal import Decimal
+from typing import Any, Literal
 
 import duckdb
 
@@ -189,8 +190,8 @@ class CategorizationQueries:
         self,
         *,
         limit: int,
-        sort: str = "date",
-        min_amount: float = 0.0,
+        sort: Literal["date", "impact"] = "date",
+        min_amount: Decimal = Decimal("0"),
         account_id: str | None = None,
     ) -> list[dict[str, Any]] | None:
         """List uncategorized transactions from the curator-impact view.

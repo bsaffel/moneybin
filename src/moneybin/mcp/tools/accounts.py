@@ -438,7 +438,7 @@ def register_accounts_tools(mcp: FastMCP) -> None:
         "accounts_balance_reconcile",
         "Threshold-filtered list of days where computed balance differs from asserted by more than `threshold`. "
         "Returns one row per (account, day) with the magnitude of the delta. Use when you want to find magnitude-level mismatches. "
-        "Amounts use the accounting convention.",
+        "Amounts use the accounting convention; currency named by summary.display_currency.",
     )
     register(
         mcp,

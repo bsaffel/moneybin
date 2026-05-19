@@ -80,10 +80,12 @@ def categorize_pending(
     from moneybin.services.categorization import CategorizationService
 
     try:
-        min_amount_dec = float(Decimal(min_amount))
+        min_amount_dec = Decimal(min_amount)
     except InvalidOperation as e:
         typer.echo(f"❌ Invalid --min-amount: {min_amount}", err=True)
         raise typer.Exit(2) from e
+
+    from typing import Literal, cast
 
     if sort not in {"date", "impact"}:
         typer.echo("❌ --sort must be 'date' or 'impact'.", err=True)
@@ -96,7 +98,7 @@ def categorize_pending(
                 account_id = AccountService(db).resolve_strict(account)
             records = CategorizationService(db).list_uncategorized_transactions(
                 limit=min(limit, 1000),
-                sort=sort,
+                sort=cast(Literal["date", "impact"], sort),
                 min_amount=min_amount_dec,
                 account_id=account_id,
             )

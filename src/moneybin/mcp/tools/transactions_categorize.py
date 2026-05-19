@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping, Sequence
+from decimal import Decimal
 from typing import Literal
 
 from fastmcp import FastMCP
@@ -97,7 +98,7 @@ def transactions_categorize_stats(
 def transactions_categorize_pending(
     limit: int = 50,
     sort: Literal["date", "impact"] = "date",
-    min_amount: float = 0.0,
+    min_amount: Decimal = Decimal("0"),
     account: str | None = None,
 ) -> ResponseEnvelope:
     """Find transactions that have not been categorized yet.
@@ -114,7 +115,7 @@ def transactions_categorize_pending(
         limit: Maximum number of results (default 50, max 1000).
         sort: ``date`` (most recent first, default) or ``impact`` (ABS(amount)
             * age_days — highest-value/oldest transactions first).
-        min_amount: Filter to ABS(amount) >= this value. Default 0.0 returns all.
+        min_amount: Filter to ABS(amount) >= this value. Default 0 returns all.
         account: Filter to a specific account; accepts ``account_id`` or
             case-insensitive display_name. Ambiguous matches raise. Default
             None returns all accounts.
