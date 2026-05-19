@@ -17,7 +17,9 @@ from moneybin.database import Database, get_database
 from moneybin.mcp.tools.reports import (
     reports_balance_drift,
     reports_recurring,
-    reports_uncategorized,
+)
+from moneybin.mcp.tools.transactions_categorize import (
+    transactions_categorize_pending,
 )
 from moneybin.protocol.envelope import ResponseEnvelope
 
@@ -95,8 +97,11 @@ class TestReportsRecurringGet:
         assert "Unknown cadence" in parsed["error"]["message"]
 
 
-class TestReportsUncategorizedGet:
-    """Stubs reports.uncategorized_queue and exercises filters + limit."""
+class TestCategorizePendingGet:
+    """Stubs reports.uncategorized_queue; exercises filters + limit.
+
+    Covers transactions_categorize_pending (replaced reports_uncategorized).
+    """
 
     @staticmethod
     def _install_view() -> None:
@@ -112,52 +117,65 @@ class TestReportsUncategorizedGet:
                     'COFFEE SHOP' AS description,
                     CAST(NULL AS VARCHAR) AS merchant_id,
                     'Coffee Shop' AS merchant_normalized,
-                    39 AS age_days,
+                    CAST(39 AS INTEGER) AS age_days,
                     CAST(975.0 AS DOUBLE) AS priority_score,
                     'ofx' AS source_type,
                     CAST(NULL AS VARCHAR) AS source_id
                 UNION ALL SELECT
                     'T2', 'ACC001', 'Test Bank Checking',
                     DATE '2026-04-10', CAST(-500.00 AS DECIMAL(18,2)),
-                    'BIG EXPENSE', NULL, 'Big Expense', 30, 15000.0, 'ofx', NULL
+                    'BIG EXPENSE', NULL, 'Big Expense',
+                    CAST(30 AS INTEGER), 15000.0, 'ofx', NULL
                 UNION ALL SELECT
                     'T3', 'ACC002', 'Other Bank Savings',
                     DATE '2026-04-15', CAST(-5.00 AS DECIMAL(18,2)),
-                    'TINY', NULL, 'Tiny', 25, 125.0, 'ofx', NULL
+                    'TINY', NULL, 'Tiny',
+                    CAST(25 AS INTEGER), 125.0, 'ofx', NULL
             """)  # noqa: S608  # test input, not executing dynamic SQL
 
     @pytest.mark.unit
-    async def test_returns_all_rows_by_default(self, mcp_db: Path) -> None:
+    async def test_returns_all_rows_default_sort_date(self, mcp_db: Path) -> None:
         self._install_view()
-        parsed = (await reports_uncategorized()).to_dict()
+        parsed = (await transactions_categorize_pending()).to_dict()
         assert parsed["summary"]["sensitivity"] == "medium"
+        # Default sort=date → most recent first (T3 > T2 > T1).
         ids = [row["transaction_id"] for row in parsed["data"]]
-        # Sorted by priority_score DESC.
+        assert ids == ["T3", "T2", "T1"]
+
+    @pytest.mark.unit
+    async def test_sort_impact_returns_highest_priority_first(
+        self, mcp_db: Path
+    ) -> None:
+        self._install_view()
+        parsed = (await transactions_categorize_pending(sort="impact")).to_dict()
+        # Impact sort: T2(500*30=15000) > T1(25*39=975) > T3(5*25=125).
+        ids = [row["transaction_id"] for row in parsed["data"]]
         assert ids == ["T2", "T1", "T3"]
 
     @pytest.mark.unit
     async def test_min_amount_filters_low_value(self, mcp_db: Path) -> None:
         self._install_view()
-        parsed = (await reports_uncategorized(min_amount=20.0)).to_dict()
+        parsed = (await transactions_categorize_pending(min_amount=20.0)).to_dict()
         ids = {row["transaction_id"] for row in parsed["data"]}
         assert ids == {"T1", "T2"}
 
     @pytest.mark.unit
     async def test_account_filter_narrows_results(self, mcp_db: Path) -> None:
         # Filter via canonical account_id; the resolver resolves the
-        # reference against core.dim_accounts (the canonical source),
-        # not the stub view's free-text account_name column.
+        # reference against core.dim_accounts.
         self._install_view()
-        parsed = (await reports_uncategorized(account="ACC002")).to_dict()
+        parsed = (await transactions_categorize_pending(account="ACC002")).to_dict()
         ids = [row["transaction_id"] for row in parsed["data"]]
         assert ids == ["T3"]
 
     @pytest.mark.unit
     async def test_limit_caps_rows(self, mcp_db: Path) -> None:
         self._install_view()
-        parsed = (await reports_uncategorized(limit=1)).to_dict()
+        parsed = (
+            await transactions_categorize_pending(sort="impact", limit=1)
+        ).to_dict()
         assert len(parsed["data"]) == 1
-        # Highest priority wins.
+        # Highest impact wins.
         assert parsed["data"][0]["transaction_id"] == "T2"
 
 

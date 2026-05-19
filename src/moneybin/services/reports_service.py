@@ -17,7 +17,6 @@ the constant rather than redefining it.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from decimal import Decimal
 from typing import Any
 
 from moneybin.database import Database
@@ -29,7 +28,6 @@ from moneybin.tables import (
     REPORTS_MERCHANT_ACTIVITY,
     REPORTS_RECURRING_SUBSCRIPTIONS,
     REPORTS_SPENDING_TREND,
-    REPORTS_UNCATEGORIZED_QUEUE,
 )
 
 QueryResult = tuple[list[str], list[tuple[Any, ...]]]
@@ -194,30 +192,6 @@ class ReportsService:
             LIMIT ?
         """  # noqa: S608  # TableRef + MERCHANTS_SORTS allowlists
         return self._execute(sql, [top])
-
-    def uncategorized_queue(
-        self,
-        *,
-        min_amount: Decimal | float | int = 0,
-        account: str | None = None,
-        limit: int = 50,
-    ) -> QueryResult:
-        """Uncategorized transactions queue, ranked by curator-impact."""
-        sql = f"""
-            SELECT transaction_id, account_id, account_name, txn_date, amount,
-                   description, merchant_id, merchant_normalized, age_days,
-                   priority_score, source_type, source_id
-            FROM {REPORTS_UNCATEGORIZED_QUEUE.full_name}
-            WHERE ABS(amount) >= ?
-        """  # noqa: S608  # TableRef interpolation
-        params: list[object] = [min_amount]
-        if account:
-            account_id = AccountService(self._db).resolve_strict(account)
-            sql += " AND account_id = ?"
-            params.append(account_id)
-        sql += " ORDER BY priority_score DESC LIMIT ?"
-        params.append(limit)
-        return self._execute(sql, params)
 
     def large_transactions(
         self,

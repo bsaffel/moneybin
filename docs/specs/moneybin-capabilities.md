@@ -75,6 +75,11 @@ not-yet-built.
 | 14| Commit externally-decided categorizations (LLM workflow's terminal step) | `transactions_categorize_commit`        | `transactions categorize commit`        | —          | live                  |
 | 15| Run the categorization engine cascade (rules + merchants)        | `transactions_categorize_run`            | `transactions categorize run`            | —          | live                  |
 | 16| Get redacted batch for LLM categorization                        | `transactions_categorize_assist`         | `transactions categorize assist`         | —          | live                  |
+| 17| Categorization coverage statistics (with optional auto-rule health) | `transactions_categorize_stats` *(`include_auto=True` for auto metrics)* | `transactions categorize stats` | — | live |
+| 18| Fetch uncategorized transactions queue (sortable by date or impact) | `transactions_categorize_pending` *(`sort`, `min_amount`, `account`)* | `transactions categorize pending` | — | live |
+| 19| Check auto-rule health metrics in isolation                      | absorbed into row 17 (`include_auto=True`) | `transactions categorize auto stats` *(CLI-only after MCP tool retired)* | — | live |
+| 20| Balance assertion drift by status category                       | `reports_balance_drift`                  | `reports balance-drift`                  | —          | live                  |
+| 21| Threshold-filtered balance mismatch by day                       | `accounts_balance_reconcile`             | `accounts balance reconcile`             | —          | live                  |
 
 | 17| Inspect SQLMesh model state (status/plan/validate/audit)        | — *(cat 2 — operator)*       | `transform status|plan|validate|audit`             | —          | live (CLI-only)       |
 

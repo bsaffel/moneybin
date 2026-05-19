@@ -466,10 +466,25 @@ class CategorizationService:
         return self._queries.list_merchants()
 
     def list_uncategorized_transactions(
-        self, *, limit: int
+        self,
+        *,
+        limit: int,
+        sort: str = "date",
+        min_amount: float = 0.0,
+        account_id: str | None = None,
     ) -> list[dict[str, Any]] | None:
-        """List uncategorized transactions ordered by date descending."""
-        return self._queries.list_uncategorized_transactions(limit=limit)
+        """List uncategorized transactions from the curator-impact view.
+
+        ``sort`` is ``'date'`` (most recent first) or ``'impact'`` (ABS(amount)
+        * age_days, largest first). ``min_amount`` and ``account_id`` filter the
+        results before sorting.
+        """
+        return self._queries.list_uncategorized_transactions(
+            limit=limit,
+            sort=sort,
+            min_amount=min_amount,
+            account_id=account_id,
+        )
 
     def count_uncategorized(self) -> int:
         """Return the number of transactions without a category assignment."""

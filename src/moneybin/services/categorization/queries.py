@@ -22,6 +22,7 @@ from moneybin.tables import (
     CATEGORIZATION_RULES,
     FCT_TRANSACTIONS,
     MERCHANTS,
+    REPORTS_UNCATEGORIZED_QUEUE,
     TRANSACTION_CATEGORIES,
 )
 
@@ -185,28 +186,46 @@ class CategorizationQueries:
         ]
 
     def list_uncategorized_transactions(
-        self, *, limit: int
+        self,
+        *,
+        limit: int,
+        sort: str = "date",
+        min_amount: float = 0.0,
+        account_id: str | None = None,
     ) -> list[dict[str, Any]] | None:
-        """List uncategorized transactions ordered by date descending.
+        """List uncategorized transactions from the curator-impact view.
 
-        Returns ``None`` (rather than ``[]``) when the underlying tables don't
-        exist yet — callers can distinguish "no transactions" from "no schema"
-        and surface a more useful action hint.
+        Uses ``reports.uncategorized_queue`` which already excludes transfer
+        pairs and archived accounts and provides pre-computed ``age_days`` and
+        ``priority_score`` columns needed for impact-sort.
+
+        ``sort`` controls the ORDER BY:
+        - ``"date"``   — ``txn_date DESC`` (most recent first, default)
+        - ``"impact"`` — ``priority_score DESC`` (ABS(amount) * age_days, largest first)
+
+        Returns ``None`` when the underlying tables don't exist yet so callers
+        can distinguish "no transactions" from "no schema".
         """
+        if sort not in {"date", "impact"}:
+            raise ValueError(f"Unknown sort: {sort!r}; expected 'date' or 'impact'")
+
+        order = "priority_score DESC" if sort == "impact" else "txn_date DESC"
+        sql = f"""
+            SELECT transaction_id, account_id, account_name, txn_date, amount,
+                   description, merchant_id, merchant_normalized, age_days,
+                   priority_score, source_type, source_id
+            FROM {REPORTS_UNCATEGORIZED_QUEUE.full_name}
+            WHERE ABS(amount) >= ?
+        """  # noqa: S608  # TableRef constant + allowlisted sort literal
+        params: list[object] = [min_amount]
+        if account_id is not None:
+            sql += " AND account_id = ?"
+            params.append(account_id)
+        sql += f" ORDER BY {order} LIMIT ?"  # noqa: S608  # order from allowlisted set
+        params.append(limit)
+
         try:
-            result = self._db.execute(
-                f"""
-                SELECT t.transaction_id, t.transaction_date, t.amount,
-                       t.description, t.memo, t.account_id
-                FROM {FCT_TRANSACTIONS.full_name} t
-                LEFT JOIN {TRANSACTION_CATEGORIES.full_name} c
-                    ON t.transaction_id = c.transaction_id
-                WHERE c.transaction_id IS NULL
-                ORDER BY t.transaction_date DESC
-                LIMIT ?
-                """,
-                [limit],
-            )
+            result = self._db.execute(sql, params)
             columns = [desc[0] for desc in result.description]
             rows = result.fetchall()
         except duckdb.CatalogException:

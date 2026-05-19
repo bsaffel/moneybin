@@ -812,13 +812,13 @@ Confirm and execute AI-assisted parsing for a file.
 
 ### `transactions_categorize_pending`
 
-Fetch transactions that haven't been categorized yet. The read side of the categorize-then-apply workflow.
+Fetch transactions that haven't been categorized yet. Absorbs the former `reports_uncategorized` tool.
 
 - **Sensitivity:** `medium` — returns transaction descriptions and amounts.
-- **Unique parameters:** `suggest: bool = false` — when true, include AI-suggested categories based on merchant mappings and existing rules (does not apply them).
-- **Behavior:** Returns array of `{transaction_id, date, amount, description, account_id, suggested_category?, suggested_subcategory?, suggestion_source?}`. Degraded response returns uncategorized count by account and time period.
-- **Service:** `CategorizationService.uncategorized() -> TransactionSearchResult`
-- **CLI:** `moneybin transactions categorize pending [--suggest] [--limit 50]`
+- **Unique parameters:** `limit: int = 50`, `sort: Literal["date", "impact"] = "date"` (`impact` sorts by `ABS(amount) × age_days` descending), `min_amount: float = 0.0` (filter to `ABS(amount) >= min_amount`), `account: str | None = None` (filter by account ID or display name; ambiguous display names raise `account_ambiguous`).
+- **Behavior:** Returns array of `{transaction_id, account_id, account_name, txn_date, amount, description, merchant_id, merchant_normalized, age_days, priority_score, source_type, source_id}` from `reports.uncategorized_queue`. Amounts use the accounting convention: negative = expense, positive = income. Degraded response returns uncategorized count by account and time period.
+- **Service:** `CategorizationService.list_uncategorized_transactions(limit, sort, min_amount, account_id)`
+- **CLI:** `moneybin transactions categorize pending [--limit N] [--sort date|impact] [--min-amount N] [--account NAME]`
 
 ### `transactions_categorize_commit`
 
@@ -932,12 +932,12 @@ Hard-delete a user-created category.
 
 ### `transactions_categorize_stats`
 
-Categorization coverage statistics.
+Categorization coverage statistics; optionally includes auto-rule health metrics.
 
 - **Sensitivity:** `low` — counts and percentages only.
-- **Unique parameters:** None.
-- **Behavior:** Returns `{total_transactions, categorized, uncategorized, percent_categorized, by_source}` where `by_source` breaks down by categorization source (user, rule, ai, plaid).
-- **Service:** `CategorizationService.stats() -> CategorizationStats`
+- **Unique parameters:** `include_auto: bool = False` — when true, appends auto-rule health to the response.
+- **Behavior:** Base response: `{total_transactions, categorized, uncategorized, percent_categorized, by_source}` where `by_source` breaks down by categorization source (user, rule, ai, plaid). With `include_auto=True`, returns `{overall: <base>, auto: {active_rules, pending_proposals, rejected_proposals, override_rate, top_rules}}`. The `auto` block absorbs what was previously the standalone `transactions_categorize_auto_stats` tool.
+- **Service:** `CategorizationService.stats() -> CategorizationStats`; with `include_auto=True` also calls `AutoRuleService.stats() -> AutoStatsResult`.
 - **CLI:** `moneybin transactions categorize stats`
 
 ### `transactions_categorize_rules_apply`
@@ -969,14 +969,7 @@ Accept or reject proposed auto-generated rules. Takes two parallel ID lists.
 
 ### `transactions_categorize_auto_stats`
 
-Auto-rule health metrics.
-
-- **Sensitivity:** `low`
-- **Unique parameters:** None.
-- **Behavior:** Returns `{active_rules, pending_proposals, rejected_proposals, override_rate, top_rules}` where `top_rules` is an array of the most-matched auto-rules with match counts. `override_rate` is the percentage of auto-rule categorizations that were later overridden by the user.
-- **Service:** `AutoRuleService.stats() -> AutoStatsResult`
-- **CLI:** `moneybin transactions categorize auto stats`
-- **Dependency:** [Categorization overview](categorization-overview.md) (Pillar E: auto-rule generation), [Auto-rule generation](categorization-auto-rules.md).
+**Retired (MCP only).** The auto-rule health metrics are now available via `transactions_categorize_stats(include_auto=True)`. The CLI command `moneybin transactions categorize auto stats` remains — it calls `AutoRuleService.stats()` directly and is unaffected.
 
 > ML-based categorization is deferred; see `categorization-ml.md` (planned) when work resumes.
 
@@ -1133,12 +1126,7 @@ Top merchants by lifetime activity.
 
 ### `reports_uncategorized`
 
-Uncategorized transactions queue, ranked by curator-impact.
-
-- **Sensitivity:** `medium` — row-level transactions.
-- **Unique parameters:** `min_amount: float = 0.0` (filter to `ABS(amount) >= min_amount`), `account: str | None = None` (filter by account name), `limit: int = 50`.
-- **Behavior:** Returns uncategorized rows from `reports.uncategorized_queue`. Amounts use the accounting convention: negative = expense, positive = income.
-- **CLI:** `moneybin reports uncategorized [--min-amount N] [--account NAME] [--limit N]`
+**Retired.** Folded into `transactions_categorize_pending` with the addition of `sort` (`"date"` or `"impact"`) and `account` filter parameters. The CLI command `moneybin reports uncategorized` has been removed; use `moneybin transactions categorize pending [--sort impact] [--min-amount N] [--account NAME]` instead.
 
 ### `reports_large_transactions`
 
@@ -1151,11 +1139,11 @@ Anomaly-flavored transaction lens — top-N by absolute amount, with optional pe
 
 ### `reports_balance_drift`
 
-Account-level reconciliation drift: difference between asserted balances and computed running totals.
+Categorical view of balance assertions by drift status.
 
 - **Sensitivity:** `medium` — balance amounts.
 - **Unique parameters:** `account: str | None = None` (filter by account name), `status: str = "all"` (`drift` | `warning` | `clean` | `no-data` | `all`), `since: str | None = None` (ISO date; only assertions on or after).
-- **Behavior:** Returns per-account drift rows from `reports.balance_drift`. Drift in `summary.display_currency`.
+- **Behavior:** Returns one row per assertion with computed drift from `reports.balance_drift`. Use when you want a status breakdown across all assertions. Amounts use the accounting convention: negative = expense, positive = income. Drift in `summary.display_currency`.
 - **CLI:** `moneybin reports balance-drift [--account NAME] [--status STATUS] [--since YYYY-MM-DD]`
 
 ### `refresh_run`
