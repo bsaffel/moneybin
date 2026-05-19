@@ -489,7 +489,7 @@ def import_revert(
     """
     from moneybin.cli.utils import handle_cli_errors
     from moneybin.database import get_database  # noqa: PLC0415 — deferred import
-    from moneybin.loaders.tabular_loader import TabularLoader
+    from moneybin.services.import_service import ImportService
 
     if not yes:
         confirmed = typer.confirm(
@@ -502,8 +502,7 @@ def import_revert(
 
     with handle_cli_errors():
         with get_database() as db:
-            loader = TabularLoader(db)
-            result = loader.revert_import(import_id)
+            result = ImportService(db).revert(import_id)
 
     status = result.get("status")
     if status == "not_found":

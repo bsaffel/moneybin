@@ -219,10 +219,10 @@ def import_revert(import_id: str) -> ResponseEnvelope:
         import_id: UUID of the import batch to revert. Get it from
             import_files's response or from import_status.
     """
-    from moneybin.loaders import import_log
+    from moneybin.services.import_service import ImportService  # noqa: PLC0415
 
     with get_database() as db:
-        result = import_log.revert_import(db, import_id)
+        result = ImportService(db).revert(import_id)
     status = result.get("status")
 
     if status == "reverted":

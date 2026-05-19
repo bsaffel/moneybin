@@ -1,10 +1,14 @@
 """Generic import-batch lifecycle for raw.import_log.
 
-Both tabular and OFX import paths call these functions to create batches,
-finalize them with row counts, query history, and revert by import_id.
+Both tabular and OFX import paths call these functions to create batches
+(``begin_import``), finalize them with row counts (``finalize_import``),
+query history (``get_import_history``), and check for prior imports of a
+source file (``find_existing_import``).
 
-The module is the single source of truth for which raw tables a given
-source_type populates — see _REVERT_TABLES below.
+The module is also the single source of truth for which raw tables a given
+source_type populates — see ``REVERT_TABLES`` below. ``ImportService.revert``
+(see ``moneybin/services/import_service.py``) consults this allowlist; the
+revert operation itself lives on the service, not here.
 """
 
 import json
@@ -34,10 +38,11 @@ _SourceType = Literal[
 
 
 # Allowlist mapping source_type → raw tables that carry rows for that type.
-# revert_import() uses this to know what to delete. Adding a new format means
-# adding an entry here AND ensuring those tables have an import_id column.
+# ImportService.revert() consults this to know what to delete. Adding a new
+# format means adding an entry here AND ensuring those tables have an
+# import_id column.
 _TABULAR_RAW_TABLES = [TABULAR_TRANSACTIONS, TABULAR_ACCOUNTS]
-_REVERT_TABLES: dict[str, list[TableRef]] = {
+REVERT_TABLES: dict[str, list[TableRef]] = {
     "csv": _TABULAR_RAW_TABLES,
     "tsv": _TABULAR_RAW_TABLES,
     "excel": _TABULAR_RAW_TABLES,
@@ -65,7 +70,7 @@ def begin_import(
         db: Database connection.
         source_file: Absolute path to the imported file.
         source_type: File format marker (csv, ofx, etc.). Must be a key of
-            _REVERT_TABLES — anything else cannot be reverted.
+            REVERT_TABLES — anything else cannot be reverted.
         source_origin: Format/institution identifier (e.g., 'wells_fargo', 'tiller').
         account_names: List of account names this import touches.
         format_name: Tabular format name if a format matched; None for OFX.
@@ -76,12 +81,12 @@ def begin_import(
         UUID import_id for this batch.
 
     Raises:
-        ValueError: If source_type is not in _REVERT_TABLES.
+        ValueError: If source_type is not in REVERT_TABLES.
     """
-    if source_type not in _REVERT_TABLES:
+    if source_type not in REVERT_TABLES:
         raise ValueError(
             f"Unknown source_type {source_type!r}; "
-            f"must be one of {sorted(_REVERT_TABLES)}"
+            f"must be one of {sorted(REVERT_TABLES)}"
         )
     import_id = str(uuid.uuid4())
     db.execute(
@@ -162,103 +167,6 @@ def finalize_import(
         f"Import {import_id[:8]}... finalized: {status} "
         f"({rows_imported} imported, {rows_rejected} rejected)"
     )
-
-
-def revert_import(db: Database, import_id: str) -> dict[str, str | int]:
-    """Revert an import batch by deleting all its rows from raw tables.
-
-    Looks up source_type from raw.import_log to determine which tables to
-    delete from (via the _REVERT_TABLES allowlist). Updates status to 'reverted'.
-
-    Returns:
-        {'status': 'reverted', 'rows_deleted': N} on success.
-        {'status': 'not_found', ...} if import_id doesn't exist.
-        {'status': 'already_reverted'} if already reverted.
-        {'status': 'superseded', ...} if a later import overwrote the rows.
-    """
-    row = db.execute(
-        f"SELECT source_type, status, source_file, started_at "
-        f"FROM {IMPORT_LOG.full_name} WHERE import_id = ?",
-        [import_id],
-    ).fetchone()
-
-    if row is None:
-        return {"status": "not_found", "reason": f"No import with ID {import_id}"}
-
-    src_type, status, source_file, started_at = row
-
-    if status == "reverted":
-        return {"status": "already_reverted"}
-
-    if src_type not in _REVERT_TABLES:
-        return {
-            "status": "unsupported",
-            "reason": f"Cannot revert source_type {src_type!r}",
-        }
-
-    tables = _REVERT_TABLES[src_type]
-
-    # Sum across every table the source_type populates. OFX statements with
-    # zero transactions but populated accounts/balances must still be
-    # detectable as live (not superseded) and reportable in rows_deleted.
-    rows_to_delete = 0
-    for table in tables:
-        result = db.execute(
-            f"SELECT COUNT(*) FROM {table.full_name} WHERE import_id = ?",
-            [import_id],
-        ).fetchone()
-        if result:
-            rows_to_delete += result[0]
-
-    if rows_to_delete == 0:
-        # Same superseded check as the original tabular_loader: if a later
-        # import upserted over this one's rows, surface that.
-        reimport_row = db.execute(
-            f"""
-            SELECT import_id
-            FROM {IMPORT_LOG.full_name}
-            WHERE source_file = ?
-              AND import_id != ?
-              AND started_at > ?
-              AND status NOT IN ('reverted', 'failed')
-            ORDER BY started_at DESC
-            LIMIT 1
-            """,
-            [source_file, import_id, started_at],
-        ).fetchone()
-        if reimport_row:
-            newer_id = reimport_row[0]
-            return {
-                "status": "superseded",
-                "reason": (
-                    f"File was re-imported as {newer_id[:8]}...; "
-                    f"revert that batch to remove the data."
-                ),
-            }
-
-    db.begin()
-    try:
-        for table in tables:
-            db.execute(
-                f"DELETE FROM {table.full_name} WHERE import_id = ?",
-                [import_id],
-            )
-        db.execute(
-            f"""
-            UPDATE {IMPORT_LOG.full_name} SET
-                status = 'reverted',
-                reverted_at = CURRENT_TIMESTAMP
-            WHERE import_id = ?
-            """,
-            [import_id],
-        )
-        db.commit()
-    except Exception:
-        db.rollback()
-        raise
-
-    logger.info(f"Reverted import {import_id[:8]}...: {rows_to_delete} rows deleted")
-    return {"status": "reverted", "rows_deleted": rows_to_delete}
 
 
 def get_import_history(
