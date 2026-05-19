@@ -63,7 +63,7 @@ class TestReportsRecurringGet:
         parsed = result.to_dict()
         # Aggregate per-merchant rollup — sensitivity is "low" per mcp-server.md.
         assert parsed["summary"]["sensitivity"] == "low"
-        merchants = {row["merchant_normalized"] for row in parsed["data"]}
+        merchants = {row["merchant_normalized"] for row in parsed["data"]["rows"]}
         # Default min_confidence=0.5, status='active' → drops OldGym (inactive)
         # and WeakSignal (confidence=0.3).
         assert merchants == {"Netflix"}
@@ -72,7 +72,7 @@ class TestReportsRecurringGet:
     async def test_status_all_keeps_inactive(self, mcp_db: Path) -> None:
         self._install_view()
         parsed = (await reports_recurring(status="all")).to_dict()
-        merchants = {row["merchant_normalized"] for row in parsed["data"]}
+        merchants = {row["merchant_normalized"] for row in parsed["data"]["rows"]}
         # min_confidence=0.5 still drops WeakSignal but keeps OldGym (inactive).
         assert merchants == {"Netflix", "OldGym"}
 
@@ -129,7 +129,7 @@ class TestReportsUncategorizedGet:
         self._install_view()
         parsed = (await reports_uncategorized()).to_dict()
         assert parsed["summary"]["sensitivity"] == "medium"
-        ids = [row["transaction_id"] for row in parsed["data"]]
+        ids = [row["transaction_id"] for row in parsed["data"]["rows"]]
         # Sorted by priority_score DESC.
         assert ids == ["T2", "T1", "T3"]
 
@@ -137,23 +137,23 @@ class TestReportsUncategorizedGet:
     async def test_min_amount_filters_low_value(self, mcp_db: Path) -> None:
         self._install_view()
         parsed = (await reports_uncategorized(min_amount=20.0)).to_dict()
-        ids = {row["transaction_id"] for row in parsed["data"]}
+        ids = {row["transaction_id"] for row in parsed["data"]["rows"]}
         assert ids == {"T1", "T2"}
 
     @pytest.mark.unit
     async def test_account_filter_narrows_results(self, mcp_db: Path) -> None:
         self._install_view()
         parsed = (await reports_uncategorized(account="Other Bank Savings")).to_dict()
-        ids = [row["transaction_id"] for row in parsed["data"]]
+        ids = [row["transaction_id"] for row in parsed["data"]["rows"]]
         assert ids == ["T3"]
 
     @pytest.mark.unit
     async def test_limit_caps_rows(self, mcp_db: Path) -> None:
         self._install_view()
         parsed = (await reports_uncategorized(limit=1)).to_dict()
-        assert len(parsed["data"]) == 1
+        assert len(parsed["data"]["rows"]) == 1
         # Highest priority wins.
-        assert parsed["data"][0]["transaction_id"] == "T2"
+        assert parsed["data"]["rows"][0]["transaction_id"] == "T2"
 
 
 class TestReportsBalanceDriftGet:
@@ -194,14 +194,14 @@ class TestReportsBalanceDriftGet:
         parsed = (await reports_balance_drift()).to_dict()
         assert parsed["summary"]["sensitivity"] == "medium"
         # Sorted by drift_abs DESC.
-        statuses = [row["status"] for row in parsed["data"]]
+        statuses = [row["status"] for row in parsed["data"]["rows"]]
         assert statuses == ["drift", "clean", "no-data"]
 
     @pytest.mark.unit
     async def test_status_filter_drift_only(self, mcp_db: Path) -> None:
         self._install_view()
         parsed = (await reports_balance_drift(status="drift")).to_dict()
-        statuses = [row["status"] for row in parsed["data"]]
+        statuses = [row["status"] for row in parsed["data"]["rows"]]
         assert statuses == ["drift"]
 
     @pytest.mark.unit
@@ -210,15 +210,15 @@ class TestReportsBalanceDriftGet:
         parsed = (await reports_balance_drift(since="2026-01-01")).to_dict()
         # The 2025-12-01 row should be excluded.
         assert all(
-            row["assertion_date"].isoformat() >= "2026-01-01" for row in parsed["data"]
+            row["assertion_date"].isoformat() >= "2026-01-01" for row in parsed["data"]["rows"]
         )
-        assert len(parsed["data"]) == 2
+        assert len(parsed["data"]["rows"]) == 2
 
     @pytest.mark.unit
     async def test_account_filter(self, mcp_db: Path) -> None:
         self._install_view()
         parsed = (await reports_balance_drift(account="Other Bank Savings")).to_dict()
-        account_ids = [row["account_id"] for row in parsed["data"]]
+        account_ids = [row["account_id"] for row in parsed["data"]["rows"]]
         assert account_ids == ["ACC002"]
 
     @pytest.mark.unit

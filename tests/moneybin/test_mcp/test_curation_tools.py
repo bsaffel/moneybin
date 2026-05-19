@@ -301,6 +301,6 @@ class TestSystemAudit:
             await system_audit(filters={"action_pattern": "tag.%"}, limit=50)
         ).to_dict()
         assert env["summary"]["sensitivity"] == "medium"
-        events: list[dict[str, Any]] = list(env["data"])
+        events: list[dict[str, Any]] = env["data"]["events"]
         assert len(events) >= 1
         assert all(str(e["action"]).startswith("tag.") for e in events)
