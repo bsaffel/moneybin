@@ -50,7 +50,6 @@ def import_files(
 
     Supported formats (auto-detected by extension):
       - .ofx / .qfx / .qbo -- OFX/Quicken bank statements
-      - .pdf -- W-2 tax forms
       - .csv / .tsv / .xlsx / .parquet / .feather -- tabular transaction exports
 
     Per-file failures do not abort the batch. The post-load refresh pipeline

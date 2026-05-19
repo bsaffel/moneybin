@@ -75,7 +75,7 @@ async def test_formerly_extended_tools_visible_at_connect() -> None:
 
     # Stub-gated tools must NOT appear (sibling guard to the stub-gate rule
     # in ``.claude/rules/mcp-server.md``).
-    stub_gated = {"budget_set", "tax_w2", "tax_deductions"}
+    stub_gated = {"budget_set"}
     leaked = stub_gated & names
     assert not leaked, (
         f"Stub-gated tools leaked onto the public surface: {leaked}. "

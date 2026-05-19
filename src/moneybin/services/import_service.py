@@ -45,13 +45,11 @@ class ImportResult:
     transactions: int = 0
     institutions: int = 0
     balances: int = 0
-    w2_forms: int = 0
     date_range: str = ""
     details: dict[str, int] = field(default_factory=dict)
     core_tables_rebuilt: bool = False
     import_id: str | None = None
-    """UUID of the raw.import_log row this import created. None for file types
-    that don't write to import_log (currently W-2/PDF)."""
+    """UUID of the raw.import_log row this import created."""
 
     def summary(self) -> str:
         """Human-readable import summary."""
@@ -66,8 +64,6 @@ class ImportResult:
             lines.append(f"  Transactions: {self.transactions}")
         if self.balances:
             lines.append(f"  Balances: {self.balances}")
-        if self.w2_forms:
-            lines.append(f"  W-2 forms: {self.w2_forms}")
         if self.date_range:
             lines.append(f"  Date range: {self.date_range}")
         if self.core_tables_rebuilt:
@@ -141,12 +137,10 @@ def _display_label(file_type: str, file_path: Path) -> str:
 
     ``"tabular"`` is an internal bucket (CSV/TSV/XLSX/Parquet/Feather all
     share one pipeline). Resolve it to the file's actual extension so the
-    user sees ``CSV`` / ``XLSX`` / ``OFX`` / ``W-2`` instead of ``TABULAR``.
+    user sees ``CSV`` / ``XLSX`` / ``OFX`` instead of ``TABULAR``.
     """
     if file_type == "tabular":
         return file_path.suffix.lstrip(".").upper() or "TABULAR"
-    if file_type == "w2":
-        return "W-2"
     return file_type.upper()
 
 
@@ -170,7 +164,7 @@ def _detect_file_type(file_path: Path) -> str:
     """Detect file type from extension, falling back to magic-byte sniffing.
 
     Returns:
-        File type string: 'ofx', 'w2', or 'tabular'.
+        File type string: 'ofx' or 'tabular'.
 
     Raises:
         ValueError: If the file cannot be classified.
@@ -180,8 +174,6 @@ def _detect_file_type(file_path: Path) -> str:
     suffix = file_path.suffix.lower()
     if suffix in (".ofx", ".qfx", ".qbo"):
         return "ofx"
-    if suffix == ".pdf":
-        return "w2"
     if suffix in _UNAMBIGUOUS_TABULAR:
         return "tabular"
 
@@ -195,7 +187,7 @@ def _detect_file_type(file_path: Path) -> str:
 
     raise ValueError(
         f"Unsupported file type: {suffix}. "
-        f"Supported: .ofx, .qfx, .qbo, .csv, .tsv, .xlsx, .parquet, .feather, .pdf"
+        f"Supported: .ofx, .qfx, .qbo, .csv, .tsv, .xlsx, .parquet, .feather"
     )
 
 
@@ -632,36 +624,6 @@ class ImportService:
 
         for _aid in account_ids:
             ACCOUNT_MATCH_OUTCOMES_TOTAL.labels(result="not_attempted").inc()
-
-    def _import_w2(
-        self,
-        file_path: Path,
-    ) -> ImportResult:
-        """Import a W-2 PDF file.
-
-        Args:
-            file_path: Path to the W-2 PDF.
-
-        Returns:
-            ImportResult with summary of imported data.
-        """
-        from moneybin.extractors.w2_extractor import W2Extractor
-        from moneybin.loaders.w2_loader import W2Loader
-
-        result = ImportResult(file_path=str(file_path), file_type="w2")
-
-        # Extract
-        extractor = W2Extractor()
-        data = extractor.extract_from_file(file_path)
-
-        # Load
-        loader = W2Loader(self._db)
-        row_count = loader.load_data(data)
-
-        result.w2_forms = row_count
-        result.details = {"w2_forms": row_count}
-
-        return result
 
     def _import_tabular(
         self,
@@ -1144,8 +1106,6 @@ class ImportService:
             return self._import_ofx(
                 path, institution=institution, force=force, interactive=interactive
             )
-        if file_type == "w2":
-            return self._import_w2(path)
         if file_type == "tabular":
             return self._import_tabular(
                 path,
@@ -1178,7 +1138,7 @@ class ImportService:
 
         Per-file failures do not abort the batch. Refresh runs only if at
         least one file succeeded AND at least one file was transformable
-        (ofx/tabular — W-2 imports don't write to fct_transactions). On
+        (ofx/tabular). On
         SQLMesh failure the per-file outcomes are preserved and the error
         surfaces in ``transforms_error`` on the result envelope.
 
@@ -1196,7 +1156,7 @@ class ImportService:
             path = Path(raw_path)
             try:
                 r = self._import_one(path, force=force, interactive=interactive)
-                rows_loaded = r.transactions or r.w2_forms
+                rows_loaded = r.transactions
                 per_file.append(
                     PerFileResult(
                         path=str(path),
