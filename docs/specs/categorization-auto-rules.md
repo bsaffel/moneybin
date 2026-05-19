@@ -1,6 +1,6 @@
 # Auto-Rule Generation
 
-> Last updated: 2026-04-26
+> Last updated: 2026-05-17
 > Status: Implemented
 > Parent: [`categorization-overview.md`](categorization-overview.md) (pillar E)
 > Companions: [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) (algorithm contract: source-precedence enforcement on write, snowball auto-apply, `match_text` and exemplar accumulator that auto-rule writes interoperate with), [`archived/transaction-categorization.md`](archived/transaction-categorization.md) (existing rule engine this builds on), [`moneybin-mcp.md`](moneybin-mcp.md) (tool signatures), `CLAUDE.md` "Architecture: Data Layers"
@@ -34,7 +34,7 @@ This spec adds auto-rule generation — pillar E from the [categorization umbrel
 
 ### Proposal generation
 
-1. After any categorization event (`transactions_categorize_commit` MCP tool or `moneybin categorize` CLI), the system checks each categorized transaction for a potential auto-rule proposal.
+1. After any categorization event (`transactions_categorize_commit` MCP tool or `moneybin transactions categorize commit` CLI), the system checks each categorized transaction for a potential auto-rule proposal.
 2. A proposal is generated when no active rule or merchant mapping already covers the transaction's pattern AND no pending proposal for the same pattern exists (if a pending proposal exists, its `trigger_count` is incremented instead).
 3. The proposal threshold is configurable (`categorization.auto_rule_proposal_threshold`, default 1). A value of 1 means propose on first categorization; a value of 3 means propose after three matching categorizations.
 4. Pattern extraction uses the merchant-first strategy: canonical merchant name when a `merchant_id` exists, cleaned description otherwise.
@@ -68,20 +68,23 @@ This spec adds auto-rule generation — pillar E from the [categorization umbrel
 ```sql
 /* Auto-rule proposals generated from user categorization patterns; staged for review before activation */
 CREATE TABLE IF NOT EXISTS app.proposed_rules (
-    proposed_rule_id VARCHAR PRIMARY KEY, -- UUID, unique identifier for this proposal
-    merchant_pattern VARCHAR NOT NULL,    -- Pattern to match: canonical merchant name or cleaned description
+    proposed_rule_id VARCHAR PRIMARY KEY,  -- 12-char truncated UUID4 hex
+    merchant_pattern VARCHAR NOT NULL,     -- Pattern to match: canonical merchant name or cleaned description
     match_type VARCHAR DEFAULT 'contains', -- How the pattern is matched: contains, exact, or regex
-    category VARCHAR NOT NULL,            -- Proposed category
-    subcategory VARCHAR,                  -- Proposed subcategory; NULL if top-level only
-    status VARCHAR DEFAULT 'pending',     -- Lifecycle: pending, approved, rejected, superseded
-    trigger_count INTEGER DEFAULT 1,      -- Number of categorizations that triggered or reinforced this proposal
+    category VARCHAR NOT NULL,             -- DEPRECATED in V014 (Phase 1 dual-write): display snapshot; category_id is canonical
+    subcategory VARCHAR,                   -- DEPRECATED in V014 (Phase 1 dual-write): display snapshot; category_id is canonical
+    category_id VARCHAR,                   -- FK to core.dim_categories.category_id (added in PR #174); NULL only for orphaned legacy rows
+    status VARCHAR DEFAULT 'pending',      -- Lifecycle: tracking, pending, approved, rejected, superseded
+    trigger_count INTEGER DEFAULT 1,       -- Number of categorizations that triggered or reinforced this proposal
     source VARCHAR DEFAULT 'pattern_detection', -- How the proposal was generated: pattern_detection or ml
-    sample_txn_ids VARCHAR[],             -- Up to 5 transaction_ids that triggered this proposal
+    sample_txn_ids VARCHAR[],              -- Up to 5 transaction_ids that triggered this proposal
     proposed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- When the proposal was created
-    decided_at TIMESTAMP,                 -- When the user approved or rejected; NULL if pending
-    decided_by VARCHAR                    -- Who decided: 'user' or NULL if still pending
+    decided_at TIMESTAMP,                  -- When the user approved or rejected; NULL if pending
+    decided_by VARCHAR                     -- Who decided: 'user' or NULL if still pending
 );
 ```
+
+> **PR #174 migration note.** The category text columns are dual-write display snapshots; `category_id` is the canonical reference. Phase 2 (post-launch) drops the text columns.
 
 ### `app.categorization_rules` (existing, no schema changes)
 
@@ -111,7 +114,7 @@ Transaction categorized
   v
 Has merchant_id in app.transaction_categories?
   |
-  +-- YES --> Use app.merchants.canonical_name as pattern
+  +-- YES --> Use core.dim_merchants.canonical_name as pattern
   |           match_type = 'contains'
   |
   +-- NO  --> Clean raw description:
@@ -139,11 +142,11 @@ The auto-rule engine hooks into the categorization service layer, which is share
 
 | Hook point | Trigger |
 |---|---|
-| `CategorizationService.categorize_items()` | Batch categorization via `transactions_categorize_commit` MCP tool or `moneybin categorize` CLI |
+| `CategorizationService.categorize_items()` (in `src/moneybin/services/categorization/`) | Batch categorization via `transactions_categorize_commit` MCP tool or `moneybin transactions categorize commit` CLI |
 
 **CLI parity:** CLI commands use the same service layer as MCP tools. Same code path, not a separate implementation.
 
-**Snowball trigger.** `categorize_pending()` (which invokes `apply_rules()` for auto-rule fan-out) is now called automatically by `bulk_categorize` after every LLM-assist commit. Newly-promoted auto-rules apply to remaining uncategorized rows in the same batch without waiting for the next import or an explicit `rules apply` invocation. See [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) §Apply order.
+**Snowball trigger.** `categorize_pending()` (which invokes `apply_rules()` for auto-rule fan-out) is called automatically by `categorize_items()` after every commit. Newly-promoted auto-rules apply to remaining uncategorized rows in the same batch without waiting for the next import or an explicit `rules apply` invocation. See [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) §Apply order.
 
 ### Hook logic (synchronous)
 
@@ -151,7 +154,7 @@ After the categorization is written to `app.transaction_categories`:
 
 1. Extract pattern from the transaction (merchant-first strategy)
 2. Check `app.categorization_rules` — does an active rule already cover this pattern? -> skip
-3. Check `app.merchants` — does a merchant mapping already produce this category for this pattern? -> skip
+3. Check `core.dim_merchants` — does a merchant mapping already produce this category for this pattern? -> skip
 4. Check `app.proposed_rules` — does a pending proposal for this pattern + category exist? -> increment `trigger_count`
 5. Otherwise -> create new proposal
 
@@ -164,9 +167,9 @@ The hook is lightweight: one SELECT each against rules, merchants, and proposals
 | Command | Description |
 |---|---|
 | `moneybin transactions categorize auto review` | Table of pending proposals with sample transactions, trigger counts, and pattern details |
-| `moneybin transactions categorize auto confirm --approve <id> [<id>...] --reject <id> [<id>...]` | Batch approve/reject proposals |
-| `moneybin transactions categorize auto confirm --approve-all` | Approve all pending proposals |
-| `moneybin transactions categorize auto confirm --reject-all` | Reject all pending proposals |
+| `moneybin transactions categorize auto accept --accept <id> [<id>...] --reject <id> [<id>...]` | Batch accept/reject proposals (renamed from `confirm` / `--approve` in PR #171) |
+| `moneybin transactions categorize auto accept --accept-all` | Accept all pending proposals |
+| `moneybin transactions categorize auto accept --reject-all` | Reject all pending proposals |
 | `moneybin transactions categorize auto stats` | Auto-rule health: active count, proposal count, override rate, top-performing rules |
 | `moneybin transactions categorize auto rules` | List active auto-rules (equivalent to `list-rules --created-by auto_rule`) |
 
@@ -191,10 +194,10 @@ Imported 120 transactions from chase_checking.csv
 | Interactive | Flag equivalent |
 |---|---|
 | Review table | `moneybin transactions categorize auto review --output json` |
-| Approve specific | `moneybin transactions categorize auto confirm --approve ar_001 ar_002` |
-| Reject specific | `moneybin transactions categorize auto confirm --reject ar_003` |
-| Approve all | `moneybin transactions categorize auto confirm --approve-all` |
-| Reject all | `moneybin transactions categorize auto confirm --reject-all` |
+| Accept specific | `moneybin transactions categorize auto accept --accept ar_001 ar_002` |
+| Reject specific | `moneybin transactions categorize auto accept --reject ar_003` |
+| Accept all | `moneybin transactions categorize auto accept --accept-all` |
+| Reject all | `moneybin transactions categorize auto accept --reject-all` |
 
 ## MCP Interface
 
@@ -203,7 +206,7 @@ Imported 120 transactions from chase_checking.csv
 | Tool | Type | Description |
 |---|---|---|
 | `transactions_categorize_auto_review` | Read | List pending proposals with sample transactions, trigger counts, and pattern details |
-| `transactions_categorize_auto_confirm` | Write | Batch approve/reject proposals by ID. Approved proposals are promoted to active rules. |
+| `transactions_categorize_auto_accept` | Write | Batch accept/reject proposals by ID. Accepted proposals are promoted to active rules. (Renamed from `_auto_confirm` in PR #171.) |
 | `transactions_categorize_auto_stats` | Read | Auto-rule health: active count, proposal count, override rate, top-performing rules by match count |
 
 ### Prompt
@@ -221,13 +224,13 @@ sequenceDiagram
     participant Sys as MoneyBin
 
     User->>AI: Show me proposed rules
-    AI->>Sys: categorize_auto_review()
+    AI->>Sys: transactions_categorize_auto_review()
     Sys-->>AI: 8 pending rules with samples
     AI->>User: 8 patterns found:<br/>1. STARBUCKS -> Coffee (3 matches)<br/>2. AMAZON -> Shopping (5 matches)...
-    User->>AI: Approve all except #4,<br/>that should be Groceries
-    AI->>Sys: categorize_auto_confirm(<br/>approve x7, reject x1)
-    AI->>Sys: categorize_create_rules(<br/>corrected #4 as Groceries)
-    Sys-->>AI: 7 approved, 1 rejected, 1 created
+    User->>AI: Accept all except #4,<br/>that should be Groceries
+    AI->>Sys: transactions_categorize_auto_accept(<br/>accept x7, reject x1)
+    AI->>Sys: transactions_categorize_rules_create(<br/>corrected #4 as Groceries)
+    Sys-->>AI: 7 accepted, 1 rejected, 1 created
     AI->>User: 7 rules activated,<br/>1 corrected to Groceries.<br/>Next import will auto-categorize<br/>these patterns.
 ```
 
@@ -250,7 +253,7 @@ Env var overrides:
 
 ### Unit tests
 
-- **Pattern extraction (merchant path)**: given a transaction with `merchant_id`, verify pattern uses `canonical_name` from `app.merchants`
+- **Pattern extraction (merchant path)**: given a transaction with `merchant_id`, verify pattern uses `canonical_name` from `core.dim_merchants`
 - **Pattern extraction (description fallback)**: given a transaction without merchant match, verify description cleaning strips IDs, locations, prefixes
 - **Dedup — same pattern same category**: categorize same merchant twice same category -> one proposal with `trigger_count = 2`
 - **Dedup — same pattern different category**: categorize same merchant two different categories -> first proposal `superseded`, second created
@@ -260,9 +263,9 @@ Env var overrides:
 
 ### Integration tests
 
-- **End-to-end**: import -> categorize apply -> verify proposals created -> approve -> re-import -> verify new transactions auto-categorized by the promoted rule
-- **Hook fires on all paths**: `transactions_categorize_commit` MCP tool and CLI categorization both trigger proposal generation (same service layer)
-- **Immediate effect**: approve a proposal, verify existing uncategorized transactions matching the pattern are categorized immediately
+- **End-to-end**: import -> categorize run -> verify proposals created -> accept -> re-import -> verify new transactions auto-categorized by the promoted rule
+- **Hook fires on all paths**: `transactions_categorize_commit` MCP tool and `moneybin transactions categorize commit` CLI both trigger proposal generation (same service layer)
+- **Immediate effect**: accept a proposal, verify existing uncategorized transactions matching the pattern are categorized immediately
 - **Priority hierarchy**: transaction categorized by user rule -> auto-rule hook does not propose (pattern already covered)
 - **Hook idempotency**: categorize same transaction twice -> no duplicate proposal
 
@@ -276,8 +279,8 @@ Env var overrides:
 ## Dependencies
 
 - Existing rule engine (`app.categorization_rules`, rule evaluation logic)
-- Existing merchant normalization (`app.merchants`, canonical name resolution)
-- Existing categorization service layer (`CategorizationService.categorize_items()`, backing `transactions_categorize_commit` MCP tool)
+- Existing merchant normalization (`core.dim_merchants`, canonical name resolution)
+- Existing categorization service layer (`CategorizationService.categorize_items()` in `src/moneybin/services/categorization/`, backing `transactions_categorize_commit` MCP tool — service was split into a facade + collaborators in PR #155)
 - Database migration system (`database-migration.md`) for `app.proposed_rules` table creation
 
 ## Out of Scope
@@ -306,6 +309,6 @@ Rules that haven't matched any transaction in N months could be flagged for revi
 
 Decisions made during spec review, preserved for context.
 
-1. **Description cleaning regex list.** The description fallback path reuses the existing `normalize_description()` function in `categorization_service.py`, which already handles POS prefixes, trailing location info, trailing store IDs, and whitespace normalization. The regex approach is conservative (prefers false negatives over false positives) and is best-effort for the long tail — the merchant-first path handles the majority case, and the review queue catches what regex misses. The exact regex list is an implementation detail, extended based on real-world data. Note: merchant entity resolution (`merchant-entity-resolution.md`, planned) will improve the merchant-first path over time, reducing reliance on regex cleaning.
+1. **Description cleaning regex list.** The description fallback path reuses the existing `normalize_description()` helper from the categorization service package (`src/moneybin/services/categorization/`), which already handles POS prefixes, trailing location info, trailing store IDs, and whitespace normalization. The regex approach is conservative (prefers false negatives over false positives) and is best-effort for the long tail — the merchant-first path handles the majority case, and the review queue catches what regex misses. The exact regex list is an implementation detail, extended based on real-world data. Note: merchant entity resolution (`merchant-entity-resolution.md`, planned) will improve the merchant-first path over time, reducing reliance on regex cleaning.
 2. **Promotion timing.** Synchronous. Approved rules are immediately evaluated against existing uncategorized transactions. Instant feedback ("3 uncategorized transactions now categorized by your new rule") outweighs the marginal latency. The operation is fast at personal-finance scale.
 3. **`sample_txn_ids` cap.** 5 is sufficient for v1. Provides enough context for the user to confirm the pattern during review without bloating the proposal table. Trivially adjustable during implementation if review experience suggests otherwise.

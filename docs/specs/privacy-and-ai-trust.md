@@ -197,7 +197,7 @@ AI-call audit rows live in the unified `app.audit_log` defined by [`transaction-
 | `consent_reference` | string | FK to the `app.ai_consent_grants` row that authorized the call. |
 | `user_initiated` | boolean | True for direct MCP queries; false for system-initiated calls (Smart Import). |
 
-The `get_ai_audit_log` consumer surface is preserved — it reads from `app.audit_log` filtered by `action='ai.external_call'` and projects `context_json` keys back into the original column names so callers see no API change.
+The `privacy_audit` consumer surface (per `moneybin-mcp.md` §1089) reads from `app.audit_log` filtered by `action='ai.external_call'` and projects `context_json` keys back into the original column names so callers see no API change.
 
 ### Why no payload storage
 
@@ -210,8 +210,8 @@ The `data_sent_hash` allows forensic verification ("was this specific payload se
 
 ### User interface
 
-- **CLI:** `moneybin privacy audit-log [--last N] [--feature X] [--backend Y] [--since DATE]`
-- **MCP:** `get_ai_audit_log` tool with the same filter parameters
+- **CLI:** `moneybin privacy audit [--last N] [--feature X] [--backend Y] [--since DATE]`
+- **MCP:** `privacy_audit` tool with the same filter parameters (per `moneybin-mcp.md` §1089)
 - **Example output:**
   ```
   2026-04-17 14:32:01 | tier 3 | smart_import_parse | anthropic/claude-sonnet-4-6
@@ -283,13 +283,13 @@ MCP tools prefer returning the minimum data needed to answer the query:
 - `moneybin privacy grant <category>` — proactively grant consent (e.g., scripting/automation)
 - `moneybin privacy revoke <category>` — revoke a specific consent; takes effect immediately
 - `moneybin privacy revoke-all` — revoke all consents; nuclear option
-- `moneybin privacy audit-log [filters]` — query the audit log (see Audit Log section)
+- `moneybin privacy audit [filters]` — query the audit log (see Audit Log section)
 
 ### MCP tools
 
-- `get_privacy_status` — returns active consents and backend info
-- `revoke_ai_consent` — revoke a consent by category
-- `get_ai_audit_log` — query the audit log
+- `privacy_status` — returns active consents and backend info (per `moneybin-mcp.md` §1059)
+- `privacy_revoke` — revoke a consent by category (per `moneybin-mcp.md` §1079)
+- `privacy_audit` — query the audit log (per `moneybin-mcp.md` §1089)
 
 ### Config override
 

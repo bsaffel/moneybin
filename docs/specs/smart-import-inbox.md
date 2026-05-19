@@ -72,8 +72,8 @@ Existing tables touched indirectly via `ImportService`:
 ### Files to Create
 
 - `src/moneybin/services/inbox_service.py` — `InboxService` class encapsulating directory layout, locking, the recovery pass, file movement, and the sync/list operations. Calls `ImportService.import_file()` for each file. Returns a dataclass result (`InboxSyncResult`) with `processed`, `failed`, `skipped`, `ignored` lists.
-- `src/moneybin/cli/import_inbox.py` — Typer subcommands `inbox`, `inbox list`, `inbox path` registered under the existing `import` group.
-- `src/moneybin/mcp/tools/import_inbox.py` — `import_inbox_sync` and `import_inbox_pending` MCP tools (or extend `import_tools.py` if it stays small).
+- `src/moneybin/cli/commands/import_inbox.py` — Typer subcommands `inbox`, `inbox list`, `inbox path` registered under the existing `import` group.
+- `src/moneybin/mcp/tools/import_inbox.py` — `import_inbox_sync` and `import_inbox_pending` MCP tools.
 - `tests/services/test_inbox_service.py` — service-level unit + integration tests.
 - `tests/cli/test_import_inbox.py` — CLI subprocess tests.
 - `tests/mcp/test_import_inbox_tools.py` — MCP tool tests.
@@ -81,7 +81,7 @@ Existing tables touched indirectly via `ImportService`:
 ### Files to Modify
 
 - `src/moneybin/config.py` — add `ImportSettings` submodel with `inbox_root: Path = Path.home() / "Documents" / "MoneyBin"`. Wire into `MoneyBinSettings`. The active-profile inbox path (`<inbox_root>/<profile>/`) is derived at access time, not stored, so a profile switch picks up the new path without restart.
-- `src/moneybin/cli/import_.py` (or wherever the `import` group lives) — register the new subcommands.
+- `src/moneybin/cli/commands/import_cmd.py` — register the new subcommands under the existing `import` Typer group.
 - `src/moneybin/mcp/_registration.py` — register the two new tools.
 - `src/moneybin/metrics/registry.py` — add the two new metrics.
 - `docs/specs/INDEX.md` — add an entry under "Smart Import."
@@ -135,7 +135,7 @@ Two new tools under the existing `import.*` namespace.
 ### `import_inbox_sync`
 
 - **Sensitivity:** `low` (returns counts, filenames, error codes; never file contents)
-- **Args:** none
+- **Args:** `refresh: bool = True` — added in the transform handoff (PR #143/#151). When True, runs the post-load refresh pipeline (matching + SQLMesh apply + categorization) once after all files have been imported; pass False to defer.
 - **Behavior:** runs the same operation as `moneybin import inbox`.
 - **Response data:**
   ```json

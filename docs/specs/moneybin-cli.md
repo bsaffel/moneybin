@@ -44,9 +44,9 @@ The global `--profile` flag provides ephemeral override without changing the def
 
 ### Import is the golden path
 
-`moneybin import file` and `moneybin sync pull` are the two ways data enters the system. Both automatically execute the full pipeline: load to raw, transform (SQLMesh), match (dedup + transfers), categorize. Users should never need to manually run pipeline stages in sequence.
+`moneybin import files` and `moneybin sync pull` are the two ways data enters the system. Both automatically execute the full pipeline: load to raw, transform (SQLMesh), match (dedup + transfers), categorize. Users should never need to manually run pipeline stages in sequence.
 
-Individual commands (`matches run`, `categorize apply-rules`, `transform apply`) exist for configuration, troubleshooting, and power-user control — not as steps in a manual pipeline.
+Individual commands (`transactions matches run`, `transactions categorize rules apply`, `transform apply`) exist for configuration, troubleshooting, and power-user control — not as steps in a manual pipeline. The user-intent umbrella is `moneybin refresh` (CLI peer of MCP `refresh_run`, per PR #173) — `refresh --step transform` is the always-visible caller for what was previously the standalone `transform_apply` MCP tool (removed; see `moneybin-mcp.md`).
 
 ### Entity groups own their workflows and aggregations
 
@@ -66,15 +66,16 @@ Sub-group names are the natural English name for the workflow or concept. Usuall
 
 ### Universal flags
 
-All commands support these flags (per `mcp-architecture.md` CLI symmetry):
+All commands support these flags (per `mcp-architecture.md` CLI symmetry). `--profile` and `--verbose` attach to the root callback in `src/moneybin/cli/main.py`; the remaining flags attach per-subcommand. Pass them in that position: `moneybin --profile NAME --verbose <command> --output json --quiet --yes ARGS...`.
 
-| Flag | Purpose |
-|---|---|
-| `--profile NAME` / `-p` | Specify active profile (ephemeral, does not change default) |
-| `--verbose` / `-v` | Enable debug logging |
-| `--output json\|table` | Output format (default: `table` for humans, `json` for AI/script consumers) |
-| `--json-fields FIELDS` | Comma-separated field projection for `--output json` (read-only commands only). Available fields documented per-command in `--help`. |
-| `--yes` / `-y` | Non-interactive mode — auto-accept confirmations |
+| Flag | Attaches to | Purpose |
+|---|---|---|
+| `--profile NAME` / `-p` | root | Specify active profile (ephemeral, does not change default) |
+| `--verbose` / `-v` | root | Enable debug logging |
+| `--output text\|json` (`-o`) | subcommand | Output format (default: `text` for humans, `json` for AI/script consumers). `db query` extends this to `text\|json\|csv\|markdown\|box`. |
+| `--quiet` / `-q` | subcommand | Suppress informational chatter on read-only commands (result data is never suppressed) |
+| `--json-fields FIELDS` | subcommand | Comma-separated field projection for `--output json` (read-only commands only). Available fields documented per-command in `--help`. |
+| `--yes` / `-y` | subcommand | Non-interactive mode — auto-accept confirmations |
 
 ### `--validate` not `--dry-run`
 
@@ -85,7 +86,9 @@ Import validation (`--validate`) parses the file, detects format, and reports wh
 ### Complete target surface
 
 ```
-moneybin [--profile NAME] [--verbose] [--output json|table] [--yes]
+moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [--yes] ...
+  # Note: --profile / --verbose attach to the root callback;
+  # --output / --quiet / --yes / --json-fields attach per-subcommand.
 |
 +-- profile
 |   +-- create <name>              -- Create profile + directory + DB + keychain
@@ -96,23 +99,31 @@ moneybin [--profile NAME] [--verbose] [--output json|table] [--yes]
 |   +-- set <key> <value>          -- Set config value
 |
 +-- import
-|   +-- file <path>                -- Smart import with full pipeline
+|   +-- files <paths...>           -- Smart import with full pipeline (accepts one or more paths)
 |   |     [--validate]               Parse and validate only
 |   |     [--account-name NAME]      Account name for multi-account files
 |   |     [--format NAME]            Use saved tabular format
 |   |     [--save-format NAME]       Save detection as reusable format
 |   |     [--override MAPPING]       Override detected column mapping
 |   |     [--sheet NAME]             Excel sheet selection
-|   |     [--skip-transform]         Load to raw only
-|   |     [--skip-match]             Skip dedup/transfer detection
-|   |     [--skip-categorize]        Skip auto-categorization
+|   |     [--refresh/--no-refresh]   Run post-load pipeline (default on)
 |   |     [--yes]                    Non-interactive mode
+|   +-- history                    -- Show recent import batches
+|   +-- preview                    -- Detect format / column mapping without writing
+|   +-- revert                     -- Undo a recent import batch by import_id
 |   +-- status                     -- End-to-end import health and diagnostics
+|   +-- formats                    -- Manage saved tabular format definitions
+|   |   +-- list
+|   |   +-- show <name>
+|   |   +-- delete <name>
+|   +-- inbox                      -- Drain the watched import inbox
+|   +-- labels                     -- Manage labels on imports
 |
 +-- sync
 |   +-- login                      -- Authenticate with moneybin-server (device flow)
 |   +-- logout                     -- Clear stored JWT from keychain
 |   +-- connect                    -- Connect a bank account (opens provider UI)
+|   +-- connect-status             -- Poll the in-flight connect session
 |   +-- disconnect --institution NAME -- Remove an institution
 |   +-- pull [--force] [--institution NAME] -- Pull data + full pipeline
 |   +-- status                     -- Connected institutions, health, errors
@@ -120,7 +131,8 @@ moneybin [--profile NAME] [--verbose] [--output json|table] [--yes]
 |   |   +-- set --time HH:MM      -- Install daily sync (launchd/cron)
 |   |   +-- show                   -- Current schedule details
 |   |   +-- remove                 -- Uninstall scheduled job
-|   +-- rotate-key                 -- Rotate E2E encryption key pair
+|   +-- key
+|       +-- rotate                 -- Rotate E2E encryption key pair
 |
 +-- refresh                        -- Run the post-load pipeline (match -> transform -> categorize)
 |         [--step STEP]              Subset of canonical steps; repeatable.
@@ -132,24 +144,23 @@ moneybin [--profile NAME] [--verbose] [--output json|table] [--yes]
 |         [--output json] [-q]
 |
 +-- accounts
-|   +-- list                       -- List accounts
-|   +-- show <account_id>          -- Show one account
-|   +-- rename <account_id> <name> -- Rename an account
-|   +-- include <account_id>       -- Toggle include_in_net_worth [--no]
-|   +-- archive <account_id>       -- Mark archived; cascades exclude_in_net_worth=FALSE
-|   +-- unarchive <account_id>     -- Clear archived flag (does NOT restore include)
-|   +-- set <account_id>           -- Metadata update
+|   +-- list                       -- List accounts [--include-archived] [--type TYPE]
+|   +-- get <account_id>           -- Show one account's full settings + dim record
+|   +-- set <account_id>           -- Partial update (structural + behavioral fields)
 |   |   [--official-name NAME] [--last-four XXXX] [--subtype TYPE]
 |   |   [--holder-category CAT] [--currency CODE] [--credit-limit AMT]
+|   |   [--display-name NAME] [--include/--exclude] [--archive/--unarchive]
 |   |   [--clear-official-name] [--clear-last-four] [--clear-subtype]
-|   |   [--clear-holder-category] [--clear-credit-limit]
+|   |   [--clear-holder-category] [--clear-currency] [--clear-credit-limit]
+|   |   [--clear-display-name] [--yes]
+|   +-- resolve <query> [--limit N] -- Fuzzy resolve free-text reference to ranked candidates
 |   +-- balance                    -- Per-account balance workflow (net-worth.md)
 |   |   +-- show [--account ID] [--as-of DATE]
 |   |   +-- assert <account_id> <date> <amount> [--notes] [--yes]
 |   |   +-- list [--account ID]
-|   |   +-- delete <account_id> <date> [--yes]
+|   |   +-- assertion-delete <account_id> <date> [--yes]
 |   |   +-- reconcile [--account ID] [--threshold AMOUNT]
-|   |   +-- history [--from DATE] [--to DATE] [--interval]
+|   |   +-- history --account ID [--from DATE] [--to DATE]
 |   +-- investments                -- (future spec, gated on investment-tracking.md)
 |
 +-- assets                         -- (future spec) Physical assets (real estate, vehicles, valuables)
@@ -158,8 +169,8 @@ moneybin [--profile NAME] [--verbose] [--output json|table] [--yes]
 |
 +-- transactions
 |   +-- list                       -- List transactions [--account ID] [--from] [--to]
-|   +-- show <txn_id>              -- Show one transaction
-|   +-- search <query>             -- Full-text / structured search
+|   +-- create                     -- Create a manual transaction
+|   +-- audit                      -- Audit one transaction's curation history (notes, tags, splits)
 |   +-- review                     -- Unified review queue (matches + categorize)
 |   |     [--type matches|categorize|all]   Default all; walks matches first then categorize
 |   |     [--status]                        Counts only, no interactive loop
@@ -168,14 +179,18 @@ moneybin [--profile NAME] [--verbose] [--output json|table] [--yes]
 |   |     [--confirm-all]                   Non-interactive: confirm all in scope
 |   |     [--limit N]                       Cap items per session
 |   +-- matches                    -- Transfer detection + dedup workflow (no review — see transactions review)
-|   |   +-- run [--type transfer|dedup]
-|   |   +-- log [--type] [--status] [--debug]
-|   |   +-- undo <match_id>
-|   |   +-- backfill
+|   |   +-- run [--skip-transform] [--auto-accept-transfers]
+|   |   +-- history [--type dedup|transfer] [--limit N]
+|   |   +-- undo <match_id> [--yes]
+|   |   +-- backfill [--skip-transform] [--auto-accept-transfers]
 |   +-- categorize                 -- Categorization workflow + rules (taxonomy/merchants live in top-level groups; review lives at transactions review)
-|   |   +-- apply <category_id> --txn-ids ...
-|   |   +-- stats                  -- Coverage metrics
-|   |   +-- rules                  -- Rule management (list, create, apply, delete)
+|   |   +-- commit                  -- Commit externally-decided categorizations (--input <path> or stdin '-')
+|   |   +-- commit-from-file <path> -- Commit from a JSON file (convenience wrapper)
+|   |   +-- run                     -- Run engine cascade (--methods rules,merchants)
+|   |   +-- assist                  -- Emit redacted uncategorized rows for LLM workflows
+|   |   +-- export-uncategorized    -- Export uncategorized rows to JSON for offline review
+|   |   +-- stats                   -- Coverage metrics
+|   |   +-- rules                   -- Rule management (list, create, apply, delete)
 |   |   |   +-- list
 |   |   |   +-- create <name> [--pattern --category --subcategory --match-type
 |   |   |   |                  --priority --min-amount --max-amount --account-id
@@ -183,14 +198,17 @@ moneybin [--profile NAME] [--verbose] [--output json|table] [--yes]
 |   |   |   +-- apply               -- Run rules against uncategorized
 |   |   |   +-- delete <rule_id> [--reapply]
 |   |   +-- auto                    -- Auto-rule proposals workflow
-|   |   |   +-- review
-|   |   |   +-- confirm [--approve ID ...] [--reject ID ...] [--approve-all] [--reject-all]
+|   |   |   +-- review [--limit N]
+|   |   |   +-- accept [--accept ID ...] [--reject ID ...] [--accept-all] [--reject-all]
+|   |   |   +-- rules [--limit N]
 |   |   |   +-- stats
-|   |   +-- ml                      -- ML-assisted categorization
+|   |   +-- ml                      -- ML-assisted categorization (stub)
 |   |       +-- status
 |   |       +-- train
 |   |       +-- apply
-|   +-- recurring                  -- (future spec) Recurring transaction detection
+|   +-- notes                      -- Notes on a transaction (add, list, edit, delete)
+|   +-- tags                       -- Tags on a transaction (add, remove, list, rename)
+|   +-- splits                     -- Splits on a transaction (add, list, remove, clear)
 |
 +-- categories                     -- Category taxonomy (reference data)
 |   +-- list
@@ -203,13 +221,17 @@ moneybin [--profile NAME] [--verbose] [--output json|table] [--yes]
 |   +-- create <pattern> <canonical_name> [--default-category]
 |
 +-- reports                        -- Cross-domain analytical and aggregation views (read-only)
-|   +-- networth                   -- Cross-domain net worth aggregation (accounts + assets)
-|   |   +-- show [--as-of DATE]
-|   |   +-- history [--from DATE] [--to DATE] [--interval]
-|   +-- spending                   -- (future spec)
-|   +-- cashflow                   -- (future spec)
+|   +-- networth                   -- Cross-domain net worth aggregation (accounts + assets) [--as-of DATE]
+|   +-- networth-history           -- Net worth time series [--from DATE] [--to DATE]
+|   +-- cashflow                   -- Inflow / outflow over a window
+|   +-- spending                   -- Spending by category
+|   +-- recurring                  -- Recurring transactions (replaces removed `transactions_recurring_list` per #163)
+|   +-- merchants                  -- Top merchants by spend
+|   +-- uncategorized              -- Uncategorized transactions roll-up
+|   +-- large-transactions         -- Outlier amounts
+|   +-- balance-drift              -- Reconciliation drift across accounts
 |   +-- budget                     -- (future spec) Budget vs actual report
-|   +-- health                     -- Cross-domain financial snapshot (was overview health)
+|   +-- health                     -- (future spec) Cross-domain financial health snapshot
 |
 +-- tax                            -- Tax domain (forms, deductions, capital gains, estimates)
 |   +-- w2 <year>                  -- W-2 form data
@@ -218,8 +240,19 @@ moneybin [--profile NAME] [--verbose] [--output json|table] [--yes]
 |
 +-- system                         -- System / data status meta-view
 |   +-- status                     -- What data exists, freshness, pending review queues
+|   +-- doctor                     -- Run pipeline integrity checks across all invariants
+|   +-- audit                      -- Privacy / access audit utilities
+|
++-- privacy                        -- Privacy utilities (redaction testing)
+|   +-- redact                     -- Test the project redaction pipeline on a value
+|
++-- synthetic                      -- Generate and manage synthetic financial data for testing
+|   +-- generate
+|   +-- reset
 |
 +-- budget                         -- (future spec) Budget target management (mutation)
+|   +-- set <category> <amount>
+|   +-- delete <category>
 |
 +-- export                         -- (future spec) Export to CSV / Excel / Sheets
 |
@@ -235,12 +268,20 @@ moneybin [--profile NAME] [--verbose] [--output json|table] [--yes]
 |   +-- init [--passphrase]        -- Create encrypted DB (power user)
 |   +-- shell                      -- Interactive DuckDB shell
 |   +-- ui                         -- DuckDB web UI
-|   +-- query <sql> [--format table|csv|json|markdown|box]
+|   +-- query <sql> [--output text|json|csv|markdown|box]
+|   +-- info                       -- Show DB path, size, schema summary
+|   +-- backup                     -- Snapshot encrypted database to a backup file
+|   +-- restore                    -- Restore encrypted database from a backup file
 |   +-- ps                         -- Show processes holding DB open
 |   +-- kill                       -- Release DB locks (confirm)
 |   +-- lock                       -- Clear cached encryption key
 |   +-- unlock                     -- Prompt for passphrase, cache key
-|   +-- rotate-key                 -- Re-encrypt database with new key
+|   +-- key                        -- Manage the database encryption key
+|   |   +-- show
+|   |   +-- rotate                 -- Re-encrypt database with new key
+|   |   +-- export
+|   |   +-- import
+|   |   +-- verify
 |   +-- migrate
 |       +-- apply [--dry-run]      -- Apply pending migrations
 |       +-- status                 -- Show migration state
@@ -259,21 +300,23 @@ moneybin [--profile NAME] [--verbose] [--output json|table] [--yes]
 |
 +-- transform
     +-- plan [--apply]             -- Preview pending SQLMesh changes
-    +-- apply                      -- Execute SQLMesh changes
+    +-- apply                      -- Execute SQLMesh changes (operator-only; user-intent caller is `refresh --step transform`)
+    +-- seed                       -- Re-materialize seed models in isolation
     +-- status                     -- Show current model state and environment
     +-- validate                   -- Check model SQL parses and resolves
-    +-- audit                      -- Run data quality assertions
-    +-- restate --model NAME --start DATE -- Force recompute for a date range (confirm)
+    +-- audit --start DATE --end DATE -- Run data quality assertions over a window
+    +-- restate --model NAME --start DATE [--end DATE] -- Force recompute for a date range (confirm)
 ```
 
 ### Mental model
 
 ```
-Entity groups:  accounts (+ balance), transactions (+ matches, categorize), assets
+Entity groups:  accounts (+ balance), transactions (+ matches, categorize, notes, tags, splits), assets
 Reference data: categories, merchants (taxonomies that transactions reference)
-Reports:        reports (networth, spending, cashflow, financial health, budget vs actual — cross-domain read-only)
+Reports:        reports (networth, networth-history, spending, cashflow, recurring, merchants, uncategorized, large-transactions, balance-drift; budget + health stubbed)
 Tax:            tax (forms, deductions, future capital gains)
-System:         system (data status meta-view)
+System:         system (status, doctor, audit)
+Privacy:        privacy (redaction testing); synthetic (testing data generation)
 Data in:        import, sync
 Data out:       export
 Pipeline:       refresh (post-load orchestration: match -> transform -> categorize)
@@ -282,9 +325,9 @@ Operational:    logs, stats
 Infrastructure: profile, db, mcp, transform
 ```
 
-### Top-level command count: 19
+### Top-level command count: 21
 
-`profile`, `import`, `sync`, `refresh`, `accounts`, `transactions`, `assets`, `categories`, `merchants`, `reports`, `tax`, `system`, `budget`, `export`, `logs`, `stats`, `db`, `mcp`, `transform`
+`profile`, `import`, `sync`, `accounts`, `reports`, `transactions`, `assets`, `categories`, `merchants`, `privacy`, `budget`, `tax`, `system`, `refresh`, `transform`, `synthetic`, `stats`, `export`, `mcp`, `db`, `logs`
 
 ## Cross-Interface Taxonomy
 
@@ -312,8 +355,8 @@ The same hierarchy expresses across CLI, MCP, and (future) HTTP. Each protocol e
 | Assert a balance | `accounts balance assert ...` | `accounts_balance_assert` | `POST /accounts/{id}/balances` |
 | Balance history | `accounts balance history` | `accounts_balance_history` | `GET /accounts/{id}/balances/history` |
 | Net worth now | `reports networth` | `reports_networth` | `GET /reports/networth` |
-| List matches | `transactions matches list` | `transactions_matches_list` | `GET /transactions/matches` |
-| Confirm a match | `transactions matches confirm <id>` | `transactions_matches_confirm` | `POST /transactions/matches/{id}/confirm` |
+| Match history | `transactions matches history` | `transactions_matches_history` | `GET /transactions/matches` |
+| Undo a match | `transactions matches undo <id>` | `transactions_matches_undo` | `POST /transactions/matches/{id}/undo` |
 | Spending report | `reports spending` | `reports_spending` | `GET /reports/spending` |
 
 ### Pluralization
@@ -413,9 +456,9 @@ On first run after upgrade, if `~/.moneybin/config.yaml` exists with an old-form
 
 ## Pipeline Orchestration
 
-### `import file` golden path
+### `import files` golden path
 
-When a user runs `moneybin import file`, the system executes a full pipeline:
+When a user runs `moneybin import files`, the system executes a full pipeline:
 
 1. **Detect & parse** — Identify format (smart-import heuristic engine), extract records
 2. **Load to raw** — Write to `raw.*` tables via `Database.ingest_dataframe()`
@@ -426,7 +469,7 @@ When a user runs `moneybin import file`, the system executes a full pipeline:
 Default output:
 
 ```
-$ moneybin import file march-statement.csv
+$ moneybin import files march-statement.csv
 ⚙️  Importing march-statement.csv...
   Detected: CSV (Wells Fargo checking format)
   Loaded: 47 transactions (2026-03-01 -> 2026-03-31)
@@ -434,7 +477,7 @@ $ moneybin import file march-statement.csv
   Categorized: 38 auto-classified, 4 need review
 ✅ Imported 44 new transactions
 👀 4 uncategorized transactions and 2 transfers need review
-💡 Run 'moneybin categorize auto review' or 'moneybin matches review'
+💡 Run 'moneybin transactions categorize auto review' or 'moneybin transactions review --type matches'
 ```
 
 Error handling: if any pipeline stage fails, prior stages' data is preserved (raw data is already loaded). The error message identifies which stage failed and how to retry just that stage.
@@ -683,7 +726,7 @@ These existing specs define CLI commands that need updates to reflect v2's taxon
 | Spec | CLI change needed (v2) | MCP change needed (v2) |
 |---|---|---|
 | `net-worth.md` | `track balance` → `accounts balance`. `track networth` → `reports networth` (cross-domain rollup, accounts + assets). `reconciliation show` → `accounts balance reconcile`. | `get_balances` → `accounts_balances`, etc. `get_net_worth` → `reports_networth`. |
-| `asset-tracking.md` | CLI namespace: top-level `assets` group (parallel to `accounts`). Net worth contribution flows through `core.agg_net_worth` consumed by `reports networth`. | Asset MCP tools take `assets_*` prefix (path-prefix-verb-suffix per v2). |
+| `asset-tracking.md` | CLI namespace: top-level `assets` group (parallel to `accounts`). Net worth contribution flows through `reports.net_worth` consumed by `reports networth`. | Asset MCP tools take `assets_*` prefix (path-prefix-verb-suffix per v2). |
 | `account-management.md` (planned) | Owns the `accounts` namespace entity ops (`list`, `get`, `set`, `resolve`). Settings updates (display name, include/exclude, archive/unarchive) fold into `accounts set` flags. Balance subcommands stay nested per `net-worth.md`. | Owns `accounts`, `accounts_get`, `accounts_set` (folds display_name / include / archive), `accounts_resolve`. |
 | `matching-same-record-dedup.md` / `matching-transfer-detection.md` | `matches *` → `transactions matches *` | Match-related tools take `transactions_matches_*` prefix |
 | `categorization-overview.md` / `categorization-auto-rules.md` / `categorize-bulk.md` | `categorize *` workflow → `transactions categorize *`. Pull category-taxonomy and merchant-mapping commands to top-level `categories *` and `merchants *` groups | Categorize workflow tools take `transactions_categorize_*` prefix; category and merchant CRUD become `categories_*` / `merchants_*` top-level |
@@ -761,5 +804,6 @@ These were identified during design and should be added to the spec index:
 
 | Date | Version | Summary |
 |---|---|---|
+| 2026-05-17 | v2 audit | Refreshed command tree to match shipped implementation. Notable shipped PRs reflected: #159 (noun-only read names), #163 (`reports recurring` replaces removed `transactions_recurring_list`), #164 (`accounts set` absorbs rename/include/archive/unarchive), #166 (`categories delete --force`), #167 (`categorize rules create + delete` parity), #171 (`categorize commit` rename + `categorize run` umbrella + `categorize assist`), #173 (`refresh` umbrella, `transform apply` operator-only). Renamed CLI commands documented: `accounts balance delete` → `accounts balance assertion-delete`; `db rotate-key` → `db key rotate`; `sync rotate-key` → `sync key rotate`; `import file` → `import files`; `matches log` → `matches history`. New top-level groups not previously enumerated: `privacy`, `synthetic`; new sub-groups: `transactions {notes, tags, splits, create, audit}`, `import {history, revert, preview, formats, inbox, labels}`, `db {info, backup, restore, key {show, rotate, export, import, verify}}`, `system {doctor, audit}`. Auto-rule workflow uses `accept` (not `confirm`) and adds `rules`. |
 | 2026-05-02 | v2 | Dissolved `track`; introduced entity groups (`accounts`, `transactions`); added `reports` group; unified taxonomy across CLI / MCP / future HTTP; renamed MCP tools to path-prefix-verb-suffix convention. Hard cut, no aliases. |
 | 2026-04-20 (orig) | v1 | Initial restructure: profile system, dissolved `config`/`data`, top-level `matches`/`categorize`/`track`. Implemented. |

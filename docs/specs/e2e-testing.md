@@ -2,6 +2,7 @@
 
 **Status:** implemented
 **Created:** 2026-04-23
+**Last updated:** 2026-05-17 — the `tests/e2e/` layout has grown beyond the initial `test_e2e_smoke.py` + `test_e2e_workflows.py` split documented below. Current files include `test_e2e_help.py`, `test_e2e_readonly.py`, `test_e2e_mutating.py`, `test_e2e_workflows.py`, `test_e2e_mcp.py`, `test_e2e_inbox.py`, `test_e2e_doctor.py`, `test_e2e_transaction_curation.py`, and `test_concurrent_access.py`. The tier-1/2/3 conceptual taxonomy below still applies; tests are now split by audience and concern rather than tier number.
 
 ## Problem
 
@@ -77,7 +78,7 @@ Three tiers, all marked `@pytest.mark.e2e`:
 
 One parametrized test running `moneybin <group> --help` for every command group. Verifies the app boots and commands register without errors.
 
-Groups: top-level, `profile`, `import`, `sync`, `categorize`, `matches`, `transform`, `synthetic`, `db`, `db migrate`, `logs`, `mcp`, `stats`, `track`, `export`.
+Groups (representative — actual surface evolves; see `tests/e2e/test_e2e_help.py` for the current parametrize list): top-level, `profile`, `import`, `sync`, `transactions categorize`, `transactions matches`, `transform`, `refresh`, `synthetic`, `db`, `db migrate`, `logs`, `mcp`, `stats`, `accounts`, `categories`, `merchants`, `budget`, `reports`.
 
 #### Tier 2 — Commands that run without a DB
 
@@ -96,8 +97,8 @@ Use the `e2e_profile` fixture. These go through the full `get_database()` → `i
 - `db info`, `db query "SELECT 1"`, `db migrate status`
 - `transform status`, `transform validate`
 - `import status`, `import history`
-- `categorize stats`, `categorize list-rules`
-- `matches history`
+- `transactions categorize stats`, `transactions categorize rules list` (renamed from the original `categorize list-rules` after the noun-only / subgroup overhaul — PR #159, #171)
+- `transactions matches history`
 - `stats show`
 
 All smoke tests assert: exit code 0, no Python tracebacks in stderr.
@@ -157,8 +158,8 @@ Verifies: database remains accessible after lock/unlock.
 profile create → db init
 → import file <fixture>
 → transform apply
-→ categorize apply-rules
-→ categorize stats
+→ transactions categorize run --methods rules
+→ transactions categorize stats
 ```
 
 Verifies: categorization wiring end-to-end.

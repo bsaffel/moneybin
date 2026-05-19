@@ -93,7 +93,7 @@ duration of the shell session.
    file on disk.
 9. Passphrase mode supports `lock` (clear cached key from keychain) and `unlock` (prompt
    for passphrase, derive key, cache in keychain).
-10. Key rotation (`rotate-key`) re-encrypts the database with a new key via DuckDB's
+10. Key rotation (`db key rotate`) re-encrypts the database with a new key via DuckDB's
     `COPY FROM DATABASE` mechanism — attach old with current key, create new with new
     key, copy, swap files, update keychain.
 
@@ -104,7 +104,7 @@ duration of the shell session.
       `SecretNotFoundError`. Used for encryption keys (database, e2e).
     - **`set_key(name, value)` / `delete_key(name)`**: Write to / clear from OS
       keychain. Used by CLI commands (`db init`, `db lock`, `db unlock`,
-      `db rotate-key`) to manage key lifecycle. SecretStore does not own the
+      `db key rotate`) to manage key lifecycle. SecretStore does not own the
       lifecycle logic — it provides the keychain interface.
     - **`get_env(name)`**: `MONEYBIN_{NAME}` env var → `SecretNotFoundError`. Used
       for API keys, server credentials — secrets that don't need keychain storage.
@@ -253,19 +253,15 @@ class DatabaseConfig(BaseModel):
 `backup_path` and `temp_directory` resolve to profile-relative defaults in
 `MoneyBinSettings.__init__`, following the existing pattern for `raw_data_path`.
 
-**Data directory structure:**
+**Data directory structure:** under `~/.moneybin/` (or CWD in dev mode via `MONEYBIN_HOME`):
 
-```
-~/.moneybin/                              # or CWD in dev mode (MONEYBIN_HOME)
-  data/<profile>/
-    moneybin.duckdb                       # 0600, encrypted (AES-256-GCM)
-    backups/                              # 0700
-      moneybin_2026-04-18_143201.duckdb   # timestamped encrypted copies
-    temp/                                 # 0700, DuckDB temp spill (encrypted)
-    raw/                                  # 0700, imported source files
-  logs/<profile>/
-    moneybin.log                          # 0600
-```
+| Path | Permission | Notes |
+|------|------------|-------|
+| `data/<profile>/moneybin.duckdb` | 0600 | Encrypted (AES-256-GCM) |
+| `data/<profile>/backups/` | 0700 | Timestamped encrypted copies (`moneybin_YYYY-MM-DD_HHMMSS.duckdb`) |
+| `data/<profile>/temp/` | 0700 | DuckDB temp spill (encrypted) |
+| `data/<profile>/raw/` | 0700 | Imported source files |
+| `logs/<profile>/moneybin.log` | 0600 | Profile log file |
 
 ## Implementation Plan
 
@@ -276,9 +272,9 @@ class DatabaseConfig(BaseModel):
 - `src/moneybin/database.py` — `Database` class, `get_database()` singleton,
   `DatabaseKeyError` exception. Uses `SecretStore` for key retrieval.
 - `src/moneybin/log_sanitizer.py` — `SanitizedLogFormatter` with PII pattern detection
-- `src/moneybin/cli/commands/db_encrypt.py` — `lock`, `unlock`, `key`, `rotate-key`
-  subcommands (or integrated into existing `db.py`). Uses `SecretStore.set_key()` /
-  `delete_key()` for keychain operations.
+- `src/moneybin/cli/commands/db.py` — `lock`, `unlock`, `key show`, `key rotate`,
+  `key export`, `key import`, `key verify` subcommands (integrated into existing
+  `db.py`). Uses `SecretStore.set_key()` / `delete_key()` for keychain operations.
 - `tests/moneybin/test_secrets.py` — `SecretStore` unit tests (keychain hit, env
   fallback, missing secret, set/delete)
 - `tests/moneybin/test_database.py` — `Database` class unit tests
@@ -297,8 +293,9 @@ class DatabaseConfig(BaseModel):
   `get_database().conn` or accept a `Database` instance
 - `src/moneybin/services/import_service.py` — change from `db_path: Path` to
   `db: Database`; remove internal `duckdb.connect()` calls
-- `src/moneybin/services/categorization_service.py` — change from
-  `conn: DuckDBPyConnection` to `db: Database`
+- `src/moneybin/services/categorization/` — change from
+  `conn: DuckDBPyConnection` to `db: Database` (the service is a package since PR #155;
+  the original spec referenced a single `categorization_service.py` module)
 - `src/moneybin/services/*.py` — all other services follow the same contract
 - `src/moneybin/mcp/server.py` — replace connection management
   (`refresh_read_connection`, `get_write_connection`) with `get_database()`
@@ -354,7 +351,7 @@ class DatabaseConfig(BaseModel):
 moneybin db init [--database PATH]
 ```
 Creates an encrypted database. Prompts for key mode (auto-key default, passphrase
-opt-in). On passphrase: prompts twice for confirmation, derives key via PBKDF2, stores
+opt-in). On passphrase: prompts twice for confirmation, derives key via Argon2id, stores
 derived key in keychain. Runs schema init and migrations.
 
 ```
@@ -366,7 +363,7 @@ commands fail with "Database is locked. Run `moneybin db unlock` to continue."
 ```
 moneybin db unlock
 ```
-Passphrase mode only. Prompts for passphrase, derives key via PBKDF2, caches in OS
+Passphrase mode only. Prompts for passphrase, derives key via Argon2id, caches in OS
 keychain. Validates by attempting to attach the database — wrong passphrase errors
 immediately.
 
@@ -495,7 +492,7 @@ this spec — the CLI is the primary interface for infrastructure concerns.
 ### Integration
 - Full lifecycle: `db init` → import data → `db backup` → `db restore` → verify data
   intact.
-- Key rotation: `db init` → import data → `db rotate-key` → verify data accessible
+- Key rotation: `db init` → import data → `db key rotate` → verify data accessible
   with new key.
 - Migration against encrypted DB: `db init` → add migration file → restart → migration
   applied automatically.
@@ -553,5 +550,5 @@ common interface.
 - Migration system works transparently against encrypted databases.
 - `db backup` / `db restore` round-trips successfully, including cross-key-rotation
   restore with original key provided.
-- `db rotate-key` re-encrypts the database and updates the keychain.
+- `db key rotate` re-encrypts the database and updates the keychain.
 - `db info` reports encryption status, key mode, and database health.

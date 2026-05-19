@@ -146,10 +146,11 @@ The financial balance reconciliation command (`moneybin accounts balance reconci
 
 ## MCP Interface
 
-**`reconciliation.check`** — Runs pipeline reconciliation checks.
+**`reconciliation_check`** — Runs pipeline reconciliation checks.
 - Params: `layer` (optional, default "all"), `import_id` (optional)
 - Returns: per-check pass/fail with details for failures
 - Sensitivity: `low` (aggregates and counts only, no transaction data)
+- Naming: underscore form per `.claude/rules/surface-design.md` shape 3 verb vocabulary (`_check` is a discrete verb); dotted form `reconciliation.check` is not the MoneyBin MCP convention.
 
 ## Metrics
 

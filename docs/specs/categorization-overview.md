@@ -1,6 +1,6 @@
 # Categorization — Overview
 
-> Last updated: 2026-04-19
+> Last updated: 2026-05-17
 > Status: Ready — umbrella doc for the categorization initiative. Child specs listed in [Pillars](#pillars) are written separately.
 > Companions: [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) (algorithm contract: `match_text` construction, exemplar accumulation, source-precedence enforcement on write, snowball auto-apply), [`smart-import-overview.md`](smart-import-overview.md) (peer initiative, references this spec for pillars D & E), [`matching-overview.md`](matching-overview.md) (peer initiative, owns transfer detection), [`archived/transaction-categorization.md`](archived/transaction-categorization.md) (existing implementation this builds on), [`moneybin-mcp.md`](moneybin-mcp.md) (tool signatures), `CLAUDE.md` "Architecture: Data Layers"
 
@@ -31,19 +31,19 @@ Categorization touches all four MoneyBin user personas:
 
 Every categorization source has a distinct `categorized_by` value for auditability. Higher-priority sources are never overwritten by lower ones.
 
-| Priority | Source | `categorized_by` | Overwritten by | Confidence |
-|---|---|---|---|---|
-| 1 (highest) | User manual | `'user'` | Nothing | 1.0 |
-| 2 | User-defined rules | `'rule'` | User only | 1.0 |
-| 3 | Auto-generated rules | `'auto_rule'` | User, rules | 1.0 |
-| 4 | Migration imports | `'migration'` | All above | 1.0 |
-| 5 | ML predictions | `'ml'` | All above | Model confidence (0–1) |
-| 6 | Plaid categories | `'plaid'` | All above | 1.0 (provider-supplied) |
-| 7 (lowest) | LLM-assist | `'ai'` | All above | 1.0 (user accepted batch) |
+| Priority | Source | `categorized_by` | Overwritten by | Confidence | Status |
+|---|---|---|---|---|---|
+| 1 (highest) | User manual | `'user'` | Nothing | 1.0 | ✅ implemented |
+| 2 | User-defined rules | `'rule'` | User only | 1.0 | ✅ implemented |
+| 3 | Auto-generated rules | `'auto_rule'` | User, rules | 1.0 | ✅ implemented (PR #155, #167, #171) |
+| 4 | Migration imports | `'migration'` | All above | 1.0 | ⏳ not yet (no `categorized_by='migration'` writer ships today) |
+| 5 | ML predictions | `'ml'` | All above | Model confidence (0–1) | ⏳ planned (Pillar D) |
+| 6 | Plaid categories | `'plaid'` | All above | 1.0 (provider-supplied) | ✅ implemented (via sync-plaid) |
+| 7 (lowest) | LLM-assist | `'ai'` | All above | 1.0 (user accepted batch) | ✅ implemented (LLM-assist workflow shipped) |
 
 The deterministic pipeline respects this ordering — a transaction already categorized by a higher-priority source is never re-categorized by a lower one. See [`categorization-cold-start.md`](categorization-cold-start.md) for the full per-source mechanism description.
 
-**Enforcement is on write** via the `write_categorization` helper in `categorization_service.py` (see [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) §Source precedence). Every write to `app.transaction_categories` compares the incoming source's priority against the existing row's via an inlined `CASE` expression in an `INSERT ... ON CONFLICT ... DO UPDATE WHERE` shape — lower-priority sources cannot overwrite higher-priority assignments. The `categorized_by` column is the lock; there is no separate lock table.
+**Enforcement is on write** via the `write_categorization` helper on `MatchApplier` in `src/moneybin/services/categorization/applier.py` (called via the `CategorizationService` facade; see [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) §Source precedence). Every write to `app.transaction_categories` compares the incoming source's priority against the existing row's via an inlined `CASE` expression in an `INSERT ... ON CONFLICT ... DO UPDATE WHERE` shape — lower-priority sources cannot overwrite higher-priority assignments. The `categorized_by` column is the lock; there is no separate lock table.
 
 ## Deterministic categorization pipeline
 
@@ -77,10 +77,10 @@ Every step only operates on transactions not yet categorized by a higher-priorit
 
 Categorization decomposes into two independent subsystems. Each has its own child spec; this doc fixes the shared vocabulary, sequencing, and pipeline contract.
 
-| Pillar | Purpose | Child spec |
-|---|---|---|
-| **E.** Auto-rule generation | When a user categorizes a transaction, identify the pattern and propose a rule so future matching transactions are categorized automatically. User confirms before activation. | `categorization-auto-rules.md` |
-| **D.** ML-powered categorization | Local scikit-learn model trained on the user's own categorization history. Provides confidence-scored predictions for uncategorized transactions. | `categorization-ml.md` |
+| Pillar | Purpose | Child spec | Status |
+|---|---|---|---|
+| **E.** Auto-rule generation | When a user categorizes a transaction, identify the pattern and propose a rule so future matching transactions are categorized automatically. User confirms before activation. | `categorization-auto-rules.md` | ✅ implemented |
+| **D.** ML-powered categorization | Local scikit-learn model trained on the user's own categorization history. Provides confidence-scored predictions for uncategorized transactions. | `categorization-ml.md` | ⏳ planned |
 
 Both pillars share one architectural property: they operate within the existing categorization pipeline. Their output is a `categorized_by` value and a `confidence` score written to `app.transaction_categories`. No changes to the raw/prep/core pipeline.
 
@@ -98,7 +98,7 @@ When a user categorizes a transaction, the system identifies the pattern and pro
 - **Pattern extraction:** Merchant-first — use the canonical merchant name when a `merchant_id` exists, fall back to `normalize_description()` cleanup otherwise. Reuses the existing description normalization code.
 - **Proposal lifecycle:** `pending` → `approved` (promoted to `app.categorization_rules` with `created_by='auto_rule'`, `priority=200`) or `rejected` or `superseded` (when the user corrects the category).
 - **Correction handling:** Single user overrides don't affect the rule. After `auto_rule_override_threshold` (default 2) overrides, the rule is deactivated and a new proposal is created with the corrected category.
-- **UX:** Proposals accumulate silently. `transactions_categorize_commit` response includes a `rules_proposed` count and review hint. User reviews in batch via `transactions_categorize_auto_review` and `transactions_categorize_auto_confirm`. Approved rules take effect immediately against existing uncategorized transactions (synchronous promotion).
+- **UX:** Proposals accumulate silently. `transactions_categorize_commit` response includes a `rules_proposed` count and review hint. User reviews in batch via `transactions_categorize_auto_review` and `transactions_categorize_auto_accept`. Approved rules take effect immediately against existing uncategorized transactions (synchronous promotion).
 - **Conflicting categorizations:** Amount/account-aware rule proposals are deferred to future enhancements (see Future Directions).
 
 ---

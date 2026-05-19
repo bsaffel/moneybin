@@ -1,6 +1,6 @@
 # Categorization — Matching Mechanics
 
-> Last updated: 2026-05-10
+> Last updated: 2026-05-17
 > Status: Implemented
 > Companions: [`categorization-overview.md`](categorization-overview.md) (parent — priority hierarchy, pipeline contract), [`categorization-cold-start.md`](categorization-cold-start.md) (LLM-assist workflow; this spec amends its merchant-creation and redaction behavior), [`categorization-auto-rules.md`](categorization-auto-rules.md) (auto-rule generation; consumes the precedence model), [`matching-transfer-detection.md`](matching-transfer-detection.md) (transfer subsystem; categorization runs independent of `is_transfer` per its principles), [`architecture-shared-primitives.md`](architecture-shared-primitives.md) (schema reference), [`observability.md`](observability.md) (metrics wiring)
 >
@@ -60,7 +60,7 @@ with the following rules:
 | `is_transfer` | BOOLEAN | `core.fct_transactions` (JOIN-derived from `core.bridge_transfers`) | Signal that this row is part of a confirmed transfer pair |
 | `transfer_pair_id` | TEXT | `core.fct_transactions` | Identity of the matched transfer pair (LLM may use to label both sides consistently) |
 | `payment_channel` | TEXT | `core.fct_transactions` (Plaid-only today) | Channel hint (online / in store / other) |
-| `amount_sign` | TEXT (`'+'` / `'-'`) | derived from `core.fct_transactions.amount` | Coarse direction hint without exposing magnitude |
+| `amount_sign` | TEXT (`'+'` / `'-'` / `'0'`) | derived from `core.fct_transactions.amount` | Coarse direction hint without exposing magnitude. `'0'` covers NULL/zero amounts so the LLM isn't biased toward income-side categories on balance adjustments / voided rows. |
 
 The full numeric `amount` is **not** sent to the LLM (privacy contract from `categorization-cold-start.md`). The matcher continues to consume `amount` for amount-bounded rules.
 
@@ -68,7 +68,7 @@ The full numeric `amount` is **not** sent to the LLM (privacy contract from `cat
 
 ### `RedactedTransaction` schema (extended)
 
-The frozen dataclass that crosses the privacy boundary in `src/moneybin/services/categorization_service.py` is extended:
+The frozen dataclass that crosses the privacy boundary in `src/moneybin/services/categorization/assist.py` is extended:
 
 ```python
 @dataclass(frozen=True)
@@ -82,7 +82,7 @@ class RedactedTransaction:
     is_transfer: bool
     transfer_pair_id: str | None
     payment_channel: str | None
-    amount_sign: str  # '+' or '-'
+    amount_sign: Literal["+", "-", "0"]
 ```
 
 `memo_redacted` runs through the same `redact_for_llm()` pipeline that `description_redacted` does. The existing redactor already strips P2P recipients, account-number tails, hash-prefixed refs, bare digits, embedded contact info, dates, and city/state — the patterns that memos carry. No new redaction rules are required for the v1 expansion; the contract is "run the existing redactor over both fields."
@@ -113,21 +113,20 @@ Within a source, specificity is scored to break ties when multiple rules or merc
 | Match shape | Score |
 |---|---|
 | `oneOf` exemplar set | 10 |
-| `is` (exact, case-insensitive) | 10 |
-| `isApprox` / `between` | 5 |
-| `gt` / `gte` / `lt` / `lte` | 1 |
-| `contains` / `regex` | 0 |
+| `exact` (`is`, case-insensitive) | 10 |
+| `contains` | 0 |
+| `regex` | 0 |
 
-A rule's total score is the sum across its conditions. If every condition uses a "specific" operator (`is`, `oneOf`, `isApprox`, `between`), the score is doubled. Higher score wins; tie-broken by `created_at ASC`. This replaces the current ad-hoc `CASE match_type WHEN 'exact' THEN 1 WHEN 'contains' THEN 2 WHEN 'regex' THEN 3` ordering.
+Higher score wins; tie-broken by `created_at ASC`. This replaces the current ad-hoc `CASE match_type WHEN 'exact' THEN 1 WHEN 'contains' THEN 2 WHEN 'regex' THEN 3` ordering. The amount-bounded operators (`isApprox` / `between` / `gt` / `gte` / `lt` / `lte`) were originally specified but never implemented — they are excluded from the OP_SCORES table until amount-bounded rules ship.
 
-Implementation: a small `score_match_shape(rule)` helper in the matcher; called once per rule at fetch time, cached on the rule row in memory.
+Implementation: `score_match_shape(rule)` in `src/moneybin/services/categorization/_shared.py`. The score is rendered into the merchants-fetch `ORDER BY` SQL via `match_shape_case_sql()` so the Python and SQL ladders cannot drift.
 
 ### Exemplar accumulation
 
 Each merchant carries an exemplar set in addition to its (optional) authored pattern:
 
 ```sql
-ALTER TABLE app.user_merchants ADD COLUMN exemplars TEXT[] DEFAULT [];
+ALTER TABLE app.user_merchants ADD COLUMN exemplars VARCHAR[] DEFAULT [];
 ```
 
 When the system (LLM-assist or another auto-pillar) creates or augments a merchant from a categorized row:
@@ -142,7 +141,7 @@ The `oneOf` lookup is `match_text IN merchant.exemplars` (set membership). DuckD
 
 ### What auto-merchant creation no longer does
 
-The current behavior in `categorization_service.py:854-879` — creating a merchant with `raw_pattern = normalize_description(description)` and `match_type = 'contains'` — is removed. Replaced by exemplar accumulation above. User-authored `contains` and `regex` patterns continue to work; only the *system-generated* path changes.
+The previous behavior — creating a merchant with `raw_pattern = normalize_description(description)` and `match_type = 'contains'` — is removed. Replaced by exemplar accumulation above (now in `src/moneybin/services/categorization/orchestrator.py`). User-authored `contains` and `regex` patterns continue to work; only the *system-generated* path changes.
 
 ## Source precedence
 
@@ -204,7 +203,7 @@ WHERE
         WHEN 'ai' THEN 7 END);
 ```
 
-Lower number = higher authority; new write replaces only if its priority is ≤ the existing row's. The `CASE` block is duplicated by design — the precedence comparison is needed at exactly this one call site, and a UDF would be over-abstraction per AGENTS.md "no abstractions for single-use code." If a second call site appears later, promote to a SQL or Python UDF then.
+Lower number = higher authority; new write replaces only if its priority is ≤ the existing row's. The SQL `CASE` is rendered from a single Python `SOURCE_PRIORITY` dict via `priority_case_sql()` (`src/moneybin/services/categorization/_shared.py`), so the SQL and Python ladders cannot drift. The dict is the canonical reference for the priority table above.
 
 This is the entire locking primitive. No separate `app.locked_categorizations` table; no per-field locks; no JSONB lock map. The `categorized_by` column is the lock.
 
@@ -228,8 +227,9 @@ This is the entire locking primitive. No separate `app.locked_categorizations` t
 |---|---|---|
 | Import completes | `import_service.py` (existing) | All uncategorized rows from the import |
 | Rules CLI command | `cli/commands/transactions/categorize/rules.py` (existing) | All uncategorized rows |
-| **Categorize_apply commits a batch** (new) | `transactions_categorize_commit` MCP tool | All still-uncategorized rows |
-| **Edit op with `reapply=True`** (new) | rule/merchant update operations | Rows matching the edited entity |
+| **`transactions_categorize_commit` commits a batch** | `transactions_categorize_commit` MCP tool (renamed from `_apply` per PR #171) | All still-uncategorized rows |
+| **Edit op with `reapply=True`** | rule create/delete operations (`transactions_categorize_rules_create` / `_delete`) | Rows matching the edited entity |
+| **Categorize cascade** | `transactions_categorize_run(methods=[...])` umbrella (PR #171) — canonical `["rules","merchants"]` routes through `categorize_pending()`'s shared-scan path; non-canonical orders fall through to per-method invocations | All still-uncategorized rows |
 
 The third row is the snowball fix. After the LLM-assist batch's writes commit, `categorize_pending()` runs once. New merchants and rules from the batch fan out to remaining uncategorized rows in the same dataset. The next `categorize_assist` call sees only what's still genuinely uncategorized.
 
@@ -250,7 +250,7 @@ flowchart TD
     C -->|no| END[done]
     C -->|yes| D[categorize_assist returns redacted batch]
     D --> E[LLM proposes category + merchant per row]
-    E --> F[categorize_apply commits batch]
+    E --> F[transactions_categorize_commit commits batch]
     F --> G[merchants created/exemplars accumulated]
     G --> H[categorize_pending — pass 2 — snowball fanout]
     H --> I{remaining uncategorized?}
@@ -277,7 +277,7 @@ ALTER TABLE app.user_merchants ALTER COLUMN raw_pattern DROP NOT NULL;
 ALTER TABLE app.user_merchants ALTER COLUMN match_type SET DEFAULT 'oneOf';
 ```
 
-The `MatchType` literal in `categorization_service.py` extends to `'exact' | 'contains' | 'regex' | 'oneOf'`.
+A separate `InternalMatchType` literal in `src/moneybin/services/categorization/_shared.py` adds `'oneOf'` for the in-memory matcher and exemplar-creation paths; the public `MatchType` (rule-author input) remains the three-shape set `'exact' | 'contains' | 'regex'`.
 
 ### `app.merchants` view
 
@@ -298,49 +298,14 @@ A single SQLMesh migration:
 
 No data migration is required — existing merchants retain their `raw_pattern` + `match_type` and continue to match via the existing path.
 
-## Implementation plan
+## Implementation status
 
-### Step order
-
-The work lands in a single PR but proceeds in this internal order. Each step has a clear measurement gate before the next begins.
-
-1. **Rename `apply_deterministic` → `categorize_pending`** (mechanical refactor, no behavior change). Rename the service method, the test-shim `apply_deterministic_categorization`, and update call sites in `cli/commands/transactions/categorize/rules.py`, `services/import_service.py`, `tests/scenarios/_runner/steps.py`, and the affected test files in `tests/moneybin/test_services/`. The CLI subcommand name (`moneybin transactions categorize rules apply`) is unchanged — the rename is internal. Lands as its own commit so feature changes downstream are reviewed against the new name.
-2. **Baseline measurement experiment.** A throwaway config flag (`MONEYBIN_CATEGORIZATION__ASSIST_BYPASS_REDACTION=1`) sends raw `description + memo + structural fields` to the LLM, no redaction. Re-run two-batch `assist → apply` on the live test dataset. Measure: (a) percentage of currently-stuck rows that become categorizable; (b) accuracy vs ground truth. Establishes the upper bound on what's possible. Removed before merge.
-3. **Field coverage parity** (fixes bugs 1, 2, 5). Extend `RedactedTransaction`, expand `categorize_assist` SQL projection, run redactor over `memo`, build `match_text`, update `_match_description` and `_fetch_merchants` to consume `match_text`. Update the assist tool to pass structural fields through to the response envelope.
-4. **Source precedence enforcement** (prerequisite for step 6). Introduce the inlined `CASE`-based priority comparison and the `ON CONFLICT ... WHERE` write path. All writes to `transaction_categories` route through a new `write_categorization` helper. Existing tests that assert "any source can overwrite any source" need updating to reflect the new precedence semantics; new tests cover precedence skipping outcomes.
-5. **Exemplar accumulator** (fixes bug 3). Schema change + migration. Update `categorize_apply` to append exemplars instead of inventing `contains` patterns. Update `_match_description` lookup order: exemplars first, then existing pattern types.
-6. **Auto-apply on commit** (fixes bug 4). `transactions_categorize_commit` calls `categorize_pending()` after writes commit. The `reapply: bool = False` flag is added to merchant/rule update operations; when `True`, the operation runs `categorize_pending()` scoped to that one entity's match set after the write.
-7. **OP_SCORES specificity ranking.** Replace the `CASE match_type WHEN ...` ordering with the score-based comparator.
-
-### Files to create
-
-- `docs/specs/categorization-matching-mechanics.md` — this spec.
-- `tests/scenarios/data/categorize-snowball-rolls.yaml` — scenario covering: import 100 OFX checking-account rows, run two `assist → apply` cycles, assert batch 2 returns zero of batch 1's already-handled patterns.
-- `tests/moneybin/test_services/test_match_text.py` — unit tests for `match_text` construction edge cases (NULL/empty fields, normalization, separator).
-- `tests/moneybin/test_services/test_source_precedence.py` — table tests for the priority ladder and write outcomes.
-- `tests/moneybin/test_services/test_exemplar_accumulator.py` — exemplar growth, dedup, lookup correctness.
-
-### Files to modify
-
-- `src/moneybin/services/_text.py` — no changes; existing redactor handles memo.
-- `src/moneybin/services/categorization_service.py` — `RedactedTransaction` extension, `categorize_assist` SQL, `_match_description` (consume `match_text`, exemplar lookup), `_fetch_merchants` (return exemplars), `bulk_categorize` (exemplar accumulation, `categorize_pending` post-commit), new `write_categorization` helper, `score_match_shape` helper.
-- `src/moneybin/services/auto_rule_service.py` — match path consumes `match_text`; `record_categorization` uses the precedence-enforcing write helper.
-- `src/moneybin/mcp/tools/transactions_categorize.py` — `apply` tool calls `categorize_pending()` after `bulk_categorize`. Edit ops grow a `reapply` parameter.
-- `src/moneybin/mcp/tools/transactions_categorize_assist.py` — response envelope includes new fields.
-- `src/moneybin/cli/commands/transactions/categorize/apply.py` — same auto-apply behavior as the MCP tool.
-- `src/moneybin/sql/schema/app_user_merchants.sql` — add `exemplars` column, drop NOT NULL on `raw_pattern`.
-- `src/moneybin/sql/migrations/V###__user_merchants_exemplars.py` — DuckDB migration.
-- `src/moneybin/config.py` — add temporary `assist_bypass_redaction` flag (removed after baseline experiment).
-- `src/moneybin/metrics/registry.py` — register `merchant_exemplar_count`, `categorize_apply_redeterministic_duration_seconds`, `categorize_write_skipped_precedence_total`.
-- `docs/specs/categorization-overview.md` — update priority hierarchy, pipeline diagram, and the apply-order section to point to this spec.
-- `docs/specs/categorization-cold-start.md` — status flips `implemented` → `in-progress` for the duration of this spec's work; merchant-creation section rewritten to reference exemplar accumulation; redaction contract extended to memo + structural fields.
-- `docs/specs/categorization-auto-rules.md` — match path edits; precedence model edits.
-- `docs/specs/INDEX.md` — add this spec at status `draft`.
-- `docs/roadmap.md` — 📐 entry under the appropriate milestone.
-- `docs/features.md` — categorization entry updated with memo support, snowball semantics, exemplar accumulation.
-- `docs/guides/categorization.md` — new user-facing guide explaining the mental model (or extension of an existing guide if one exists).
-- `CHANGELOG.md` — `Unreleased` bullets for memo-as-match-input, snowball fix, precedence enforcement, exemplar accumulator.
-- `private/findings.md` — add follow-up note on `transaction_type` canonicalization (deferred per Q6).
+> **Shipped via PRs #155, #171, #174.** All seven planned steps landed. The original step-by-step plan and file-modification checklist are retired as historical noise; the shipped artifacts are:
+>
+> - **Categorization package** at `src/moneybin/services/categorization/` (PR #155 split): `__init__.py` (facade), `assist.py` (`RedactedTransaction`, `categorize_assist`), `matcher.py` (`_match_text`, `_match_exemplar`, `_fetch_merchants`), `applier.py` (`write_categorization`, commit pipeline), `orchestrator.py` (exemplar accumulation, `categorize_pending`), `queries.py` (shared SQL), `_shared.py` (`MatchType`, `priority_case_sql`, `match_shape_case_sql`).
+> - **MCP tools** at `src/moneybin/mcp/tools/transactions_categorize.py`: `transactions_categorize_commit` (renamed from `_apply` in PR #171) calls `categorize_pending()` post-commit; `transactions_categorize_run` umbrella; `transactions_categorize_rules_create` / `_delete` accept `reapply`.
+> - **Schema migration** `V008__user_merchants_exemplars.py` added `exemplars VARCHAR[]` and dropped NOT NULL from `raw_pattern`.
+> - **`category_id` FK columns** added in V014 (PR #174) alongside `category`/`subcategory` on `app.user_merchants` / `app.transaction_categories` / `app.transaction_splits` — dual-write phase pending Phase 2 drop.
 
 ## Observability
 
@@ -352,7 +317,7 @@ Per `observability.md`, every spec touching app code wires metrics. New metrics:
 | `categorize_match_outcome_total{outcome,shape}` | counter | `outcome` ∈ {`exemplar`, `exact`, `contains`, `regex`, `none`}; `shape` ∈ {`description_only`, `memo_only`, `both`} |
 | `merchant_exemplar_count` | gauge | Per-merchant exemplar set size; alarms triggered if any merchant exceeds 200 |
 | `categorize_write_skipped_precedence_total{src_existing,src_attempted}` | counter | Tracks how often precedence locks fire |
-| `categorize_apply_post_commit_duration_seconds` | histogram | Latency of the snowball apply triggered by `categorize_apply` |
+| `categorize_apply_post_commit_duration_seconds` | histogram | Latency of the snowball apply triggered by `transactions_categorize_commit`. Metric name retains the `categorize_apply_` prefix for Prometheus stability across the 2026-05 rename. |
 | `categorize_apply_post_commit_rows_affected` | histogram | How many rows the snowball fanned out to per batch |
 
 Existing metrics (`CATEGORIZE_BULK_*`, `CATEGORIZE_ASSIST_*`) remain unchanged.
@@ -375,7 +340,7 @@ Per `.claude/rules/testing.md`, features that cross subsystem boundaries need co
 
 ## Open questions / deferred
 
-These came up during design and are explicitly out of scope. Each gets a follow-up note in `private/findings.md`.
+These came up during design and are explicitly out of scope. Each is tracked as follow-up work.
 
 1. **`transaction_type` canonicalization.** Today the column carries source-specific vocabulary (OFX `DEBIT`/`CREDIT`/`XFER`, Plaid `payment_channel` enum). When users start authoring rules like `transaction_type = 'check'`, source coupling becomes a problem. Defer until that workflow surfaces.
 2. **Field-prefix syntax** (`memo:youtube`, `payee:starbucks`). Firefly III and hledger support per-field rule patterns. This spec routes everything through concatenated `match_text`. Add prefix syntax only if a user reports false-positive matches caused by token bleed across fields.

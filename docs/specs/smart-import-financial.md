@@ -49,7 +49,7 @@ OFX files carry four entity types in one document (institutions, accounts, balan
 12. Extracted data preserves the existing `source_transaction_id` semantics (FITID), and the matching engine continues to use it for cross-source dedup against tabular and Plaid.
 13. Scenario test coverage exists for: single-account, multi-account, QBO from Intuit, QBO from a bank, re-import idempotency, missing-institution-metadata fallback, and cross-source dedup against tabular.
 14. The synthetic data generator emits OFX *and* QBO variants for scenario fixtures.
-15. The CLI and MCP `import_file` surfaces gain no new flags beyond `--institution`. Detection, resolution, and the import-log lifecycle happen automatically.
+15. The CLI and MCP `import_files` surfaces (renamed from `import_file` singular; see `smart-import-transform.md`) gain no new flags beyond `--institution`. Detection, resolution, and the import-log lifecycle happen automatically.
 
 ---
 
@@ -138,7 +138,7 @@ Legacy rows imported before this change have `import_id = NULL`. They appear in 
 - `src/moneybin/utils/file.py` — `copy_to_raw()` accepts `qbo` (lands in `data/raw/ofx/`).
 - `src/moneybin/loaders/tabular_loader.py` — call sites for batch lifecycle migrate to `import_log` module; tabular-specific code stays.
 - `src/moneybin/cli/commands/import_cmd.py` — `--institution` flag changes contract (override-when-missing); `import revert` learns OFX dispatch.
-- `src/moneybin/mcp/tools/import_tools.py` — `import_file` MCP tool reflects new `institution` semantics.
+- `src/moneybin/mcp/tools/import_tools.py` — `import_files` MCP tool (renamed from `import_file` in the transform handoff PR) reflects new `institution` semantics.
 - `src/moneybin/metrics/registry.py` — add `moneybin_ofx_import_*` metric counterparts.
 - `src/moneybin/testing/synthetic/models.py` — extend `source_type` literal as needed for QBO scenarios.
 - `src/moneybin/testing/synthetic/writer.py` — emit `.qbo` variants when scenarios request them.
@@ -265,36 +265,39 @@ No new commands. Behavior changes only:
 
 ```bash
 # Basic import — no --institution needed; resolved from file
-moneybin import ~/Downloads/wells_fargo_2025.qfx
+moneybin import files ~/Downloads/wells_fargo_2025.qfx
 
 # QBO works through the same command
-moneybin import ~/Downloads/intuit_export.qbo
+moneybin import files ~/Downloads/intuit_export.qbo
 
 # Override only when the file lacks <FI><ORG> and FID lookup fails
-moneybin import ~/Downloads/anonymous.ofx --institution "Local Credit Union"
+moneybin import files ~/Downloads/anonymous.ofx --institution "Local Credit Union"
 
 # Re-importing the same file is rejected
-moneybin import ~/Downloads/wells_fargo_2025.qfx
+moneybin import files ~/Downloads/wells_fargo_2025.qfx
 # → Error: file already imported (import_id abc12345...). Use --force to re-import.
 
 # Force re-import (creates a new batch; previous batch stays unless reverted)
-moneybin import ~/Downloads/wells_fargo_2025.qfx --force
+moneybin import files ~/Downloads/wells_fargo_2025.qfx --force
 
 # History and revert work for OFX batches
 moneybin import history --limit 10
 moneybin import revert abc12345-...
 ```
 
-Removed: `moneybin data extract ofx ...` (the legacy command path). Replaced by the unified `moneybin import` golden path per `moneybin-cli.md`. The legacy command is already aliased; this spec finalizes its removal.
+Removed: `moneybin data extract ofx ...` (the legacy command path). Replaced by the unified `moneybin import files` golden path per `moneybin-cli.md`. The legacy command is already aliased; this spec finalizes its removal. CLI command was renamed from singular `import file` to variadic `import files` in the transform handoff PR.
 
 ## MCP Interface
 
-`import_file` tool — existing tool gains:
+`import_files` tool (renamed from singular `import_file` in the transform handoff PR) —
+existing tool gains:
 - Optional `institution: str | None` parameter (override-when-missing semantics).
-- Returns `import_id` in the response so AI conversations can reference and revert.
+- Returns `import_id` per file so AI conversations can reference and revert.
 - Errors surface "institution could not be derived" with structured fields the prompt template can use to ask the user.
 
-`import_history` and `import_revert` tools — already exist for tabular; gain OFX support automatically via the shared `import_log` module.
+`import_status` (originally proposed as `import_history`; renamed at ship time) and
+`import_revert` tools — already exist for tabular; gain OFX support automatically via
+the shared `import_log` module.
 
 No new tools.
 

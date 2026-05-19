@@ -17,23 +17,18 @@ MoneyBin's observability system provides unified logging, metrics collection, an
 
 ## Architecture
 
-```
-src/moneybin/
-├── observability.py              # Public API: setup_observability(), @tracked, track_duration()
-├── logging/
-│   ├── __init__.py               # Re-exports setup_logging (internal)
-│   ├── config.py                 # setup_logging() implementation
-│   └── formatters.py             # HumanFormatter, JSONFormatter
-├── metrics/
-│   ├── __init__.py               # init_metrics(), public metric constants
-│   ├── registry.py               # Metric definitions (Counter, Histogram, Gauge)
-│   ├── instruments.py            # @tracked, track_duration implementations
-│   └── persistence.py            # flush_to_duckdb(), load_from_duckdb()
-├── cli/commands/
-│   ├── logs.py                   # logs clean, logs path, logs tail
-│   └── stats.py                  # stats command
-└── config.py                     # LoggingConfig (Pydantic, on MoneyBinSettings)
-```
+| Path | Role |
+|------|------|
+| `src/moneybin/observability.py` | Public API: `setup_observability()`, `@tracked`, `track_duration()`, `flush_metrics()` |
+| `src/moneybin/logging/config.py` | `setup_logging()` implementation |
+| `src/moneybin/logging/formatters.py` | `HumanFormatter`, `JSONFormatter` |
+| `src/moneybin/log_sanitizer.py` | `SanitizedLogFormatter` (PII safety net) |
+| `src/moneybin/metrics/registry.py` | Metric definitions (Counter, Histogram, Gauge) |
+| `src/moneybin/metrics/instruments.py` | `@tracked`, `track_duration` implementations |
+| `src/moneybin/metrics/persistence.py` | `flush_to_duckdb()`, `load_from_duckdb()` |
+| `src/moneybin/cli/commands/logs.py` | `moneybin logs` subcommands |
+| `src/moneybin/cli/commands/stats.py` | `moneybin stats` |
+| `src/moneybin/config.py` | `LoggingConfig` (Pydantic, on `MoneyBinSettings`) |
 
 ### Public API
 
@@ -96,15 +91,12 @@ Reads from `get_settings().logging` internally. No config objects passed around.
 
 ## 2. Log File Layout
 
-All log files live under `~/.moneybin/logs/{profile}/` with name-first, date-second naming:
+All log files live under `~/.moneybin/logs/{profile}/` with name-first, date-second naming. Example contents:
 
-```
-~/.moneybin/logs/{profile}/
-├── cli_2026-04-20.log
-├── cli_2026-04-19.log
-├── mcp_2026-04-20.log
-├── sqlmesh_2026-04-20.log
-```
+- `cli_2026-04-20.log`
+- `cli_2026-04-19.log`
+- `mcp_2026-04-20.log`
+- `sqlmesh_2026-04-20.log`
 
 ### Stream Routing
 
@@ -138,12 +130,7 @@ moneybin logs --prune --older-than 30d --dry-run  # Preview
 
 ### Formatter Stack
 
-```
-SanitizedLogFormatter (outermost — always applied)
-  └── wraps either:
-      ├── HumanFormatter
-      └── JSONFormatter
-```
+`SanitizedLogFormatter` (outermost — always applied) wraps either `HumanFormatter` or `JSONFormatter`.
 
 The `SanitizedLogFormatter` decorates the inner formatter's output, applying regex-based masking before records reach any handler. It is format-agnostic — works identically on human or JSON output.
 
@@ -184,13 +171,15 @@ One JSON object per line. Includes `timestamp`, `logger`, `level`, `message`, pl
 
 ### Initial Metrics
 
+Metric definitions live in `src/moneybin/metrics/registry.py` (single source of truth). The matrix below names the original M1 metric set; subsequent surfaces (sync, inbox, audit, synthetic, transfer detection, categorize/assist) have grown the registry — consult the registry file for the live list. New specs MUST add their metrics there per the observability wiring rule in `AGENTS.md`.
+
 | Metric | Type | Labels |
 |--------|------|--------|
 | `moneybin_import_records_total` | Counter | `source_type` |
 | `moneybin_import_duration_seconds` | Histogram | `source_type` |
 | `moneybin_import_errors_total` | Counter | `source_type`, `error_type` |
 | `moneybin_sqlmesh_run_duration_seconds` | Histogram | `model` |
-| `moneybin_dedup_matches_total` | Counter | — |
+| `moneybin_dedup_matches_total` | Counter | `match_tier`, `decided_by` |
 | `moneybin_categorization_auto_rate` | Gauge | — |
 | `moneybin_categorization_rules_fired_total` | Counter | `rule_id` |
 | `moneybin_mcp_tool_calls_total` | Counter | `tool_name` |
@@ -266,7 +255,7 @@ The MCP server calls `setup_observability(stream="mcp")` at startup.
 
 ```
 2026-04-20 14:23:01 - moneybin.mcp - INFO - Server started, database: ~/.moneybin/data/default.db
-2026-04-20 14:23:05 - moneybin.mcp - INFO - Tool spending_summary called
+2026-04-20 14:23:05 - moneybin.mcp - INFO - Tool reports_spending called
 2026-04-20 14:23:05 - moneybin.mcp - INFO - Consent not granted, returning degraded response
 ```
 
@@ -300,7 +289,7 @@ $ moneybin stats
 Import Records:     12,847 total (247 today)
 Import Duration:    p50=0.8s  p95=2.1s
 Auto-categorized:   78% of transactions
-MCP Tool Calls:     1,203 total (top: spending_summary, transactions_search)
+MCP Tool Calls:     1,203 total (top: reports_spending, transactions_get)
 Dedup Matches:      1,891 records merged
 ```
 

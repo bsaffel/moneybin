@@ -1,7 +1,7 @@
 # Sync — Overview
 
-> Last updated: 2026-05-14
-> Status: Ready — umbrella doc for the sync initiative. Phase 1 implementation underway in [`sync-plaid.md`](sync-plaid.md); Phases 3-4 (E2E encryption, post-quantum) remain forward-looking design sketches within this doc.
+> Last updated: 2026-05-17
+> Status: In-progress — umbrella doc for the sync initiative. Phase 1 shipped in [`sync-plaid.md`](sync-plaid.md) (PR #151 added the post-pull refresh umbrella; PR #160 made `MONEYBIN_PROFILE` honored from non-CLI SQLMesh entry points). Phase 2 (scheduling) is unstarted; Phases 3-4 (E2E encryption, post-quantum) remain forward-looking design sketches within this doc.
 > Companions: [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) (AI data flow governance, consent model), [`matching-overview.md`](matching-overview.md) (peer initiative, dedup of synced data), [`moneybin-mcp.md`](moneybin-mcp.md) (MCP tool conventions), `CLAUDE.md` "Architecture: Data Layers"
 > Server contract: the moneybin-server HTTP API is the authoritative integration surface. Endpoint shapes are restated inline where this spec depends on them; cross-repo paths intentionally omitted to keep this doc self-contained.
 > Replaces: `plaid-integration.md` and `sync-client-integration.md` (moved to `archived/`)
@@ -332,11 +332,14 @@ MCP tools mirror the CLI under a `sync` namespace. Designed for AI agents (Claud
 
 | Tool | Description | Parameters |
 |---|---|---|
-| `sync.pull` | Trigger a bank data sync, wait for completion, load results | `institution_name: str \| None`, `force: bool` |
-| `sync.status` | Show connected institutions and health | None |
-| `sync.connect` | Start bank connection flow | None; returns URL for user to visit |
-| `sync.disconnect` | Remove a bank connection | `institution_name: str` |
-| `sync.schedule` | Manage automated sync schedule | `action: Literal['set', 'show', 'remove']`, `time: str \| None` (HH:MM, required for `set`) |
+| `sync_pull` | Trigger a bank data sync, wait for completion, load results; runs post-load refresh by default | `institution: str \| None`, `force: bool`, `refresh: bool` |
+| `sync_status` | Show connected institutions and health | None |
+| `sync_connect` | Start bank connection flow | `institution: str \| None`; returns session URL |
+| `sync_connect_status` | Poll a connect session for completion | `session_id: str` |
+| `sync_disconnect` | Remove a bank connection | `institution: str` |
+| `sync_schedule_set` / `sync_schedule_show` / `sync_schedule_remove` | Manage automated sync schedule (split per shape-3 verb convention) | `time: str` on `_set` (HH:MM) |
+
+Underscore separators per `.claude/rules/surface-design.md` and the Anthropic/OpenAI tool-name regex (`mcp-architecture.md` §3).
 
 ### Not exposed as MCP tools
 
@@ -351,7 +354,7 @@ MCP tools mirror the CLI under a `sync` namespace. Designed for AI agents (Claud
 
 ### How synced data surfaces
 
-No sync-specific read tools needed. Once data is pulled and transformed, it flows through the existing core tables. All existing MCP tools (`transactions_list`, `spending_by_category`, `accounts`, etc.) automatically include synced data via `source_type = '{provider}'` — the data warehouse doing its job.
+No sync-specific read tools needed. Once data is pulled and transformed, it flows through the existing core tables. All existing MCP tools (`transactions_review`, `reports_spending`, `accounts`, etc.) automatically include synced data via `source_type = '{provider}'` — the data warehouse doing its job.
 
 ---
 
@@ -508,7 +511,7 @@ The error code vocabulary is owned by the server. As providers are added, new er
 | Server unreachable | Network or server down | Retry with exponential backoff (3 attempts). Clear error: "Cannot reach moneybin-server at {url}." |
 | Sync job timeout | Polling exceeded max wait | Log `job_id` for manual recovery. "Sync job {id} timed out — run `moneybin sync status` to check." |
 | Load failure | DuckDB write error during load | Roll back partial load (transaction). No raw data corruption. |
-| Transform failure | `sqlmesh run` error after load | Raw data is safely loaded. User can re-run `moneybin data transform apply` independently. |
+| Transform failure | `sqlmesh run` error after load | Raw data is safely loaded. User can re-run `moneybin transform apply` (or `moneybin refresh run`) independently. |
 
 ### Partial success handling
 

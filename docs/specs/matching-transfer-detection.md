@@ -1,6 +1,6 @@
 # Transfer Detection
 
-> Last updated: 2026-04-26
+> Last updated: 2026-05-17 — CLI commands relocated to `moneybin transactions matches *` (PR #159); MCP names aligned to `transactions_matches_*` (phantom namespace per `moneybin-mcp.md` §17); `core.bridge_transfers` materialized as SQLMesh VIEW.
 > Status: implemented
 > Parent: [`matching-overview.md`](matching-overview.md) (pillar B)
 > Companions: [`matching-same-record-dedup.md`](matching-same-record-dedup.md) (sibling spec, pillars A+C), [`categorization-overview.md`](categorization-overview.md) (independent axis), `CLAUDE.md` "Architecture: Data Layers", `.claude/rules/database.md` (column naming, model prefixes)
@@ -56,22 +56,19 @@ This spec covers pillar B from the [transaction-matching umbrella](matching-over
 
 ## Data Model
 
-### `core.bridge_transfers` (new, SQLMesh model)
+### `core.bridge_transfers` (new, SQLMesh VIEW)
 
-```sql
-/* Confirmed transfer pairs linking two fct_transactions rows; rebuilt from app.match_decisions on every SQLMesh run */
-CREATE TABLE core.bridge_transfers (
-    transfer_id VARCHAR NOT NULL,        -- UUID for this transfer pair
-    debit_transaction_id VARCHAR NOT NULL, -- FK to fct_transactions; the outgoing side (negative amount)
-    credit_transaction_id VARCHAR NOT NULL, -- FK to fct_transactions; the incoming side (positive amount)
-    match_id VARCHAR NOT NULL,            -- FK to app.match_decisions; the decision that created this pair
-    date_offset_days INTEGER,             -- Days between the two post dates (0 = same day)
-    amount DECIMAL(18, 2),                -- Absolute transfer amount
-    PRIMARY KEY (transfer_id)
-);
-```
+Shipped as a SQLMesh `kind VIEW` model (`sqlmesh/models/core/bridge_transfers.sql`) — derived from `app.match_decisions` where `match_type = 'transfer'`, `match_status = 'accepted'`, and `reversed_at IS NULL`. No mutable state in core; the view re-evaluates on every read.
 
-Derived from `app.match_decisions` where `match_type = 'transfer'` and `match_status = 'accepted'`. Rebuilt on every SQLMesh run — no mutable state in core.
+Columns (one row per accepted transfer pair):
+
+| Column | Type | Description |
+|---|---|---|
+| `transfer_id` | VARCHAR | Identifies this transfer pair; reuses `app.match_decisions.match_id`. Also FK to `app.match_decisions`. |
+| `debit_transaction_id` | VARCHAR | FK to `fct_transactions`; the outgoing side (negative amount). |
+| `credit_transaction_id` | VARCHAR | FK to `fct_transactions`; the incoming side (positive amount). |
+| `date_offset_days` | INTEGER | Days between the two post dates (0 = same day). |
+| `amount` | DECIMAL(18,2) | Absolute transfer amount. |
 
 ### `core.fct_transactions` (modified)
 
@@ -181,11 +178,11 @@ Two signals from the review queue:
 1. **Noise ratio** — you're rejecting a lot of proposed pairs. Scoring is too permissive or threshold too low.
 2. **Missed pairs** — you manually identify transfers that the matcher didn't propose. Blocking criteria too strict or threshold too high.
 
-These surface naturally during `moneybin matches review`.
+These surface naturally during `moneybin transactions review --type matches`.
 
 ### Diagnose: where is the problem?
 
-`moneybin matches log --type transfer` shows recent decisions with `match_signals` JSON breakdown:
+`moneybin transactions matches history --type transfer` shows recent decisions with `match_signals` JSON breakdown:
 
 ```
 Transfer: Checking -> Savings  $500.00  (2026-03-15 / 2026-03-15)
@@ -204,23 +201,23 @@ The signal breakdown shows what's driving false positives or misses.
 | **Date window** | `matching.date_window_days` | Narrow to reduce cross-month false matches; widen for slow ACH | Recurring transfers matching wrong months -> narrow to 2. International wires -> widen. |
 | **Signal weights** | `matching.transfer_signal_weights` | Dict of per-signal weights | When a specific signal consistently drives false positives |
 
-All three are Pydantic settings with env var overrides. Changes take effect on the next `moneybin matches run`.
+All three are Pydantic settings with env var overrides. Changes take effect on the next `moneybin transactions matches run`.
 
 ### The recipe
 
 **"I'm rejecting too many transfer proposals":**
 
-1. `moneybin matches log --type transfer --status rejected` — examine signal breakdowns
+1. `moneybin transactions matches history --type transfer` — examine signal breakdowns (a `--status rejected` filter is planned)
 2. Identify which signal is consistently high on rejected pairs
 3. Lower that signal's weight, or raise the review threshold
-4. `moneybin matches run` — re-score with new settings
+4. `moneybin transactions matches run` — re-score with new settings
 5. Check if the review queue improved
 
 **"The matcher missed an obvious transfer":**
 
 1. Check blocking criteria (different accounts, opposite signs, exact amount, within date window)
 2. If blocking failed: widen `date_window_days`, or check if an earlier dedup match claimed one of the transactions
-3. If blocked but scored too low: `moneybin matches log --debug` shows below-threshold pairs. Adjust weights or lower threshold.
+3. If blocked but scored too low: enable DEBUG-level logging on the matcher; below-threshold pairs are logged there. Adjust weights or lower threshold.
 
 ### v2 connection
 
@@ -256,7 +253,7 @@ After import, the matcher runs in transfer mode alongside dedup:
 ```
 Imported 142 transactions from chase_checking_2026-03.csv
   Matching: 8 dedup auto-merged, 5 potential transfers found
-  Run 'moneybin matches review' when ready
+  Run 'moneybin transactions review --type matches' when ready
 ```
 
 ### Match commands (extended)
@@ -265,11 +262,11 @@ Transfer detection extends the commands defined in `matching-same-record-dedup.m
 
 | Command | Transfer behavior |
 |---|---|
-| `moneybin matches review` | Shows dedup and transfer proposals. Transfer pairs display both sides. `--type transfer` to filter. |
-| `moneybin matches log` | `--type transfer` filter. `--status rejected` for tuning diagnosis. Signal breakdown per entry. |
-| `moneybin matches undo <match_id>` | Un-matches a confirmed transfer pair, restores both transactions to independent status. |
-| `moneybin matches run` | Runs dedup + transfers. `--type transfer` for transfers only. |
-| `moneybin matches backfill` | Scans existing transactions for transfer pairs (runs after dedup backfill). |
+| `moneybin transactions review --type matches` | Shows dedup and transfer proposals. Transfer pairs display both sides (interactive loop pending per `moneybin-cli.md` v2; `--status` works end-to-end). |
+| `moneybin transactions matches history` | `--type transfer` filter. Signal breakdown per entry. (`--status rejected` planned for tuning diagnosis.) |
+| `moneybin transactions matches undo <match_id>` | Un-matches a confirmed transfer pair, restores both transactions to independent status. |
+| `moneybin transactions matches run` | Runs dedup + transfers. `--auto-accept-transfers` skips interactive review. |
+| `moneybin transactions matches backfill` | Scans existing transactions for transfer pairs (runs after dedup backfill). |
 
 ### Transfer review UX
 
@@ -288,9 +285,9 @@ Transfer pair (confidence: 0.88)
 
 | Interactive | Flag equivalent |
 |---|---|
-| Review one-by-one | `moneybin matches review --accept <match_id> --accept <match_id>` |
-| Accept all pending | `moneybin matches review --accept-all --type transfer` |
-| Reject specific | `moneybin matches review --reject <match_id>` |
+| Review one-by-one | `moneybin transactions review --type matches --confirm <match_id>` (one ID per invocation; non-interactive flags pending per `moneybin-cli.md` v2) |
+| Accept all pending | `moneybin transactions review --type matches --confirm-all` (pending — see above) |
+| Reject specific | `moneybin transactions review --type matches --reject <match_id>` (pending — see above) |
 
 ## MCP Interface
 
@@ -298,15 +295,15 @@ Designed alongside CLI. Implementation may be sequenced after CLI, but the data 
 
 ### Tools
 
-Transfer detection reuses the same MCP tools as same-record dedup with `match_type` filtering. No new tools needed:
+Currently a phantom namespace per `moneybin-mcp.md` §17 "Dependency tracker" — no `transactions_matches_*` tool is registered yet. Transfer detection reuses the same MCP tools as same-record dedup with `match_type` filtering. No new tools needed; names follow the `transactions_matches_*` prefix defined in `moneybin-mcp.md` §6:
 
 | Tool | Transfer usage |
 |---|---|
-| `list_pending_matches` | `match_type='transfer'` filter. Returns both sides of each pair with signal breakdown. |
-| `confirm_match` | Accepts a `match_id` regardless of type. |
-| `reject_match` | Rejects a `match_id` regardless of type. |
-| `undo_match` | Reverses a previously accepted match. |
-| `get_match_log` | `match_type='transfer'` filter. Signal breakdown per entry. |
+| `transactions_matches_pending` | `match_type='transfer'` filter. Returns both sides of each pair with signal breakdown. |
+| `transactions_matches_confirm` | Accepts `match_ids` regardless of type. |
+| `transactions_matches_reject` | Rejects `match_ids` regardless of type. |
+| `transactions_matches_undo` | Reverses previously accepted matches. |
+| `transactions_matches_log` | `match_type='transfer'` filter. Signal breakdown per entry. |
 
 ### Prompt
 
@@ -314,7 +311,7 @@ Transfer detection reuses the same MCP tools as same-record dedup with `match_ty
 |---|---|
 | `review_matches` | "Help me review pending transaction matches. Show dedup and transfer proposals, explain why each was proposed, and let me accept or reject them." |
 
-The AI can walk the user through the review queue conversationally — showing both sides of transfer pairs, explaining signal scores, and calling `confirm_match`/`reject_match` as the user decides.
+The AI can walk the user through the review queue conversationally — showing both sides of transfer pairs, explaining signal scores, and calling `transactions_matches_confirm` / `transactions_matches_reject` as the user decides.
 
 ## Configuration
 
