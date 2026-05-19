@@ -53,7 +53,7 @@ class TestImportInboxSync:
         )
         envelope = await import_inbox_sync()
         assert envelope.summary.sensitivity == "low"
-        assert envelope.data["processed"][0]["filename"] == "a.csv"
+        assert envelope.data.processed[0]["filename"] == "a.csv"
 
     async def test_failure_includes_actions_hint(
         self, patch_service: MagicMock
@@ -112,4 +112,4 @@ class TestImportInboxPending:
         )
         envelope = await import_inbox_pending()
         assert envelope.summary.sensitivity == "low"
-        assert envelope.data["would_process"][0]["filename"] == "a.csv"
+        assert envelope.data.would_process[0]["filename"] == "a.csv"

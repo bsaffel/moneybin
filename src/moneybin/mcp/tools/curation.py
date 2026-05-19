@@ -34,6 +34,7 @@ from moneybin.database import get_database
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.privacy.payloads.imports import ImportLabelsSetPayload
 from moneybin.privacy.payloads.transactions import (
     ManualBatchEntryResult as ManualBatchEntryResultPayload,
 )
@@ -274,9 +275,10 @@ def transactions_splits_set(
     )
 
 
-# Stopgap: import_labels_set belongs to batch 6 (ImportService surface).
 @mcp_tool(sensitivity="medium", read_only=False)
-def import_labels_set(import_id: str, labels: list[str]) -> ResponseEnvelope[Any]:
+def import_labels_set(
+    import_id: str, labels: list[str]
+) -> ResponseEnvelope[ImportLabelsSetPayload]:
     """Declarative target-state for an import's labels.
 
     Computes the add/remove diff against the prior labels and emits one
@@ -285,7 +287,7 @@ def import_labels_set(import_id: str, labels: list[str]) -> ResponseEnvelope[Any
     with get_database() as db:
         final = ImportService(db).set_labels(import_id, labels, actor="mcp")
     return build_envelope(
-        data={"import_id": import_id, "labels": final},
+        data=ImportLabelsSetPayload(import_id=import_id, labels=final),
         sensitivity="medium",
     )
 

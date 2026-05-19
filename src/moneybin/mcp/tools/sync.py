@@ -18,6 +18,16 @@ from fastmcp import FastMCP
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.privacy.payloads.sync import (
+    SyncConnectionRow,
+    SyncConnectPayload,
+    SyncConnectStatusPayload,
+    SyncDisconnectPayload,
+    SyncPullInstitutionRow,
+    SyncPullPayload,
+    SyncSchedulePlaceholderPayload,
+    SyncStatusPayload,
+)
 from moneybin.protocol.envelope import (
     ResponseEnvelope,
     build_envelope,
@@ -28,9 +38,9 @@ from moneybin.protocol.envelope import (
 _SPEC = "docs/specs/2026-05-13-plaid-sync-design.md"
 
 
-def _stub(action: str) -> ResponseEnvelope:
+def _stub(action: str) -> ResponseEnvelope[SyncSchedulePlaceholderPayload]:
     cli_verb = action.removeprefix("sync_").replace("_", " ")
-    return not_implemented_envelope(
+    return not_implemented_envelope(  # type: ignore[return-value]
         action=action,
         spec=_SPEC,
         actions=[
@@ -72,7 +82,7 @@ def sync_pull(
     institution: str | None = None,
     force: bool = False,
     refresh: bool = True,
-) -> ResponseEnvelope:
+) -> ResponseEnvelope[SyncPullPayload]:
     """Pull transactions, accounts, balances from connected institutions via moneybin-server.
 
     Amounts in loaded data follow MoneyBin accounting convention: negative = expense,
@@ -94,27 +104,63 @@ def sync_pull(
             force=force,
             refresh=refresh,
         )
+    institutions = [
+        SyncPullInstitutionRow(
+            provider_item_id=inst.provider_item_id,
+            institution_name=inst.institution_name,
+            status=inst.status,
+            transaction_count=inst.transaction_count,
+            error=inst.error,
+            error_code=inst.error_code,
+        )
+        for inst in result.institutions
+    ]
     return build_envelope(
-        data=result.model_dump(mode="json"),
+        data=SyncPullPayload(
+            job_id=result.job_id,
+            transactions_loaded=result.transactions_loaded,
+            accounts_loaded=result.accounts_loaded,
+            balances_loaded=result.balances_loaded,
+            transactions_removed=result.transactions_removed,
+            institutions=institutions,
+            transforms_applied=result.transforms_applied,
+            transforms_duration_seconds=result.transforms_duration_seconds,
+            transforms_error=result.transforms_error,
+        ),
         sensitivity="medium",
         actions=["Use sync_status to see connection health going forward."],
     )
 
 
 @mcp_tool(sensitivity="low")
-def sync_status() -> ResponseEnvelope:
+def sync_status() -> ResponseEnvelope[SyncStatusPayload]:
     """Connected institutions, last-sync times, and error-state guidance."""
     with _build_sync_service() as service:
         connections = service.list_connections()
+    rows = [
+        SyncConnectionRow(
+            id=c.id,
+            provider_item_id=c.provider_item_id,
+            institution_name=c.institution_name,
+            provider=c.provider,
+            status=c.status,
+            last_sync=c.last_sync.isoformat() if c.last_sync else None,
+            error_code=c.error_code,
+            guidance=c.guidance,
+        )
+        for c in connections
+    ]
     return build_envelope(
-        data=[c.model_dump(mode="json") for c in connections],
+        data=SyncStatusPayload(connections=rows),
         sensitivity="low",
         actions=[],
     )
 
 
 @mcp_tool(sensitivity="medium", read_only=False, idempotent=False, open_world=True)
-def sync_connect(institution: str | None = None) -> ResponseEnvelope:
+def sync_connect(
+    institution: str | None = None,
+) -> ResponseEnvelope[SyncConnectPayload]:
     """Initiate a bank-connection flow via moneybin-server's Plaid Hosted Link.
 
     Returns a URL the user opens in their browser to complete the Plaid UI.
@@ -136,7 +182,7 @@ def sync_connect(institution: str | None = None) -> ResponseEnvelope:
         ]
         if len(matches) > 1:
             ids = ", ".join(m.provider_item_id for m in matches)
-            return build_error_envelope(
+            return build_error_envelope(  # type: ignore[return-value]
                 error=UserError(
                     f"multiple connected institutions match '{institution}' ({ids})",
                     code="ambiguous",
@@ -151,11 +197,11 @@ def sync_connect(institution: str | None = None) -> ResponseEnvelope:
         # per design Section 8; let the server's Link flow name the institution.
     initiate = client.initiate_connect(provider_item_id=provider_item_id)
     return build_envelope(
-        data={
-            "session_id": initiate.session_id,
-            "link_url": initiate.link_url,
-            "expiration": initiate.expiration.isoformat(),
-        },
+        data=SyncConnectPayload(
+            session_id=initiate.session_id,
+            link_url=initiate.link_url,
+            expiration=initiate.expiration.isoformat(),
+        ),
         sensitivity="medium",
         actions=[
             "Present link_url to the user and ask them to complete the connection in their browser.",
@@ -167,7 +213,7 @@ def sync_connect(institution: str | None = None) -> ResponseEnvelope:
 
 
 @mcp_tool(sensitivity="low")
-def sync_connect_status(session_id: str) -> ResponseEnvelope:
+def sync_connect_status(session_id: str) -> ResponseEnvelope[SyncConnectStatusPayload]:
     """Check whether a bank-connection session has completed.
 
     Call after the user indicates they've finished the Plaid Link flow in their browser.
@@ -187,21 +233,21 @@ def sync_connect_status(session_id: str) -> ResponseEnvelope:
     elif status.status == "failed":
         actions = ["Run sync_connect to retry the connection."]
     return build_envelope(
-        data={
-            "session_id": status.session_id,
-            "status": status.status,
-            "provider_item_id": status.provider_item_id,
-            "institution_name": status.institution_name,
-            "error": status.error,
-            "expiration": status.expiration.isoformat(),
-        },
+        data=SyncConnectStatusPayload(
+            session_id=status.session_id,
+            status=status.status,
+            provider_item_id=status.provider_item_id,
+            institution_name=status.institution_name,
+            error=status.error,
+            expiration=status.expiration.isoformat(),
+        ),
         sensitivity="low",
         actions=actions,
     )
 
 
 @mcp_tool(sensitivity="medium", read_only=False, open_world=True)
-def sync_disconnect(institution: str) -> ResponseEnvelope:
+def sync_disconnect(institution: str) -> ResponseEnvelope[SyncDisconnectPayload]:
     """Remove a bank connection on moneybin-server. Permanent — no revert path.
 
     Local pulled transactions are preserved in raw.plaid_* and core.fct_transactions;
@@ -212,26 +258,26 @@ def sync_disconnect(institution: str) -> ResponseEnvelope:
     with _build_sync_service() as service:
         service.disconnect(institution=institution)
     return build_envelope(
-        data={"status": "disconnected", "institution": institution},
+        data=SyncDisconnectPayload(status="disconnected", institution=institution),
         sensitivity="medium",
         actions=[],
     )
 
 
 @mcp_tool(sensitivity="low", read_only=False)
-def sync_schedule_set(time: str) -> ResponseEnvelope:  # noqa: ARG001 — placeholder
+def sync_schedule_set(time: str) -> ResponseEnvelope[SyncSchedulePlaceholderPayload]:  # noqa: ARG001 — placeholder
     """Install a daily sync at the given HH:MM."""
     return _stub("sync_schedule_set")
 
 
 @mcp_tool(sensitivity="low")
-def sync_schedule_show() -> ResponseEnvelope:
+def sync_schedule_show() -> ResponseEnvelope[SyncSchedulePlaceholderPayload]:
     """Show current scheduled sync details."""
     return _stub("sync_schedule_show")
 
 
 @mcp_tool(sensitivity="low", read_only=False)
-def sync_schedule_remove() -> ResponseEnvelope:
+def sync_schedule_remove() -> ResponseEnvelope[SyncSchedulePlaceholderPayload]:
     """Uninstall the scheduled sync job."""
     return _stub("sync_schedule_remove")
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 import logging
 
 from fastmcp import FastMCP
@@ -10,6 +9,10 @@ from fastmcp import FastMCP
 from moneybin.database import get_database
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.privacy.payloads.imports import (
+    ImportInboxPendingPayload,
+    ImportInboxSyncPayload,
+)
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.inbox_service import InboxService
 
@@ -39,7 +42,7 @@ def _uncategorized_count() -> int:
 
 
 @mcp_tool(sensitivity="low", read_only=False, idempotent=False)
-def import_inbox_sync(refresh: bool = True) -> ResponseEnvelope:
+def import_inbox_sync(refresh: bool = True) -> ResponseEnvelope[ImportInboxSyncPayload]:
     """Drain the active profile's import inbox.
 
     Args:
@@ -53,10 +56,10 @@ def import_inbox_sync(refresh: bool = True) -> ResponseEnvelope:
 
     with get_database() as db:
         service = InboxService(db=db, settings=get_settings())
-        result = dataclasses.asdict(service.sync(refresh=refresh))
+        sync_result = service.sync(refresh=refresh)
 
     actions: list[str] = ["Use transactions.search to view newly imported transactions"]
-    if result["failed"]:
+    if sync_result.failed:
         actions.insert(
             0,
             "Move failed files into inbox/<account-slug>/ and re-run import_inbox_sync",
@@ -71,16 +74,31 @@ def import_inbox_sync(refresh: bool = True) -> ResponseEnvelope:
             "`moneybin transactions categorize export-uncategorized` for the CLI bridge"
         )
 
-    return build_envelope(data=result, sensitivity="low", actions=actions)
+    return build_envelope(
+        data=ImportInboxSyncPayload(
+            processed=sync_result.processed,
+            failed=sync_result.failed,
+            skipped=sync_result.skipped,
+            ignored=sync_result.ignored,
+            transforms_applied=sync_result.transforms_applied,
+            transforms_duration_seconds=sync_result.transforms_duration_seconds,
+            transforms_error=sync_result.transforms_error,
+        ),
+        sensitivity="low",
+        actions=actions,
+    )
 
 
 @mcp_tool(sensitivity="low")
-def import_inbox_pending() -> ResponseEnvelope:
+def import_inbox_pending() -> ResponseEnvelope[ImportInboxPendingPayload]:
     """Preview pending items in the active profile's import inbox."""
     service = InboxService.for_active_profile_no_db()
-    result = dataclasses.asdict(service.enumerate())
+    list_result = service.enumerate()
     return build_envelope(
-        data=result,
+        data=ImportInboxPendingPayload(
+            would_process=list_result.would_process,
+            ignored=list_result.ignored,
+        ),
         sensitivity="low",
         actions=["Use import_inbox_sync to drain the inbox"],
     )
