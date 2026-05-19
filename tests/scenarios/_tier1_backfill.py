@@ -40,6 +40,7 @@ FCT_TRANSACTIONS_SCHEMA: dict[str, str] = {
     "transaction_direction": "VARCHAR",
     "description": "VARCHAR",
     "merchant_name": "VARCHAR",
+    "merchant_id": "VARCHAR",
     "memo": "VARCHAR",
     "category": "VARCHAR",
     "subcategory": "VARCHAR",
