@@ -1,7 +1,7 @@
 """Transfer detection: candidate blocking and confidence scoring.
 
 Tier 4 of the matching pipeline. Finds transactions from different accounts
-with opposite signs and the same absolute amount, scores them on four signals,
+with opposite signs and the same absolute amount, scores them on two signals,
 and returns scored candidate pairs for 1:1 assignment.
 """
 
@@ -93,8 +93,6 @@ class TransferCandidatePair:
     description_b: str
     date_distance_score: float
     keyword_score: float
-    amount_roundness_score: float
-    pair_frequency_score: float
     confidence_score: float
 
 
@@ -116,31 +114,6 @@ def compute_keyword_score(desc_a: str, desc_b: str) -> float:
     return 0.0
 
 
-def compute_amount_roundness(amount: Decimal) -> float:
-    """Score based on how round the transfer amount is."""
-    abs_amount = abs(amount)
-    if abs_amount % 100 == 0:
-        return 1.0
-    if abs_amount % 10 == 0:
-        return 0.7
-    if abs_amount % 1 == 0:
-        return 0.5
-    return 0.3
-
-
-def compute_pair_frequency(
-    account_id_a: str,
-    account_id_b: str,
-    pair_counts: dict[tuple[str, str], int],
-    max_count: int,
-) -> float:
-    """Score based on how often this account pair appears in the batch."""
-    sorted_ids = sorted([account_id_a, account_id_b])
-    key: tuple[str, str] = (sorted_ids[0], sorted_ids[1])
-    count = pair_counts.get(key, 0)
-    return min(1.0, count / max(max_count, 1))
-
-
 def compute_date_score(date_distance_days: int, date_window_days: int) -> float:
     """Score based on temporal proximity within the date window."""
     if date_window_days <= 0:
@@ -152,17 +125,10 @@ def compute_transfer_confidence(
     *,
     date_score: float,
     keyword_score: float,
-    amount_roundness: float,
-    pair_frequency: float,
     weights: dict[str, float],
 ) -> float:
-    """Compute transfer confidence from four pre-computed, weighted signals."""
-    return (
-        weights["date_distance"] * date_score
-        + weights["keyword"] * keyword_score
-        + weights["roundness"] * amount_roundness
-        + weights["pair_frequency"] * pair_frequency
-    )
+    """Compute transfer confidence from two pre-computed, weighted signals."""
+    return weights["date_distance"] * date_score + weights["keyword"] * keyword_score
 
 
 def get_candidates_transfers(
@@ -233,10 +199,7 @@ def get_candidates_transfers(
                 acct_a,
             ))
 
-    # Pass 1: filter rows and build pair-frequency counts (needed for scoring).
-    filtered: list[dict[str, Any]] = []
-    pair_counts: dict[tuple[str, str], int] = {}
-
+    results: list[TransferCandidatePair] = []
     for row in rows:
         stid_a, st_a, so_a, acct_a, desc_a, amount_a = row[:6]
         stid_b, st_b, so_b, acct_b, desc_b, _amount_b, date_dist = row[6:]
@@ -250,61 +213,31 @@ def get_candidates_transfers(
         if (st_a, stid_a, acct_a, st_b, stid_b, acct_b) in rejected_set:
             continue
 
-        filtered.append({
-            "stid_a": stid_a,
-            "st_a": st_a,
-            "so_a": so_a,
-            "acct_a": acct_a,
-            "desc_a": desc_a,
-            "amount_a": amount_a,
-            "stid_b": stid_b,
-            "st_b": st_b,
-            "so_b": so_b,
-            "acct_b": acct_b,
-            "desc_b": desc_b,
-            "date_dist": int(date_dist),
-        })
-        sorted_accts = sorted([acct_a, acct_b])
-        freq_key: tuple[str, str] = (sorted_accts[0], sorted_accts[1])
-        pair_counts[freq_key] = pair_counts.get(freq_key, 0) + 1
-
-    max_count = max(pair_counts.values()) if pair_counts else 1
-    # Pass 2: score each candidate using pair-frequency data from pass 1.
-    results: list[TransferCandidatePair] = []
-    for p in filtered:
-        abs_amount = abs(p["amount_a"])
-        kw_score = compute_keyword_score(p["desc_a"] or "", p["desc_b"] or "")
-        roundness = compute_amount_roundness(abs_amount)
-        pair_freq = compute_pair_frequency(
-            p["acct_a"], p["acct_b"], pair_counts, max_count
-        )
-        d_score = compute_date_score(p["date_dist"], date_window_days)
+        abs_amount = abs(amount_a)
+        kw_score = compute_keyword_score(desc_a or "", desc_b or "")
+        d_score = compute_date_score(int(date_dist), date_window_days)
         confidence = compute_transfer_confidence(
             date_score=d_score,
             keyword_score=kw_score,
-            amount_roundness=roundness,
-            pair_frequency=pair_freq,
             weights=signal_weights,
         )
 
         results.append(
             TransferCandidatePair(
-                source_transaction_id_a=p["stid_a"],
-                source_type_a=p["st_a"],
-                source_origin_a=p["so_a"],
-                account_id_a=p["acct_a"],
-                source_transaction_id_b=p["stid_b"],
-                source_type_b=p["st_b"],
-                source_origin_b=p["so_b"],
-                account_id_b=p["acct_b"],
+                source_transaction_id_a=stid_a,
+                source_type_a=st_a,
+                source_origin_a=so_a,
+                account_id_a=acct_a,
+                source_transaction_id_b=stid_b,
+                source_type_b=st_b,
+                source_origin_b=so_b,
+                account_id_b=acct_b,
                 amount=abs_amount,
-                date_distance_days=p["date_dist"],
-                description_a=p["desc_a"] or "",
-                description_b=p["desc_b"] or "",
+                date_distance_days=int(date_dist),
+                description_a=desc_a or "",
+                description_b=desc_b or "",
                 date_distance_score=d_score,
                 keyword_score=kw_score,
-                amount_roundness_score=roundness,
-                pair_frequency_score=pair_freq,
                 confidence_score=confidence,
             )
         )

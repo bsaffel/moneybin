@@ -11,7 +11,7 @@ class TestTransferSettings:
 
     def test_transfer_review_threshold_default(self) -> None:
         settings = MatchingSettings()
-        assert settings.transfer_review_threshold == 0.70
+        assert settings.transfer_review_threshold == 0.55
 
     def test_transfer_review_threshold_custom(self) -> None:
         settings = MatchingSettings(transfer_review_threshold=0.85)
@@ -26,27 +26,21 @@ class TestTransferSettings:
     def test_transfer_signal_weights_default(self) -> None:
         settings = MatchingSettings()
         assert settings.transfer_signal_weights == {
-            "date_distance": 0.4,
-            "keyword": 0.3,
-            "roundness": 0.15,
-            "pair_frequency": 0.15,
+            "date_distance": 0.6,
+            "keyword": 0.4,
         }
 
     def test_transfer_signal_weights_custom(self) -> None:
         custom = {
-            "date_distance": 0.5,
-            "keyword": 0.25,
-            "roundness": 0.15,
-            "pair_frequency": 0.1,
+            "date_distance": 0.7,
+            "keyword": 0.3,
         }
         settings = MatchingSettings(transfer_signal_weights=custom)
         assert settings.transfer_signal_weights == custom
 
     def test_transfer_signal_weights_missing_key(self) -> None:
         with pytest.raises(ValidationError, match="missing keys"):
-            MatchingSettings(
-                transfer_signal_weights={"date_distance": 0.5, "keyword": 0.5}
-            )
+            MatchingSettings(transfer_signal_weights={"date_distance": 1.0})
 
     def test_transfer_signal_weights_negative(self) -> None:
         with pytest.raises(ValidationError, match="negative values"):
@@ -54,8 +48,6 @@ class TestTransferSettings:
                 transfer_signal_weights={
                     "date_distance": 1.2,
                     "keyword": -0.2,
-                    "roundness": 0.0,
-                    "pair_frequency": 0.0,
                 }
             )
 
@@ -65,7 +57,5 @@ class TestTransferSettings:
                 transfer_signal_weights={
                     "date_distance": 0.5,
                     "keyword": 0.4,
-                    "roundness": 0.2,
-                    "pair_frequency": 0.2,
                 }
             )

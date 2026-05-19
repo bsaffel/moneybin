@@ -34,7 +34,7 @@ This spec covers pillar B from the [transaction-matching umbrella](matching-over
 ### Detection
 
 1. Transactions from different accounts with opposite signs and the same absolute amount, within a configurable date window, are candidates for transfer pairing.
-2. Candidates are scored using four signals: date distance, description keyword presence, amount roundness, and account pair frequency within the batch.
+2. Candidates are scored using two signals: date distance and description keyword presence.
 3. All scored pairs above `transfer_review_threshold` go to the review queue. No auto-confirmation in v1.
 4. Pairs below `transfer_review_threshold` are not surfaced (logged at DEBUG level only).
 5. Each transaction participates in at most one transfer pair (1:1 assignment).
@@ -92,7 +92,7 @@ Transfer-specific values in existing columns:
 
 - `match_type = 'transfer'`
 - `match_tier = NULL` (tiers are dedup-specific)
-- `match_signals` JSON carries transfer-specific signal scores: `{"date_distance": 0.8, "keyword_score": 0.6, "amount_roundness": 1.0, "pair_frequency": 0.7}`
+- `match_signals` JSON carries transfer-specific signal scores: `{"date_distance": 0.8, "keyword": 0.6}`
 
 ## Matching Algorithm
 
@@ -136,16 +136,16 @@ This produces a narrow candidate set. No fuzzy logic at this stage.
 
 ### Scoring
 
-For each candidate pair, four signals combined into a confidence score:
+For each candidate pair, two signals combined into a confidence score:
 
 | Signal | Range | Logic |
 |---|---|---|
 | **Date distance** | 0.0-1.0 | `1.0 - (days_apart / date_window_days)`. Same-day = 1.0, 3 days apart = 0.0. Primary discriminator for recurring transfers. |
-| **Keyword presence** | 0.0-1.0 | Scan both descriptions for transfer-indicating terms: TRANSFER, XFER, ACH, DIRECT DEP, WIRE, account number fragments. Score based on how many indicators found in either description. |
-| **Amount roundness** | 0.0-1.0 | Round numbers score higher. 1.0 if divisible by 100, 0.7 if divisible by 10, 0.5 if whole dollar, 0.3 otherwise. |
-| **Account pair frequency** | 0.0-1.0 | How often this (account_a, account_b) pair appears among all candidates in this batch. Accounts that frequently transfer between each other score higher within the current run. |
+| **Keyword presence** | 0.0-1.0 | Scan both descriptions for transfer-indicating terms: TRANSFER, XFER, ACH, DIRECT DEP, WIRE, plus ~40 compound phrases (ONLINE TRANSFER TO SAV, AUTO PAY, CC PAYMENT, etc.). Matched longest-first (non-overlapping) so compound phrases consume their span before sub-keywords can double-count. Score: 0.0 (no match), 0.5 (1 match), 0.8 (2 matches), 1.0 (3+ matches). |
 
-Exact signal weights are an implementation detail, tuned against real data. Default starting point: `{date_distance: 0.4, keyword: 0.3, roundness: 0.15, pair_frequency: 0.15}`. All four signal scores are persisted in `match_signals` JSON for auditability and tuning diagnosis.
+Amount roundness and account pair frequency were dropped: roundness is a weak signal ($437.82 is as real a transfer as $500), and pair frequency is within-batch-only — backfills see different scores than incremental syncs, making the signal unstable. Both remaining signals and their per-pair scores are persisted in `match_signals` JSON for auditability and tuning diagnosis.
+
+Default weights: `{date_distance: 0.6, keyword: 0.4}`. Both signals max at 1.0 and weights sum to 1.0, so confidence score range is [0.0, 1.0].
 
 ### 1:1 assignment
 
@@ -186,8 +186,8 @@ These surface naturally during `moneybin transactions review --type matches`.
 
 ```
 Transfer: Checking -> Savings  $500.00  (2026-03-15 / 2026-03-15)
-  Confidence: 0.88
-  Signals: date_distance=1.0, keyword=0.6, roundness=1.0, pair_freq=0.8
+  Confidence: 0.84
+  Signals: date_distance=1.0, keyword=0.6
   Status: rejected (user, 2026-03-16)
 ```
 
@@ -199,7 +199,7 @@ The signal breakdown shows what's driving false positives or misses.
 |---|---|---|---|
 | **Review threshold** | `matching.transfer_review_threshold` | Raise to see fewer, higher-quality proposals; lower to catch more | Too much noise -> raise. Missing pairs -> lower. |
 | **Date window** | `matching.date_window_days` | Narrow to reduce cross-month false matches; widen for slow ACH | Recurring transfers matching wrong months -> narrow to 2. International wires -> widen. |
-| **Signal weights** | `matching.transfer_signal_weights` | Dict of per-signal weights | When a specific signal consistently drives false positives |
+| **Signal weights** | `matching.transfer_signal_weights` | Dict with `date_distance` and `keyword` weights (must sum to 1.0) | When one signal consistently drives false positives vs the other |
 
 All three are Pydantic settings with env var overrides. Changes take effect on the next `moneybin transactions matches run`.
 
@@ -273,10 +273,10 @@ Transfer detection extends the commands defined in `matching-same-record-dedup.m
 Transfer review shows both sides for full context:
 
 ```
-Transfer pair (confidence: 0.88)
+Transfer pair (confidence: 0.84)
   DEBIT:  Chase Checking  -$500.00  2026-03-15  "ONLINE TRANSFER TO SAV"
   CREDIT: Chase Savings   +$500.00  2026-03-15  "TRANSFER FROM CHK"
-  Signals: date=1.0  keyword=0.6  roundness=1.0  pair_freq=0.8
+  Signals: date=1.0  keyword=0.6
 
   [a]ccept / [r]eject / [s]kip / [q]uit
 ```
@@ -320,21 +320,19 @@ class MatchingSettings(BaseModel):
     # ... existing dedup settings from matching-same-record-dedup.md ...
 
     # Transfer-specific settings
-    transfer_review_threshold: float = 0.70
+    transfer_review_threshold: float = 0.55
     date_window_days: int = 3  # shared with dedup
     transfer_signal_weights: dict[str, float] = {
-        "date_distance": 0.4,
-        "keyword": 0.3,
-        "roundness": 0.15,
-        "pair_frequency": 0.15,
+        "date_distance": 0.6,
+        "keyword": 0.4,
     }
 ```
 
 Env var overrides:
 
-- `MONEYBIN_MATCHING__TRANSFER_REVIEW_THRESHOLD=0.80`
+- `MONEYBIN_MATCHING__TRANSFER_REVIEW_THRESHOLD=0.65`
 - `MONEYBIN_MATCHING__DATE_WINDOW_DAYS=5`
-- `MONEYBIN_MATCHING__TRANSFER_SIGNAL_WEIGHTS='{"date_distance": 0.5, "keyword": 0.25, "roundness": 0.15, "pair_frequency": 0.1}'`
+- `MONEYBIN_MATCHING__TRANSFER_SIGNAL_WEIGHTS='{"date_distance": 0.7, "keyword": 0.3}'`
 
 ### What is not configurable
 
@@ -351,7 +349,7 @@ Env var overrides:
 ### Unit tests
 
 - **Blocking query**: given transactions with known amounts/dates/accounts/signs, verify candidate pairs are correctly identified (opposite signs, same amount, different accounts, within window)
-- **Scoring function**: given a candidate pair, verify each signal component (date distance, keyword, roundness, pair frequency) and the combined score
+- **Scoring function**: given a candidate pair, verify each signal component (date distance, keyword) and the combined score
 - **1:1 assignment with recurring transfers**: 3 months of $500 checking->savings, verify greedy assignment pairs same-day matches correctly without cross-month contamination
 - **Bridge table derivation**: given accepted match decisions, verify `bridge_transfers` output (debit/credit sides, date offset, amount)
 
@@ -434,8 +432,5 @@ Transfers that always occur at the same amount or within a narrow range (e.g., $
 ### Resolved
 
 - **Backfill ordering.** Dedup completes fully first, then transfer detection runs. Transfers are cross-account by definition, so all accounts must be deduplicated before transfer pairing can produce correct results. Same order as import-time matching (Tiers 2b → 3 → 4).
-
-### Deferred to implementation tuning milestone
-
-1. **Confidence score formula.** Exact combination of the four signals. Starting weights provided (`date_distance: 0.4, keyword: 0.3, roundness: 0.15, pair_frequency: 0.15`) but should be tuned against real data. See MVP roadmap M1 tuning milestone.
-2. **Keyword list.** The initial set of transfer-indicating terms (TRANSFER, XFER, ACH, DIRECT DEP, WIRE, etc.) and how to handle institution-specific variations. Start with a reasonable default set; tune alongside confidence scores with real data.
+- **Confidence score formula.** Two-signal model: `date_distance × 0.6 + keyword × 0.4`. Amount roundness dropped ($437.82 is as real a transfer as $500). Account pair frequency dropped — within-batch-only, unstable for backfills. Threshold re-tuned to 0.55 to preserve approximate review-queue size against the prior four-signal baseline.
+- **Keyword list.** Retained as-is (~50 terms including compound phrases like ONLINE TRANSFER TO SAV, AUTO PAY, CC PAYMENT). Matched longest-first via a single compiled regex to prevent sub-phrase double-counting. The compound phrases are doing real recall work and are not candidates for pruning without empirical validation against real data.
