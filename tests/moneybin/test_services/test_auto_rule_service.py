@@ -6,6 +6,7 @@ invariants — silencing ``reportPrivateUsage`` for this file is deliberate.
 
 # pyright: reportPrivateUsage=false
 
+import json
 from collections.abc import Generator
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -724,8 +725,20 @@ class TestDeactivateOverriddenRulesSimplified:
         ).fetchone()
         assert proposal_count is not None and proposal_count[0] == 0
 
-        # Audit event emitted.
+        # Audit event emitted — check count and content.
         audit_count = real_db.execute(
             "SELECT COUNT(*) FROM app.audit_log WHERE action = 'rule_deactivated'"
         ).fetchone()
         assert audit_count is not None and audit_count[0] == 1
+
+        audit_row = real_db.execute(
+            "SELECT action, actor, target_id, context_json "
+            "FROM app.audit_log WHERE action = 'rule_deactivated'"
+        ).fetchone()
+        assert audit_row is not None
+        assert audit_row[0] == "rule_deactivated"
+        assert audit_row[1] == "auto_rule_service"
+        assert audit_row[2] is not None  # target_id = rule_id
+        context = json.loads(audit_row[3])
+        assert "override_count" in context
+        assert "sample_ids" in context

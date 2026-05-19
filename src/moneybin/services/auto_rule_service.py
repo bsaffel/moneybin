@@ -505,6 +505,7 @@ class AutoRuleService:
             """
         ).fetchall()
         deactivated = 0
+        audit_service = AuditService(self._db)
 
         for (
             rule_id,
@@ -582,7 +583,7 @@ class AutoRuleService:
                     "WHERE rule_id = ?",
                     [rule_id],
                 )
-                AuditService(self._db).record_audit_event(
+                audit_service.record_audit_event(
                     actor="auto_rule_service",
                     action="rule_deactivated",
                     target=(
