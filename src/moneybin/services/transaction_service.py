@@ -18,7 +18,6 @@ from decimal import Decimal
 from typing import Any
 
 from moneybin.database import Database
-from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services._validators import validate_note_text, validate_slug
 from moneybin.services.audit_service import AuditService
 from moneybin.services.categorization._shared import resolve_category_id
@@ -104,19 +103,6 @@ class TransactionGetResult:
 
     transactions: list[Transaction]
     next_cursor: str | None
-
-    def to_envelope(self) -> ResponseEnvelope:
-        """Build a ResponseEnvelope for MCP/CLI output."""
-        return build_envelope(
-            data=[t.to_dict() for t in self.transactions],
-            sensitivity="medium",
-            next_cursor=self.next_cursor,
-            actions=[
-                "Use transactions_get with the next_cursor value to fetch the next page",
-                "Use reports_spending for category breakdowns",
-                "Use transactions_categorize_commit to categorize uncategorized transactions",
-            ],
-        )
 
 
 @dataclass(frozen=True, slots=True)

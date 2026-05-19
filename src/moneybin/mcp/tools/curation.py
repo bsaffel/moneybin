@@ -34,6 +34,18 @@ from moneybin.database import get_database
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.privacy.payloads.transactions import (
+    ManualBatchEntryResult as ManualBatchEntryResultPayload,
+)
+from moneybin.privacy.payloads.transactions import (
+    ManualBatchPayload,
+    NoteDeletePayload,
+    NotePayload,
+    SplitRow,
+    SplitsPayload,
+    TagRenamePayload,
+    TagsPayload,
+)
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.audit_service import AuditService
 from moneybin.services.import_service import ImportService
@@ -51,28 +63,28 @@ _MANUAL_BATCH_MAX = 100
 # ---------- helpers ----------
 
 
-def _note_dict(note: Note) -> dict[str, Any]:
-    return {
-        "note_id": note.note_id,
-        "transaction_id": note.transaction_id,
-        "text": note.text,
-        "author": note.author,
-        "created_at": note.created_at,
-    }
+def _note_payload(note: Note) -> NotePayload:
+    return NotePayload(
+        note_id=note.note_id,
+        transaction_id=note.transaction_id,
+        text=note.text,
+        author=note.author,
+        created_at=note.created_at,
+    )
 
 
-def _split_dict(split: Split) -> dict[str, Any]:
-    return {
-        "split_id": split.split_id,
-        "transaction_id": split.transaction_id,
-        "amount": str(split.amount),
-        "category": split.category,
-        "subcategory": split.subcategory,
-        "note": split.note,
-        "ord": split.ord,
-        "created_at": split.created_at,
-        "created_by": split.created_by,
-    }
+def _split_row(split: Split) -> SplitRow:
+    return SplitRow(
+        split_id=split.split_id,
+        transaction_id=split.transaction_id,
+        amount=str(split.amount),
+        category=split.category,
+        subcategory=split.subcategory,
+        note=split.note,
+        ord=split.ord,
+        created_at=split.created_at,
+        created_by=split.created_by,
+    )
 
 
 def _coerce_amount(value: Any, where: str) -> Decimal:
@@ -143,7 +155,7 @@ def _prepare_splits(splits: list[dict[str, Any]]) -> list[dict[str, Any]]:
 @mcp_tool(sensitivity="medium", read_only=False, idempotent=False)
 def transactions_create(
     transactions: list[dict[str, Any]],
-) -> ResponseEnvelope:
+) -> ResponseEnvelope[ManualBatchPayload]:
     """Create 1..100 manual transactions atomically under one import_id.
 
     Each entry requires ``account_id``, ``amount`` (Decimal-coerced), a
@@ -161,16 +173,16 @@ def transactions_create(
     with get_database() as db:
         result = TransactionService(db).create_manual_batch(prepared, actor="mcp")
     return build_envelope(
-        data={
-            "batch_id": result.import_id,
-            "results": [
-                {
-                    "transaction_id": r.transaction_id,
-                    "source_transaction_id": r.source_transaction_id,
-                }
+        data=ManualBatchPayload(
+            batch_id=result.import_id,
+            results=[
+                ManualBatchEntryResultPayload(
+                    transaction_id=r.transaction_id,
+                    source_transaction_id=r.source_transaction_id,
+                )
                 for r in result.results
             ],
-        },
+        ),
         sensitivity="medium",
         actions=[
             "Use transactions_get to confirm the rows landed",
@@ -180,19 +192,21 @@ def transactions_create(
 
 
 @mcp_tool(sensitivity="medium", read_only=False, idempotent=False)
-def transactions_notes_add(transaction_id: str, text: str) -> ResponseEnvelope:
+def transactions_notes_add(
+    transaction_id: str, text: str
+) -> ResponseEnvelope[NotePayload]:
     """Append a note to a transaction. Returns the created note row."""
     with get_database() as db:
         note = TransactionService(db).add_note(transaction_id, text, actor="mcp")
-    return build_envelope(data=_note_dict(note), sensitivity="medium")
+    return build_envelope(data=_note_payload(note), sensitivity="medium")
 
 
 @mcp_tool(sensitivity="medium", read_only=False)
-def transactions_notes_edit(note_id: str, text: str) -> ResponseEnvelope:
+def transactions_notes_edit(note_id: str, text: str) -> ResponseEnvelope[NotePayload]:
     """Update an existing note's text. Returns the updated row."""
     with get_database() as db:
         note = TransactionService(db).edit_note(note_id, text, actor="mcp")
-    return build_envelope(data=_note_dict(note), sensitivity="medium")
+    return build_envelope(data=_note_payload(note), sensitivity="medium")
 
 
 @mcp_tool(
@@ -201,15 +215,17 @@ def transactions_notes_edit(note_id: str, text: str) -> ResponseEnvelope:
     destructive=True,
     idempotent=False,
 )
-def transactions_notes_delete(note_id: str) -> ResponseEnvelope:
+def transactions_notes_delete(note_id: str) -> ResponseEnvelope[NoteDeletePayload]:
     """Delete a note by ID. Hard-delete; raises LookupError if the note is gone."""
     with get_database() as db:
         TransactionService(db).delete_note(note_id, actor="mcp")
-    return build_envelope(data={"note_id": note_id}, sensitivity="low")
+    return build_envelope(data=NoteDeletePayload(note_id=note_id), sensitivity="low")
 
 
 @mcp_tool(sensitivity="medium", read_only=False)
-def transactions_tags_set(transaction_id: str, tags: list[str]) -> ResponseEnvelope:
+def transactions_tags_set(
+    transaction_id: str, tags: list[str]
+) -> ResponseEnvelope[TagsPayload]:
     """Declarative target-state for a transaction's tags.
 
     The service diffs the supplied list against current state and emits one
@@ -220,18 +236,22 @@ def transactions_tags_set(transaction_id: str, tags: list[str]) -> ResponseEnvel
     with get_database() as db:
         final = TransactionService(db).set_tags(transaction_id, tags, actor="mcp")
     return build_envelope(
-        data={"transaction_id": transaction_id, "tags": final},
+        data=TagsPayload(transaction_id=transaction_id, tags=final),
         sensitivity="medium",
     )
 
 
 @mcp_tool(sensitivity="medium", read_only=False)
-def transactions_tags_rename(old_tag: str, new_tag: str) -> ResponseEnvelope:
+def transactions_tags_rename(
+    old_tag: str, new_tag: str
+) -> ResponseEnvelope[TagRenamePayload]:
     """Rename a tag globally. Emits one parent + N child audit events."""
     with get_database() as db:
         res = TransactionService(db).rename_tag(old_tag, new_tag, actor="mcp")
     return build_envelope(
-        data={"row_count": res.row_count, "parent_audit_id": res.parent_audit_id},
+        data=TagRenamePayload(
+            row_count=res.row_count, parent_audit_id=res.parent_audit_id
+        ),
         sensitivity="medium",
     )
 
@@ -239,7 +259,7 @@ def transactions_tags_rename(old_tag: str, new_tag: str) -> ResponseEnvelope:
 @mcp_tool(sensitivity="medium", read_only=False)
 def transactions_splits_set(
     transaction_id: str, splits: list[dict[str, Any]]
-) -> ResponseEnvelope:
+) -> ResponseEnvelope[SplitsPayload]:
     """Declarative replace: clear existing splits then add the new sequence.
 
     Each split requires ``amount`` (Decimal-coerced); ``category``,
@@ -249,13 +269,14 @@ def transactions_splits_set(
     with get_database() as db:
         out = TransactionService(db).set_splits(transaction_id, prepared, actor="mcp")
     return build_envelope(
-        data=[_split_dict(s) for s in out],
+        data=SplitsPayload(splits=[_split_row(s) for s in out]),
         sensitivity="medium",
     )
 
 
+# Stopgap: import_labels_set belongs to batch 6 (ImportService surface).
 @mcp_tool(sensitivity="medium", read_only=False)
-def import_labels_set(import_id: str, labels: list[str]) -> ResponseEnvelope:
+def import_labels_set(import_id: str, labels: list[str]) -> ResponseEnvelope[Any]:
     """Declarative target-state for an import's labels.
 
     Computes the add/remove diff against the prior labels and emits one
@@ -269,10 +290,11 @@ def import_labels_set(import_id: str, labels: list[str]) -> ResponseEnvelope:
     )
 
 
+# Stopgap: system_audit belongs to batch 7 (AuditService surface).
 @mcp_tool(sensitivity="medium")
 def system_audit(
     filters: dict[str, Any] | None = None, limit: int = 100
-) -> ResponseEnvelope:
+) -> ResponseEnvelope[Any]:
     """List audit events. Filter by actor, ``action_pattern`` (LIKE), target, or time.
 
     Equivalent to ``moneybin system audit list``. Supply ``audit_id`` via

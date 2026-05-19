@@ -73,7 +73,42 @@ def transactions_list(
                 cursor=cursor,
             )
 
-    envelope = result.to_envelope()
+    from moneybin.privacy.payloads.transactions import (
+        TransactionGetPayload,
+        TransactionRow,
+    )
+    from moneybin.protocol.envelope import build_envelope
+
+    payload = TransactionGetPayload(
+        transactions=[
+            TransactionRow(
+                transaction_id=t.transaction_id,
+                account_id=t.account_id,
+                transaction_date=t.transaction_date,
+                amount=t.amount,
+                description=t.description,
+                memo=t.memo,
+                source_type=t.source_type,
+                category=t.category,
+                subcategory=t.subcategory,
+                notes=t.notes,
+                tags=t.tags,
+                splits=t.splits,
+            )
+            for t in result.transactions
+        ],
+        next_cursor=result.next_cursor,
+    )
+    envelope = build_envelope(
+        data=payload,
+        sensitivity="medium",
+        next_cursor=result.next_cursor,
+        actions=[
+            "Use transactions_get with the next_cursor value to fetch the next page",
+            "Use reports_spending for category breakdowns",
+            "Use transactions_categorize_commit to categorize uncategorized transactions",
+        ],
+    )
 
     def _render_text(_: object) -> None:
         if not result.transactions:

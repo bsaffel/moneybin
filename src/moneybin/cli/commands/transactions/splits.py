@@ -21,6 +21,7 @@ from moneybin.cli.output import (
 )
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
+from moneybin.privacy.payloads.transactions import SplitRow, SplitsPayload
 from moneybin.protocol.envelope import build_envelope
 from moneybin.services.transaction_service import Split
 
@@ -32,18 +33,18 @@ app = typer.Typer(
 )
 
 
-def _split_to_dict(s: Split) -> dict[str, object]:
-    return {
-        "split_id": s.split_id,
-        "transaction_id": s.transaction_id,
-        "amount": str(s.amount),
-        "category": s.category,
-        "subcategory": s.subcategory,
-        "note": s.note,
-        "ord": s.ord,
-        "created_at": s.created_at,
-        "created_by": s.created_by,
-    }
+def _split_row(s: Split) -> SplitRow:
+    return SplitRow(
+        split_id=s.split_id,
+        transaction_id=s.transaction_id,
+        amount=str(s.amount),
+        category=s.category,
+        subcategory=s.subcategory,
+        note=s.note,
+        ord=s.ord,
+        created_at=s.created_at,
+        created_by=s.created_by,
+    )
 
 
 @app.command("add")
@@ -81,9 +82,14 @@ def transactions_splits_add(
         typer.echo(f"❌ {e}", err=True)
         raise typer.Exit(1) from e
 
-    payload = {"split": _split_to_dict(split), "residual": str(residual)}
     if output == OutputFormat.JSON:
-        render_or_json(build_envelope(data=payload, sensitivity="low"), output)
+        render_or_json(
+            build_envelope(
+                data={"split": _split_row(split), "residual": str(residual)},
+                sensitivity="low",
+            ),
+            output,
+        )
     else:
         logger.info(f"✅ Added split {split.split_id} to {transaction_id}")
     if residual != Decimal("0"):
@@ -107,7 +113,10 @@ def transactions_splits_list(
 
     if output == OutputFormat.JSON:
         render_or_json(
-            build_envelope(data=[_split_to_dict(s) for s in splits], sensitivity="low"),
+            build_envelope(
+                data=SplitsPayload(splits=[_split_row(s) for s in splits]),
+                sensitivity="low",
+            ),
             output,
         )
         return

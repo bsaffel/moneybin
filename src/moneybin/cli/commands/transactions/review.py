@@ -83,14 +83,21 @@ def _print_status(type_: str, output: OutputFormat) -> None:
             s = review_svc.status()
 
     if output == OutputFormat.JSON:
-        payload: dict[str, int] = {}
-        if type_ in ("matches", "all"):
-            payload["matches_pending"] = s.matches_pending
-        if type_ in ("categorize", "all"):
-            payload["categorize_pending"] = s.categorize_pending
+        from moneybin.privacy.payloads.transactions import ReviewStatusPayload
+
+        # Subset the typed payload per --type filter so the JSON shape
+        # matches the documented per-type contract.
         if type_ == "all":
-            payload["total"] = s.total
-        render_or_json(build_envelope(data=payload, sensitivity="low"), output)
+            data: object = ReviewStatusPayload(
+                matches_pending=s.matches_pending,
+                categorize_pending=s.categorize_pending,
+                total=s.total,
+            )
+        elif type_ == "matches":
+            data = {"matches_pending": s.matches_pending}
+        else:  # type_ == "categorize"
+            data = {"categorize_pending": s.categorize_pending}
+        render_or_json(build_envelope(data=data, sensitivity="low"), output)
         return
 
     if type_ == "matches":

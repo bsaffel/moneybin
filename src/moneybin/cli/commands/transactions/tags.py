@@ -18,6 +18,7 @@ from moneybin.cli.output import (
 )
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
+from moneybin.privacy.payloads.transactions import TagRenamePayload, TagsPayload
 from moneybin.protocol.envelope import build_envelope
 
 logger = logging.getLogger(__name__)
@@ -50,7 +51,7 @@ def transactions_tags_add(
     if output == OutputFormat.JSON:
         render_or_json(
             build_envelope(
-                data={"transaction_id": transaction_id, "added": added},
+                data=TagsPayload(transaction_id=transaction_id, tags=added),
                 sensitivity="low",
             ),
             output,
@@ -80,7 +81,7 @@ def transactions_tags_remove(
     if output == OutputFormat.JSON:
         render_or_json(
             build_envelope(
-                data={"transaction_id": transaction_id, "removed": removed},
+                data=TagsPayload(transaction_id=transaction_id, tags=removed),
                 sensitivity="low",
             ),
             output,
@@ -112,7 +113,7 @@ def transactions_tags_list(
                 if output == OutputFormat.JSON:
                     render_or_json(
                         build_envelope(
-                            data={"transaction_id": transaction_id, "tags": tags},
+                            data=TagsPayload(transaction_id=transaction_id, tags=tags),
                             sensitivity="low",
                         ),
                         output,
@@ -165,12 +166,10 @@ def transactions_tags_rename(
     if output == OutputFormat.JSON:
         render_or_json(
             build_envelope(
-                data={
-                    "old": old,
-                    "new": new,
-                    "row_count": result.row_count,
-                    "parent_audit_id": result.parent_audit_id,
-                },
+                data=TagRenamePayload(
+                    row_count=result.row_count,
+                    parent_audit_id=result.parent_audit_id,
+                ),
                 sensitivity="low",
             ),
             output,

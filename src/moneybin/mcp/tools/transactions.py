@@ -15,6 +15,11 @@ from fastmcp import FastMCP
 from moneybin.database import get_database
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.privacy.payloads.transactions import (
+    ReviewStatusPayload,
+    TransactionGetPayload,
+    TransactionRow,
+)
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.transaction_service import TransactionService
 
@@ -31,7 +36,7 @@ def transactions_get(
     uncategorized_only: bool = False,
     limit: int = 50,
     cursor: str | None = None,
-) -> ResponseEnvelope:
+) -> ResponseEnvelope[TransactionGetPayload]:
     """Fetch transactions with optional filtering and cursor-based pagination.
 
     Returns full transaction records including curation metadata (notes, tags,
@@ -66,11 +71,40 @@ def transactions_get(
             limit=limit,
             cursor=cursor,
         )
-    return result.to_envelope()
+    payload = TransactionGetPayload(
+        transactions=[
+            TransactionRow(
+                transaction_id=t.transaction_id,
+                account_id=t.account_id,
+                transaction_date=t.transaction_date,
+                amount=t.amount,
+                description=t.description,
+                memo=t.memo,
+                source_type=t.source_type,
+                category=t.category,
+                subcategory=t.subcategory,
+                notes=t.notes,
+                tags=t.tags,
+                splits=t.splits,
+            )
+            for t in result.transactions
+        ],
+        next_cursor=result.next_cursor,
+    )
+    return build_envelope(
+        data=payload,
+        sensitivity="medium",
+        next_cursor=result.next_cursor,
+        actions=[
+            "Use transactions_get with the next_cursor value to fetch the next page",
+            "Use reports_spending for category breakdowns",
+            "Use transactions_categorize_commit to categorize uncategorized transactions",
+        ],
+    )
 
 
 @mcp_tool(sensitivity="low")
-def transactions_review() -> ResponseEnvelope:
+def transactions_review() -> ResponseEnvelope[ReviewStatusPayload]:
     """Return counts of pending reviews across both queues.
 
     Orientation tool: call this to decide which queue to drain first.
@@ -89,11 +123,11 @@ def transactions_review() -> ResponseEnvelope:
         ).status()
 
     return build_envelope(
-        data={
-            "matches_pending": status.matches_pending,
-            "categorize_pending": status.categorize_pending,
-            "total": status.total,
-        },
+        data=ReviewStatusPayload(
+            matches_pending=status.matches_pending,
+            categorize_pending=status.categorize_pending,
+            total=status.total,
+        ),
         sensitivity="low",
         actions=[
             "Use transactions_categorize_pending to fetch the categorize queue",

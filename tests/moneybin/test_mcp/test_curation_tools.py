@@ -257,10 +257,10 @@ class TestSplitsSet:
                 ],
             )
         ).to_dict()
-        data: list[dict[str, Any]] = list(env["data"])
-        assert len(data) == 2
-        assert [s["category"] for s in data] == ["Food", "Travel"]
-        assert all(s["amount"] for s in data)
+        splits: list[dict[str, Any]] = list(env["data"]["splits"])
+        assert len(splits) == 2
+        assert [s["category"] for s in splits] == ["Food", "Travel"]
+        assert all(s["amount"] for s in splits)
 
 
 # ---------- import labels ----------
