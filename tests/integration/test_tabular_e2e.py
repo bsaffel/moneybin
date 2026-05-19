@@ -125,11 +125,14 @@ class TestCSVImportPipeline:
         format_info = detect_format(path)
         read_result = read_file(path, format_info)
         mapping = map_columns(read_result.df)
+        assert mapping.date_format is not None, (
+            "date format should be auto-detected for chase_credit.csv"
+        )
 
         result = transform_dataframe(
             df=read_result.df,
             field_mapping=mapping.field_mapping,
-            date_format=mapping.date_format or "%m/%d/%Y",
+            date_format=mapping.date_format,
             sign_convention=mapping.sign_convention,
             number_format=mapping.number_format,
             account_id="chase-checking",
@@ -154,11 +157,14 @@ class TestCSVImportPipeline:
         mapping = map_columns(read_result.df)
 
         assert mapping.sign_convention == "split_debit_credit"
+        assert mapping.date_format is not None, (
+            "date format should be auto-detected for citi_credit.csv"
+        )
 
         result = transform_dataframe(
             df=read_result.df,
             field_mapping=mapping.field_mapping,
-            date_format=mapping.date_format or "%m/%d/%Y",
+            date_format=mapping.date_format,
             sign_convention=mapping.sign_convention,
             number_format=mapping.number_format,
             account_id="citi-card",
@@ -477,10 +483,13 @@ class TestIdempotency:
             format_info = detect_format(path)
             read_result = read_file(path, format_info)
             mapping = map_columns(read_result.df)
+            assert mapping.date_format is not None, (
+                "date format should be auto-detected for chase_credit.csv"
+            )
             result = transform_dataframe(
                 df=read_result.df,
                 field_mapping=mapping.field_mapping,
-                date_format=mapping.date_format or "%m/%d/%Y",
+                date_format=mapping.date_format,
                 sign_convention=mapping.sign_convention,
                 number_format=mapping.number_format,
                 account_id="chase-checking",
