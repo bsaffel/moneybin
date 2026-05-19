@@ -52,10 +52,17 @@ therefore peak at **30–70 GB**, which exceeds RAM on a 32 GB machine and
 pushes the OS compressor + swap into the danger zone where macOS may
 panic WindowServer.
 
-When running pytest from a long-running interactive session — especially
-from an agent loop that is also holding context, or a subagent dispatch
-that already has a large in-memory working set — cap worker count and
-override the default explicitly:
+**The `-n auto` default is not safe on a 32 GB development machine, even
+when nothing else of size is running.** Empirically the full
+`tests/moneybin/` tree under `-n auto` (12 workers) on a 32 GB M1 Pro
+saturates the compressor + swap so badly that the workers deadlock
+without ever writing a progress dot — observed twice in one session,
+each run sitting for 8+ hours doing nothing but swap IO until killed by
+hand. CI containers with exclusive RAM can use `-n auto`; interactive
+local dev should not.
+
+When running pytest from any local interactive session, cap worker count
+and override the default explicitly:
 
 ```bash
 uv run pytest <paths> \
