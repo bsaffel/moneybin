@@ -120,7 +120,6 @@ pipeline was fixed in this PR, but the issue exists elsewhere.
 tabular import review and may have changed):
 
 - `src/moneybin/extractors/ofx_extractor.py` — OFX amounts parsed as float
-- `src/moneybin/extractors/w2_extractor.py` — W-2 wage/tax amounts as float
 - `src/moneybin/mcp/` — MCP tool responses with float amounts
 - `tests/moneybin/test_services/test_synthetic_data.py` — synthetic data
   generator uses float for amounts

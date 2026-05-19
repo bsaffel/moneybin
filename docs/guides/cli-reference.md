@@ -376,16 +376,14 @@ Cross-domain analytical views. All commands support `--output json` and return t
 
 **Related guides:** [`reports.md`](reports.md).
 
-## Budget and tax
+## Budget
 
-Both groups reserve the CLI namespace; full implementations land with the owning specs.
+The `budget` group reserves the CLI namespace; full implementation lands with the owning spec.
 
 | Command | Purpose |
 |---|---|
 | `budget set <category> <amount>` 🚧 | Set or update a budget target (stub). |
 | `budget delete <category>` 🚧 | Delete a budget target (stub). |
-| `tax w2 <year>` 🚧 | Show W-2 form data for a tax year (stub). |
-| `tax deductions <year>` 🚧 | Show categorized deductible expenses (stub). |
 
 ## Privacy
 

@@ -7,7 +7,7 @@ How-to guides for MoneyBin. These walk you through specific tasks — import dat
 
 The path most people follow when they first install MoneyBin: get data in, learn the CLI, decide whether to run more than one profile. Allow 30–60 minutes including your first import.
 
-- **[Data Import](data-import.md)** — Bring your first statements in from CSV, OFX/QFX, Excel, Parquet, Feather, W-2 PDFs, or a Plaid-connected bank.
+- **[Data Import](data-import.md)** — Bring your first statements in from CSV, OFX/QFX, Excel, Parquet, Feather, or a Plaid-connected bank.
 - **[CLI Reference](cli-reference.md)** — The full command tree, with JSON output and scripting notes.
 - **[Profiles](profiles.md)** — When to create more than one profile, how to switch between them, what gets isolated.
 

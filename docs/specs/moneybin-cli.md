@@ -16,7 +16,7 @@ The current CLI grew organically during early development. Several pain points:
 
 - **`config` is a grab bag.** Profile management, credential validation, and config display are conflated. There's no way to list profiles or manage their lifecycle.
 - **`data` subgroup is incoherent.** It houses extractors (being superseded by smart import), SQLMesh transforms, and categorization — three unrelated concerns.
-- **`data extract *` causes confusion.** Users see both `import file` and `data extract ofx/csv/w2`. The old extractors should not compete with the smart importer.
+- **`data extract *` causes confusion.** Users see both `import file` and `data extract ofx/csv`. The old extractors should not compete with the smart importer.
 - **Profiles are implicit.** Created as a side effect of `db init`, with no way to enumerate, create, or delete them intentionally.
 - **`get_base_dir()` defaults to `cwd`.** This breaks for `pip install` users who have no repo checkout.
 - **MCP lock management lives under `mcp`.** `mcp show`/`mcp kill` are about database connections, not MCP.
@@ -232,11 +232,6 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- balance-drift              -- Reconciliation drift across accounts
 |   +-- budget                     -- (future spec) Budget vs actual report
 |   +-- health                     -- (future spec) Cross-domain financial health snapshot
-|
-+-- tax                            -- Tax domain (forms, deductions, capital gains, estimates)
-|   +-- w2 <year>                  -- W-2 form data
-|   +-- deductions <year>          -- Categorized deductible expenses
-|                                     Future: 1099, capital_gains, estimate, carryforward
 |
 +-- system                         -- System / data status meta-view
 |   +-- status                     -- What data exists, freshness, pending review queues
@@ -603,7 +598,6 @@ Specific existing-tool renames are enumerated in `moneybin-mcp.md` as part of v2
 | `config credentials list-services` | Provider discovery happens through `sync connect` |
 | `data extract ofx` | Superseded by `import file` |
 | `data extract csv` | Superseded by `import file` |
-| `data extract w2` | Superseded by `import file` |
 
 ### Moved/renamed commands
 

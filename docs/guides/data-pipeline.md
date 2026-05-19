@@ -80,7 +80,6 @@ Owned by Python: every loader writes to a source-specific `raw` table via `Datab
 | `raw.plaid_transactions` | Plaid `/transactions/sync` | `sync pull` |
 | `raw.plaid_balances` | Plaid balance snapshots | `sync pull` |
 | `raw.manual_transactions` | Manual entries | `transactions create` |
-| `raw.w2_forms` | W-2 PDFs | `import files` |
 | `raw.import_log` | Per-file import metadata | every loader |
 
 Adding a new source = a new `raw.<source>_transactions` (and `_accounts`, `_balances` as relevant) plus the staging view below. No consumer code changes.

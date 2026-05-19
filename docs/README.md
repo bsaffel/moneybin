@@ -27,7 +27,7 @@ Use your browser's Ctrl/Cmd-F to search this index; every doc carries a `<!-- La
 ### Install and first run
 
 - **[Top-level README quick start](../README.md#quick-start)** — Clone, `make setup`, first import.
-- **[Data import](guides/data-import.md)** — All supported file formats (OFX/QFX/QBO, CSV, TSV, Excel, Parquet, Feather, W-2 PDF) and the inbox workflow. Covers migration from Tiller, Monarch, Copilot exports.
+- **[Data import](guides/data-import.md)** — All supported file formats (OFX/QFX/QBO, CSV, TSV, Excel, Parquet, Feather) and the inbox workflow. Covers migration from Tiller, Monarch, Copilot exports.
 - **[Profiles](guides/profiles.md)** — Isolation boundaries, profile lifecycle, per-profile config.
 
 ### Daily use
