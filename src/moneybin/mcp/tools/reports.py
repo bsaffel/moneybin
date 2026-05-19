@@ -274,7 +274,9 @@ def reports_uncategorized(
 
     Args:
         min_amount: filter to ABS(amount) >= this.
-        account: filter to account name; None for all accounts.
+        account: filter to an account; accepts ``account_id`` or
+            case-insensitive ``display_name``. Ambiguous display_name
+            matches raise; None for all accounts.
         limit: max rows.
     """
     with get_database(read_only=True) as db:
@@ -309,7 +311,9 @@ def reports_balance_drift(
     """Balance reconciliation drift: asserted vs computed.
 
     Args:
-        account: filter to account name; None for all.
+        account: filter to an account; accepts ``account_id`` or
+            case-insensitive ``display_name``. Ambiguous display_name
+            matches raise; None for all.
         status: drift | warning | clean | no-data | all.
         since: ISO date; only assertions on or after.
     """

@@ -297,25 +297,32 @@ class AccountSettingsRepository:
         )
 
 
-class AccountNotFoundError(Exception):
+class AccountNotFoundError(UserError):
     """Raised when ``AccountService.resolve_strict`` finds no match.
 
     Carries ``candidates`` — a list of ``(account_id, display_name)``
     tuples for every known account — so callers can render a helpful
-    error message listing valid values.
+    error message listing valid values. Subclasses ``UserError`` so the
+    CLI ``handle_cli_errors`` and MCP ``mcp_tool`` decorators surface it
+    as a clean user-facing error.
     """
 
     def __init__(self, query: str, candidates: list[tuple[str, str]]) -> None:
         """Store the failed query and the full candidate list for the error."""
-        super().__init__(
+        message = (
             f"No account matches {query!r}. "
             f"Known accounts: {', '.join(name for _, name in candidates)}"
+        )
+        super().__init__(
+            message,
+            code="account_not_found",
+            hint="💡 Run 'moneybin accounts list' to see available accounts",
         )
         self.query = query
         self.candidates = candidates
 
 
-class AmbiguousAccountError(Exception):
+class AmbiguousAccountError(UserError):
     """Raised when ``AccountService.resolve_strict`` matches multiple rows.
 
     Display-name collisions are not prevented by the schema — two
@@ -323,6 +330,7 @@ class AmbiguousAccountError(Exception):
     in ``dim_accounts`` (institution + type + last-4) happen to
     coincide. Surfacing the collision is the contract; the caller is
     expected to disambiguate by passing ``account_id`` directly.
+    Subclasses ``UserError`` so CLI/MCP surface it as a clean error.
     """
 
     def __init__(
@@ -332,10 +340,11 @@ class AmbiguousAccountError(Exception):
         pairs = ", ".join(
             f"{i} ({n})" for i, n in zip(account_ids, display_names, strict=True)
         )
-        super().__init__(
+        message = (
             f"{query!r} matches {len(account_ids)} accounts: {pairs}. "
             "Use the account_id directly to disambiguate."
         )
+        super().__init__(message, code="account_ambiguous")
         self.query = query
         self.account_ids = account_ids
         self.display_names = display_names

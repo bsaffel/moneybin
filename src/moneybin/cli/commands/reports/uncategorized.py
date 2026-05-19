@@ -24,7 +24,9 @@ def reports_uncategorized(
         "0", "--min-amount", help="Filter to absolute amount >= this"
     ),
     account: str | None = typer.Option(
-        None, "--account", help="Filter to account name"
+        None,
+        "--account",
+        help="Filter to an account: accepts account_id or display_name (ambiguous matches error)",
     ),
     limit: int = typer.Option(50, "--limit", help="Maximum rows"),
     output: OutputFormat = output_option,

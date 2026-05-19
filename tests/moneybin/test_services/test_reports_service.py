@@ -186,3 +186,121 @@ class TestUncategorizedQueueTyping:
         cols, _ = ReportsService(db).uncategorized_queue()
         assert "source_type" in cols
         assert "source_id" in cols
+
+
+def _install_dim_accounts(db: Database) -> None:
+    """Minimal core.dim_accounts shape for the account filter tests.
+
+    Includes the collision pair (Joint / Joint) so the resolver's
+    ambiguity branch can be exercised.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS core")
+    db.execute("""
+        CREATE OR REPLACE VIEW core.dim_accounts AS
+        SELECT * FROM (VALUES
+            ('A1', 'Alpha'),
+            ('A2', 'Beta'),
+            ('A3', 'Joint'),
+            ('A4', 'Joint')
+        ) AS t(account_id, display_name)
+    """)
+
+
+def _install_uncategorized_queue_with_accounts(db: Database) -> None:
+    db.execute("CREATE SCHEMA IF NOT EXISTS reports")
+    db.execute("""
+        CREATE OR REPLACE VIEW reports.uncategorized_queue AS
+        SELECT * FROM (VALUES
+            ('T1', 'A1', 'Alpha', DATE '2026-04-01', -25.00,
+             'COFFEE', 'Coffee', 30, 750.0, 'ofx', NULL),
+            ('T2', 'A1', 'Alpha', DATE '2026-04-10', -500.00,
+             'BIG', 'Big', 20, 10000.0, 'ofx', NULL),
+            ('T3', 'A2', 'Beta', DATE '2026-04-12', -50.00,
+             'GAS', 'Gas', 15, 200.0, 'ofx', NULL)
+        ) AS t(transaction_id, account_id, account_name, txn_date, amount,
+               description, merchant_normalized, age_days, priority_score,
+               source_type, source_id)
+    """)
+
+
+def _install_balance_drift_with_accounts(db: Database) -> None:
+    db.execute("CREATE SCHEMA IF NOT EXISTS reports")
+    db.execute("""
+        CREATE OR REPLACE VIEW reports.balance_drift AS
+        SELECT * FROM (VALUES
+            ('A1', 'Alpha', DATE '2026-04-01', 1000.00, 1010.00, 10.00, 10.00,
+             1.0, 5, 'drift'),
+            ('A2', 'Beta', DATE '2026-04-01', 500.00, 500.00, 0.00, 0.00,
+             0.0, 5, 'clean')
+        ) AS t(account_id, account_name, assertion_date, asserted_balance,
+               computed_balance, drift, drift_abs, drift_pct,
+               days_since_assertion, status)
+    """)
+
+
+class TestAccountFilterResolver:
+    """``uncategorized_queue`` and ``balance_drift`` resolve account via AccountService.
+
+    The filter accepts ``account_id`` or ``display_name`` and binds the
+    resolved id to the SQL ``WHERE`` clause. Ambiguous display_name
+    matches raise instead of silently doubling.
+    """
+
+    def test_uncategorized_queue_filter_accepts_account_id(self, db: Database) -> None:
+        _install_dim_accounts(db)
+        _install_uncategorized_queue_with_accounts(db)
+        cols, rows = ReportsService(db).uncategorized_queue(account="A1")
+        ids = {row[cols.index("account_id")] for row in rows}
+        assert ids == {"A1"}
+        assert len(rows) == 2
+
+    def test_uncategorized_queue_filter_accepts_display_name(
+        self, db: Database
+    ) -> None:
+        _install_dim_accounts(db)
+        _install_uncategorized_queue_with_accounts(db)
+        cols, rows = ReportsService(db).uncategorized_queue(account="Alpha")
+        ids = {row[cols.index("account_id")] for row in rows}
+        assert ids == {"A1"}
+
+    def test_uncategorized_queue_filter_unknown_account_errors(
+        self, db: Database
+    ) -> None:
+        from moneybin.services.account_service import AccountNotFoundError
+
+        _install_dim_accounts(db)
+        _install_uncategorized_queue_with_accounts(db)
+        with pytest.raises(AccountNotFoundError):
+            ReportsService(db).uncategorized_queue(account="No Such Account")
+
+    def test_uncategorized_queue_filter_ambiguous_account_errors(
+        self, db: Database
+    ) -> None:
+        from moneybin.services.account_service import AmbiguousAccountError
+
+        _install_dim_accounts(db)
+        _install_uncategorized_queue_with_accounts(db)
+        with pytest.raises(AmbiguousAccountError):
+            ReportsService(db).uncategorized_queue(account="Joint")
+
+    def test_balance_drift_filter_accepts_account_id(self, db: Database) -> None:
+        _install_dim_accounts(db)
+        _install_balance_drift_with_accounts(db)
+        cols, rows = ReportsService(db).balance_drift(account="A1")
+        ids = {row[cols.index("account_id")] for row in rows}
+        assert ids == {"A1"}
+
+    def test_balance_drift_filter_accepts_display_name(self, db: Database) -> None:
+        _install_dim_accounts(db)
+        _install_balance_drift_with_accounts(db)
+        cols, rows = ReportsService(db).balance_drift(account="Beta")
+        ids = {row[cols.index("account_id")] for row in rows}
+        assert ids == {"A2"}
+
+    def test_balance_drift_filter_ambiguous_account_errors(self, db: Database) -> None:
+        from moneybin.services.account_service import AmbiguousAccountError
+
+        _install_dim_accounts(db)
+        _install_balance_drift_with_accounts(db)
+        with pytest.raises(AmbiguousAccountError):
+            ReportsService(db).balance_drift(account="Joint")

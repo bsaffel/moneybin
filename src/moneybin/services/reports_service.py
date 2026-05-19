@@ -21,6 +21,7 @@ from decimal import Decimal
 from typing import Any
 
 from moneybin.database import Database
+from moneybin.services.account_service import AccountService
 from moneybin.tables import (
     REPORTS_BALANCE_DRIFT,
     REPORTS_CASH_FLOW,
@@ -209,8 +210,9 @@ class ReportsService:
         """  # noqa: S608  # TableRef interpolation
         params: list[object] = [min_amount]
         if account:
-            sql += " AND account_name = ?"
-            params.append(account)
+            account_id = AccountService(self._db).resolve_strict(account)
+            sql += " AND account_id = ?"
+            params.append(account_id)
         sql += " ORDER BY priority_score DESC LIMIT ?"
         params.append(limit)
         return self._execute(sql, params)
@@ -256,8 +258,9 @@ class ReportsService:
         """  # noqa: S608  # TableRef interpolation
         params: list[object] = []
         if account:
-            sql += " AND account_name = ?"
-            params.append(account)
+            account_id = AccountService(self._db).resolve_strict(account)
+            sql += " AND account_id = ?"
+            params.append(account_id)
         if status != "all":
             sql += " AND status = ?"
             params.append(status)
