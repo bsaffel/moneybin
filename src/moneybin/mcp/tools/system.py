@@ -2,17 +2,27 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from fastmcp import FastMCP
 
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.privacy.payloads.system import (
+    InvariantResultPayload,
+    SchemaDriftTable,
+    SystemDoctorPayload,
+    SystemStatusAccountsInfo,
+    SystemStatusCategorizationInfo,
+    SystemStatusMatchesInfo,
+    SystemStatusPayload,
+    SystemStatusSchemaDrift,
+    SystemStatusTransactionsInfo,
+    SystemStatusTransformsInfo,
+)
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 
 
 @mcp_tool(sensitivity="low")
-def system_status() -> ResponseEnvelope:
+def system_status() -> ResponseEnvelope[SystemStatusPayload]:
     """Return data inventory, pending review queue counts, and transforms freshness.
 
     Use this tool to understand what data exists in MoneyBin and what
@@ -25,40 +35,20 @@ def system_status() -> ResponseEnvelope:
         status = SystemService(db).status()
 
     min_date, max_date = status.transactions_date_range
-    data: dict[str, Any] = {
-        "accounts": {"count": status.accounts_count},
-        "transactions": {
-            "count": status.transactions_count,
-            "date_range": [
-                min_date.isoformat() if min_date else None,
-                max_date.isoformat() if max_date else None,
-            ],
-            "last_import_at": status.last_import_at.isoformat()
-            if status.last_import_at
-            else None,
-        },
-        "matches": {"pending_review": status.matches_pending},
-        "categorization": {"uncategorized": status.categorize_pending},
-        "transforms": {
-            "pending": status.transforms_pending,
-            "last_apply_at": status.transforms_last_apply_at.isoformat()
-            if status.transforms_last_apply_at
-            else None,
-        },
-    }
 
+    schema_drift_payload: SystemStatusSchemaDrift | None = None
     actions = [
         "Use transactions_review for per-queue review counts",
         "Use reports_spending for a monthly spending trend snapshot",
     ]
     if status.schema_drift:
-        data["schema_drift"] = {
-            "tables": [
-                {"name": table, "missing_columns": cols}
+        schema_drift_payload = SystemStatusSchemaDrift(
+            tables=[
+                SchemaDriftTable(name=table, missing_columns=cols)
                 for table, cols in sorted(status.schema_drift.items())
             ],
-            "remediation": "moneybin refresh",
-        }
+            remediation="moneybin refresh",
+        )
         actions.append(
             "Run refresh_run to rebuild stale models — "
             f"{len(status.schema_drift)} core table(s) drifted"
@@ -71,14 +61,39 @@ def system_status() -> ResponseEnvelope:
         )
 
     return build_envelope(
-        data=data,
+        data=SystemStatusPayload(
+            accounts=SystemStatusAccountsInfo(count=status.accounts_count),
+            transactions=SystemStatusTransactionsInfo(
+                count=status.transactions_count,
+                date_range=[
+                    min_date.isoformat() if min_date else None,
+                    max_date.isoformat() if max_date else None,
+                ],
+                last_import_at=(
+                    status.last_import_at.isoformat() if status.last_import_at else None
+                ),
+            ),
+            matches=SystemStatusMatchesInfo(pending_review=status.matches_pending),
+            categorization=SystemStatusCategorizationInfo(
+                uncategorized=status.categorize_pending
+            ),
+            transforms=SystemStatusTransformsInfo(
+                pending=status.transforms_pending,
+                last_apply_at=(
+                    status.transforms_last_apply_at.isoformat()
+                    if status.transforms_last_apply_at
+                    else None
+                ),
+            ),
+            schema_drift=schema_drift_payload,
+        ),
         sensitivity="low",
         actions=actions,
     )
 
 
 @mcp_tool(sensitivity="low", read_only=False)
-def system_doctor() -> ResponseEnvelope:
+def system_doctor() -> ResponseEnvelope[SystemDoctorPayload]:
     """Run pipeline integrity checks across all SQLMesh named audits.
 
     Returns pass/fail/warn per invariant plus a transaction count.
@@ -91,33 +106,29 @@ def system_doctor() -> ResponseEnvelope:
     with get_database() as db:
         report = DoctorService(db).run_all(verbose=False)
 
-    failing = report.failing
-    warning = report.warning
-    passing = report.passing
-
     actions: list[str] = []
-    if failing > 0:
+    if report.failing > 0:
         actions.append(
             "Run moneybin system doctor --verbose for affected transaction IDs"
         )
 
     return build_envelope(
-        data={
-            "passing": passing,
-            "failing": failing,
-            "warning": warning,
-            "skipped": report.skipped,
-            "transaction_count": report.transaction_count,
-            "invariants": [
-                {
-                    "name": r.name,
-                    "status": r.status,
-                    "detail": r.detail,
-                    "affected_ids": r.affected_ids,
-                }
+        data=SystemDoctorPayload(
+            passing=report.passing,
+            failing=report.failing,
+            warning=report.warning,
+            skipped=report.skipped,
+            transaction_count=report.transaction_count,
+            invariants=[
+                InvariantResultPayload(
+                    name=r.name,
+                    status=r.status,
+                    detail=r.detail,
+                    affected_ids=r.affected_ids,
+                )
                 for r in report.invariants
             ],
-        },
+        ),
         sensitivity="low",
         actions=actions,
     )

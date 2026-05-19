@@ -13,11 +13,19 @@ from fastmcp import FastMCP
 from moneybin.database import get_database
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.privacy.payloads.system import (
+    TransformAuditPayload,
+    TransformAuditRow,
+    TransformPlanPayload,
+    TransformStatusPayload,
+    TransformValidatePayload,
+    TransformValidationError,
+)
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 
 
 @mcp_tool(sensitivity="low")
-def transform_status() -> ResponseEnvelope:
+def transform_status() -> ResponseEnvelope[TransformStatusPayload]:
     """Current SQLMesh model state and environment."""
     from moneybin.services.transform_service import TransformService
 
@@ -29,60 +37,69 @@ def transform_status() -> ResponseEnvelope:
             "Run refresh_run with steps=['transform'] to refresh derived tables"
         )
     return build_envelope(
-        data={
-            "environment": status.environment,
-            "initialized": status.initialized,
-            "last_apply_at": (
+        data=TransformStatusPayload(
+            environment=status.environment,
+            initialized=status.initialized,
+            last_apply_at=(
                 status.last_apply_at.isoformat()
                 if status.last_apply_at is not None
                 else None
             ),
-            "pending": status.pending,
-            "latest_import_at": (
+            pending=status.pending,
+            latest_import_at=(
                 status.latest_import_at.isoformat()
                 if status.latest_import_at is not None
                 else None
             ),
-        },
+        ),
         sensitivity="low",
         actions=actions,
     )
 
 
 @mcp_tool(sensitivity="low")
-def transform_plan() -> ResponseEnvelope:
+def transform_plan() -> ResponseEnvelope[TransformPlanPayload]:
     """Preview pending SQLMesh changes."""
     from moneybin.services.transform_service import TransformService
 
     with get_database(read_only=True) as db:
         plan = TransformService(db).plan()
     return build_envelope(
-        data={
-            "has_changes": plan.has_changes,
-            "directly_modified": plan.directly_modified,
-            "indirectly_modified": plan.indirectly_modified,
-            "added": plan.added,
-            "removed": plan.removed,
-        },
+        data=TransformPlanPayload(
+            has_changes=plan.has_changes,
+            directly_modified=plan.directly_modified,
+            indirectly_modified=plan.indirectly_modified,
+            added=plan.added,
+            removed=plan.removed,
+        ),
         sensitivity="low",
     )
 
 
 @mcp_tool(sensitivity="low")
-def transform_validate() -> ResponseEnvelope:
+def transform_validate() -> ResponseEnvelope[TransformValidatePayload]:
     """Check that model SQL parses and resolves."""
     from moneybin.services.transform_service import TransformService
 
     with get_database(read_only=True) as db:
         result = TransformService(db).validate()
     return build_envelope(
-        data={"valid": result.valid, "errors": result.errors},
+        data=TransformValidatePayload(
+            valid=result.valid,
+            errors=[
+                TransformValidationError(
+                    model=e.get("model", "<unknown>"),
+                    message=e.get("message", ""),
+                )
+                for e in result.errors
+            ],
+        ),
         sensitivity="low",
     )
 
 
 @mcp_tool(sensitivity="low", read_only=False)
-def transform_audit(start: str, end: str) -> ResponseEnvelope:
+def transform_audit(start: str, end: str) -> ResponseEnvelope[TransformAuditPayload]:
     """Run SQLMesh data-quality audits over a date window.
 
     May write SQLMesh state tables on first Context init.
@@ -92,11 +109,18 @@ def transform_audit(start: str, end: str) -> ResponseEnvelope:
     with get_database() as db:
         result = TransformService(db).audit(start, end)
     return build_envelope(
-        data={
-            "passed": result.passed,
-            "failed": result.failed,
-            "audits": result.audits,
-        },
+        data=TransformAuditPayload(
+            passed=result.passed,
+            failed=result.failed,
+            audits=[
+                TransformAuditRow(
+                    name=a.get("name") or "",
+                    status=a.get("status") or "",
+                    detail=a.get("detail"),
+                )
+                for a in result.audits
+            ],
+        ),
         sensitivity="low",
     )
 

@@ -12,14 +12,14 @@ import uuid
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
-from typing import Any, Literal
+from typing import Literal
 
 from moneybin.database import Database
 from moneybin.privacy.payloads.budget import (
     BudgetCategoryStatusRow,
+    BudgetSetPayload,
     BudgetStatusPayload,
 )
-from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.categorization._shared import resolve_category_id
 from moneybin.tables import BUDGETS, FCT_TRANSACTIONS, TRANSACTION_CATEGORIES
 
@@ -33,32 +33,20 @@ class BudgetSetResult:
     category: str
     monthly_amount: Decimal
     action: Literal["created", "updated"]
+    start_month: str
 
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to a plain dict for JSON serialization."""
-        return {
-            "category": self.category,
-            "monthly_amount": self.monthly_amount,
-            "action": self.action,
-        }
-
-    def to_envelope(self) -> ResponseEnvelope[Any]:
-        """Build a ResponseEnvelope for MCP/CLI output."""
-        return build_envelope(
-            data=self.to_dict(),
-            sensitivity="low",
-            actions=[
-                "Use reports_budget to see spending vs budget",
-                "Use reports_spending for category breakdown",
-            ],
+    def to_payload(self) -> BudgetSetPayload:
+        """Convert to a typed BudgetSetPayload for MCP/CLI envelopes."""
+        return BudgetSetPayload(
+            category=self.category,
+            monthly_amount=self.monthly_amount,
+            action=self.action,
+            start_month=self.start_month,
         )
 
 
 class BudgetService:
-    """Budget management operations.
-
-    All methods return typed dataclasses with a ``to_envelope()`` method.
-    """
+    """Budget management operations."""
 
     def __init__(self, db: Database) -> None:
         """Initialize BudgetService with an open Database connection."""
@@ -136,6 +124,7 @@ class BudgetService:
             category=category,
             monthly_amount=monthly_amount,
             action=action,
+            start_month=start_month,
         )
 
     def status(self, month: str | None = None) -> BudgetStatusPayload:

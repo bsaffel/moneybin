@@ -35,6 +35,7 @@ from moneybin.errors import UserError
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.privacy.payloads.imports import ImportLabelsSetPayload
+from moneybin.privacy.payloads.system import SystemAuditEventPayload, SystemAuditPayload
 from moneybin.privacy.payloads.transactions import (
     ManualBatchEntryResult as ManualBatchEntryResultPayload,
 )
@@ -292,11 +293,10 @@ def import_labels_set(
     )
 
 
-# Stopgap: system_audit belongs to batch 7 (AuditService surface).
 @mcp_tool(sensitivity="medium")
 def system_audit(
     filters: dict[str, Any] | None = None, limit: int = 100
-) -> ResponseEnvelope[Any]:
+) -> ResponseEnvelope[SystemAuditPayload]:
     """List audit events. Filter by actor, ``action_pattern`` (LIKE), target, or time.
 
     Equivalent to ``moneybin system audit list``. Supply ``audit_id`` via
@@ -316,7 +316,24 @@ def system_audit(
             limit=limit,
         )
     return build_envelope(
-        data=[e.to_dict() for e in events],
+        data=SystemAuditPayload(
+            events=[
+                SystemAuditEventPayload(
+                    audit_id=e.audit_id,
+                    occurred_at=e.occurred_at,
+                    actor=e.actor,
+                    action=e.action,
+                    target_schema=e.target_schema,
+                    target_table=e.target_table,
+                    target_id=e.target_id,
+                    before_value=e.before_value,
+                    after_value=e.after_value,
+                    parent_audit_id=e.parent_audit_id,
+                    context_json=e.context_json,
+                )
+                for e in events
+            ]
+        ),
         sensitivity="medium",
         actions=[
             "Filter with action_pattern='tag.%' / 'note.%' / 'split.%' to drill in",

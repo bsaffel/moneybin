@@ -1,11 +1,13 @@
-"""Typed payload dataclasses for the budget reports surface.
+"""Typed payload dataclasses for the budget surface.
 
 Each field carries ``Annotated[T, DataClass.X]`` metadata so the Phase 6
 middleware can derive sensitivity via ``derive_tier`` without inspecting
 tool source code directly.
 
-BudgetStatusPayload contains TXN_AMOUNT (HIGH) and CATEGORY (LOW) fields,
-so ``derive_tier`` resolves to ``Tier.HIGH``.
+Tier derivation summary:
+  - ``BudgetCategoryStatusRow``  → Tier.HIGH (TXN_AMOUNT fields)
+  - ``BudgetStatusPayload``      → Tier.HIGH (via BudgetCategoryStatusRow)
+  - ``BudgetSetPayload``         → Tier.HIGH (monthly_amount = TXN_AMOUNT)
 """
 
 from __future__ import annotations
@@ -34,3 +36,20 @@ class BudgetStatusPayload:
 
     month: Annotated[str, DataClass.TXN_DATE]
     categories: list[BudgetCategoryStatusRow]
+
+
+@dataclass(frozen=True, slots=True)
+class BudgetSetPayload:
+    """Result of ``budget_set`` — confirmation of created/updated budget.
+
+    ``monthly_amount`` is TXN_AMOUNT (Tier.HIGH) — it is a user-provided
+    spending target and classified consistently with other amount fields
+    in the budget surface.
+    ``start_month`` is TXN_DATE (Tier.MEDIUM) — the month boundary for
+    this budget target.
+    """
+
+    category: Annotated[str, DataClass.CATEGORY]
+    monthly_amount: Annotated[Decimal, DataClass.TXN_AMOUNT]
+    action: Annotated[Literal["created", "updated"], DataClass.TXN_TYPE]
+    start_month: Annotated[str, DataClass.TXN_DATE]

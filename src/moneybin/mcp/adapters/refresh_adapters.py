@@ -7,6 +7,7 @@ mapping so the two surfaces cannot drift.
 
 from __future__ import annotations
 
+from moneybin.privacy.payloads.system import RefreshRunPayload
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.refresh import RefreshResult
 
@@ -21,7 +22,7 @@ REFRESH_CATEGORIZE_FOLLOWUP_HINT = (
 
 def refresh_envelope(
     result: RefreshResult, *, requested: frozenset[str]
-) -> ResponseEnvelope:
+) -> ResponseEnvelope[RefreshRunPayload]:
     """Build the standard response envelope for a refresh invocation.
 
     Args:
@@ -30,13 +31,6 @@ def refresh_envelope(
             ``expand_steps(...)`` result). Used to decide whether the
             categorize follow-up hint applies.
     """
-    data: dict[str, object] = {
-        "applied": result.applied,
-        "duration_seconds": result.duration_seconds,
-    }
-    if result.error is not None:
-        data["error"] = result.error
-
     actions: list[str] = []
     if not result.applied and result.error is not None:
         actions.append(REFRESH_APPLY_FAILED_HINT)
@@ -45,4 +39,12 @@ def refresh_envelope(
     # the apply failure first rather than chain categorize after it.
     if result.error is None and "match" in requested and "categorize" not in requested:
         actions.append(REFRESH_CATEGORIZE_FOLLOWUP_HINT)
-    return build_envelope(data=data, sensitivity="low", actions=actions)
+    return build_envelope(
+        data=RefreshRunPayload(
+            applied=result.applied,
+            duration_seconds=result.duration_seconds,
+            error=result.error,
+        ),
+        sensitivity="low",
+        actions=actions,
+    )

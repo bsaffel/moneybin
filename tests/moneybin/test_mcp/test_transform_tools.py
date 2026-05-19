@@ -69,11 +69,11 @@ async def test_transform_status_envelope_shape(
         fake_status,
     )
     env = await transform_status()
-    assert env.data["environment"] == "prod"
-    assert env.data["initialized"] is True
-    assert env.data["pending"] is False
-    assert env.data["last_apply_at"] == "2026-01-01T12:00:00"
-    assert env.data["latest_import_at"] is None
+    assert env.data.environment == "prod"
+    assert env.data.initialized is True
+    assert env.data.pending is False
+    assert env.data.last_apply_at == "2026-01-01T12:00:00"
+    assert env.data.latest_import_at is None
 
 
 @pytest.mark.unit
@@ -97,7 +97,7 @@ async def test_transform_status_pending_appends_action(
         fake_status,
     )
     env = await transform_status()
-    assert env.data["pending"] is True
+    assert env.data.pending is True
     assert any("refresh_run" in a and "transform" in a for a in env.actions), (
         env.actions
     )
@@ -124,11 +124,11 @@ async def test_transform_plan_envelope_shape(
         fake_plan,
     )
     env = await transform_plan()
-    assert env.data["has_changes"] is False
-    assert env.data["directly_modified"] == []
-    assert env.data["indirectly_modified"] == []
-    assert env.data["added"] == []
-    assert env.data["removed"] == []
+    assert env.data.has_changes is False
+    assert env.data.directly_modified == []
+    assert env.data.indirectly_modified == []
+    assert env.data.added == []
+    assert env.data.removed == []
 
 
 @pytest.mark.unit
@@ -146,8 +146,8 @@ async def test_transform_validate_envelope_shape(
         fake_validate,
     )
     env = await transform_validate()
-    assert env.data["valid"] is True
-    assert env.data["errors"] == []
+    assert env.data.valid is True
+    assert env.data.errors == []
 
 
 @pytest.mark.unit
@@ -169,6 +169,6 @@ async def test_transform_audit_envelope_shape(
         fake_audit,
     )
     env = await transform_audit(start="2020-01-01", end="2030-12-31")
-    assert env.data["passed"] == 3
-    assert env.data["failed"] == 0
-    assert isinstance(env.data["audits"], list)
+    assert env.data.passed == 3
+    assert env.data.failed == 0
+    assert isinstance(env.data.audits, list)

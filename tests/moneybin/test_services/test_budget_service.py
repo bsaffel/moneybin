@@ -13,6 +13,7 @@ import pytest
 from moneybin.database import Database
 from moneybin.privacy.payloads.budget import (
     BudgetCategoryStatusRow,
+    BudgetSetPayload,
     BudgetStatusPayload,
 )
 from moneybin.services.budget_service import (
@@ -98,16 +99,17 @@ class TestSetBudget:
         assert result.monthly_amount == Decimal("300.00")
 
     @pytest.mark.unit
-    def test_to_envelope_sensitivity_low(self, budget_db: Database) -> None:
+    def test_to_payload_shape(self, budget_db: Database) -> None:
         service = BudgetService(budget_db)
         result = service.set_budget(
             "Food & Drink", Decimal("200.00"), start_month="2026-04"
         )
-        envelope = result.to_envelope()
-        d = envelope.to_dict()
-        assert d["summary"]["sensitivity"] == "low"
-        assert d["data"]["category"] == "Food & Drink"
-        assert d["data"]["action"] == "created"
+        payload = result.to_payload()
+        assert isinstance(payload, BudgetSetPayload)
+        assert payload.category == "Food & Drink"
+        assert payload.monthly_amount == Decimal("200.00")
+        assert payload.action == "created"
+        assert payload.start_month == "2026-04"
 
 
 class TestBudgetStatus:
