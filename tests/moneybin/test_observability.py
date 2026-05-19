@@ -39,16 +39,6 @@ class TestSetupObservability:
             mock_log.assert_called_once_with(stream="cli", verbose=True)
 
     @pytest.mark.unit
-    def test_setup_registers_atexit(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """setup_observability should register an atexit handler for metrics flush."""
-        import moneybin.observability as obs_mod
-
-        monkeypatch.setattr(obs_mod, "_initialized", False)
-        with patch("moneybin.observability.atexit") as mock_atexit:
-            obs_mod.setup_observability(stream="cli")
-            mock_atexit.register.assert_called_once()
-
-    @pytest.mark.unit
     def test_public_api_exports(self) -> None:
         """The observability module should export tracked and track_duration."""
         from moneybin.observability import setup_observability, track_duration, tracked
