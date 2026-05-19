@@ -313,11 +313,10 @@ class AccountNotFoundError(UserError):
         """Store the failed query and the (capped) candidate list."""
         shown = candidates[:_RESOLVE_STRICT_CANDIDATE_CAP]
         names = ", ".join(name for _, name in shown)
-        suffix = (
-            f" (+{len(candidates) - len(shown)} more)"
-            if len(candidates) > len(shown)
-            else ""
-        )
+        # The fetch caps at _RESOLVE_STRICT_CANDIDATE_CAP + 1 to detect
+        # truncation; surface that to the user as a generic "more
+        # available" pointer rather than a count it can't track at scale.
+        suffix = " (and others — see hint)" if len(candidates) > len(shown) else ""
         message = f"No account matches {query!r}. Known accounts: {names}{suffix}"
         super().__init__(
             message,
@@ -764,13 +763,21 @@ class AccountService:
         one row. Raises ``AccountNotFoundError`` when neither step
         matches.
 
+        Archived accounts are excluded from all paths, mirroring the
+        ``NOT a.archived`` filter on the reports views. A display name
+        shared by an active and an archived account resolves to the
+        active one rather than raising ``account_ambiguous``. Callers
+        that need archived-account access should use the canonical id
+        directly via a non-strict lookup.
+
         Distinct from :meth:`resolve` (fuzzy ``SequenceMatcher``) — a
         filter that silently fuzzed would return surprising results.
         See ``.claude/rules/identifiers.md`` "Propagation" for the
         contract.
         """
         row = self._db.execute(
-            f"SELECT account_id FROM {DIM_ACCOUNTS.full_name} WHERE account_id = ?",  # noqa: S608  # TableRef constant
+            f"SELECT account_id FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef constant
+            "WHERE account_id = ? AND NOT COALESCE(archived, false)",
             [account_ref],
         ).fetchone()
         if row:
@@ -780,6 +787,7 @@ class AccountService:
             f"""
             SELECT account_id, display_name FROM {DIM_ACCOUNTS.full_name}
             WHERE LOWER(display_name) = LOWER(?)
+              AND NOT COALESCE(archived, false)
             """,  # noqa: S608  # TableRef constant
             [account_ref],
         ).fetchall()
@@ -794,6 +802,7 @@ class AccountService:
 
         candidates = self._db.execute(
             f"SELECT account_id, display_name FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef constant
+            "WHERE NOT COALESCE(archived, false) "
             "ORDER BY display_name LIMIT ?",
             [_RESOLVE_STRICT_CANDIDATE_CAP + 1],
         ).fetchall()

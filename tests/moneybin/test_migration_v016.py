@@ -137,6 +137,37 @@ class TestV016AddRuleId:
         ).fetchone()
         assert row == (None,)
 
+    def test_backfills_active_rule_when_inactive_duplicate_exists(
+        self, v016_db: Database
+    ) -> None:
+        """Post-override-cycle state: inactive original + active replacement.
+
+        The normal state of a pre-V016 database that has gone through one
+        override cycle has the original auto-rule deactivated and a
+        replacement (same merchant_pattern) active. Only the replacement's
+        proposal should remain `approved`. Backfill must pick the active
+        rule rather than treating the lifecycle pair as ambiguous.
+        """
+        v016_db.execute(
+            """
+            INSERT INTO app.categorization_rules
+                (rule_id, name, merchant_pattern, match_type, category, subcategory,
+                 priority, is_active, created_by, created_at, updated_at)
+            VALUES ('rul-inactive', 'auto: STARBUCKS OLD', ?, 'contains',
+                    'Food & Drink', 'Coffee',
+                    500, false, 'auto_rule',
+                    TIMESTAMP '2025-12-01 00:00:00',
+                    TIMESTAMP '2025-12-15 00:00:00')
+            """,
+            [LINKED_PATTERN],
+        )
+        run_migration(v016_db, migrate)
+        row = v016_db.execute(
+            "SELECT rule_id FROM app.proposed_rules WHERE proposed_rule_id = ?",
+            [LINKED_PROPOSAL_ID],
+        ).fetchone()
+        assert row == (LINKED_RULE_ID,)
+
     def test_index_exists_after_migration(self, v016_db: Database) -> None:
         run_migration(v016_db, migrate)
         indexes = {

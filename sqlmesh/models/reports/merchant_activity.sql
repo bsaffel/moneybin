@@ -11,7 +11,11 @@ MODEL (
 WITH normalized AS (
   SELECT
     t.merchant_id,
-    CASE WHEN t.merchant_id IS NULL THEN '(uncategorized)' ELSE t.merchant_name END AS merchant_normalized,
+    CASE
+      WHEN t.merchant_id IS NULL
+      THEN '(uncategorized)'
+      ELSE COALESCE(t.merchant_name, '(uncategorized)')
+    END AS merchant_normalized,
     t.amount,
     t.category,
     t.transaction_date,

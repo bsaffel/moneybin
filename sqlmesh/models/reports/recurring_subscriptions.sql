@@ -14,7 +14,11 @@ WITH eligible AS (
   SELECT
     t.account_id,
     t.merchant_id,
-    CASE WHEN t.merchant_id IS NULL THEN '(uncategorized)' ELSE t.merchant_name END AS merchant_normalized,
+    CASE
+      WHEN t.merchant_id IS NULL
+      THEN '(uncategorized)'
+      ELSE COALESCE(t.merchant_name, '(uncategorized)')
+    END AS merchant_normalized,
     ROUND(t.amount, 0) AS amount_bucket,
     t.amount,
     t.transaction_date

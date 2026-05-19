@@ -192,17 +192,21 @@ def _install_dim_accounts(db: Database) -> None:
     """Minimal core.dim_accounts shape for the account filter tests.
 
     Includes the collision pair (Joint / Joint) so the resolver's
-    ambiguity branch can be exercised.
+    ambiguity branch can be exercised, plus an archived account
+    sharing a display_name with an active one so the archived-filter
+    behavior can be verified separately.
     """
     db.execute("CREATE SCHEMA IF NOT EXISTS core")
     db.execute("""
         CREATE OR REPLACE VIEW core.dim_accounts AS
         SELECT * FROM (VALUES
-            ('A1', 'Alpha'),
-            ('A2', 'Beta'),
-            ('A3', 'Joint'),
-            ('A4', 'Joint')
-        ) AS t(account_id, display_name)
+            ('A1', 'Alpha', false),
+            ('A2', 'Beta', false),
+            ('A3', 'Joint', false),
+            ('A4', 'Joint', false),
+            ('A5_OLD', 'Chase Checking', true),
+            ('A5_NEW', 'Chase Checking', false)
+        ) AS t(account_id, display_name, archived)
     """)
 
 

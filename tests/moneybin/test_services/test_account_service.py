@@ -1039,3 +1039,46 @@ class TestAccountServiceResolveStrict:
         _insert_dim_account(extended_db, "checking", display_name="Primary")
         _insert_dim_account(extended_db, "acct_b2", display_name="checking")
         assert AccountService(extended_db).resolve_strict("checking") == "checking"
+
+    @pytest.mark.unit
+    def test_skips_archived_account_on_display_name_collision(
+        self, extended_db: Database
+    ) -> None:
+        """Display-name shared by an archived and an active account resolves to active.
+
+        Mirrors the ``NOT a.archived`` filter on the reports views — an
+        archived old account reusing a name shouldn't trigger
+        AmbiguousAccountError.
+        """
+        from moneybin.services.account_service import AccountService
+
+        _insert_dim_account(
+            extended_db, "acct_old", display_name="Chase Checking", archived=True
+        )
+        _insert_dim_account(
+            extended_db, "acct_new", display_name="Chase Checking", archived=False
+        )
+        assert (
+            AccountService(extended_db).resolve_strict("Chase Checking") == "acct_new"
+        )
+
+    @pytest.mark.unit
+    def test_archived_account_id_not_resolvable(self, extended_db: Database) -> None:
+        """Explicit archived account_id raises AccountNotFoundError.
+
+        The resolver mirrors report-view semantics; callers that need
+        archived-account access should reach for a non-strict lookup.
+        """
+        from moneybin.services.account_service import (
+            AccountNotFoundError,
+            AccountService,
+        )
+
+        _insert_dim_account(
+            extended_db, "acct_old", display_name="Old Account", archived=True
+        )
+        _insert_dim_account(
+            extended_db, "acct_active", display_name="Active", archived=False
+        )
+        with pytest.raises(AccountNotFoundError):
+            AccountService(extended_db).resolve_strict("acct_old")

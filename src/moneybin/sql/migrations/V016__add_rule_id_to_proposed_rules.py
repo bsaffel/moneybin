@@ -1,12 +1,14 @@
 """V016: add rule_id FK column to app.proposed_rules and backfill approved rows.
 
 Backfill rule: for each ``status = 'approved'`` proposal whose
-``merchant_pattern`` matches exactly one auto_rule categorization_rule,
-copy that rule's ``rule_id``. Orphans (no match) and ambiguous matches
-(multiple rules share the pattern) intentionally stay NULL — the
-approve flow has historically maintained a 1:1 proposal->rule
-invariant, so any ambiguity is a sign the upgrade is operating on
-hand-edited state and the caller should triage it explicitly.
+``merchant_pattern`` matches exactly one ACTIVE auto_rule
+categorization_rule, copy that rule's ``rule_id``. Inactive duplicates
+(deactivated rules from a prior override cycle) are excluded so the
+common post-override state — inactive original + active replacement
+sharing a pattern — backfills to the active rule. Orphans (no active
+match) and genuinely ambiguous matches (two active rules share a
+pattern) stay NULL; the approve flow normally maintains the 1:1
+invariant so ambiguity is a sign of hand-edited state.
 
 Idempotent: ``ADD COLUMN IF NOT EXISTS`` and ``CREATE INDEX IF NOT
 EXISTS`` are no-ops on replay; the backfill ``UPDATE`` only touches
@@ -27,9 +29,12 @@ def migrate(conn: object) -> None:
         "ALTER TABLE app.proposed_rules ADD COLUMN IF NOT EXISTS rule_id VARCHAR"
     )
 
-    # HAVING COUNT(*) = 1 filters out proposals whose pattern matches
-    # multiple auto_rules — those stay NULL rather than guess. MIN over
-    # the singleton group is just a placeholder aggregator.
+    # Filter to active rules only so a post-override-cycle state
+    # (inactive original + active replacement sharing a pattern) still
+    # backfills to the active rule. HAVING COUNT(*) = 1 then filters
+    # the residual case of two ACTIVE rules colliding on the same
+    # pattern — those stay NULL rather than guess. MIN over the
+    # singleton group is just a placeholder aggregator.
     conn.execute(  # type: ignore[union-attr]
         """
         UPDATE app.proposed_rules AS p
@@ -41,6 +46,7 @@ def migrate(conn: object) -> None:
               ON LOWER(pr.merchant_pattern) = LOWER(cr.merchant_pattern)
             WHERE pr.status = 'approved'
               AND cr.created_by = 'auto_rule'
+              AND cr.is_active = true
             GROUP BY pr.proposed_rule_id
             HAVING COUNT(*) = 1
         ) AS sub
