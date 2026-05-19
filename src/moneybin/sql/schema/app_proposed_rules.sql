@@ -19,5 +19,6 @@ CREATE TABLE IF NOT EXISTS app.proposed_rules (
 CREATE INDEX IF NOT EXISTS idx_proposed_rules_pattern_status
     ON app.proposed_rules (merchant_pattern, status);
 
-CREATE INDEX IF NOT EXISTS idx_proposed_rules_rule_id
-    ON app.proposed_rules (rule_id);
+-- idx_proposed_rules_rule_id lives in V016 because the rule_id column
+-- is added by that migration; the schema file runs before migrations,
+-- so an index DDL here would bind against the pre-V016 table shape.
