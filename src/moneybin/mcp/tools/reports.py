@@ -21,7 +21,6 @@ from __future__ import annotations
 from datetime import UTC
 from datetime import date as _date
 from datetime import datetime as _datetime
-from typing import Any, Literal
 
 from fastmcp import FastMCP
 
@@ -33,27 +32,19 @@ from moneybin.privacy.payloads.networth import (
     NetWorthHistoryPayload,
     NetWorthSnapshotPayload,
 )
+from moneybin.privacy.payloads.reports import (
+    BalanceDriftPayload,
+    CashFlowPayload,
+    LargeTransactionsPayload,
+    MerchantActivityPayload,
+    RecurringSubscriptionsPayload,
+    SpendingTrendPayload,
+    UncategorizedQueuePayload,
+)
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.budget_service import BudgetService
 from moneybin.services.networth_service import NetworthService
 from moneybin.services.reports_service import ReportsService
-
-
-def _envelope(
-    cols: list[str],
-    rows: list[tuple[Any, ...]],
-    *,
-    sensitivity: Literal["low", "medium", "high"] = "medium",
-    actions: list[str] | None = None,
-    period: str | None = None,
-) -> ResponseEnvelope[Any]:
-    """Wrap a (cols, rows) result as a response envelope at ``sensitivity``."""
-    return build_envelope(
-        data=[dict(zip(cols, r, strict=False)) for r in rows],
-        sensitivity=sensitivity,
-        actions=actions,
-        period=period,
-    )
 
 
 def _default_window(months: int = 12) -> tuple[str, str]:
@@ -145,7 +136,7 @@ def reports_spending(
     to_month: str | None = None,
     category: str | None = None,
     compare: str = "yoy",
-) -> ResponseEnvelope[Any]:
+) -> ResponseEnvelope[SpendingTrendPayload]:
     """Monthly spending trend with MoM, YoY, and 3-month-trailing deltas.
 
     Defaults to the last 12 calendar months when both bounds are omitted.
@@ -166,7 +157,7 @@ def reports_spending(
     if defaulted:
         from_month, to_month = _default_window(months=12)
     with get_database(read_only=True) as db:
-        cols, rows = ReportsService(db).spending_trend(
+        payload = ReportsService(db).spending_trend(
             from_month=from_month, to_month=to_month, category=category, compare=compare
         )
     actions = [
@@ -180,9 +171,8 @@ def reports_spending(
             "Showing the last 12 months — pass from_month='YYYY-MM' and/or "
             "to_month='YYYY-MM' to widen or shift the window.",
         )
-    return _envelope(
-        cols,
-        rows,
+    return build_envelope(
+        data=payload,
         sensitivity="low",
         actions=actions,
         period=f"{from_month} to {to_month}" if from_month and to_month else None,
@@ -194,7 +184,7 @@ def reports_cashflow(
     from_month: str | None = None,
     to_month: str | None = None,
     by: str = "account-and-category",
-) -> ResponseEnvelope[Any]:
+) -> ResponseEnvelope[CashFlowPayload]:
     """Monthly cash flow rollup: inflow/outflow/net per account x category.
 
     Defaults to the last 12 calendar months when both bounds are omitted.
@@ -210,7 +200,7 @@ def reports_cashflow(
     if defaulted:
         from_month, to_month = _default_window(months=12)
     with get_database(read_only=True) as db:
-        cols, rows = ReportsService(db).cash_flow(
+        payload = ReportsService(db).cash_flow(
             from_month=from_month, to_month=to_month, by=by
         )
     actions = [
@@ -223,9 +213,8 @@ def reports_cashflow(
             "Showing the last 12 months — pass from_month='YYYY-MM' and/or "
             "to_month='YYYY-MM' to widen or shift the window.",
         )
-    return _envelope(
-        cols,
-        rows,
+    return build_envelope(
+        data=payload,
         sensitivity="low",
         actions=actions,
         period=f"{from_month} to {to_month}" if from_month and to_month else None,
@@ -237,7 +226,7 @@ def reports_recurring(
     min_confidence: float = 0.5,
     status: str = "active",
     cadence: str | None = None,
-) -> ResponseEnvelope[Any]:
+) -> ResponseEnvelope[RecurringSubscriptionsPayload]:
     """Likely-recurring subscription candidates with confidence scores.
 
     Args:
@@ -247,17 +236,17 @@ def reports_recurring(
             (None returns all).
     """
     with get_database(read_only=True) as db:
-        cols, rows = ReportsService(db).recurring_subscriptions(
+        payload = ReportsService(db).recurring_subscriptions(
             min_confidence=min_confidence, status=status, cadence=cadence
         )
-    return _envelope(cols, rows, sensitivity="low")
+    return build_envelope(data=payload, sensitivity="low")
 
 
 @mcp_tool(sensitivity="low")
 def reports_merchants(
     top: int = 25,
     sort: str = "spend",
-) -> ResponseEnvelope[Any]:
+) -> ResponseEnvelope[MerchantActivityPayload]:
     """Per-merchant lifetime activity totals.
 
     Args:
@@ -265,8 +254,8 @@ def reports_merchants(
         sort: spend | count | recent.
     """
     with get_database(read_only=True) as db:
-        cols, rows = ReportsService(db).merchant_activity(top=top, sort=sort)
-    return _envelope(cols, rows, sensitivity="low")
+        payload = ReportsService(db).merchant_activity(top=top, sort=sort)
+    return build_envelope(data=payload, sensitivity="low")
 
 
 @mcp_tool(sensitivity="medium")
@@ -274,7 +263,7 @@ def reports_uncategorized(
     min_amount: float = 0.0,
     account: str | None = None,
     limit: int = 50,
-) -> ResponseEnvelope[Any]:
+) -> ResponseEnvelope[UncategorizedQueuePayload]:
     """Uncategorized transactions queue, ranked by curator-impact.
 
     Args:
@@ -283,17 +272,17 @@ def reports_uncategorized(
         limit: max rows.
     """
     with get_database(read_only=True) as db:
-        cols, rows = ReportsService(db).uncategorized_queue(
+        payload = ReportsService(db).uncategorized_queue(
             min_amount=min_amount, account=account, limit=limit
         )
-    return _envelope(cols, rows)
+    return build_envelope(data=payload, sensitivity="medium")
 
 
 @mcp_tool(sensitivity="medium")
 def reports_large_transactions(
     top: int = 25,
     anomaly: str = "none",
-) -> ResponseEnvelope[Any]:
+) -> ResponseEnvelope[LargeTransactionsPayload]:
     """Anomaly-flavored transaction lens (top-N + per-account/category z-scores).
 
     Args:
@@ -301,8 +290,8 @@ def reports_large_transactions(
         anomaly: account | category | none — filter to z>2.5 in the named scope.
     """
     with get_database(read_only=True) as db:
-        cols, rows = ReportsService(db).large_transactions(top=top, anomaly=anomaly)
-    return _envelope(cols, rows)
+        payload = ReportsService(db).large_transactions(top=top, anomaly=anomaly)
+    return build_envelope(data=payload, sensitivity="medium")
 
 
 @mcp_tool(sensitivity="medium")
@@ -310,7 +299,7 @@ def reports_balance_drift(
     account: str | None = None,
     status: str = "all",
     since: str | None = None,
-) -> ResponseEnvelope[Any]:
+) -> ResponseEnvelope[BalanceDriftPayload]:
     """Balance reconciliation drift: asserted vs computed.
 
     Args:
@@ -319,10 +308,10 @@ def reports_balance_drift(
         since: ISO date; only assertions on or after.
     """
     with get_database(read_only=True) as db:
-        cols, rows = ReportsService(db).balance_drift(
+        payload = ReportsService(db).balance_drift(
             account=account, status=status, since=since
         )
-    return _envelope(cols, rows)
+    return build_envelope(data=payload, sensitivity="medium")
 
 
 @mcp_tool(sensitivity="low", domain="budget")

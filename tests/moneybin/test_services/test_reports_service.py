@@ -47,31 +47,32 @@ class TestCashFlow:
 
     def test_by_account_groups_by_account_id_and_name(self, db: Database) -> None:
         _install_cash_flow_view(db)
-        cols, rows = ReportsService(db).cash_flow(by="account")
-        assert "account_id" in cols
-        assert "account_name" in cols
-        assert "category" not in cols
+        payload = ReportsService(db).cash_flow(by="account")
+        # account_id and account_name present; category is None
+        assert all(r.account_id is not None for r in payload.rows)
+        assert all(r.account_name is not None for r in payload.rows)
+        assert all(r.category is None for r in payload.rows)
         # Two accounts with the same display_name "Alpha" must not collapse.
-        account_ids = {row[cols.index("account_id")] for row in rows}
+        account_ids = {r.account_id for r in payload.rows}
         assert account_ids == {"A1", "A2"}
 
     def test_by_category_groups_by_category_only(self, db: Database) -> None:
         _install_cash_flow_view(db)
-        cols, rows = ReportsService(db).cash_flow(by="category")
-        assert "category" in cols
-        assert "account_id" not in cols
-        assert "account_name" not in cols
-        categories = {row[cols.index("category")] for row in rows}
+        payload = ReportsService(db).cash_flow(by="category")
+        assert all(r.category is not None for r in payload.rows)
+        assert all(r.account_id is None for r in payload.rows)
+        assert all(r.account_name is None for r in payload.rows)
+        categories = {r.category for r in payload.rows}
         assert categories == {"Food", "Travel"}
 
     def test_by_account_and_category_groups_by_both(self, db: Database) -> None:
         _install_cash_flow_view(db)
-        cols, rows = ReportsService(db).cash_flow(by="account-and-category")
-        assert "account_id" in cols
-        assert "account_name" in cols
-        assert "category" in cols
+        payload = ReportsService(db).cash_flow(by="account-and-category")
+        assert all(r.account_id is not None for r in payload.rows)
+        assert all(r.account_name is not None for r in payload.rows)
+        assert all(r.category is not None for r in payload.rows)
         # Two A1/Food/2026-01 rows do not collapse with A2/Food/2026-01.
-        assert len(rows) == 4
+        assert len(payload.rows) == 4
 
     def test_invalid_by_raises(self, db: Database) -> None:
         with pytest.raises(ValueError, match="Unknown by"):
@@ -80,11 +81,11 @@ class TestCashFlow:
     def test_from_to_bounds_filter_rows(self, db: Database) -> None:
         _install_cash_flow_view(db)
         # from_month accepts 'YYYY-MM' or 'YYYY-MM-DD' — the day is stripped.
-        cols, rows = ReportsService(db).cash_flow(
+        payload = ReportsService(db).cash_flow(
             from_month="2026-02-01", by="account-and-category"
         )
         # Only February rows survive.
-        year_months = {row[cols.index("year_month")] for row in rows}
+        year_months = {r.year_month for r in payload.rows}
         assert year_months == {"2026-02"}
 
 
@@ -164,25 +165,25 @@ class TestUncategorizedQueueTyping:
 
     def test_min_amount_decimal(self, db: Database) -> None:
         self._install(db)
-        cols, rows = ReportsService(db).uncategorized_queue(min_amount=Decimal("100"))
+        payload = ReportsService(db).uncategorized_queue(min_amount=Decimal("100"))
         # Only T2 (|-500| >= 100) survives.
-        assert len(rows) == 1
-        assert rows[0][cols.index("transaction_id")] == "T2"
+        assert len(payload.rows) == 1
+        assert payload.rows[0].transaction_id == "T2"
 
     def test_min_amount_float(self, db: Database) -> None:
         self._install(db)
-        _, rows = ReportsService(db).uncategorized_queue(min_amount=100.0)
-        assert len(rows) == 1
+        payload = ReportsService(db).uncategorized_queue(min_amount=100.0)
+        assert len(payload.rows) == 1
 
     def test_min_amount_int(self, db: Database) -> None:
         self._install(db)
-        _, rows = ReportsService(db).uncategorized_queue(min_amount=100)
-        assert len(rows) == 1
+        payload = ReportsService(db).uncategorized_queue(min_amount=100)
+        assert len(payload.rows) == 1
 
-    def test_source_columns_in_projection(self, db: Database) -> None:
+    def test_source_columns_in_payload(self, db: Database) -> None:
         # Regression: provenance columns must survive the service projection
         # so downstream tooling can trace rows back to their origin.
         self._install(db)
-        cols, _ = ReportsService(db).uncategorized_queue()
-        assert "source_type" in cols
-        assert "source_id" in cols
+        payload = ReportsService(db).uncategorized_queue()
+        assert hasattr(payload.rows[0], "source_type")
+        assert hasattr(payload.rows[0], "source_id")
