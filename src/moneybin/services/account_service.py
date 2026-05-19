@@ -297,6 +297,50 @@ class AccountSettingsRepository:
         )
 
 
+class AccountNotFoundError(Exception):
+    """Raised when ``AccountService.resolve_strict`` finds no match.
+
+    Carries ``candidates`` — a list of ``(account_id, display_name)``
+    tuples for every known account — so callers can render a helpful
+    error message listing valid values.
+    """
+
+    def __init__(self, query: str, candidates: list[tuple[str, str]]) -> None:
+        """Store the failed query and the full candidate list for the error."""
+        super().__init__(
+            f"No account matches {query!r}. "
+            f"Known accounts: {', '.join(name for _, name in candidates)}"
+        )
+        self.query = query
+        self.candidates = candidates
+
+
+class AmbiguousAccountError(Exception):
+    """Raised when ``AccountService.resolve_strict`` matches multiple rows.
+
+    Display-name collisions are not prevented by the schema — two
+    accounts can legitimately share a name when the COALESCE defaults
+    in ``dim_accounts`` (institution + type + last-4) happen to
+    coincide. Surfacing the collision is the contract; the caller is
+    expected to disambiguate by passing ``account_id`` directly.
+    """
+
+    def __init__(
+        self, query: str, account_ids: list[str], display_names: list[str]
+    ) -> None:
+        """Store the colliding query and the matching id/name pairs."""
+        pairs = ", ".join(
+            f"{i} ({n})" for i, n in zip(account_ids, display_names, strict=True)
+        )
+        super().__init__(
+            f"{query!r} matches {len(account_ids)} accounts: {pairs}. "
+            "Use the account_id directly to disambiguate."
+        )
+        self.query = query
+        self.account_ids = account_ids
+        self.display_names = display_names
+
+
 @dataclass(frozen=True, slots=True)
 class AccountResolution:
     """A single fuzzy-match candidate from AccountService.resolve().
@@ -693,3 +737,52 @@ class AccountService:
             f"{len(scored)} candidates, returning {min(limit, len(scored))}"
         )
         return scored[:limit]
+
+    def resolve_strict(self, account_ref: str) -> str:
+        """Resolve a free-text reference to a unique ``account_id``.
+
+        Lookup order:
+
+        1. Exact ``account_id`` match (case-sensitive — ids are slugs).
+        2. Case-insensitive exact ``display_name`` match.
+
+        Raises ``AmbiguousAccountError`` when step 2 returns more than
+        one row. Raises ``AccountNotFoundError`` when neither step
+        matches.
+
+        Differs from :meth:`resolve` (fuzzy ``SequenceMatcher``) by
+        design — a filter that silently fuzzed would return surprising
+        results. See ``.claude/rules/identifiers.md`` "Propagation"
+        and ``private/reviews/2026-05-18-identifier-hygiene-audit.md``
+        Finding 2.
+        """
+        row = self._db.execute(
+            f"SELECT account_id FROM {DIM_ACCOUNTS.full_name} WHERE account_id = ?",  # noqa: S608  # TableRef constant
+            [account_ref],
+        ).fetchone()
+        if row:
+            return str(row[0])
+
+        matches = self._db.execute(
+            f"""
+            SELECT account_id, display_name FROM {DIM_ACCOUNTS.full_name}
+            WHERE LOWER(display_name) = LOWER(?)
+            """,  # noqa: S608  # TableRef constant
+            [account_ref],
+        ).fetchall()
+        if len(matches) == 1:
+            return str(matches[0][0])
+        if len(matches) > 1:
+            raise AmbiguousAccountError(
+                query=account_ref,
+                account_ids=[str(r[0]) for r in matches],
+                display_names=[str(r[1]) for r in matches],
+            )
+
+        candidates = self._db.execute(
+            f"SELECT account_id, display_name FROM {DIM_ACCOUNTS.full_name} ORDER BY display_name"  # noqa: S608  # TableRef constant
+        ).fetchall()
+        raise AccountNotFoundError(
+            query=account_ref,
+            candidates=[(str(r[0]), str(r[1])) for r in candidates],
+        )

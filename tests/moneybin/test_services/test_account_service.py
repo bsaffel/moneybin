@@ -959,3 +959,83 @@ class TestAccountServiceResolve:
         _insert_dim_account(extended_db, "a1", display_name="Anything")
         assert AccountService(extended_db).resolve("") == []
         assert AccountService(extended_db).resolve("   ") == []
+
+
+class TestAccountServiceResolveStrict:
+    """Tests for AccountService.resolve_strict() — strict id-or-name lookup."""
+
+    @pytest.mark.unit
+    def test_returns_account_id_for_exact_id_match(self, extended_db: Database) -> None:
+        """Exact account_id pass-through returns the same id."""
+        from moneybin.services.account_service import AccountService
+
+        _insert_dim_account(extended_db, "acct_abc123", display_name="Chase Checking")
+        assert (
+            AccountService(extended_db).resolve_strict("acct_abc123") == "acct_abc123"
+        )
+
+    @pytest.mark.unit
+    def test_resolves_display_name_case_insensitive(
+        self, extended_db: Database
+    ) -> None:
+        """Exact case-insensitive match on display_name returns its account_id."""
+        from moneybin.services.account_service import AccountService
+
+        _insert_dim_account(extended_db, "acct_abc123", display_name="Chase Checking")
+        svc = AccountService(extended_db)
+        assert svc.resolve_strict("Chase Checking") == "acct_abc123"
+        assert svc.resolve_strict("chase checking") == "acct_abc123"
+        assert svc.resolve_strict("CHASE CHECKING") == "acct_abc123"
+
+    @pytest.mark.unit
+    def test_raises_not_found_with_candidates(self, extended_db: Database) -> None:
+        """Unknown reference raises AccountNotFoundError listing candidates."""
+        from moneybin.services.account_service import (
+            AccountNotFoundError,
+            AccountService,
+        )
+
+        _insert_dim_account(extended_db, "acct_a1", display_name="Chase Checking")
+        _insert_dim_account(extended_db, "acct_a2", display_name="Schwab Brokerage")
+        with pytest.raises(AccountNotFoundError) as excinfo:
+            AccountService(extended_db).resolve_strict("Nonexistent Account")
+        assert excinfo.value.query == "Nonexistent Account"
+        candidate_names = {name for _, name in excinfo.value.candidates}
+        assert candidate_names == {"Chase Checking", "Schwab Brokerage"}
+
+    @pytest.mark.unit
+    def test_raises_ambiguous_on_display_name_collision(
+        self, extended_db: Database
+    ) -> None:
+        """Two accounts with the same display_name raise AmbiguousAccountError.
+
+        The COALESCE defaults in dim_accounts (institution + type + last-4)
+        can collide across sources; the resolver must surface that instead
+        of silently doubling.
+        """
+        from moneybin.services.account_service import (
+            AccountService,
+            AmbiguousAccountError,
+        )
+
+        _insert_dim_account(extended_db, "acct_a1", display_name="Joint Account")
+        _insert_dim_account(extended_db, "acct_a2", display_name="Joint Account")
+        with pytest.raises(AmbiguousAccountError) as excinfo:
+            AccountService(extended_db).resolve_strict("Joint Account")
+        assert excinfo.value.query == "Joint Account"
+        assert set(excinfo.value.account_ids) == {"acct_a1", "acct_a2"}
+
+    @pytest.mark.unit
+    def test_id_match_wins_over_name_match(self, extended_db: Database) -> None:
+        """Id-exact match wins over display_name match when they collide.
+
+        Guarantees the resolution order: account_id check runs first, so a
+        valid id never falls through to the case-insensitive name lookup.
+        """
+        from moneybin.services.account_service import AccountService
+
+        # Pathological setup: account A's id is "checking"; account B's
+        # display_name is also "checking". The id match must win.
+        _insert_dim_account(extended_db, "checking", display_name="Primary")
+        _insert_dim_account(extended_db, "acct_b2", display_name="checking")
+        assert AccountService(extended_db).resolve_strict("checking") == "checking"
