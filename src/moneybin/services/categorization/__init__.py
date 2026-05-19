@@ -44,6 +44,18 @@ from moneybin.metrics.registry import (
 from moneybin.metrics.registry import (
     MERCHANT_EXEMPLAR_COUNT as MERCHANT_EXEMPLAR_COUNT,
 )
+from moneybin.privacy.payloads.categories import (
+    CategoriesPayload as CategoriesPayload,
+)
+from moneybin.privacy.payloads.categories import (
+    MerchantsPayload as MerchantsPayload,
+)
+from moneybin.privacy.payloads.categorize import (
+    CategorizeRulesPayload as CategorizeRulesPayload,
+)
+from moneybin.privacy.payloads.categorize import (
+    CatPendingPayload as CatPendingPayload,
+)
 from moneybin.protocol.envelope import ResponseEnvelope as ResponseEnvelope
 from moneybin.protocol.envelope import build_envelope as build_envelope
 from moneybin.services._text import (
@@ -109,10 +121,6 @@ from moneybin.services.categorization.matcher import (
 from moneybin.services.categorization.orchestrator import (
     CategorizationOrchestrator,
     CategorizationResult,
-)
-from moneybin.privacy.payloads.categorize import (
-    CatPendingPayload as CatPendingPayload,
-    CategorizeRulesPayload as CategorizeRulesPayload,
 )
 from moneybin.services.categorization.queries import (
     CategorizationQueries,
@@ -455,9 +463,7 @@ class CategorizationService:
         """Get all active categories."""
         return self._queries.get_active_categories()
 
-    def get_all_categories(
-        self, *, include_inactive: bool
-    ) -> list[dict[str, str | bool | None]]:
+    def get_all_categories(self, *, include_inactive: bool) -> CategoriesPayload:
         """Get categories with consistent field shape including is_active."""
         return self._queries.get_all_categories(include_inactive=include_inactive)
 
@@ -465,7 +471,7 @@ class CategorizationService:
         """List all categorization rules (active and inactive) ordered by priority."""
         return self._queries.list_rules()
 
-    def list_merchants(self) -> list[dict[str, str | None]]:
+    def list_merchants(self) -> MerchantsPayload:
         """List all merchant name mappings ordered by canonical name."""
         return self._queries.list_merchants()
 

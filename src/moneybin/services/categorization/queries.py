@@ -15,6 +15,12 @@ from dataclasses import dataclass
 import duckdb
 
 from moneybin.database import Database
+from moneybin.privacy.payloads.categories import (
+    CategoriesPayload,
+    CategoryRow,
+    MerchantRow,
+    MerchantsPayload,
+)
 from moneybin.privacy.payloads.categorize import (
     CategorizeRulesPayload,
     CategorizeStatsPayload,
@@ -88,9 +94,7 @@ class CategorizationQueries:
             for r in rows
         ]
 
-    def get_all_categories(
-        self, *, include_inactive: bool
-    ) -> list[dict[str, str | bool | None]]:
+    def get_all_categories(self, *, include_inactive: bool) -> CategoriesPayload:
         """Get categories with consistent field shape including is_active.
 
         Active-only views can use ``get_active_categories()`` to omit
@@ -109,20 +113,22 @@ class CategorizationQueries:
                 """  # noqa: S608  # constant clause, not user input
             ).fetchall()
         except duckdb.CatalogException:
-            return []
+            return CategoriesPayload(categories=[])
 
-        return [
-            {
-                "category_id": r[0],
-                "category": r[1],
-                "subcategory": r[2],
-                "description": r[3],
-                "is_default": r[4],
-                "is_active": r[5],
-                "plaid_detailed": r[6],
-            }
-            for r in rows
-        ]
+        return CategoriesPayload(
+            categories=[
+                CategoryRow(
+                    category_id=r[0],
+                    category=r[1],
+                    subcategory=r[2],
+                    description=r[3],
+                    is_default=bool(r[4]) if r[4] is not None else None,
+                    is_active=bool(r[5]) if r[5] is not None else None,
+                    plaid_detailed=r[6],
+                )
+                for r in rows
+            ]
+        )
 
     def list_rules(self) -> CategorizeRulesPayload:
         """List all categorization rules (active and inactive) ordered by priority."""
@@ -158,7 +164,7 @@ class CategorizationQueries:
             ]
         )
 
-    def list_merchants(self) -> list[dict[str, str | None]]:
+    def list_merchants(self) -> MerchantsPayload:
         """List all merchant name mappings ordered by canonical name."""
         try:
             rows = self._db.execute(
@@ -170,19 +176,21 @@ class CategorizationQueries:
                 """
             ).fetchall()
         except duckdb.CatalogException:
-            return []
+            return MerchantsPayload(merchants=[])
 
-        return [
-            {
-                "merchant_id": r[0],
-                "raw_pattern": r[1],
-                "match_type": r[2],
-                "canonical_name": r[3],
-                "category": r[4],
-                "subcategory": r[5],
-            }
-            for r in rows
-        ]
+        return MerchantsPayload(
+            merchants=[
+                MerchantRow(
+                    merchant_id=r[0],
+                    raw_pattern=r[1],
+                    match_type=r[2],
+                    canonical_name=r[3],
+                    category=r[4],
+                    subcategory=r[5],
+                )
+                for r in rows
+            ]
+        )
 
     def list_uncategorized_transactions(
         self, *, limit: int

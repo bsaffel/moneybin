@@ -7,19 +7,25 @@ from fastmcp import FastMCP
 from moneybin.database import get_database
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.privacy.payloads.categories import (
+    CategoriesPayload,
+    CategoryCreatePayload,
+    CategoryDeletePayload,
+    CategorySetPayload,
+)
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.categorization import CategorizationService
 
 
 @mcp_tool(sensitivity="low")
-def categories(include_inactive: bool = False) -> ResponseEnvelope:
+def categories(include_inactive: bool = False) -> ResponseEnvelope[CategoriesPayload]:
     """List all categories in the taxonomy."""
     with get_database(read_only=True) as db:
-        data = CategorizationService(db).get_all_categories(
+        payload = CategorizationService(db).get_all_categories(
             include_inactive=include_inactive
         )
     return build_envelope(
-        data=data,
+        data=payload,
         sensitivity="low",
         actions=[
             "Use categories_create to add a custom category",
@@ -34,7 +40,7 @@ def categories_create(
     category: str,
     subcategory: str | None = None,
     description: str | None = None,
-) -> ResponseEnvelope:
+) -> ResponseEnvelope[CategoryCreatePayload]:
     """Create a custom category or subcategory (non-default, active by default)."""
     with get_database() as db:
         category_id = CategorizationService(db).create_category(
@@ -44,13 +50,13 @@ def categories_create(
         )
     sub = f" / {subcategory}" if subcategory else ""
     return build_envelope(
-        data={
-            "category_id": category_id,
-            "category": category,
-            "subcategory": subcategory,
-            "action": "created",
-            "display": f"{category}{sub}",
-        },
+        data=CategoryCreatePayload(
+            category_id=category_id,
+            category=category,
+            subcategory=subcategory,
+            action="created",
+            display=f"{category}{sub}",
+        ),
         sensitivity="low",
     )
 
@@ -59,7 +65,7 @@ def categories_create(
 def categories_set(
     category_id: str,
     is_active: bool,
-) -> ResponseEnvelope:
+) -> ResponseEnvelope[CategorySetPayload]:
     """Update a category's settings (currently only is_active).
 
     Idempotent partial update — matches the shape-1b _set convention used
@@ -81,7 +87,7 @@ def categories_set(
         )
     action = "enabled" if is_active else "disabled"
     return build_envelope(
-        data={"category_id": category_id, "action": action},
+        data=CategorySetPayload(category_id=category_id, action=action),
         sensitivity="low",
     )
 
@@ -90,7 +96,7 @@ def categories_set(
 def categories_delete(
     category_id: str,
     force: bool = False,
-) -> ResponseEnvelope:
+) -> ResponseEnvelope[CategoryDeletePayload]:
     """Hard-delete a user-created category.
 
     Args:
@@ -102,11 +108,11 @@ def categories_delete(
     with get_database() as db:
         CategorizationService(db).delete_category(category_id, force=force)
     return build_envelope(
-        data={
-            "category_id": category_id,
-            "action": "deleted",
-            "force": force,
-        },
+        data=CategoryDeletePayload(
+            category_id=category_id,
+            action="deleted",
+            force=force,
+        ),
         sensitivity="low",
     )
 

@@ -14,6 +14,10 @@ from fastmcp import FastMCP
 from moneybin.database import get_database
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.privacy.payloads.categories import (
+    MerchantsCreatePayload,
+    MerchantsPayload,
+)
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.categorization import (
     CategorizationService,
@@ -24,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 
 @mcp_tool(sensitivity="low")
-def merchants() -> ResponseEnvelope:
+def merchants() -> ResponseEnvelope[MerchantsPayload]:
     """List all merchant name mappings.
 
     Returns merchant ID, raw pattern, match type, canonical name,
@@ -32,9 +36,9 @@ def merchants() -> ResponseEnvelope:
     descriptions and provide default categories.
     """
     with get_database(read_only=True) as db:
-        data = CategorizationService(db).list_merchants()
+        payload = CategorizationService(db).list_merchants()
     return build_envelope(
-        data=data,
+        data=payload,
         sensitivity="low",
         actions=[
             "Use merchants_create to add new merchant mappings",
@@ -45,7 +49,7 @@ def merchants() -> ResponseEnvelope:
 @mcp_tool(sensitivity="low", read_only=False, idempotent=False)
 def merchants_create(
     merchants: list[dict[str, str | None]],
-) -> ResponseEnvelope:
+) -> ResponseEnvelope[MerchantsCreatePayload]:
     """Create multiple merchant name mappings in one call.
 
     Each merchant dict should have ``raw_pattern`` and ``canonical_name``.
@@ -57,7 +61,11 @@ def merchants_create(
     """
     if not merchants:
         return build_envelope(
-            data={"created": 0, "skipped": 0, "error_details": []},
+            data=MerchantsCreatePayload(
+                created=0,
+                skipped=0,
+                error_details=[],
+            ),
             sensitivity="low",
         )
 
@@ -111,11 +119,11 @@ def merchants_create(
                 })
 
     return build_envelope(
-        data={
-            "created": created,
-            "skipped": skipped,
-            "error_details": error_details,
-        },
+        data=MerchantsCreatePayload(
+            created=created,
+            skipped=skipped,
+            error_details=error_details,
+        ),
         sensitivity="low",
         total_count=len(merchants),
         actions=[

@@ -71,8 +71,16 @@ def categories_delete(
         with get_database() as db:
             CategorizationService(db).delete_category(category_id, force=force)
 
+    from moneybin.privacy.payloads.categories import (
+        CategoryDeletePayload,  # noqa: PLC0415
+    )
+
     envelope = build_envelope(
-        data={"category_id": category_id, "action": "deleted", "force": force},
+        data=CategoryDeletePayload(
+            category_id=category_id,
+            action="deleted",
+            force=force,
+        ),
         sensitivity="low",
     )
     if output == OutputFormat.JSON:

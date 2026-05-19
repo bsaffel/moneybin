@@ -76,7 +76,8 @@ class TestCategorizeToolRegistration:
         cat_result = (await categories()).to_dict()
         assert "summary" in cat_result
         assert "data" in cat_result
-        assert isinstance(cat_result["data"], list)
+        # data is now a typed CategoriesPayload dict with a "categories" list field
+        assert isinstance(cat_result["data"]["categories"], list)
 
     @pytest.mark.unit
     async def test_register_includes_auto_rule_tools(self) -> None:
