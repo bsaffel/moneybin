@@ -231,7 +231,7 @@ moneybin import preview ~/Downloads/report.xlsx --sheet Sheet2
 | Flag | Purpose |
 |------|---------|
 | `-n, --account-name` | Account name when the file is single-account and the column doesn't carry one. |
-| `-f, --format` | Force a named format (`chase_credit`, `tiller`, etc.). |
+| `-f, --format` | Force a named format (`tiller`, `mint`, etc.). |
 | `--override` | Field-to-column override, repeatable (`--override date=Posted --override amount=Amt`). |
 | `--sign` | Sign convention override. |
 | `-y, --yes` | Auto-accept the top fuzzy account match without prompting. |
@@ -341,7 +341,7 @@ moneybin import status                             # per-table row counts and da
 moneybin import history                            # batch log with IDs, status, confidence
 moneybin import history --import-id abc123        # one batch in detail
 moneybin import formats list                       # built-in and user-saved formats
-moneybin import formats show chase_credit          # field mapping and signature for one format
+moneybin import formats show tiller                # field mapping and signature for one format
 moneybin import formats delete my_custom_format    # remove a user-saved format (built-ins are protected)
 ```
 

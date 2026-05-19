@@ -417,46 +417,6 @@ class MatchingSettings(BaseModel):
         return self
 
 
-class MLTrainingWeights(BaseModel):
-    """Relative importance weights for training data sources in ML pipelines."""
-
-    user: float = Field(
-        default=1.0,
-        ge=0.0,
-        description="Weight for user-provided categorizations",
-    )
-    rule: float = Field(
-        default=1.0,
-        ge=0.0,
-        description="Weight for rule-matched transactions",
-    )
-    auto_rule: float = Field(
-        default=0.9,
-        ge=0.0,
-        description="Weight for auto-rule-matched transactions",
-    )
-    migration: float = Field(
-        default=0.85,
-        ge=0.0,
-        description="Weight for user-attested transactions migrated from prior tools",
-    )
-    plaid: float = Field(
-        default=0.7,
-        ge=0.0,
-        description="Weight for Plaid personal finance categories",
-    )
-    ai: float = Field(
-        default=0.8,
-        ge=0.0,
-        description="Weight for AI-generated suggestions (excluding seed)",
-    )
-    seed: float = Field(
-        default=0.5,
-        ge=0.0,
-        description="Weight for seed transactions; may be excluded after empirical evaluation",
-    )
-
-
 class CategorizationSettings(BaseModel):
     """Auto-rule proposal and lifecycle configuration."""
 
@@ -520,9 +480,6 @@ class CategorizationSettings(BaseModel):
         ge=1,
         le=500,
         description="Hard upper bound enforced server-side",
-    )
-    training_weights: "MLTrainingWeights" = Field(
-        default_factory=lambda: MLTrainingWeights()
     )
 
     @model_validator(mode="after")

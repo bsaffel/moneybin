@@ -721,7 +721,7 @@ def formats_show(
     including column mappings, detection signature, and format options.
 
     Example:
-        moneybin import formats show chase_credit
+        moneybin import formats show tiller
     """
     from moneybin.database import get_database
 
