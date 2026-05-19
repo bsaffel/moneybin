@@ -1,4 +1,4 @@
-/* Prometheus metric snapshots flushed periodically and on shutdown; each row is a point-in-time snapshot of one metric */
+/* Prometheus metric snapshots written via flush_metrics(); each row is a point-in-time snapshot of one metric */
 CREATE TABLE IF NOT EXISTS app.metrics (
     metric_name VARCHAR NOT NULL, -- Prometheus metric name (e.g. 'moneybin_import_records_total')
     metric_type VARCHAR NOT NULL CHECK (metric_type IN ('counter', 'gauge', 'histogram')), -- One of: 'counter', 'histogram', 'gauge'
