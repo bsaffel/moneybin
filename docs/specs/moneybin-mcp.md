@@ -978,7 +978,7 @@ Auto-rule health metrics.
 - **CLI:** `moneybin transactions categorize auto stats`
 - **Dependency:** [Categorization overview](categorization-overview.md) (Pillar E: auto-rule generation), [Auto-rule generation](categorization-auto-rules.md).
 
-> ML-based categorization is deferred; see `docs/specs/categorization-ml.md` (planned) when work resumes.
+> ML-based categorization is deferred; see `categorization-ml.md` (planned) when work resumes.
 
 ---
 
