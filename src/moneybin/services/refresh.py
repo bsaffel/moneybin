@@ -107,10 +107,8 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
     callers can preserve already-loaded raw rows and surface the failure
     in their response envelope.
     """
-    from moneybin.config import get_settings  # noqa: PLC0415
     from moneybin.errors import UserError  # noqa: PLC0415
-    from moneybin.matching.engine import TransactionMatcher  # noqa: PLC0415
-    from moneybin.matching.priority import seed_source_priority  # noqa: PLC0415
+    from moneybin.services.matching_service import MatchingService  # noqa: PLC0415
 
     if steps is not None:
         unknown = [s for s in steps if s not in CANONICAL_STEPS]
@@ -125,10 +123,7 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
 
     if "match" in requested:
         try:
-            settings = get_settings().matching
-            seed_source_priority(db, settings)
-            matcher = TransactionMatcher(db, settings)
-            match_result = matcher.run()
+            match_result = MatchingService(db).run()
             if match_result.has_matches:
                 logger.info(f"Matching: {match_result.summary()}")
                 if match_result.has_pending:
