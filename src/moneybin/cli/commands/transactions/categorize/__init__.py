@@ -20,6 +20,7 @@ from moneybin.cli.output import (
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
 from moneybin.errors import UserError
+
 from . import auto, ml, rules
 from .commit_from_file import categorize_commit_from_file
 from .export import categorize_export_uncategorized

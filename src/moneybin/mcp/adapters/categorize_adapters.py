@@ -24,7 +24,9 @@ if TYPE_CHECKING:
     )
 
 
-def auto_review_envelope(result: AutoReviewResult) -> ResponseEnvelope[AutoReviewPayload]:
+def auto_review_envelope(
+    result: AutoReviewResult,
+) -> ResponseEnvelope[AutoReviewPayload]:
     """Build a ResponseEnvelope for the transactions_categorize_auto_review tool."""
     payload = AutoReviewPayload(
         proposals=[
@@ -50,7 +52,9 @@ def auto_review_envelope(result: AutoReviewResult) -> ResponseEnvelope[AutoRevie
     )
 
 
-def auto_accept_envelope(result: AutoConfirmResult) -> ResponseEnvelope[AutoAcceptPayload]:
+def auto_accept_envelope(
+    result: AutoConfirmResult,
+) -> ResponseEnvelope[AutoAcceptPayload]:
     """Build a ResponseEnvelope for the transactions_categorize_auto_accept tool."""
     payload = AutoAcceptPayload(
         approved=result.approved,
