@@ -176,19 +176,19 @@ class TestListFormats:
         """Formats list exits 0 and includes known built-in format names."""
         result = runner.invoke(app, ["formats", "list"])
         assert result.exit_code == 0
-        assert "chase_credit" in result.output
+        assert "tiller" in result.output
 
     def test_output_includes_institution_name(self) -> None:
         """Formats list output includes institution names."""
         result = runner.invoke(app, ["formats", "list"])
         assert result.exit_code == 0
-        assert "Chase" in result.output
+        assert "Tiller" in result.output
 
     def test_lists_all_builtin_formats(self) -> None:
         """Formats list lists all expected built-in formats."""
         result = runner.invoke(app, ["formats", "list"])
         assert result.exit_code == 0
-        for name in ("chase_credit", "citi_credit", "mint", "tiller", "ynab"):
+        for name in ("mint", "tiller", "ynab"):
             assert name in result.output, f"Expected format {name!r} in output"
 
 
@@ -197,13 +197,13 @@ class TestShowFormat:
 
     def test_shows_known_format(self) -> None:
         """Formats show exits 0 and prints details for a valid format name."""
-        result = runner.invoke(app, ["formats", "show", "chase_credit"])
+        result = runner.invoke(app, ["formats", "show", "tiller"])
         assert result.exit_code == 0
-        assert "Chase" in result.output
+        assert "Tiller" in result.output
 
     def test_shows_field_mapping(self) -> None:
         """Formats show output includes field mapping section."""
-        result = runner.invoke(app, ["formats", "show", "chase_credit"])
+        result = runner.invoke(app, ["formats", "show", "tiller"])
         assert result.exit_code == 0
         assert "Field mapping" in result.output
 
@@ -218,7 +218,7 @@ class TestDeleteFormat:
 
     def test_builtin_format_cannot_be_deleted(self) -> None:
         """Attempting to delete a built-in format exits 1."""
-        result = runner.invoke(app, ["formats", "delete", "chase_credit", "--yes"])
+        result = runner.invoke(app, ["formats", "delete", "tiller", "--yes"])
         assert result.exit_code == 1
 
     def test_unknown_format_exits_with_error(self, mocker: Any) -> None:

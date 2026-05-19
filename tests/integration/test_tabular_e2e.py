@@ -114,35 +114,24 @@ class TestCSVImportPipeline:
         ids = result.transactions["transaction_id"].to_list()
         assert len(ids) == len(set(ids)), "Transaction IDs must be unique"
 
-    def test_chase_credit_format_match(self) -> None:
-        """Chase credit CSV matches built-in format and transforms correctly."""
+    def test_chase_credit_auto_detect(self) -> None:
+        """Chase credit CSV is detected and transforms correctly via auto-detection."""
+        from moneybin.extractors.tabular.column_mapper import map_columns
         from moneybin.extractors.tabular.format_detector import detect_format
-        from moneybin.extractors.tabular.formats import load_builtin_formats
         from moneybin.extractors.tabular.readers import read_file
         from moneybin.extractors.tabular.transforms import transform_dataframe
 
         path = FIXTURES / "chase_credit.csv"
         format_info = detect_format(path)
         read_result = read_file(path, format_info)
-
-        # Should match chase_credit format
-        builtin = load_builtin_formats()
-        matched = None
-        headers = list(read_result.df.columns)
-        for fmt in builtin.values():
-            if fmt.matches_headers(headers):
-                matched = fmt
-                break
-
-        assert matched is not None
-        assert matched.name == "chase_credit"
+        mapping = map_columns(read_result.df)
 
         result = transform_dataframe(
             df=read_result.df,
-            field_mapping=matched.field_mapping,
-            date_format=matched.date_format,
-            sign_convention=matched.sign_convention,
-            number_format=matched.number_format,
+            field_mapping=mapping.field_mapping,
+            date_format=mapping.date_format or "%m/%d/%Y",
+            sign_convention=mapping.sign_convention,
+            number_format=mapping.number_format,
             account_id="chase-checking",
             source_file=str(path),
             source_type="csv",
@@ -153,34 +142,25 @@ class TestCSVImportPipeline:
         assert result.rows_rejected == 0
 
     def test_citi_credit_split_debit_credit(self) -> None:
-        """Citi credit CSV with split Debit/Credit columns transforms correctly."""
+        """Citi credit CSV with split Debit/Credit columns auto-detected and transforms correctly."""
+        from moneybin.extractors.tabular.column_mapper import map_columns
         from moneybin.extractors.tabular.format_detector import detect_format
-        from moneybin.extractors.tabular.formats import load_builtin_formats
         from moneybin.extractors.tabular.readers import read_file
         from moneybin.extractors.tabular.transforms import transform_dataframe
 
         path = FIXTURES / "citi_credit.csv"
         format_info = detect_format(path)
         read_result = read_file(path, format_info)
+        mapping = map_columns(read_result.df)
 
-        builtin = load_builtin_formats()
-        headers = list(read_result.df.columns)
-        matched = None
-        for fmt in builtin.values():
-            if fmt.matches_headers(headers):
-                matched = fmt
-                break
-
-        assert matched is not None
-        assert matched.name == "citi_credit"
-        assert matched.sign_convention == "split_debit_credit"
+        assert mapping.sign_convention == "split_debit_credit"
 
         result = transform_dataframe(
             df=read_result.df,
-            field_mapping=matched.field_mapping,
-            date_format=matched.date_format,
-            sign_convention=matched.sign_convention,
-            number_format=matched.number_format,
+            field_mapping=mapping.field_mapping,
+            date_format=mapping.date_format or "%m/%d/%Y",
+            sign_convention=mapping.sign_convention,
+            number_format=mapping.number_format,
             account_id="citi-card",
             source_file=str(path),
             source_type="csv",
@@ -416,26 +396,20 @@ class TestMappingConfidence:
         )
 
     def test_all_required_fields_mapped_for_chase(self) -> None:
-        """Chase credit format maps all three required fields."""
+        """Chase credit CSV auto-detection maps all three required fields."""
+        from moneybin.extractors.tabular.column_mapper import map_columns
         from moneybin.extractors.tabular.format_detector import detect_format
-        from moneybin.extractors.tabular.formats import load_builtin_formats
         from moneybin.extractors.tabular.readers import read_file
 
         path = FIXTURES / "chase_credit.csv"
         format_info = detect_format(path)
         read_result = read_file(path, format_info)
+        mapping = map_columns(read_result.df)
 
-        builtin = load_builtin_formats()
-        headers = list(read_result.df.columns)
-        matched = next(
-            (fmt for fmt in builtin.values() if fmt.matches_headers(headers)), None
-        )
-        assert matched is not None
-
-        # Built-in format must cover all three required fields
-        assert "transaction_date" in matched.field_mapping
-        assert "description" in matched.field_mapping
-        assert "amount" in matched.field_mapping
+        # Auto-detection must cover all three required fields
+        assert "transaction_date" in mapping.field_mapping
+        assert "description" in mapping.field_mapping
+        assert "amount" in mapping.field_mapping
 
     def test_tiller_is_multi_account(self) -> None:
         """Tiller format is correctly identified as multi-account."""
@@ -491,9 +465,9 @@ class TestIdempotency:
         assert ids_first == ids_second, "Re-importing same file must produce same IDs"
 
     def test_chase_reimport_produces_same_ids(self) -> None:
-        """Re-importing chase_credit.csv yields identical transaction IDs."""
+        """Re-importing chase_credit.csv yields identical transaction IDs via auto-detection."""
+        from moneybin.extractors.tabular.column_mapper import map_columns
         from moneybin.extractors.tabular.format_detector import detect_format
-        from moneybin.extractors.tabular.formats import load_builtin_formats
         from moneybin.extractors.tabular.readers import read_file
         from moneybin.extractors.tabular.transforms import transform_dataframe
 
@@ -502,18 +476,13 @@ class TestIdempotency:
         def _run_pipeline() -> list[str]:
             format_info = detect_format(path)
             read_result = read_file(path, format_info)
-            builtin = load_builtin_formats()
-            headers = list(read_result.df.columns)
-            matched = next(
-                (fmt for fmt in builtin.values() if fmt.matches_headers(headers)), None
-            )
-            assert matched is not None
+            mapping = map_columns(read_result.df)
             result = transform_dataframe(
                 df=read_result.df,
-                field_mapping=matched.field_mapping,
-                date_format=matched.date_format,
-                sign_convention=matched.sign_convention,
-                number_format=matched.number_format,
+                field_mapping=mapping.field_mapping,
+                date_format=mapping.date_format or "%m/%d/%Y",
+                sign_convention=mapping.sign_convention,
+                number_format=mapping.number_format,
                 account_id="chase-checking",
                 source_file=str(path),
                 source_type="csv",
