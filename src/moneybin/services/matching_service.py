@@ -1,7 +1,9 @@
-"""MatchingService — thin facade over TransactionMatcher.
+"""MatchingService — thin facade over the matching package's primitives.
 
-Exists so the scenario runner, MCP tools, and CLI can call
-``MatchingService(db).run()`` uniformly alongside other services.
+Exposes ``run``, ``seed_priority``, ``undo``, ``get_log``, and
+``count_pending`` so adapters and other services call
+``MatchingService(db).method(...)`` uniformly instead of importing
+:mod:`moneybin.matching.engine` / ``persistence`` / ``priority`` directly.
 """
 
 from __future__ import annotations

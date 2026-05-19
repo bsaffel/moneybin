@@ -1257,9 +1257,7 @@ class ImportService:
             ``{'status': 'superseded', 'reason': ...}`` if a later import for
             the same source_file already overwrote the rows.
         """
-        # REVERT_TABLES is the source-type → raw-tables allowlist; the loader
-        # module owns it (it's also consulted by begin_import), so we read it
-        # in-place rather than duplicate the mapping.
+        # REVERT_TABLES is owned by import_log because begin_import also consults it.
         from moneybin.loaders.import_log import REVERT_TABLES  # noqa: PLC0415
         from moneybin.tables import IMPORT_LOG  # noqa: PLC0415
 
@@ -1298,8 +1296,8 @@ class ImportService:
                 rows_to_delete += result[0]
 
         if rows_to_delete == 0:
-            # Same superseded check as the original tabular_loader: if a later
-            # import upserted over this one's rows, surface that.
+            # If a later import upserted over this one's rows, surface that
+            # instead of a silent no-op revert.
             reimport_row = self._db.execute(
                 f"""
                 SELECT import_id
