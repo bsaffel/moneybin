@@ -297,40 +297,45 @@ class AccountSettingsRepository:
         )
 
 
+_RESOLVE_STRICT_CANDIDATE_CAP = 25
+
+
 class AccountNotFoundError(UserError):
     """Raised when ``AccountService.resolve_strict`` finds no match.
 
-    Carries ``candidates`` — a list of ``(account_id, display_name)``
-    tuples for every known account — so callers can render a helpful
-    error message listing valid values. Subclasses ``UserError`` so the
-    CLI ``handle_cli_errors`` and MCP ``mcp_tool`` decorators surface it
-    as a clean user-facing error.
+    Carries up to :data:`_RESOLVE_STRICT_CANDIDATE_CAP` ``(account_id,
+    display_name)`` tuples on ``candidates`` so callers can render a
+    short suggestion list; the user-facing hint points at the canonical
+    listing command for the full set.
     """
 
     def __init__(self, query: str, candidates: list[tuple[str, str]]) -> None:
-        """Store the failed query and the full candidate list for the error."""
-        message = (
-            f"No account matches {query!r}. "
-            f"Known accounts: {', '.join(name for _, name in candidates)}"
+        """Store the failed query and the (capped) candidate list."""
+        shown = candidates[:_RESOLVE_STRICT_CANDIDATE_CAP]
+        names = ", ".join(name for _, name in shown)
+        suffix = (
+            f" (+{len(candidates) - len(shown)} more)"
+            if len(candidates) > len(shown)
+            else ""
         )
+        message = f"No account matches {query!r}. Known accounts: {names}{suffix}"
         super().__init__(
             message,
             code="account_not_found",
             hint="💡 Run 'moneybin accounts list' to see available accounts",
         )
         self.query = query
-        self.candidates = candidates
+        self.candidates = shown
 
 
 class AmbiguousAccountError(UserError):
     """Raised when ``AccountService.resolve_strict`` matches multiple rows.
 
     Display-name collisions are not prevented by the schema — two
-    accounts can legitimately share a name when the COALESCE defaults
-    in ``dim_accounts`` (institution + type + last-4) happen to
-    coincide. Surfacing the collision is the contract; the caller is
-    expected to disambiguate by passing ``account_id`` directly.
-    Subclasses ``UserError`` so CLI/MCP surface it as a clean error.
+    accounts can legitimately share a name when ``dim_accounts``
+    COALESCE defaults (institution + type + last-4) happen to coincide.
+    The contract is to surface the collision; the caller disambiguates
+    by passing ``account_id`` directly.
     """
 
     def __init__(
@@ -759,11 +764,10 @@ class AccountService:
         one row. Raises ``AccountNotFoundError`` when neither step
         matches.
 
-        Differs from :meth:`resolve` (fuzzy ``SequenceMatcher``) by
-        design — a filter that silently fuzzed would return surprising
-        results. See ``.claude/rules/identifiers.md`` "Propagation"
-        and ``private/reviews/2026-05-18-identifier-hygiene-audit.md``
-        Finding 2.
+        Distinct from :meth:`resolve` (fuzzy ``SequenceMatcher``) — a
+        filter that silently fuzzed would return surprising results.
+        See ``.claude/rules/identifiers.md`` "Propagation" for the
+        contract.
         """
         row = self._db.execute(
             f"SELECT account_id FROM {DIM_ACCOUNTS.full_name} WHERE account_id = ?",  # noqa: S608  # TableRef constant
@@ -789,7 +793,9 @@ class AccountService:
             )
 
         candidates = self._db.execute(
-            f"SELECT account_id, display_name FROM {DIM_ACCOUNTS.full_name} ORDER BY display_name"  # noqa: S608  # TableRef constant
+            f"SELECT account_id, display_name FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef constant
+            "ORDER BY display_name LIMIT ?",
+            [_RESOLVE_STRICT_CANDIDATE_CAP + 1],
         ).fetchall()
         raise AccountNotFoundError(
             query=account_ref,

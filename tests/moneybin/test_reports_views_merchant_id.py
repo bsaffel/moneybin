@@ -1,10 +1,8 @@
 """Shape tests for reports.* models: merchant_id propagation.
 
-Audit Finding 1 (2026-05-18 identifier-hygiene audit): four reports
-views aggregated/exposed merchant data keyed only by ``merchant_name``
-text. After Phase 3 of the fix they project ``merchant_id`` alongside
-``merchant_normalized`` and aggregate on the FK; NULL merchant_id rows
-collapse into a single ``'(uncategorized)'`` bucket.
+Four reports views project ``merchant_id`` alongside ``merchant_normalized``
+and aggregate on the FK; NULL merchant_id rows collapse into a single
+``'(uncategorized)'`` bucket.
 
 These tests read the model SQL files and assert structural properties
 (column present, GROUP/PARTITION key uses merchant_id). They do NOT run
@@ -37,11 +35,12 @@ class TestMerchantActivityMerchantId:
 
     def test_groups_by_merchant_id(self) -> None:
         content = _read("merchant_activity.sql")
-        # The GROUP BY clause must include merchant_id so aggregations
-        # bucket on the FK, not on text.
-        assert "GROUP BY\n  merchant_id" in content or (
-            "merchant_id," in content and "GROUP BY" in content
-        ), "merchant_activity must GROUP BY merchant_id"
+        # Normalize whitespace so the assertion survives sqlmesh-format
+        # rewrites that could put GROUP BY on a single line.
+        normalized = " ".join(content.split())
+        assert "GROUP BY merchant_id" in normalized, (
+            "merchant_activity must GROUP BY merchant_id"
+        )
 
     def test_uncategorized_bucket_label(self) -> None:
         content = _read("merchant_activity.sql")

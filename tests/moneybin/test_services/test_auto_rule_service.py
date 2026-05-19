@@ -616,16 +616,13 @@ class TestProposedRulesDualWrite:
 
 
 class TestSupersessionByRuleId:
-    """V016 + Phase 2: proposal->rule linkage is via rule_id, not merchant_pattern.
+    """Proposal->rule linkage is FK-keyed via rule_id, not merchant_pattern.
 
-    The 2026-05-18 identifier-hygiene audit found that check_overrides()
-    superseded approved proposals via WHERE LOWER(merchant_pattern) =
-    LOWER(?). When two approved proposals share a merchant_pattern (e.g.
-    a rule was approved, manually deactivated, then a new proposal with
-    the same pattern was approved later), the supersession would mark
-    BOTH proposals 'superseded'. After V016 the linkage is FK-keyed via
-    rule_id, so only the proposal tied to the deactivated rule is
-    touched.
+    When two approved proposals share a merchant_pattern (e.g. a rule
+    was approved, manually deactivated, and a new proposal with the
+    same pattern was approved later), supersession must touch only the
+    proposal tied to the deactivated rule — the rule_id binding makes
+    that an opaque-id comparison instead of a text match.
     """
 
     def test_approve_writes_rule_id_to_proposal(self, real_db: Database) -> None:

@@ -419,7 +419,7 @@ class AutoRuleService:
                     ],
                 )
                 # Write rule_id alongside status so the proposal->rule link
-                # is FK-keyed; check_overrides() supersedes via rule_id (V016).
+                # is FK-keyed; check_overrides() supersedes via rule_id.
                 self._db.execute(
                     f"""
                     UPDATE {PROPOSED_RULES.full_name}
@@ -597,11 +597,9 @@ class AutoRuleService:
                     f"UPDATE {CATEGORIZATION_RULES.full_name} SET is_active = false, updated_at = CURRENT_TIMESTAMP WHERE rule_id = ?",
                     [rule_id],
                 )
-                # Supersede via FK linkage (V016). Pre-V016 this was
-                # WHERE LOWER(merchant_pattern) = LOWER(?), which marked
-                # every approved proposal sharing the pattern -- including
-                # stale ones from prior promotions. The rule_id binding
-                # touches only the proposal that produced this rule.
+                # Bind by rule_id so colliding merchant_patterns from
+                # prior promotions stay untouched; only the proposal that
+                # produced this rule flips to superseded.
                 self._db.execute(
                     f"""
                     UPDATE {PROPOSED_RULES.full_name}

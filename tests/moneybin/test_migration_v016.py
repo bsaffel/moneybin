@@ -1,17 +1,13 @@
 """V016: add rule_id FK column to app.proposed_rules with backfill.
 
-PR #174 retired the (category, subcategory) text-keyed cross-table
-references; the 2026-05-18 identifier-hygiene audit found that
-``auto_rule_service.approve()`` and ``check_overrides()`` reconstruct the
-proposal->rule link from ``merchant_pattern`` text because
-``app.proposed_rules`` has no ``rule_id`` column. V016 adds the column
-and backfills approved rows that have a unique active-rule match.
+Seeds three proposed_rules rows (linked+approved, orphaned+approved,
+pending) plus one matching categorization_rules row, runs the migration
+inside a BEGIN/COMMIT wrap mirroring ``MigrationRunner``, and verifies
+the backfill rule: only proposals with a 1:1 active-rule match receive
+a rule_id; orphans and pending rows stay NULL.
 
-Populated-fixture pattern per ``.claude/rules/database.md``: V016 touches
-existing data (ADD COLUMN + UPDATE backfill), so the test seeds three
-proposed_rules rows (linked+approved, orphaned+approved, pending) plus
-one matching categorization_rules row, then runs the migration inside a
-BEGIN/COMMIT wrap mirroring ``MigrationRunner``.
+Populated-fixture pattern per ``.claude/rules/database.md`` — V016
+touches existing data (ADD COLUMN + UPDATE backfill).
 """
 
 from __future__ import annotations

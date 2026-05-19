@@ -48,10 +48,9 @@ class TestFctTransactionsCurationColumns:
     def test_fct_transactions_projects_merchant_id(self) -> None:
         """SQLMesh model projects merchant_id from the dim_merchants join.
 
-        Audit Finding 1: dropping merchant_id at this view boundary forces
-        downstream reports to GROUP BY text, which silently re-buckets on
-        a canonical_name rename. Both the enriched CTE and the outer SELECT
-        must carry the FK so reports models can bind to it.
+        Downstream reports GROUP/PARTITION on merchant_id, so the view
+        must carry the FK alongside merchant_name. Dropping the id at
+        this boundary would force reports back onto text bucketing.
         """
         content = _MODEL_PATH.read_text()
         # Final SELECT must project merchant_id with its comment so it
