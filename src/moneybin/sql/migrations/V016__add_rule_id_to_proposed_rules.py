@@ -10,6 +10,11 @@ match) and genuinely ambiguous matches (two active rules share a
 pattern) stay NULL; the approve flow normally maintains the 1:1
 invariant so ambiguity is a sign of hand-edited state.
 
+Three-step ADD then UPDATE then CREATE INDEX with an interim COMMIT
+between the UPDATE and CREATE INDEX — DuckDB rejects index creation
+on a column with outstanding updates in the same transaction. See
+V010 for the same pattern and the recovery branch reasoning.
+
 Idempotent: ``ADD COLUMN IF NOT EXISTS`` and ``CREATE INDEX IF NOT
 EXISTS`` are no-ops on replay; the backfill ``UPDATE`` only touches
 rows where ``rule_id IS NULL``.
@@ -54,6 +59,17 @@ def migrate(conn: object) -> None:
           AND p.rule_id IS NULL
         """
     )
+
+    # Commit the backfill before CREATE INDEX. DuckDB raises
+    # "Cannot create index with outstanding updates" when the UPDATE
+    # above and the CREATE INDEX below share a transaction. A failure
+    # between this COMMIT and CREATE INDEX leaves the column added and
+    # backfilled but without the supporting index; the next migration
+    # run hits ADD COLUMN IF NOT EXISTS (no-op), UPDATE (touches no
+    # rows since rule_id is set), and CREATE INDEX IF NOT EXISTS
+    # finishes the job.
+    conn.execute("COMMIT")  # type: ignore[union-attr]
+    conn.execute("BEGIN TRANSACTION")  # type: ignore[union-attr]
 
     logger.info("V016: CREATE INDEX IF NOT EXISTS idx_proposed_rules_rule_id")
     conn.execute(  # type: ignore[union-attr]
