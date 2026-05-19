@@ -978,44 +978,7 @@ Auto-rule health metrics.
 - **CLI:** `moneybin transactions categorize auto stats`
 - **Dependency:** [Categorization overview](categorization-overview.md) (Pillar E: auto-rule generation), [Auto-rule generation](categorization-auto-rules.md).
 
-### `transactions_categorize_ml_status`
-
-**Status:** blocked on [`categorization-ml.md`](categorization-ml.md) (planned) — NOT registered.
-
-ML model status and accuracy metrics.
-
-- **Sensitivity:** `low`
-- **Unique parameters:** None.
-- **Behavior:** Returns `{status, last_trained, training_samples, accuracy, confidence_distribution}` where `status` is `untrained`, `training`, or `ready`. `confidence_distribution` shows how many transactions fall in each confidence tier (high/moderate/low). Confidence scores are Platt-calibrated probabilities; user-facing output uses qualitative tiers (see [categorization overview](categorization-overview.md) Progressive Confidence Disclosure).
-- **Service:** `CategorizationService.ml_status() -> MLModelStatus`
-- **CLI:** `moneybin transactions categorize ml status`
-- **Dependency:** [Categorization overview](categorization-overview.md) (Pillar D: ML categorization).
-
-### `transactions_categorize_ml_train`
-
-**Status:** blocked on [`categorization-ml.md`](categorization-ml.md) (planned) — NOT registered.
-
-Trigger model training or retraining on current categorization history.
-
-- **Sensitivity:** `low` — training data stays local.
-- **Unique parameters:** None.
-- **Behavior:** Trains the model synchronously. Returns `{status, training_samples, accuracy, duration_seconds}`. Requires minimum number of categorized transactions to produce a useful model. Note: the pipeline auto-retrains when statistically significant new categorizations exist (see [categorization overview](categorization-overview.md)); this tool is a manual escape hatch.
-- **Service:** `CategorizationService.ml_train() -> MLTrainResult`
-- **CLI:** `moneybin transactions categorize ml train`
-- **Dependency:** [Categorization overview](categorization-overview.md) (Pillar D: ML categorization).
-
-### `transactions_categorize_ml_apply`
-
-**Status:** blocked on [`categorization-ml.md`](categorization-ml.md) (planned) — NOT registered. The `"ml"` literal will be added to `transactions_categorize_run(methods=...)` when ML categorization implementation lands.
-
-Run ML categorization at a given confidence threshold.
-
-- **Sensitivity:** `low`
-- **Unique parameters:** `min_confidence: float = 0.9` — only apply predictions above this threshold. `dry_run: bool = false`.
-- **Behavior:** Applies ML predictions to uncategorized transactions above the confidence threshold. Returns `{applied, below_threshold, already_categorized}`. With `dry_run`, returns predictions without applying.
-- **Service:** `CategorizationService.ml_apply() -> MLApplyResult`
-- **CLI:** `moneybin transactions categorize ml apply [--min-confidence 0.9] [--dry-run]`
-- **Dependency:** [Categorization overview](categorization-overview.md) (Pillar D: ML categorization).
+> ML-based categorization is deferred; see `docs/specs/categorization-ml.md` (planned) when work resumes.
 
 ---
 
@@ -1298,7 +1261,7 @@ Four goal-oriented workflow templates. Each defines the goal, relevant tools, gu
 - Present proposed categorizations to the user for confirmation before applying
 - After applying, propose merchant mappings and rules for patterns that appeared multiple times
 - Track progress: "X of Y categorized, Z remaining"
-- If `transactions_categorize_ml_status` shows a trained model, use `suggest=true` to leverage ML suggestions
+- ML-assisted suggestions (`suggest=true`) are deferred pending ML categorization implementation
 - Stop when the user says stop, not when the queue is empty
 
 **Decision points:** User confirms each batch of categorizations before `transactions_categorize_commit` is called. User confirms proposed rules before `transactions_categorize_rules_create` is called.
@@ -1452,7 +1415,7 @@ Tools that depend on unbuilt subsystems are documented in the catalog with depen
 | **Provider profiles spec** | Not written | Verified-local bypass; `privacy_status` backend info |
 | **Transaction matching (Pillars A+C)** | Draft (umbrella) | All `transactions_matches.*` tools |
 | **Transaction matching (Pillar B)** | Draft (umbrella) | `transactions_matches.*` transfer-type filtering |
-| **[Categorization overview](categorization-overview.md)** | Draft | `transactions_categorize_ml_status`, `transactions_categorize_ml_train`, `transactions_categorize_ml_apply` (blocked on `categorization-ml.md`) |
+| **[Categorization overview](categorization-overview.md)** | Draft | ML tools deferred — see `categorization-ml.md` (planned) |
 | **Smart Import (Pillar A)** | Not written | `import_folder` |
 | **Smart Import (Pillar F) + Privacy** | Not written | `import_ai_preview`, `import_ai_parse` |
 | **Corrections table schema** | Not written | `transactions_correct` |
