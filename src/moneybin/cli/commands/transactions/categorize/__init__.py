@@ -9,6 +9,8 @@ in the top-level `categories` and `merchants` groups respectively.
 
 import dataclasses
 import logging
+from decimal import Decimal, InvalidOperation
+from typing import Literal, cast
 
 import typer
 
@@ -72,8 +74,6 @@ def categorize_pending(
       moneybin transactions categorize pending --sort impact
       moneybin transactions categorize pending --min-amount 20 --output json
     """
-    from decimal import Decimal, InvalidOperation
-
     from moneybin.cli.output import render_or_json
     from moneybin.protocol.envelope import build_envelope
     from moneybin.services.account_service import AccountService
@@ -84,8 +84,6 @@ def categorize_pending(
     except InvalidOperation as e:
         typer.echo(f"❌ Invalid --min-amount: {min_amount}", err=True)
         raise typer.Exit(2) from e
-
-    from typing import Literal, cast
 
     if sort not in {"date", "impact"}:
         typer.echo("❌ --sort must be 'date' or 'impact'.", err=True)
@@ -107,7 +105,7 @@ def categorize_pending(
         typer.echo("No data — import transactions first.", err=True)
         raise typer.Exit(0)
 
-    envelope = build_envelope(data=records or [], sensitivity="medium")
+    envelope = build_envelope(data=records, sensitivity="medium")
 
     def _render_table(_: ResponseEnvelope) -> None:
         if not records:
@@ -115,7 +113,7 @@ def categorize_pending(
             return
         from moneybin.cli.utils import render_rich_table
 
-        cols = list(records[0].keys()) if records else []
+        cols = list(records[0].keys())
         rows = [tuple(r.values()) for r in records]
         render_rich_table(cols, rows)
 

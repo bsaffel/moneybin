@@ -815,7 +815,7 @@ Confirm and execute AI-assisted parsing for a file.
 Fetch transactions that haven't been categorized yet. Absorbs the former `reports_uncategorized` tool.
 
 - **Sensitivity:** `medium` — returns transaction descriptions and amounts.
-- **Unique parameters:** `limit: int = 50`, `sort: Literal["date", "impact"] = "date"` (`impact` sorts by `ABS(amount) × age_days` descending), `min_amount: float = 0.0` (filter to `ABS(amount) >= min_amount`), `account: str | None = None` (filter by account ID or display name; ambiguous display names raise `account_ambiguous`).
+- **Unique parameters:** `limit: int = 50`, `sort: Literal["date", "impact"] = "date"` (`impact` sorts by `ABS(amount) × age_days` descending), `min_amount: Decimal = Decimal("0")` (filter to `ABS(amount) >= min_amount`), `account: str | None = None` (filter by account ID or display name; ambiguous display names raise `account_ambiguous`).
 - **Behavior:** Returns array of `{transaction_id, account_id, account_name, txn_date, amount, description, merchant_id, merchant_normalized, age_days, priority_score, source_type, source_id}` from `reports.uncategorized_queue`. Amounts use the accounting convention: negative = expense, positive = income. Degraded response returns uncategorized count by account and time period.
 - **Service:** `CategorizationService.list_uncategorized_transactions(limit, sort, min_amount, account_id)`
 - **CLI:** `moneybin transactions categorize pending [--limit N] [--sort date|impact] [--min-amount N] [--account NAME]`
