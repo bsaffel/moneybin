@@ -35,36 +35,32 @@ from moneybin.privacy.taxonomy import strip_sigil
 logger = logging.getLogger(__name__)
 
 _SQL_DIR = Path(__file__).resolve().parent / "sql" / "schema"
-_OFX_SCHEMA_DIR = Path(__file__).resolve().parent / "extractors" / "ofx" / "schema"
-_PLAID_SCHEMA_DIR = Path(__file__).resolve().parent / "extractors" / "plaid" / "schema"
-_TABULAR_SCHEMA_DIR = (
-    Path(__file__).resolve().parent / "extractors" / "tabular" / "schema"
-)
+
+# Provider-bundled DDL directories. Listed here as plain paths rather than
+# imported via ``Provider.schema_files()`` to avoid triggering each
+# provider package's lazy-import machinery — the extractor classes pull in
+# polars and other heavy deps, and ``init_schemas`` only needs to discover
+# `.sql` files. The provider package owns the contents of its schema
+# directory; this list owns only the location.
+_EXTRACTORS_DIR = Path(__file__).resolve().parent / "extractors"
+_PROVIDER_SCHEMA_DIRS: list[Path] = [
+    _EXTRACTORS_DIR / "ofx" / "schema",
+    _EXTRACTORS_DIR / "plaid" / "schema",
+    _EXTRACTORS_DIR / "tabular" / "schema",
+]
 
 
-# Entries are filenames resolved against ``_SQL_DIR`` by default; tuples of
-# (directory, filename) point at provider-bundled schema directories. The
-# tuple form is a stopgap until Task 6 fully decentralizes schema discovery
-# via Provider.schema_files().
-_SchemaEntry = str | tuple[Path, str]
-
-
-_SCHEMA_FILES: list[_SchemaEntry] = [
+# Cross-cutting (non-provider-owned) DDL files resolved against ``_SQL_DIR``.
+# Order matters where dependencies exist: schema-create statements
+# (``raw_schema.sql``, etc.) must run before any table DDL inside that
+# schema. Tables within a schema have no ordering dependency on each other.
+_NON_PROVIDER_SCHEMA_FILES: list[str] = [
     "raw_schema.sql",
     "core_schema.sql",
     "app_schema.sql",
     "analytics_schema.sql",
     "meta_schema.sql",
     "reports_schema.sql",
-    (_OFX_SCHEMA_DIR, "raw_ofx_institutions.sql"),
-    (_OFX_SCHEMA_DIR, "raw_ofx_accounts.sql"),
-    (_OFX_SCHEMA_DIR, "raw_ofx_transactions.sql"),
-    (_OFX_SCHEMA_DIR, "raw_ofx_balances.sql"),
-    (_PLAID_SCHEMA_DIR, "raw_plaid_accounts.sql"),
-    (_PLAID_SCHEMA_DIR, "raw_plaid_balances.sql"),
-    (_PLAID_SCHEMA_DIR, "raw_plaid_transactions.sql"),
-    (_TABULAR_SCHEMA_DIR, "raw_tabular_transactions.sql"),
-    (_TABULAR_SCHEMA_DIR, "raw_tabular_accounts.sql"),
     "raw_import_log.sql",
     "raw_manual_transactions.sql",
     "app_categories.sql",
@@ -87,6 +83,20 @@ _SCHEMA_FILES: list[_SchemaEntry] = [
     "app_transaction_splits.sql",
     "app_imports.sql",
 ]
+
+
+def _all_schema_files() -> list[Path]:
+    """Enumerate every DDL file: cross-cutting plus provider-bundled.
+
+    Schema-creation statements (cross-cutting) run first so provider
+    tables can reference ``raw.*`` / ``app.*`` / etc. Each provider
+    directory contributes its ``raw_<provider>_*.sql`` files, discovered
+    by glob — matching the per-provider ``schema_files()`` contract.
+    """
+    files: list[Path] = [_SQL_DIR / name for name in _NON_PROVIDER_SCHEMA_FILES]
+    for schema_dir in _PROVIDER_SCHEMA_DIRS:
+        files.extend(sorted(schema_dir.glob("raw_*.sql")))
+    return files
 
 
 def _apply_comments(
@@ -199,22 +209,17 @@ def init_schemas(conn: duckdb.DuckDBPyConnection) -> None:
         conn: An active read-write DuckDB connection.
     """
     table_snapshot, column_snapshot = _snapshot_catalog_comments(conn)
-    for entry in _SCHEMA_FILES:
-        if isinstance(entry, tuple):
-            sql_dir, sql_file = entry
-            sql_path = sql_dir / sql_file
-        else:
-            sql_file = entry
-            sql_path = _SQL_DIR / sql_file
+    schema_files = _all_schema_files()
+    for sql_path in schema_files:
         if not sql_path.exists():
-            logger.warning(f"Schema file not found, skipping: {sql_file}")
+            logger.warning(f"Schema file not found, skipping: {sql_path.name}")
             continue
         sql = sql_path.read_text()
         conn.execute(sql)
         _apply_comments(conn, sql, table_snapshot, column_snapshot)
-        logger.debug(f"Executed {sql_file}")
+        logger.debug(f"Executed {sql_path.name}")
 
-    logger.debug(f"Executed {len(_SCHEMA_FILES)} schema files from {_SQL_DIR}")
+    logger.debug(f"Executed {len(schema_files)} schema files")
 
     # Mirror the DataClass registry into the catalog (suffix comments
     # with `[class: ...]`).
