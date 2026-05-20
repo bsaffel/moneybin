@@ -9,6 +9,7 @@ CLI-only by convention).
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any
@@ -24,6 +25,8 @@ from moneybin.protocol.envelope import (
     build_error_envelope,
     not_implemented_envelope,
 )
+
+logger = logging.getLogger(__name__)
 
 _SPEC = "docs/specs/2026-05-13-plaid-sync-design.md"
 
@@ -114,12 +117,13 @@ def sync_status() -> ResponseEnvelope:
 
 
 @mcp_tool(sensitivity="medium", read_only=False, idempotent=False, open_world=True)
-def sync_connect(institution: str | None = None) -> ResponseEnvelope:
-    """Initiate a bank-connection flow via moneybin-server's Plaid Hosted Link.
+def sync_link(institution: str | None = None) -> ResponseEnvelope:
+    """Link a bank account via Plaid (formerly: sync_connect).
 
+    Initiates a bank-connection flow via moneybin-server's Plaid Hosted Link.
     Returns a URL the user opens in their browser to complete the Plaid UI.
     Does NOT wait for completion — after the user confirms they've finished,
-    call sync_connect_status with the returned session_id to verify. The
+    call sync_link_status with the returned session_id to verify. The
     link_url is a sensitive one-time credential — present it to the user
     but do not include it in logs or summaries.
 
@@ -141,7 +145,7 @@ def sync_connect(institution: str | None = None) -> ResponseEnvelope:
                     f"multiple connected institutions match '{institution}' ({ids})",
                     code="ambiguous",
                     hint="Run sync_status to identify them; the duplicate name "
-                    "must be disambiguated before sync_connect can target one.",
+                    "must be disambiguated before sync_link can target one.",
                 ),
                 actions=["Run sync_status to list connected institutions."],
             )
@@ -159,19 +163,20 @@ def sync_connect(institution: str | None = None) -> ResponseEnvelope:
         sensitivity="medium",
         actions=[
             "Present link_url to the user and ask them to complete the connection in their browser.",
-            "After they confirm completion, call sync_connect_status with session_id to verify.",
+            "After they confirm completion, call sync_link_status with session_id to verify.",
             "Once verified, call sync_pull to fetch transactions.",
-            "Session expires at the expiration timestamp — beyond that, start a new connect flow.",
+            "Session expires at the expiration timestamp — beyond that, start a new link flow.",
         ],
     )
 
 
 @mcp_tool(sensitivity="low")
-def sync_connect_status(session_id: str) -> ResponseEnvelope:
-    """Check whether a bank-connection session has completed.
+def sync_link_status(session_id: str) -> ResponseEnvelope:
+    """Poll a sync_link session for completion (formerly: sync_connect_status).
 
-    Call after the user indicates they've finished the Plaid Link flow in their browser.
-    Returns connected, pending, or failed. Does NOT loop internally — the agent should
+    Check whether a bank-connection session has completed. Call after the user
+    indicates they've finished the Plaid Link flow in their browser. Returns
+    connected, pending, or failed. Does NOT loop internally — the agent should
     invoke this when the user signals completion, not poll repeatedly.
     """
     client = _build_sync_client()
@@ -180,12 +185,12 @@ def sync_connect_status(session_id: str) -> ResponseEnvelope:
     if status.status == "pending":
         actions = [
             "Connection has not completed yet. Ask the user to finish the flow in their browser, or wait and check again.",
-            "If the session expiration has passed, start a new connect flow with sync_connect.",
+            "If the session expiration has passed, start a new link flow with sync_link.",
         ]
     elif status.status == "connected":
         actions = ["Run sync_pull to fetch transactions from the new institution."]
     elif status.status == "failed":
-        actions = ["Run sync_connect to retry the connection."]
+        actions = ["Run sync_link to retry the connection."]
     return build_envelope(
         data={
             "session_id": status.session_id,
@@ -198,6 +203,30 @@ def sync_connect_status(session_id: str) -> ResponseEnvelope:
         sensitivity="low",
         actions=actions,
     )
+
+
+# Deprecated aliases — will be removed in the next minor release. The decorator
+# does not accept a `deprecated=` flag; the description string + warning log
+# carry the deprecation signal. Aliases are async so they can await the
+# canonical tool through its mcp_tool-decorated async wrapper.
+@mcp_tool(sensitivity="medium", read_only=False, idempotent=False, open_world=True)
+async def sync_connect(institution: str | None = None) -> ResponseEnvelope:
+    """Deprecated alias for `sync_link`. Will be removed in the next minor release."""
+    logger.warning(
+        "MCP tool `sync_connect` is deprecated; use `sync_link`. "
+        "The alias will be removed in the next minor release."
+    )
+    return await sync_link(institution=institution)
+
+
+@mcp_tool(sensitivity="low")
+async def sync_connect_status(session_id: str) -> ResponseEnvelope:
+    """Deprecated alias for `sync_link_status`. Will be removed in the next minor release."""
+    logger.warning(
+        "MCP tool `sync_connect_status` is deprecated; use `sync_link_status`. "
+        "The alias will be removed in the next minor release."
+    )
+    return await sync_link_status(session_id=session_id)
 
 
 @mcp_tool(sensitivity="medium", read_only=False, open_world=True)
@@ -268,10 +297,10 @@ def register_sync_tools(mcp: FastMCP) -> None:
     """Register all sync namespace tools with the FastMCP server."""
     for fn, desc in [
         (
-            sync_connect,
-            "Initiate a bank-connection flow — returns a URL the user opens in their browser. link_url is a sensitive one-time credential.",
+            sync_link,
+            "Link a bank account via Plaid — returns a URL the user opens in their browser. link_url is a sensitive one-time credential.",
         ),
-        (sync_connect_status, "Check whether a connect session has completed."),
+        (sync_link_status, "Poll a sync_link session for completion."),
         (sync_disconnect, "Remove a bank connection."),
         (
             sync_pull,
@@ -281,5 +310,13 @@ def register_sync_tools(mcp: FastMCP) -> None:
         (sync_schedule_set, "Install a daily sync at HH:MM."),
         (sync_schedule_show, "Show current scheduled sync."),
         (sync_schedule_remove, "Uninstall the scheduled sync job."),
+        (
+            sync_connect,
+            "Deprecated alias for sync_link. Will be removed in the next minor release.",
+        ),
+        (
+            sync_connect_status,
+            "Deprecated alias for sync_link_status. Will be removed in the next minor release.",
+        ),
     ]:
         register(mcp, fn, fn.__name__, desc)
