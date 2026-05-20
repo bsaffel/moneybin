@@ -56,10 +56,12 @@ async def test_formerly_extended_tools_visible_at_connect() -> None:
 
     Belt-and-suspenders complement to ``test_full_surface_visible_at_connect``:
     asserts specific tools by name so a regression that drops one namespace
-    entirely (rather than hiding it) is caught. ``budget_*`` and ``tax_*``
-    are intentionally NOT in this set — both are de-registered until their
-    backing specs reach ``in-progress``/``implemented`` (see
-    ``moneybin-mcp.md`` §17 "Dependency tracker").
+    entirely (rather than hiding it) is caught. ``budget_*`` is intentionally
+    NOT in this set — it is stub-gated pending spec maturity (re-registers
+    when ``budget-tracking.md`` reaches ``in-progress``/``implemented``).
+    ``tax_*`` has been removed entirely (PR #186); it will return only when
+    a new tax spec is written. See ``moneybin-mcp.md`` §17 "Dependency
+    tracker".
     """
     from moneybin.mcp.server import mcp
 
