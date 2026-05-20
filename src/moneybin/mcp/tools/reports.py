@@ -378,7 +378,8 @@ def register_reports_tools(mcp: FastMCP) -> None:
         "reports_balance_drift",
         "Categorical view of balance assertions by drift status (clean / warning / drift / no-data). "
         "Returns one row per assertion with computed drift. Use when you want a status breakdown across all assertions. "
-        "Amounts use the accounting convention: negative = expense, positive = income.",
+        "Amounts use the accounting convention: negative = expense, positive = income. "
+        "Drift amounts are in the currency named by summary.display_currency.",
     )
     register(
         mcp,
