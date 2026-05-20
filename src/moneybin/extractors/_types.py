@@ -44,6 +44,12 @@ class OAuthSession:
     Protocol's input union is complete.
     """
 
+    # TODO(connect-providers): tokens must route through SecretStore before
+    # the first `connect-*` provider lands — plain `str` violates the
+    # project security rule on credential storage (CLAUDE.md / .claude/
+    # rules/security.md). Either wrap as `SecretStr` (Pydantic) or have
+    # OAuthSession reference a SecretStore key instead of holding the
+    # token value. Decision deferred to the first connect provider PR.
     access_token: str
     refresh_token: str | None = None
     expires_at: int | None = None  # epoch seconds

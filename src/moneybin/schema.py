@@ -90,8 +90,13 @@ def _all_schema_files() -> list[Path]:
 
     Schema-creation statements (cross-cutting) run first so provider
     tables can reference ``raw.*`` / ``app.*`` / etc. Each provider
-    directory contributes its ``raw_<provider>_*.sql`` files, discovered
-    by glob — matching the per-provider ``schema_files()`` contract.
+    directory contributes every ``raw_*.sql`` it owns, discovered by
+    glob. The glob is intentionally permissive within a provider's
+    directory because the directory itself is the ownership boundary —
+    each provider owns the entire contents of its ``schema/`` dir.
+    By convention, provider files follow ``raw_<provider>_<entity>.sql``
+    naming (matching the per-provider ``schema_files()`` contract); the
+    permissive glob avoids re-declaring the prefix in two places.
     """
     files: list[Path] = [_SQL_DIR / name for name in _NON_PROVIDER_SCHEMA_FILES]
     for schema_dir in _PROVIDER_SCHEMA_DIRS:
