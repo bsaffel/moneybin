@@ -14,7 +14,7 @@ The work has eight pieces, all interlocking:
 2. `operation_id` grouping on `app.audit_log` so a tool call's mutations are one undoable unit.
 3. An audit-log undo consumer — Phase 2 of Invariant 9 — exposed via `system_audit_undo` / `system_audit_history` / `system_audit_get`.
 4. A doctor recipe registry: each invariant audit ships with a Python recipe producing `recovery_actions` from the failure's affected IDs.
-5. A self-heal safelist run at refresh time — six recipes, all reversible through the same audit-log undo, with five strict criteria that gate any future addition.
+5. A self-heal safelist run at refresh time — five active recipes, all reversible through the same audit-log undo, with five strict criteria that gate any future addition. A small "deferred" subsection captures known-shape future recipes that don't yet have a concrete trigger.
 6. The matches MCP surface (`transactions_matches_run` / `_review` / `_set` / `_history`) closing the CLI-only gap.
 7. `RefreshResult` extensions surfacing matching and categorization crashes that today log at DEBUG and accumulate dupes silently.
 8. A new always-loaded project rule (`.claude/rules/data-recovery.md`) codifying the contract for future tools, audits, and refresh stages.
@@ -52,7 +52,7 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
 
 **Audit-log-driven undo over per-domain inverse tools.** Invariant 9 Phase 1 already captures the data; Phase 2 is one consumer, not a dozen `un*` tools. The verb vocabulary in `.claude/rules/surface-design.md` doesn't have a `_undo` verb on purpose — reversibility lives in the audit log, not in paired tools. Explicit named tools exist only where the inverse is structurally a different operation (matches, splits — where the inverse is a state change, not a row restore).
 
-**Safelist + report over aggressive auto-heal.** Refresh-time self-healing is gated on five strict criteria (derivable, idempotent, no information loss, auditable, reversible). Six recipes pass all five; everything else surfaces as an audit failure with a recovery recipe. The system never destroys user-authored content automatically. The trust contract is concrete: **recompute, don't decide.**
+**Safelist + report over aggressive auto-heal.** Refresh-time self-healing is gated on five strict criteria (derivable, idempotent, no information loss, auditable, reversible). Five active recipes pass all five; everything else surfaces as an audit failure with a recovery recipe. The system never destroys user-authored content automatically. The trust contract is concrete: **recompute, don't decide.**
 
 **Block-don't-cascade undo.** `system_audit_undo` blocks when a later operation modified the same row and returns the blocker operations in `recovery_actions`. The agent walks the chain explicitly. Auto-cascade is exactly the magic that loses trust ("I undid one thing and it deleted my categorizations from last week"); blocking forces the agent to communicate the cascade to the user before acting.
 
@@ -143,7 +143,7 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
     | `staging_coverage` (skipped) | Returns `[]` until the `is_primary` unblock (tracked in `followups.md:131`) |
     | `orphan_app_state` (new) | (1) `transactions_notes_delete(note_ids=[...])` and/or `transactions_tags_set(transaction_id=..., tags=[])` per orphan. `confidence=certain` |
 
-8. **Self-heal safelist.** Six recipes run at refresh time. Each MUST satisfy all five criteria:
+8. **Self-heal safelist.** Five active recipes run at refresh time. Each MUST satisfy all five criteria:
 
     1. **Derivable** — corrected state fully computable from inputs the user controls.
     2. **Idempotent** — running twice = running once.
@@ -159,10 +159,15 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
     | 2 | `orphan_splits_cleanup` | Same | DELETE `app.transaction_splits` rows whose parent transaction is gone |
     | 3 | `derived_table_rebuild` | Every refresh (already happens) | Rebuild `core.*` and `reports.*` from raw + app |
     | 4 | `match_index_recompute` | Account aliases change, or after revert | Rebuild matching index from current account+txn state |
-    | 5 | `account_displayname_reresolve` | After `accounts_set` updates a display name | Refresh derived display references in `core.dim_accounts` and `reports.*` (largely subsumed by `derived_table_rebuild` in Phase 1; kept as a separate slot so a future non-derived display cache can plug in without re-architecting the safelist) |
-    | 6 | `rule_apply_to_uncategorized` | After `transactions_categorize_rules_create` | Apply new rule to transactions where `app.transaction_categories` has no row — never to manually-categorized rows |
+    | 5 | `rule_apply_to_uncategorized` | After `transactions_categorize_rules_create` | Apply new rule to transactions where `app.transaction_categories` has no row — never to manually-categorized rows |
 
     Adding a recipe after Phase 1 requires explicit reference to all five criteria in the PR description; no recipe lands without that justification. Orphan `app.transaction_notes` / `app.transaction_tags` rows after revert explicitly stay OFF the safelist (fail criterion 3) — they surface as `orphan_app_state` audit failures instead.
+
+    **Deferred safelist recipes** — known-shape recipes whose trigger doesn't yet warrant a concrete implementation. Documented so future contributors recognize the shape and don't re-derive the analysis; added to the active safelist (with the five-criteria justification) only when a real driver appears.
+
+    | Recipe | Why deferred | Trigger that would promote it |
+    |---|---|---|
+    | `account_displayname_reresolve` | Refresh derived display references in `core.dim_accounts` and `reports.*` is already covered by `derived_table_rebuild` (recipe #3) in Phase 1. No non-derived cache of account display names exists today. Promoting now would allocate audit/undo surface for a no-op. | A non-derived projection that caches account display names appears (e.g., a saved-view system, a report that materializes display strings outside SQLMesh). At that point: add the recipe to the active list with explicit five-criteria justification. |
 
 9. **`RefreshResult` error surfacing.** The response from `refresh_run` gains:
 
@@ -277,7 +282,7 @@ flowchart TB
         ExTool["Existing inverse tool<br/>(categories_delete, accounts_set, ...)"]
         Undo["system_audit_undo(operation_id)"]
         Revert["import_revert + re-import"]
-        Heal["Self-heal at refresh<br/>(6-recipe safelist)"]
+        Heal["Self-heal at refresh<br/>(5-recipe safelist)"]
         DomTool["Matches MCP / curation tools"]
     end
 
@@ -363,7 +368,7 @@ Phase 2 of Invariant 9 + sister contract work + matches MCP + refresh surfacing 
 
 ### PR 7 — Self-heal safelist recipes
 
-- `src/moneybin/services/self_heal/` — one module per recipe in the safelist (recipes 1, 2, 4, 5, 6; recipe 3 — derived table rebuild — already exists in refresh and just gains audit_log emission).
+- `src/moneybin/services/self_heal/` — one module per recipe in the active safelist (recipes 1, 2, 4, 5; recipe 3 — derived table rebuild — already exists in refresh and just gains audit_log emission). Deferred recipes (e.g., `account_displayname_reresolve`) are not implemented in Phase 1; the spec's deferred subsection documents their shape for future promotion.
 - `refresh_run` invokes the safelist after `derived_table_rebuild`. Each recipe writes per-entity audit rows with `actor='system:self_heal'` and `operation_id='op_self_heal_<recipe_id>_<uuid4_hex>'`. The triggered operation_ids accumulate into `RefreshResult.self_heal_actions`.
 - Tests per recipe: seed drift → refresh runs → drift gone → audit rows present → `system_audit_undo(operation_id)` reverses the heal.
 - Cross-cutting test: chain of revert → refresh → self-heal → audit_history shows the self-heal as undoable; user can `system_audit_undo` it to restore the orphan.
@@ -434,7 +439,7 @@ Resolved during the 2026-05-19/2026-05-20 brainstorm. Captured so future readers
 
 1. **Push + pull discovery, not push-only.** Push (`recovery_actions` on failures) covers the reactive case. Pull (`system_audit_history`) covers regret — the user changed their mind, no error preceded the bad state. Push-only would force agents to reach for `sql_query` for regret cases; that's exactly the surgery this spec rules out. Cost: one extra tool surface (`system_audit_history`), worth it.
 
-2. **Safelist + report posture for self-heal, not aggressive or detect-only.** "I don't want friction, but I don't want the kind of magic that loses trust." The five criteria are the line: derivable + idempotent + no information loss + auditable + reversible. Six recipes pass all five. Everything else — orphan notes, recategorization conflicts, budget references — surfaces as `orphan_app_state` audit failures with structured recovery_actions. Recipe #6 (`rule_apply_to_uncategorized`) stays auto-on; it only creates rows where `app.transaction_categories` has no entry for the transaction, so manual categorizations are protected.
+2. **Safelist + report posture for self-heal, not aggressive or detect-only.** "I don't want friction, but I don't want the kind of magic that loses trust." The five criteria are the line: derivable + idempotent + no information loss + auditable + reversible. Five active recipes pass all five (`account_displayname_reresolve` was drafted as a sixth but moved to the deferred subsection per the PR #188 review — it's "largely subsumed by `derived_table_rebuild`" in Phase 1, so reserving an active slot for it would allocate audit/undo surface for a no-op). Everything else — orphan notes, recategorization conflicts, budget references — surfaces as `orphan_app_state` audit failures with structured recovery_actions. Recipe #5 (`rule_apply_to_uncategorized`) stays auto-on; it only creates rows where `app.transaction_categories` has no entry for the transaction, so manual categorizations are protected.
 
 3. **Audit-log-driven undo, not per-domain inverse tools.** Approach C (hybrid) over Approach B (per-domain). Phase 1 already captures the data; Phase 2 is one consumer rather than 6-8 `un*` tools. The verb vocabulary in `.claude/rules/surface-design.md` doesn't have a `_undo` verb on purpose — reversibility lives in the audit log. Explicit named tools exist only where the inverse is structurally a different operation (matches, splits).
 
