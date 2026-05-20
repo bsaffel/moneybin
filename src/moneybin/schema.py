@@ -35,19 +35,27 @@ from moneybin.privacy.taxonomy import strip_sigil
 logger = logging.getLogger(__name__)
 
 _SQL_DIR = Path(__file__).resolve().parent / "sql" / "schema"
+_OFX_SCHEMA_DIR = Path(__file__).resolve().parent / "extractors" / "ofx" / "schema"
 
 
-_SCHEMA_FILES: list[str] = [
+# Entries are filenames resolved against ``_SQL_DIR`` by default; tuples of
+# (directory, filename) point at provider-bundled schema directories. The
+# tuple form is a stopgap until Task 6 fully decentralizes schema discovery
+# via Provider.schema_files().
+_SchemaEntry = str | tuple[Path, str]
+
+
+_SCHEMA_FILES: list[_SchemaEntry] = [
     "raw_schema.sql",
     "core_schema.sql",
     "app_schema.sql",
     "analytics_schema.sql",
     "meta_schema.sql",
     "reports_schema.sql",
-    "raw_ofx_institutions.sql",
-    "raw_ofx_accounts.sql",
-    "raw_ofx_transactions.sql",
-    "raw_ofx_balances.sql",
+    (_OFX_SCHEMA_DIR, "raw_ofx_institutions.sql"),
+    (_OFX_SCHEMA_DIR, "raw_ofx_accounts.sql"),
+    (_OFX_SCHEMA_DIR, "raw_ofx_transactions.sql"),
+    (_OFX_SCHEMA_DIR, "raw_ofx_balances.sql"),
     "raw_plaid_accounts.sql",
     "raw_plaid_balances.sql",
     "raw_plaid_transactions.sql",
@@ -187,8 +195,13 @@ def init_schemas(conn: duckdb.DuckDBPyConnection) -> None:
         conn: An active read-write DuckDB connection.
     """
     table_snapshot, column_snapshot = _snapshot_catalog_comments(conn)
-    for sql_file in _SCHEMA_FILES:
-        sql_path = _SQL_DIR / sql_file
+    for entry in _SCHEMA_FILES:
+        if isinstance(entry, tuple):
+            sql_dir, sql_file = entry
+            sql_path = sql_dir / sql_file
+        else:
+            sql_file = entry
+            sql_path = _SQL_DIR / sql_file
         if not sql_path.exists():
             logger.warning(f"Schema file not found, skipping: {sql_file}")
             continue

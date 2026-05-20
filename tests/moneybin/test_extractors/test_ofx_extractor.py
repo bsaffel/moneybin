@@ -11,12 +11,8 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from moneybin.extractors.ofx_extractor import (
-    OFXExtractionConfig,
-    OFXExtractor,
-    OFXTransactionSchema,
-    extract_ofx_file,
-)
+from moneybin.extractors.ofx import OFXExtractor, OFXProviderConfig
+from moneybin.extractors.ofx.extractor import OFXTransactionSchema, extract_ofx_file
 
 # Path to test fixtures directory
 FIXTURES_DIR = Path(__file__).parent.parent.parent / "fixtures"
@@ -38,9 +34,9 @@ def sample_ofx_file() -> Path:
 
 
 @pytest.fixture
-def extractor_config(tmp_path: Path) -> OFXExtractionConfig:
+def extractor_config(tmp_path: Path) -> OFXProviderConfig:
     """Create test extraction configuration."""
-    return OFXExtractionConfig(
+    return OFXProviderConfig(
         raw_data_path=tmp_path / "raw_ofx",
         preserve_source_files=True,
         validate_balances=True,
@@ -81,7 +77,7 @@ def test_ofx_transaction_schema_validation() -> None:
 
 
 @pytest.mark.unit
-def test_extractor_initialization(extractor_config: OFXExtractionConfig) -> None:
+def test_extractor_initialization(extractor_config: OFXProviderConfig) -> None:
     """Test that OFX extractor initializes correctly."""
     extractor = OFXExtractor(extractor_config)
 
@@ -92,7 +88,7 @@ def test_extractor_initialization(extractor_config: OFXExtractionConfig) -> None
 
 @pytest.mark.unit
 def test_extract_from_file_creates_dataframes(
-    sample_ofx_file: Path, extractor_config: OFXExtractionConfig
+    sample_ofx_file: Path, extractor_config: OFXProviderConfig
 ) -> None:
     """Test that extraction creates all expected DataFrames."""
     extractor = OFXExtractor(extractor_config)
@@ -115,7 +111,7 @@ def test_extract_from_file_creates_dataframes(
 
 @pytest.mark.unit
 def test_extract_institutions_data(
-    sample_ofx_file: Path, extractor_config: OFXExtractionConfig
+    sample_ofx_file: Path, extractor_config: OFXProviderConfig
 ) -> None:
     """Test that institution data is extracted correctly."""
     extractor = OFXExtractor(extractor_config)
@@ -142,7 +138,7 @@ def test_extract_institutions_data(
 
 @pytest.mark.unit
 def test_extract_accounts_data(
-    sample_ofx_file: Path, extractor_config: OFXExtractionConfig
+    sample_ofx_file: Path, extractor_config: OFXProviderConfig
 ) -> None:
     """Test that account data is extracted correctly."""
     extractor = OFXExtractor(extractor_config)
@@ -170,7 +166,7 @@ def test_extract_accounts_data(
 
 @pytest.mark.unit
 def test_extract_transactions_data(
-    sample_ofx_file: Path, extractor_config: OFXExtractionConfig
+    sample_ofx_file: Path, extractor_config: OFXProviderConfig
 ) -> None:
     """Test that transaction data is extracted correctly."""
     extractor = OFXExtractor(extractor_config)
@@ -213,7 +209,7 @@ def test_extract_transactions_data(
 
 @pytest.mark.unit
 def test_extract_balances_data(
-    sample_ofx_file: Path, extractor_config: OFXExtractionConfig
+    sample_ofx_file: Path, extractor_config: OFXProviderConfig
 ) -> None:
     """Test that balance data is extracted correctly."""
     extractor = OFXExtractor(extractor_config)
@@ -240,7 +236,7 @@ def test_extract_balances_data(
 
 @pytest.mark.unit
 def test_extract_nonexistent_file_raises_error(
-    extractor_config: OFXExtractionConfig,
+    extractor_config: OFXProviderConfig,
 ) -> None:
     """Test that extracting non-existent file raises FileNotFoundError."""
     extractor = OFXExtractor(extractor_config)
@@ -255,7 +251,7 @@ def test_extract_nonexistent_file_raises_error(
 
 @pytest.mark.unit
 def test_extract_invalid_ofx_raises_error(
-    tmp_path: Path, extractor_config: OFXExtractionConfig
+    tmp_path: Path, extractor_config: OFXProviderConfig
 ) -> None:
     """Test that invalid OFX content raises ValueError."""
     # Create file with invalid OFX content
@@ -289,7 +285,7 @@ def test_convenience_function(sample_ofx_file: Path) -> None:
 
 @pytest.mark.unit
 def test_extract_preserves_metadata(
-    sample_ofx_file: Path, extractor_config: OFXExtractionConfig
+    sample_ofx_file: Path, extractor_config: OFXProviderConfig
 ) -> None:
     """Test that extraction preserves metadata like source file and extraction time."""
     extractor = OFXExtractor(extractor_config)
@@ -313,7 +309,7 @@ def test_extract_preserves_metadata(
 
 @pytest.mark.unit
 def test_extracted_transaction_amount_is_decimal(
-    sample_ofx_file: Path, extractor_config: OFXExtractionConfig
+    sample_ofx_file: Path, extractor_config: OFXProviderConfig
 ) -> None:
     """Transaction amount column must be pl.Decimal(18,2), not Float64."""
     extractor = OFXExtractor(extractor_config)
@@ -327,7 +323,7 @@ def test_extracted_transaction_amount_is_decimal(
 
 @pytest.mark.unit
 def test_extracted_balance_amounts_are_decimal(
-    sample_ofx_file: Path, extractor_config: OFXExtractionConfig
+    sample_ofx_file: Path, extractor_config: OFXProviderConfig
 ) -> None:
     """Balance amount columns must be pl.Decimal(18,2), not Float64."""
     extractor = OFXExtractor(extractor_config)

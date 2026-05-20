@@ -443,10 +443,8 @@ class ImportService:
             InstitutionResolutionError,
             resolve_institution,
         )
-        from moneybin.extractors.ofx_extractor import (
-            OFXExtractor,
-            preprocess_ofx_content,
-        )
+        from moneybin.extractors.ofx import OFXExtractor
+        from moneybin.extractors.ofx.extractor import preprocess_ofx_content
         from moneybin.loaders import import_log
         from moneybin.metrics.registry import OFX_IMPORT_BATCHES
 
@@ -1176,7 +1174,7 @@ class ImportService:
                 if r.file_type in ("ofx", "tabular"):
                     any_transformable = True
             except Exception as e:  # noqa: BLE001 — per-file failure must not abort batch
-                # error_type only; raw str(e) may embed PII per ofx_extractor.py:228-232
+                # error_type only; raw str(e) may embed PII per extractors/ofx/extractor.py
                 error_type = type(e).__name__
                 logger.warning(f"Import failed for {path}: {error_type}")
                 per_file.append(

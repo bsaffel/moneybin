@@ -9,7 +9,6 @@ Documentation: https://github.com/jseutter/ofxparse
 
 import html
 import logging
-from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
@@ -19,6 +18,8 @@ import ofxparse
 import polars as pl
 from pydantic import BaseModel, Field, field_validator
 
+from moneybin.extractors._types import ExtractionResult, FilePath, ProviderSource
+from moneybin.extractors.ofx.config import OFXProviderConfig
 from moneybin.utils.parsing import coerce_to_decimal
 
 logger = logging.getLogger(__name__)
@@ -118,15 +119,6 @@ class OFXStatementSchema(BaseModel):
     model_config = {"extra": "allow"}
 
 
-@dataclass
-class OFXExtractionConfig:
-    """Configuration for OFX file extraction."""
-
-    raw_data_path: Path | None = None  # Will use profile-aware path if None
-    preserve_source_files: bool = True
-    validate_balances: bool = True
-
-
 def preprocess_ofx_content(content: str) -> str:
     """Preprocess OFX content to handle SGML format without newlines.
 
@@ -157,7 +149,13 @@ def preprocess_ofx_content(content: str) -> str:
 class OFXExtractor:
     """Extract financial data from OFX/QFX files into raw table structures."""
 
-    def __init__(self, config: OFXExtractionConfig | None = None):
+    name = "ofx"
+    """Provider name; matches raw.ofx_* table prefix."""
+
+    source_type = "ofx"
+    """Written into source_type column on every row produced by this provider."""
+
+    def __init__(self, config: OFXProviderConfig | None = None):
         """Initialize the OFX extractor.
 
         Args:
@@ -165,9 +163,11 @@ class OFXExtractor:
         """
         from moneybin.config import get_raw_data_path
 
-        self.config = config or OFXExtractionConfig()
+        self.config = config or OFXProviderConfig()
 
-        # Use profile-aware path if not explicitly provided
+        # Use profile-aware path if not explicitly provided.
+        # OFXProviderConfig overrides ProviderConfig's frozen=True for this
+        # one initialization mutation; treat as effectively immutable otherwise.
         if self.config.raw_data_path is None:
             self.config.raw_data_path = get_raw_data_path() / "ofx"
 
@@ -177,6 +177,30 @@ class OFXExtractor:
         logger.info(
             f"Initialized OFX extractor with output: {self.config.raw_data_path}"
         )
+
+    def extract(self, source: ProviderSource) -> ExtractionResult:
+        """Provider Protocol entry point.
+
+        OFX accepts ``FilePath`` only. ``import_id`` and ``source_origin``
+        are framework-supplied — currently still threaded through callers
+        via ``extract_from_file()`` directly until Task 5 (the framework
+        wiring) lands. This stub satisfies the Protocol's structural shape
+        but is not yet a live call path.
+        """
+        if not isinstance(source, FilePath):
+            raise TypeError(
+                f"OFXExtractor expects FilePath; got {type(source).__name__}"
+            )
+        raise NotImplementedError(
+            "OFXExtractor.extract() requires framework-supplied import_id and "
+            "source_origin; wiring lands in Task 5 of the provider-framework "
+            "refactor. Call extract_from_file() directly for now."
+        )
+
+    def schema_files(self) -> list[Path]:
+        """Return paths to raw.ofx_* DDL files bundled with this package."""
+        schema_dir = Path(__file__).parent / "schema"
+        return sorted(schema_dir.glob("raw_ofx_*.sql"))
 
     def extract_from_file(
         self,

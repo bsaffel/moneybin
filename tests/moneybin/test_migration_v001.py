@@ -27,7 +27,8 @@ class TestV001Migration:
             Path(__file__).resolve().parents[2]
             / "src"
             / "moneybin"
-            / "sql"
+            / "extractors"
+            / "ofx"
             / "schema"
             / "raw_ofx_transactions.sql"
         )
@@ -47,7 +48,7 @@ class TestOFXExtractorColumnName:
 
     def test_extractor_outputs_source_transaction_id(self) -> None:
         """OFX extractor DataFrame must use source_transaction_id column."""
-        from moneybin.extractors.ofx_extractor import OFXExtractor
+        from moneybin.extractors.ofx import OFXExtractor
 
         extractor = OFXExtractor()
         empty_df = extractor._build_empty_transactions_df()  # pyright: ignore[reportPrivateUsage]  # testing protected method output
