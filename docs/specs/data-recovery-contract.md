@@ -74,13 +74,13 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
 
     ```python
     class RecoveryAction:
-        tool: str                       # MCP tool name, e.g. "system_audit_undo"
-        arguments: dict[str, Any]       # prefilled args — agent can execute directly
-        rationale: str                  # short prose: WHY this fixes the failure
+        tool: str  # MCP tool name, e.g. "system_audit_undo"
+        arguments: dict[str, Any]  # prefilled args — agent can execute directly
+        rationale: str  # short prose: WHY this fixes the failure
         confidence: Literal["certain", "suggested"]
-                                        # certain = this will fix it
-                                        # suggested = agent should weigh other context
-        idempotent: bool                # safe to retry on transient failure?
+        # certain = this will fix it
+        # suggested = agent should weigh other context
+        idempotent: bool  # safe to retry on transient failure?
     ```
 
     Lists are ordered: most-likely-correct first. Empty list = nothing actionable; the agent MUST escalate to the user — never silently treat as auto-recovered.
@@ -99,6 +99,8 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
     | `recovery_*` | Recovery tooling itself (e.g. `recovery_no_path`) |
 
     Every existing `UserError` code is audited and migrated to this taxonomy in the rollout PR sequence. The `code` field becomes load-bearing — agents may branch on it. CHANGELOG entry under `Changed` for any pre-existing code that changes shape.
+
+    **Implementation note (PR 2):** the taxonomy module (`src/moneybin/error_codes.py`) also declares `infra_*` and `sync_*` prefixes to absorb existing non-recovery error codes (`infra_database_locked`, `infra_io_error`, `sync_error`, etc.) without leaving them unprefixed. These prefixes are *not* part of the recovery contract — they exist purely for taxonomy completeness so `test_error_codes::test_every_code_uses_valid_prefix` can be enforced repo-wide. New recovery codes must use one of the six prefixes in the table above.
 
 4. **`operation_id` schema addition.** `app.audit_log` gains three columns:
 
@@ -126,7 +128,7 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
     ```python
     def recovery_recipe(
         affected_ids: list[str],
-        context: AuditContext,   # DB handle, settings, current state
+        context: AuditContext,  # DB handle, settings, current state
     ) -> list[RecoveryAction]: ...
     ```
 
@@ -183,10 +185,11 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
         categorization_error: str | None
         self_heal_actions: list[SelfHealRecord]
 
+
     class SelfHealRecord:
-        recipe_id: str            # one of the 6 safelist recipes
+        recipe_id: str  # one of the 6 safelist recipes
         rows_affected: int
-        operation_id: str         # for undo via system_audit_undo
+        operation_id: str  # for undo via system_audit_undo
         timestamp: str
     ```
 
