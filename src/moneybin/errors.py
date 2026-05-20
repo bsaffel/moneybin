@@ -14,7 +14,9 @@ translated into user-facing messages.
 from __future__ import annotations
 
 from decimal import InvalidOperation
-from typing import Any
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from moneybin.connectors.sync_errors import SyncError
 from moneybin.database import (
@@ -24,6 +26,37 @@ from moneybin.database import (
     SchemaDriftError,
     database_key_error_hint,
 )
+
+
+class RecoveryAction(BaseModel):
+    """One structured action an agent can execute to fix a failure.
+
+    Carried in the optional `recovery_actions` field on both UserError
+    and ResponseEnvelope. Agents read the field, pick the highest-confidence
+    action they're authorized to run, and invoke `tool(**arguments)`.
+
+    Semantics:
+    - tool: an MCP tool name (e.g. "system_audit_undo"). For CLI parity,
+      the same string maps to a CLI command via the surface registry.
+    - arguments: pre-filled arguments the agent can execute directly. No
+      placeholder strings; if a value isn't known at error-construction
+      time, the action belongs as `confidence="suggested"` with the
+      missing argument named in rationale.
+    - rationale: short prose explaining WHY this action fixes the failure.
+      One sentence. Agent surfaces this to the user when confirming.
+    - confidence: "certain" = this will fix it; "suggested" = the agent
+      should weigh other context and may need user input.
+    - idempotent: True if running the action twice is safe — agents can
+      retry on transient failures without confirming.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    tool: str = Field(..., min_length=1)
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    rationale: str = Field(..., min_length=1)
+    confidence: Literal["certain", "suggested"]
+    idempotent: bool
 
 
 class UserError(Exception):
