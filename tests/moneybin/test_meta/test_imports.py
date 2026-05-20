@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 
+@pytest.mark.unit
 def test_w2_modules_removed() -> None:
     """Confirm that the W-2 extractor and loader are fully removed."""
     with pytest.raises(ModuleNotFoundError):
