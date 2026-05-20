@@ -83,7 +83,7 @@ The MCP server registers around seventy tools across roughly a dozen domains. Fu
 | `transactions.categorize.*` | Categorization: rules, LLM-assist, commit, auto-review | `transactions_categorize_assist`, `transactions_categorize_commit`, `transactions_categorize_run`, `transactions_categorize_rules` |
 | `reports.*` | Pre-built analytical views | `reports_networth`, `reports_cashflow`, `reports_spending`, `reports_recurring`, `reports_uncategorized` |
 | `refresh` | Run the matching → SQLMesh apply → categorization cascade | `refresh_run` (single umbrella) |
-| `sync.*` | Pull from upstream providers (Plaid) and the inbox | `sync_pull`, `sync_connect`, `import_inbox_sync` |
+| `sync.*` | Pull from upstream providers (Plaid) and the inbox | `sync_pull`, `sync_link`, `import_inbox_sync` |
 | `merchants.*` | Manage merchant identities | `merchants`, `merchants_create` |
 | `sql` | Read-only DuckDB query against the interface set | `sql_query` |
 

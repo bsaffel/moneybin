@@ -82,7 +82,7 @@ def _surface_connect_link(
 
     Always prints to stderr so headless users can copy the URL even when
     `webbrowser.open()` falsely reports success (common on Linux without a
-    display server). Called by SyncService.connect via the on_initiate hook
+    display server). Called by SyncService.link via the on_initiate hook
     before it begins polling.
     """
     typer.echo("⚙️  To complete authentication, open this URL:", err=True)
@@ -177,7 +177,7 @@ def sync_link(
             def _on_initiate(init: ConnectInitiateResponse) -> None:
                 _surface_connect_link(init, open_browser=not no_browser)
 
-            result = service.connect(
+            result = service.link(
                 institution=institution,
                 auto_pull=not no_pull,
                 on_initiate=_on_initiate,

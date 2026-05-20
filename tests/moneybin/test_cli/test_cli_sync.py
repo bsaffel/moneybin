@@ -195,7 +195,7 @@ def test_sync_link_status_command_exists() -> None:
 def test_sync_link_new_institution(mock_build: MagicMock) -> None:
     service = MagicMock()
     service.list_connections.return_value = []
-    service.connect.return_value = ConnectResult(
+    service.link.return_value = ConnectResult(
         provider_item_id="item_new",
         institution_name="Chase",
         pull_result=_fake_pull_result(),
@@ -203,9 +203,9 @@ def test_sync_link_new_institution(mock_build: MagicMock) -> None:
     mock_build.return_value.__enter__.return_value = service
     result = runner.invoke(app, ["sync", "link"])
     assert result.exit_code == 0, result.output
-    service.connect.assert_called_once()
+    service.link.assert_called_once()
     # auto_pull defaults to True
-    assert service.connect.call_args.kwargs.get("auto_pull", True) is True
+    assert service.link.call_args.kwargs.get("auto_pull", True) is True
 
 
 @pytest.mark.unit
@@ -221,7 +221,7 @@ def test_sync_link_surfaces_transforms_error_from_auto_pull(
     """
     service = MagicMock()
     service.list_connections.return_value = []
-    service.connect.return_value = ConnectResult(
+    service.link.return_value = ConnectResult(
         provider_item_id="item_new",
         institution_name="Chase",
         pull_result=_fake_pull_result(
@@ -232,7 +232,7 @@ def test_sync_link_surfaces_transforms_error_from_auto_pull(
     mock_build.return_value.__enter__.return_value = service
     result = runner.invoke(app, ["sync", "link"])
     assert result.exit_code == 1
-    service.connect.assert_called_once()
+    service.link.assert_called_once()
 
 
 @pytest.mark.unit
@@ -240,22 +240,22 @@ def test_sync_link_surfaces_transforms_error_from_auto_pull(
 def test_sync_link_no_pull(mock_build: MagicMock) -> None:
     service = MagicMock()
     service.list_connections.return_value = []
-    service.connect.return_value = ConnectResult(
+    service.link.return_value = ConnectResult(
         provider_item_id="item_new",
         institution_name="Chase",
     )
     mock_build.return_value.__enter__.return_value = service
     result = runner.invoke(app, ["sync", "link", "--no-pull"])
     assert result.exit_code == 0, result.output
-    service.connect.assert_called_once()
-    assert service.connect.call_args.kwargs["auto_pull"] is False
+    service.link.assert_called_once()
+    assert service.link.call_args.kwargs["auto_pull"] is False
 
 
 @pytest.mark.unit
 @patch("moneybin.cli.commands.sync._build_sync_service")
 def test_sync_link_explicit_institution(mock_build: MagicMock) -> None:
     service = MagicMock()
-    service.connect.return_value = ConnectResult(
+    service.link.return_value = ConnectResult(
         provider_item_id="item_x",
         institution_name="Schwab",
     )
@@ -264,8 +264,8 @@ def test_sync_link_explicit_institution(mock_build: MagicMock) -> None:
         app, ["sync", "link", "--institution", "Schwab", "--no-pull"]
     )
     assert result.exit_code == 0, result.output
-    service.connect.assert_called_once()
-    assert service.connect.call_args.kwargs["institution"] == "Schwab"
+    service.link.assert_called_once()
+    assert service.link.call_args.kwargs["institution"] == "Schwab"
 
 
 @pytest.mark.unit
@@ -302,14 +302,14 @@ def test_sync_connect_alias_warns_and_forwards(
     """The deprecated `sync connect` alias warns but still forwards to `sync link`."""
     service = MagicMock()
     service.list_connections.return_value = []
-    service.connect.return_value = ConnectResult(
+    service.link.return_value = ConnectResult(
         provider_item_id="item_new",
         institution_name="Chase",
     )
     mock_build.return_value.__enter__.return_value = service
     result = runner.invoke(app, ["sync", "connect", "--no-pull"])
     assert result.exit_code == 0, result.output
-    service.connect.assert_called_once()
+    service.link.assert_called_once()
     # Deprecation warning fires via module logger; caplog can't observe it
     # because setup_observability reconfigures logging mid-invocation. Assert
     # against the patched logger instead.
