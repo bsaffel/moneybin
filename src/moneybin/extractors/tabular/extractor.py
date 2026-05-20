@@ -1,14 +1,28 @@
-"""Stage 5: Tabular data loader.
+"""Stage 5: Tabular data extractor.
 
 Handles raw table writes via Database.ingest_dataframe(). Batch lifecycle
 delegates to moneybin.loaders.import_log.
+
+This module is the Protocol-compliant entry point for the tabular provider;
+it composes the format-detection, reading, and column-mapping primitives
+in neighbor modules (``format_detector``, ``readers``, ``column_mapper``,
+``transforms``) rather than reimplementing them.
 """
 
+from __future__ import annotations
+
 import logging
+from pathlib import Path
 
 import polars as pl
 
 from moneybin.database import Database
+from moneybin.extractors._types import (
+    ExtractionResult,
+    FilePath,
+    ProviderSource,
+)
+from moneybin.extractors.tabular.config import TabularProviderConfig
 from moneybin.loaders import import_log
 from moneybin.metrics.registry import TABULAR_IMPORT_BATCHES
 from moneybin.tables import TABULAR_ACCOUNTS, TABULAR_TRANSACTIONS
@@ -16,12 +30,66 @@ from moneybin.tables import TABULAR_ACCOUNTS, TABULAR_TRANSACTIONS
 logger = logging.getLogger(__name__)
 
 
-class TabularLoader:
-    """Load tabular data into DuckDB raw tables with batch tracking."""
+class TabularExtractor:
+    """Load tabular data into DuckDB raw tables with batch tracking.
 
-    def __init__(self, db: Database) -> None:
-        """Initialize with an active Database connection."""
+    Caller manages the Database connection lifetime per ADR-010:
+
+        with get_database(read_only=False) as db:
+            extractor = TabularExtractor(db)
+            extractor.load_transactions(df)
+    """
+
+    name = "tabular"
+    """Provider name; matches raw.tabular_* table prefix."""
+
+    source_type = "tabular"
+    """Written into source_type column on every row produced by this provider.
+
+    Note: per-row ``source_type`` for tabular imports records the concrete file
+    format (``csv``, ``tsv``, ``excel``, ``parquet``, ``feather``) supplied by
+    the caller; this class-level attribute is the provider-level identifier
+    used by framework wiring (Task 5).
+    """
+
+    def __init__(
+        self, db: Database, config: TabularProviderConfig | None = None
+    ) -> None:
+        """Initialize with an active Database connection.
+
+        Args:
+            db: An active Database connection (caller-managed per ADR-010).
+            config: Provider configuration; defaults to empty
+                ``TabularProviderConfig``. Tabular tunables currently still
+                live on ``MoneyBinSettings.data.tabular`` — Task 5 migrates
+                them to this config.
+        """
         self.db = db
+        self.config = config or TabularProviderConfig()
+
+    def extract(self, source: ProviderSource) -> ExtractionResult:
+        """Provider Protocol entry point.
+
+        Tabular accepts ``FilePath`` only. Framework decoration that supplies
+        ``import_id`` and ``source_origin`` lands in Plan 2; existing callers
+        continue to use ``load_transactions()`` / ``load_accounts()`` and the
+        batch-lifecycle methods directly.
+        """
+        if not isinstance(source, FilePath):
+            raise TypeError(
+                f"TabularExtractor expects FilePath; got {type(source).__name__}"
+            )
+        raise NotImplementedError(
+            "TabularExtractor.extract() will be wired in Plan 2 (framework "
+            "decoration supplies import_id and source_origin). Use the "
+            "existing load_transactions() / load_accounts() entry points "
+            "for now."
+        )
+
+    def schema_files(self) -> list[Path]:
+        """Return paths to raw.tabular_* DDL files bundled with this package."""
+        schema_dir = Path(__file__).parent / "schema"
+        return sorted(schema_dir.glob("raw_tabular_*.sql"))
 
     def create_import_batch(
         self,

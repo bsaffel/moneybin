@@ -64,14 +64,14 @@ ADAPTER_LAYERING_ALLOWLIST: frozenset[tuple[str, str, str]] = frozenset({
         "moneybin.loaders",
         "import_log",
     ),
-    # TabularLoader.get_import_history() is the CLI's read path for
+    # TabularExtractor.get_import_history() is the CLI's read path for
     # `moneybin import history` — class method but read-only (opens DB
     # read_only=True). Functionally equivalent to a module-level read
     # helper.
     (
         "cli/commands/import_cmd.py",
-        "moneybin.loaders.tabular_loader",
-        "TabularLoader",
+        "moneybin.extractors.tabular",
+        "TabularExtractor",
     ),
     # --- Dependency injection -------------------------------------------
     # PlaidExtractor is constructed by the sync adapters and passed into

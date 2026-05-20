@@ -670,6 +670,7 @@ class ImportService:
         """
         import polars as pl
 
+        from moneybin.extractors.tabular import TabularExtractor
         from moneybin.extractors.tabular.column_mapper import map_columns
         from moneybin.extractors.tabular.format_detector import detect_format
         from moneybin.extractors.tabular.formats import (
@@ -681,7 +682,6 @@ class ImportService:
         )
         from moneybin.extractors.tabular.readers import read_file
         from moneybin.extractors.tabular.transforms import transform_dataframe
-        from moneybin.loaders.tabular_loader import TabularLoader
         from moneybin.utils import slugify
 
         result = ImportResult(file_path=str(file_path), file_type="tabular")
@@ -849,8 +849,8 @@ class ImportService:
         )
 
         # Create import batch
-        loader = TabularLoader(self._db)
-        import_id = loader.create_import_batch(
+        extractor = TabularExtractor(self._db)
+        import_id = extractor.create_import_batch(
             source_file=str(file_path),
             source_type=source_type,
             source_origin=source_origin,
@@ -880,7 +880,7 @@ class ImportService:
                 balance_tolerance_cents=tabular_cfg.balance_tolerance_cents,
             )
         except Exception as e:  # noqa: BLE001  # re-raised as ValueError after recording rejection in DB
-            loader.finalize_import_batch(
+            extractor.finalize_import_batch(
                 import_id=import_id,
                 rows_total=len(df),
                 rows_imported=0,
@@ -908,10 +908,10 @@ class ImportService:
             "import_id": [import_id] * len(unique_ids),
         })
 
-        rows_imported = loader.load_transactions(transform_result.transactions)
-        loader.load_accounts(account_df)
+        rows_imported = extractor.load_transactions(transform_result.transactions)
+        extractor.load_accounts(account_df)
 
-        loader.finalize_import_batch(
+        extractor.finalize_import_batch(
             import_id=import_id,
             rows_total=len(df),
             rows_imported=rows_imported,
