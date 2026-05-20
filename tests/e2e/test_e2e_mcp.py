@@ -229,13 +229,14 @@ class TestReportsNetworthTools:
                     "reports_cashflow",
                     "reports_recurring",
                     "reports_merchants",
-                    "reports_uncategorized",
                     "reports_large_transactions",
                     "reports_balance_drift",
                 }
                 missing = expected - tool_names
                 assert not missing, f"Missing reports view-backed tools: {missing}"
 
+                # reports_uncategorized removed — use transactions_categorize_pending instead
+                assert "reports_uncategorized" not in tool_names
                 # v1 tools removed
                 assert "reports_spending_summary" not in tool_names
                 assert "reports_spending_by_category" not in tool_names

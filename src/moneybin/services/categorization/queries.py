@@ -11,17 +11,20 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any
+from decimal import Decimal
+from typing import Any, Literal
 
 import duckdb
 
 from moneybin.database import Database
+from moneybin.errors import UserError
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.tables import (
     CATEGORIES,
     CATEGORIZATION_RULES,
     FCT_TRANSACTIONS,
     MERCHANTS,
+    REPORTS_UNCATEGORIZED_QUEUE,
     TRANSACTION_CATEGORIES,
 )
 
@@ -62,6 +65,20 @@ class CategorizationQueries:
     def __init__(self, db: Database) -> None:
         """Bind the queries collaborator to a database connection."""
         self._db = db
+
+    def _fct_transactions_exists(self) -> bool:
+        """Return True if core.fct_transactions is queryable.
+
+        Used to distinguish pre-first-import state (no fact table yet) from
+        schema drift (fact table present, derived views missing).
+        """
+        try:
+            self._db.execute(
+                f"SELECT 1 FROM {FCT_TRANSACTIONS.full_name} LIMIT 0"  # noqa: S608  # TableRef constant
+            )
+        except duckdb.CatalogException:
+            return False
+        return True
 
     def get_active_categories(self) -> list[dict[str, str | bool | None]]:
         """Get all active categories."""
@@ -185,32 +202,62 @@ class CategorizationQueries:
         ]
 
     def list_uncategorized_transactions(
-        self, *, limit: int
+        self,
+        *,
+        limit: int,
+        sort: Literal["date", "impact"] = "date",
+        min_amount: Decimal = Decimal("0"),
+        account_id: str | None = None,
     ) -> list[dict[str, Any]] | None:
-        """List uncategorized transactions ordered by date descending.
+        """List uncategorized transactions from the curator-impact view.
 
-        Returns ``None`` (rather than ``[]``) when the underlying tables don't
-        exist yet — callers can distinguish "no transactions" from "no schema"
-        and surface a more useful action hint.
+        Uses ``reports.uncategorized_queue`` which already excludes transfer
+        pairs and archived accounts and provides pre-computed ``age_days`` and
+        ``priority_score`` columns needed for impact-sort.
+
+        ``sort`` controls the ORDER BY:
+        - ``"date"``   — ``txn_date DESC`` (most recent first, default)
+        - ``"impact"`` — ``priority_score DESC`` (ABS(amount) * age_days, largest first)
+
+        Returns ``None`` only when the underlying fact table doesn't exist
+        yet (pre-first-import). When the fact table exists but the queue
+        view is missing — schema drift or unapplied refresh — raises
+        ``UserError(code="schema_out_of_date")`` so callers surface a
+        ``refresh_run`` remediation rather than misreporting "no data".
         """
+        if sort not in {"date", "impact"}:
+            raise ValueError(f"Unknown sort: {sort!r}; expected 'date' or 'impact'")
+
+        order = "priority_score DESC" if sort == "impact" else "txn_date DESC"
+        sql = f"""
+            SELECT transaction_id, account_id, account_name, txn_date, amount,
+                   description, merchant_id, merchant_normalized, age_days,
+                   priority_score, source_type, source_id
+            FROM {REPORTS_UNCATEGORIZED_QUEUE.full_name}
+            WHERE ABS(amount) >= ?
+        """  # noqa: S608  # TableRef constant + allowlisted sort literal
+        params: list[object] = [min_amount]
+        if account_id is not None:
+            sql += " AND account_id = ?"
+            params.append(account_id)
+        sql += f" ORDER BY {order} LIMIT ?"  # noqa: S608  # order from allowlisted set
+        params.append(limit)
+
         try:
-            result = self._db.execute(
-                f"""
-                SELECT t.transaction_id, t.transaction_date, t.amount,
-                       t.description, t.memo, t.account_id
-                FROM {FCT_TRANSACTIONS.full_name} t
-                LEFT JOIN {TRANSACTION_CATEGORIES.full_name} c
-                    ON t.transaction_id = c.transaction_id
-                WHERE c.transaction_id IS NULL
-                ORDER BY t.transaction_date DESC
-                LIMIT ?
-                """,
-                [limit],
-            )
+            result = self._db.execute(sql, params)
             columns = [desc[0] for desc in result.description]
             rows = result.fetchall()
-        except duckdb.CatalogException:
-            return None
+        except duckdb.CatalogException as e:
+            if not self._fct_transactions_exists():
+                return None
+            raise UserError(
+                "Uncategorized-queue view is missing. The schema is out of "
+                "date — run `refresh_run` (MCP) or `moneybin refresh` (CLI) "
+                "to rebuild derived views.",
+                code="schema_out_of_date",
+                hint="refresh_run",
+                details={"missing_object": REPORTS_UNCATEGORIZED_QUEUE.full_name},
+            ) from e
 
         return [dict(zip(columns, row, strict=False)) for row in rows]
 

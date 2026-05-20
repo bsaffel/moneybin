@@ -74,13 +74,13 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
 
     ```python
     class RecoveryAction:
-        tool: str                       # MCP tool name, e.g. "system_audit_undo"
-        arguments: dict[str, Any]       # prefilled args — agent can execute directly
-        rationale: str                  # short prose: WHY this fixes the failure
+        tool: str  # MCP tool name, e.g. "system_audit_undo"
+        arguments: dict[str, Any]  # prefilled args — agent can execute directly
+        rationale: str  # short prose: WHY this fixes the failure
         confidence: Literal["certain", "suggested"]
-                                        # certain = this will fix it
-                                        # suggested = agent should weigh other context
-        idempotent: bool                # safe to retry on transient failure?
+        # certain = this will fix it
+        # suggested = agent should weigh other context
+        idempotent: bool  # safe to retry on transient failure?
     ```
 
     Lists are ordered: most-likely-correct first. Empty list = nothing actionable; the agent MUST escalate to the user — never silently treat as auto-recovered.
@@ -126,7 +126,7 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
     ```python
     def recovery_recipe(
         affected_ids: list[str],
-        context: AuditContext,   # DB handle, settings, current state
+        context: AuditContext,  # DB handle, settings, current state
     ) -> list[RecoveryAction]: ...
     ```
 
@@ -183,10 +183,11 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
         categorization_error: str | None
         self_heal_actions: list[SelfHealRecord]
 
+
     class SelfHealRecord:
-        recipe_id: str            # one of the 6 safelist recipes
+        recipe_id: str  # one of the 6 safelist recipes
         rows_affected: int
-        operation_id: str         # for undo via system_audit_undo
+        operation_id: str  # for undo via system_audit_undo
         timestamp: str
     ```
 

@@ -97,13 +97,13 @@ def review_auto_rules() -> str:
         they can promote useful rules to active and reject noisy ones.
 
         **Relevant tools:**
-        - transactions_categorize_auto_stats — pending proposal count and rule health
+        - transactions_categorize_stats(include_auto=True) — pending proposal count and rule health
         - transactions_categorize_auto_review — list pending proposals with samples
         - transactions_categorize_auto_accept — batch approve/reject proposals by ID
         - transactions_categorize_rules — review currently active rules
 
         **Workflow:**
-        1. Check transactions_categorize_auto_stats for pending proposal count
+        1. Check transactions_categorize_stats(include_auto=True) for pending proposal count
         2. Fetch proposals with transactions_categorize_auto_review
         3. For each proposal, show the merchant pattern, suggested
            category, sample matching transactions, and trigger count

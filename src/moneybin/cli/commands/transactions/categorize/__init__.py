@@ -9,6 +9,8 @@ in the top-level `categories` and `merchants` groups respectively.
 
 import dataclasses
 import logging
+from decimal import Decimal, InvalidOperation
+from typing import Literal, cast
 
 import typer
 
@@ -39,6 +41,83 @@ app.add_typer(ml.app, name="ml")
 
 app.command("export-uncategorized")(categorize_export_uncategorized)
 app.command("commit-from-file")(categorize_commit_from_file)
+
+
+@app.command("pending")
+def categorize_pending(
+    limit: int = typer.Option(
+        50, "--limit", help="Maximum rows (default 50, max 1000)."
+    ),
+    sort: str = typer.Option(
+        "date",
+        "--sort",
+        help="Sort order: 'date' (most recent first) or 'impact' (ABS(amount)*age_days).",
+    ),
+    min_amount: str = typer.Option(
+        "0",
+        "--min-amount",
+        help="Filter to ABS(amount) >= this value.",
+    ),
+    account: str | None = typer.Option(
+        None,
+        "--account",
+        help="Filter to an account: accepts account_id or display_name (ambiguous matches error).",
+    ),
+    output: OutputFormat = output_option,
+    quiet: bool = quiet_option,  # noqa: ARG001
+) -> None:
+    """List uncategorized transactions.
+
+    Excludes transfer pairs and archived accounts.
+
+      moneybin transactions categorize pending
+      moneybin transactions categorize pending --sort impact
+      moneybin transactions categorize pending --min-amount 20 --output json
+    """
+    from moneybin.cli.output import render_or_json
+    from moneybin.protocol.envelope import build_envelope
+    from moneybin.services.account_service import AccountService
+    from moneybin.services.categorization import CategorizationService
+
+    try:
+        min_amount_dec = Decimal(min_amount)
+    except InvalidOperation as e:
+        typer.echo(f"❌ Invalid --min-amount: {min_amount}", err=True)
+        raise typer.Exit(2) from e
+
+    if sort not in {"date", "impact"}:
+        typer.echo("❌ --sort must be 'date' or 'impact'.", err=True)
+        raise typer.Exit(2)
+
+    with handle_cli_errors():
+        with get_database(read_only=True) as db:
+            account_id: str | None = None
+            if account is not None:
+                account_id = AccountService(db).resolve_strict(account)
+            records = CategorizationService(db).list_uncategorized_transactions(
+                limit=min(limit, 1000),
+                sort=cast(Literal["date", "impact"], sort),
+                min_amount=min_amount_dec,
+                account_id=account_id,
+            )
+
+    if records is None:
+        typer.echo("No data — import transactions first.", err=True)
+        raise typer.Exit(0)
+
+    envelope = build_envelope(data=records, sensitivity="medium")
+
+    def _render_table(_: ResponseEnvelope) -> None:
+        if not records:
+            logger.info("No uncategorized transactions.")
+            return
+        from moneybin.cli.utils import render_rich_table
+
+        cols = list(records[0].keys())
+        rows = [tuple(r.values()) for r in records]
+        render_rich_table(cols, rows)
+
+    render_or_json(envelope, output, render_fn=_render_table)
 
 
 @app.command("commit")
