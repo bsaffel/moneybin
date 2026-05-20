@@ -104,18 +104,18 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
 
     | Column | Type | Purpose |
     |--------|------|---------|
-    | `operation_id` | `TEXT NOT NULL` | ULID; all audit rows from one MCP/CLI call share this value |
+    | `operation_id` | `TEXT NOT NULL` | `op_<uuid4_hex>` (32-char hex prefixed with `op_`); all audit rows from one MCP/CLI call share this value. Pre-spec rows use the synthetic backfill form `op_legacy_<audit_id>` so they're queryable but not grouped. |
     | `is_undo` | `BOOLEAN NOT NULL DEFAULT FALSE` | True for rows produced by `system_audit_undo` |
     | `undoes_operation_id` | `TEXT NULL` | If `is_undo=True`, points at the original operation |
 
-    Plus indexes on `(operation_id)` and `(timestamp DESC, operation_id)`. The service-layer mutation context manager (introduced in this spec) sets `operation_id` once at the start of a tool call; every audit row written during that call inherits it. Self-heal recipes use the same mechanism with `operation_id='op_self_heal_<recipe>_<ULID>'` and `actor='system:self_heal'`.
+    Plus indexes on `(operation_id)` and `(occurred_at DESC, operation_id)`. The service-layer mutation context manager (introduced in this spec) sets `operation_id` once at the start of a tool call; every audit row written during that call inherits it. Self-heal recipes use the same mechanism with `operation_id='op_self_heal_<recipe>_<uuid4_hex>'` and `actor='system:self_heal'`.
 
 5. **Audit-log undo consumer.** Three new MCP tools (with CLI parity):
 
     - **`system_audit_undo(operation_id)`** — push consumer. Reads all audit rows for the operation, computes per-row inverse (insert→delete, update→update-to-before_value, delete→insert), wraps in a transaction, writes new audit rows with `is_undo=True` and `undoes_operation_id`, returns summary with the new operation_id (so the undo itself is undoable). Errors:
         - `undo_operation_not_found` — bad operation_id. `recovery_actions` lists `system_audit_history` to enumerate valid ids.
         - `undo_already_undone` — an undo already reversed this op. `recovery_actions` suggests undoing the undo, `confidence=suggested`.
-        - `undo_cascade_blocked` — a later operation modified the same `(target_table, target_row_id)`. `recovery_actions` lists blocker operation_ids with `system_audit_undo` calls in reverse chronological order.
+        - `undo_cascade_blocked` — a later operation modified the same `(target_table, target_id)`. `recovery_actions` lists blocker operation_ids with `system_audit_undo` calls in reverse chronological order.
     - **`system_audit_history(domain?, since?, actor?, limit=50, include_undone=False)`** — pull surface. Returns recent operations grouped by `operation_id`. Each entry includes the tool, arguments, actor, timestamp, tables touched, row count, `can_undo` bool, `undo_blocked_by: list[operation_id] | None`, and a `recovery_actions` list (always one `system_audit_undo` call).
     - **`system_audit_get(operation_id)`** — single-entity detail. Returns full `before_value` / `after_value` for every audit row in the operation, letting agents pre-check what an undo would change without executing.
 
@@ -225,18 +225,32 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
 `app.audit_log` schema additions (Migration `V0NN_audit_log_operation_id.sql`):
 
 ```sql
-ALTER TABLE app.audit_log
-    ADD COLUMN operation_id TEXT NOT NULL DEFAULT 'op_legacy_' || audit_id;
-ALTER TABLE app.audit_log
-    ADD COLUMN is_undo BOOLEAN NOT NULL DEFAULT FALSE;
-ALTER TABLE app.audit_log
-    ADD COLUMN undoes_operation_id TEXT NULL;
+-- Step 1: add the new columns. operation_id starts NULLABLE so the
+-- backfill UPDATE in Step 2 can populate it. DuckDB (like standard SQL)
+-- does not permit column references in DEFAULT clauses, so a
+-- `DEFAULT 'op_legacy_' || audit_id` is invalid — the backfill must be
+-- a separate UPDATE.
+ALTER TABLE app.audit_log ADD COLUMN operation_id TEXT;
+ALTER TABLE app.audit_log ADD COLUMN is_undo BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE app.audit_log ADD COLUMN undoes_operation_id TEXT NULL;
 
+-- Step 2: backfill existing rows with a deterministic synthetic id so
+-- each pre-spec row is independently undoable but not grouped.
+UPDATE app.audit_log
+   SET operation_id = 'op_legacy_' || audit_id
+ WHERE operation_id IS NULL;
+
+-- Step 3: enforce NOT NULL going forward. From here on, the
+-- service-layer MutationContext owns assignment at the AuditService
+-- write boundary; new rows always have a value.
+ALTER TABLE app.audit_log ALTER COLUMN operation_id SET NOT NULL;
+
+-- Step 4: indexes for undo lookups.
 CREATE INDEX idx_audit_log_operation_id ON app.audit_log (operation_id);
-CREATE INDEX idx_audit_log_timestamp_op ON app.audit_log (timestamp DESC, operation_id);
+CREATE INDEX idx_audit_log_occurred_at_op ON app.audit_log (occurred_at DESC, operation_id);
 ```
 
-Existing rows get a synthetic `operation_id` (`op_legacy_<audit_id>`) so each pre-spec row is independently undoable but not grouped. After the migration the default is dropped and the service-layer context manager owns assignment.
+Existing rows get a synthetic `operation_id` (`op_legacy_<audit_id>`) so each pre-spec row is independently undoable but not grouped. The column carries no SQL-level DEFAULT after the migration; new rows are populated explicitly by the service-layer MutationContext at the AuditService write boundary.
 
 No other schema changes. The pre-image in `before_value` (full row, per Phase 1 Req 4) is what the undo consumer restores.
 
@@ -295,7 +309,7 @@ flowchart TB
     class ExTool,Undo,Revert,Heal,DomTool rec;
 ```
 
-Every failure on the left funnels into the universal envelope; the agent reads `recovery_actions` and dispatches into one of five concrete recovery mechanisms; all mechanisms that touch `app.*` land in the audit log via Invariant 9 Phase 1's pre-image capture, so every recovery is itself recoverable.
+Every failure on the left funnels into the universal envelope; the agent reads `recovery_actions` and dispatches into one of the six recovery paths in Invariant 10. The right side of the diagram shows the five *executing* mechanisms; the sixth path — doctor recipes (Invariant 10 path (e)) — produces `recovery_actions` whose `tool` fields name one of those same five mechanisms, so it routes through the Push discovery layer rather than executing recovery itself. All mechanisms that touch `app.*` land in the audit log via Invariant 9 Phase 1's pre-image capture, so every recovery is itself recoverable.
 
 ## Implementation Plan
 
@@ -304,7 +318,7 @@ Phase 2 of Invariant 9 + sister contract work + matches MCP + refresh surfacing 
 ### PR 1 — `operation_id` schema + service-layer context manager
 
 - Migration `V0NN_audit_log_operation_id.sql` (per Data Model).
-- `src/moneybin/services/mutation_context.py` — context manager that mints an `operation_id` (ULID) at the start of every MCP/CLI tool call and threads it through the repository write path. Repositories pass `operation_id` to `AuditService.record_audit_event()`. The decorator that wraps MCP tool entry points and the CLI command framework both push the operation_id onto a contextvars frame; repositories read it from there.
+- `src/moneybin/services/mutation_context.py` — context manager that mints an `operation_id` (`op_<uuid4_hex>`) at the start of every MCP/CLI tool call and threads it through the repository write path. Repositories pass `operation_id` to `AuditService.record_audit_event()`. The decorator that wraps MCP tool entry points and the CLI command framework both push the operation_id onto a contextvars frame; repositories read it from there.
 - `AuditService.record_audit_event()` accepts `operation_id` (required after PR 1) and writes it.
 - Backfill test: existing pre-spec audit rows get the legacy synthetic id; new rows from any tool share the contextvars value.
 - No behavior changes visible at the MCP/CLI surface yet.
@@ -323,7 +337,7 @@ Phase 2 of Invariant 9 + sister contract work + matches MCP + refresh surfacing 
 - `src/moneybin/services/undo_service.py` — `UndoService.undo(operation_id)`, `.history(...)`, `.get(operation_id)`.
 - MCP tools: `system_audit_undo`, `system_audit_history`, `system_audit_get` in `src/moneybin/mcp/tools/system.py`.
 - CLI parity: `moneybin system audit undo`, `moneybin system audit history`, `moneybin system audit get`.
-- Cascade detection: query for any later audit row in `(target_table, target_row_id, operation_id != self)`. If found, return `undo_cascade_blocked` with the blockers in `recovery_actions` (newest first, since blockers must undo in reverse order).
+- Cascade detection: query for any later audit row in `(target_table, target_id, operation_id != self)`. If found, return `undo_cascade_blocked` with the blockers in `recovery_actions` (newest first, since blockers must undo in reverse order).
 - Undo emission: each undo writes a new audit row per affected entity with `is_undo=TRUE`, `undoes_operation_id=<original>`, and a fresh `operation_id` of its own. The returned summary includes that new operation_id so the undo itself is queryable and undoable.
 - Tests: round-trip per Invariant 9 protected table; cascade-blocked scenario; double-undo (`undo_already_undone`); `undo_operation_not_found`.
 
@@ -350,7 +364,7 @@ Phase 2 of Invariant 9 + sister contract work + matches MCP + refresh surfacing 
 ### PR 7 — Self-heal safelist recipes
 
 - `src/moneybin/services/self_heal/` — one module per recipe in the safelist (recipes 1, 2, 4, 5, 6; recipe 3 — derived table rebuild — already exists in refresh and just gains audit_log emission).
-- `refresh_run` invokes the safelist after `derived_table_rebuild`. Each recipe writes per-entity audit rows with `actor='system:self_heal'` and `operation_id='op_self_heal_<recipe_id>_<ULID>'`. The triggered operation_ids accumulate into `RefreshResult.self_heal_actions`.
+- `refresh_run` invokes the safelist after `derived_table_rebuild`. Each recipe writes per-entity audit rows with `actor='system:self_heal'` and `operation_id='op_self_heal_<recipe_id>_<uuid4_hex>'`. The triggered operation_ids accumulate into `RefreshResult.self_heal_actions`.
 - Tests per recipe: seed drift → refresh runs → drift gone → audit rows present → `system_audit_undo(operation_id)` reverses the heal.
 - Cross-cutting test: chain of revert → refresh → self-heal → audit_history shows the self-heal as undoable; user can `system_audit_undo` it to restore the orphan.
 
@@ -437,6 +451,10 @@ Resolved during the 2026-05-19/2026-05-20 brainstorm. Captured so future readers
 9. **New milestone slot (M2D), not bundled into M2C.** The envelope is a one-way door — lock once, every future spec inherits — so it deserves its own scope. Bundling into M2C dilutes both. Cross-cutting into M3A-D fragments the contract.
 
 10. **Invariant 10 (Recoverability of mutations), not just a documentation update.** Codified at the same level as Invariant 9 in `architecture-shared-primitives.md`. Forces future specs to declare their recovery path during design, not after.
+
+11. **UUID4 over ULID for `operation_id`.** Drafted with "ULID" for chronological-sort properties; the spec was updated during review (2026-05-20, PR #188 review feedback) to use `op_<uuid4_hex>` — 32-char UUID4 hex prefixed with `op_`. Reasons: the project already uses UUID4 throughout (`identifiers.md` decision tree; `audit_id` itself is full UUID4 hex), adding a ULID dependency crosses the "fewer dependencies on the critical path" line in `.claude/rules/design-principles.md`, and chronological sort is available without ULID via the existing `app.audit_log.occurred_at` column (the `idx_audit_log_occurred_at_op` index serves the same use case). The `op_` prefix provides the visual discriminability ULID would have given.
+
+12. **Two-step migration for `operation_id` backfill, not a column-reference DEFAULT.** Drafted with `ADD COLUMN operation_id TEXT NOT NULL DEFAULT 'op_legacy_' || audit_id`; the spec was updated during review (2026-05-20, PR #188 — Codex P1 + Claude review) to use the standard add-then-UPDATE-then-SET-NOT-NULL pattern. Reason: DuckDB (and standard SQL) does not allow column references inside `DEFAULT` clauses — that is a `GENERATED ALWAYS AS` feature, not a default. The original SQL would error at migration time and block adoption on every existing database. The four-step migration (ADD nullable → UPDATE backfill → ALTER NOT NULL → CREATE INDEX) is the deterministic safe path.
 
 ## Related Work
 
