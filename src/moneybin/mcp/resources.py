@@ -6,7 +6,7 @@ the curated SQL schema that lets the AI write accurate queries for
 ``sql_query`` without a separate discovery call. It is the only resource
 with unique composition value not already reachable via tools.
 
-The seven resources removed in PR #177 (moneybin://status, moneybin://accounts,
+The seven resources removed in PR #185 (moneybin://status, moneybin://accounts,
 moneybin://privacy, moneybin://tools, accounts://summary, moneybin://recent-curation,
 net-worth://summary) were duplicates of tool responses and added context-window
 overhead without information gain. Their data remains available via the

@@ -1307,7 +1307,7 @@ Four goal-oriented workflow templates. Each defines the goal, relevant tools, gu
 
 ## 15. Resources
 
-One ambient context endpoint: `moneybin://schema`. The seven resources removed in PR #177 (`moneybin://status`, `moneybin://accounts`, `moneybin://privacy`, `moneybin://tools`, `accounts://summary`, `moneybin://recent-curation`, `net-worth://summary`) were duplicates of tool responses and added context-window overhead without information gain. Their data remains available via the corresponding tools.
+One ambient context endpoint: `moneybin://schema`. The seven resources removed in PR #185 (`moneybin://status`, `moneybin://accounts`, `moneybin://privacy`, `moneybin://tools`, `accounts://summary`, `moneybin://recent-curation`, `net-worth://summary`) were duplicates of tool responses and added context-window overhead without information gain. Their data remains available via the corresponding tools.
 
 ### `moneybin://schema`
 
@@ -1339,7 +1339,7 @@ Per the MCP exposure principle, sync is fully MCP-exposed except for credential-
 
 ## 17. `transform_*` — SQLMesh pipeline operations
 
-**CLI-only (operator territory, category 2).** The `transform_*` functions are not registered on the MCP surface as of PR #177. They remain accessible via `moneybin transform <subcommand>` for operators performing hands-on SQLMesh introspection. The mutating refresh path is `refresh_run` (§12); on apply failure, `refresh_run` emits a hint pointing at `moneybin transform plan`.
+**CLI-only (operator territory, category 2).** The `transform_*` functions are not registered on the MCP surface as of PR #185. They remain accessible via `moneybin transform <subcommand>` for operators performing hands-on SQLMesh introspection. The mutating refresh path is `refresh_run` (§12); on apply failure, `refresh_run` emits a hint pointing at `moneybin transform plan`.
 
 `transform_apply` was retired as a standalone MCP tool in favor of `refresh_run(steps=["transform"])`. See [`smart-import-transform.md`](smart-import-transform.md).
 

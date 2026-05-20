@@ -85,8 +85,8 @@ when client-driven progressive disclosure was retired (see
 [`mcp-architecture.md`](mcp-architecture.md) §3); the current
 rows 12–13 are unrelated and were added 2026-05-17 with the
 rules-CLI parity work. Row 17 added 2026-05-19: transform_* de-registered
-from MCP (PR #177) — operator territory per mcp-server.md category 2.
-`sync_schedule_set/show/remove` stubs removed from MCP (PR #177) — were
+from MCP (PR #185) — operator territory per mcp-server.md category 2.
+`sync_schedule_set/show/remove` stubs removed from MCP (PR #185) — were
 not-implemented placeholders with no backing spec.)*
 
 ## Exemption categories

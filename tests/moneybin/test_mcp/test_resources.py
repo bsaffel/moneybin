@@ -29,5 +29,6 @@ class TestResourceSchema:
     @pytest.mark.unit
     def test_contains_table_info(self) -> None:
         result = resource_schema()
-        # Schema doc should have some content about tables
-        assert len(result) > 10
+        # Schema doc should contain at least one of the canonical layer names
+        # consumers query against (core, app, reports).
+        assert "core" in result or "app" in result or "reports" in result
