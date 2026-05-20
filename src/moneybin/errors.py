@@ -63,7 +63,8 @@ class UserError(Exception):
     """A classified, user-facing error that can be raised and caught.
 
     Carries a sanitized message safe to show end users, a stable code for
-    programmatic handling, and an optional hint pointing at recovery steps.
+    programmatic handling, an optional hint pointing at recovery steps, and
+    optional structured recovery actions an agent can execute to fix the failure.
 
     Can be raised directly in tool code::
 
@@ -80,6 +81,7 @@ class UserError(Exception):
         code: str,
         hint: str | None = None,
         details: dict[str, Any] | None = None,
+        recovery_actions: list[RecoveryAction] | None = None,
     ) -> None:
         """Initialize with a user-safe message and optional metadata."""
         super().__init__(message)
@@ -87,6 +89,7 @@ class UserError(Exception):
         self.code = code
         self.hint = hint
         self.details = details
+        self.recovery_actions = recovery_actions
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to a plain dict for envelope serialization."""
