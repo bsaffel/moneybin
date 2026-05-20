@@ -10,7 +10,11 @@ import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.commands.import_cmd import app
-from moneybin.services.import_service import ImportResult
+from moneybin.services.import_service import (
+    BatchImportResult,
+    ImportResult,
+    PerFileResult,
+)
 
 runner = CliRunner()
 
@@ -122,6 +126,53 @@ def test_import_file_surfaces_sign_correction_warning(csv_path: Path) -> None:
 
     assert result.exit_code == 0, result.output
     # typer.echo(..., err=True) goes to stderr; CliRunner mixes it into output
+    assert "Sign convention may be inverted" in result.output
+
+
+def test_import_files_batch_surfaces_sign_correction_warning(csv_path: Path) -> None:
+    """Batch path (no per-file knobs) emits the sign-inversion warning too.
+
+    `moneybin import files <path>` without --account-name / --sign / --override
+    falls into the batch branch (svc.import_files), not the single-file branch
+    (svc.import_file). Both paths must surface the warning.
+    """
+
+    def fake_run_batch(*args: Any, **kwargs: Any) -> BatchImportResult:
+        return BatchImportResult(
+            per_file=[
+                PerFileResult(
+                    path=str(csv_path),
+                    status="imported",
+                    source_type="tabular",
+                    rows_loaded=1,
+                    sign_correction_suggested=True,
+                )
+            ],
+            transforms_applied=False,
+            transforms_duration_seconds=None,
+        )
+
+    with (
+        patch(
+            "moneybin.cli.utils.handle_cli_errors",
+            _fake_db_ctx,
+        ),
+        patch(
+            "moneybin.database.get_database",
+            _fake_db_ctx,
+        ),
+        patch(
+            "moneybin.services.import_service.ImportService.import_files",
+            side_effect=fake_run_batch,
+        ),
+    ):
+        result = runner.invoke(
+            app,
+            ["files", str(csv_path)],
+            catch_exceptions=False,
+        )
+
+    assert result.exit_code == 0, result.output
     assert "Sign convention may be inverted" in result.output
 
 
