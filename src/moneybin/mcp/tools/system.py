@@ -21,7 +21,7 @@ from moneybin.privacy.payloads.system import (
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool()
 def system_status() -> ResponseEnvelope[SystemStatusPayload]:
     """Return data inventory, pending review queue counts, and transforms freshness.
 
@@ -87,12 +87,11 @@ def system_status() -> ResponseEnvelope[SystemStatusPayload]:
             ),
             schema_drift=schema_drift_payload,
         ),
-        sensitivity="low",
         actions=actions,
     )
 
 
-@mcp_tool(sensitivity="low", read_only=False)
+@mcp_tool(read_only=False)
 def system_doctor() -> ResponseEnvelope[SystemDoctorPayload]:
     """Run pipeline integrity checks across all SQLMesh named audits.
 
@@ -129,7 +128,6 @@ def system_doctor() -> ResponseEnvelope[SystemDoctorPayload]:
                 for r in report.invariants
             ],
         ),
-        sensitivity="low",
         actions=actions,
     )
 

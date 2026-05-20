@@ -24,7 +24,7 @@ from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.transaction_service import TransactionService
 
 
-@mcp_tool(sensitivity="medium", read_only=True)
+@mcp_tool(read_only=True)
 def transactions_get(
     accounts: list[str] | None = None,
     date_from: str | None = None,
@@ -93,7 +93,6 @@ def transactions_get(
     )
     return build_envelope(
         data=payload,
-        sensitivity="medium",
         next_cursor=result.next_cursor,
         actions=[
             "Use transactions_get with the next_cursor value to fetch the next page",
@@ -103,7 +102,7 @@ def transactions_get(
     )
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool()
 def transactions_review() -> ResponseEnvelope[ReviewStatusPayload]:
     """Return counts of pending reviews across both queues.
 
@@ -128,7 +127,6 @@ def transactions_review() -> ResponseEnvelope[ReviewStatusPayload]:
             categorize_pending=status.categorize_pending,
             total=status.total,
         ),
-        sensitivity="low",
         actions=[
             "Use transactions_categorize_pending to fetch the categorize queue",
             "For matches, run `moneybin transactions review --type matches` (CLI-only today)",

@@ -25,7 +25,7 @@ from moneybin.protocol.envelope import ResponseEnvelope
 from moneybin.services.refresh import RefreshStep, expand_steps, refresh
 
 
-@mcp_tool(sensitivity="low", read_only=False)
+@mcp_tool(read_only=False)
 def refresh_run(
     steps: list[RefreshStep] | None = None,
 ) -> ResponseEnvelope[RefreshRunPayload]:

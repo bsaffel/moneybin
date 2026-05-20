@@ -51,11 +51,7 @@ from moneybin.privacy.payloads.transactions import (
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.audit_service import AuditService
 from moneybin.services.import_service import ImportService
-from moneybin.services.transaction_service import (
-    Note,
-    Split,
-    TransactionService,
-)
+from moneybin.services.transaction_service import Note, Split, TransactionService
 
 logger = logging.getLogger(__name__)
 
@@ -112,9 +108,7 @@ def _coerce_amount(value: Any, where: str) -> Decimal:
     )
 
 
-def _prepare_manual_entries(
-    transactions: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
+def _prepare_manual_entries(transactions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Normalize MCP-shape entries for ``TransactionService.create_manual_batch``.
 
     The service requires ``amount`` to be a ``Decimal``; JSON delivers it as a
@@ -143,8 +137,7 @@ def _prepare_splits(splits: list[dict[str, Any]]) -> list[dict[str, Any]]:
         prepared = dict(s)
         if "amount" not in prepared:
             raise UserError(
-                f"splits[{idx}] missing required 'amount'",
-                code="invalid_input",
+                f"splits[{idx}] missing required 'amount'", code="invalid_input"
             )
         prepared["amount"] = _coerce_amount(prepared["amount"], f"splits[{idx}]")
         out.append(prepared)
@@ -154,7 +147,7 @@ def _prepare_splits(splits: list[dict[str, Any]]) -> list[dict[str, Any]]:
 # ---------- tools ----------
 
 
-@mcp_tool(sensitivity="medium", read_only=False, idempotent=False)
+@mcp_tool(read_only=False, idempotent=False)
 def transactions_create(
     transactions: list[dict[str, Any]],
 ) -> ResponseEnvelope[ManualBatchPayload]:
@@ -185,7 +178,6 @@ def transactions_create(
                 for r in result.results
             ],
         ),
-        sensitivity="medium",
         actions=[
             "Use transactions_get to confirm the rows landed",
             "Use refresh_run to materialize them into core.fct_transactions",
@@ -193,38 +185,33 @@ def transactions_create(
     )
 
 
-@mcp_tool(sensitivity="medium", read_only=False, idempotent=False)
+@mcp_tool(read_only=False, idempotent=False)
 def transactions_notes_add(
     transaction_id: str, text: str
 ) -> ResponseEnvelope[NotePayload]:
     """Append a note to a transaction. Returns the created note row."""
     with get_database() as db:
         note = TransactionService(db).add_note(transaction_id, text, actor="mcp")
-    return build_envelope(data=_note_payload(note), sensitivity="medium")
+    return build_envelope(data=_note_payload(note))
 
 
-@mcp_tool(sensitivity="medium", read_only=False)
+@mcp_tool(read_only=False)
 def transactions_notes_edit(note_id: str, text: str) -> ResponseEnvelope[NotePayload]:
     """Update an existing note's text. Returns the updated row."""
     with get_database() as db:
         note = TransactionService(db).edit_note(note_id, text, actor="mcp")
-    return build_envelope(data=_note_payload(note), sensitivity="medium")
+    return build_envelope(data=_note_payload(note))
 
 
-@mcp_tool(
-    sensitivity="medium",
-    read_only=False,
-    destructive=True,
-    idempotent=False,
-)
+@mcp_tool(read_only=False, destructive=True, idempotent=False)
 def transactions_notes_delete(note_id: str) -> ResponseEnvelope[NoteDeletePayload]:
     """Delete a note by ID. Hard-delete; raises LookupError if the note is gone."""
     with get_database() as db:
         TransactionService(db).delete_note(note_id, actor="mcp")
-    return build_envelope(data=NoteDeletePayload(note_id=note_id), sensitivity="low")
+    return build_envelope(data=NoteDeletePayload(note_id=note_id))
 
 
-@mcp_tool(sensitivity="medium", read_only=False)
+@mcp_tool(read_only=False)
 def transactions_tags_set(
     transaction_id: str, tags: list[str]
 ) -> ResponseEnvelope[TagsPayload]:
@@ -237,13 +224,10 @@ def transactions_tags_set(
     """
     with get_database() as db:
         final = TransactionService(db).set_tags(transaction_id, tags, actor="mcp")
-    return build_envelope(
-        data=TagsPayload(transaction_id=transaction_id, tags=final),
-        sensitivity="medium",
-    )
+    return build_envelope(data=TagsPayload(transaction_id=transaction_id, tags=final))
 
 
-@mcp_tool(sensitivity="medium", read_only=False)
+@mcp_tool(read_only=False)
 def transactions_tags_rename(
     old_tag: str, new_tag: str
 ) -> ResponseEnvelope[TagRenamePayload]:
@@ -253,12 +237,11 @@ def transactions_tags_rename(
     return build_envelope(
         data=TagRenamePayload(
             row_count=res.row_count, parent_audit_id=res.parent_audit_id
-        ),
-        sensitivity="medium",
+        )
     )
 
 
-@mcp_tool(sensitivity="medium", read_only=False)
+@mcp_tool(read_only=False)
 def transactions_splits_set(
     transaction_id: str, splits: list[dict[str, Any]]
 ) -> ResponseEnvelope[SplitsPayload]:
@@ -270,13 +253,10 @@ def transactions_splits_set(
     prepared = _prepare_splits(splits)
     with get_database() as db:
         out = TransactionService(db).set_splits(transaction_id, prepared, actor="mcp")
-    return build_envelope(
-        data=SplitsPayload(splits=[_split_row(s) for s in out]),
-        sensitivity="medium",
-    )
+    return build_envelope(data=SplitsPayload(splits=[_split_row(s) for s in out]))
 
 
-@mcp_tool(sensitivity="medium", read_only=False)
+@mcp_tool(read_only=False)
 def import_labels_set(
     import_id: str, labels: list[str]
 ) -> ResponseEnvelope[ImportLabelsSetPayload]:
@@ -288,12 +268,11 @@ def import_labels_set(
     with get_database() as db:
         final = ImportService(db).set_labels(import_id, labels, actor="mcp")
     return build_envelope(
-        data=ImportLabelsSetPayload(import_id=import_id, labels=final),
-        sensitivity="medium",
+        data=ImportLabelsSetPayload(import_id=import_id, labels=final)
     )
 
 
-@mcp_tool(sensitivity="medium")
+@mcp_tool()
 def system_audit(
     filters: dict[str, Any] | None = None, limit: int = 100
 ) -> ResponseEnvelope[SystemAuditPayload]:
@@ -334,7 +313,6 @@ def system_audit(
                 for e in events
             ]
         ),
-        sensitivity="medium",
         actions=[
             "Filter with action_pattern='tag.%' / 'note.%' / 'split.%' to drill in",
         ],

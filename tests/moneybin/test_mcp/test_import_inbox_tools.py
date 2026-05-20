@@ -52,7 +52,8 @@ class TestImportInboxSync:
             processed=[{"filename": "a.csv", "transactions": 3}],
         )
         envelope = await import_inbox_sync()
-        assert envelope.summary.sensitivity == "low"
+        # ImportInboxSyncPayload has failed/transforms_error: DESCRIPTION → MEDIUM
+        assert envelope.summary.sensitivity == "medium"
         assert envelope.data.processed[0]["filename"] == "a.csv"
 
     async def test_failure_includes_actions_hint(

@@ -24,7 +24,7 @@ from moneybin.privacy.payloads.system import (
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool()
 def transform_status() -> ResponseEnvelope[TransformStatusPayload]:
     """Current SQLMesh model state and environment."""
     from moneybin.services.transform_service import TransformService
@@ -52,12 +52,11 @@ def transform_status() -> ResponseEnvelope[TransformStatusPayload]:
                 else None
             ),
         ),
-        sensitivity="low",
         actions=actions,
     )
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool()
 def transform_plan() -> ResponseEnvelope[TransformPlanPayload]:
     """Preview pending SQLMesh changes."""
     from moneybin.services.transform_service import TransformService
@@ -71,12 +70,11 @@ def transform_plan() -> ResponseEnvelope[TransformPlanPayload]:
             indirectly_modified=plan.indirectly_modified,
             added=plan.added,
             removed=plan.removed,
-        ),
-        sensitivity="low",
+        )
     )
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool()
 def transform_validate() -> ResponseEnvelope[TransformValidatePayload]:
     """Check that model SQL parses and resolves."""
     from moneybin.services.transform_service import TransformService
@@ -88,17 +86,15 @@ def transform_validate() -> ResponseEnvelope[TransformValidatePayload]:
             valid=result.valid,
             errors=[
                 TransformValidationError(
-                    model=e.get("model", "<unknown>"),
-                    message=e.get("message", ""),
+                    model=e.get("model", "<unknown>"), message=e.get("message", "")
                 )
                 for e in result.errors
             ],
-        ),
-        sensitivity="low",
+        )
     )
 
 
-@mcp_tool(sensitivity="low", read_only=False)
+@mcp_tool(read_only=False)
 def transform_audit(start: str, end: str) -> ResponseEnvelope[TransformAuditPayload]:
     """Run SQLMesh data-quality audits over a date window.
 
@@ -120,8 +116,7 @@ def transform_audit(start: str, end: str) -> ResponseEnvelope[TransformAuditPayl
                 )
                 for a in result.audits
             ],
-        ),
-        sensitivity="low",
+        )
     )
 
 

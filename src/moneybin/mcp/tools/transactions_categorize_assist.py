@@ -19,7 +19,7 @@ from moneybin.services.categorization import CategorizationService
 logger = logging.getLogger(__name__)
 
 
-@mcp_tool(sensitivity="medium", domain="categorize")
+@mcp_tool(domain="categorize")
 def transactions_categorize_assist(
     limit: int | None = None,
     account_filter: list[str] | None = None,
@@ -54,9 +54,7 @@ def transactions_categorize_assist(
     with get_database(read_only=True) as db:
         svc = CategorizationService(db)
         redacted = svc.categorize_assist(
-            limit=effective_limit,
-            account_filter=account_filter,
-            date_range=date_tuple,
+            limit=effective_limit, account_filter=account_filter, date_range=date_tuple
         )
 
     CATEGORIZE_ASSIST_CALLS_TOTAL.labels(surface="mcp").inc()
@@ -89,7 +87,6 @@ def transactions_categorize_assist(
     )
     return build_envelope(
         data=payload,
-        sensitivity="medium",
         actions=[
             "Propose (category, subcategory, canonical_merchant_name) per item",
             "Use transactions_categorize_commit to commit user-accepted proposals",

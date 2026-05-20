@@ -53,10 +53,9 @@ from moneybin.services.balance_service import BalanceService
 # ─── Read tools (entity) ──────────────────────────────────────────────────
 
 
-@mcp_tool(sensitivity="medium")
+@mcp_tool()
 def accounts(
-    include_archived: bool = False,
-    type_filter: str | None = None,
+    include_archived: bool = False, type_filter: str | None = None
 ) -> ResponseEnvelope[AccountListPayload]:
     """List accounts in MoneyBin.
 
@@ -72,12 +71,10 @@ def accounts(
     """
     with get_database(read_only=True) as db:
         result = AccountService(db).list_accounts(
-            include_archived=include_archived,
-            type_filter=type_filter,
+            include_archived=include_archived, type_filter=type_filter
         )
     return build_envelope(
         data=result,
-        sensitivity="medium",
         actions=[
             "Use accounts_balances for current balances",
             "Use reports_spending with a category filter to drill in by account",
@@ -85,7 +82,7 @@ def accounts(
     )
 
 
-@mcp_tool(sensitivity="medium")
+@mcp_tool()
 def accounts_get(account_id: str) -> ResponseEnvelope[AccountDetail]:
     """Single account record with full settings + dim record.
 
@@ -102,10 +99,10 @@ def accounts_get(account_id: str) -> ResponseEnvelope[AccountDetail]:
         record = AccountService(db).get_account(account_id)
     if record is None:
         raise UserError(f"Account not found: {account_id}", code="not_found")
-    return build_envelope(data=record, sensitivity="medium")
+    return build_envelope(data=record)
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool()
 def accounts_summary() -> ResponseEnvelope[AccountSummaryStats]:
     """Aggregate account snapshot: counts only, no per-account data, no PII.
 
@@ -115,7 +112,7 @@ def accounts_summary() -> ResponseEnvelope[AccountSummaryStats]:
     """
     with get_database(read_only=True) as db:
         stats = AccountService(db).summary()
-    return build_envelope(data=stats, sensitivity="low")
+    return build_envelope(data=stats)
 
 
 # ─── Write tools (entity) ──────────────────────────────────────────────────
@@ -132,7 +129,7 @@ _CLEARABLE_FIELDS: frozenset[str] = frozenset({
 })
 
 
-@mcp_tool(sensitivity="medium", read_only=False)
+@mcp_tool(read_only=False)
 def accounts_set(
     account_id: str,
     official_name: str | None = None,
@@ -196,8 +193,7 @@ def accounts_set(
         unknown = set(clear_fields) - _CLEARABLE_FIELDS
         if unknown:
             raise UserError(
-                f"Unknown clearable fields: {sorted(unknown)}",
-                code="invalid_field",
+                f"Unknown clearable fields: {sorted(unknown)}", code="invalid_field"
             )
         for field in clear_fields:
             kwargs[field] = CLEAR
@@ -221,16 +217,15 @@ def accounts_set(
         warnings=[w.get("message", str(w)) for w in warnings] if warnings else [],
         cascaded_include_in_net_worth=False if is_archived is True else None,
     )
-    return build_envelope(data=payload, sensitivity="medium")
+    return build_envelope(data=payload)
 
 
 # ─── Read tools (balance) ──────────────────────────────────────────────────
 
 
-@mcp_tool(sensitivity="medium")
+@mcp_tool()
 def accounts_balances(
-    account_ids: list[str] | None = None,
-    as_of_date: str | None = None,
+    account_ids: list[str] | None = None, as_of_date: str | None = None
 ) -> ResponseEnvelope[BalanceObservationListPayload]:
     """Most recent balance per account; optionally as-of an ISO date.
 
@@ -243,14 +238,12 @@ def accounts_balances(
         result = BalanceService(db).current_balances(
             account_ids=account_ids, as_of_date=parsed_date
         )
-    return build_envelope(data=result, sensitivity="medium")
+    return build_envelope(data=result)
 
 
-@mcp_tool(sensitivity="medium")
+@mcp_tool()
 def accounts_balance_history(
-    account_id: str,
-    from_date: str | None = None,
-    to_date: str | None = None,
+    account_id: str, from_date: str | None = None, to_date: str | None = None
 ) -> ResponseEnvelope[BalanceObservationListPayload]:
     """Per-account balance history (daily series with carry-forward + reconciliation deltas).
 
@@ -265,13 +258,12 @@ def accounts_balance_history(
         result = BalanceService(db).history(
             account_id, from_date=parsed_from, to_date=parsed_to
         )
-    return build_envelope(data=result, sensitivity="medium")
+    return build_envelope(data=result)
 
 
-@mcp_tool(sensitivity="medium")
+@mcp_tool()
 def accounts_balance_reconcile(
-    account_ids: list[str] | None = None,
-    threshold: float = 0.01,
+    account_ids: list[str] | None = None, threshold: float = 0.01
 ) -> ResponseEnvelope[BalanceObservationListPayload]:
     """Show balance days with non-zero reconciliation delta above threshold.
 
@@ -284,10 +276,10 @@ def accounts_balance_reconcile(
         result = BalanceService(db).reconcile(
             account_ids=account_ids, threshold=parsed_threshold
         )
-    return build_envelope(data=result, sensitivity="medium")
+    return build_envelope(data=result)
 
 
-@mcp_tool(sensitivity="medium")
+@mcp_tool()
 def accounts_balance_assertions(
     account_id: str | None = None,
 ) -> ResponseEnvelope[BalanceAssertionListPayload]:
@@ -298,18 +290,15 @@ def accounts_balance_assertions(
     """
     with get_database(read_only=True) as db:
         result = BalanceService(db).list_assertions(account_id)
-    return build_envelope(data=result, sensitivity="medium")
+    return build_envelope(data=result)
 
 
 # ─── Write tools (balance) ──────────────────────────────────────────────────
 
 
-@mcp_tool(sensitivity="medium", read_only=False)
+@mcp_tool(read_only=False)
 def accounts_balance_assert(
-    account_id: str,
-    assertion_date: str,
-    balance: float,
-    notes: str | None = None,
+    account_id: str, assertion_date: str, balance: float, notes: str | None = None
 ) -> ResponseEnvelope[BalanceAssertionPayload]:
     """Insert or update a manual balance assertion.
 
@@ -328,13 +317,12 @@ def accounts_balance_assert(
             balance=parsed_balance,
             notes=notes,
         )
-    return build_envelope(data=result, sensitivity="medium")
+    return build_envelope(data=result)
 
 
-@mcp_tool(sensitivity="medium", read_only=False, destructive=True)
+@mcp_tool(read_only=False, destructive=True)
 def accounts_balance_assertion_delete(
-    account_id: str,
-    assertion_date: str,
+    account_id: str, assertion_date: str
 ) -> ResponseEnvelope[BalanceAssertionDeletePayload]:
     """Delete a manual balance assertion. Silent no-op if no row exists.
 
@@ -347,18 +335,15 @@ def accounts_balance_assertion_delete(
         BalanceService(db).delete_assertion(account_id, parsed_date)
     return build_envelope(
         data=BalanceAssertionDeletePayload(
-            account_id=account_id,
-            assertion_date=parsed_date,
-            deleted=True,
-        ),
-        sensitivity="medium",
+            account_id=account_id, assertion_date=parsed_date, deleted=True
+        )
     )
 
 
 # ─── Resolution (free-text → account_id) ───────────────────────────────────
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool()
 def accounts_resolve(
     query: str, limit: int = 5
 ) -> ResponseEnvelope[AccountResolvePayload]:
@@ -392,11 +377,7 @@ def accounts_resolve(
         actions.append(
             "Top match has low confidence; verify with the user before taking action."
         )
-    return build_envelope(
-        data=payload,
-        sensitivity="low",
-        actions=actions,
-    )
+    return build_envelope(data=payload, actions=actions)
 
 
 # ─── Registration ──────────────────────────────────────────────────────────

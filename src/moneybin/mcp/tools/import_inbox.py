@@ -41,7 +41,7 @@ def _uncategorized_count() -> int:
         return 0
 
 
-@mcp_tool(sensitivity="low", read_only=False, idempotent=False)
+@mcp_tool(read_only=False, idempotent=False)
 def import_inbox_sync(refresh: bool = True) -> ResponseEnvelope[ImportInboxSyncPayload]:
     """Drain the active profile's import inbox.
 
@@ -84,22 +84,19 @@ def import_inbox_sync(refresh: bool = True) -> ResponseEnvelope[ImportInboxSyncP
             transforms_duration_seconds=sync_result.transforms_duration_seconds,
             transforms_error=sync_result.transforms_error,
         ),
-        sensitivity="low",
         actions=actions,
     )
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool()
 def import_inbox_pending() -> ResponseEnvelope[ImportInboxPendingPayload]:
     """Preview pending items in the active profile's import inbox."""
     service = InboxService.for_active_profile_no_db()
     list_result = service.enumerate()
     return build_envelope(
         data=ImportInboxPendingPayload(
-            would_process=list_result.would_process,
-            ignored=list_result.ignored,
+            would_process=list_result.would_process, ignored=list_result.ignored
         ),
-        sensitivity="low",
         actions=["Use import_inbox_sync to drain the inbox"],
     )
 

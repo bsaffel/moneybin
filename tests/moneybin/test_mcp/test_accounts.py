@@ -86,8 +86,10 @@ class TestAccountsResolve:
     """Tests for the accounts_resolve MCP tool envelope and action hints."""
 
     @pytest.mark.unit
-    async def test_envelope_shape_returns_low_sensitivity(self, mcp_db: Path) -> None:
-        """accounts_resolve returns envelope with low sensitivity and sorted results."""
+    async def test_envelope_shape_returns_critical_sensitivity(
+        self, mcp_db: Path
+    ) -> None:
+        """accounts_resolve returns CRITICAL sensitivity (account_id is ACCOUNT_IDENTIFIER)."""
         _seed_named_account(
             "a1",
             display_name="Chase Checking",
@@ -96,12 +98,15 @@ class TestAccountsResolve:
         )
         result = await accounts_resolve(query="chase")
         parsed = result.to_dict()
-        assert parsed["summary"]["sensitivity"] == "low"
+        # ACCOUNT_IDENTIFIER → Tier.CRITICAL per privacy taxonomy
+        assert parsed["summary"]["sensitivity"] == "critical"
         # data is now {"matches": [...]} from AccountResolvePayload serialization
         assert isinstance(parsed["data"], dict)
         matches = parsed["data"]["matches"]
         assert len(matches) >= 1
-        assert matches[0]["account_id"] == "a1"
+        # account_id is ACCOUNT_IDENTIFIER → masked by redact_typed.
+        # "a1" is only 2 chars, so the entire value is masked → "****"
+        assert matches[0]["account_id"] == "****"
         # Data shape matches AccountResolutionItem fields
         assert "confidence" in matches[0]
         assert "display_name" in matches[0]
@@ -191,7 +196,8 @@ class TestAccountsSetExtended:
             include_in_net_worth=False,
         )
         parsed = result.to_dict()
-        assert parsed["summary"]["sensitivity"] == "medium"
+        # AccountSettingsPayload has account_id: ACCOUNT_IDENTIFIER → CRITICAL
+        assert parsed["summary"]["sensitivity"] == "critical"
         assert parsed["data"]["display_name"] == "My Custom Name"
         assert parsed["data"]["include_in_net_worth"] is False
         assert parsed["data"]["archived"] is False

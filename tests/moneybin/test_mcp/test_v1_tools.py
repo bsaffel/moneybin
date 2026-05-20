@@ -61,8 +61,8 @@ class TestReportsRecurringGet:
         result = await reports_recurring()
         assert isinstance(result, ResponseEnvelope)
         parsed = result.to_dict()
-        # Aggregate per-merchant rollup — sensitivity is "low" per mcp-server.md.
-        assert parsed["summary"]["sensitivity"] == "low"
+        # RecurringSubscriptionRow has TXN_AMOUNT → Tier.HIGH per privacy taxonomy.
+        assert parsed["summary"]["sensitivity"] == "high"
         merchants = {row["merchant_normalized"] for row in parsed["data"]["rows"]}
         # Default min_confidence=0.5, status='active' → drops OldGym (inactive)
         # and WeakSignal (confidence=0.3).
@@ -128,7 +128,8 @@ class TestReportsUncategorizedGet:
     async def test_returns_all_rows_by_default(self, mcp_db: Path) -> None:
         self._install_view()
         parsed = (await reports_uncategorized()).to_dict()
-        assert parsed["summary"]["sensitivity"] == "medium"
+        # UncategorizedQueueRow has account_id: ACCOUNT_IDENTIFIER → Tier.CRITICAL
+        assert parsed["summary"]["sensitivity"] == "critical"
         ids = [row["transaction_id"] for row in parsed["data"]["rows"]]
         # Sorted by priority_score DESC.
         assert ids == ["T2", "T1", "T3"]
@@ -192,7 +193,8 @@ class TestReportsBalanceDriftGet:
     async def test_default_returns_all_statuses(self, mcp_db: Path) -> None:
         self._install_view()
         parsed = (await reports_balance_drift()).to_dict()
-        assert parsed["summary"]["sensitivity"] == "medium"
+        # BalanceDriftPayload has account_id: ACCOUNT_IDENTIFIER → Tier.CRITICAL
+        assert parsed["summary"]["sensitivity"] == "critical"
         # Sorted by drift_abs DESC.
         statuses = [row["status"] for row in parsed["data"]["rows"]]
         assert statuses == ["drift", "clean", "no-data"]
@@ -210,7 +212,8 @@ class TestReportsBalanceDriftGet:
         parsed = (await reports_balance_drift(since="2026-01-01")).to_dict()
         # The 2025-12-01 row should be excluded.
         assert all(
-            row["assertion_date"].isoformat() >= "2026-01-01" for row in parsed["data"]["rows"]
+            row["assertion_date"].isoformat() >= "2026-01-01"
+            for row in parsed["data"]["rows"]
         )
         assert len(parsed["data"]["rows"]) == 2
 
@@ -219,7 +222,8 @@ class TestReportsBalanceDriftGet:
         self._install_view()
         parsed = (await reports_balance_drift(account="Other Bank Savings")).to_dict()
         account_ids = [row["account_id"] for row in parsed["data"]["rows"]]
-        assert account_ids == ["ACC002"]
+        # account_id is ACCOUNT_IDENTIFIER → redacted to last-4 chars by middleware
+        assert account_ids == ["****C002"]
 
     @pytest.mark.unit
     async def test_unknown_status_returns_error_envelope(self, mcp_db: object) -> None:

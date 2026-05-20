@@ -77,11 +77,9 @@ def _build_sync_service() -> Generator[Any, None, None]:
         yield SyncService(client=client, db=db, loader=loader)
 
 
-@mcp_tool(sensitivity="medium", read_only=False, idempotent=False, open_world=True)
+@mcp_tool(read_only=False, idempotent=False, open_world=True)
 def sync_pull(
-    institution: str | None = None,
-    force: bool = False,
-    refresh: bool = True,
+    institution: str | None = None, force: bool = False, refresh: bool = True
 ) -> ResponseEnvelope[SyncPullPayload]:
     """Pull transactions, accounts, balances from connected institutions via moneybin-server.
 
@@ -99,11 +97,7 @@ def sync_pull(
     SQLMesh apply dominates pull latency (typically 5–30s).
     """
     with _build_sync_service() as service:
-        result = service.pull(
-            institution=institution,
-            force=force,
-            refresh=refresh,
-        )
+        result = service.pull(institution=institution, force=force, refresh=refresh)
     institutions = [
         SyncPullInstitutionRow(
             provider_item_id=inst.provider_item_id,
@@ -127,12 +121,11 @@ def sync_pull(
             transforms_duration_seconds=result.transforms_duration_seconds,
             transforms_error=result.transforms_error,
         ),
-        sensitivity="medium",
         actions=["Use sync_status to see connection health going forward."],
     )
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool()
 def sync_status() -> ResponseEnvelope[SyncStatusPayload]:
     """Connected institutions, last-sync times, and error-state guidance."""
     with _build_sync_service() as service:
@@ -150,14 +143,10 @@ def sync_status() -> ResponseEnvelope[SyncStatusPayload]:
         )
         for c in connections
     ]
-    return build_envelope(
-        data=SyncStatusPayload(connections=rows),
-        sensitivity="low",
-        actions=[],
-    )
+    return build_envelope(data=SyncStatusPayload(connections=rows), actions=[])
 
 
-@mcp_tool(sensitivity="medium", read_only=False, idempotent=False, open_world=True)
+@mcp_tool(read_only=False, idempotent=False, open_world=True)
 def sync_connect(
     institution: str | None = None,
 ) -> ResponseEnvelope[SyncConnectPayload]:
@@ -202,7 +191,6 @@ def sync_connect(
             link_url=initiate.link_url,
             expiration=initiate.expiration.isoformat(),
         ),
-        sensitivity="medium",
         actions=[
             "Present link_url to the user and ask them to complete the connection in their browser.",
             "After they confirm completion, call sync_connect_status with session_id to verify.",
@@ -212,7 +200,7 @@ def sync_connect(
     )
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool()
 def sync_connect_status(session_id: str) -> ResponseEnvelope[SyncConnectStatusPayload]:
     """Check whether a bank-connection session has completed.
 
@@ -241,12 +229,11 @@ def sync_connect_status(session_id: str) -> ResponseEnvelope[SyncConnectStatusPa
             error=status.error,
             expiration=status.expiration.isoformat(),
         ),
-        sensitivity="low",
         actions=actions,
     )
 
 
-@mcp_tool(sensitivity="medium", read_only=False, open_world=True)
+@mcp_tool(read_only=False, open_world=True)
 def sync_disconnect(institution: str) -> ResponseEnvelope[SyncDisconnectPayload]:
     """Remove a bank connection on moneybin-server. Permanent — no revert path.
 
@@ -259,24 +246,23 @@ def sync_disconnect(institution: str) -> ResponseEnvelope[SyncDisconnectPayload]
         service.disconnect(institution=institution)
     return build_envelope(
         data=SyncDisconnectPayload(status="disconnected", institution=institution),
-        sensitivity="medium",
         actions=[],
     )
 
 
-@mcp_tool(sensitivity="low", read_only=False)
+@mcp_tool(read_only=False)
 def sync_schedule_set(time: str) -> ResponseEnvelope[SyncSchedulePlaceholderPayload]:  # noqa: ARG001 — placeholder
     """Install a daily sync at the given HH:MM."""
     return _stub("sync_schedule_set")
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool()
 def sync_schedule_show() -> ResponseEnvelope[SyncSchedulePlaceholderPayload]:
     """Show current scheduled sync details."""
     return _stub("sync_schedule_show")
 
 
-@mcp_tool(sensitivity="low", read_only=False)
+@mcp_tool(read_only=False)
 def sync_schedule_remove() -> ResponseEnvelope[SyncSchedulePlaceholderPayload]:
     """Uninstall the scheduled sync job."""
     return _stub("sync_schedule_remove")

@@ -17,7 +17,7 @@ from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.categorization import CategorizationService
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool()
 def categories(include_inactive: bool = False) -> ResponseEnvelope[CategoriesPayload]:
     """List all categories in the taxonomy."""
     with get_database(read_only=True) as db:
@@ -26,7 +26,6 @@ def categories(include_inactive: bool = False) -> ResponseEnvelope[CategoriesPay
         )
     return build_envelope(
         data=payload,
-        sensitivity="low",
         actions=[
             "Use categories_create to add a custom category",
             "Defaults are seeded automatically by `moneybin db init` and "
@@ -35,18 +34,14 @@ def categories(include_inactive: bool = False) -> ResponseEnvelope[CategoriesPay
     )
 
 
-@mcp_tool(sensitivity="low", read_only=False, idempotent=False)
+@mcp_tool(read_only=False, idempotent=False)
 def categories_create(
-    category: str,
-    subcategory: str | None = None,
-    description: str | None = None,
+    category: str, subcategory: str | None = None, description: str | None = None
 ) -> ResponseEnvelope[CategoryCreatePayload]:
     """Create a custom category or subcategory (non-default, active by default)."""
     with get_database() as db:
         category_id = CategorizationService(db).create_category(
-            category,
-            subcategory=subcategory,
-            description=description,
+            category, subcategory=subcategory, description=description
         )
     sub = f" / {subcategory}" if subcategory else ""
     return build_envelope(
@@ -56,15 +51,13 @@ def categories_create(
             subcategory=subcategory,
             action="created",
             display=f"{category}{sub}",
-        ),
-        sensitivity="low",
+        )
     )
 
 
-@mcp_tool(sensitivity="low", read_only=False)
+@mcp_tool(read_only=False)
 def categories_set(
-    category_id: str,
-    is_active: bool,
+    category_id: str, is_active: bool
 ) -> ResponseEnvelope[CategorySetPayload]:
     """Update a category's settings (currently only is_active).
 
@@ -81,21 +74,16 @@ def categories_set(
             categorizations.
     """
     with get_database() as db:
-        CategorizationService(db).toggle_category(
-            category_id,
-            is_active=is_active,
-        )
+        CategorizationService(db).toggle_category(category_id, is_active=is_active)
     action = "enabled" if is_active else "disabled"
     return build_envelope(
-        data=CategorySetPayload(category_id=category_id, action=action),
-        sensitivity="low",
+        data=CategorySetPayload(category_id=category_id, action=action)
     )
 
 
-@mcp_tool(sensitivity="low", read_only=False, destructive=True)
+@mcp_tool(read_only=False, destructive=True)
 def categories_delete(
-    category_id: str,
-    force: bool = False,
+    category_id: str, force: bool = False
 ) -> ResponseEnvelope[CategoryDeletePayload]:
     """Hard-delete a user-created category.
 
@@ -109,22 +97,14 @@ def categories_delete(
         CategorizationService(db).delete_category(category_id, force=force)
     return build_envelope(
         data=CategoryDeletePayload(
-            category_id=category_id,
-            action="deleted",
-            force=force,
-        ),
-        sensitivity="low",
+            category_id=category_id, action="deleted", force=force
+        )
     )
 
 
 def register_categories_tools(mcp: FastMCP) -> None:
     """Register all categories namespace tools with the FastMCP server."""
-    register(
-        mcp,
-        categories,
-        "categories",
-        "List all categories in the taxonomy.",
-    )
+    register(mcp, categories, "categories", "List all categories in the taxonomy.")
     register(
         mcp,
         categories_create,

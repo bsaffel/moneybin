@@ -68,10 +68,9 @@ def _default_window(months: int = 12) -> tuple[str, str]:
     return start.strftime("%Y-%m"), end.strftime("%Y-%m")
 
 
-@mcp_tool(sensitivity="medium")
+@mcp_tool()
 def reports_networth(
-    as_of_date: str | None = None,
-    account_ids: list[str] | None = None,
+    as_of_date: str | None = None, account_ids: list[str] | None = None
 ) -> ResponseEnvelope[NetWorthSnapshotPayload]:
     """Current or as-of net worth snapshot with per-account breakdown.
 
@@ -91,7 +90,6 @@ def reports_networth(
         )
     return build_envelope(
         data=snapshot,
-        sensitivity="medium",
         actions=[
             "Use reports_networth_history(from_date, to_date) for the time series",
             "Use accounts_balance_history(account_id=...) to drill into one account",
@@ -100,11 +98,9 @@ def reports_networth(
     )
 
 
-@mcp_tool(sensitivity="medium")
+@mcp_tool()
 def reports_networth_history(
-    from_date: str,
-    to_date: str,
-    interval: str = "monthly",
+    from_date: str, to_date: str, interval: str = "monthly"
 ) -> ResponseEnvelope[NetWorthHistoryPayload]:
     """Net worth history time series with period-over-period change.
 
@@ -122,7 +118,6 @@ def reports_networth_history(
         payload = NetworthService(db).history(parsed_from, parsed_to, interval=interval)
     return build_envelope(
         data=payload,
-        sensitivity="medium",
         actions=[
             "Use reports_networth(as_of_date=...) for a single-date snapshot with per-account breakdown",
             "Switch `interval` to 'daily' or 'weekly' for finer resolution",
@@ -130,7 +125,7 @@ def reports_networth_history(
     )
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool()
 def reports_spending(
     from_month: str | None = None,
     to_month: str | None = None,
@@ -173,13 +168,12 @@ def reports_spending(
         )
     return build_envelope(
         data=payload,
-        sensitivity="low",
         actions=actions,
         period=f"{from_month} to {to_month}" if from_month and to_month else None,
     )
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool()
 def reports_cashflow(
     from_month: str | None = None,
     to_month: str | None = None,
@@ -215,17 +209,14 @@ def reports_cashflow(
         )
     return build_envelope(
         data=payload,
-        sensitivity="low",
         actions=actions,
         period=f"{from_month} to {to_month}" if from_month and to_month else None,
     )
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool()
 def reports_recurring(
-    min_confidence: float = 0.5,
-    status: str = "active",
-    cadence: str | None = None,
+    min_confidence: float = 0.5, status: str = "active", cadence: str | None = None
 ) -> ResponseEnvelope[RecurringSubscriptionsPayload]:
     """Likely-recurring subscription candidates with confidence scores.
 
@@ -239,13 +230,12 @@ def reports_recurring(
         payload = ReportsService(db).recurring_subscriptions(
             min_confidence=min_confidence, status=status, cadence=cadence
         )
-    return build_envelope(data=payload, sensitivity="low")
+    return build_envelope(data=payload)
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool()
 def reports_merchants(
-    top: int = 25,
-    sort: str = "spend",
+    top: int = 25, sort: str = "spend"
 ) -> ResponseEnvelope[MerchantActivityPayload]:
     """Per-merchant lifetime activity totals.
 
@@ -255,14 +245,12 @@ def reports_merchants(
     """
     with get_database(read_only=True) as db:
         payload = ReportsService(db).merchant_activity(top=top, sort=sort)
-    return build_envelope(data=payload, sensitivity="low")
+    return build_envelope(data=payload)
 
 
-@mcp_tool(sensitivity="medium")
+@mcp_tool()
 def reports_uncategorized(
-    min_amount: float = 0.0,
-    account: str | None = None,
-    limit: int = 50,
+    min_amount: float = 0.0, account: str | None = None, limit: int = 50
 ) -> ResponseEnvelope[UncategorizedQueuePayload]:
     """Uncategorized transactions queue, ranked by curator-impact.
 
@@ -275,13 +263,12 @@ def reports_uncategorized(
         payload = ReportsService(db).uncategorized_queue(
             min_amount=min_amount, account=account, limit=limit
         )
-    return build_envelope(data=payload, sensitivity="medium")
+    return build_envelope(data=payload)
 
 
-@mcp_tool(sensitivity="medium")
+@mcp_tool()
 def reports_large_transactions(
-    top: int = 25,
-    anomaly: str = "none",
+    top: int = 25, anomaly: str = "none"
 ) -> ResponseEnvelope[LargeTransactionsPayload]:
     """Anomaly-flavored transaction lens (top-N + per-account/category z-scores).
 
@@ -291,14 +278,12 @@ def reports_large_transactions(
     """
     with get_database(read_only=True) as db:
         payload = ReportsService(db).large_transactions(top=top, anomaly=anomaly)
-    return build_envelope(data=payload, sensitivity="medium")
+    return build_envelope(data=payload)
 
 
-@mcp_tool(sensitivity="medium")
+@mcp_tool()
 def reports_balance_drift(
-    account: str | None = None,
-    status: str = "all",
-    since: str | None = None,
+    account: str | None = None, status: str = "all", since: str | None = None
 ) -> ResponseEnvelope[BalanceDriftPayload]:
     """Balance reconciliation drift: asserted vs computed.
 
@@ -311,13 +296,11 @@ def reports_balance_drift(
         payload = ReportsService(db).balance_drift(
             account=account, status=status, since=since
         )
-    return build_envelope(data=payload, sensitivity="medium")
+    return build_envelope(data=payload)
 
 
-@mcp_tool(sensitivity="low", domain="budget")
-def reports_budget(
-    month: str | None = None,
-) -> ResponseEnvelope[BudgetStatusPayload]:
+@mcp_tool(domain="budget")
+def reports_budget(month: str | None = None) -> ResponseEnvelope[BudgetStatusPayload]:
     """Get budget vs actual spending comparison for a month.
 
     Shows each budgeted category with its target, actual spending,
@@ -330,7 +313,6 @@ def reports_budget(
         payload = BudgetService(db).status(month=month)
     return build_envelope(
         data=payload,
-        sensitivity="low",
         period=payload.month,
         actions=[
             "Use `moneybin budget set` (CLI) to adjust a budget target",

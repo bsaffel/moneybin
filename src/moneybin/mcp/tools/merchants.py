@@ -19,15 +19,12 @@ from moneybin.privacy.payloads.categories import (
     MerchantsPayload,
 )
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
-from moneybin.services.categorization import (
-    CategorizationService,
-    validate_match_type,
-)
+from moneybin.services.categorization import CategorizationService, validate_match_type
 
 logger = logging.getLogger(__name__)
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool()
 def merchants() -> ResponseEnvelope[MerchantsPayload]:
     """List all merchant name mappings.
 
@@ -39,14 +36,13 @@ def merchants() -> ResponseEnvelope[MerchantsPayload]:
         payload = CategorizationService(db).list_merchants()
     return build_envelope(
         data=payload,
-        sensitivity="low",
         actions=[
             "Use merchants_create to add new merchant mappings",
         ],
     )
 
 
-@mcp_tool(sensitivity="low", read_only=False, idempotent=False)
+@mcp_tool(read_only=False, idempotent=False)
 def merchants_create(
     merchants: list[dict[str, str | None]],
 ) -> ResponseEnvelope[MerchantsCreatePayload]:
@@ -61,12 +57,7 @@ def merchants_create(
     """
     if not merchants:
         return build_envelope(
-            data=MerchantsCreatePayload(
-                created=0,
-                skipped=0,
-                error_details=[],
-            ),
-            sensitivity="low",
+            data=MerchantsCreatePayload(created=0, skipped=0, error_details=[])
         )
 
     created = 0
@@ -120,11 +111,8 @@ def merchants_create(
 
     return build_envelope(
         data=MerchantsCreatePayload(
-            created=created,
-            skipped=skipped,
-            error_details=error_details,
+            created=created, skipped=skipped, error_details=error_details
         ),
-        sensitivity="low",
         total_count=len(merchants),
         actions=[
             "Use merchants to review all merchant mappings",
@@ -134,12 +122,7 @@ def merchants_create(
 
 def register_merchants_tools(mcp: FastMCP) -> None:
     """Register all merchants namespace tools with the FastMCP server."""
-    register(
-        mcp,
-        merchants,
-        "merchants",
-        "List all merchant name mappings.",
-    )
+    register(mcp, merchants, "merchants", "List all merchant name mappings.")
     register(
         mcp,
         merchants_create,

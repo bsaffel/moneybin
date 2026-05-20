@@ -25,8 +25,10 @@ from moneybin.protocol.envelope import (
 from moneybin.services.schema_catalog import build_schema_doc
 
 
-@mcp_tool(sensitivity="medium")
-def sql_query(query: str) -> ResponseEnvelope:
+@mcp_tool(
+    unclassified=True
+)  # DEPRECATED: unclassified=True — PR 4 wires sqlglot lineage
+def sql_query(query: str) -> ResponseEnvelope[Any]:
     """Execute a read-only SQL query against the database.
 
     Only SELECT, WITH, DESCRIBE, SHOW, PRAGMA, and EXPLAIN queries
@@ -60,8 +62,10 @@ def sql_query(query: str) -> ResponseEnvelope:
     return build_envelope(data=records, sensitivity="medium")
 
 
-@mcp_tool(sensitivity="low")
-def sql_schema(table: str | None = None) -> ResponseEnvelope:
+@mcp_tool(
+    unclassified=True
+)  # DEPRECATED: unclassified=True — PR 4 wires sqlglot lineage
+def sql_schema(table: str | None = None) -> ResponseEnvelope[Any]:
     """Return the curated database schema for ad-hoc SQL composition.
 
     Equivalent to reading the ``moneybin://schema`` MCP resource. Provided

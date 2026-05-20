@@ -84,7 +84,8 @@ class TestToolRegistration:
         parsed = result.to_dict()
         assert "summary" in parsed
         assert "data" in parsed
-        assert parsed["summary"]["sensitivity"] == "medium"
+        # AccountSummary has account_id: ACCOUNT_IDENTIFIER → Tier.CRITICAL
+        assert parsed["summary"]["sensitivity"] == "critical"
         # data is now a typed payload dict with a "rows" key
         assert len(parsed["data"]["rows"]) == 2  # 2 accounts from mcp_db fixture
 
@@ -121,7 +122,8 @@ class TestToolRegistration:
 
         result = await sql_schema()
         parsed = result.to_dict()
-        assert parsed["summary"]["sensitivity"] == "low"
+        # sql_schema uses unclassified=True (dynamic return shape) → HIGH sensitivity
+        assert parsed["summary"]["sensitivity"] == "high"
         data = parsed["data"]
         assert data["version"] == 1
         names = {t["name"] for t in data["tables"]}

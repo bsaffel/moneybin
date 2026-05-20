@@ -203,7 +203,8 @@ class TestTransactionsCategorizeRun:
         )
 
         result = (await transactions_categorize_run()).to_dict()
-        assert result["summary"]["sensitivity"] == "medium"
+        # CategorizeRunPayload has only AGGREGATE fields → Tier.LOW derived sensitivity
+        assert result["summary"]["sensitivity"] == "low"
         assert "applied_by_method" in result["data"]
         assert "rules" in result["data"]["applied_by_method"]
         assert "merchants" in result["data"]["applied_by_method"]

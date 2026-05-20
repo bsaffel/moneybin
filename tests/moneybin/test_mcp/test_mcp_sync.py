@@ -38,6 +38,7 @@ async def test_sync_pull_returns_envelope_with_summary(mock_build: MagicMock) ->
     from moneybin.mcp.tools.sync import sync_pull
 
     envelope = await sync_pull()
+    # SyncPullPayload has DESCRIPTION fields → Tier.MEDIUM derived sensitivity
     assert envelope.summary.sensitivity == "medium"
     assert envelope.data.transactions_loaded == 5
     service.pull.assert_called_once()
@@ -62,7 +63,8 @@ async def test_sync_status_returns_low_sensitivity(mock_build: MagicMock) -> Non
     from moneybin.mcp.tools.sync import sync_status
 
     envelope = await sync_status()
-    assert envelope.summary.sensitivity == "low"
+    # SyncConnectionRow has guidance: DESCRIPTION → Tier.MEDIUM derived sensitivity
+    assert envelope.summary.sensitivity == "medium"
     assert envelope.data.connections[0].institution_name == "Chase"
 
 
@@ -82,7 +84,7 @@ async def test_sync_connect_returns_link_url_with_medium_sensitivity(
     from moneybin.mcp.tools.sync import sync_connect
 
     envelope = await sync_connect()
-    # link_url is a one-time bearer credential → medium sensitivity per design
+    # SyncConnectPayload has link_url: DESCRIPTION → Tier.MEDIUM derived sensitivity
     assert envelope.summary.sensitivity == "medium"
     assert envelope.data.session_id == "sess_abc"
     assert envelope.data.link_url.startswith("https://hosted.plaid.com")
@@ -122,7 +124,8 @@ async def test_sync_disconnect_calls_service(mock_build: MagicMock) -> None:
 
     envelope = await sync_disconnect(institution="Chase")
     service.disconnect.assert_called_once_with(institution="Chase")
-    assert envelope.summary.sensitivity == "medium"
+    # SyncDisconnectPayload has only TXN_TYPE + INSTITUTION → Tier.LOW derived sensitivity
+    assert envelope.summary.sensitivity == "low"
 
 
 @pytest.mark.unit

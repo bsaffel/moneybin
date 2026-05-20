@@ -13,7 +13,7 @@ from moneybin.protocol.envelope import ResponseEnvelope
 async def test_mcp_tool_converts_user_error_to_envelope() -> None:
     """A UserError raised inside a tool becomes an error envelope."""
 
-    @mcp_tool(sensitivity="low")
+    @mcp_tool(unclassified=True)
     def failing_tool() -> ResponseEnvelope:
         raise UserError("not found", code="NOT_FOUND")
 
@@ -27,7 +27,7 @@ async def test_mcp_tool_converts_user_error_to_envelope() -> None:
 async def test_mcp_tool_converts_database_key_error_to_envelope() -> None:
     """DatabaseKeyError is a recognised classified exception."""
 
-    @mcp_tool(sensitivity="low")
+    @mcp_tool(unclassified=True)
     def failing_tool() -> ResponseEnvelope:
         raise DatabaseKeyError("missing key")
 
@@ -44,7 +44,7 @@ async def test_mcp_tool_lets_unclassified_exceptions_propagate() -> None:
     server boundary.
     """
 
-    @mcp_tool(sensitivity="low")
+    @mcp_tool(unclassified=True)
     def failing_tool() -> ResponseEnvelope:
         raise RuntimeError("internal detail leak")
 
@@ -59,9 +59,9 @@ async def test_mcp_tool_returns_response_envelope_directly() -> None:
     """
     from moneybin.protocol.envelope import build_envelope
 
-    @mcp_tool(sensitivity="low")
+    @mcp_tool(unclassified=True)
     def ok_tool() -> ResponseEnvelope:
-        return build_envelope(data=[{"x": 1}], sensitivity="low")
+        return build_envelope(data=[{"x": 1}])
 
     result = await ok_tool()
     assert isinstance(result, ResponseEnvelope)  # NOT a str

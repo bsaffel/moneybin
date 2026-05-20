@@ -142,7 +142,8 @@ class TestTransactionsCreate:
                 ],
             )
         ).to_dict()
-        assert env["summary"]["sensitivity"] == "medium"
+        # ManualBatchPayload has only RECORD_ID fields → Tier.LOW derived sensitivity
+        assert env["summary"]["sensitivity"] == "low"
         data: dict[str, Any] = dict(env["data"])
         assert data["batch_id"]
         results: list[dict[str, Any]] = list(data["results"])
@@ -300,7 +301,8 @@ class TestSystemAudit:
         env = (
             await system_audit(filters={"action_pattern": "tag.%"}, limit=50)
         ).to_dict()
-        assert env["summary"]["sensitivity"] == "medium"
+        # SystemAuditEventPayload has TXN_AMOUNT fields → Tier.HIGH derived sensitivity
+        assert env["summary"]["sensitivity"] == "high"
         events: list[dict[str, Any]] = env["data"]["events"]
         assert len(events) >= 1
         assert all(str(e["action"]).startswith("tag.") for e in events)

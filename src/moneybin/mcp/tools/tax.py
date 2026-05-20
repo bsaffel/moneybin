@@ -16,10 +16,8 @@ from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.tax_service import TaxService, W2Result
 
 
-@mcp_tool(sensitivity="high", domain="tax")
-def tax_w2(
-    tax_year: int | None = None,
-) -> ResponseEnvelope[W2Result]:
+@mcp_tool(domain="tax")
+def tax_w2(tax_year: int | None = None) -> ResponseEnvelope[W2Result]:
     """Retrieve W-2 form data for a tax year.
 
     Returns wages, federal income tax, social security, medicare, and
@@ -32,9 +30,7 @@ def tax_w2(
     with get_database(read_only=True) as db:
         result = TaxService(db).w2(tax_year=tax_year)
     return build_envelope(
-        data=result,
-        sensitivity="high",
-        actions=["Use reports_spending for spending overview"],
+        data=result, actions=["Use reports_spending for spending overview"]
     )
 
 

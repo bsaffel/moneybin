@@ -181,7 +181,7 @@ class ResponseEnvelope[T]:
 def build_envelope(
     *,
     data: Any,
-    sensitivity: Literal["low", "medium", "high", "critical"],
+    sensitivity: Literal["low", "medium", "high", "critical"] = "low",
     total_count: int | None = None,
     next_cursor: str | None = None,
     period: str | None = None,
@@ -194,15 +194,18 @@ def build_envelope(
 
     ``data`` may be a typed dataclass / Pydantic model / TypedDict
     (preferred — carries privacy classification metadata), or a bare
-    dict / list of dicts (back-compat). The middleware will derive
-    sensitivity from the tool's return type annotation; this
-    ``sensitivity`` parameter is the override-or-redundant-declaration
-    for non-decorated callers (CLI builders, error envelopes).
+    dict / list of dicts (back-compat). When used inside ``@mcp_tool``
+    functions, the decorator derives sensitivity from the return type
+    annotation — the ``sensitivity`` parameter here is informational
+    metadata stored in ``summary.sensitivity``. Defaults to ``"low"``
+    so callers can omit it when the decorator owns enforcement.
 
     Args:
         data: The payload — typed dataclass/model, list of records, or a
             write-result dict.
-        sensitivity: Sensitivity tier of the response.
+        sensitivity: Sensitivity tier stored in ``summary.sensitivity``.
+            Defaults to ``"low"``; the ``@mcp_tool`` decorator derives the
+            effective tier from the return type and governs redaction.
         total_count: Total matching records (if known and different from
             returned count). When None, inferred from data length.
         next_cursor: Opaque pagination token. When provided, ``summary.has_more``

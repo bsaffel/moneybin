@@ -28,7 +28,7 @@ async def test_sync_tool_under_cap_passes_through(
 ) -> None:
     monkeypatch.setattr("moneybin.mcp.decorator._get_timeout_seconds", lambda: 5.0)
 
-    @mcp_tool(sensitivity="low")
+    @mcp_tool(unclassified=True)
     def fast_tool() -> ResponseEnvelope:
         return _ok_envelope()
 
@@ -47,7 +47,7 @@ async def test_sync_tool_over_cap_returns_timeout_envelope(
         "moneybin.mcp.decorator.interrupt_and_reset_database", reset_mock
     )
 
-    @mcp_tool(sensitivity="low")
+    @mcp_tool(unclassified=True)
     def slow_tool() -> ResponseEnvelope:
         time.sleep(0.5)
         return _ok_envelope()
@@ -82,7 +82,7 @@ async def test_async_tool_over_cap_returns_timeout_envelope(
         "moneybin.mcp.decorator.interrupt_and_reset_database", MagicMock()
     )
 
-    @mcp_tool(sensitivity="low")
+    @mcp_tool(unclassified=True)
     async def slow_tool() -> ResponseEnvelope:
         await asyncio.sleep(0.5)
         return _ok_envelope()
@@ -102,7 +102,7 @@ async def test_timeout_logs_low_cardinality_line(
         "moneybin.mcp.decorator.interrupt_and_reset_database", MagicMock()
     )
 
-    @mcp_tool(sensitivity="low")
+    @mcp_tool(unclassified=True)
     async def slow_tool(account_number: str = "secret-123") -> ResponseEnvelope:
         await asyncio.sleep(0.5)
         return _ok_envelope()
@@ -123,7 +123,7 @@ async def test_classified_user_error_still_returned(
     monkeypatch.setattr("moneybin.mcp.decorator._get_timeout_seconds", lambda: 5.0)
     from moneybin.errors import UserError
 
-    @mcp_tool(sensitivity="low")
+    @mcp_tool(unclassified=True)
     def bad_tool() -> ResponseEnvelope:
         raise UserError("nope", code="not_found")
 
@@ -149,7 +149,7 @@ async def test_tool_raised_timeout_error_not_classified_as_cap_fired(
         "moneybin.mcp.decorator.interrupt_and_reset_database", reset_mock
     )
 
-    @mcp_tool(sensitivity="low")
+    @mcp_tool(unclassified=True)
     def inner_timeout_tool() -> ResponseEnvelope:
         raise TimeoutError("downstream HTTP timeout")
 
@@ -166,7 +166,7 @@ async def test_tool_raised_timeout_error_not_classified_as_cap_fired(
 def test_async_generator_tool_rejected_at_decoration() -> None:
     with pytest.raises(TypeError, match="async generator"):
 
-        @mcp_tool(sensitivity="low")
+        @mcp_tool(unclassified=True)
         async def gen_tool() -> ResponseEnvelope:  # type: ignore[misc]
             yield  # type: ignore[misc]
 
@@ -175,7 +175,7 @@ def test_async_generator_tool_rejected_at_decoration() -> None:
 def test_sync_generator_tool_rejected_at_decoration() -> None:
     with pytest.raises(TypeError, match="sync generator"):
 
-        @mcp_tool(sensitivity="low")
+        @mcp_tool(unclassified=True)
         def gen_tool() -> ResponseEnvelope:  # type: ignore[misc]
             yield  # type: ignore[misc]
 
@@ -234,7 +234,7 @@ async def test_back_to_back_call_after_timeout_succeeds(
     )
     monkeypatch.setattr("moneybin.mcp.decorator._get_timeout_seconds", lambda: 0.1)
 
-    @mcp_tool(sensitivity="low")
+    @mcp_tool(unclassified=True)
     def hang_tool() -> ResponseEnvelope:
         with _fake_get_database() as _db:
             _stop.wait(timeout=10.0)  # blocks until interrupt_and_reset fires
@@ -243,7 +243,7 @@ async def test_back_to_back_call_after_timeout_succeeds(
             summary=SummaryMeta(total_count=0, returned_count=0), data=[]
         )
 
-    @mcp_tool(sensitivity="low")
+    @mcp_tool(unclassified=True)
     def quick_tool() -> ResponseEnvelope:
         # Wait until hang_tool's background thread has closed its connection
         # before opening a new one to the same file.
