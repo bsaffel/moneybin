@@ -1365,14 +1365,16 @@ Tools that depend on unbuilt subsystems are documented in the catalog with depen
 
 ## 17d. Entry-points-registered tools
 
-The tool catalog above enumerates the in-tree surface — every tool wired in by an explicit `register_*_tools(mcp)` call in `src/moneybin/mcp/server.py`. The runtime-registered surface is broader: per [`mcp-architecture.md`](mcp-architecture.md) §"Tool registration paths" and [`extension-contracts.md`](extension-contracts.md), the framework also enumerates the `moneybin.packages` setuptools entry points at startup and invokes each package's `tools.register(mcp)` hook after the in-tree path completes.
+**Status: planned, pending [`extension-contracts.md`](extension-contracts.md).** [`extension-contracts.md`](extension-contracts.md) is currently `draft`; the entry-points discovery path is documented here for design alignment but is NOT active at runtime until the spec reaches `in-progress` and the framework implementation lands (Plan 2 of the extension-contracts implementation graph). As of 2026-05-20, the tool catalog above is the complete registered surface — every tool is wired in by an explicit `register_*_tools(mcp)` call in `src/moneybin/mcp/server.py`.
 
-Two extension shapes contribute tools through this second path:
+When the entry-points path ships: per [`mcp-architecture.md`](mcp-architecture.md) §"Tool registration paths" and [`extension-contracts.md`](extension-contracts.md), the framework will also enumerate the `moneybin.packages` setuptools entry points at startup and invoke each package's `tools.register(mcp)` hook after the explicit-call path completes.
 
-- **Analysis Packages** (`extension-contracts.md` §"Analysis Package contract") — `<pkg>_*`-prefixed tools registered programmatically. At M3E launch the in-tree lineup is `assets_*` (see [`asset-tracking.md`](asset-tracking.md), §17b reservation) and `us_tax_*`. Third-party packages installed via PyPI register identically once they appear on the entry-point group.
+Two extension shapes will contribute tools through this second path:
+
+- **Analysis Packages** (`extension-contracts.md` §"Analysis Package contract") — `<pkg>_*`-prefixed tools registered programmatically. The M3E first-party lineup will be `assets_*` and `us_tax_*` (both shipped in the MoneyBin repo, both contributed via the entry-points path rather than explicit register-call imports — see [`asset-tracking.md`](asset-tracking.md) and §17b reservation for the assets namespace). Third-party packages installed via PyPI will register identically once they appear on the entry-point group.
 - **Standalone Reports** (`extension-contracts.md` §"Report contract") — `reports_*` tools auto-generated from structured comments on a single SQLMesh view, including the paired `TableRef` constant, `ReportsService` method, MCP tool, and CLI command. The contributor writes only the SQL with the `@name` / `@description` / `@param` / `@example` block; the framework derives the registration trinity.
 
-The §18 tool-catalog-discipline rule applies symmetrically: a PR that adds a package- or report-contributed tool must update this spec (or its in-package equivalent) in the same change. The runtime-registered surface — in-tree plus entry-points — must match what's documented.
+The §18 tool-catalog-discipline rule will apply symmetrically: a PR that adds a package- or report-contributed tool must update this spec (or its in-package equivalent) in the same change. The runtime-registered surface — explicit-register-call plus entry-points — must match what's documented.
 
 ---
 
