@@ -80,6 +80,7 @@ RECOVERY_NO_PATH = "recovery_no_path"
 
 INFRA_DATABASE_LOCKED = "infra_database_locked"
 INFRA_DATABASE_NOT_INITIALIZED = "infra_database_not_initialized"
+INFRA_FILE_NOT_FOUND = "infra_file_not_found"
 INFRA_IO_ERROR = "infra_io_error"
 INFRA_SCHEMA_DRIFT = "infra_schema_drift"
 INFRA_TIMED_OUT = "infra_timed_out"

@@ -96,3 +96,45 @@ class TestBuildErrorEnvelope:
         )
         env = build_error_envelope(error=err, sensitivity="low")
         assert env.recovery_actions == []
+
+
+class TestEnvelopeSerialization:
+    """Test ResponseEnvelope.to_dict() serialization of recovery_actions."""
+
+    def test_to_dict_serializes_recovery_actions(self):
+        err = UserError(
+            "boom",
+            code=error_codes.MUTATION_NOT_FOUND,
+            recovery_actions=[_sample_action()],
+        )
+        env = build_error_envelope(error=err, sensitivity="low")
+        d = env.to_dict()
+        assert "recovery_actions" in d
+        assert d["recovery_actions"][0]["tool"] == "system_audit_undo"
+        assert d["recovery_actions"][0]["confidence"] == "certain"
+
+    def test_to_dict_omits_recovery_actions_when_none(self):
+        env = ResponseEnvelope(
+            summary=SummaryMeta(
+                total_count=0,
+                returned_count=0,
+                has_more=False,
+                sensitivity="low",
+                display_currency="USD",
+                degraded=False,
+            ),
+            data=[],
+        )
+        d = env.to_dict()
+        assert "recovery_actions" not in d
+
+    def test_to_dict_serializes_empty_recovery_actions(self):
+        """Empty list = explicit 'nothing actionable'; must appear in output."""
+        err = UserError(
+            "boom",
+            code=error_codes.RECOVERY_NO_PATH,
+            recovery_actions=[],
+        )
+        env = build_error_envelope(error=err, sensitivity="low")
+        d = env.to_dict()
+        assert d["recovery_actions"] == []

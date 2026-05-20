@@ -108,45 +108,49 @@ def classify_user_error(exc: BaseException) -> UserError | None:
     should re-raise so programmer errors surface as failures rather than
     being translated into user-facing messages.
     """
+    from moneybin import error_codes
+
     if isinstance(exc, UserError):
         return exc
     if isinstance(exc, DatabaseNotInitializedError):
         return UserError(
             "Database not found. Run 'moneybin db init' to initialize it first.",
-            code="database_not_initialized",
+            code=error_codes.INFRA_DATABASE_NOT_INITIALIZED,
         )
     if isinstance(exc, DatabaseLockError):
         return UserError(
             str(exc),
-            code="database_locked",
+            code=error_codes.INFRA_DATABASE_LOCKED,
             hint="💡 Run 'moneybin db ps' for details or wait and retry",
         )
     if isinstance(exc, DatabaseKeyError):
         return UserError(
             str(exc),
-            code="wrong_key",
+            code=error_codes.INFRA_WRONG_KEY,
             hint=database_key_error_hint(),
         )
     if isinstance(exc, SchemaDriftError):
         return UserError(
             str(exc),
-            code="schema_drift",
+            code=error_codes.INFRA_SCHEMA_DRIFT,
             hint="💡 Run 'moneybin transform apply' to rebuild stale models",
         )
     if isinstance(exc, FileNotFoundError):
         # Drop the "[Errno 2]" prefix that str(FileNotFoundError) includes —
         # end users don't need the errno number.
         msg = f"{exc.strerror}: {exc.filename}" if exc.filename else str(exc)
-        return UserError(msg, code="file_not_found")
+        return UserError(msg, code=error_codes.INFRA_FILE_NOT_FOUND)
     if isinstance(exc, OSError) and not isinstance(exc, TimeoutError):
         msg = f"{exc.strerror}: {exc.filename}" if exc.filename else str(exc)
-        return UserError(msg, code="io_error")
+        return UserError(msg, code=error_codes.INFRA_IO_ERROR)
     if isinstance(exc, ValueError):
-        return UserError(str(exc), code="invalid_input")
+        return UserError(str(exc), code=error_codes.MUTATION_INVALID_INPUT)
     if isinstance(exc, InvalidOperation):
-        return UserError(f"invalid decimal value: {exc}", code="invalid_input")
+        return UserError(
+            f"invalid decimal value: {exc}", code=error_codes.MUTATION_INVALID_INPUT
+        )
     if isinstance(exc, LookupError) and not isinstance(exc, (KeyError, IndexError)):
-        return UserError(str(exc), code="not_found")
+        return UserError(str(exc), code=error_codes.MUTATION_NOT_FOUND)
     if isinstance(exc, SyncError):
-        return UserError(str(exc), code="sync_error")
+        return UserError(str(exc), code=error_codes.SYNC_ERROR)
     return None

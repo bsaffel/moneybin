@@ -2,6 +2,7 @@
 
 from unittest.mock import patch
 
+from moneybin import error_codes
 from moneybin.database import DatabaseKeyError
 from moneybin.errors import UserError, classify_user_error
 
@@ -14,7 +15,7 @@ def test_classify_database_key_error_returns_user_error() -> None:
     ):
         result = classify_user_error(DatabaseKeyError("locked"))
     assert result is not None
-    assert result.code == "wrong_key"
+    assert result.code == error_codes.INFRA_WRONG_KEY
     assert "locked" in result.message
     assert result.hint == "Run: moneybin db unlock"
 
@@ -23,7 +24,7 @@ def test_classify_file_not_found_returns_user_error() -> None:
     """FileNotFoundError maps to a UserError with no hint."""
     result = classify_user_error(FileNotFoundError("missing.csv"))
     assert result is not None
-    assert result.code == "file_not_found"
+    assert result.code == error_codes.INFRA_FILE_NOT_FOUND
     assert "missing.csv" in result.message
     assert result.hint is None
 
@@ -32,7 +33,7 @@ def test_classify_lookup_error_returns_not_found() -> None:
     """Plain LookupError maps to a UserError with code not_found."""
     result = classify_user_error(LookupError("note abc not found"))
     assert result is not None
-    assert result.code == "not_found"
+    assert result.code == error_codes.MUTATION_NOT_FOUND
     assert "not found" in result.message
 
 
@@ -55,7 +56,7 @@ def test_classify_value_error_returns_user_error() -> None:
     """ValueError maps to a UserError so CLI date/decimal parse errors surface cleanly."""
     result = classify_user_error(ValueError("bad input"))
     assert result is not None
-    assert result.code == "invalid_input"
+    assert result.code == error_codes.MUTATION_INVALID_INPUT
     assert "bad input" in result.message
 
 
@@ -79,7 +80,7 @@ def test_classify_database_not_initialized_error() -> None:
     result = classify_user_error(err)
     assert result is not None
     assert "db init" in (result.message + (result.hint or "")).lower()
-    assert result.code == "database_not_initialized"
+    assert result.code == error_codes.INFRA_DATABASE_NOT_INITIALIZED
 
 
 def test_classify_database_lock_error() -> None:
@@ -89,4 +90,4 @@ def test_classify_database_lock_error() -> None:
     err = DatabaseLockError("Could not acquire write lock after 5s")
     result = classify_user_error(err)
     assert result is not None
-    assert result.code == "database_locked"
+    assert result.code == error_codes.INFRA_DATABASE_LOCKED

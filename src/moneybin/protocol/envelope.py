@@ -130,6 +130,8 @@ class ResponseEnvelope:
             d["error"] = self.error.to_dict()
         if self.next_cursor is not None:
             d["next_cursor"] = self.next_cursor
+        if self.recovery_actions is not None:
+            d["recovery_actions"] = [ra.model_dump() for ra in self.recovery_actions]
         return d
 
     def to_json(self) -> str:
