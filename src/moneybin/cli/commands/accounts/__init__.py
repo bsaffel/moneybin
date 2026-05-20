@@ -9,6 +9,7 @@ display_name, include_in_net_worth, and is_archived fold in via flags
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import sys
 from collections.abc import Callable
@@ -104,8 +105,6 @@ def accounts_get(
             cli_actor="accounts_get",
         )
         return
-    import dataclasses
-
     for k, v in dataclasses.asdict(record).items():
         typer.echo(f"  {k}: {v}")
 

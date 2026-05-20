@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
@@ -111,14 +112,19 @@ def write_privacy_event(event: dict[str, Any]) -> None:
             log_dir = _resolve_privacy_log_dir()
             log_dir.mkdir(parents=True, exist_ok=True)
             log_path = log_dir / _LOG_FILE
-            is_current = _rotate_if_new_day(log_path)
+            _rotate_if_new_day(log_path)
             line = json.dumps(event, sort_keys=True, separators=(",", ":"))
-            with log_path.open("a", encoding="utf-8") as f:
+            # os.open with O_CREAT|O_APPEND|mode=0o600 sets restrictive perms
+            # atomically at file creation. open("a") + chmod afterwards leaves
+            # a sub-millisecond window where the file exists at the umask
+            # default — narrow but real for a security-sensitive audit log.
+            fd = os.open(
+                log_path,
+                os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+                0o600,
+            )
+            with os.fdopen(fd, "a", encoding="utf-8") as f:
                 f.write(line + "\n")
-            if not is_current:
-                # First write of the day (file just created or just rotated).
-                # Restrict to 0o600. Don't chmod on every append.
-                log_path.chmod(0o600)
     except (OSError, PermissionError) as exc:
         logger.warning(f"privacy log write failed: {type(exc).__name__}: {exc}")
 

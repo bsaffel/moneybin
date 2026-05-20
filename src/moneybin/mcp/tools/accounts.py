@@ -98,7 +98,7 @@ def accounts_get(account_id: str) -> ResponseEnvelope[AccountDetail]:
     with get_database(read_only=True) as db:
         record = AccountService(db).get_account(account_id)
     if record is None:
-        raise UserError(f"Account not found: {account_id}", code="not_found")
+        raise UserError(f"Account not found: {account_id}", code="account_not_found")
     return build_envelope(data=record)
 
 

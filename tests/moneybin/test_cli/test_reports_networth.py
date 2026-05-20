@@ -70,29 +70,23 @@ class TestReportsNetworth:
 
     @pytest.mark.unit
     def test_as_of_date(self, runner: CliRunner) -> None:
+        # Real typed payload — MagicMock would trigger PrivacyContractError in
+        # the JSON path's redaction gate, which has no Annotated metadata.
+        snapshot = NetWorthSnapshotPayload(
+            balance_date=date(2026, 1, 1),
+            net_worth=Decimal("0"),
+            total_assets=Decimal("0"),
+            total_liabilities=Decimal("0"),
+            account_count=0,
+            per_account=[],
+        )
         with (
             patch("moneybin.cli.commands.reports.networth.get_database"),
             patch(
                 "moneybin.cli.commands.reports.networth.NetworthService"
             ) as mock_service_class,
         ):
-            mock_snap = MagicMock(
-                balance_date=date(2026, 1, 1),
-                net_worth=Decimal("0"),
-                total_assets=Decimal("0"),
-                total_liabilities=Decimal("0"),
-                account_count=0,
-                per_account=[],
-            )
-            mock_snap.to_dict.return_value = {
-                "balance_date": "2026-01-01",
-                "net_worth": Decimal("0"),
-                "total_assets": Decimal("0"),
-                "total_liabilities": Decimal("0"),
-                "account_count": 0,
-                "per_account": [],
-            }
-            mock_service_class.return_value.current.return_value = mock_snap
+            mock_service_class.return_value.current.return_value = snapshot
             result = runner.invoke(
                 app,
                 [

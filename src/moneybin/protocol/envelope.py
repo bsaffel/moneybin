@@ -261,9 +261,30 @@ def build_envelope(
     )
 
 
+# Auxiliary list fields that commonly accompany single-object write results
+# but are NOT the primary row collection. Without this filter the first-list
+# heuristic returns len(warnings)=0 for a successful write whose only list is
+# an empty diagnostic field, and propagates that into summary.returned_count
+# and the privacy log's row_count.
+_AUXILIARY_LIST_FIELDS = frozenset({
+    "warnings",
+    "errors",
+    "error_details",
+    "unmapped_columns",
+    "flagged_fields",
+})
+
+
 def _count_typed_payload(data: Any) -> int:
-    """For a typed payload, return the row count if a list-shaped field exists, else 1."""
+    """For a typed payload, return the row count if a primary list field exists, else 1.
+
+    Skips auxiliary diagnostic list fields (see ``_AUXILIARY_LIST_FIELDS``) so
+    write-result payloads like ``AccountSettingsPayload(warnings=[])`` report
+    ``returned_count=1`` instead of ``0``.
+    """
     for f in dataclasses.fields(data):
+        if f.name in _AUXILIARY_LIST_FIELDS:
+            continue
         v: Any = getattr(data, f.name)
         if isinstance(v, list):
             return len(cast(list[Any], v))

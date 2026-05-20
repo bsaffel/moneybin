@@ -397,8 +397,12 @@ def mcp_tool(
             if sensitivity.value != envelope.summary.sensitivity:
                 updated_summary = dataclasses.replace(
                     envelope.summary,
+                    # Sensitivity is typed Literal["low","medium","high","critical"];
+                    # `sensitivity.value` is the matching str but pyright doesn't narrow.
                     sensitivity=sensitivity.value,  # pyright: ignore[reportArgumentType]
                 )
+                # ResponseEnvelope is generic over the payload type; dataclasses.replace
+                # erases the type param so pyright reports the rebuilt envelope as unknown.
                 envelope = dataclasses.replace(envelope, summary=updated_summary)  # pyright: ignore[reportUnknownArgumentType]
             # Redact CRITICAL fields before returning. Skip the walk entirely
             # for tools whose return type has no CRITICAL field — the result
@@ -409,8 +413,11 @@ def mcp_tool(
                 has_critical
                 and not unclassified
                 and envelope.error is None
+                # ResponseEnvelope.data type param is erased after the
+                # dataclasses.replace above; pyright can't see it's narrowable.
                 and envelope.data is not None  # pyright: ignore[reportUnknownMemberType]
             ):
+                # Same reason: envelope.data is `Unknown` after the generic erase.
                 redacted_data = redact_typed(envelope.data, consent=None)  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
                 envelope = dataclasses.replace(envelope, data=redacted_data)  # pyright: ignore[reportUnknownArgumentType]
             # Write a privacy.log.jsonl event for every tool call.
@@ -419,6 +426,7 @@ def mcp_tool(
                     actor=f"mcp.{fn.__name__}",
                     sensitivity=sensitivity.value,
                     classes_returned=classes_for_log,
+                    # Generic envelope type erased; _envelope_row_count handles Any.
                     row_count=_envelope_row_count(envelope),  # pyright: ignore[reportUnknownArgumentType]
                 )
             )

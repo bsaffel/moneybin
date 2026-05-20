@@ -30,7 +30,9 @@ REDACTION_KEY_NAME = "PRIVACY__REDACTION_KEY"
 _KEY_BYTES = 32
 
 _CACHE: dict[str, bytes] = {}
-_CACHE_KEY = "current"
+# Cache slot used when no profile has been resolved (single-user bootstrap path
+# before the profile resolver fires). Distinct from any real profile name.
+_NO_PROFILE_KEY = "__base__"
 
 
 def get_redaction_key() -> bytes:
@@ -38,9 +40,24 @@ def get_redaction_key() -> bytes:
 
     Generates and stores a fresh key on first call if none exists.
     Subsequent calls return the cached value.
+
+    Keyed by profile name: a process that resolves multiple profiles in
+    its lifetime (test runs, future multi-profile CLI flows) keeps each
+    profile's key distinct. A constant cache key would silently return
+    the first-resolved profile's key for every other profile and cross-
+    contaminate HMAC identifiers — a key-confusion defect once PR 3's
+    hash-placeholder transforms land.
     """
-    if _CACHE_KEY in _CACHE:
-        return _CACHE[_CACHE_KEY]
+    from moneybin.config import (  # noqa: PLC0415 — defer to avoid import cycle
+        get_current_profile,
+    )
+
+    try:
+        profile = get_current_profile()
+    except RuntimeError:
+        profile = _NO_PROFILE_KEY
+    if profile in _CACHE:
+        return _CACHE[profile]
     store = SecretStore()
     try:
         hex_value = store.get_key(REDACTION_KEY_NAME)
@@ -48,5 +65,5 @@ def get_redaction_key() -> bytes:
     except SecretNotFoundError:
         key = secrets.token_bytes(_KEY_BYTES)
         store.set_key(REDACTION_KEY_NAME, key.hex())
-    _CACHE[_CACHE_KEY] = key
+    _CACHE[profile] = key
     return key

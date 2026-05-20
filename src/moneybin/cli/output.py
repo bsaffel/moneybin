@@ -170,11 +170,20 @@ def _has_critical(payload_type: type) -> bool:
     that would pass through unchanged (every non-CRITICAL tier is
     pass-through in PR 2). Mirrors the equivalent check in the
     ``@mcp_tool`` decorator's wrapper.
+
+    ``PrivacyContractError`` deliberately propagates: a typed payload
+    missing ``Annotated[T, DataClass]`` metadata is a contract bug, not
+    a "non-critical" case. The MCP path fails the same way at
+    registration time; the CLI has no equivalent gate so this is the
+    only place the violation can surface.
     """
-    try:
-        return derive_tier(payload_type) == Tier.CRITICAL
-    except Exception:  # noqa: BLE001 — bare types (list/dict) raise; treat as non-critical
+    # Bare builtin containers (legacy CLI commands still passing dict/list
+    # payloads pre-typed-payload migration) have no field annotations.
+    # Short-circuit so we don't conflate "no annotation possible" with
+    # "annotation missing on a typed payload".
+    if payload_type in (list, dict, tuple, set):
         return False
+    return derive_tier(payload_type) == Tier.CRITICAL
 
 
 def emit_json_error(user_error: UserError) -> None:
