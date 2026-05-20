@@ -278,7 +278,7 @@ class TestCurationTools:
 class TestNamespaceResources:
     """MCP resource registration smoke tests.
 
-    Only moneybin://schema remains after PR #177 removed seven duplicate resources
+    Only moneybin://schema remains after PR #185 removed seven duplicate resources
     (status, accounts, privacy, tools, accounts://summary, recent-curation,
     net-worth://summary) whose data is reachable via tools.
     """
