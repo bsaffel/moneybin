@@ -86,7 +86,7 @@ def _check_collection_caps(
     list_params: list[str],
     bound_args: dict[str, Any],
     cap: int | None,
-) -> ResponseEnvelope | None:
+) -> ResponseEnvelope[Any] | None:
     """Return an error envelope if any list param exceeds ``cap``, else None."""
     if cap is None:
         return None
@@ -177,7 +177,7 @@ def _find_list_params(fn: Callable[..., Any]) -> list[str]:
     return list_params
 
 
-def _check_envelope(fn_name: str, result: Any) -> ResponseEnvelope:
+def _check_envelope(fn_name: str, result: Any) -> ResponseEnvelope[Any]:
     if not isinstance(result, ResponseEnvelope):
         # mask_error_details=True at the server boundary swallows the TypeError
         # into a generic ToolError, so log the contract violation first.
@@ -187,7 +187,7 @@ def _check_envelope(fn_name: str, result: Any) -> ResponseEnvelope:
     return result
 
 
-def _classify_or_raise(fn_name: str, exc: Exception) -> ResponseEnvelope:
+def _classify_or_raise(fn_name: str, exc: Exception) -> ResponseEnvelope[Any]:
     """Convert a classified domain exception to an error envelope, else re-raise."""
     classified = classify_user_error(exc)
     if classified is None:
@@ -198,7 +198,7 @@ def _classify_or_raise(fn_name: str, exc: Exception) -> ResponseEnvelope:
 
 def _build_timeout_envelope(
     fn_name: str, elapsed_s: float, timeout_s: float
-) -> ResponseEnvelope:
+) -> ResponseEnvelope[Any]:
     err = UserError(
         f"Tool {fn_name} exceeded {timeout_s:.1f}s cap",
         code="timed_out",
@@ -309,7 +309,7 @@ def mcp_tool(
         cached_sig = inspect.signature(fn) if list_params else None
 
         @functools.wraps(fn)
-        async def wrapper(*args: Any, **kwargs: Any) -> ResponseEnvelope:
+        async def wrapper(*args: Any, **kwargs: Any) -> ResponseEnvelope[Any]:
             log_tool_call(fn.__name__, sensitivity)
             # Resolve cap: explicit per-tool override wins; otherwise inherit settings.
             cap_attr = cast(

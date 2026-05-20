@@ -124,7 +124,8 @@ def render_or_json(
     if json_fields and isinstance(envelope.data, list):  # pyright: ignore[reportUnknownMemberType]
         fields = {f.strip() for f in json_fields.split(",") if f.strip()}
         filtered = [
-            {k: v for k, v in row.items() if k in fields} for row in envelope.data  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
+            {k: v for k, v in row.items() if k in fields}  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
+            for row in envelope.data  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
         ]
         envelope = dataclasses.replace(envelope, data=filtered)  # pyright: ignore[reportUnknownArgumentType]
 

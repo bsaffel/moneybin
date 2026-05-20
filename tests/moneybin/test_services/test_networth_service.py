@@ -288,7 +288,7 @@ class TestHistory:
         assert feb.change_abs == Decimal("200.00")
         # change_pct = 200/1000 = 0.2
         assert feb.change_pct is not None
-        assert abs(feb.change_pct - 0.2) < 0.001
+        assert abs(float(feb.change_pct) - 0.2) < 0.001
 
     @pytest.mark.unit
     def test_history_invalid_interval_raises(self, db: Database) -> None:

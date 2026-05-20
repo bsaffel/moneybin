@@ -6,7 +6,7 @@ import asyncio
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import pytest
 
@@ -45,7 +45,7 @@ def test_decorator_fails_on_unclassified_return_type() -> None:
     with pytest.raises(PrivacyContractError):
 
         @mcp_tool()
-        def bad_tool() -> ResponseEnvelope[dict]:  # bare dict — no classes
+        def bad_tool() -> ResponseEnvelope[dict[str, Any]]:  # pyright: ignore[reportUnusedFunction]  # bare dict — no DataClass-annotated fields; the @mcp_tool decoration itself is the act under test
             return build_envelope(data={"x": 1}, sensitivity="low")
 
 

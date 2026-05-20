@@ -48,7 +48,7 @@ class SpendingSummary:
     months: list[MonthlySpending]
     period_label: str = ""
 
-    def to_envelope(self) -> ResponseEnvelope:
+    def to_envelope(self) -> ResponseEnvelope[Any]:
         """Build a ResponseEnvelope for MCP/CLI output."""
         return build_envelope(
             data=[m.to_dict() for m in self.months],
@@ -91,7 +91,7 @@ class CategoryBreakdown:
     categories: list[CategorySpending]
     period_label: str = ""
 
-    def to_envelope(self) -> ResponseEnvelope:
+    def to_envelope(self) -> ResponseEnvelope[Any]:
         """Build a ResponseEnvelope for MCP/CLI output."""
         return build_envelope(
             data=[c.to_dict() for c in self.categories],
