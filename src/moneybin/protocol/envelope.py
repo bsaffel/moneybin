@@ -278,16 +278,24 @@ _AUXILIARY_LIST_FIELDS = frozenset({
 def _count_typed_payload(data: Any) -> int:
     """For a typed payload, return the row count if a primary list field exists, else 1.
 
-    Skips auxiliary diagnostic list fields (see ``_AUXILIARY_LIST_FIELDS``) so
-    write-result payloads like ``AccountSettingsPayload(warnings=[])`` report
-    ``returned_count=1`` instead of ``0``.
+    - Skips auxiliary diagnostic list fields (see ``_AUXILIARY_LIST_FIELDS``)
+      so write-result payloads like ``AccountSettingsPayload(warnings=[])``
+      report ``returned_count=1`` instead of ``0``.
+    - Falls back to ``1`` when the payload has more than one non-auxiliary
+      list field — these are aggregate result objects (e.g.
+      ``ImportInboxSyncPayload`` with ``processed``/``failed``/``skipped``/
+      ``ignored``), not row collections, so no single list represents the
+      "returned" count.
     """
+    primary_lists: list[list[Any]] = []
     for f in dataclasses.fields(data):
         if f.name in _AUXILIARY_LIST_FIELDS:
             continue
         v: Any = getattr(data, f.name)
         if isinstance(v, list):
-            return len(cast(list[Any], v))
+            primary_lists.append(cast(list[Any], v))
+    if len(primary_lists) == 1:
+        return len(primary_lists[0])
     return 1
 
 

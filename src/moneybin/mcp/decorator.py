@@ -314,6 +314,23 @@ def mcp_tool(
         # and tools with list_params would otherwise rebuild it on every call.
         cached_sig = inspect.signature(fn) if list_params else None
 
+        def _emit_privacy_event(env: ResponseEnvelope[Any]) -> None:
+            """Write the per-call privacy.log event.
+
+            Called on every return path (success, cap violation, timeout,
+            classified error) so the audit trail covers blocked / failed
+            invocations, not just successes.
+            """
+            write_privacy_event(
+                build_tool_call_event(
+                    actor=f"mcp.{fn.__name__}",
+                    sensitivity=sensitivity.value,
+                    classes_returned=classes_for_log,
+                    # Generic envelope type erased; _envelope_row_count handles Any.
+                    row_count=_envelope_row_count(env),  # pyright: ignore[reportUnknownArgumentType]
+                )
+            )
+
         @functools.wraps(fn)
         async def wrapper(*args: Any, **kwargs: Any) -> ResponseEnvelope[Any]:
             log_tool_call(fn.__name__, sensitivity)
@@ -334,6 +351,7 @@ def mcp_tool(
                     bound = {}
                 cap_error = _check_collection_caps(fn.__name__, list_params, bound, cap)
                 if cap_error is not None:
+                    _emit_privacy_event(cap_error)
                     return cap_error
             timeout_s = _get_timeout_seconds()
             started = time.monotonic()
@@ -368,7 +386,9 @@ def mcp_tool(
                         )
             except TimeoutError as exc:
                 if not cm.expired():
-                    return _classify_or_raise(fn.__name__, exc)
+                    err_env = _classify_or_raise(fn.__name__, exc)
+                    _emit_privacy_event(err_env)
+                    return err_env
                 elapsed = time.monotonic() - started
                 logger.warning(
                     f"Tool {fn.__name__} timed out after {elapsed:.2f}s "
@@ -387,9 +407,13 @@ def mcp_tool(
                 # flock). Without this, an immediate retry hits inbox_busy
                 # while the previous thread is still in its finally block.
                 await asyncio.sleep(0.5)
-                return _build_timeout_envelope(fn.__name__, elapsed, timeout_s)
+                timeout_env = _build_timeout_envelope(fn.__name__, elapsed, timeout_s)
+                _emit_privacy_event(timeout_env)
+                return timeout_env
             except Exception as exc:
-                return _classify_or_raise(fn.__name__, exc)
+                err_env = _classify_or_raise(fn.__name__, exc)
+                _emit_privacy_event(err_env)
+                return err_env
             envelope = _check_envelope(fn.__name__, result)
             # Stamp summary.sensitivity with the decorator-derived tier so the
             # envelope reflects the statically-derived classification regardless
@@ -421,15 +445,7 @@ def mcp_tool(
                 redacted_data = redact_typed(envelope.data, consent=None)  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
                 envelope = dataclasses.replace(envelope, data=redacted_data)  # pyright: ignore[reportUnknownArgumentType]
             # Write a privacy.log.jsonl event for every tool call.
-            write_privacy_event(
-                build_tool_call_event(
-                    actor=f"mcp.{fn.__name__}",
-                    sensitivity=sensitivity.value,
-                    classes_returned=classes_for_log,
-                    # Generic envelope type erased; _envelope_row_count handles Any.
-                    row_count=_envelope_row_count(envelope),  # pyright: ignore[reportUnknownArgumentType]
-                )
-            )
+            _emit_privacy_event(envelope)
             return envelope
 
         wrapper._mcp_sensitivity = sensitivity  # type: ignore[attr-defined]

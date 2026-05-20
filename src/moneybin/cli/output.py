@@ -151,16 +151,34 @@ def render_or_json(
             c.value
             for c in sorted(extract_data_classes(original_data_type))  # pyright: ignore[reportUnknownArgumentType]
         ]
+        # Derive sensitivity from the payload TYPE — envelope.summary.sensitivity
+        # is set manually by CLI commands and frequently understates the actual
+        # tier (e.g. accounts_resolve passes "low" while returning ACCOUNT_IDENTIFIER
+        # data). Auditing must reflect what was actually returned, not what the
+        # command guessed.
+        log_sensitivity = _derive_log_sensitivity(original_data_type)  # pyright: ignore[reportUnknownArgumentType]
         write_privacy_event(
             build_tool_call_event(
                 actor=f"cli.{cli_actor}",
-                sensitivity=envelope.summary.sensitivity,
+                sensitivity=log_sensitivity,
                 classes_returned=classes_returned,
                 row_count=envelope.summary.returned_count,
             )
         )
 
     typer.echo(envelope.to_json())
+
+
+def _derive_log_sensitivity(payload_type: type) -> str:
+    """Return the audit-log sensitivity string derived from ``payload_type``.
+
+    Falls back to ``"low"`` for bare list/dict/None payloads (legacy CLI
+    commands not yet migrated to typed payloads) — those carry no class
+    metadata, so there's nothing to derive against.
+    """
+    if payload_type in (list, dict, tuple, set, type(None)):
+        return "low"
+    return derive_tier(payload_type).name.lower()
 
 
 def _has_critical(payload_type: type) -> bool:
