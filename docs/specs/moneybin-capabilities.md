@@ -76,13 +76,18 @@ not-yet-built.
 | 15| Run the categorization engine cascade (rules + merchants)        | `transactions_categorize_run`            | `transactions categorize run`            | —          | live                  |
 | 16| Get redacted batch for LLM categorization                        | `transactions_categorize_assist`         | `transactions categorize assist`         | —          | live                  |
 
+| 17| Inspect SQLMesh model state (status/plan/validate/audit)        | — *(cat 2 — operator)*       | `transform status|plan|validate|audit`             | —          | live (CLI-only)       |
+
 *(Bootstrap rows only; full table populates incrementally as
 follow-up work closes the parity backlog. A prior row covering
 "Discover currently-hidden MCP tools" was removed 2026-05-17
 when client-driven progressive disclosure was retired (see
 [`mcp-architecture.md`](mcp-architecture.md) §3); the current
 rows 12–13 are unrelated and were added 2026-05-17 with the
-rules-CLI parity work.)*
+rules-CLI parity work. Row 17 added 2026-05-19: transform_* de-registered
+from MCP (PR #185) — operator territory per mcp-server.md category 2.
+`sync_schedule_set/show/remove` stubs removed from MCP (PR #185) — were
+not-implemented placeholders with no backing spec.)*
 
 ## Exemption categories
 

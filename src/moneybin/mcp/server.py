@@ -206,17 +206,16 @@ def register_core_tools() -> None:
     from moneybin.mcp.tools.transactions_categorize_assist import (
         register_transactions_categorize_assist_tools,
     )
-    from moneybin.mcp.tools.transform import register_transform_tools
-
-    # Budget and tax tools are intentionally NOT registered today —
+    # Budget, tax, and transform tools are intentionally NOT registered today —
     # ``budget-tracking.md`` is ``draft`` (today's ``budget_set`` is a partial
     # slice of the planned set/status/delete + rollovers feature) and there is
-    # no backing tax spec at all. Per ``.claude/rules/mcp-server.md``
+    # no backing tax spec at all. Transform tools are CLI-accessible operator
+    # territory (category 2 per mcp-server.md). Per ``.claude/rules/mcp-server.md``
     # "Surface change discipline" they re-register when their backing spec
     # reaches ``in-progress`` or ``implemented``. The tool implementation
-    # files (``tools/budget.py``, ``tools/tax.py``) stay in place as building
-    # blocks; only the registration is gated. See ``moneybin-mcp.md`` §17
-    # "Dependency tracker".
+    # files (``tools/budget.py``, ``tools/tax.py``, ``tools/transform.py``) stay
+    # in place as building blocks; only the registration is gated. See
+    # ``moneybin-mcp.md`` §17 "Dependency tracker".
 
     register_system_tools(mcp)
     register_reports_tools(mcp)
@@ -232,7 +231,6 @@ def register_core_tools() -> None:
     register_sync_tools(mcp)
     register_sync_prompts(mcp)
     register_refresh_tools(mcp)
-    register_transform_tools(mcp)
     register_sql_tools(mcp)
 
     logger.info("Registered MCP tools — full surface visible at connect")
