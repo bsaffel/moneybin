@@ -51,9 +51,10 @@ class TestToolRegistration:
         assert "reports_cashflow" in names
         assert "reports_recurring" in names
         assert "reports_merchants" in names
-        assert "reports_uncategorized" in names
         assert "reports_large_transactions" in names
         assert "reports_balance_drift" in names
+        # reports_uncategorized removed — use transactions_categorize_pending instead
+        assert "reports_uncategorized" not in names
         # Removed v1 tools should be gone
         assert "reports_spending_summary" not in names
         assert "reports_spending_by_category" not in names

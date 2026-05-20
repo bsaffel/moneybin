@@ -95,6 +95,7 @@ class PendingTxnRow:
     memo: Annotated[str | None, DataClass.DESCRIPTION]
     # ACCOUNT_IDENTIFIER — drives CatPendingPayload to Tier.CRITICAL
     account_id: Annotated[str | None, DataClass.ACCOUNT_IDENTIFIER]
+    age_days: Annotated[int | None, DataClass.AGGREGATE]
 
 
 @dataclass(frozen=True, slots=True)

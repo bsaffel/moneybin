@@ -35,7 +35,6 @@ from .commands import (
     sync,
     synthetic,
     system,
-    tax,
     transactions,
     transform,
 )
@@ -146,7 +145,6 @@ app.add_typer(
     privacy.app, name="privacy", help="Privacy utilities: redaction and audit"
 )
 app.add_typer(budget_cmd.app, name="budget")
-app.add_typer(tax.app, name="tax")
 app.add_typer(system.app, name="system")
 app.command(
     name="refresh",

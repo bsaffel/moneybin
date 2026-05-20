@@ -10,10 +10,12 @@ Read tools:
   - reports_cashflow (medium)
   - reports_recurring (medium)
   - reports_merchants (medium)
-  - reports_uncategorized (medium)
   - reports_large_transactions (medium)
   - reports_balance_drift (medium)
   - reports_budget (low)
+
+Removed: reports_uncategorized — use transactions_categorize_pending instead
+(accepts sort='impact'|'date', min_amount, account).
 """
 
 from __future__ import annotations
@@ -39,7 +41,6 @@ from moneybin.privacy.payloads.reports import (
     MerchantActivityPayload,
     RecurringSubscriptionsPayload,
     SpendingTrendPayload,
-    UncategorizedQueuePayload,
 )
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.budget_service import BudgetService
@@ -249,24 +250,6 @@ def reports_merchants(
 
 
 @mcp_tool()
-def reports_uncategorized(
-    min_amount: float = 0.0, account: str | None = None, limit: int = 50
-) -> ResponseEnvelope[UncategorizedQueuePayload]:
-    """Uncategorized transactions queue, ranked by curator-impact.
-
-    Args:
-        min_amount: filter to ABS(amount) >= this.
-        account: filter to account name; None for all accounts.
-        limit: max rows.
-    """
-    with get_database(read_only=True) as db:
-        payload = ReportsService(db).uncategorized_queue(
-            min_amount=min_amount, account=account, limit=limit
-        )
-    return build_envelope(data=payload)
-
-
-@mcp_tool()
 def reports_large_transactions(
     top: int = 25, anomaly: str = "none"
 ) -> ResponseEnvelope[LargeTransactionsPayload]:
@@ -288,7 +271,9 @@ def reports_balance_drift(
     """Balance reconciliation drift: asserted vs computed.
 
     Args:
-        account: filter to account name; None for all.
+        account: filter to an account; accepts ``account_id`` or
+            case-insensitive ``display_name``. Ambiguous display_name
+            matches raise; None for all.
         status: drift | warning | clean | no-data | all.
         since: ISO date; only assertions on or after.
     """
@@ -367,13 +352,6 @@ def register_reports_tools(mcp: FastMCP) -> None:
     )
     register(
         mcp,
-        reports_uncategorized,
-        "reports_uncategorized",
-        "Uncategorized transactions queue, ranked by curator-impact "
-        "(amount x age). Reads from reports.uncategorized_queue.",
-    )
-    register(
-        mcp,
         reports_large_transactions,
         "reports_large_transactions",
         "Top transactions by absolute amount with per-account and per-category "
@@ -383,12 +361,10 @@ def register_reports_tools(mcp: FastMCP) -> None:
         mcp,
         reports_balance_drift,
         "reports_balance_drift",
-        "Per-assertion-date asserted-vs-computed reconciliation series with "
-        "categorical status (drift / warning / clean / no-data). Reads "
-        "reports.balance_drift. For a per-day point-in-time numeric threshold "
-        "filter on the precomputed reconciliation delta, use "
-        "accounts_balance_reconcile instead. "
-        "Amounts are in the currency named by `summary.display_currency`.",
+        "Categorical view of balance assertions by drift status (clean / warning / drift / no-data). "
+        "Returns one row per assertion with computed drift. Use when you want a status breakdown across all assertions. "
+        "Amounts use the accounting convention: negative = expense, positive = income. "
+        "Drift amounts are in the currency named by summary.display_currency.",
     )
     register(
         mcp,

@@ -11,6 +11,8 @@ paths: ["src/moneybin/cli/**", "src/moneybin/main.py"]
 
 CLI commands are **thin wrappers** around tested business logic. Delegate complex work to business logic classes.
 
+**Enforcement:** `tests/moneybin/test_architecture/test_adapter_layering.py` fails CI when CLI commands (or MCP tools) import write-callable symbols from `moneybin.loaders`, `moneybin.extractors`, or `moneybin.matching` without an allowlist entry. The fix is almost always a new service method; allowlist entries are reserved for pure constants, pure read helpers, DI targets, and type/format descriptors, each with a `# why` comment.
+
 ## Consumer Model
 
 CLI serves three peer consumers, not just one:

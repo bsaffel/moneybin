@@ -51,7 +51,7 @@ def test_refresh_json_failure_includes_action_hint(runner: CliRunner) -> None:
     assert payload["data"]["applied"] is False
     assert payload["data"]["error"] == "model boom"
     assert payload["actions"], "apply failure must emit a recovery hint"
-    assert any("transform_plan" in a for a in payload["actions"])
+    assert any("moneybin transform plan" in a for a in payload["actions"])
     assert all("moneybin_discover" not in a for a in payload["actions"])
 
 

@@ -1,6 +1,6 @@
 # Transfer Detection
 
-> Last updated: 2026-04-26
+> Last updated: 2026-05-17 — CLI commands relocated to `moneybin transactions matches *` (PR #159); MCP names aligned to `transactions_matches_*` (phantom namespace per `moneybin-mcp.md` §17); `core.bridge_transfers` materialized as SQLMesh VIEW.
 > Status: implemented
 > Parent: [`matching-overview.md`](matching-overview.md) (pillar B)
 > Companions: [`matching-same-record-dedup.md`](matching-same-record-dedup.md) (sibling spec, pillars A+C), [`categorization-overview.md`](categorization-overview.md) (independent axis), `CLAUDE.md` "Architecture: Data Layers", `.claude/rules/database.md` (column naming, model prefixes)
@@ -34,7 +34,7 @@ This spec covers pillar B from the [transaction-matching umbrella](matching-over
 ### Detection
 
 1. Transactions from different accounts with opposite signs and the same absolute amount, within a configurable date window, are candidates for transfer pairing.
-2. Candidates are scored using four signals: date distance, description keyword presence, amount roundness, and account pair frequency within the batch.
+2. Candidates are scored using two signals: date distance and description keyword presence.
 3. All scored pairs above `transfer_review_threshold` go to the review queue. No auto-confirmation in v1.
 4. Pairs below `transfer_review_threshold` are not surfaced (logged at DEBUG level only).
 5. Each transaction participates in at most one transfer pair (1:1 assignment).
@@ -56,22 +56,19 @@ This spec covers pillar B from the [transaction-matching umbrella](matching-over
 
 ## Data Model
 
-### `core.bridge_transfers` (new, SQLMesh model)
+### `core.bridge_transfers` (new, SQLMesh VIEW)
 
-```sql
-/* Confirmed transfer pairs linking two fct_transactions rows; rebuilt from app.match_decisions on every SQLMesh run */
-CREATE TABLE core.bridge_transfers (
-    transfer_id VARCHAR NOT NULL,        -- UUID for this transfer pair
-    debit_transaction_id VARCHAR NOT NULL, -- FK to fct_transactions; the outgoing side (negative amount)
-    credit_transaction_id VARCHAR NOT NULL, -- FK to fct_transactions; the incoming side (positive amount)
-    match_id VARCHAR NOT NULL,            -- FK to app.match_decisions; the decision that created this pair
-    date_offset_days INTEGER,             -- Days between the two post dates (0 = same day)
-    amount DECIMAL(18, 2),                -- Absolute transfer amount
-    PRIMARY KEY (transfer_id)
-);
-```
+Shipped as a SQLMesh `kind VIEW` model (`sqlmesh/models/core/bridge_transfers.sql`) — derived from `app.match_decisions` where `match_type = 'transfer'`, `match_status = 'accepted'`, and `reversed_at IS NULL`. No mutable state in core; the view re-evaluates on every read.
 
-Derived from `app.match_decisions` where `match_type = 'transfer'` and `match_status = 'accepted'`. Rebuilt on every SQLMesh run — no mutable state in core.
+Columns (one row per accepted transfer pair):
+
+| Column | Type | Description |
+|---|---|---|
+| `transfer_id` | VARCHAR | Identifies this transfer pair; reuses `app.match_decisions.match_id`. Also FK to `app.match_decisions`. |
+| `debit_transaction_id` | VARCHAR | FK to `fct_transactions`; the outgoing side (negative amount). |
+| `credit_transaction_id` | VARCHAR | FK to `fct_transactions`; the incoming side (positive amount). |
+| `date_offset_days` | INTEGER | Days between the two post dates (0 = same day). |
+| `amount` | DECIMAL(18,2) | Absolute transfer amount. |
 
 ### `core.fct_transactions` (modified)
 
@@ -95,7 +92,7 @@ Transfer-specific values in existing columns:
 
 - `match_type = 'transfer'`
 - `match_tier = NULL` (tiers are dedup-specific)
-- `match_signals` JSON carries transfer-specific signal scores: `{"date_distance": 0.8, "keyword_score": 0.6, "amount_roundness": 1.0, "pair_frequency": 0.7}`
+- `match_signals` JSON carries transfer-specific signal scores: `{"date_distance": 0.8, "keyword": 0.6}`
 
 ## Matching Algorithm
 
@@ -139,16 +136,16 @@ This produces a narrow candidate set. No fuzzy logic at this stage.
 
 ### Scoring
 
-For each candidate pair, four signals combined into a confidence score:
+For each candidate pair, two signals combined into a confidence score:
 
 | Signal | Range | Logic |
 |---|---|---|
 | **Date distance** | 0.0-1.0 | `1.0 - (days_apart / date_window_days)`. Same-day = 1.0, 3 days apart = 0.0. Primary discriminator for recurring transfers. |
-| **Keyword presence** | 0.0-1.0 | Scan both descriptions for transfer-indicating terms: TRANSFER, XFER, ACH, DIRECT DEP, WIRE, account number fragments. Score based on how many indicators found in either description. |
-| **Amount roundness** | 0.0-1.0 | Round numbers score higher. 1.0 if divisible by 100, 0.7 if divisible by 10, 0.5 if whole dollar, 0.3 otherwise. |
-| **Account pair frequency** | 0.0-1.0 | How often this (account_a, account_b) pair appears among all candidates in this batch. Accounts that frequently transfer between each other score higher within the current run. |
+| **Keyword presence** | 0.0-1.0 | Scan both descriptions for transfer-indicating terms: TRANSFER, XFER, ACH, DIRECT DEP, WIRE, plus ~40 compound phrases (ONLINE TRANSFER TO SAV, AUTO PAY, CC PAYMENT, etc.). Matched longest-first (non-overlapping) so compound phrases consume their span before sub-keywords can double-count. Score: 0.0 (no match), 0.5 (1 match), 0.8 (2 matches), 1.0 (3+ matches). |
 
-Exact signal weights are an implementation detail, tuned against real data. Default starting point: `{date_distance: 0.4, keyword: 0.3, roundness: 0.15, pair_frequency: 0.15}`. All four signal scores are persisted in `match_signals` JSON for auditability and tuning diagnosis.
+Amount roundness and account pair frequency were dropped: roundness is a weak signal ($437.82 is as real a transfer as $500), and pair frequency is within-batch-only — backfills see different scores than incremental syncs, making the signal unstable. Both remaining signals and their per-pair scores are persisted in `match_signals` JSON for auditability and tuning diagnosis.
+
+Default weights: `{date_distance: 0.6, keyword: 0.4}`. Both signals max at 1.0 and weights sum to 1.0, so confidence score range is [0.0, 1.0].
 
 ### 1:1 assignment
 
@@ -181,16 +178,16 @@ Two signals from the review queue:
 1. **Noise ratio** — you're rejecting a lot of proposed pairs. Scoring is too permissive or threshold too low.
 2. **Missed pairs** — you manually identify transfers that the matcher didn't propose. Blocking criteria too strict or threshold too high.
 
-These surface naturally during `moneybin matches review`.
+These surface naturally during `moneybin transactions review --type matches`.
 
 ### Diagnose: where is the problem?
 
-`moneybin matches log --type transfer` shows recent decisions with `match_signals` JSON breakdown:
+`moneybin transactions matches history --type transfer` shows recent decisions with `match_signals` JSON breakdown:
 
 ```
 Transfer: Checking -> Savings  $500.00  (2026-03-15 / 2026-03-15)
-  Confidence: 0.88
-  Signals: date_distance=1.0, keyword=0.6, roundness=1.0, pair_freq=0.8
+  Confidence: 0.84
+  Signals: date_distance=1.0, keyword=0.6
   Status: rejected (user, 2026-03-16)
 ```
 
@@ -202,25 +199,25 @@ The signal breakdown shows what's driving false positives or misses.
 |---|---|---|---|
 | **Review threshold** | `matching.transfer_review_threshold` | Raise to see fewer, higher-quality proposals; lower to catch more | Too much noise -> raise. Missing pairs -> lower. |
 | **Date window** | `matching.date_window_days` | Narrow to reduce cross-month false matches; widen for slow ACH | Recurring transfers matching wrong months -> narrow to 2. International wires -> widen. |
-| **Signal weights** | `matching.transfer_signal_weights` | Dict of per-signal weights | When a specific signal consistently drives false positives |
+| **Signal weights** | `matching.transfer_signal_weights` | Dict with `date_distance` and `keyword` weights (must sum to 1.0) | When one signal consistently drives false positives vs the other |
 
-All three are Pydantic settings with env var overrides. Changes take effect on the next `moneybin matches run`.
+All three are Pydantic settings with env var overrides. Changes take effect on the next `moneybin transactions matches run`.
 
 ### The recipe
 
 **"I'm rejecting too many transfer proposals":**
 
-1. `moneybin matches log --type transfer --status rejected` — examine signal breakdowns
+1. `moneybin transactions matches history --type transfer` — examine signal breakdowns (a `--status rejected` filter is planned)
 2. Identify which signal is consistently high on rejected pairs
 3. Lower that signal's weight, or raise the review threshold
-4. `moneybin matches run` — re-score with new settings
+4. `moneybin transactions matches run` — re-score with new settings
 5. Check if the review queue improved
 
 **"The matcher missed an obvious transfer":**
 
 1. Check blocking criteria (different accounts, opposite signs, exact amount, within date window)
 2. If blocking failed: widen `date_window_days`, or check if an earlier dedup match claimed one of the transactions
-3. If blocked but scored too low: `moneybin matches log --debug` shows below-threshold pairs. Adjust weights or lower threshold.
+3. If blocked but scored too low: enable DEBUG-level logging on the matcher; below-threshold pairs are logged there. Adjust weights or lower threshold.
 
 ### v2 connection
 
@@ -256,7 +253,7 @@ After import, the matcher runs in transfer mode alongside dedup:
 ```
 Imported 142 transactions from chase_checking_2026-03.csv
   Matching: 8 dedup auto-merged, 5 potential transfers found
-  Run 'moneybin matches review' when ready
+  Run 'moneybin transactions review --type matches' when ready
 ```
 
 ### Match commands (extended)
@@ -265,21 +262,21 @@ Transfer detection extends the commands defined in `matching-same-record-dedup.m
 
 | Command | Transfer behavior |
 |---|---|
-| `moneybin matches review` | Shows dedup and transfer proposals. Transfer pairs display both sides. `--type transfer` to filter. |
-| `moneybin matches log` | `--type transfer` filter. `--status rejected` for tuning diagnosis. Signal breakdown per entry. |
-| `moneybin matches undo <match_id>` | Un-matches a confirmed transfer pair, restores both transactions to independent status. |
-| `moneybin matches run` | Runs dedup + transfers. `--type transfer` for transfers only. |
-| `moneybin matches backfill` | Scans existing transactions for transfer pairs (runs after dedup backfill). |
+| `moneybin transactions review --type matches` | Shows dedup and transfer proposals. Transfer pairs display both sides (interactive loop pending per `moneybin-cli.md` v2; `--status` works end-to-end). |
+| `moneybin transactions matches history` | `--type transfer` filter. Signal breakdown per entry. (`--status rejected` planned for tuning diagnosis.) |
+| `moneybin transactions matches undo <match_id>` | Un-matches a confirmed transfer pair, restores both transactions to independent status. |
+| `moneybin transactions matches run` | Runs dedup + transfers. `--auto-accept-transfers` skips interactive review. |
+| `moneybin transactions matches backfill` | Scans existing transactions for transfer pairs (runs after dedup backfill). |
 
 ### Transfer review UX
 
 Transfer review shows both sides for full context:
 
 ```
-Transfer pair (confidence: 0.88)
+Transfer pair (confidence: 0.84)
   DEBIT:  Chase Checking  -$500.00  2026-03-15  "ONLINE TRANSFER TO SAV"
   CREDIT: Chase Savings   +$500.00  2026-03-15  "TRANSFER FROM CHK"
-  Signals: date=1.0  keyword=0.6  roundness=1.0  pair_freq=0.8
+  Signals: date=1.0  keyword=0.6
 
   [a]ccept / [r]eject / [s]kip / [q]uit
 ```
@@ -288,9 +285,9 @@ Transfer pair (confidence: 0.88)
 
 | Interactive | Flag equivalent |
 |---|---|
-| Review one-by-one | `moneybin matches review --accept <match_id> --accept <match_id>` |
-| Accept all pending | `moneybin matches review --accept-all --type transfer` |
-| Reject specific | `moneybin matches review --reject <match_id>` |
+| Review one-by-one | `moneybin transactions review --type matches --confirm <match_id>` (one ID per invocation; non-interactive flags pending per `moneybin-cli.md` v2) |
+| Accept all pending | `moneybin transactions review --type matches --confirm-all` (pending — see above) |
+| Reject specific | `moneybin transactions review --type matches --reject <match_id>` (pending — see above) |
 
 ## MCP Interface
 
@@ -298,15 +295,15 @@ Designed alongside CLI. Implementation may be sequenced after CLI, but the data 
 
 ### Tools
 
-Transfer detection reuses the same MCP tools as same-record dedup with `match_type` filtering. No new tools needed:
+Currently a phantom namespace per `moneybin-mcp.md` §17 "Dependency tracker" — no `transactions_matches_*` tool is registered yet. Transfer detection reuses the same MCP tools as same-record dedup with `match_type` filtering. No new tools needed; names follow the `transactions_matches_*` prefix defined in `moneybin-mcp.md` §6:
 
 | Tool | Transfer usage |
 |---|---|
-| `list_pending_matches` | `match_type='transfer'` filter. Returns both sides of each pair with signal breakdown. |
-| `confirm_match` | Accepts a `match_id` regardless of type. |
-| `reject_match` | Rejects a `match_id` regardless of type. |
-| `undo_match` | Reverses a previously accepted match. |
-| `get_match_log` | `match_type='transfer'` filter. Signal breakdown per entry. |
+| `transactions_matches_pending` | `match_type='transfer'` filter. Returns both sides of each pair with signal breakdown. |
+| `transactions_matches_confirm` | Accepts `match_ids` regardless of type. |
+| `transactions_matches_reject` | Rejects `match_ids` regardless of type. |
+| `transactions_matches_undo` | Reverses previously accepted matches. |
+| `transactions_matches_log` | `match_type='transfer'` filter. Signal breakdown per entry. |
 
 ### Prompt
 
@@ -314,7 +311,7 @@ Transfer detection reuses the same MCP tools as same-record dedup with `match_ty
 |---|---|
 | `review_matches` | "Help me review pending transaction matches. Show dedup and transfer proposals, explain why each was proposed, and let me accept or reject them." |
 
-The AI can walk the user through the review queue conversationally — showing both sides of transfer pairs, explaining signal scores, and calling `confirm_match`/`reject_match` as the user decides.
+The AI can walk the user through the review queue conversationally — showing both sides of transfer pairs, explaining signal scores, and calling `transactions_matches_confirm` / `transactions_matches_reject` as the user decides.
 
 ## Configuration
 
@@ -323,21 +320,19 @@ class MatchingSettings(BaseModel):
     # ... existing dedup settings from matching-same-record-dedup.md ...
 
     # Transfer-specific settings
-    transfer_review_threshold: float = 0.70
+    transfer_review_threshold: float = 0.55
     date_window_days: int = 3  # shared with dedup
     transfer_signal_weights: dict[str, float] = {
-        "date_distance": 0.4,
-        "keyword": 0.3,
-        "roundness": 0.15,
-        "pair_frequency": 0.15,
+        "date_distance": 0.6,
+        "keyword": 0.4,
     }
 ```
 
 Env var overrides:
 
-- `MONEYBIN_MATCHING__TRANSFER_REVIEW_THRESHOLD=0.80`
+- `MONEYBIN_MATCHING__TRANSFER_REVIEW_THRESHOLD=0.65`  — raise above the 0.55 default to tighten (fewer false positives, more missed transfers); lower toward 0.50 to relax (more reviewed candidates, more false positives)
 - `MONEYBIN_MATCHING__DATE_WINDOW_DAYS=5`
-- `MONEYBIN_MATCHING__TRANSFER_SIGNAL_WEIGHTS='{"date_distance": 0.5, "keyword": 0.25, "roundness": 0.15, "pair_frequency": 0.1}'`
+- `MONEYBIN_MATCHING__TRANSFER_SIGNAL_WEIGHTS='{"date_distance": 0.7, "keyword": 0.3}'`
 
 ### What is not configurable
 
@@ -354,7 +349,7 @@ Env var overrides:
 ### Unit tests
 
 - **Blocking query**: given transactions with known amounts/dates/accounts/signs, verify candidate pairs are correctly identified (opposite signs, same amount, different accounts, within window)
-- **Scoring function**: given a candidate pair, verify each signal component (date distance, keyword, roundness, pair frequency) and the combined score
+- **Scoring function**: given a candidate pair, verify each signal component (date distance, keyword) and the combined score
 - **1:1 assignment with recurring transfers**: 3 months of $500 checking->savings, verify greedy assignment pairs same-day matches correctly without cross-month contamination
 - **Bridge table derivation**: given accepted match decisions, verify `bridge_transfers` output (debit/credit sides, date offset, amount)
 
@@ -437,8 +432,5 @@ Transfers that always occur at the same amount or within a narrow range (e.g., $
 ### Resolved
 
 - **Backfill ordering.** Dedup completes fully first, then transfer detection runs. Transfers are cross-account by definition, so all accounts must be deduplicated before transfer pairing can produce correct results. Same order as import-time matching (Tiers 2b → 3 → 4).
-
-### Deferred to implementation tuning milestone
-
-1. **Confidence score formula.** Exact combination of the four signals. Starting weights provided (`date_distance: 0.4, keyword: 0.3, roundness: 0.15, pair_frequency: 0.15`) but should be tuned against real data. See MVP roadmap M1 tuning milestone.
-2. **Keyword list.** The initial set of transfer-indicating terms (TRANSFER, XFER, ACH, DIRECT DEP, WIRE, etc.) and how to handle institution-specific variations. Start with a reasonable default set; tune alongside confidence scores with real data.
+- **Confidence score formula.** Two-signal model: `date_distance × 0.6 + keyword × 0.4`. Amount roundness dropped ($437.82 is as real a transfer as $500). Account pair frequency dropped — within-batch-only, unstable for backfills. Threshold re-tuned to 0.55 to preserve approximate review-queue size against the prior four-signal baseline.
+- **Keyword list.** Retained as-is (~50 terms including compound phrases like ONLINE TRANSFER TO SAV, AUTO PAY, CC PAYMENT). Matched longest-first via a single compiled regex to prevent sub-phrase double-counting. The compound phrases are doing real recall work and are not candidates for pruning without empirical validation against real data.

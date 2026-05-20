@@ -1,293 +1,285 @@
+<!-- Last reviewed: 2026-05-17 -->
+
 # CLI Startup Flow
 
-How a MoneyBin CLI command goes from `moneybin <cmd>` to executing user code, what happens at each stage, and where things can go wrong.
+How `moneybin <command>` actually runs from the shell to the command body. This deep technical view documents the cold-start path (the `--help` invariant), profile resolution, and the lazy-import patterns that keep cold start fast. For the user-facing command reference, see [`docs/guides/cli-reference.md`](../guides/cli-reference.md). For the profile model, see [`docs/guides/profiles.md`](../guides/profiles.md). For the encryption-key lifecycle, see [`docs/guides/database-security.md`](../guides/database-security.md).
 
-## Overview
+## The cold-start path
 
 ```mermaid
-flowchart TD
-    A["moneybin &lt;cmd&gt; [--profile X] [-v]"] --> B[Module-level init]
-    B --> C[main_callback — inert]
-    C --> C1[stash flags]
-    C1 --> C2["setup_observability(profile=None)"]
-    C2 --> C3{explicit --profile<br/>or env var?}
-    C3 -->|yes| C4[set_current_profile<br/>name only — no I/O]
-    C3 -->|no| C5
-    C4 --> C5{subcommand in<br/>profile/synthetic?}
-    C5 -->|yes| C6[return — these manage<br/>their own lifecycle]
-    C5 -->|no| C7[register lazy<br/>profile resolver]
-    C7 --> J[Subcommand executes]
-    C6 --> J
-    J --> J1{Subcommand calls<br/>get_settings?}
-    J1 -->|yes, first time| J2["resolve_profile()<br/>full chain + wizard +<br/>dir-check + log re-init"]
-    J1 -->|no| J3[Skip resolution]
-    J2 --> J3
-    J3 --> K[Process exit]
-    K --> L[atexit: flush metrics]
+sequenceDiagram
+    participant Shell
+    participant Python
+    participant Main as moneybin.cli.main
+    participant Typer
+    participant Callback as main_callback
+    participant Leaf as command body
+
+    Shell->>Python: exec moneybin <cmd> [--profile X] [-v]
+    Python->>Main: import moneybin.cli.main
+    Main->>Main: instantiate Typer app, register groups
+    Python->>Main: main()
+    Main->>Typer: app()
+    Typer->>Callback: parse top-level flags
+    Callback->>Callback: stash_cli_flags(profile_name, verbose)
+    Callback->>Callback: setup_observability(profile=None)
+    Callback->>Callback: maybe set_current_profile(name) — no I/O
+    Callback->>Callback: register_profile_resolver(resolve_profile)
+    Typer->>Leaf: dispatch to subcommand
+    Leaf->>Leaf: lazy imports + get_database()
+    Leaf-->>Shell: stdout / stderr, exit code
 ```
 
-## Stage 1: Module-Level Initialization
+1. **Shell exec.** The `moneybin` console script is registered by `pyproject.toml`:
 
-When `moneybin.config` is first imported, a module-level variable is initialized:
+   ```toml
+   [project.scripts]
+   moneybin = "moneybin.cli.main:main"
+   ```
+
+   The launcher script created by `uv`/`pip` is what the shell finds on `PATH`.
+
+2. **Python import.** Python imports `moneybin.cli.main`. The module imports Typer, the config helpers, the observability setup, and every command-group module in [`src/moneybin/cli/commands/`](../../src/moneybin/cli/commands/). Heavy transitive dependencies (`fastmcp`, `sqlmesh`, `polars`) are **not** imported here — they live inside individual command bodies (see "Cold-start hygiene" below).
+
+3. **Typer app instantiation.** `app = typer.Typer(name="moneybin", no_args_is_help=True, ...)`. Each sub-group is attached via `app.add_typer(...)`; the leaf commands (`stats`, `logs`) are attached via `app.command(...)`.
+
+4. **Typer argument parsing.** Typer (a thin layer over Click) parses argv, identifies the leaf command, and routes through `main_callback` on the way down.
+
+5. **`main_callback` runs.** Stashes flags, calls `setup_observability` with no profile, eagerly validates the profile name when one is explicit, registers the lazy resolver. No I/O against the profile dir or database.
+
+6. **Leaf command body runs.** First call to `get_settings()` / `get_current_profile()` fires the lazy resolver. First call to `get_database()` opens the encrypted DuckDB connection.
+
+## Cold-start hygiene
+
+`--help`, shell autocomplete, every E2E test, and every CLI invocation pay the module-import cost for `moneybin.cli.main`. That cost is the budget. The rules in [`.claude/rules/cli.md`](../../.claude/rules/cli.md) → "Cold-Start Hygiene" enforce three invariants.
+
+### The `--help` invariant
+
+`--help` and `-h` MUST be side-effect free:
+
+- No first-run wizard, no `config.yaml` writes.
+- No profile-directory creation, no log file rotation.
+- No database connection, no keychain lookup.
+- No network calls.
+
+Typer short-circuits explicit `--help` before any callback or command body runs. Bare-group invocations (`moneybin db`, `moneybin import`) exit via `no_args_is_help=True` before the subcommand body runs. Because `main_callback` itself is inert (no `get_settings()`, no `resolve_profile()` call), `moneybin <subgroup> --help` is also safe — the callback runs, but only stashes flags and registers the resolver.
+
+This is why `main_callback`'s name validation uses only `set_current_profile(name)`, which is a format-and-cache update with no I/O.
+
+### Lazy imports in command bodies
+
+Heavy transitive imports MUST be deferred inside the function that needs them:
 
 ```python
-_current_profile: str | None = None
+# src/moneybin/cli/commands/mcp.py
+@app.command("list-prompts")
+def mcp_list_prompts(...) -> None:
+    from moneybin.mcp.server import (
+        mcp,  # noqa: PLC0415 — defer fastmcp import to subcommand body
+    )
+    ...
 ```
 
-No profile is set at import time — it stays `None` until `set_current_profile()` is called, either eagerly by `main_callback` (when `--profile` or `MONEYBIN_PROFILE` is explicit) or lazily by `resolve_profile()` on first settings access. Calling `get_settings()` or `get_current_profile()` before that raises `RuntimeError`.
+The `# noqa: PLC0415` suppression is the grep-able marker for the pattern. The same pattern applies to anything that pulls a parser, ORM, or large package graph: `fastmcp`, `sqlmesh`, `polars`.
 
-**Side effects:** None. No YAML reads, no directories, no database.
+The non-obvious failure mode: `from x import Y` at module top of any command file (including transitive imports from helper modules those files load) loads the heavy graph for *every* invocation — `--help`, autocomplete, every E2E subprocess. The CLI feels fine in isolation but the test suite slows by a factor of N over time. The CI guard described below catches regressions early.
 
-## Stage 2: main_callback (inert)
+### `main_callback` stays inert
 
-The Typer callback is intentionally inert. It stashes flags, runs early observability with no profile, optionally sets the active profile *name* (no I/O), and registers a lazy resolver. Heavy work — wizard, dir-check, profile-scoped logging — fires only when a command first calls `get_settings()` / `get_current_profile()`.
+The callback in [`src/moneybin/cli/main.py`](../../src/moneybin/cli/main.py) does exactly four things and nothing else:
+
+1. `stash_cli_flags(profile_name, verbose)` — writes to a module-level `_CLIFlags` dataclass.
+2. `setup_observability(stream="cli", verbose=verbose, profile=None)` — console logging only; no file handler yet because the profile isn't resolved.
+3. When `--profile <name>` or `MONEYBIN_PROFILE` is explicit: `set_current_profile(name)`. This validates the name format and updates the `_current_profile` module variable — no directory check, no YAML read, no DB open.
+4. When `ctx.invoked_subcommand` is neither `"profile"` nor `"synthetic"`: `register_profile_resolver(resolve_profile)`. The resolver fires the first time anything calls `get_settings()` or `get_current_profile()`.
+
+The callback NEVER calls `resolve_profile()` directly. That is the single rule that keeps `--help` and bare-group invocations side-effect free.
+
+## Cold-start budget and measurement
+
+There is no formal latency target pinned in the codebase. As a working baseline, on a developer laptop with warm OS file caches, `moneybin --help` runs in roughly **250 ms** end-to-end (best of three subprocess invocations); the underlying `import moneybin.cli.main` accounts for the bulk of that. First invocation after a cold boot or branch switch can be 1–2 s while Python's `.pyc` cache and the OS page cache warm up. Numbers vary across machines — measure on yours rather than trusting these.
+
+Profile heavy imports with `-X importtime`:
+
+```bash
+uv run python -X importtime -c "import moneybin.cli.main" 2>&1 | tail -30
+```
+
+Read the rightmost `cumulative` column to find the heavy modules. The names to watch for: `fastmcp` (~150 ms), `sqlmesh` (~300 ms cold), `polars` (~100 ms). None of these should appear on the cold-start path.
+
+The regression guard is the unit test [`tests/moneybin/test_cli/test_cold_start.py`](../../tests/moneybin/test_cli/test_cold_start.py), which imports `moneybin.cli.main` in a clean subprocess and asserts that none of `fastmcp.*`, `sqlmesh.*`, or `polars.*` end up in `sys.modules`. It runs as part of the unit-test job in [`ci.yml`](../../.github/workflows/ci.yml), so an eager import added in a PR fails CI before merge.
+
+### Verifying `--help` is side-effect free
+
+The behavioral test is [`tests/moneybin/test_cli/test_help_no_wizard.py`](../../tests/moneybin/test_cli/test_help_no_wizard.py): it parametrizes every command group, mocks `ensure_default_profile`, runs `--help` via Typer's `CliRunner`, asserts the wizard was never called, and additionally asserts nothing wrote `profiles/` under a fake `HOME`. Defense-in-depth across both the behavioral path and the filesystem.
+
+For a manual smoke check with a clean home:
+
+```bash
+rm -rf /tmp/mb-test-home
+MONEYBIN_HOME=/tmp/mb-test-home moneybin --help
+ls -la /tmp/mb-test-home 2>/dev/null   # should not exist
+```
+
+## Profile resolution flow
+
+Profile resolution has two paths: an **eager** path when the user supplies a profile name explicitly, and a **lazy** path when the resolver fires from the first `get_settings()` call inside the command body.
 
 ```mermaid
 flowchart TD
-    A[main_callback entry] --> A1[stash_cli_flags]
-    A1 --> A2["setup_observability(stream=cli, profile=None)"]
-    A2 --> B{explicit --profile<br/>or MONEYBIN_PROFILE?}
-    B -->|yes| B1["set_current_profile(name)<br/>format-validate only — no I/O"]
-    B1 --> B2{Bad name format?}
-    B2 -->|yes| B3[BadParameter — exit 2]
-    B2 -->|no| C
-    B -->|no| C
-    C{subcommand in<br/>profile / synthetic?}
-    C -->|yes| C1[return — these manage<br/>their own profile lifecycle]
-    C -->|no| D[register_profile_resolver]
-    D --> E[Subcommand runs]
-    C1 --> E
+    A[main_callback entry] --> B{--profile flag<br/>or MONEYBIN_PROFILE?}
+    B -->|yes| C["set_current_profile(name)<br/>name validation only"]
+    B -->|no| D[skip eager set]
+    C --> E{invoked_subcommand in<br/>profile / synthetic?}
+    D --> E
+    E -->|yes| F[return — these manage<br/>their own profile lifecycle]
+    E -->|no| G[register_profile_resolver]
+    G --> H[command body runs]
+    F --> H
+    H --> I{first get_settings or<br/>get_current_profile call?}
+    I -->|profile already set<br/>by eager path| J[skip resolution]
+    I -->|profile is None<br/>and resolver registered| K[resolve_profile fires]
+    K --> L[walk priority chain]
+    L --> M["set_current_profile(name)"]
+    M --> N[validate profile dir exists]
+    N --> O[re-init observability<br/>with profile-scoped log files]
 ```
 
-### Why inert?
+### Eager path (no I/O)
 
-`--help`, bare-group invocations (e.g. `moneybin db`), and docker-style usage errors (`moneybin logs` with no stream) MUST be side-effect free — no wizard, no profile-dir creation, no log file rotation. Click short-circuits explicit `--help` before the callback runs; bare-group exits via `NoArgsIsHelpError` before any subcommand body runs. Because the callback never calls `resolve_profile()`, all of those paths are automatically safe — no walker or argv inspection needed.
+When `--profile <name>` is on argv, or `MONEYBIN_PROFILE` is in the environment, `main_callback` calls `stash_cli_flags(...)` followed by `set_current_profile(name)`. This is just module-state mutation:
 
-### Profile Resolution Priority (lazy path)
+- `_current_profile` gets the normalized name.
+- `_current_settings` is invalidated.
+- The per-process encryption-key cache is invalidated so the next `Database()` open re-fetches.
 
-When a command actually needs settings, `resolve_profile()` (in `cli/utils.py`) walks this chain:
+No filesystem touch. No keychain touch. Safe for `--help` and bare-group invocations.
 
-| Priority | Source | When used |
+### Lazy path
+
+When neither flag nor env var is set, `main_callback` registers the lazy resolver `resolve_profile` (in [`src/moneybin/cli/utils.py`](../../src/moneybin/cli/utils.py)). The resolver fires from inside `config.get_settings()` / `config.get_current_profile()` via the `_maybe_resolve_profile()` shim — that is, the first time a command body actually needs configuration.
+
+### Profile-selection precedence
+
+`resolve_profile()` walks this chain top-down — the first source that produces a name wins:
+
+| Priority | Source | Notes |
 |---|---|---|
-| 1 | `--profile` flag (stashed) | Always wins |
-| 2 | `MONEYBIN_PROFILE` env var | If no flag |
-| 3 | `ensure_default_profile()` | If neither flag nor env var |
-| 4 | Interactive first-run wizard | If `ensure_default_profile()` finds no saved default |
+| 1 | `--profile <name>` flag | Stashed by `main_callback` via `stash_cli_flags`. Source = `"--profile flag"`. |
+| 2 | `MONEYBIN_PROFILE` env var | Read once per process at resolver time, not at module import. Source = `"MONEYBIN_PROFILE env var"`. |
+| 3 | `<base>/config.yaml` → `active_profile` | Set by `moneybin profile switch <name>`. Read via `ensure_default_profile()`. |
+| 4 | First-run wizard | Interactive prompt that creates the profile and writes `config.yaml`. Only fires when (1)–(3) all miss. |
 
-After resolution, `resolve_profile()` validates the profile dir exists, re-initializes observability with profile-scoped log files, and emits the `Using profile: X` banner.
+Setting both `--profile` and `MONEYBIN_PROFILE` is fine — the flag wins. Setting `MONEYBIN_PROFILE` in a systemd unit or `Dockerfile` `ENV` is the recommended way to pin a profile for a long-running process; it overrides whatever `config.yaml` says without modifying user state.
 
-### Profile and Synthetic Commands Are Special
+After the chain returns a profile name, the resolver:
 
-When `ctx.invoked_subcommand` is `"profile"` or `"synthetic"`, the callback returns *before* registering the lazy resolver:
+1. Calls `set_current_profile(name)`.
+2. Checks `<base>/profiles/<normalized>/` exists. If not, emits a hint to `profile list` / `profile create <name>` and exits 1.
+3. Calls `setup_observability(stream="cli", verbose=_flags.verbose, profile=name)` — this is the call that actually opens the profile-scoped log file at `<base>/profiles/<profile>/logs/moneybin.log`.
+4. Logs `Using profile: X (from <source>)`.
 
-- `profile create` legitimately runs against a profile that doesn't yet exist — the dir-check would block recovery.
-- `synthetic` commands manage their own profile lifecycle (create, populate, tear down) and call `set_current_profile` directly.
+### Bare-group invocations and recovery commands
 
-Both rely on `get_current_profile(auto_resolve=False)` so they never trigger the lazy chain. The eager `set_current_profile(name)` in the callback still runs for these — that just sets the active name from the flag/env, which both subgroups expect.
+`moneybin db --help`, `moneybin import` (no args), `moneybin db` (no args) all reach `main_callback`. The callback runs, stashes flags, optionally validates an explicit `--profile`, and registers the resolver — but Typer then exits with the group's help text (via `no_args_is_help=True`) or with `--help` output, **before** any command body runs. The resolver is registered but never fires. No profile dir is read, no log file is opened.
 
-## Stage 3: setup_observability
+When `ctx.invoked_subcommand` is `"profile"` or `"synthetic"`, `main_callback` returns before `register_profile_resolver(...)`. Both subgroups call `get_current_profile(auto_resolve=False)` internally so they never trigger the lazy chain even if the resolver were registered. `profile create <new>` legitimately runs against a profile that doesn't exist yet; `synthetic` commands manage their own profile lifecycle.
 
-Called for every command. Sets up logging and registers the atexit metrics handler.
+## Encryption-key resolution
 
-```mermaid
-flowchart TD
-    A[setup_observability] --> B{profile set?}
-    B -->|yes| C["get_settings().logging"]
-    C --> D["setup_logging(level, format,<br/>log_to_file, log_file_path)"]
-    B -->|no| E["setup_logging() — defaults<br/>(console only, INFO)"]
+Cold-start does not load the encryption key. The key is only loaded on the first `get_database()` call inside the command body. When that happens, [`SecretStore.get_key`](../../src/moneybin/secrets.py) walks this chain:
 
-    D --> H{log_to_file?}
-    H -->|yes| I["mkdir log dir<br/>(parents=False)"]
-    I -->|parent missing| J[Skip file logging]
-    I -->|ok| K[Create FileHandler]
-    H -->|no| L[Console only]
-    E --> L
+1. **OS keychain** — `service="moneybin-<profile>"`, `username="DATABASE__ENCRYPTION_KEY"`. The default mode on macOS/Linux desktops with a working keyring.
+2. **`MONEYBIN_DATABASE__ENCRYPTION_KEY` env var** — fallback when the keychain entry is missing OR no keyring backend is available (headless CI runners, minimal Linux containers, NAS appliances). This is the supported pattern for non-desktop deployments.
+3. **`SecretNotFoundError`** — raised by `SecretStore`, wrapped by `Database` as `DatabaseKeyError` with a recovery message pointing at `moneybin db init` and `MONEYBIN_DATABASE__ENCRYPTION_KEY`.
 
-    A --> M{First init?}
-    M -->|yes| N[Register atexit handler]
-    M -->|no| O[Skip]
+There is no separate "passphrase mode" at startup — passphrase derivation (Argon2id) happens during `moneybin db init` / `db key rotate` and writes the derived AES-256-GCM key to the keychain. The runtime read path is always "keychain → env var."
 
-    A --> P{stream == 'mcp'?}
-    P -->|yes| Q[Start periodic metrics flush timer]
-    P -->|no| R[Done]
+The key is cached per-process in `database.py:_cached_encryption_key` after the first successful read; `set_current_profile()` invalidates this cache so profile switches re-fetch.
+
+Container pattern: inject the key via `--env-file` or Docker secrets and pre-set `MONEYBIN_PROFILE`. Full headless-deployment recipes live in [`docs/guides/database-security.md`](../guides/database-security.md) → "Headless and cron deployments."
+
+## Headless and non-TTY behavior
+
+The first-run wizard (`ensure_default_profile` → `prompt_for_profile_name`) is a raw blocking `input()` call. There is no `sys.stdin.isatty()` guard in front of it — if it fires in a non-interactive context where stdin is closed or empty, `input()` raises `EOFError`, the wizard catches it as a cancellation and raises `KeyboardInterrupt`, and the resolver maps that to `typer.Abort()` (exit code 1). A clean failure, but not a friendly one.
+
+The supported headless setup is to pre-resolve profile selection so the wizard never enters the chain in the first place. In a container or systemd unit:
+
+```dockerfile
+ENV MONEYBIN_PROFILE=primary
+ENV MONEYBIN_DATABASE__ENCRYPTION_KEY=<hex>
 ```
 
-`setup_logging()` does not call `get_settings()`. All config values are passed explicitly by `setup_observability()`. When no profile is set (e.g. profile commands), `setup_logging()` runs with defaults: console-only, INFO level, human format.
+…OR mount a pre-initialized `<base>/config.yaml` with `active_profile` set, plus a `<base>/profiles/<name>/` tree created on a machine that had a working keyring.
 
-### Directory Creation Rules
+Container build-time: `moneybin --help` during `docker build` is safe — the `--help` invariant guarantees no filesystem writes. `moneybin profile create` during build is discouraged: it touches `$HOME`, requires a keyring, and bakes the encryption key into an image layer. Run `profile create` at container start, not at image build.
 
-**Profile root** (`<base>/profiles/<name>/`) is only created by `ProfileService.create()`. No other code path creates it. This is the single invariant that prevents deleted profiles from being silently resurrected.
+## Concurrency across processes
 
-**Subdirectories** (logs, temp) are created by `ProfileService.create()` during profile setup.
+DuckDB is single-writer per file. Multiple `read_only=True` attaches against the same profile DB coexist freely across processes. Multiple write-mode `Database()` opens serialize via the file lock: the second writer either acquires the lock when the first releases it, or — after `max_wait` seconds (default 5 s) of exponential backoff retry — surfaces `DatabaseLockError`. The error message identifies the blocking process when `lsof` is available.
 
-**Log directory** uses `mkdir(parents=False)` — it will create `logs/` inside an existing profile dir, but won't create the profile dir itself. If the profile dir is missing, file logging is skipped gracefully.
+For containers sharing a volume, pick active-passive rather than active-active. Multiple sidecars writing to the same profile DB at once will see lock errors under load; the safe pattern is one container as the writer (sync, transform) and others as read-only consumers (MCP server, query CLI).
 
-**Database directory** uses `mkdir(parents=False, exist_ok=True)` — same principle. The profile root must already exist.
+See [`docs/specs/database-writer-coordination.md`](../specs/database-writer-coordination.md) for the full coordination model.
 
-### The atexit Handler
+## Settings load (one-liner)
 
-`_flush_metrics_on_exit()` runs when the process exits. It only flushes metrics if a `Database` instance was already created during the session. It never calls `get_database()` to create a new one — that would trigger the full database initialization chain (directory creation, schema init, migrations) on shutdown, which is wrong for commands that never touch the database.
+`get_settings()` is a pure read: returns the cached `MoneyBinSettings` if present, otherwise calls `_maybe_resolve_profile()` to fire the lazy resolver, then constructs and caches `MoneyBinSettings(profile=_current_profile)`. It does not create directories, load the encryption key, or touch the database. Calling it before any profile is set raises `RuntimeError`. Environment variables use the `MONEYBIN_` prefix with `__` for nesting (e.g. `MONEYBIN_DATABASE__PATH`).
 
-## Stage 4: Subcommand Execution
+## Database open
 
-After the callback completes, Typer dispatches to the subcommand function.
+Database open happens inside the command body, on the first `get_database()` call. See [`docs/guides/database-security.md`](../guides/database-security.md) → "How encryption works in MoneyBin" for the attach mechanics, and [`docs/specs/database-writer-coordination.md`](../specs/database-writer-coordination.md) for the read/write contract.
 
-### Regular Commands (import, sync, categorize, etc.)
+Two errors are routinely surfaced by `handle_cli_errors()`:
 
-These call `get_database()` on first use, triggering lazy initialization:
+- `DatabaseKeyError` — encryption key not in keychain or env. Recovery: `moneybin db unlock` (or set `MONEYBIN_DATABASE__ENCRYPTION_KEY`).
+- `DatabaseNotInitializedError` — the `.duckdb` file does not exist for this profile. Recovery: `moneybin db init`.
 
-```mermaid
-flowchart TD
-    A["get_database() — singleton"] --> B{Instance<br/>exists?}
-    B -->|yes| C[Return cached]
-    B -->|no| D[get_settings]
-    D --> E[SecretStore.get_key]
-    E -->|not found| F["DatabaseKeyError<br/>'run moneybin db init'"]
-    E -->|found| G[duckdb.connect — in-memory]
-    G --> H["ATTACH encrypted file<br/>+ USE moneybin"]
-    H --> I[init_schemas — idempotent DDL]
-    I --> J{auto_upgrade<br/>enabled?}
-    J -->|yes| K[MigrationRunner.apply_all]
-    K --> L[Record version in app.versions]
-    L --> M[sqlmesh migrate if version changed]
-    J -->|no| N[Skip migrations]
-    M --> O[Database ready]
-    N --> O
+Both are classified user-facing errors. Stack traces are not surfaced.
+
+## Command body
+
+By the time the leaf command body runs:
+
+- The profile is resolved (eagerly or lazily) and `_current_profile` is set.
+- `get_settings()` returns a frozen `MoneyBinSettings` for that profile.
+- The first `get_database()` call inside the body opens the encrypted connection.
+- The body typically wraps work in `with handle_cli_errors():` (or `with sqlmesh_command(...)` for SQLMesh-fronted operations) to route classified user errors to the standard `❌`-prefixed log line and `typer.Exit(1)`.
+
+Output rendering follows the `--output {text,json}` contract from [`.claude/rules/cli.md`](../../.claude/rules/cli.md); JSON output uses the response envelope defined in `moneybin.protocol.envelope`. Diagnostic output goes to stderr; data output goes to stdout. Exit codes follow the docker/kubectl convention (`0` success, `1` runtime error, `2` usage error) — see [`docs/guides/cli-reference.md`](../guides/cli-reference.md) for the full table.
+
+## Failure-mode catalog
+
+What a regression in this layer looks like, and where to look first:
+
+| Symptom | Likely cause | Where to look |
+|---|---|---|
+| `moneybin --help` slow (>500 ms steady state) | Eager import of `fastmcp` / `sqlmesh` / `polars` (or a transitive helper) at module top of a command file | `uv run pytest tests/moneybin/test_cli/test_cold_start.py -v`; then `-X importtime` to find the offender |
+| First-run wizard fires during a CLI call that should be inert (e.g. `--help`, `moneybin db --help`) | `main_callback` calling `resolve_profile()` directly, or a callback running inside a leaf that should defer | `test_help_no_wizard.py`; audit `main.py` for any path that hits `ensure_default_profile` outside the resolver |
+| Log file written to an unexpected path | `setup_observability(profile=...)` called with the wrong profile, or before `set_current_profile` | Trace the `profile=` argument in every `setup_observability` call site |
+| Cold start blocks on network or DB unlock | Violation of the `--help` invariant or the inert-callback rule — something on the import path is opening a connection or hitting an API | Reproduce with `MONEYBIN_HOME=/tmp/empty moneybin --help`; if it hangs, bisect via `-X importtime` |
+| `moneybin <cmd>` in a container exits with `typer.Abort` and no obvious error | Wizard fired in a non-interactive context; stdin EOF cancelled it | Pre-set `MONEYBIN_PROFILE` and ensure the profile dir exists |
+
+## Edge cases
+
+- **`moneybin --help`.** Typer prints help and exits. `main_callback` does not run. No profile resolution, no DB open.
+- **`moneybin <subgroup> --help`.** `main_callback` runs (inert), Typer prints the subgroup help, exits. Resolver is registered but never fires.
+- **`moneybin db` (bare group).** `main_callback` runs (inert), Typer exits with the group's help via `no_args_is_help=True`. Resolver is registered but never fires.
+- **`moneybin profile create <new>` / `moneybin synthetic ...`.** `main_callback` skips `register_profile_resolver(...)`. The eager `set_current_profile(name)` still runs if `--profile` was supplied. Both subgroups use `get_current_profile(auto_resolve=False)` internally.
+- **`moneybin logs` (no stream argument).** Leaf command with a required positional. Typer surfaces the missing-arg error and exits 2 *without* the resolver firing — the wizard never runs for usage errors.
+
+## Extending the CLI
+
+Where to add a new command (per [`.claude/rules/cli.md`](../../.claude/rules/cli.md) → "Leaf Commands vs Sub-Groups"):
+
+- **New subcommand in an existing group:** add a function in the relevant module under `src/moneybin/cli/commands/<group>/`. Use `<group>_<verb>` naming.
+- **New sub-group:** create `src/moneybin/cli/commands/<group>/__init__.py` with its own `typer.Typer(no_args_is_help=True)`, then register it from `src/moneybin/cli/main.py` via `app.add_typer(...)` in the workflow-ordered list (setup → ingest → enrich → pipeline → analyze → output → integrations → ops).
+- **New top-level leaf:** add a free function named `<name>_command` and register with `app.command(name=...)(...)`.
+
+Before opening the PR, verify cold start stays clean:
+
+```bash
+uv run pytest tests/moneybin/test_cli/test_cold_start.py tests/moneybin/test_cli/test_help_no_wizard.py -v
 ```
 
-**Note:** `Database.__init__` calls `db_path.parent.mkdir(parents=False, exist_ok=True)`. This ensures the immediate parent exists but will not recreate a deleted profile's root directory — the `parents=False` flag means the profile root must already exist.
-
-### Profile Commands
-
-No database access. Use `ProfileService` directly:
-
-```mermaid
-flowchart TD
-    A[profile create] --> B[normalize name]
-    B --> C["mkdir profile root<br/>(exist_ok=False)"]
-    C -->|exists| D[ProfileExistsError]
-    C -->|created| E[mkdir logs/, temp/]
-    E --> F[Write config.yaml]
-
-    G[profile delete] --> H[normalize name]
-    H --> I{Is default<br/>profile?}
-    I -->|yes| J["ValueError:<br/>'switch first'"]
-    I -->|no| K[shutil.rmtree]
-
-    L[profile list] --> M[Iterate profiles/ dir]
-    M --> N[Return dirs with config.yaml]
-```
-
-### db shell / db ui
-
-These are special — they don't use the `Database` class at all. They spawn a DuckDB CLI subprocess with an init script that ATTACHes the encrypted database:
-
-```mermaid
-flowchart TD
-    A[db shell / db ui] --> B{DB file exists?}
-    B -->|no| C["Exit 1: 'run db init'"]
-    B -->|yes| D[Get encryption key from keychain]
-    D -->|not found| E["Exit 1: 'run db unlock'"]
-    D -->|found| F[Write temp init script<br/>with ATTACH statement]
-    F --> G["subprocess.run duckdb -init script"]
-    G --> H[User interactive session]
-    H --> I[Cleanup temp script]
-```
-
-This bypasses all Python-level database initialization (schema init, migrations). The user gets a raw DuckDB shell.
-
-### MCP Server
-
-Similar to regular commands but long-running:
-
-```mermaid
-flowchart TD
-    A[mcp start] --> B[get_database — full init]
-    B --> C[Instantiate MCPServer]
-    C --> D["fastmcp.run(transport='stdio')"]
-    D --> E[Serve tools indefinitely]
-    E --> F[Process exit — atexit flushes metrics]
-```
-
-Additionally, MCP mode starts a periodic metrics flush timer (every 5 minutes) since the process may run for hours.
-
-## Stage 5: First-Run Wizard
-
-Triggered when `ensure_default_profile()` finds no saved default and no `--profile` flag was provided.
-
-```mermaid
-flowchart TD
-    A[ensure_default_profile] --> B{Default profile<br/>in config.yaml?}
-    B -->|yes| C[Return it]
-    B -->|no| D["Prompt: 'First name?'"]
-    D --> E[Normalize name]
-    E --> F["Confirm: 'Is this okay?'"]
-    F -->|no| D
-    F -->|Ctrl+C| G[Abort — no profile created]
-    F -->|yes| H[set_default_profile<br/>writes config.yaml]
-    H --> I[ProfileService.create]
-    I --> J[set_current_profile]
-    J --> K["Auto-init DB (best-effort)"]
-    K -->|success| L[Generate key, store in keychain,<br/>create Database]
-    K -->|failure| M["Suggest 'moneybin db init'"]
-    L --> N[Return profile name]
-    M --> N
-```
-
-**Side effects (all-or-nothing on success):**
-1. `~/.moneybin/config.yaml` created/updated with `active_profile`
-2. Profile directory tree created
-3. Encryption key generated and stored in OS keychain
-4. Encrypted database created with schema
-
-**On Ctrl+C:** Nothing is created. The wizard re-triggers on next invocation.
-
-## Base Directory Resolution
-
-Where MoneyBin looks for profile data:
-
-```mermaid
-flowchart TD
-    A[get_base_dir] --> B{MONEYBIN_HOME<br/>env var set?}
-    B -->|yes| C["Use $MONEYBIN_HOME"]
-    B -->|no| D{MONEYBIN_ENVIRONMENT<br/>== 'development'?}
-    D -->|yes| E["Use cwd/.moneybin"]
-    D -->|no| F{cwd is moneybin<br/>repo checkout?}
-    F -->|yes| G["Use cwd/.moneybin"]
-    F -->|no| H["Use ~/.moneybin/"]
-```
-
-In development (running from the repo), the base dir is `<repo>/.moneybin/`, so profiles live at `<repo>/.moneybin/profiles/<name>/`. In production, they live at `~/.moneybin/profiles/<name>/`.
-
-## Invariants
-
-These are the rules that prevent the bugs we've encountered:
-
-1. **Only `ProfileService.create()` creates profile root directories.** No other code path — not `setup_logging()`, not `Database.__init__()` — creates `<base>/profiles/<name>/`. Both `setup_logging()` and `Database.__init__()` use `mkdir(parents=False)`, so they can create immediate subdirectories but will fail (gracefully) if the profile root doesn't exist.
-
-2. **The atexit handler never creates database connections.** It only flushes metrics if a `Database` singleton was already initialized during the session. Otherwise it's a no-op.
-
-3. **`main_callback` is inert.** It stashes flags, registers a lazy profile resolver, and (when explicit) sets the active profile *name* — but it never runs the wizard, validates dirs, or opens files. Heavy work happens only when a command calls `get_settings()` / `get_current_profile()`. This is what keeps `--help` and bare-group invocations side-effect free.
-
-4. **Profile and synthetic commands skip the lazy resolver.** The callback returns before `register_profile_resolver()` when `invoked_subcommand` is `"profile"` or `"synthetic"`. Both subgroups call `get_current_profile(auto_resolve=False)` and manage their own profile lifecycle.
-
-5. **`get_settings()` is a pure read.** It loads configuration from files and environment variables but creates no directories and has no filesystem side effects. Safe to call from any context. Raises `RuntimeError` if called before `set_current_profile()`.
-
-6. **`setup_logging()` is decoupled from `get_settings()`.** All log config values (level, format, file path) are passed explicitly by `setup_observability()`. The early `setup_observability(profile=None)` in the callback gives console-only logging until the lazy resolver re-initializes with profile-scoped files.
-
-7. **No module-level profile initialization.** `_current_profile` starts as `None`. It is set either eagerly in the callback (when an explicit name is provided) or lazily via `resolve_profile()` on first settings access. Either way, by the time any command body reads the profile, it has been set.
-
-## Known Remaining Issues
-
-### `ensure_default_profile` Does Too Much
-
-The first-run wizard in `ensure_default_profile()` handles profile creation, config writing, key generation, and database initialization — all in one function in `user_config.py`. This couples user config management to database and keychain operations. A cleaner design would have the wizard only create the profile and config, with `db init` handling key/database setup separately (or as a clearly separate step).
-
-## Simplifications Applied
-
-The bugs we fixed were symptoms of a deeper issue: **too many things knew how to create directories**, and **startup side effects were scattered across modules that shouldn't own them**. All four simplifications have been applied:
-
-1. **Removed `create_directories()` from `get_settings()`** — The `create_dirs` config flag and `create_directories()` method were deleted from `MoneyBinSettings`. `get_settings()` is now a pure read with no filesystem side effects.
-2. **Fixed `Database.__init__` directory creation** — Changed from `mkdir(parents=True)` to `mkdir(parents=False)`, closing the last path that could recreate a deleted profile.
-3. **Eliminated module-level `_current_profile`** — `_current_profile` starts as `None` instead of eagerly reading `config.yaml` at import time. `get_settings()` and `get_current_profile()` raise `RuntimeError` if called before `set_current_profile()`.
-4. **Decoupled `setup_logging()` from `get_settings()`** — `setup_logging()` accepts all config values as explicit parameters. `setup_observability()` resolves them from settings when a profile is available, or uses defaults (console-only, INFO level) when not. Profile commands get proper logging without touching the settings chain.
+If your new command needs a heavy import, put it inside the function body with `# noqa: PLC0415 — defer <dep> import` per the pattern in `mcp.py` and `transform.py`. See CONTRIBUTING.md → "Adding a new CLI command" for the full recipe (test layer expectations, JSON-output parity, `--help` audit).

@@ -43,6 +43,7 @@ This spec is the inaugurating implementation of that convention. It exercises th
 - [`net-worth.md`](net-worth.md) — owner of the existing `core.agg_net_worth` model, which this spec migrates. The two `NetworthService` SQL references are updated as part of the migration (no behavior change).
 - [`transaction-curation.md`](transaction-curation.md) — sibling M2A spec that introduces `app.audit_log`, `app.transaction_tags`, etc. This spec does not depend on its tables; the doctor spec ([`moneybin-doctor.md`](moneybin-doctor.md), drafted next) will.
 - [`mcp-architecture.md`](mcp-architecture.md) — sensitivity tiers. All `reports_*` tools are **Tier 1 (Account-Level)** — they expose aggregate financial state and category breakdowns, never raw PII or full transaction descriptions.
+- [`extension-contracts.md`](extension-contracts.md) — governance layer for the Report extension type. Defines the contributor-facing surface (manifest, structured-comment format, auto-generated registration trinity, Quality Scale tiers). This spec describes WHAT the v1 in-tree `reports.*` models are; `extension-contracts.md` describes HOW any report — in-tree or contributed — registers and is validated. The eight v1 models migrate to the structured-comment shape as part of `extension-contracts.md`'s pre-launch surgical work.
 
 ### Decisions made during design (cross-references for reviewers)
 
@@ -73,6 +74,8 @@ Eight models in v1. Each section: purpose, grain, source, columns (with comments
 
 ### `reports.net_worth`
 
+**Shipped:** PR #121 (M2C entry).
+
 **Purpose:** Daily cross-account net worth snapshot, replacing `core.agg_net_worth`. Powers `reports networth` (point-in-time) and `reports networth-history` (time series).
 
 **Grain:** One row per `balance_date`. Aggregates across all accounts where `include_in_net_worth = TRUE AND archived = FALSE`.
@@ -93,6 +96,8 @@ CLI: `moneybin reports networth [--as-of DATE]`, `moneybin reports networth-hist
 MCP: `reports_networth` (point-in-time), `reports_networth_history` (time series). Tier 1.
 
 ### `reports.cash_flow`
+
+**Shipped:** PR #121 (M2C entry).
 
 **Purpose:** Monthly inflow/outflow/net per account × category. Powers `reports cashflow` and any drill-down the consumer wants (by account, by category, totals).
 
@@ -117,6 +122,8 @@ CLI: `moneybin reports cashflow [--from MONTH] [--to MONTH] [--by account|catego
 MCP: `reports_cashflow`. Tier 1.
 
 ### `reports.spending_trend`
+
+**Shipped:** PR #121 (M2C entry).
 
 **Purpose:** Monthly spending per category with month-over-month and year-over-year deltas. Subsumes the brief's `year_over_year_spending` — the wider grain supports YoY, MoM, and 3-month-trailing comparisons from a single view.
 
@@ -144,6 +151,8 @@ CLI: `moneybin reports spending [--from MONTH] [--to MONTH] [--category SLUG] [-
 MCP: `reports_spending`. Tier 1.
 
 ### `reports.recurring_subscriptions`
+
+**Shipped:** PR #121 (M2C entry).
 
 **Purpose:** Heuristic detection of likely-recurring outflow charges (subscriptions, memberships, regular bills). Surfaces candidates with a `confidence` score; does **not** auto-classify or write back to any table.
 
@@ -180,7 +189,8 @@ MCP: `reports_spending`. Tier 1.
 
 | Column | Type | Comment |
 |---|---|---|
-| `merchant_normalized` | `VARCHAR` | Normalized merchant string (joinable to core.dim_merchants) |
+| `merchant_id` | `VARCHAR` | Foreign key to `core.dim_merchants.merchant_id`; NULL for the `'(uncategorized)'` bucket. Projected at the view boundary per `.claude/rules/identifiers.md` Guard 1 so downstream aggregations bucket on ID, not display text. |
+| `merchant_normalized` | `VARCHAR` | Display label: `dim_merchants.canonical_name` for resolved merchants; `'(uncategorized)'` when `merchant_id IS NULL` |
 | `avg_amount` | `DECIMAL(18,2)` | Average absolute charge amount across this cluster |
 | `cadence` | `VARCHAR` | One of: weekly, biweekly, monthly, quarterly, yearly, irregular |
 | `interval_days_avg` | `DECIMAL(8,2)` | Mean days between consecutive charges |
@@ -198,6 +208,8 @@ CLI: `moneybin reports recurring [--min-confidence FLOAT] [--status active|inact
 MCP: `reports_recurring`. Tier 1.
 
 ### `reports.uncategorized_queue`
+
+**Shipped:** PR #121 (M2C entry).
 
 **Purpose:** Surface uncategorized transactions ranked by curator-impact (large + old first). Backs the curation workflow; complements (does not replace) the `transactions categorize` review surface.
 
@@ -228,6 +240,8 @@ MCP: `reports_uncategorized`. Tier 1.
 
 ### `reports.merchant_activity`
 
+**Shipped:** PR #121 (M2C entry).
+
 **Purpose:** Per-merchant lifetime aggregations. Subsumes the brief's `top_merchants` — top-N is just `ORDER BY total_spend DESC LIMIT N` against this view. The wider grain also powers a hypothetical "merchant detail" surface without a second model.
 
 **Grain:** One row per `merchant_normalized`.
@@ -255,6 +269,8 @@ CLI: `moneybin reports merchants [--top N] [--sort spend|count|recent]`.
 MCP: `reports_merchants`. Tier 1.
 
 ### `reports.large_transactions`
+
+**Shipped:** PR #121 (M2C entry).
 
 **Purpose:** Surface unusually large transactions, by both absolute amount and statistical outlier flags. Demo-rich; useful for catching expense anomalies and recurring-charge surprises.
 
@@ -284,6 +300,8 @@ CLI: `moneybin reports large-transactions [--top N] [--anomaly account|category|
 MCP: `reports_large_transactions`. Tier 1.
 
 ### `reports.balance_drift`
+
+**Shipped:** PR #121 (M2C entry).
 
 **Purpose:** Per-(account, assertion_date) reconciliation deltas: asserted vs computed balance. Feeds `moneybin doctor` (next spec) directly via the `status` column traffic-light.
 
@@ -354,7 +372,7 @@ sqlmesh/models/core/
 
 **Consumers:**
 - `src/moneybin/services/networth_service.py` — three SQL references update from `AGG_NET_WORTH` to `REPORTS_NET_WORTH`. No behavior change.
-- `src/moneybin/services/categorization_service.py` — fix the latent bug at line 426: route `INSERT INTO {MERCHANTS.full_name}` to `INSERT INTO {USER_MERCHANTS.full_name}`. Existing read paths via `MERCHANTS` keep working (they auto-pick up `core.dim_merchants` via the constant). Same for any read-side `CATEGORIES.full_name` usages.
+- `src/moneybin/services/categorization/applier.py` — write path already routes to `INSERT INTO {USER_MERCHANTS.full_name}` (shipped). Existing read paths via `MERCHANTS` keep working (they auto-pick up `core.dim_merchants` via the constant). Same for any read-side `CATEGORIES.full_name` usages. Note: `CategorizationService` was split into a facade plus five collaborators under `src/moneybin/services/categorization/` in PR #155 — line numbers below refer to that layout.
 - `src/moneybin/services/schema_catalog.py` — swap `app.categories` and `app.merchants` interface entries for `core.dim_categories` and `core.dim_merchants`; extend with the eight new `reports.*` views and curated example queries (see [Schema Discoverability](#schema-discoverability)).
 
 **Specs:**
@@ -448,7 +466,7 @@ Mirrors CLI 1:1. Eight new or updated tools, all Tier 1 (Account-Level):
 | `reports_large_transactions` | Tier 1 | Large transactions |
 | `reports_balance_drift` | Tier 1 | Balance reconciliation drift |
 
-Tier 1 rationale (per `mcp-architecture.md`): these expose aggregate financial state, category breakdowns, and merchant-level totals. They never expose raw account numbers, full descriptions of one-off purchases without aggregation, or PII-bearing fields. The `uncategorized_queue` and `large_transactions` views surface individual `description` columns — these are still Tier 1 because the data is the user's own, exposed to consumers the user has explicitly granted MCP access to. Tier 2 (Transaction-Level) is reserved for tools that expose full unaggregated transaction lists (`transactions_list`).
+Tier 1 rationale (per `mcp-architecture.md`): these expose aggregate financial state, category breakdowns, and merchant-level totals. They never expose raw account numbers, full descriptions of one-off purchases without aggregation, or PII-bearing fields. The `uncategorized_queue` and `large_transactions` views surface individual `description` columns — these are still Tier 1 because the data is the user's own, exposed to consumers the user has explicitly granted MCP access to. Tier 2 (Transaction-Level) is reserved for tools that expose full unaggregated transaction reads (e.g., `transactions_review` for the review queue surface).
 
 All tools return `ResponseEnvelope` with `data`, `summary`, and `display_currency` fields (per `architecture-shared-primitives.md` §MCP/CLI/SQL Symmetry).
 
@@ -470,13 +488,13 @@ Not a redesign — a rename plus an ownership transfer of a deferred migration t
 
 Rename of one SQLMesh view. Same SELECT body. Destructive in SQLMesh terms only (DROP + CREATE on a view); no source-of-truth data is involved because the view is fully derivable from `core.fct_balances_daily`.
 
-Steps on first `moneybin transform apply` after this spec ships:
+Steps on first `moneybin refresh run --steps transform` (or `refresh_run(steps=["transform"])` MCP call) after this spec ships:
 
 1. SQLMesh sees `core.agg_net_worth` is no longer in the model set and that `reports.net_worth` is new.
 2. SQLMesh drops the old view and creates the new one.
 3. The first `NetworthService` call post-migration reads from `reports.net_worth` and returns identical results.
 
-The CHANGELOG entry calls out the rename so users running `transform apply` understand the prompt.
+The CHANGELOG entry calls out the rename so users running `refresh run` understand the prompt. (The legacy `transform_apply` MCP tool was retired in PR #173 — refresh-domain transform application now routes through the `refresh_run` umbrella per `.claude/rules/surface-design.md` shape 3.)
 
 ### 3. `app.categories` (Python-built view) → `core.dim_categories` (SQLMesh model)
 
@@ -512,7 +530,7 @@ Same architectural fix as migration 3. The Python-built `app.merchants` view (in
 - `schema_catalog.py` swaps its `app.merchants` interface entry for `core.dim_merchants`.
 - `app.merchants` view is dropped.
 
-**Forcing-function fix:** `categorization_service.py:426` currently reads `INSERT INTO {MERCHANTS.full_name}` — i.e., `INSERT INTO app.merchants`, which is a UNION view and therefore not insertable in DuckDB. This is a pre-existing latent bug. After migration, `MERCHANTS.full_name` is `core.dim_merchants`, which is a `core.*` view (read-only by design). The INSERT obviously breaks; the fix is to route the write to `USER_MERCHANTS` (the actual user-state table where new merchants always should have landed). The migration PR includes this fix.
+**Forcing-function fix (shipped):** the write previously located in `categorization_service.py` (`INSERT INTO {MERCHANTS.full_name}` — i.e., `INSERT INTO app.merchants`, which was a UNION view and therefore not insertable in DuckDB) now lives in `src/moneybin/services/categorization/applier.py` and routes to `INSERT INTO {USER_MERCHANTS.full_name}`. After this spec's migrations, `MERCHANTS.full_name` resolves to `core.dim_merchants` (a `core.*` view, read-only by design); writes always go through `USER_MERCHANTS`, the user-state table.
 
 ### Aggregate impact
 
@@ -575,7 +593,7 @@ The scenario also asserts each of the four migrations from §Migrations:
 1. **`core.agg_net_worth` → `reports.net_worth`:** after applying this spec's transform, `reports.net_worth` exists, `core.agg_net_worth` does not, and the row count + final `net_worth` value match what `core.agg_net_worth` would have returned on the same data. (The synthetic generator is deterministic per `testing-synthetic-data.md`, so this is reproducible.)
 2. **`app.categories` → `core.dim_categories`:** `core.dim_categories` exists, `app.categories` does not, the unified row set (seeds + user_categories minus inactive overrides) matches the pre-migration shape, and `is_default`/`is_active`/all original columns are preserved.
 3. **`app.merchants` → `core.dim_merchants`:** analogous to categories — `core.dim_merchants` exists, `app.merchants` does not, the unioned row set across user_merchants + three regional seeds matches pre-migration with overrides applied.
-4. **Categorization-service merchant write fix:** an explicit unit test under `tests/moneybin/test_services/test_categorization_service.py` exercises `_create_merchant()` and asserts that the new row lands in `app.user_merchants` (now that the bug at line 426 is fixed). A regression test would have caught this earlier; add it now as part of the migration.
+4. **Categorization-service merchant write fix (shipped):** a regression test under `tests/moneybin/test_services/test_categorization/` exercises the applier's merchant-create path and asserts that the new row lands in `app.user_merchants`. (Post-PR #155 split, the path lives in `services/categorization/applier.py`.)
 
 Scenario fixtures use the YAML format owned by `testing-scenario-comprehensive.md`.
 

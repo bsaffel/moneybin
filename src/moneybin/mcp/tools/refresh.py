@@ -5,11 +5,9 @@ Tool:
 
 Wraps :func:`moneybin.services.refresh.refresh`. Operators needing
 SQLMesh-step granularity can pass ``steps=["transform"]`` (the granular
-form formerly exposed as ``transform_apply``) or reach the dedicated
-read tools :func:`transform_plan`, :func:`transform_validate`,
-:func:`transform_audit`, :func:`transform_status` directly — they're
-registered as infrastructure verbs per the carve-out in
-``.claude/rules/mcp-server.md``.
+form formerly exposed as ``transform_apply``), or use the CLI for
+read-only introspection: ``moneybin transform plan|validate|audit|status``
+(operator territory, not MCP-registered; see mcp-server.md category 2).
 """
 
 from __future__ import annotations
@@ -44,8 +42,8 @@ def refresh_run(
             views). Pass ``["transform"]`` to run only SQLMesh apply.
 
     For SQLMesh-step granularity beyond apply (plan, validate, audit,
-    per-step status), call ``transform_plan``, ``transform_validate``,
-    ``transform_audit``, or ``transform_status`` directly.
+    per-step status), use the CLI: ``moneybin transform plan|validate|
+    audit|status`` (operator tools, CLI-only).
 
     This umbrella is symmetric with ``transactions_categorize_run(methods=...)``:
     both accept a list parameter to scope which sub-operations execute,
@@ -74,6 +72,6 @@ def register_refresh_tools(mcp: FastMCP) -> None:
         "and writes app.transaction_categories for newly-matched rules. "
         "No revert path; re-run after fixing inputs. "
         "Symmetric with transactions_categorize_run(methods=...). "
-        "For SQLMesh-step granularity beyond apply, call transform_plan, "
-        "transform_validate, transform_audit, or transform_status directly.",
+        "For SQLMesh-step granularity beyond apply, use the CLI: "
+        "`moneybin transform plan|validate|audit|status` (CLI-only operator tools).",
     )

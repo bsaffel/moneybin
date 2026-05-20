@@ -9,8 +9,6 @@ end-to-end against DuckDB without needing a full SQLMesh transform.
 
 from __future__ import annotations
 
-from decimal import Decimal
-
 import pytest
 
 from moneybin.database import Database
@@ -148,42 +146,79 @@ class TestAllowlistConstants:
         assert set(RECURRING_STATUSES) == {"active", "inactive", "all"}
 
 
-class TestUncategorizedQueueTyping:
-    """``min_amount`` accepts Decimal, float, and int (typing-locked union)."""
+# TestUncategorizedQueueTyping removed — ReportsService.uncategorized_queue was
+# consolidated into CategorizationService.list_uncategorized_transactions (PR #9).
+# Account-filter and sort behavior is covered by
+# tests/moneybin/test_mcp/test_v1_tools.py::TestCategorizePendingGet.
 
-    def _install(self, db: Database) -> None:
-        db.execute("CREATE SCHEMA IF NOT EXISTS reports")
-        db.execute("""
-            CREATE OR REPLACE VIEW reports.uncategorized_queue AS
-            SELECT * FROM (VALUES
-                ('T1', 'A1', 'Alpha', DATE '2026-04-01', -25.00, 'COFFEE', 'Coffee', 30, 750.0, 'ofx', NULL),
-                ('T2', 'A1', 'Alpha', DATE '2026-04-10', -500.00, 'BIG', 'Big', 20, 10000.0, 'ofx', NULL)
-            ) AS t(transaction_id, account_id, account_name, txn_date, amount,
-                   description, merchant_normalized, age_days, priority_score,
-                   source_type, source_id)
-        """)
 
-    def test_min_amount_decimal(self, db: Database) -> None:
-        self._install(db)
-        payload = ReportsService(db).uncategorized_queue(min_amount=Decimal("100"))
-        # Only T2 (|-500| >= 100) survives.
-        assert len(payload.rows) == 1
-        assert payload.rows[0].transaction_id == "T2"
+def _install_dim_accounts(db: Database) -> None:
+    """Minimal core.dim_accounts shape for the account filter tests.
 
-    def test_min_amount_float(self, db: Database) -> None:
-        self._install(db)
-        payload = ReportsService(db).uncategorized_queue(min_amount=100.0)
-        assert len(payload.rows) == 1
+    Includes the collision pair (Joint / Joint) so the resolver's
+    ambiguity branch can be exercised, plus an archived account
+    sharing a display_name with an active one so the archived-filter
+    behavior can be verified separately.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS core")
+    db.execute("""
+        CREATE OR REPLACE VIEW core.dim_accounts AS
+        SELECT * FROM (VALUES
+            ('A1', 'Alpha', false),
+            ('A2', 'Beta', false),
+            ('A3', 'Joint', false),
+            ('A4', 'Joint', false),
+            ('A5_OLD', 'Chase Checking', true),
+            ('A5_NEW', 'Chase Checking', false)
+        ) AS t(account_id, display_name, archived)
+    """)
 
-    def test_min_amount_int(self, db: Database) -> None:
-        self._install(db)
-        payload = ReportsService(db).uncategorized_queue(min_amount=100)
-        assert len(payload.rows) == 1
 
-    def test_source_columns_in_payload(self, db: Database) -> None:
-        # Regression: provenance columns must survive the service projection
-        # so downstream tooling can trace rows back to their origin.
-        self._install(db)
-        payload = ReportsService(db).uncategorized_queue()
-        assert hasattr(payload.rows[0], "source_type")
-        assert hasattr(payload.rows[0], "source_id")
+def _install_balance_drift_with_accounts(db: Database) -> None:
+    db.execute("CREATE SCHEMA IF NOT EXISTS reports")
+    db.execute("""
+        CREATE OR REPLACE VIEW reports.balance_drift AS
+        SELECT * FROM (VALUES
+            ('A1', 'Alpha', DATE '2026-04-01', 1000.00, 1010.00, 10.00, 10.00,
+             1.0, 5, 'drift'),
+            ('A2', 'Beta', DATE '2026-04-01', 500.00, 500.00, 0.00, 0.00,
+             0.0, 5, 'clean')
+        ) AS t(account_id, account_name, assertion_date, asserted_balance,
+               computed_balance, drift, drift_abs, drift_pct,
+               days_since_assertion, status)
+    """)
+
+
+class TestAccountFilterResolver:
+    """``balance_drift`` resolves account via AccountService.
+
+    The filter accepts ``account_id`` or ``display_name`` and binds the
+    resolved id to the SQL ``WHERE`` clause. Ambiguous display_name
+    matches raise instead of silently doubling.
+
+    Note: uncategorized_queue account-filter tests removed — that
+    functionality moved to CategorizationService.list_uncategorized_transactions;
+    covered by tests/moneybin/test_mcp/test_v1_tools.py::TestCategorizePendingGet.
+    """
+
+    def test_balance_drift_filter_accepts_account_id(self, db: Database) -> None:
+        _install_dim_accounts(db)
+        _install_balance_drift_with_accounts(db)
+        payload = ReportsService(db).balance_drift(account="A1")
+        ids = {row.account_id for row in payload.rows}
+        assert ids == {"A1"}
+
+    def test_balance_drift_filter_accepts_display_name(self, db: Database) -> None:
+        _install_dim_accounts(db)
+        _install_balance_drift_with_accounts(db)
+        payload = ReportsService(db).balance_drift(account="Beta")
+        ids = {row.account_id for row in payload.rows}
+        assert ids == {"A2"}
+
+    def test_balance_drift_filter_ambiguous_account_errors(self, db: Database) -> None:
+        from moneybin.services.account_service import AmbiguousAccountError
+
+        _install_dim_accounts(db)
+        _install_balance_drift_with_accounts(db)
+        with pytest.raises(AmbiguousAccountError):
+            ReportsService(db).balance_drift(account="Joint")

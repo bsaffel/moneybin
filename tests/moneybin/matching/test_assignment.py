@@ -49,8 +49,6 @@ def _transfer_pair(
         description_b="TRANSFER",
         date_distance_score=1.0,
         keyword_score=0.5,
-        amount_roundness_score=1.0,
-        pair_frequency_score=1.0,
         confidence_score=score,
     )
 
@@ -151,8 +149,6 @@ class TestAssignGreedyTransfers:
                 description_b="TRANSFER",
                 date_distance_score=1.0,
                 keyword_score=0.5,
-                amount_roundness_score=1.0,
-                pair_frequency_score=1.0,
                 confidence_score=0.90,
             ),
             TransferCandidatePair(
@@ -170,8 +166,6 @@ class TestAssignGreedyTransfers:
                 description_b="DEPOSIT",
                 date_distance_score=0.67,
                 keyword_score=0.5,
-                amount_roundness_score=1.0,
-                pair_frequency_score=0.5,
                 confidence_score=0.70,
             ),
         ]
@@ -198,8 +192,6 @@ class TestAssignGreedyTransfers:
                 description_b="TRANSFER",
                 date_distance_score=1.0,
                 keyword_score=1.0,
-                amount_roundness_score=1.0,
-                pair_frequency_score=1.0,
                 confidence_score=0.95,
             ),
             TransferCandidatePair(
@@ -217,8 +209,6 @@ class TestAssignGreedyTransfers:
                 description_b="TRANSFER",
                 date_distance_score=1.0,
                 keyword_score=1.0,
-                amount_roundness_score=1.0,
-                pair_frequency_score=1.0,
                 confidence_score=0.90,
             ),
         ]
@@ -244,8 +234,6 @@ class TestAssignGreedyTransfers:
                 description_b="TRANSFER",
                 date_distance_score=1.0,
                 keyword_score=1.0,
-                amount_roundness_score=1.0,
-                pair_frequency_score=1.0,
                 confidence_score=0.95,
             ),
             TransferCandidatePair(
@@ -263,8 +251,6 @@ class TestAssignGreedyTransfers:
                 description_b="TRANSFER",
                 date_distance_score=0.67,
                 keyword_score=1.0,
-                amount_roundness_score=1.0,
-                pair_frequency_score=1.0,
                 confidence_score=0.85,
             ),
         ]

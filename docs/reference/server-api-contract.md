@@ -1,255 +1,255 @@
-# API Contract
+<!-- Last reviewed: 2026-05-17 -->
+# Server API Contract
 
-Base URL: `https://api.moneybin.app` (production), `http://localhost:3000` (development).
+`moneybin-server` is a thin HTTP service that brokers connections to upstream banking providers (Plaid today). The MoneyBin client treats it as opaque — this page documents the contract the client *expects*, so a self-hoster running their own `moneybin-server` (or anyone evaluating the architecture) can reason about the surface from the client's perspective.
 
-## Authentication
+This is **not** a server implementation guide. Every endpoint here corresponds to a method on `SyncClient` (`src/moneybin/connectors/sync_client.py`); every response shape corresponds to a Pydantic model in `src/moneybin/connectors/sync_models.py` that the client validates at the boundary. Anything not documented here is not part of the contract — even if your `moneybin-server` happens to implement it. See [Versioning](#versioning) for the pre-launch posture.
 
-All endpoints except `/health` and `/auth/*` require a valid JWT in the `Authorization` header:
+## Design philosophy
 
-```
-Authorization: Bearer <jwt-token>
-```
+Three properties drive the shape of this contract:
 
-The JWT is issued by Auth0 (via server proxy) and validated against the Auth0 JWKS endpoint. Clients never talk to Auth0 directly -- all auth flows go through `api.moneybin.app`.
+- **The client is offline-first.** The encrypted DuckDB profile holds your data. The server is invoked only when you connect a new bank or pull a sync. It is a broker, not a system of record.
+- **Raw credentials never touch the server.** The Plaid Link flow runs in your browser against Plaid's hosted UI. The server sees the short-lived `public_token` that Plaid returns *after* the user authorizes — not the bank password. The client never sees the long-lived `access_token` either; the server holds it encrypted on the user's behalf.
+- **The server is replaceable.** Because the contract is narrow (a handful of endpoints, JSON payloads only) and the client validates every response, a self-hoster can run their own `moneybin-server` against their own Plaid credentials. `moneybin-server` is a separate project; setup instructions live in its repository.
 
-## Error Response Format
+## Local-only mode
 
-All error responses use a consistent JSON shape:
+This entire surface is optional. MoneyBin runs end-to-end without ever contacting `moneybin-server` when you use file-based imports — OFX, QFX, QBO, CSV, and PDF paths never touch the network and never read `sync.server_url`.
 
-```json
-{
-  "error": "Human-readable error message",
-  "details": {}
-}
-```
+When `sync.server_url` is unset (the default), every `moneybin sync ...` command fails fast with a configuration error pointing at `MONEYBIN_SYNC__SERVER_URL`. Nothing else in the client probes the sync surface — startup, transforms, imports, and reports all proceed normally.
 
-The `details` field is optional and included only when additional context is available (e.g., validation errors).
+Bank-direct sync via `moneybin-server` is an additive capability for users who want automated pulls. Skip it entirely and you skip every concern on this page.
 
-## HTTP Status Codes
+## Identity and auth
 
-| Code | Meaning |
-|------|---------|
-| 200 | Success |
-| 201 | Created |
-| 202 | Accepted (polling response for device flow) |
-| 204 | No Content (successful deletion) |
-| 400 | Bad Request (malformed input) |
-| 401 | Unauthorized (missing or invalid JWT) |
-| 403 | Forbidden (valid JWT but insufficient permissions) |
-| 404 | Not Found |
-| 409 | Conflict (resource exists but is in the wrong state, e.g. job not yet complete) |
-| 422 | Unprocessable Entity (valid JSON but failed semantic validation) |
-| 500 | Internal Server Error |
-| 501 | Not Implemented (stub endpoints during phased rollout) |
+The client authenticates to `moneybin-server` with a per-user OAuth2 access token. The token is acquired through the **Device Authorization Grant** (RFC 8628) so that headless CLI environments work without a callback URL.
 
----
+| Concern | Behavior |
+|---|---|
+| Auth flow | Device Authorization Grant (RFC 8628). `moneybin sync login` prints a user code + verification URL; the user opens it in any browser and approves. |
+| Identity provider | The server is presumed to delegate to an external IdP (Auth0 in the reference deployment). The client never talks to the IdP directly. |
+| Token type | `Bearer` JWT — passed via `Authorization: Bearer <token>` on every authed request. |
+| Refresh | Rotating refresh tokens. On a 401, the client calls `POST /auth/refresh` once and retries. A second 401 clears both tokens and prompts re-login. |
+| Token storage (client) | Client implementation detail; see `src/moneybin/connectors/sync_client.py`. Not part of the contract. |
+| Token storage (server) | Out of scope of this contract. The client treats stored Plaid `access_token`s as the server's problem. |
 
-## Health
+## Endpoint catalog
 
-### `GET /health`
+Every endpoint below is exercised by `SyncClient`. Paths and methods are taken directly from the client's call sites — if the server names something differently, the client won't reach it.
 
-Health check endpoint. No authentication required.
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| `POST` | `/auth/device/code` | none | Begin device authorization. Returns `device_code`, `user_code`, verification URL, polling interval. |
+| `POST` | `/auth/device/token` | none | Poll for the device-flow result. Returns tokens once the user approves; `202 pending` / `202 slow_down` while waiting. |
+| `POST` | `/auth/refresh` | refresh token | Exchange a refresh token for a new access token (with a rotated refresh token). |
+| `GET` | `/institutions` | bearer | List the user's connected institutions across providers. |
+| `DELETE` | `/institutions/{id}` | bearer | Disconnect an institution by its internal connection ID. |
+| `POST` | `/sync/connect/initiate` | bearer | Start a connect session (Plaid Link today). Returns a hosted `link_url` for the user to open. |
+| `GET` | `/sync/connect/status` | bearer | Read the current state of a connect session (`pending` / `connected` / `failed`). |
+| `POST` | `/sync/trigger` | bearer | Run a sync. Synchronous from the client's perspective — blocks until the server completes the pull. |
+| `GET` | `/sync/data` | bearer | One-shot read of the most recent sync payload by `job_id`. Server deletes from its TTL store after read. |
 
-**Response** `200`
+Properties across the catalog: bearer-token auth everywhere except the device-flow bootstrap (no cookies, no sessions); JSON request and response bodies (errors included); synchronous semantics — `POST /sync/trigger` blocks until the server-side pull completes, then `GET /sync/data` returns the payload. No webhooks; polling exists only for the connect flow, where the user takes the wheel.
 
-```json
-{
-  "status": "ok",
-  "timestamp": "2026-04-07T12:00:00.000Z"
-}
-```
+### Sync sequence (canonical)
 
----
+1. Client calls `POST /sync/trigger`.
+2. Server runs the upstream provider pull synchronously (may take up to ~120 seconds for multi-institution syncs).
+3. Server stores the result in a short-lived TTL cache keyed by `job_id`.
+4. Server returns `200` with a sync summary (`job_id`, `status`, `transaction_count`).
+5. Client calls `GET /sync/data?job_id=<id>`.
+6. Server returns the payload and drops it from the TTL cache.
 
-## Auth Endpoints (No JWT Required)
+The trigger blocks because the contract avoids a job-queue/webhook protocol — the client has no inbound port, and the CLI/MCP host is already waiting on the call.
 
-These endpoints are part of the authentication flow and do not require an existing JWT.
+## Request and response shapes
+
+The Pydantic models the client validates against — names match `src/moneybin/connectors/sync_models.py`.
 
 ### `POST /auth/device/code`
 
-Initiates the Device Authorization Flow for CLI clients. The server proxies the request to Auth0.
+**Request:** empty body.
 
-**Request body**: None.
-
-**Response** `200`
+**Response (200):**
 
 ```json
 {
   "device_code": "Ag_EE...",
   "user_code": "ABCD-EFGH",
-  "verification_uri": "https://your-tenant.auth0.com/activate",
-  "verification_uri_complete": "https://your-tenant.auth0.com/activate?user_code=ABCD-EFGH",
-  "expires_in": 900,
+  "verification_uri_complete": "https://idp.example.com/activate?user_code=ABCD-EFGH",
   "interval": 5
 }
 ```
 
-The CLI displays `user_code` and `verification_uri_complete` to the user, who visits the URL in a browser to authorize. The CLI then polls `POST /auth/device/token`.
+The client reads `user_code` (display), `verification_uri_complete` (open in browser), `device_code` (pass to the poll endpoint), and `interval` (polling cadence in seconds, default 5). Additional fields the server may return are ignored.
 
 ### `POST /auth/device/token`
 
-Polls for a device token after the user has authorized the device. The server proxies the request to Auth0.
-
-**Request body**
+**Request:**
 
 ```json
-{
-  "device_code": "Ag_EE..."
-}
+{ "device_code": "Ag_EE..." }
 ```
 
-**Response** `200` (authorized)
+**Response (200, approved):** `AuthToken`
 
 ```json
 {
   "access_token": "eyJ...",
-  "id_token": "eyJ...",
   "refresh_token": "v1.M...",
-  "token_type": "Bearer",
-  "expires_in": 86400
+  "expires_in": 86400,
+  "token_type": "Bearer"
 }
 ```
 
-**Response** `202` (pending -- user has not yet authorized)
+**Response (202, pending):**
 
 ```json
-{
-  "status": "pending"
-}
+{ "status": "pending" }
 ```
 
-**Response** `202` (slow_down -- polling too fast)
+**Response (202, slow_down):**
 
 ```json
-{
-  "status": "slow_down"
-}
+{ "status": "slow_down" }
 ```
 
-> **RFC 8628 §3.5 compliance:** On a `slow_down` response, the client MUST increase its polling interval by at least 5 seconds and use that new interval for all subsequent polls in the same flow.
+Per RFC 8628 §3.5, on `slow_down` the client increases its polling interval by 5 seconds and continues polling. On `200` the client persists both tokens and returns. On `403` the client surfaces "user denied device authorization"; on `400` it surfaces "device code expired or invalid; restart login."
 
-**Errors**
+### `POST /auth/refresh`
 
-- `400` if `device_code` is missing or the device code has expired.
-- `403` if the user denied authorization.
-
-### `GET /auth/login`
-
-Redirects the user to Auth0 Universal Login (Authorization Code Flow for web clients).
-
-**Response** `302` redirect to Auth0 login page with CSRF state cookie set.
-
-### `GET /auth/callback`
-
-Auth0 redirects here after successful Authorization Code Flow authentication. The server validates the state parameter (CSRF check), exchanges the authorization code for tokens, and establishes a session.
-
-**Query Parameters**
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `code` | string | Authorization code from Auth0 |
-| `state` | string | CSRF state parameter (must match cookie) |
-
-**Response** `302` redirect to the web UI with session established.
-
-### `GET /auth/logout`
-
-Clears the session and redirects to Auth0's logout endpoint.
-
-**Response** `302` redirect to Auth0 logout, then to post-logout URL.
-
----
-
-## Auth Endpoints (JWT Required)
-
-### `GET /auth/session`
-
-Returns the currently authenticated user's information. `id` is the server's local UUID (not the Auth0 `sub`).
-
-**Response** `200`
+**Request:**
 
 ```json
-{
-  "user": {
+{ "refresh_token": "v1.M..." }
+```
+
+**Response (200):** Same `AuthToken` shape as the device-token endpoint. Refresh tokens rotate — the response always includes a new `refresh_token` that supersedes the one used.
+
+Any non-200 response clears both tokens on the client and requires re-login.
+
+### `GET /institutions`
+
+**Response (200):** JSON array of `ConnectedInstitution`:
+
+```json
+[
+  {
     "id": "550e8400-e29b-41d4-a716-446655440000",
-    "email": "user@example.com"
+    "provider_item_id": "item_abc123...",
+    "provider": "plaid",
+    "institution_name": "Chase",
+    "status": "active",
+    "last_sync": "2026-05-15T14:22:10Z",
+    "created_at": "2026-03-15T08:30:00Z",
+    "error_code": null
   }
-}
+]
 ```
 
-**Error** `401` if no valid JWT.
+| Field | Type | Notes |
+|---|---|---|
+| `id` | string | Server-internal connection ID. The value to pass to `DELETE /institutions/{id}`. |
+| `provider_item_id` | string | The provider's own item identifier (Plaid `item_id`). Stable across the connection's lifetime. |
+| `provider` | string | Provider name. Today: `"plaid"`. |
+| `institution_name` | string \| null | Human-readable institution name. |
+| `status` | enum | `"active"` \| `"error"` \| `"revoked"`. |
+| `last_sync` | ISO 8601 \| null | Timestamp of last successful sync, server-side. |
+| `created_at` | ISO 8601 | When the connection was established. |
+| `error_code` | string \| null | Provider error code (e.g., `ITEM_LOGIN_REQUIRED`). Advisory only; treat absence as `null`. |
 
----
+**Why two IDs?** `id` is the server's UUID for the connection (the disconnect handle). `provider_item_id` is the upstream provider's identifier (what shows up in sync payloads and per-institution results). They are not interchangeable. The client uses `provider_item_id` when targeting a sync at a specific connection and `id` when disconnecting.
 
-## Sync Endpoints (JWT Required)
+### `DELETE /institutions/{id}`
 
-### `POST /sync/link-token`
+**Path parameter:** `id` — the server-internal UUID from `GET /institutions`.
 
-Creates a Plaid Link token. The client uses this token to initialize Plaid Link in the browser.
+**Response (204):** No content. The server revokes the upstream access token and removes the connection from its records.
 
-**Request body**: None.
+**Errors:** `404` if the connection does not exist or belongs to another user.
 
-**Response** `200`
+### `POST /sync/connect/initiate`
+
+Begin a connect session. The response includes a hosted URL the user opens in a browser; the user completes provider-side flows there (Plaid Link, in today's deployment).
+
+**Request:**
 
 ```json
 {
-  "link_token": "link-sandbox-abc123...",
-  "expiration": "2026-04-07T12:30:00Z"
+  "provider": "plaid",
+  "provider_item_id": null,
+  "return_to": null
 }
 ```
 
-### `POST /sync/exchange-token`
+| Field | Type | Required | Purpose |
+|---|---|---|---|
+| `provider` | string | yes | Defaults to `"plaid"` client-side. Reserved for multi-provider future. |
+| `provider_item_id` | string \| null | no | If set, opens an **update-mode** Link session for an existing connection (e.g., to resolve `ITEM_LOGIN_REQUIRED`). |
+| `return_to` | string \| null | no | Where the hosted UI should send the user after completion. Server-defined semantics. |
 
-Exchanges a Plaid public token (received after the user completes Plaid Link) for a persistent access token. The server encrypts the access token with AES-256-GCM and stores it in the `plaid_items` table.
-
-**Request body**
+**Response (200):** `ConnectInitiateResponse`
 
 ```json
 {
-  "public_token": "public-sandbox-abc123...",
-  "institution_id": "ins_123",
-  "institution_name": "Chase"
+  "session_id": "sess_abc123",
+  "link_url": "https://link.example.com/sessions/sess_abc123",
+  "connect_type": "widget_flow",
+  "expiration": "2026-05-17T15:00:00Z"
 }
 ```
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `public_token` | string | yes | Public token from Plaid Link completion |
-| `institution_id` | string | no | Plaid institution identifier |
-| `institution_name` | string | no | Human-readable institution name |
+| Field | Notes |
+|---|---|
+| `session_id` | Opaque token; the client passes it to `GET /sync/connect/status`. |
+| `link_url` | Hosted URL the client opens in the user's browser. |
+| `connect_type` | `"widget_flow"` (Plaid Link in a hosted browser) or `"token_paste"` (manual token entry, reserved for headless flows). |
+| `expiration` | After this timestamp, the session can no longer transition to `connected`. |
 
-**Response** `201`
+### `GET /sync/connect/status`
+
+**Query parameter:** `session_id` from `/sync/connect/initiate`.
+
+**Response (200):** `ConnectStatusResponse`
 
 ```json
 {
-  "item_id": "item_abc123..."
+  "session_id": "sess_abc123",
+  "status": "connected",
+  "provider_item_id": "item_abc123...",
+  "institution_name": "Chase",
+  "error": null,
+  "expiration": "2026-05-17T15:00:00Z"
 }
 ```
 
-**Errors**
+| Field | Type | Notes |
+|---|---|---|
+| `status` | enum | `"pending"` \| `"connected"` \| `"failed"`. |
+| `provider_item_id` | string \| null | Populated once `status == "connected"`. |
+| `institution_name` | string \| null | Populated once `status == "connected"`. |
+| `error` | string \| null | Populated when `status == "failed"`. |
 
-- `400` if `public_token` is missing.
-- `422` if the token exchange fails with Plaid.
+`pending` → keep polling. `connected` → success. `failed` → surface `error` to the user. Polling cadence and overall deadline are client-side policy, not part of the contract.
 
 ### `POST /sync/trigger`
 
-Triggers a sync job. If `item_id` is provided, syncs only that institution. If omitted, syncs all connected institutions in parallel (`Promise.allSettled`). Blocks until complete.
-
-**Request body**
+**Request:**
 
 ```json
 {
-  "item_id": "item_abc123...",
+  "provider_item_id": null,
   "reset_cursor": false
 }
 ```
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `item_id` | string | no | Specific Plaid Item to sync. Omit to sync all institutions in parallel. |
-| `reset_cursor` | boolean | no | If `true`, resets the Plaid transaction cursor and re-fetches all available history. Default `false`. |
+| Field | Type | Required | Purpose |
+|---|---|---|---|
+| `provider_item_id` | string \| null | no | If set, syncs only that connection. If omitted, syncs all of the user's active connections. |
+| `reset_cursor` | bool | no | If `true`, the server discards its cursor and re-pulls full available history. Default `false` — incremental from the last cursor. |
 
-**Response** `201`
+**Response (200):** `SyncTriggerResponse`
 
 ```json
 {
@@ -259,141 +259,13 @@ Triggers a sync job. If `item_id` is provided, syncs only that institution. If o
 }
 ```
 
-The response always reflects the final job state since sync is synchronous. In a future async implementation, the response would return `status: "pending"` and the client would use the existing polling flow.
-
-### `GET /sync/status`
-
-Returns the current status of a sync job, including per-institution results.
-
-**Query Parameters**
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `job_id` | string (UUID) | yes | The sync job identifier |
-
-**Response** `200`
-
-```json
-{
-  "job_id": "550e8400-e29b-41d4-a716-446655440000",
-  "status": "completed",
-  "transaction_count": 142,
-  "error": null,
-  "started_at": "2026-04-07T12:00:00.000Z",
-  "completed_at": "2026-04-07T12:00:05.000Z",
-  "results": [
-    {
-      "item_id": "item_abc",
-      "institution_name": "Chase",
-      "status": "completed",
-      "transaction_count": 80
-    },
-    {
-      "item_id": "item_def",
-      "institution_name": "Schwab",
-      "status": "failed",
-      "error": "ITEM_LOGIN_REQUIRED"
-    }
-  ]
-}
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `job_id` | string (UUID) | Job identifier |
-| `status` | string | One of: `pending`, `running`, `completed`, `failed` |
-| `transaction_count` | number or null | Total transactions fetched across all institutions |
-| `error` | string or null | Top-level error message (set on complete failure) |
-| `started_at` | string or null | ISO 8601 timestamp when processing began |
-| `completed_at` | string or null | ISO 8601 timestamp when processing finished |
-| `results` | array or null | Per-institution outcomes (from JSONB column) |
-
-**Errors**
-
-- `400` if `job_id` query parameter is missing.
-- `404` if the job does not exist or belongs to another user.
+`status` is always terminal — the server completes the pull synchronously before responding. `transaction_count` is the total across all institutions in the job. A client-side timeout does not mean the server-side job failed; cursor-based sync makes retry safe.
 
 ### `GET /sync/data`
 
-Returns the sync results as JSON. The client calls this after `status` returns `completed`. Data is held in an in-memory TTL store (30-minute default) and expires after that window.
+**Query parameter:** `job_id` from the trigger response.
 
-**Query Parameters**
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `job_id` | string (UUID) | yes | The completed sync job identifier |
-
-**Response** `200`
-
-```
-Content-Type: application/json
-```
-
-See [Sync Data Format](#sync-data-format) for the full response shape.
-
-**Errors**
-
-- `400` if `job_id` query parameter is missing.
-- `404` if the job does not exist, belongs to another user, or has expired from the TTL store.
-- `409` if the job has not completed yet.
-
-> **TTL recovery:** Data expires from the in-memory store 30 minutes after the job completes. If the client misses this window (e.g. crashes after `POST /sync/trigger`), it can recover by calling `POST /sync/trigger` again — triggering a new sync is idempotent with respect to the underlying Plaid cursor state.
-
----
-
-## Institution Endpoints (JWT Required)
-
-### `GET /institutions`
-
-Lists all connected institutions for the authenticated user.
-
-**Response** `200`
-
-```json
-[
-  {
-    "id": "550e8400-e29b-41d4-a716-446655440000",
-    "item_id": "item_abc123...",
-    "institution_name": "Chase",
-    "status": "active",
-    "last_sync": "2026-04-07T12:00:00.000Z",
-    "created_at": "2026-03-15T08:30:00.000Z"
-  }
-]
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | string (UUID) | Internal identifier for this connection |
-| `item_id` | string | Plaid Item identifier |
-| `institution_name` | string or null | Human-readable institution name |
-| `status` | string | Connection status: `active`, `error`, `revoked` |
-| `last_sync` | string or null | ISO 8601 timestamp of last successful sync |
-| `created_at` | string | ISO 8601 timestamp when institution was connected |
-
-### `DELETE /institutions/:id`
-
-Disconnects an institution. Revokes the Plaid access token and removes the connection from the database.
-
-**Path Parameters**
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `id` | string (UUID) | Internal identifier for the institution connection |
-
-**Response** `204 No Content`
-
-**Errors**
-
-- `404` if the institution does not exist or belongs to another user.
-
-> **Finding the `id`:** `POST /sync/exchange-token` returns only `item_id` (the Plaid identifier). The internal UUID required here is different — it can be obtained from the `id` field in the `GET /institutions` response. Clients that need to disconnect must call `GET /institutions` first to resolve `item_id → id`.
-
----
-
-## Sync Data Format
-
-The `GET /sync/data` endpoint returns JSON. Data volumes are small (hundreds to low thousands of transactions per sync), making JSON a natural fit that eliminates heavy server-side Parquet dependencies.
+**Response (200):** `SyncDataResponse`
 
 ```json
 {
@@ -411,8 +283,8 @@ The `GET /sync/data` endpoint returns JSON. Data volumes are small (hundreds to 
     {
       "transaction_id": "txn_001",
       "account_id": "acc_001",
-      "transaction_date": "2026-04-07",
-      "amount": 42.50,
+      "transaction_date": "2026-05-12",
+      "amount": "42.50",
       "description": "COFFEE SHOP",
       "merchant_name": "Best Coffee",
       "category": "FOOD_AND_DRINK",
@@ -422,94 +294,182 @@ The `GET /sync/data` endpoint returns JSON. Data volumes are small (hundreds to 
   "balances": [
     {
       "account_id": "acc_001",
-      "balance_date": "2026-04-08",
-      "current_balance": 1234.56,
-      "available_balance": 1200.00
+      "balance_date": "2026-05-13",
+      "current_balance": "1234.56",
+      "available_balance": "1200.00"
     }
   ],
   "removed_transactions": ["txn_old_001"],
   "metadata": {
     "job_id": "550e8400-e29b-41d4-a716-446655440000",
-    "synced_at": "2026-04-08T12:00:00.000Z",
+    "synced_at": "2026-05-13T12:00:00Z",
     "institutions": [
       {
-        "item_id": "item_abc",
+        "provider_item_id": "item_abc",
         "institution_name": "Chase",
         "status": "completed",
-        "transaction_count": 80
-      },
-      {
-        "item_id": "item_def",
-        "institution_name": "Schwab",
-        "status": "failed",
-        "error": "ITEM_LOGIN_REQUIRED"
+        "transaction_count": 142,
+        "error": null,
+        "error_code": null
       }
     ]
   }
 }
 ```
 
-### Field Reference
+`accounts[]`, `transactions[]`, `balances[]`, and `removed_transactions[]` are guaranteed to be present (possibly empty). `metadata` is always present. This endpoint is a one-shot read — see [Failure semantics](#failure-semantics) for retry behavior.
 
 #### `accounts[]`
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `account_id` | string | Plaid account identifier; stable across syncs |
-| `account_type` | string | Plaid account type: `depository`, `credit`, `loan`, `investment`, `other` |
-| `account_subtype` | string | Plaid account subtype: `checking`, `savings`, `credit card`, etc. |
-| `institution_name` | string | Human-readable institution name |
-| `official_name` | string | Official account name from the institution |
-| `mask` | string | Last 4 digits of the account number |
+| Field | Type | Notes |
+|---|---|---|
+| `account_id` | string | Provider account ID. Stable across syncs. |
+| `account_type` | string \| null | Provider account type (e.g., `depository`, `credit`, `loan`, `investment`, `other`). |
+| `account_subtype` | string \| null | Provider subtype (e.g., `checking`, `savings`, `credit card`). |
+| `institution_name` | string \| null | Human-readable institution name. |
+| `official_name` | string \| null | Account name as the institution reports it. |
+| `mask` | string \| null | Last few digits of the account number (≤ 8 chars). |
 
 #### `transactions[]`
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `transaction_id` | string | Plaid transaction identifier; unique and stable |
-| `account_id` | string | Plaid account identifier |
-| `transaction_date` | string (YYYY-MM-DD) | Date the transaction posted or is pending |
-| `amount` | number | Transaction amount in **Plaid convention: positive = expense, negative = income** |
-| `description` | string | Transaction description from the institution |
-| `merchant_name` | string or null | Normalized merchant name from Plaid |
-| `category` | string or null | Plaid's primary transaction category |
-| `pending` | boolean | `true` if the transaction has not yet posted |
+| Field | Type | Notes |
+|---|---|---|
+| `transaction_id` | string | Provider transaction ID. Unique and stable across syncs. |
+| `account_id` | string | Provider account ID. |
+| `transaction_date` | `YYYY-MM-DD` | Date the transaction posted (or the pending date). |
+| `amount` | decimal | **Provider sign convention** — Plaid emits positive for expense, negative for income. The MoneyBin staging layer flips this before data reaches `core`. See [Sign convention](#sign-convention) below. |
+| `description` | string \| null | Raw description from the institution. |
+| `merchant_name` | string \| null | Provider's normalized merchant name (`null` when unknown). |
+| `category` | string \| null | Provider's primary category. For Plaid this is `personal_finance_category.primary`. |
+| `pending` | bool | `true` if not yet posted; may transition to `false` (with the same `transaction_id`) in a later sync. |
 
 #### `balances[]`
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `account_id` | string | Plaid account identifier |
-| `balance_date` | string (YYYY-MM-DD) | Date the balance was captured |
-| `current_balance` | number | Total current balance including pending transactions |
-| `available_balance` | number or null | Available balance; may be null for credit accounts |
+| Field | Type | Notes |
+|---|---|---|
+| `account_id` | string | Provider account ID. |
+| `balance_date` | `YYYY-MM-DD` | Date the snapshot was captured. |
+| `current_balance` | decimal \| null | Current balance including pending. |
+| `available_balance` | decimal \| null | Available balance after holds; often `null` for credit accounts. |
 
 #### `removed_transactions[]`
 
-Array of `transaction_id` strings for transactions that Plaid has removed (e.g., reversed or duplicate). The client should delete these from local storage.
+Array of `transaction_id` strings the provider has retracted (reversal, dedup, error correction). The client deletes these rows from `raw.plaid_transactions`.
 
 #### `metadata`
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `job_id` | string (UUID) | Sync job identifier |
-| `synced_at` | string (ISO 8601) | When the server fetched this data from Plaid |
-| `institutions[]` | array | Per-institution sync outcomes |
+| Field | Type | Notes |
+|---|---|---|
+| `job_id` | string (UUID) | Echoes the trigger response. |
+| `synced_at` | ISO 8601 | When the server pulled this batch from the provider. Used as `extracted_at` in `raw.plaid_*`. |
+| `institutions[]` | array | Per-institution outcomes for this job. |
 
-### Amount Sign Convention
+Each entry of `metadata.institutions[]`:
 
-Plaid and moneybin use opposite sign conventions for transaction amounts:
+| Field | Type | Notes |
+|---|---|---|
+| `provider_item_id` | string | Which connection this entry is for. |
+| `institution_name` | string \| null | Human-readable name. |
+| `status` | enum | `"completed"` \| `"failed"`. |
+| `transaction_count` | int \| null | Transactions in this batch from this institution. |
+| `error` | string \| null | Error message when `status == "failed"`. |
+| `error_code` | string \| null | Provider error code (e.g., `ITEM_LOGIN_REQUIRED`). |
 
-| System | Expense | Income |
-|--------|---------|--------|
-| Plaid (server delivers this) | Positive | Negative |
-| moneybin core convention | Negative | Positive |
+The client uses `institutions[]` to update `app.sync_connections` with per-institution status and to surface targeted re-auth guidance.
 
-The server delivers Plaid's native convention. The moneybin client's staging model `prep.stg_plaid__transactions` negates the amount (`-1 * amount`) to align with the project-wide convention before data reaches the core layer.
+## Sign convention
 
-### Client-Side Metadata
+Plaid and MoneyBin use opposite sign conventions. This contract preserves the **provider** convention. The flip to MoneyBin convention happens once, in SQLMesh staging — never in the client transport, never in the server, never in the raw loader.
 
-The JSON response does not include `source_file`, `extracted_at`, or `loaded_at` fields. These are client-side metadata:
-- `source_file`: The client generates a logical identifier such as `sync_{job_id}`
-- `extracted_at`: Set from `metadata.synced_at`
-- `loaded_at`: Set to the current timestamp during DuckDB insertion
+| Layer | Expense | Income |
+|---|---|---|
+| `/sync/data` response (this contract) | Positive | Negative |
+| `raw.plaid_transactions` | Positive (faithful to source) | Negative |
+| `prep.stg_plaid__transactions` and downstream `core.*` | Negative | Positive |
+
+If a future provider arrives with a different native convention, the same rule holds: raw preserves the source; staging flips to MoneyBin convention.
+
+## Error model
+
+What the server returns and how the client classifies it:
+
+| Server signal | Client behavior |
+|---|---|
+| `401` on an authed call | Refresh once, retry. A second `401` clears tokens and prompts re-login. |
+| `403` on `/auth/device/token` | Treated as "user denied authorization." Re-login required. |
+| `400` on `/auth/device/token` | Treated as "device code expired." Re-login required. |
+| Connect session `status == "failed"` | Surfaces the server's `error` string verbatim to the user. |
+| Any other `>= 400` | Surfaces `<METHOD> <path> returned <status>: <truncated body>` to the user. |
+| Connection refused / DNS failure / TLS error | Surfaces "sync server unreachable at &lt;url&gt;". |
+| Client deadline elapsed (connect poll, trigger long timeout) | Surfaces a timeout message; the server-side job may still complete. |
+
+The client wraps each of these into one of `SyncAuthError`, `SyncConnectError`, `SyncTimeoutError`, or `SyncAPIError` — the precise subclass hierarchy is a client implementation detail, defined in `src/moneybin/connectors/sync_errors.py`.
+
+The contract does **not** mandate a uniform error envelope. The client treats any `>= 400` status with an unstructured body as a generic API error. A future revision may tighten this to a structured `{ "error": { "code": "...", "message": "..." } }` shape; until then, the client relies on Pydantic validation to catch malformed success responses and on HTTP status to gate refresh-and-retry behavior.
+
+### Provider error codes inside `metadata.institutions[]`
+
+Per-institution failures inside an otherwise-successful sync do **not** raise — they appear in `metadata.institutions[].error_code` (Plaid error codes, passed through verbatim) and the client maps them to user-facing guidance. The mapping (which codes prompt re-auth, which trigger automatic retry, which suggest "try again later") is a client-side policy detail; see `src/moneybin/connectors/sync_errors.py` for the current set.
+
+## Webhooks
+
+**None.** The contract is strictly request/response. The server does not push events to the client; the client never opens an inbound port. Provider webhooks are a server-side concern; if a future revision adds push semantics, it will be a server-sent stream over the same authed channel, not an inbound listener on the client.
+
+## Privacy boundary
+
+What stays on the client, what crosses to the server, and what never appears on either:
+
+| Data | Client (your machine) | `moneybin-server` | Notes |
+|---|---|---|---|
+| Bank password / online banking credentials | Never | Never | Entered into Plaid's hosted UI in your browser; goes directly from your browser to Plaid. |
+| Plaid `public_token` | Briefly (in URL fragment during redirect) | Yes — exchanged for `access_token` | Short-lived, single-use. |
+| Plaid `access_token` | Never | Yes — encrypted at rest | Long-lived bearer that lets the server pull data from Plaid on your behalf. |
+| Bank transaction data (amounts, descriptions, merchants) | Yes — in your encrypted DuckDB profile | Yes — transiently during the sync, then in a short-TTL store until you fetch it | After `GET /sync/data` the server drops the payload from its TTL store. |
+| DuckDB encryption key | Yes — OS keychain or passphrase | Never | The server has no way to read your local database. |
+| OFX / CSV / PDF imports | Yes | Never | The bank-direct sync server is irrelevant to file-based imports. |
+
+The narrowest possible exposure on the server side is the design intent: the server holds the keys that let Plaid hand over your data, runs the pull, hands the payload to you, then forgets. The DuckDB file on your machine is where data persists.
+
+## Self-host overview
+
+`moneybin-server` is a separate project in the same GitHub organization as MoneyBin. Setup, configuration, conformance checklist, and the server-side threat model live in its own repository — consult its README directly.
+
+A self-hosted deployment needs, at a high level:
+
+- A reachable HTTPS endpoint.
+- Plaid (or future-provider) credentials, scoped to your own account.
+- An OAuth2 IdP that issues the bearer JWTs the client expects (Auth0 is the reference IdP; any IdP speaking the Device Authorization Grant + JWT bearer pattern will do).
+- A database for the server's own state — connected institutions, encrypted upstream access tokens, sync cursors.
+
+The client points at it via `MoneyBinSettings.sync.server_url` (env var `MONEYBIN_SYNC__SERVER_URL`) and cares only that the deployment honors the contract on this page.
+
+## Operational expectations
+
+What the client assumes about the transport.
+
+| Concern | Behavior |
+|---|---|
+| TLS | HTTPS required. Client uses `httpx` defaults — system CA bundle via `certifi`; no certificate pinning; `SSL_CERT_FILE` / `SSL_CERT_DIR` env vars honored. |
+| Connection reuse | One persistent `httpx.Client` per `SyncClient`. Connect timeout 10 s; read timeout 15 s for most calls, 120 s for `/sync/trigger` and connect polling. |
+| Server-side rate limits | No specified `429` / `Retry-After` shape. The client does not handle `429` specially — it surfaces as a generic `SyncAPIError`. A future revision should pin this down. |
+| Server retention | `access_token`s persist until `DELETE /institutions/{id}`. Sync cursors live server-side and survive across syncs (incremental sync depends on this). The `/sync/data` TTL cache drops the payload after a successful read. Audit-log and metrics retention are server-policy concerns. |
+| Telemetry / egress | The contract requires nothing of the server beyond these endpoints. Any phone-home behavior is documented by the deployment, not by this contract. |
+| SLO / latency | None. The 120-second client timeout on `/sync/trigger` is client-side defense, not a server guarantee. |
+| Correlation IDs | Not implemented today — no request-ID header sent or parsed. A future revision may add `X-Request-Id` or similar. |
+
+## Failure semantics
+
+What the contract guarantees when things partially fail.
+
+- **TTL atomicity for `/sync/data`.** The contract intent is that the server drops the payload only after handing a complete `200` response to the client; a mid-read drop should leave the payload available for one retry. The exact mechanism is server-implementation detail and not pinned down today. **If the client lost the payload, the safe recovery is to call `POST /sync/trigger` again** — sync is idempotent against the cursor, so re-triggering re-pulls the same incremental window without double-counting.
+- **Concurrent `/sync/trigger` calls.** No `Idempotency-Key` header, no specified lock or queue model. The client never issues concurrent triggers; treat concurrent triggers as undefined behavior in any other client until the contract pins this down.
+- **Connect session reuse.** Opening `link_url` twice is provider-side behavior (Plaid Link manages its own session). The client treats whatever terminal state `/sync/connect/status` reports as authoritative.
+- **Payload size for `/sync/data`.** Single JSON body, no chunking, no documented maximum. Initial syncs with multi-year history can be large; the client validates the whole payload in memory. Servers emitting payloads above a few hundred MB will cause client-side memory pressure — a known sharp edge.
+
+## Versioning
+
+Pre-launch. No `/v1/` URL prefix, no `MoneyBin-API-Version` header, no formal version negotiation. The contract evolves in lockstep with the client release cycle; the reference `moneybin-server` deployment is updated alongside the client.
+
+The post-launch versioning mechanism (header? path prefix? content-type?) is genuinely TBD. The intent stated in `docs/architecture.md` is additive changes preferred, deprecate-then-remove across two releases for anything breaking — but the wire-level handle for signalling a break hasn't been picked.
+
+Pydantic validation at the boundary is the only contract-drift signal the client offers today: extra fields pass silently; missing or renamed required fields surface as `SyncAPIError` on the next call.

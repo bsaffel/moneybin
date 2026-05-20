@@ -4,7 +4,7 @@
 
 - **Type:** Architecture
 - **Status:** implemented
-- **Authority:** Reference doc cited by every M2+ spec rather than re-derived. Documents what is true in the code today, plus two narrowly-scoped naming changes that land with this spec (see [Cascading edits](#cascading-edits)).
+- **Authority:** Reference doc cited by every M2+ spec rather than re-derived. Documents what is true in the code today. The two narrowly-scoped naming changes that landed with this spec are retained for context in [Cascading edits](#cascading-edits).
 
 ## Goal
 
@@ -16,7 +16,7 @@ It is **not** a feature spec. There is no implementation plan. The two narrow na
 
 ## Background
 
-The strategic review of 2026-05-04 (`private/strategy/2026-05-04-strategic-review-engineering.md` §(b)) catalogued the convergence and recommended writing this doc before the next domain spec. The data-layer table in `AGENTS.md` is now a partial map of the schemas that actually exist (three rows; the codebase uses seven going on eight). The service-layer contract is consistent across ~18 services but never written down. The sensitivity decorator and response envelope have hardened but don't have a single-page reference.
+An internal architectural review in mid-2026 catalogued the convergence and recommended writing this doc before the next domain spec. The data-layer table in `AGENTS.md` is now a partial map of the schemas that actually exist (three rows; the codebase uses seven going on eight). The service-layer contract is consistent across ~18 services but never written down. The sensitivity decorator and response envelope have hardened but don't have a single-page reference.
 
 ### Related specs
 
@@ -28,6 +28,7 @@ The strategic review of 2026-05-04 (`private/strategy/2026-05-04-strategic-revie
 - [`database-migration.md`](database-migration.md) — versioned migrations and rebaseline. Cited for connection lifecycle.
 - [`testing-scenario-comprehensive.md`](testing-scenario-comprehensive.md) — five-tier assertion taxonomy and bug-report recipe. Cited for scenario fixture conventions.
 - [`transaction-curation.md`](transaction-curation.md) — sibling M2A entry spec; populates `app.*` heavily and defines the curation-presentation pattern (flat `app.*` tables surfaced as nested `LIST(STRUCT(...))` columns on `core.fct_*`).
+- [`extension-contracts.md`](extension-contracts.md) — contributor-facing surface for reports, analysis packages, and providers. Defines the `<pkg>_*` prefix discipline that lets analysis packages contribute tables to `raw`, `prep`, `core`, `app`, and `reports` without colliding with the canonical layout.
 
 ## Architecture Invariants
 
@@ -41,7 +42,7 @@ Every service, MCP tool, and CLI command in MoneyBin obeys these. Reviewers shou
 6. **Parameterized SQL.** All values are bound with `?` placeholders; identifiers are validated against a `TableRef` allowlist or quoted with `sqlglot`. Inline f-string SQL is reserved for `noqa: S608`-annotated cases with a justification (test fixtures, sqlglot-quoted identifiers from trusted callers). See `.claude/rules/security.md`.
 7. **No PII in logs.** Log record counts, IDs, and status codes; never amounts, descriptions, or account numbers. `SanitizedLogFormatter` is a runtime safety net, not a license to be careless. See `.claude/rules/security.md` "PII in Logs and Errors".
 8. **Derivations live in SQLMesh, not in services.** Every conceptual aggregation, rollup, or alternate grain that callers need is a first-class SQLMesh model named for the concept (`core.fct_balances_daily`, `reports.net_worth`, future `core.fct_holdings_daily`). Services read from those models — or, when transient, compute on demand by querying them. **Services never snapshot derived state into `app.*` and re-read it.** The narrow exception is decision audit rows: `app.match_decisions` records *what was decided* (and by whom, when, against which candidates) — not *what the matcher would compute now*. Services that violate this invariant turn cache invalidation into a bug class and silently diverge from the source of truth in `core`. This is what makes SQLMesh a first-class surface in MoneyBin (see [§MCP/CLI/SQL Symmetry](#mcpclisql-symmetry) and [§SQLMesh Layer Conventions](#sqlmesh-layer-conventions)).
-9. **Categories are referenced by `category_id` FK.** Seven `app.*` tables — `transaction_categories`, `budgets`, `user_merchants`, `transaction_splits`, `categorization_rules`, `proposed_rules`, and `rule_deactivations` (as `new_category_id`) — reference `core.dim_categories.category_id`. The legacy `(category, subcategory)` text columns are display snapshots only during the Phase 1 dual-write window; readers prefer the FK-resolved name (via `core.dim_categories` join) and fall back to the text snapshot for orphaned rows whose target category was deleted or renamed before the row was backfilled.
+9. **Categories are referenced by `category_id` FK.** Seven `app.*` tables — `transaction_categories`, `budgets`, `user_merchants`, `transaction_splits`, `categorization_rules`, `proposed_rules`, and `rule_deactivations` (as `new_category_id`) — reference `core.dim_categories.category_id` (shipped via PR #174; migrations V014 / V015). The legacy `(category, subcategory)` text columns are display snapshots only during the Phase 1 dual-write window; readers prefer the FK-resolved name (via `core.dim_categories` join) and fall back to the text snapshot for orphaned rows whose target category was deleted or renamed before the row was backfilled.
 
 ## Data Layer
 
@@ -49,11 +50,11 @@ MoneyBin uses eight schemas under this spec — seven that exist today plus `rep
 
 | Schema | Materialization | Mutated by | Read by | Allowed prefixes | Purpose |
 |---|---|---|---|---|---|
-| `raw` | Tables | Python loaders (`src/moneybin/loaders/`); managed-write MCP tools | SQLMesh staging models | source-named (`tabular_*`, `ofx_*`, `w2_*`, `manual_transactions`) | Untouched data from each source. Re-importable from the original file. |
-| `prep` | Views | SQLMesh transforms | SQLMesh core models | `stg_<source>__<entity>`, `int_<entity>__<transformation>` | Light cleaning, type casting, source-system unioning. Internal to the pipeline; not exposed to consumers. |
-| `core` | Tables (canonical) and Views (derived-grain) | SQLMesh transforms | All consumers (services, MCP, CLI, reports) | `fct_<entity>` (event grain or alternate event grain), `dim_<entity>` (slowly-changing entity), `bridge_<entity>` (M:N relationship) | Canonical, deduplicated, multi-source. **One canonical table per real-world entity at its primary grain.** Alternate-grain facts use `fct_*` with a disambiguating name (`fct_transactions` header grain, `fct_transaction_lines` line grain). |
-| `app` | Tables | Services (write); migrations (DDL); managed-write MCP tools | SQLMesh `dim_*` models (joins for resolved views); services (reads) | flat tables named for the entity: `account_settings`, `transaction_notes`, `transaction_tags`, `match_decisions`, `categorization_rules`, `versions`, `schema_migrations`, `audit_log`, etc. | User-state and application-managed metadata. **Mutable. Not derivable from raw.** Recovery is the responsibility of the `db backup` CLI surface, not the pipeline. |
-| `reports` | Views (typically) | SQLMesh transforms | CLI `reports *` commands; MCP `reports_*` tools; future HTTP `/reports/*` | `<entity>` matching the CLI report name (`networth`, `spending`, `budget`, future `portfolio`, `cashflow`) | Curated presentation models, one per report surface. **Read-only by design.** Symmetric with the CLI/MCP `reports` namespace per `moneybin-cli.md` v2. |
+| `raw` | Tables | Python loaders (`src/moneybin/loaders/`); managed-write MCP tools | SQLMesh staging models | source-named (`tabular_*`, `ofx_*`, `plaid_*`, `manual_transactions`); plus `<pkg>_*` for analysis-package contributions per [extension-contracts.md](extension-contracts.md) | Untouched data from each source. Re-importable from the original file. |
+| `prep` | Views | SQLMesh transforms | SQLMesh core models | `stg_<source>__<entity>`, `int_<entity>__<transformation>`; plus `stg_<pkg>__<entity>` for analysis-package contributions per [extension-contracts.md](extension-contracts.md) | Light cleaning, type casting, source-system unioning. Internal to the pipeline; not exposed to consumers. |
+| `core` | Tables (canonical) and Views (derived-grain) | SQLMesh transforms | All consumers (services, MCP, CLI, reports) | `fct_<entity>` (event grain or alternate event grain), `dim_<entity>` (slowly-changing entity), `bridge_<entity>` (M:N relationship); plus `<pkg>_*` for analysis-package contributions per [extension-contracts.md](extension-contracts.md) | Canonical, deduplicated, multi-source. **One canonical table per real-world entity at its primary grain.** Alternate-grain facts use `fct_*` with a disambiguating name (`fct_transactions` header grain, `fct_transaction_lines` line grain). |
+| `app` | Tables | Services (write); migrations (DDL); managed-write MCP tools | SQLMesh `dim_*` models (joins for resolved views); services (reads) | flat tables named for the entity: `account_settings`, `transaction_notes`, `transaction_tags`, `match_decisions`, `categorization_rules`, `versions`, `schema_migrations`, `audit_log`, etc.; plus `<pkg>_*` for analysis-package contributions per [extension-contracts.md](extension-contracts.md) | User-state and application-managed metadata. **Mutable. Not derivable from raw.** Recovery is the responsibility of the `db backup` CLI surface, not the pipeline. |
+| `reports` | Views (typically) | SQLMesh transforms | CLI `reports *` commands; MCP `reports_*` tools; future HTTP `/reports/*` | `<entity>` matching the CLI report name (`networth`, `spending`, `budget`, future `portfolio`, `cashflow`); plus `<pkg>_*` for analysis-package contributions per [extension-contracts.md](extension-contracts.md) | Curated presentation models, one per report surface. **Read-only by design.** Symmetric with the CLI/MCP `reports` namespace per `moneybin-cli.md` v2. |
 | `meta` | Tables / Views | SQLMesh transforms | Reconciliation tooling; provenance queries; freshness probes | `fct_<entity>_provenance` (today: `fct_transaction_provenance`); `fct_<entity>_lineage` reserved; `model_freshness` | Provenance and pipeline metadata. Cross-source row lineage (`fct_*_provenance`) and model-level freshness (`model_freshness`, wrapping SQLMesh state). |
 | `seeds` | Tables | SQLMesh seeds (from CSV) | SQLMesh transforms; services (read-only reference data) | `<entity>` (e.g., `categories`) | Reference data shipped in-repo. Rebuilt from CSV on `sqlmesh seed`. |
 | `synthetic` | Tables | Synthetic data generator (`moneybin synthetic generate`) | Scenario tests | `ground_truth`, persona-named tables | Test scenario tables created on demand. Excluded from production builds. |
@@ -70,6 +71,7 @@ MoneyBin uses eight schemas under this spec — seven that exist today plus `rep
 5. **Multi-source unioning happens in `core`.** Core models `UNION ALL` from every staging source with a `source_type` column. Per `.claude/rules/database.md` "Column Name Consistency Across Layers".
 6. **Sign convention:** negative = expense, positive = income. `DECIMAL(18,2)` for money amounts, `DECIMAL(18,8)` for quantities and unit prices, `DATE` for dates. Per `.claude/rules/database.md` "Anti-Patterns".
 7. **Money convention.** Every monetary column carries a currency column at the same grain. The pair is inseparable: no consumer should read an amount without its currency. When a row carries multiple monetary perspectives (e.g., transaction-currency + account-currency + display-currency post-multi-currency landing), each amount has its own currency column. Service-layer return types follow the same rule — a `Decimal` field representing money is paired with an explicit currency field on the same dataclass, never inferred from context.
+8. **Analysis packages contribute under a single prefix across layers.** A package named `<pkg>` may contribute tables to `raw.<pkg>_*`, `prep.stg_<pkg>__*`, `core.<pkg>_*`, `app.<pkg>_*`, and `reports.<pkg>_*` — subject to its manifest-declared capabilities. The prefix is load-bearing: registration refuses to start if a package's SQL writes outside its declared prefix. The layer roles above (canonical vs. user-state vs. presentation) apply identically to package-contributed tables. Per [`extension-contracts.md`](extension-contracts.md).
 
 ```mermaid
 flowchart LR
@@ -164,7 +166,7 @@ class WhateverService:
         """Writes to app.* (or raw.*). Returns a typed result. Raises classified UserError."""
 ```
 
-Concrete reference: `NetworthService` (`src/moneybin/services/networth_service.py`) is a clean read-only example; `CategorizationService` is a clean transactional example.
+Concrete reference: `NetworthService` (`src/moneybin/services/networth_service.py`) is a clean read-only example; `CategorizationService` (`src/moneybin/services/categorization/__init__.py`, a façade over the `matcher` / `applier` / `orchestrator` modules in the same package, PR #155) is a clean transactional example.
 
 ### What every consumer can assume
 
@@ -202,7 +204,7 @@ Same noun ordering across all three; only the verb position and separators diffe
 
 1. **`@mcp_tool(sensitivity=...)`** decorates every MCP tool. Accepts `sensitivity` (`"low"` / `"medium"` / `"high"`) and optional `domain` (for progressive disclosure). Wraps the tool body in: privacy logging (`log_tool_call`), the 30s timeout guard, classified-exception → error-envelope conversion, and a final guard that the body returned a `ResponseEnvelope`. Source: `src/moneybin/mcp/decorator.py`.
 
-2. **`ResponseEnvelope`** is the common response shape across MCP tools and CLI `--output json`. Fields: `summary` (counts, truncation flag, sensitivity tier, display currency), `data` (list of records or single dict), `actions` (next-step hints), and optional `error` (classified `UserError`). Decimal values serialize as strings to avoid float imprecision. Source: `src/moneybin/protocol/envelope.py`. Constructors: `build_envelope()`, `build_error_envelope()`, `not_implemented_envelope()`.
+2. **`ResponseEnvelope`** is the common response shape across MCP tools and CLI `--output json`. Fields: `summary` (counts, truncation flag, sensitivity tier, display currency), `data` (list of records or single dict), `actions` (next-step hints), and optional `error` (classified `UserError`). Decimal values serialize as JSON numbers — `_DecimalEncoder.default()` returns `float(o)`, which is safe because float64's ~15.95 significant digits comfortably cover personal-finance magnitudes (the docstring on the encoder spells this out). Source: `src/moneybin/protocol/envelope.py`. Constructors: `build_envelope()`, `build_error_envelope()`, `not_implemented_envelope()`.
 
 3. **Privacy middleware** (`src/moneybin/mcp/privacy.py`) provides:
    - **Sensitivity tiers** — declared by every tool via the decorator. Per [`mcp-architecture.md`](mcp-architecture.md) §5, `low` requires no consent, `medium` requires `mcp-data-sharing` consent and degrades to aggregates without it, `high` requires consent + cloud masking. (V1 only logs; full consent enforcement lands in the privacy framework specs.)
@@ -369,7 +371,7 @@ gates:
 
 ### Conventions
 
-- **YAML, not Python.** Fixture and expectation files are YAML so non-engineering contributors (and a future "send us a repro" community workflow) can author them. Per `private/strategy/` notes on community contribution model.
+- **YAML, not Python.** Fixture and expectation files are YAML so non-engineering contributors (and a future "send us a repro" community workflow) can author them.
 - **Independent expectations.** Expected values are derived from the input fixture (counted by hand), the persona/generator config (deterministic formula), or hand-authored ground truth written before running the pipeline. **Never** observe-and-paste. Per `.claude/rules/testing.md` "Scenario Expectations Must Be Independently Derived".
 - **Every scenario declares its tier coverage** against the five-tier taxonomy (structural invariants, semantic correctness, pipeline behavior, distribution/quality, operational). Per [`testing-scenario-comprehensive.md`](testing-scenario-comprehensive.md) R1 and R2.
 - **Negative expectations are required wherever positive expectations exist.** A "these N records should match" expectation is incomplete without a paired "these M records should *not* match." Otherwise the test only catches under-matching, not over-matching.
@@ -401,13 +403,13 @@ Owned by `multi-currency.md` (M3). Open: do `reports.*` rollups carry one `displ
 
 ## Cascading Edits
 
-Two narrow naming changes ride along with this spec landing. Both are mechanical and uncontroversial; called out here so reviewers see the full surface.
+Two narrow naming changes rode along with this spec landing — both shipped. Retained for historical context.
 
-1. **`core.agg_net_worth` → `reports.net_worth`.** New `reports` schema is added to `src/moneybin/schema.py`. The SQLMesh model at `sqlmesh/models/core/agg_net_worth.sql` moves to `sqlmesh/models/reports/net_worth.sql`. `TableRef.AGG_NET_WORTH` is replaced by `TableRef.REPORTS_NET_WORTH`. `NetworthService` updates its three SQL references. Privacy middleware's `_WRITABLE_SCHEMAS` is unchanged — `reports.*` is read-only by design and never appears in managed-write validation. **This migration is owned by [`reports-recipe-library.md`](reports-recipe-library.md)** (the inaugurating implementation of the `reports.*` schema) and lands as part of that spec's first PR.
+1. **`core.agg_net_worth` → `reports.net_worth`.** Shipped via [`reports-recipe-library.md`](reports-recipe-library.md): the `reports` schema lives in `src/moneybin/schema.py`, the SQLMesh model is `sqlmesh/models/reports/net_worth.sql`, `TableRef.REPORTS_NET_WORTH` is the canonical reference (`src/moneybin/tables.py`), and `NetworthService` reads from it. Privacy middleware's `_WRITABLE_SCHEMAS` is unchanged — `reports.*` is read-only by design and never appears in managed-write validation.
 
-2. **`core.vw_transaction_lines` → `core.fct_transaction_lines`** in [`transaction-curation.md`](transaction-curation.md). One-line edit in that spec; the architecture spec triggers the convention but the actual edit lands as part of the `transaction-curation.md` implementation PR (per the prefix-describes-grain rule in §SQLMesh Layer Conventions).
+2. **`core.vw_transaction_lines` → `core.fct_transaction_lines`** in [`transaction-curation.md`](transaction-curation.md). Shipped: `TableRef.FCT_TRANSACTION_LINES` and `sqlmesh/models/core/fct_transaction_lines.sql` carry the new name.
 
-3. **AGENTS.md "Architecture: Data Layers" table** is updated alongside this spec to add `app` and `reports` rows and link here for the full layer reference. AGENTS.md stays the at-a-glance orientation; this spec is the canonical reference.
+3. **AGENTS.md "Architecture: Data Layers" table** now includes `app` and `reports` rows and links here for the full layer reference. AGENTS.md stays the at-a-glance orientation; this spec is the canonical reference.
 
 ## References
 
@@ -421,6 +423,7 @@ Two narrow naming changes ride along with this spec landing. Both are mechanical
 - [`database-migration.md`](database-migration.md) — Versioned migrations, rebaseline, SQLMesh version detection.
 - [`testing-scenario-comprehensive.md`](testing-scenario-comprehensive.md) — Five-tier assertion taxonomy and bug-report recipe.
 - [`transaction-curation.md`](transaction-curation.md) — `app.*` heavy populator; curation-presentation pattern via nested types on `core.fct_*`.
+- [`extension-contracts.md`](extension-contracts.md) — Contributor-facing surface for reports, analysis packages, and providers; defines `<pkg>_*` prefix conventions for package contributions to `raw`, `prep`, `core`, `app`, `reports`.
 
 ### Rules
 
@@ -431,10 +434,6 @@ Two narrow naming changes ride along with this spec landing. Both are mechanical
 - `.claude/rules/testing.md` — Pytest patterns, fixtures, scenario expectation independence rule.
 - `.claude/rules/identifiers.md` — Content hashes, truncated UUIDs, source IDs, semantic slugs.
 - `.claude/rules/documentation.md` — Diagram conventions (Mermaid over ASCII).
-
-### Strategic context
-
-- `private/strategy/2026-05-04-strategic-review-engineering.md` §(b) — Architectural review that catalogued the 12 primitives and recommended this spec.
 
 ### Source files (primitives)
 
@@ -447,5 +446,7 @@ Two narrow naming changes ride along with this spec landing. Both are mechanical
 - `src/moneybin/mcp/privacy.py` — `Sensitivity` enum, `validate_read_only_query`, `validate_managed_write`, `truncate_result`.
 - `src/moneybin/observability.py` — `setup_observability`, `tracked`, `track_duration`, `flush_metrics`.
 - `src/moneybin/log_sanitizer.py` — `SanitizedLogFormatter`.
+- `src/moneybin/privacy/taxonomy.py` — `DataClass` / `Tier` registry; column-level classification source of truth (PR #169, see `privacy-data-classification.md`).
+- `src/moneybin/privacy/comment_sync.py` — `sync_classification_comments()` writes DataClass sigils into DuckDB column comments.
 - `src/moneybin/services/networth_service.py` — Reference read-only service.
-- `src/moneybin/services/categorization_service.py` — Reference transactional service.
+- `src/moneybin/services/categorization/` — Reference transactional service (façade in `__init__.py`; split into `matcher.py`, `applier.py`, `orchestrator.py` per PR #155).

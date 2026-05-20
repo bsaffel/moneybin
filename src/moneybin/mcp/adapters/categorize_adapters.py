@@ -12,7 +12,6 @@ from moneybin.privacy.payloads.categorize import (
     AutoAcceptPayload,
     AutoReviewPayload,
     AutoReviewProposalRow,
-    AutoStatsPayload,
 )
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 
@@ -20,7 +19,6 @@ if TYPE_CHECKING:
     from moneybin.services.auto_rule_service import (
         AutoConfirmResult,
         AutoReviewResult,
-        AutoStatsResult,
     )
 
 
@@ -66,17 +64,4 @@ def auto_accept_envelope(
     return build_envelope(
         data=payload,
         sensitivity="medium",
-    )
-
-
-def auto_stats_envelope(result: AutoStatsResult) -> ResponseEnvelope[AutoStatsPayload]:
-    """Build a ResponseEnvelope for the transactions_categorize_auto_stats tool."""
-    payload = AutoStatsPayload(
-        active_auto_rules=result.active_auto_rules,
-        pending_proposals=result.pending_proposals,
-        transactions_categorized=result.transactions_categorized,
-    )
-    return build_envelope(
-        data=payload,
-        sensitivity="low",
     )

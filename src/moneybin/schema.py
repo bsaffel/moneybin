@@ -51,7 +51,6 @@ _SCHEMA_FILES: list[str] = [
     "raw_plaid_accounts.sql",
     "raw_plaid_balances.sql",
     "raw_plaid_transactions.sql",
-    "raw_w2_forms.sql",
     "raw_tabular_transactions.sql",
     "raw_tabular_accounts.sql",
     "raw_import_log.sql",

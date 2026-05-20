@@ -26,7 +26,9 @@ logger = logging.getLogger(__name__)
 
 def reports_balance_drift(
     account: str | None = typer.Option(
-        None, "--account", help="Filter to account name"
+        None,
+        "--account",
+        help="Filter to an account: accepts account_id or display_name (ambiguous matches error)",
     ),
     status: str = typer.Option(
         "all", "--status", help="drift | warning | clean | no-data | all"

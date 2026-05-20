@@ -1,8 +1,6 @@
 # MCP Architecture & Design
 
-> Last updated: 2026-04-17
-> Status: Ready
-> Companions: [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) (AI data flow tiers, consent model), [`moneybin-mcp.md`](moneybin-mcp.md) (concrete tool/prompt/resource definitions), [ADR-003: MCP Primary Interface](../decisions/003-mcp-primary-interface.md)
+> Companions: [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) (AI data flow tiers, consent model), [`moneybin-mcp.md`](moneybin-mcp.md) (concrete tool/prompt/resource definitions), [`extension-contracts.md`](extension-contracts.md) (contributor-facing surface — packages and reports register tools into this server via entry points), [ADR-003: MCP Primary Interface](../decisions/003-mcp-primary-interface.md)
 > Supersedes: [`mcp-tier1-tools.md`](mcp-tier1-tools.md) (prototype-era tool list), [`archived/mcp-read-tools.md`](archived/mcp-read-tools.md), [`archived/mcp-write-tools.md`](archived/mcp-write-tools.md)
 
 ## Purpose
@@ -13,7 +11,7 @@ Together they replace the prototype-era MCP specs (read tools, write tools, tier
 
 ## Status
 
-ready
+in-progress
 
 ## Mission
 
@@ -119,22 +117,49 @@ Tools use a hybrid namespace that reflects the most natural way an AI or user wo
 | `import.*` | Data ingestion | File import, status, source management |
 | `categorize.*` | Categorization pipeline | Rules, merchant mappings, categorization, auto-rule review |
 | `budget.*` | Budget tracking | Targets, status, rollovers |
-| `tax.*` | Tax information | W-2 data, future: capital gains, deductions |
+| `tax.*` | Tax information | (future; tax data ingestion deferred — no tools registered) |
 | `privacy.*` | Privacy & consent | Consent status, grants, revocations, audit log |
 | `overview.*` | Cross-domain summaries | Data status, financial health snapshot, system info |
 
 ### Namespace principles
 
 1. **One namespace per concern, not per entity.** `import` handles all file types — there's no `import_ofx`, `import_csv`, `import_pdf`. The tool figures out the file type or accepts a hint parameter.
-2. **Read and write in the same namespace.** `categorize_apply` (write) lives alongside `categorize_rules` (read). The verb in the tool name distinguishes intent.
-3. **No CRUD naming.** Tools are named for what the user wants to accomplish, not the database operation. `categorize_apply` not `create_transaction_categories`. `transactions_correct` not `update_transaction`.
+2. **Read and write in the same namespace.** `transactions_categorize_commit` (write) lives alongside the read paths in the same `transactions_*` taxonomy. The verb in the tool name distinguishes intent.
+3. **No CRUD naming.** Tools are named for what the user wants to accomplish, not the database operation. `transactions_categorize_commit` not `create_transaction_categories`; `accounts_set` not `update_account`.
 4. **New domains added per quarter.** Q2 adds `investments.*`. Q4's multi-currency is a crosscutting concern handled at the service layer (amounts, conversions, rate lookups), not a separate tool namespace.
 
 ### Naming conventions
 
-- **Noun = query.** `spending_summary`, `accounts_balances`, `categorize_rules` — returns data.
-- **Verb = action.** `categorize_apply`, `transactions_correct`, `import_file` — mutates state.
-- **Underscore separator.** `spending_summary`, `categorize_apply`. The MCP spec (rev 2025-11-25) and SEP-986 permit dot-separated namespaces (e.g. `spending.summary`), and dots were the original convention here. **Anthropic's and OpenAI's first-party clients enforce a stricter `^[a-zA-Z0-9_-]{1,64}$` regex** ([issue #1063](https://github.com/modelcontextprotocol/modelcontextprotocol/issues/1063)) and reject dots, so the portable subset is `[A-Za-z0-9_-]`. Reconsider if/when major clients align with SEP-986.
+- **Noun = query.** `reports_spending`, `accounts_balances`, `transactions_review` — returns data. No `_list` suffix (PR #172); `_get` is reserved for single-entity-by-id reads (`accounts_get(account_id)`). See `.claude/rules/surface-design.md` "Verb conventions". `transactions_get` is a defended exception: filtered/paginated collection query rather than single-entity — the name was kept for "fetch the transactions I care about" intent over strict shape conformance; documented inline in its description.
+- **Verb = action.** `transactions_categorize_commit`, `refresh_run`, `import_files` — mutates state.
+- **Underscore separator.** `reports_spending`, `transactions_categorize_commit`. The MCP spec (rev 2025-11-25) and SEP-986 permit dot-separated namespaces (e.g. `reports.spending`), and dots were the original convention here. **Anthropic's and OpenAI's first-party clients enforce a stricter `^[a-zA-Z0-9_-]{1,64}$` regex** ([issue #1063](https://github.com/modelcontextprotocol/modelcontextprotocol/issues/1063)) and reject dots, so the portable subset is `[A-Za-z0-9_-]`. Reconsider if/when major clients align with SEP-986.
+
+### Tool registration paths
+
+Tools land on the FastMCP server through two discovery paths. Both will produce the same registered shape — the agent cannot distinguish them, and the surface-discipline, taxonomy, and sensitivity rules above apply identically to each.
+
+1. **In-tree imports.** Core MoneyBin tools live under `src/moneybin/mcp/` and are wired in by explicit `register_*_tools(mcp)` calls in `mcp/server.py`. This is the path every tool documented in `moneybin-mcp.md` takes today and the only path active at runtime as of 2026-05-20.
+2. **Entry-points discovery (planned, pending [`extension-contracts.md`](extension-contracts.md)).** [`extension-contracts.md`](extension-contracts.md) is currently `draft`; entry-points discovery is documented here for design alignment but is NOT active at runtime until the spec reaches `in-progress` and the framework implementation lands (Plan 2 of the extension-contracts implementation graph). When it ships: Analysis Packages and standalone Reports will declare themselves under the `moneybin.packages` setuptools entry-point group. At server startup, after the in-tree `register_*_tools()` calls complete, the framework will enumerate `moneybin.packages` entry points (in-tree-declared and pip-installed alike), load each manifest, validate capabilities and naming, and invoke the package's `tools.register(mcp)` hook. For Reports specifically, the registration trinity (`TableRef` constant, MCP tool, CLI command) will be auto-generated from the view's structured comments — see `extension-contracts.md` §"Auto-generation of the registration trinity".
+
+The naming conventions above are load-bearing for path 2: a package named `assets` may only register tools prefixed `assets_*`, and registration will refuse to start when a package's tool names violate its declared prefix. This is how the taxonomy will stay coherent as the registered set grows beyond what `mcp/server.py` imports directly.
+
+```mermaid
+flowchart LR
+    intree[In-tree modules<br/>src/moneybin/mcp/*]
+    pkg[Analysis Packages<br/>pip-installed or in-tree]
+    rep[Standalone Reports<br/>pip-installed or in-tree]
+    ep["moneybin.packages<br/>entry points"]
+    server["FastMCP server<br/>register_*_tools() + entry-point loop"]
+    surface[Registered tool surface]
+
+    intree -->|explicit register calls| server
+    pkg --> ep
+    rep --> ep
+    ep -->|enumerate + validate + register| server
+    server --> surface
+```
+
+For the consuming agent there is one surface, governed by one set of rules. The two paths exist for the contributor — they determine *who* can add a tool and through what review gate — not for the runtime.
 
 ### Tool disclosure: full surface, taxonomy-led
 
@@ -189,7 +214,7 @@ Multi-currency is not a tool domain. It surfaces as:
 - A **parameter** on existing tools (e.g., `detail` level that includes native currency alongside home-currency amounts).
 - **Response metadata** (`display_currency`, `native_currencies` — see section 4).
 - A **service-layer concern** (conversion at query time using cached exchange rates).
-- **Rate overrides** handled via `transactions_correct` as a correction on a specific transaction.
+- **Rate overrides** handled via the curation taxonomy (a per-transaction note / split / tag, or a manual reversing transaction via `transactions_create`) — `transactions_correct` was retired in favor of the curation tools per `transaction-curation.md`.
 
 ---
 
@@ -204,10 +229,10 @@ Tools that operate on collections accept and return lists in a single call. The 
 3. **Write tool** accepts the full list of decisions in one call.
 
 ```
-Turn 1: categorize_uncategorized(limit=50)
-        -> returns 50 transactions with descriptions, amounts, dates, suggested categories
+Turn 1: transactions_categorize_assist(limit=50)
+        -> returns 50 redacted candidate transactions with descriptions, amounts, dates, suggested categories
 
-Turn 2: categorize_apply([{id: "tx_1", category: "groceries"}, {id: "tx_2", category: "dining"}, ...])
+Turn 2: transactions_categorize_commit([{id: "tx_1", category: "groceries"}, {id: "tx_2", category: "dining"}, ...])
         -> applies all 50 categorizations, returns summary: {applied: 48, skipped: 2, errors: [...]}
 ```
 
@@ -229,8 +254,8 @@ Every tool returns a consistent envelope:
   },
   "data": [ ... ],
   "actions": [
-    "Use spending_by_category for category breakdown",
-    "Use transactions_search with narrower date range for full results"
+    "Use reports_spending(category=\"Groceries\") to drill into a specific category",
+    "Use transactions_get(date_from=..., date_to=...) for row-level transactions in this window"
   ]
 }
 ```
@@ -287,6 +312,8 @@ Key properties:
 
 Tools return a configurable number of results (default varies by tool, respects `MAX_ROWS`). For large result sets:
 
+> **Note (2026-05-17):** the read-tool catalog uses noun-only names — `transactions_review`, `reports_spending`, `accounts_balance_history`. The earlier `_list` suffix was dropped in PR #172; `_get` is reserved for single-entity-by-id reads (`transactions_get`, `accounts_get`). See `.claude/rules/surface-design.md` "Verb conventions".
+
 - **`limit`** and **`offset`** parameters on read tools that can return unbounded results.
 - **`summary.has_more: true`** signals more data is available.
 - **Prefer filtering over paging.** Tools expose rich filter parameters (date ranges, amount thresholds, categories, accounts) so the AI narrows the query rather than paging through everything. A well-filtered query should rarely need page 2.
@@ -315,9 +342,9 @@ Every tool declares its **maximum data sensitivity** — the highest sensitivity
 
 | Sensitivity | Data characteristics | Consent required | Example tools |
 |---|---|---|---|
-| `low` | Aggregates, counts, category labels, structural metadata | None | `spending_summary`, `overview_status`, `accounts` |
-| `medium` | Row-level data: descriptions, amounts, dates, merchant names | `mcp-data-sharing` (tier-2, persistent) | `transactions_search`, `spending_merchants`, `categorize_uncategorized` |
-| `high` | Responses that include critical-tier fields (account numbers, routing numbers) — masked for cloud backends, unmaskable only in verified-local mode | `mcp-data-sharing` (tier-2) + masking invariant | `accounts_details` |
+| `low` | Aggregates, counts, category labels, structural metadata | None | `reports_spending`, `system_status`, `accounts` |
+| `medium` | Row-level data: descriptions, amounts, dates, merchant names | `mcp-data-sharing` (tier-2, persistent) | `transactions_get`, `reports_merchants`, `transactions_categorize_assist` |
+| `high` | Responses that include critical-tier fields (account numbers, routing numbers) — masked for cloud backends, unmaskable only in verified-local mode | `mcp-data-sharing` (tier-2) + masking invariant | `accounts_get` |
 
 ### Sensitivity behavior by tier
 
@@ -391,7 +418,7 @@ MCP prompts are guided workflows — structured templates that help the AI walk 
 
 **Design principles:**
 
-1. **Workflow-oriented, not tool-oriented.** A prompt represents a user goal ("review my monthly finances"), not a tool wrapper ("call spending_summary with these params"). The prompt orchestrates multiple tools.
+1. **Workflow-oriented, not tool-oriented.** A prompt represents a user goal ("review my monthly finances"), not a tool wrapper ("call reports_spending with these params"). The prompt orchestrates multiple tools.
 2. **Opinionated sequence.** Each prompt defines the order of operations, what data to gather, what to present, and when to ask the user for input. The AI follows the script rather than improvising.
 3. **Composable with tools.** Prompts reference tools by name. When tools evolve (new parameters, richer responses), prompts automatically benefit.
 4. **Few, high-value.** Prompts exist for workflows that are common enough to standardize and complex enough that an AI might not discover the right tool composition on its own.
@@ -437,25 +464,44 @@ The MCP server and CLI are co-equal consumers of the same service layer. The sym
 
 ```python
 # Service layer (shared)
-class SpendingService:
-    def summary(self, months: int, account_id: str | None) -> SpendingSummary: ...
+class ReportsService:
+    def spending_trend(
+        self,
+        from_month: str | None,
+        to_month: str | None,
+        category: str | None,
+        compare: str,
+    ) -> tuple[list[str], list[tuple]]: ...
 
 
 # MCP tool (thin wrapper)
 @mcp_tool(sensitivity="low")
-def spending_summary(months: int = 3, account_id: str | None = None) -> dict:
-    service = SpendingService(get_db())
-    return service.summary(months, account_id).to_response()
+def reports_spending(
+    from_month: str | None = None,
+    to_month: str | None = None,
+    category: str | None = None,
+    compare: str = "yoy",
+) -> ResponseEnvelope:
+    with get_database(read_only=True) as db:
+        cols, rows = ReportsService(db).spending_trend(
+            from_month, to_month, category, compare
+        )
+    return envelope(cols, rows)
 
 
 # CLI command (thin wrapper)
-@spending_app.command("summary")
-def spending_summary_cmd(
-    months: int = typer.Option(3), account_id: str | None = None
+@reports_app.command("spending")
+def reports_spending_cmd(
+    from_month: str | None = None,
+    to_month: str | None = None,
+    category: str | None = None,
+    compare: str = "yoy",
 ) -> None:
-    service = SpendingService(get_db())
-    result = service.summary(months, account_id)
-    render_table(result)
+    with get_database(read_only=True) as db:
+        cols, rows = ReportsService(db).spending_trend(
+            from_month, to_month, category, compare
+        )
+    render_table(cols, rows)
 ```
 
 ### What symmetry means in practice
@@ -474,57 +520,29 @@ The `transactions_categorize_commit` MCP tool has CLI parity via `moneybin trans
 ### What symmetry does NOT mean
 
 - **Not identical UX.** The CLI uses tables, progress bars, and icons. MCP returns structured data. Same data, different presentation.
-- **Not identical invocation.** `moneybin reports spending summary --months 3` vs `reports_spending_summary(months=3)`. The CLI uses Typer's conventions; MCP uses tool-call conventions.
+- **Not identical invocation.** `moneybin reports spending --from 2025-01` vs `reports_spending(from_month="2025-01")`. The CLI uses Typer's conventions (short `--from`/`--to`); MCP uses tool-call conventions (full `from_month`/`to_month` keys).
 - **Not a generated surface.** The CLI is hand-crafted for human ergonomics. It's not auto-generated from MCP tool schemas. Both surfaces are independently authored but share the service layer.
 
 ### CLI command structure
 
-The CLI mirrors the MCP namespace as command groups:
+The CLI mirrors the MCP namespace as top-level command groups (no `data` subgroup — `transform`, `import`, and `sync` are siblings under `moneybin`). The authoritative surface is [`moneybin-cli.md`](moneybin-cli.md); the shape today:
 
+```mermaid
+flowchart LR
+    moneybin --> reports
+    moneybin --> accounts
+    moneybin --> transactions
+    moneybin --> categories
+    moneybin --> merchants
+    moneybin --> import_grp[import]
+    moneybin --> sync
+    moneybin --> refresh
+    moneybin --> transform
+    moneybin --> system
+    moneybin --> db
 ```
-moneybin
-+-- spending
-|   +-- summary
-|   +-- by-category
-|   +-- merchants
-|   +-- compare
-+-- cashflow
-|   +-- summary
-|   +-- income
-+-- accounts
-|   +-- list
-|   +-- balances
-|   +-- details
-|   +-- net-worth
-+-- transactions
-|   +-- search
-|   +-- correct
-|   +-- annotate
-+-- import
-|   +-- file
-|   +-- status
-+-- categorize
-|   +-- apply
-|   +-- uncategorized
-|   +-- rules
-|   +-- auto-review
-+-- budget
-|   +-- set
-|   +-- status
-|   +-- summary
-+-- tax
-|   +-- w2
-+-- privacy
-|   +-- status
-|   +-- grant
-|   +-- revoke
-|   +-- audit-log
-+-- overview
-|   +-- status
-|   +-- health
-+-- data
-    +-- transform apply  (existing)
-```
+
+Each top-level group exposes the verbs from `.claude/rules/surface-design.md` (`_set`, `_create`, `_delete`, `_run`, `_get`, `_status`, `_history`, `_summary`). See [`moneybin-cli.md`](moneybin-cli.md) for the full per-group subcommand list and [`moneybin-capabilities.md`](moneybin-capabilities.md) for the CLI↔MCP capability map.
 
 ### Metadata for AI consumers
 
@@ -534,7 +552,7 @@ Both surfaces carry enough metadata for AI tools (Claude Code, Codex) to use the
 - **Structured output flag** — `--output json` on any CLI command returns the same response envelope as the MCP tool, enabling AI tools that prefer CLI to parse results programmatically.
 - **Exit codes** are consistent and documented: 0 = success, 1 = error, 2 = consent required.
 
-`--output json` means an AI using Claude Code can call `moneybin reports spending summary --months 3 --output json` and get the exact same response envelope as the MCP tool. No parsing heuristics needed.
+`--output json` means an AI using Claude Code can call `moneybin reports spending --months 3 --output json` and get the exact same response envelope as the MCP tool. No parsing heuristics needed.
 
 ---
 
@@ -546,7 +564,7 @@ This spec does not define MCP Apps — that is the immediate follow-on spec. But
 
 1. **Structured data, never pre-formatted.** Tools return typed fields (`amount: 1245.67`, `date: "2026-04-15"`) not display strings (`"$1,245.67"`, `"April 15, 2026"`). Formatting is the consumer's job — whether that consumer is an AI composing a text response or an App rendering a chart.
 
-2. **Aggregation-ready responses.** Tools that return time-series data (`spending_summary`, `cashflow_summary`, `accounts_networth`) include data in a shape that maps directly to chart axes — arrays of `{period, value}` objects, not prose summaries. An App can render a chart from the response without post-processing.
+2. **Aggregation-ready responses.** Tools that return time-series data (`reports_spending`, `reports_cashflow`, `reports_networth_history`) include data in a shape that maps directly to chart axes — arrays of `{period, value}` objects, not prose summaries. An App can render a chart from the response without post-processing.
 
 3. **Currency in metadata, not per-row.** `summary.display_currency` at the top of the response, not `currency: "USD"` on every row. Per-row currency fields only when the response contains mixed unconverted currencies (see section 4).
 
@@ -640,6 +658,7 @@ These decisions and their rationale should be documented in the 12-month plan.
 | [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) | Defines the privacy framework this spec consumes. MCP field minimization section references tool sensitivity declarations. |
 | [`smart-import-overview.md`](smart-import-overview.md) | Pillar F (AI-assisted parsing) uses the same consent/audit infrastructure. Import tools in this spec's surface replace the prototype `import_file` tool. |
 | [`matching-overview.md`](matching-overview.md) | Match review tools (`transactions_matches_pending`, etc.) will be defined in `moneybin-mcp.md`. Audit log is shared infrastructure. |
+| [`extension-contracts.md`](extension-contracts.md) | Defines how third-party Analysis Packages and standalone Reports register MCP tools into this server via Python entry points (`moneybin.packages`). Names, namespaces, and response envelopes defined here are inherited by every extension. |
 
 ## Resolved Decisions
 

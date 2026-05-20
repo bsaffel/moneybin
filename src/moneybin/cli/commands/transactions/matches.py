@@ -8,8 +8,8 @@ import typer
 from moneybin.cli.output import OutputFormat, output_option, quiet_option
 from moneybin.cli.utils import emit_json, handle_cli_errors
 from moneybin.database import get_database
-from moneybin.matching.engine import TransactionMatcher
-from moneybin.matching.persistence import VALID_MATCH_TYPES, get_match_log, undo_match
+from moneybin.matching.persistence import VALID_MATCH_TYPES
+from moneybin.services.matching_service import MatchingService
 
 app = typer.Typer(
     help="Review and manage transaction matches (dedup, transfers)",
@@ -34,16 +34,12 @@ def matches_run(
     ),
 ) -> None:
     """Run matcher against existing transactions."""
-    from moneybin.config import get_settings
-    from moneybin.matching.priority import seed_source_priority
-
     try:
         with handle_cli_errors():
             with get_database() as db:
-                settings = get_settings().matching
-                seed_source_priority(db, settings)
-                matcher = TransactionMatcher(db, settings)
-                result = matcher.run(auto_accept_transfers=auto_accept_transfers)
+                result = MatchingService(db).run(
+                    auto_accept_transfers=auto_accept_transfers
+                )
                 if result.has_matches:
                     logger.info(f"Matching: {result.summary()}")
                     if result.has_pending:
@@ -78,7 +74,7 @@ def matches_history(
 
     with handle_cli_errors():
         with get_database(read_only=True) as db:
-            entries = get_match_log(db, limit=limit, match_type=match_type)
+            entries = MatchingService(db).get_log(limit=limit, match_type=match_type)
 
             if output == OutputFormat.JSON:
                 emit_json("matches", entries)
@@ -123,7 +119,7 @@ def matches_undo(
     try:
         with handle_cli_errors():
             with get_database() as db:
-                undo_match(db, match_id, reversed_by="user")
+                MatchingService(db).undo(match_id, reversed_by="user")
                 logger.info(f"Reversed match {match_id[:8]}...")
     except ValueError as e:
         logger.error(f"❌ {e}")
@@ -142,14 +138,9 @@ def matches_backfill(
     ),
 ) -> None:
     """One-time scan of all existing transactions for latent duplicates."""
-    from moneybin.config import get_settings
-    from moneybin.matching.priority import seed_source_priority
-
     try:
         with handle_cli_errors():
             with get_database() as db:
-                settings = get_settings().matching
-
                 count = db.execute(
                     "SELECT COUNT(*) FROM prep.int_transactions__unioned"
                 ).fetchone()
@@ -158,9 +149,9 @@ def matches_backfill(
                     f"Scanning {total:,} existing transactions for duplicates and transfers..."
                 )
 
-                seed_source_priority(db, settings)
-                matcher = TransactionMatcher(db, settings)
-                result = matcher.run(auto_accept_transfers=auto_accept_transfers)
+                result = MatchingService(db).run(
+                    auto_accept_transfers=auto_accept_transfers
+                )
 
                 logger.info(f"Backfill complete: {result.summary()}")
                 if result.has_pending:

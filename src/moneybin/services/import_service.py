@@ -45,13 +45,11 @@ class ImportResult:
     transactions: int = 0
     institutions: int = 0
     balances: int = 0
-    w2_forms: int = 0
     date_range: str = ""
     details: dict[str, int] = field(default_factory=dict)
     core_tables_rebuilt: bool = False
     import_id: str | None = None
-    """UUID of the raw.import_log row this import created. None for file types
-    that don't write to import_log (currently W-2/PDF)."""
+    """UUID of the raw.import_log row this import created."""
 
     def summary(self) -> str:
         """Human-readable import summary."""
@@ -66,8 +64,6 @@ class ImportResult:
             lines.append(f"  Transactions: {self.transactions}")
         if self.balances:
             lines.append(f"  Balances: {self.balances}")
-        if self.w2_forms:
-            lines.append(f"  W-2 forms: {self.w2_forms}")
         if self.date_range:
             lines.append(f"  Date range: {self.date_range}")
         if self.core_tables_rebuilt:
@@ -141,12 +137,10 @@ def _display_label(file_type: str, file_path: Path) -> str:
 
     ``"tabular"`` is an internal bucket (CSV/TSV/XLSX/Parquet/Feather all
     share one pipeline). Resolve it to the file's actual extension so the
-    user sees ``CSV`` / ``XLSX`` / ``OFX`` / ``W-2`` instead of ``TABULAR``.
+    user sees ``CSV`` / ``XLSX`` / ``OFX`` instead of ``TABULAR``.
     """
     if file_type == "tabular":
         return file_path.suffix.lstrip(".").upper() or "TABULAR"
-    if file_type == "w2":
-        return "W-2"
     return file_type.upper()
 
 
@@ -170,7 +164,7 @@ def _detect_file_type(file_path: Path) -> str:
     """Detect file type from extension, falling back to magic-byte sniffing.
 
     Returns:
-        File type string: 'ofx', 'w2', or 'tabular'.
+        File type string: 'ofx' or 'tabular'.
 
     Raises:
         ValueError: If the file cannot be classified.
@@ -180,8 +174,6 @@ def _detect_file_type(file_path: Path) -> str:
     suffix = file_path.suffix.lower()
     if suffix in (".ofx", ".qfx", ".qbo"):
         return "ofx"
-    if suffix == ".pdf":
-        return "w2"
     if suffix in _UNAMBIGUOUS_TABULAR:
         return "tabular"
 
@@ -195,7 +187,7 @@ def _detect_file_type(file_path: Path) -> str:
 
     raise ValueError(
         f"Unsupported file type: {suffix}. "
-        f"Supported: .ofx, .qfx, .qbo, .csv, .tsv, .xlsx, .parquet, .feather, .pdf"
+        f"Supported: .ofx, .qfx, .qbo, .csv, .tsv, .xlsx, .parquet, .feather"
     )
 
 
@@ -247,7 +239,7 @@ class ImportService:
         that exposes the lifecycle to callers (manual entry, future API
         connectors) that don't have a source file but still need an
         ``import_id`` to attribute their raw rows. ``source_type`` must be
-        in the loader's allowlist (see ``_REVERT_TABLES``); ``actor`` is
+        in the loader's allowlist (see ``REVERT_TABLES``); ``actor`` is
         recorded as the ``account_names`` payload so audit consumers can
         trace which surface (cli/mcp) initiated the batch.
         """
@@ -632,36 +624,6 @@ class ImportService:
 
         for _aid in account_ids:
             ACCOUNT_MATCH_OUTCOMES_TOTAL.labels(result="not_attempted").inc()
-
-    def _import_w2(
-        self,
-        file_path: Path,
-    ) -> ImportResult:
-        """Import a W-2 PDF file.
-
-        Args:
-            file_path: Path to the W-2 PDF.
-
-        Returns:
-            ImportResult with summary of imported data.
-        """
-        from moneybin.extractors.w2_extractor import W2Extractor
-        from moneybin.loaders.w2_loader import W2Loader
-
-        result = ImportResult(file_path=str(file_path), file_type="w2")
-
-        # Extract
-        extractor = W2Extractor()
-        data = extractor.extract_from_file(file_path)
-
-        # Load
-        loader = W2Loader(self._db)
-        row_count = loader.load_data(data)
-
-        result.w2_forms = row_count
-        result.details = {"w2_forms": row_count}
-
-        return result
 
     def _import_tabular(
         self,
@@ -1144,8 +1106,6 @@ class ImportService:
             return self._import_ofx(
                 path, institution=institution, force=force, interactive=interactive
             )
-        if file_type == "w2":
-            return self._import_w2(path)
         if file_type == "tabular":
             return self._import_tabular(
                 path,
@@ -1178,7 +1138,7 @@ class ImportService:
 
         Per-file failures do not abort the batch. Refresh runs only if at
         least one file succeeded AND at least one file was transformable
-        (ofx/tabular — W-2 imports don't write to fct_transactions). On
+        (ofx/tabular). On
         SQLMesh failure the per-file outcomes are preserved and the error
         surfaces in ``transforms_error`` on the result envelope.
 
@@ -1196,7 +1156,7 @@ class ImportService:
             path = Path(raw_path)
             try:
                 r = self._import_one(path, force=force, interactive=interactive)
-                rows_loaded = r.transactions or r.w2_forms
+                rows_loaded = r.transactions
                 per_file.append(
                     PerFileResult(
                         path=str(path),
@@ -1237,6 +1197,115 @@ class ImportService:
             transforms_duration_seconds=duration_seconds,
             transforms_error=error,
         )
+
+    def revert(self, import_id: str) -> dict[str, str | int]:
+        """Revert an import batch by deleting its raw rows and flipping status.
+
+        Looks up source_type from raw.import_log to determine which tables to
+        delete from (via the ``REVERT_TABLES`` allowlist). Updates status to
+        'reverted'.
+
+        Args:
+            import_id: UUID of the import batch in ``raw.import_log``.
+
+        Returns:
+            ``{'status': 'reverted', 'rows_deleted': N}`` on success.
+            ``{'status': 'not_found', 'reason': ...}`` if import_id doesn't exist.
+            ``{'status': 'already_reverted'}`` if already reverted.
+            ``{'status': 'unsupported', 'reason': ...}`` if the source_type is
+            not in the revert allowlist.
+            ``{'status': 'superseded', 'reason': ...}`` if a later import for
+            the same source_file already overwrote the rows.
+        """
+        # REVERT_TABLES is owned by import_log because begin_import also consults it.
+        from moneybin.loaders.import_log import REVERT_TABLES  # noqa: PLC0415
+        from moneybin.tables import IMPORT_LOG  # noqa: PLC0415
+
+        row = self._db.execute(
+            f"SELECT source_type, status, source_file, started_at "
+            f"FROM {IMPORT_LOG.full_name} WHERE import_id = ?",
+            [import_id],
+        ).fetchone()
+
+        if row is None:
+            return {"status": "not_found", "reason": f"No import with ID {import_id}"}
+
+        src_type, status, source_file, started_at = row
+
+        if status == "reverted":
+            return {"status": "already_reverted"}
+
+        if src_type not in REVERT_TABLES:
+            return {
+                "status": "unsupported",
+                "reason": f"Cannot revert source_type {src_type!r}",
+            }
+
+        tables = REVERT_TABLES[src_type]
+
+        # Sum across every table the source_type populates. OFX statements with
+        # zero transactions but populated accounts/balances must still be
+        # detectable as live (not superseded) and reportable in rows_deleted.
+        rows_to_delete = 0
+        for table in tables:
+            result = self._db.execute(
+                f"SELECT COUNT(*) FROM {table.full_name} WHERE import_id = ?",
+                [import_id],
+            ).fetchone()
+            if result:
+                rows_to_delete += result[0]
+
+        if rows_to_delete == 0:
+            # If a later import upserted over this one's rows, surface that
+            # instead of a silent no-op revert.
+            reimport_row = self._db.execute(
+                f"""
+                SELECT import_id
+                FROM {IMPORT_LOG.full_name}
+                WHERE source_file = ?
+                  AND import_id != ?
+                  AND started_at > ?
+                  AND status NOT IN ('reverted', 'failed')
+                ORDER BY started_at DESC
+                LIMIT 1
+                """,
+                [source_file, import_id, started_at],
+            ).fetchone()
+            if reimport_row:
+                newer_id = reimport_row[0]
+                return {
+                    "status": "superseded",
+                    "reason": (
+                        f"File was re-imported as {newer_id[:8]}...; "
+                        f"revert that batch to remove the data."
+                    ),
+                }
+
+        self._db.begin()
+        try:
+            for table in tables:
+                self._db.execute(
+                    f"DELETE FROM {table.full_name} WHERE import_id = ?",
+                    [import_id],
+                )
+            self._db.execute(
+                f"""
+                UPDATE {IMPORT_LOG.full_name} SET
+                    status = 'reverted',
+                    reverted_at = CURRENT_TIMESTAMP
+                WHERE import_id = ?
+                """,
+                [import_id],
+            )
+            self._db.commit()
+        except Exception:
+            self._db.rollback()
+            raise
+
+        logger.info(
+            f"Reverted import {import_id[:8]}...: {rows_to_delete} rows deleted"
+        )
+        return {"status": "reverted", "rows_deleted": rows_to_delete}
 
     # ------------------------------------------------------------------
     # Import labels (spec Req 22–24).

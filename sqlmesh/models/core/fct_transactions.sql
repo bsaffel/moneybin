@@ -52,6 +52,7 @@ WITH notes_agg AS (
     CASE WHEN t.amount < 0 THEN 'expense' WHEN t.amount > 0 THEN 'income' ELSE 'zero' END AS transaction_direction,
     t.description,
     COALESCE(m.canonical_name, t.merchant_name) AS merchant_name,
+    m.merchant_id,
     t.memo,
     COALESCE(dc.category, c.category, t.category) AS category,
     COALESCE(dc.subcategory, c.subcategory, t.subcategory) AS subcategory,
@@ -117,6 +118,7 @@ SELECT
   transaction_direction, /* Derived from amount sign: expense, income, or zero */
   description, /* Payee or merchant description from highest-priority source */
   merchant_name, /* Normalized merchant name from core.dim_merchants; falls back to source value */
+  merchant_id, /* Foreign key to core.dim_merchants.merchant_id; NULL when no canonical merchant has been resolved for this transaction. Reports should GROUP/PARTITION on this FK; merchant_name is for display. */
   memo, /* Additional notes from highest-priority source */
   category, /* Spending category resolved via category_id FK to core.dim_categories; falls back to app.transaction_categories.category snapshot for orphaned rows, then to source-system text for uncategorized rows */
   subcategory, /* Spending subcategory resolved via FK; same fallback chain as category */

@@ -1,67 +1,206 @@
-# Account Identifiers and PII Handling
+<!-- Last reviewed: 2026-05-17 -->
 
-MoneyBin uses several distinct identifiers for accounts. This doc defines what
-each one is, where it lives, and how PII is masked across the project.
+# Account Identifiers
 
-## Identifier glossary
+How MoneyBin identifies accounts across sources, time, and re-imports. This page is the deep reference for `account_id` semantics; for the schema, see [`docs/reference/data-model.md`](../reference/data-model.md). For the pipeline, see [`docs/guides/data-pipeline.md`](../guides/data-pipeline.md).
 
-| Name | Type | Lives in | Source | Safe to log? |
-|---|---|---|---|---|
-| `account_id` | Synthetic stable ID | `core.dim_accounts.account_id` (PK), foreign key in `fct_transactions`, `fct_balances`, `app.account_settings`, `app.balance_assertions` | Derived: OFX `<ACCTID>` after sanitization, tabular content hash, future Plaid `account_id` | Yes — opaque, no PII |
-| `account_number` | Full bank account number | **Never stored** | Source files | Never |
-| `last_four` | Last 4 digits | `app.account_settings.last_four` (validated `^[0-9]{4}$`) | User-asserted in v1; Plaid `mask` in future | Reference by name only (`<account_id>.last_four`), never as a value |
-| `routing_number` | ABA routing number | `core.dim_accounts.routing_number` | OFX `<BANKACCTFROM><BANKID>` or tabular | PII-adjacent (publicly listed but identifies institution); log only when essential for diagnostics |
-| `display_name` | Human-readable label | `core.dim_accounts.display_name` (resolved from `app.account_settings.display_name` → derived default) | User override or auto-derived | Yes — user-controlled label |
+## The problem
 
-## Known gap: `account_id` is not opaque for OFX-sourced accounts
+The same real-world account routinely shows up in MoneyBin under more than one shape:
 
-The table above describes `account_id` as "opaque, no PII." That is **true
-for Plaid-sourced accounts** (Plaid generates a synthetic `account_id`) and
-for tabular content-hash IDs, but **false for OFX-sourced accounts** —
-`src/moneybin/extractors/ofx_extractor.py` stores the raw OFX `<ACCTID>`
-field, which for retail banks is the actual bank account number. The
-"source-provided IDs are stored as-is" rule in
-[`.claude/rules/identifiers.md`](../../.claude/rules/identifiers.md) was
-followed correctly; the contradiction is between that rule and this doc's
-opacity claim. Fixing it requires a one-way-door schema decision (hashing
-breaks every `account_id` foreign key and persisted `app.account_settings`
-row) and is tracked as outstanding work — do not assume opacity when
-reasoning about MCP or log surface for OFX accounts until this is resolved.
+- **Same source, multiple imports.** This week's Chase OFX file and next week's Chase OFX file both contain the same checking account.
+- **Multiple sources, same account.** A Chase checking account loaded once from an OFX export and again from a Plaid sync.
+- **Multiple accounts, same institution.** Chase checking and Chase savings live in one OFX file under different `<ACCTID>` elements.
 
-## Why `account_number` is never stored
+Consumers (CLI, MCP, `reports.*` views, ad-hoc SQL) need a single canonical join key so queries like "show me everything for my Chase checking" do not have to enumerate cases. That key is `account_id`, and it is the foreign key on every fact table (`fct_transactions`, `fct_balances`, `fct_balances_daily`) and every app-state table (`account_settings`, `balance_assertions`, `transaction_notes`, ...).
 
-Loaders extract only `last_four` from raw inputs. The full number is dropped at
-the parser boundary. This eliminates an entire class of breach impact: a
-database leak does not expose full account numbers because they are not there.
+`display_name` is the user-editable label on `app.account_settings`, resolved into `core.dim_accounts.display_name` for presentation. **It is never a join key** — it is user-mutable, not unique by construction, and falls back to a derived string. Every join uses `account_id`.
 
-## Masking story
+## At a glance
 
-Even with disciplined input handling, account-shaped digit sequences can leak
-into logs through error messages, stack traces, or accidentally interpolated
-SQL. The `SanitizedLogFormatter` (`src/moneybin/log_sanitizer.py`) is the
-runtime safety net — it inspects every log record for patterns matching:
+| Property | Value |
+|---|---|
+| Type | `VARCHAR` (opaque join key, source-provided) |
+| Canonical home | `core.dim_accounts.account_id` (primary, grain) |
+| Foreign-key targets | `core.fct_transactions`, `core.fct_balances`, `core.fct_balances_daily`, `app.account_settings`, `app.balance_assertions`, `app.transaction_notes`, `app.transaction_tags`, `app.transaction_splits`, `app.audit_log` (where applicable) |
+| Stable across re-imports | Yes for OFX (same `<ACCTID>`), Plaid (same Item), and tabular (same `--account-name`) |
+| Stable across Plaid re-link | **No** — Plaid issues a new value; no auto-merge |
+| Safe to log | Plaid: yes (opaque). OFX: **no** (often the raw bank account number). Tabular: usually yes (user-supplied slug). |
+| Generated by MoneyBin | Never — source-provided in every supported path |
 
-- 9+ digit sequences (catches account numbers, SSNs, routing numbers in
-  contexts where they shouldn't be)
-- Currency amount patterns (`$NNN.NN`)
+## The identifier scheme
 
-When detected, the formatter masks the value (keeping the last 4 digits for
-debug context) and emits a separate WARNING about the masking, so the original
-incident is visible without leaking the value.
+`account_id` follows the source-provided-ID rule in [`.claude/rules/identifiers.md`](../../.claude/rules/identifiers.md): when an upstream system supplies a stable identifier, MoneyBin stores it as-is. It is not hashed, salted, or rewritten. The same value appears at every layer.
 
-See `docs/specs/privacy-data-protection.md` for the full classification of
-allowed vs prohibited log content.
+| Source | Field stored as `account_id` | Where it comes from |
+|---|---|---|
+| OFX / QFX / QBO | OFX `<ACCTID>` element | `raw.ofx_accounts.account_id` ← `src/moneybin/extractors/ofx_extractor.py` |
+| Plaid | Plaid `account_id` (Item-scoped, opaque) | `raw.plaid_accounts.account_id` ← `src/moneybin/loaders/plaid_loader.py` |
+| Tabular (CSV / TSV / Excel / Parquet / Feather) | Source-system identifier, or a value supplied via `--account-name` / per-file metadata | `raw.tabular_accounts.account_id` ← `src/moneybin/extractors/tabular/account_matching.py` |
+| Manual entry | The `account_id` the user supplies (must already exist in `core.dim_accounts`) | Validated by `assert_account_exists()` in `src/moneybin/services/account_service.py` |
 
-## Relation to `account_id` stability
+No `account_id` is synthesized inside MoneyBin today. The truncated-UUID4 strategy from `.claude/rules/identifiers.md` applies to *other* user-created entities (merchants, rules, categories) — accounts are always source-provided.
 
-`account_id` is the join key everywhere. It must be stable across re-imports
-of the same upstream account (re-importing the same OFX file must not produce
-new `account_id`s). Hash-derived IDs achieve this by being a pure function of
-the source content. Future Plaid integration uses Plaid's stable
-`account_id` directly.
+### Concrete example values
 
-When two records that look like the same real-world account land under
-different `account_id`s (e.g., the user re-linked an institution and Plaid
-issued a new ID), the v1 answer is to leave both in place. Account merging is
-explicitly out of scope for v1 — see `docs/specs/account-management.md`
-§Out of Scope.
+`account_id` is *not uniformly opaque* — it carries the upstream system's shape, and the shape varies by source. Treat the value as opaque for join purposes only.
+
+| Source | Example value | Typical length / charset | Uniqueness scope |
+|---|---|---|---|
+| OFX | `1234567890` | 4–30 chars, often the raw bank account number; alphanumeric (usually digits) | Per-institution (no global guarantee) |
+| Plaid | `BxKDLBgYJK...` | ~37 chars, base64-like alphanumeric | Per Plaid Item; reissued on re-link |
+| Tabular (`--account-name`) | `chase-checking` | User-supplied; whatever the caller passes (no normalization is performed) | Within the importing user's data |
+| Tabular (smart-import) | Source-column value verbatim | Whatever the source file emits | Within the importing user's data |
+| Manual entry | Must reference an existing `account_id` | Validated only for existence in `core.dim_accounts` | Defers to whichever source created the row |
+
+Notes:
+
+- **OFX values are PII-shaped, not opaque.** `<ACCTID>` is commonly the real bank account number. The `SanitizedLogFormatter` (`src/moneybin/log_sanitizer.py`) masks 9+ digit sequences in log records as a runtime safety net, but the stored value is the raw upstream value. Never use it as a display string.
+- **Plaid values change on re-link.** When a user reconnects an institution, Plaid issues a new `account_id`; see [Identifier stability](#identifier-stability).
+- **Tabular slugs are user-controlled.** `--account-name` is passed through to the loader as-is. Conventional usage is a lowercase-with-hyphens slug (`chase-checking`); see the data-import guide for per-format specifics.
+- **`account_id` is never empty in `core.dim_accounts`** — it is the table's grain. Empty/whitespace-only values would fail upstream loader validation before reaching the core layer; `assert_account_exists()` rejects any value that is not present.
+
+## Account resolution
+
+Free-text references ("my Chase card", "savings") resolve to `account_id` through one entry point in [`AccountService.resolve()`](../../src/moneybin/services/account_service.py):
+
+- **MCP tool:** `accounts_resolve`.
+- **CLI:** `moneybin accounts resolve "<query>"`.
+
+The current implementation is a single-pass fuzzy match: it pulls `(account_id, display_name, account_subtype, institution_name)` from `core.dim_accounts`, scores the query against each of `display_name`, `account_subtype`, and `institution_name` using `difflib.SequenceMatcher`, takes the best ratio per account, and returns the top `limit` (default 5) sorted by confidence. There is no priority cascade (exact → last-4 → fuzzy); every candidate goes through the same ratio comparison and the highest score wins.
+
+`confidence` is a raw `difflib` ratio in `[0.0, 1.0]`. The service returns every candidate with a score strictly greater than zero, up to `limit`. **There is no configurable confidence floor** — `resolve(query, limit=5)` is the entire signature, and `accounts_resolve` exposes the same two parameters. Callers decide their own threshold.
+
+Recommended consumer pattern for the confidence value the service returns:
+
+- `score >= 0.8` — high confidence; safe for unattended auto-action.
+- `0.6 <= score < 0.8` — ambiguous; confirm with the user or disambiguate against `account_subtype` / `institution_name`.
+- `score < 0.6` — low confidence; reject or surface the full candidate list.
+
+These are recommendations for *consumers*, not enforced by the service. Agent loops should typically request `limit=3` or more and pick from the candidates rather than auto-accepting the highest score.
+
+Last-four-digit matching is not in the resolver today even though `last_four` exists on `dim_accounts`. Queries like `"...4521"` match only through whatever ratio they earn against `display_name`, which by default embeds the last four (`institution_name + account_type + …<last4>`).
+
+The result envelope (`AccountResolution.to_dict()`) is intentionally narrow — `account_id`, `display_name`, `account_subtype`, `institution_name`, and `confidence` rounded to three decimals. PII-adjacent fields (`last_four`, `credit_limit`, `routing_number`) are not returned here; callers that need them follow up with `accounts_get(account_id)`.
+
+## Cross-source representation
+
+At `raw.*`, every source has its own table and its own row per account. At `core.dim_accounts`, the model `UNION ALL`s `prep.stg_ofx__accounts`, `prep.stg_tabular__accounts`, and `prep.stg_plaid__accounts`, then dedups:
+
+```sql
+ROW_NUMBER() OVER (PARTITION BY account_id ORDER BY extracted_at DESC) = 1
+```
+
+**The dedup key is `account_id` only — not `(account_id, source_type)`.** Two sources that happen to publish the same value collapse to one row in `core.dim_accounts`, with the latest-extracted source winning on the carried-through columns (`source_type`, `source_file`, `institution_name`, etc.).
+
+This is rarely what happens in practice. OFX `<ACCTID>`, Plaid `account_id`, and tabular slugs come from disjoint identifier spaces, so the same real-world account loaded from two sources usually produces **two distinct `account_id` values** and therefore **two rows in `core.dim_accounts`**. There is no automatic cross-source merge today.
+
+Account merge is explicitly deferred (see [`docs/specs/account-management.md`](../specs/account-management.md) §Out of Scope). When a duplicate appears, both rows live independently until a manual merge feature ships. Until then, the canonical answer to "this is my one Chase checking" is whichever `account_id` you have already attached settings or assertions to.
+
+### Worked example: Chase checking from OFX and Plaid
+
+Same real-world account, loaded twice:
+
+| Layer | OFX path | Plaid path |
+|---|---|---|
+| Raw | `raw.ofx_accounts.account_id = '1234567890'` (the `<ACCTID>`) | `raw.plaid_accounts.account_id = 'BxKDLBgY...'` (Plaid opaque) |
+| Staging | `prep.stg_ofx__accounts` row with `source_type='ofx'` | `prep.stg_plaid__accounts` row with `source_type='plaid'` |
+| Core | `core.dim_accounts` row with `account_id='1234567890'` | `core.dim_accounts` row with `account_id='BxKDLBgY...'` |
+| Transactions | `core.fct_transactions` rows FK'd to `'1234567890'` | `core.fct_transactions` rows FK'd to `'BxKDLBgY...'` |
+
+`reports.net_worth` sums both. The `accounts list` output shows both rows. A spending query against either `account_id` only sees that source's transactions. Manual remediation today: archive one of the two and re-attach forward-looking state to the survivor.
+
+## Account-settings overlay
+
+User-controlled fields (`display_name`, `archived`, `include_in_net_worth`, `last_four`, `account_subtype`, `holder_category`, `iso_currency_code`, `credit_limit`, `official_name`) live in `app.account_settings`, keyed by `account_id`. `core.dim_accounts` `LEFT JOIN`s this table at refresh time so consumers see one resolved view. No consumer joins `app.account_settings` directly — the dim is the single source of truth. See [`docs/reference/data-model.md`](../reference/data-model.md#coredim_accounts) for the column list.
+
+`display_name` resolution falls back in order: user override → derived default (`institution_name + ' ' + account_type + ' …' + RIGHT(account_id, 4)`) → bare `account_id`. Renaming an account through `moneybin accounts set --display-name "..."` only writes to `app.account_settings`; `account_id` does not change.
+
+## Identifier stability
+
+Stability guarantees depend on the source's own behavior:
+
+- **Re-importing the same OFX file** — `<ACCTID>` is byte-stable, so the same `account_id` lands in `raw.ofx_accounts` and the same row wins in `core.dim_accounts`. Settings, assertions, notes, and tags keyed by that `account_id` survive.
+- **Re-importing a tabular file with the same `--account-name`** — same value, same `account_id`, same `core` row.
+- **Plaid steady state** — Plaid's documented contract is that `account_id` is stable for the life of an Item. As long as the Item is not deleted and re-linked, repeated syncs preserve `account_id`.
+- **Plaid re-link** — when a user re-links the same institution (Item revoked then reconnected, or institution-side account number change), Plaid issues a new `account_id`. MoneyBin loads it as a new row. There is **no auto-merge with the prior `account_id`** (verified — no merge code path exists in `src/moneybin/loaders/plaid_loader.py` or `sqlmesh/models/core/dim_accounts.sql`). Prior settings, assertions, and curation stay on the old `account_id`.
+- **OFX `<ACCTID>` change** — same outcome: new `account_id`, new `core` row, prior state stranded.
+- **Display rename** — `account_id` is immutable across renames. Only `app.account_settings.display_name` changes.
+
+`account_id` cannot change in place because every fact and app-state table holds it as a foreign key. Renaming would require coordinated updates across every dependent row plus persisted match decisions and audit-log entries — which is why merge is its own deferred spec, not a one-line settings update.
+
+When stranding happens today, the operational answer is to re-attach state by hand (re-run `accounts balance assert`, copy `display_name`, etc.) until a merge tool ships.
+
+## Common pitfalls
+
+- **Do not use `display_name` as a join key.** It is user-mutable, not unique by construction, and falls back to a derived string. Always join on `account_id`.
+- **Do not aggregate by `(account_id, source_type)` if you want one row per real-world account.** The dedup in `core.dim_accounts` already collapses on `account_id`, but if your query targets `prep.stg_*` or unions raw layers directly you will see one row per source.
+- **Do not assume `account_id` is opaque for log or display purposes.** OFX-sourced values are often the raw bank account number. Use `display_name` in human-facing surfaces. The `SanitizedLogFormatter` is a safety net, not a license to log `account_id` freely.
+- **Do not assume `account_id` survives a Plaid re-link.** It usually does not. If a user reports "all my Chase data disappeared after reconnecting," check `core.dim_accounts` for a second row with a different `account_id`.
+- **Do not rely on `accounts_resolve` for high-precision matching.** Confidence is a single `difflib` ratio against three free-text fields. Disambiguate with the user when confidence is close.
+- **Watch timezones on `extracted_at` / `loaded_at`.** Both are stored UTC. If you reconcile monthly against another system that reports in a local timezone, convert at the report boundary, not on the join.
+
+## Reconciliation recipes
+
+Find candidate same-real-world-account groups across sources (uses `last_four` from `app.account_settings`, mirrored into the dim):
+
+```sql
+SELECT institution_name, last_four,
+       ARRAY_AGG(DISTINCT account_id) AS candidate_ids,
+       ARRAY_AGG(DISTINCT source_type) AS sources
+FROM core.dim_accounts
+WHERE last_four IS NOT NULL
+GROUP BY institution_name, last_four
+HAVING COUNT(DISTINCT account_id) > 1;
+```
+
+Caveat: `last_four` is `NULL` until the user sets it or a future Plaid sync populates it. For rows where `last_four IS NULL`, fall back to `(institution_name, account_subtype)` as a hint and confirm with the user.
+
+Detect a likely Plaid re-link split (multiple Plaid rows for the same institution/subtype with an `extracted_at` gap):
+
+```sql
+SELECT institution_name, account_subtype,
+       ARRAY_AGG(account_id ORDER BY extracted_at) AS account_ids,
+       MAX(extracted_at) - MIN(extracted_at) AS age_spread
+FROM core.dim_accounts
+WHERE source_type = 'plaid'
+GROUP BY institution_name, account_subtype
+HAVING COUNT(*) > 1;
+```
+
+Pick the canonical `account_id` when duplicates exist. There is no automated rule today. Recommended order:
+
+1. **Settings attached.** If exactly one of the candidates appears in `app.account_settings`, prefer it — curation state (notes, tags, splits, assertions) keys off `account_id` and is non-trivial to recreate.
+2. **Most recently loaded.** Otherwise pick `MAX(extracted_at)` — the newest known truth from the source side.
+3. **Manual choice.** If both have settings or both are equally recent, the user picks.
+
+```sql
+WITH ranked AS (
+  SELECT d.account_id,
+         d.institution_name,
+         d.extracted_at,
+         (s.account_id IS NOT NULL) AS has_settings
+  FROM core.dim_accounts AS d
+  LEFT JOIN app.account_settings AS s USING (account_id)
+  WHERE d.institution_name ILIKE '%chase%'
+)
+SELECT * FROM ranked
+ORDER BY has_settings DESC, extracted_at DESC;
+```
+
+Trace `account_id` back to its raw provenance after dedup:
+
+```sql
+SELECT account_id, source_type, source_file, extracted_at
+FROM core.dim_accounts
+WHERE account_id = ?;
+```
+
+The `source_type` and `source_file` columns reflect the winning row after the `ROW_NUMBER` dedup; older same-`account_id` rows from earlier extractions are dropped at the `core` layer but still visible in `raw.*` and `prep.stg_*`.
+
+## Cross-references
+
+- **Schema:** [`docs/reference/data-model.md`](../reference/data-model.md) — `core.dim_accounts`, `app.account_settings`.
+- **Pipeline:** [`docs/guides/data-pipeline.md`](../guides/data-pipeline.md) — staging unions, dedup behavior, transfer detection.
+- **Identifier rule:** [`.claude/rules/identifiers.md`](../../.claude/rules/identifiers.md) — source IDs, content hashes, UUID4, semantic slugs.
+- **Service layer:** [`src/moneybin/services/account_service.py`](../../src/moneybin/services/account_service.py) — `AccountService.resolve()`, `AccountSettingsRepository`, `assert_account_exists()`.

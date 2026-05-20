@@ -41,9 +41,9 @@ No schema changes. One new configuration field:
 ### Files to Modify
 
 - `src/moneybin/config.py` — add `tool_timeout_seconds` to the MCP settings group.
-- `src/moneybin/mcp/server.py` (or wherever tool dispatch lives) — wrap every registered tool handler in a timeout guard.
-- `src/moneybin/mcp/responses.py` (or equivalent envelope helper) — extend the error envelope schema to carry `kind`, `tool`, `elapsed_s`, `timeout_s`.
-- `src/moneybin/database.py` — expose a context manager that yields a connection and guarantees `interrupt()` + `close()` on cancellation.
+- `src/moneybin/mcp/decorator.py` — `@mcp_tool` wraps every registered tool handler with the timeout guard.
+- `src/moneybin/protocol/envelope.py` — `ResponseEnvelope` / `build_error_envelope` carry the `kind`, `tool`, `elapsed_s`, `timeout_s` fields on the timeout path.
+- `src/moneybin/database.py` — `interrupt_and_reset_database()` interrupts the active write connection on timeout; per-call connections from `get_database()` close in the context manager.
 
 ### Key Decisions
 
@@ -103,7 +103,7 @@ Existing tools that return `error: null` on success are unaffected.
 - **Unit**: a fake tool handler that sleeps 60s returns the structured timeout envelope within ~30s wall-clock.
 - **Unit**: a fake tool handler that holds a DuckDB connection and runs a long query — verify `interrupt()` is called and the connection is closed on timeout.
 - **Integration**: two back-to-back calls where the first times out — the second must succeed against the same profile (proves the lock was released).
-- **Regression**: existing fast tools (e.g., `accounts`, `spending_summary`) complete unchanged and well under the cap on the standard test fixture.
+- **Regression**: existing fast tools (e.g., `accounts`, `reports_spending`) complete unchanged and well under the cap on the standard test fixture.
 
 ## Synthetic Data Requirements
 

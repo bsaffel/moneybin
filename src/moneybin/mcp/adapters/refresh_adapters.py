@@ -12,7 +12,8 @@ from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.refresh import RefreshResult
 
 REFRESH_APPLY_FAILED_HINT = (
-    "SQLMesh apply failed — call transform_plan to inspect, or refresh_run to retry."
+    "SQLMesh apply failed — run `moneybin transform plan` to inspect, "
+    "or refresh_run to retry."
 )
 REFRESH_CATEGORIZE_FOLLOWUP_HINT = (
     "Run refresh_run(steps=['categorize']) to apply rules/merchants "

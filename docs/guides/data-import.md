@@ -1,187 +1,396 @@
+<!-- Last reviewed: 2026-05-17 -->
 # Data Import
 
-MoneyBin imports financial data from local files. Each import auto-detects the file type, loads data into the raw schema, and rebuilds core analytical tables.
+MoneyBin ingests financial data from files you already have (CSV, TSV, Excel, Parquet, Feather, OFX/QFX/QBO) and from Plaid-connected banks. Every file lands in `raw.*`, flows through the SQLMesh pipeline into `core.fct_transactions` / `core.dim_accounts`, and is queryable by the CLI, MCP server, and any DuckDB client. This guide walks through the entry points by source tool and by file format, plus the housekeeping commands you'll reach for after the first import.
+
+## Before you import
+
+You only need a profile and an initialized database to import. If you've already done `moneybin profile create` and `moneybin db init`, skip ahead. Otherwise:
 
 ```bash
-moneybin import file <path>
+moneybin profile create main          # one-time per identity (work vs personal)
+moneybin db init                      # one-time per profile
+moneybin db unlock                    # each session
+moneybin system doctor                # exits 0 when ready to import
 ```
 
-## OFX / QFX Bank Statements
+See the [Profiles guide](profiles.md) and [Database and security guide](database-security.md) for detail. Plaid sync needs additional setup — see [Live banking sync](#live-banking-sync-plaid).
 
-Import OFX and QFX files from any bank or credit card provider. MoneyBin extracts accounts, transactions, and balances from the standard OFX format.
+## Back up first
+
+Before pointing MoneyBin at real history, snapshot the profile:
 
 ```bash
-# Import a checking account statement
-moneybin import file ~/Downloads/checking.qfx
-
-# Tag with institution name for organization
-moneybin import file ~/Downloads/savings.ofx --institution "Wells Fargo"
+moneybin db backup                    # encrypted snapshot under data/<profile>/backups/
+moneybin db restore <backup-path>     # roll back if an import goes wrong
 ```
 
-**What gets extracted:**
-- Accounts (name, type, institution, account ID)
-- Transactions (date, amount, description, type, FITID)
-- Balances (ledger and available, as-of date)
+`import revert` (below) handles batch-level rollback after a single import, but a full `db backup` is the right thing to do before your first real ingest of years of history.
 
-OFX files carry their own account identifiers, so no additional metadata is needed. Re-importing the same file is safe — the FITID (Financial Transaction ID) prevents duplicates.
+## From your previous tool
 
-## Smart Tabular Import
+If you're migrating from another personal-finance tool, start here. The named formats below are matched by **header signature** — the unique set of column headers each tool exports — on first import; future imports of the same shape skip detection.
 
-The universal tabular importer handles CSV, TSV, Excel (.xlsx), Parquet, and Feather files from any institution. It uses a five-stage pipeline to automatically detect file structure, map columns, and normalize data.
+### Tiller
+
+Tiller users have the deepest first-class support. The `tiller` format profile matches the standard Tiller Money sheet export (Transactions tab → "Download as CSV").
 
 ```bash
-# Auto-detect everything — works for most bank exports
-moneybin import file ~/Downloads/chase_activity.csv --account-name "Chase Checking"
-
-# Use a built-in or saved format
-moneybin import file ~/Downloads/transactions.csv --format chase_credit
-
-# Override specific column mappings when auto-detection misses
-moneybin import file export.csv --override date=TransDate --override amount=Amt
-
-# Import Excel with a specific sheet
-moneybin import file ~/Downloads/report.xlsx --sheet "Transactions"
-
-# Import Parquet from a data warehouse export
-moneybin import file ~/Downloads/transactions.parquet --account-name "Main Account"
+moneybin import files ~/Downloads/transactions.csv --format tiller
 ```
 
-### Five-Stage Pipeline
+Auto-detection picks it up without `--format` — the header signature is distinctive:
 
-1. **Format detection** — identifies encoding, delimiter, file type, preamble rows
-2. **File reading** — finds the header row, strips trailing summary rows
-3. **Column mapping** — matches headers to standard fields using 100+ aliases and content validation
-4. **Transform** — parses dates, normalizes amounts (handles sign conventions, debit/credit splits, international number formats), generates content-hash IDs
-5. **Load** — writes to raw tables with import batch tracking
+```bash
+moneybin import files ~/Downloads/transactions.csv
+```
 
-### Supported File Formats
+Re-import overlapping months without fear. Cross-source dedup (SHA-256 content hashes) means the same row imported twice is a no-op.
+
+### Mint (and Mint successors)
+
+The `mint` format profile reads the standard Mint CSV export. Even though Mint itself shut down, the export format is preserved by every Mint-successor tool that offered a "bring your history" import path.
+
+```bash
+moneybin import files ~/Downloads/transactions.csv --format mint
+```
+
+If you've since moved to a different tool and have that tool's export, see the relevant subsection below or fall back to the [generic CSV path](#csv-tsv-excel-parquet-feather).
+
+### YNAB
+
+The `ynab` format profile reads the YNAB "All Transactions" export (Budget → Export budget data → unzip → the `Register.csv` file).
+
+```bash
+moneybin import files ~/Downloads/Register.csv --format ynab
+```
+
+### Maybe / Sure
+
+The `maybe` format profile reads Maybe Finance's CSV export.
+
+```bash
+moneybin import files ~/Downloads/maybe-export.csv --format maybe
+```
+
+### Lunch Money
+
+No first-class profile yet. Lunch Money exports clean CSV (Settings → Developers → "Export to CSV") that auto-detection handles:
+
+```bash
+moneybin import files ~/Downloads/lunchmoney-export.csv --account-name "Checking"
+```
+
+If auto-detection picks the wrong column for date or amount on the first import, override and the choice is saved for next time:
+
+```bash
+moneybin import files ~/Downloads/lunchmoney-export.csv \
+  --override date="Date" --override amount="Amount"
+```
+
+### Monarch / Copilot
+
+Same shape as Lunch Money: no named migration profile yet, but auto-detection reads their exports. Both tools expose a "Download transactions" CSV in account settings.
+
+```bash
+moneybin import files ~/Downloads/monarch-transactions.csv --account-name "Joint Checking"
+```
+
+There is no automated API pull from Monarch or Copilot today — you export, you import.
+
+### Beancount / hledger
+
+No direct ledger ingest. MoneyBin doesn't parse `.beancount` postings or `journal` files, and there's no plan to round-trip back to ledger syntax.
+
+The working path: export the same source transactions your ledger was built from — OFX/QFX downloads from your bank, or a CSV per account — and import those. If your ledger has data that doesn't exist anywhere else (manual adjustments, opening balances), use [manual transaction entry](#manual-transaction-entry) for the unique rows. If round-tripping to plain-text accounting is a hard requirement, Beancount + Fava remains the better tool.
+
+### Generic CSV from any other tool
+
+If your previous tool isn't listed and exports CSV (Actual Budget, Firefly III, GnuCash, a spreadsheet you maintained by hand), the tabular importer handles it directly. Skip ahead to [CSV / TSV / Excel / Parquet / Feather](#csv-tsv-excel-parquet-feather).
+
+## What survives the trip
+
+The migration question that matters: **what carries over from your old tool, and what doesn't?** MoneyBin preserves the source columns each format profile knows about; everything else is dropped at the staging layer. The table below summarizes by source class. A ✅ means the field lands in `core.fct_transactions` (or an adjacent core table) and is queryable post-import; 🟡 means partial; ❌ means the column is read off the source row but not persisted.
+
+| Source | Categories | Notes / Memos | Tags / Labels | Splits | Transfers | Account names |
+|--------|------------|---------------|---------------|--------|-----------|---------------|
+| **Tiller** | ✅ | ✅ (Full Description) | ❌ | ❌ source-side; rebuild via `transactions splits` | 🟡 detected post-load via matching | ✅ multi-account in one file |
+| **Mint** | ✅ | ✅ (Original Description) | ❌ (Labels column dropped) | ❌ | 🟡 detected post-load | ✅ multi-account in one file |
+| **YNAB** | ✅ (Category Group/Category) | ✅ (Memo) | 🟡 (Flag preserved as status) | ❌ source-side; rebuild via `transactions splits` | 🟡 detected post-load | ✅ |
+| **Maybe / Sure** | ✅ | ✅ (note) | ❌ (tags column dropped) | ❌ | 🟡 detected post-load | ✅ |
+| **Generic CSV** (Lunch Money, Monarch, Copilot) | ✅ if a category column is detected | ✅ if a memo/notes column is detected | ❌ | ❌ | 🟡 detected post-load | ✅ if column present, else use `--account-name` |
+| **OFX / QFX / QBO** | ❌ (format carries none) | ✅ (`<MEMO>`) | ❌ | ❌ | 🟡 detected post-load | ✅ |
+| **Plaid sync** | 🟡 (Plaid's PFC taxonomy, separate from MoneyBin categories) | ✅ | ❌ | ❌ | 🟡 detected post-load | ✅ |
+
+**A few specifics to set expectations:**
+
+- **Source categories are preserved verbatim** in `core.fct_transactions.category` and `subcategory`. They are *not* mapped onto MoneyBin's category taxonomy — instead they bootstrap your categorization history and you can layer rules and overrides on top. See the [categorization guide](categorization.md).
+- **YNAB envelope state** (budgeted-but-unspent, Age of Money, scheduled transactions) does not survive — MoneyBin's budgeting surface is on the roadmap, not shipped.
+- **Splits** in the source file are not parsed as separate child rows on import. The parent row's amount lands intact; you rebuild splits via `moneybin transactions splits add` if you want them broken out.
+- **Transfers** are detected *after* import by the matching pipeline (`core.bridge_transfers`), not from any source column. Two rows on opposite sides of the same transfer collapse into one logical event after refresh, whether they came from one file or two different sources.
+- **Tags / Labels** are not yet a first-class concept on imported rows — `moneybin transactions tags add` lets you tag manually post-import.
+
+## Importing history, then connecting Plaid
+
+A common migration pattern: bring years of history in from files, then connect Plaid for ongoing sync. The recommended order is **history first, Plaid second**, because cross-source dedup (per-row content hashes on date + amount + description + account) collapses overlaps in `core.fct_transactions` regardless of order.
+
+```bash
+moneybin import files ~/Downloads/tiller-export.csv     # 5 years of history
+moneybin sync connect --institution "Chase"             # now connect live
+moneybin sync pull                                       # last 18 months from Plaid overlaps history; dedup handles it
+```
+
+The bridge tables (`core.bridge_*`) record which source contributed each row, so provenance is preserved even after dedup. If you ever need to inspect overlap, query `app.match_decisions` for `match_type = 'dedup'`.
+
+## How long this takes
+
+Order-of-magnitude, not benchmarks:
+
+- A single 10 MB CSV: a few seconds end-to-end (extract + load + refresh).
+- 5 years of monthly Tiller exports: tens of seconds total.
+- A large multi-year institutional CSV dump (100k+ rows): can stretch to a minute or two with the refresh pipeline included.
+- Pass `--no-refresh` to defer the SQLMesh apply when chaining many imports; finish with one `moneybin transform apply`.
+
+Actual timing for any specific batch appears in `moneybin import history` and in the structured log under the profile data directory.
+
+## By file format
+
+If you're working from raw bank or institution exports rather than another personal-finance tool, organize by file type.
+
+### OFX / QFX / QBO
+
+Most US banks and credit cards expose OFX or QFX downloads in their online portals; QBO is the QuickBooks variant.
+
+```bash
+moneybin import files ~/Downloads/checking.qfx
+moneybin import files ~/Downloads/*.ofx
+```
+
+**What gets extracted:** accounts (name, type, institution, account ID), transactions (date, amount, description, type, FITID — OFX's per-transaction unique-ID field), and balances (ledger and available, as-of date).
+
+**Institution resolution** runs in order:
+
+1. The `<FI><ORG>` element inside the OFX header.
+2. The `<FI><FID>` element matched against a static lookup of well-known FIDs (the OFX standard's institution identifiers — Wells Fargo, Chase, etc.).
+3. A filename heuristic (`wellsfargo_2025.qfx`).
+4. The `--institution` flag, consulted only if steps 1–3 yield nothing.
+
+```bash
+moneybin import files ~/Downloads/statement.qfx --institution "Wells Fargo"
+```
+
+You almost never need step 4 — only if your bank uses a non-standard FID the importer can't auto-resolve.
+
+**Re-import safety.** OFX files carry their own transaction IDs (FITID), so re-importing the same statement is a no-op. The import log also tracks file-content hashes — re-running the exact same file is short-circuited. Pass `--force` to re-import anyway (creates a new batch).
+
+**Description cleanup.** OFX `<PAYEE>` and `<MEMO>` fields are HTML-entity-decoded at import; banks that double-escape (Wells Fargo's `AT&amp;amp;T`) are unwound to `AT&T`.
+
+### CSV / TSV / Excel / Parquet / Feather
+
+One pipeline handles all five. Same command, file-type-driven dispatch.
+
+```bash
+moneybin import files ~/Downloads/chase_activity.csv --account-name "Chase Checking"
+moneybin import files ~/Downloads/report.xlsx --sheet "Transactions"
+moneybin import files ~/Downloads/export.parquet --account-name "Main Account"
+```
+
+**What the smart importer saves you from:** writing a column-mapping file by hand. It detects format (encoding, delimiter, file type, preamble rows), finds the header row, matches headers to canonical fields via a 100+ entry alias dictionary, and validates each guess against actual data (a column mapped as `date` is checked for date-parseable values). On success the mapping is saved as a user format and subsequent files with the same header signature skip detection. Full design: [smart-import-tabular spec](../specs/smart-import-tabular.md).
+
+A three-tier **confidence score** drives prompts: high-confidence mappings load without prompting; medium and low surface the inferred mapping and ask before continuing. Pass `-y` / `--yes` to auto-accept the top match for unattended runs.
+
+**Supported formats:**
 
 | Format | Extensions | Notes |
 |--------|-----------|-------|
-| CSV | `.csv` | Auto-detects delimiter (comma, semicolon, pipe) |
-| TSV | `.tsv`, `.tab` | Tab-delimited |
-| Excel | `.xlsx` | Auto-selects the largest sheet, or specify with `--sheet` |
-| Parquet | `.parquet` | Zero-copy Arrow ingestion |
-| Feather | `.feather` | Zero-copy Arrow ingestion |
+| CSV | `.csv` | Auto-detects delimiter (comma, semicolon, pipe). |
+| TSV | `.tsv`, `.tab` | Tab-delimited. |
+| Excel | `.xlsx` | Auto-selects the largest sheet; `--sheet` overrides. |
+| Parquet | `.parquet` | |
+| Feather | `.feather` | |
 
-### Built-In Institution Formats
+**Sign conventions.** Different institutions encode expenses and income differently. Auto-detection usually picks the right one; `--sign` overrides:
 
-| Format | Institution | Notes |
-|--------|-----------|-------|
-| `chase_credit` | Chase | Credit card exports |
-| `citi_credit` | Citi | Credit card exports |
-| `mint` | Mint | Migration from Mint exports |
-| `tiller` | Tiller | Migration from Tiller Money spreadsheets |
-| `ynab` | YNAB | Migration from You Need A Budget exports |
-| `maybe` | Maybe | Migration from Maybe Finance exports |
+| Convention | Meaning | Typical sources |
+|-----------|---------|----------------|
+| `negative_is_expense` | Negative = expense (most common) | Chase, Wells Fargo |
+| `negative_is_income` | Negative = income (inverted) | Some credit cards |
+| `split_debit_credit` | Separate debit and credit columns | Citi, many European banks |
 
-### Column Detection
+**Number formats.** Specify with `--number-format` when needed: `us` (`1,234.56`), `european` (`1.234,56`), `swiss_french` (`1'234.56`), `zero_decimal` (`123456` cents).
 
-The column mapper uses 100+ header aliases to identify standard fields:
-- Date columns: "Transaction Date", "Post Date", "Fecha", "Datum", etc.
-- Amount columns: "Amount", "Debit", "Credit", "Betrag", etc.
-- Description columns: "Description", "Memo", "Payee", "Narrative", etc.
-
-Each detected mapping is validated against the actual data content (e.g., a column mapped as "date" is checked for date-parseable values).
-
-### Sign Conventions
-
-Different banks use different conventions for representing expenses and income:
-
-| Convention | Meaning | Example banks |
-|-----------|---------|---------------|
-| `negative_is_expense` | Negative amounts are expenses (most common) | Chase, Wells Fargo |
-| `negative_is_income` | Negative amounts are income (inverted) | Some credit cards |
-| `split_debit_credit` | Separate debit and credit columns | Citi, some European banks |
-
-Specify with `--sign` if auto-detection picks the wrong convention.
-
-### Number Formats
-
-| Format | Example | Regions |
-|--------|---------|---------|
-| `us` | `1,234.56` | US, UK, most English-speaking |
-| `european` | `1.234,56` | Germany, France, most EU |
-| `swiss_french` | `1'234.56` | Switzerland |
-| `zero_decimal` | `123456` (amounts in cents) | Some payment processors |
-
-### Import Options Reference
-
-| Option | Short | Description |
-|--------|-------|-------------|
-| `--institution` | `-i` | Institution name (OFX) or format name |
-| `--account-id` | `-a` | Account identifier (bypasses name matching) |
-| `--account-name` | `-n` | Account name for single-account tabular files |
-| `--format` | `-f` | Use a specific named format (bypass detection) |
-| `--override` | | Field-to-column override, repeatable |
-| `--sign` | | Sign convention override |
-| `--date-format` | | Date format (strptime format string) |
-| `--number-format` | | Number format: us, european, swiss_french, zero_decimal |
-| `--sheet` | | Excel sheet name |
-| `--delimiter` | | Explicit delimiter for text formats |
-| `--encoding` | | File encoding (e.g., utf-8, latin-1) |
-| `--skip-transform` | | Skip rebuilding core tables after import |
-| `--no-save-format` | | Don't save detected format for future use |
-| `--no-row-limit` | | Override row count limit |
-| `--no-size-limit` | | Override file size limit |
-
-## W-2 PDF Extraction
-
-Extract wage and tax data from IRS Form W-2 PDFs.
+**Preview before committing.** `moneybin import preview` runs detection and column-mapping without writing to the database:
 
 ```bash
-moneybin import file ~/Downloads/2024_W2.pdf
-```
-
-**What gets extracted:**
-- Employer information (name, EIN, address)
-- Wages and compensation (Box 1)
-- Federal and state tax withholding (Boxes 2, 17)
-- Social Security and Medicare wages/taxes (Boxes 3-6)
-- State-specific information
-- Tax year
-
-The extractor uses dual parsing strategies (structured field extraction and text pattern matching) for robust extraction across different PDF generators.
-
-## Import Management
-
-Track, inspect, and manage your imports.
-
-```bash
-# Show a summary of all imported data
-moneybin import status
-
-# List recent imports with batch details
-moneybin import history
-
-# Preview a file's structure without importing
 moneybin import preview ~/Downloads/transactions.csv
-
-# Revert an import (deletes all rows from that batch)
-moneybin import revert <import-id>
+moneybin import preview ~/Downloads/report.xlsx --sheet Sheet2
 ```
 
-Each import creates a batch record with:
-- Unique import ID
-- Source file path
-- Row counts (accounts, transactions)
-- Detection confidence score
-- Format used (built-in, saved, or auto-detected)
-- Timestamp
+**Most common per-file overrides** (single-file mode only — passing multiple paths disables them):
 
-## Format System
+| Flag | Purpose |
+|------|---------|
+| `-n, --account-name` | Account name when the file is single-account and the column doesn't carry one. |
+| `-f, --format` | Force a named format (`tiller`, `mint`, etc.). |
+| `--override` | Field-to-column override, repeatable (`--override date=Posted --override amount=Amt`). |
+| `--sign` | Sign convention override. |
+| `-y, --yes` | Auto-accept the top fuzzy account match without prompting. |
 
-Formats define how to read a specific institution's tabular exports. They specify column mapping, date format, sign convention, delimiter, and other parsing details.
+Full flag list (institution overrides, date format, encoding, sheet, delimiter, safety-limit toggles, format-save toggles): [CLI reference](cli-reference.md).
+
+## Live banking sync (Plaid)
+
+Plaid-connected sync pulls transactions, balances, and accounts directly from supported US banks. The connection brokers through `moneybin-server` (the Plaid integration backend you can self-host).
+
+One-time setup:
 
 ```bash
-# List all formats (built-in and user-saved)
-moneybin import formats list
-
-# Show details for a format
-moneybin import formats show chase_credit
-
-# Delete a user-saved format
-moneybin import formats delete my_bank
+moneybin sync login                                # device auth flow with moneybin-server
+moneybin sync connect --institution "Chase"        # opens Plaid Hosted Link in your browser
 ```
 
-When you import a file and auto-detection succeeds, the mapping is saved as a user format. Future imports from the same institution use the saved format directly, skipping detection.
+Pull on demand:
+
+```bash
+moneybin sync pull                                 # cursor-based incremental sync
+moneybin sync pull --institution "Chase"           # one institution only
+moneybin sync pull --force                         # reset cursor; re-fetch full history
+```
+
+Plaid rows land in `raw.plaid_*` and flow through SQLMesh into the same `core.fct_transactions` and `core.dim_accounts` as your file imports. Cross-source dedup runs automatically, so a Plaid transaction and the same transaction from an OFX import collapse to one canonical row.
+
+**Coverage today:** cash and credit-card accounts flow through the canonical pipeline. Investment, loan, mortgage, and HSA accounts get loaded if Plaid exposes them, but the holdings / cost-basis / balance-sheet surfaces those deserve land with the investments milestone — see the [roadmap](../roadmap.md).
+
+`sync pull` runs the post-load refresh pipeline (matching, SQLMesh apply, categorization) automatically; pass `--no-refresh` to defer.
+
+```bash
+moneybin sync status                               # connected institutions, last sync, health
+```
+
+## Inbox: drain a watched folder
+
+Drop files into the inbox directory and `moneybin import inbox` drains them in one batch.
+
+```bash
+moneybin import inbox path                         # print the inbox path
+moneybin import inbox list                         # dry-run: show what would be processed
+moneybin import inbox                              # drain it
+```
+
+The inbox lives at `~/Documents/MoneyBin/<profile>/inbox/`. Successes move to `processed/YYYY-MM/`; failures move to `failed/YYYY-MM/` with a YAML error sidecar describing what went wrong. A per-profile lockfile at `~/Documents/MoneyBin/<profile>/.inbox.lock` (advisory `flock`) prevents concurrent drains; a crashed drain releases the lock on process exit, so the next invocation proceeds normally.
+
+There is no built-in `--watch` mode today — cron or `launchd`/`systemd` against `moneybin import inbox` is the supported pattern.
+
+Useful when you keep a folder of monthly OFX downloads or a shared download directory — drop, drain, done.
+
+## Re-importing and dedup
+
+Two layers prevent duplicates:
+
+1. **The import log.** Each completed import records a SHA-256 of the source file. Re-running the same file is short-circuited — nothing is loaded, no batch is created. Pass `--force` / `-F` to load anyway (creates a new batch).
+2. **Per-row content hashes.** Inside the SQLMesh pipeline, cross-source dedup matches rows by content hash (date + amount + description + account) across CSV, OFX, and Plaid. Two imports of the same transaction collapse to one canonical row in `core.fct_transactions`; the bridge tables retain provenance for both sources.
+
+So: re-importing a file is a no-op. Importing the same transaction from two different sources is also a no-op — the second source contributes its provenance without double-counting.
+
+## Reverting an import
+
+If a whole batch landed wrong (wrong account, wrong format, garbled file), revert it.
+
+```bash
+moneybin import history                            # list recent batches with their IDs
+moneybin import revert abc123-...                  # delete all rows from that batch
+moneybin import revert abc123-... --yes            # skip the confirmation prompt
+```
+
+Revert deletes all transactions and accounts loaded in the specified batch and marks the batch as reverted in the import log. The original file is untouched on disk — you can re-import after fixing whatever was wrong (different `--format`, `--account-name`, etc.). Reverts cascade through downstream `core.*` and `reports.*` tables on the next refresh.
+
+**Fixing one row without nuking the batch.** There's no general `transactions update` command today (a known gap). The shipped subcommands cover the most common corrections:
+
+- Add or correct notes: `moneybin transactions notes add <id> "..."`
+- Add or correct tags: `moneybin transactions tags add <id> ...`
+- Split into child rows: `moneybin transactions splits add <id> ...`
+- Re-categorize: `moneybin transactions categorize <id> ...`
+
+For anything beyond those (rewriting the amount or date on a single row), the current path is revert the batch, fix the source file, and re-import.
+
+## Manual transaction entry
+
+For cash, gifts, reimbursements, and anything else that doesn't come from a file or sync.
+
+```bash
+moneybin transactions create --date 2026-05-17 --amount -42.50 \
+  --description "Coffee with Alex" --account-name "Cash"
+```
+
+One transaction at a time. For bulk paste, build a small CSV and run it through `moneybin import files`. Once a transaction exists, notes, tags, and splits live on top — see the [categorization guide](categorization.md).
+
+## Inspecting what's already imported
+
+```bash
+moneybin import status                             # per-table row counts and date ranges
+moneybin import history                            # batch log with IDs, status, confidence
+moneybin import history --import-id abc123        # one batch in detail
+moneybin import formats list                       # built-in and user-saved formats
+moneybin import formats show tiller                # field mapping and signature for one format
+moneybin import formats delete my_custom_format    # remove a user-saved format (built-ins are protected)
+```
+
+Pair any read command with `--output json` for machine-readable output — the same envelope shape the MCP server uses.
+
+## For scripts and agents
+
+`moneybin import` is designed to drive from cron, CI, or an agent loop. The contract:
+
+**Non-interactive flags.**
+
+- `--yes` / `-y` — auto-accept the top fuzzy account match without prompting. Does **not** auto-accept low-confidence column mappings on first detection of a new format — those still require interactive review, so first-touch of a new format should be done interactively, then automated thereafter.
+- `--output json` — emits the [standard response envelope](mcp-server.md#response-envelope) on stdout.
+- `--no-refresh` — defer the post-load SQLMesh apply. Useful when chaining many imports.
+- `--force` / `-F` — re-import a file already in the log.
+
+**Exit codes for `moneybin import files`.**
+
+- `0` — every file imported and (when refresh is enabled) the post-load refresh succeeded.
+- `1` — at least one file failed, or the refresh pipeline failed. Per-file failures do **not** abort the batch (the rest still import); the non-zero exit signals "look at the envelope."
+- `2` — usage error (missing arg, bad flag).
+
+The same contract applies to `moneybin import inbox`: the command exits 0 when the drain completes, even if individual files moved to `failed/`. Detect per-file failure via the `--output json` envelope or by checking the `failed/` directory — do not rely on exit code alone for the inbox.
+
+**`--output json` envelope shape** (mutating-command envelope; see [mcp-server.md](mcp-server.md#response-envelope) for the full schema):
+
+```json
+{
+  "data": {
+    "imported_count": 2,
+    "failed_count": 1,
+    "total_count": 3,
+    "transforms_applied": true,
+    "transforms_duration_seconds": 4.2,
+    "files": [
+      {"path": "a.ofx", "status": "imported", "source_type": "ofx", "rows_loaded": 142, "import_id": "..."},
+      {"path": "b.csv", "status": "imported", "source_type": "csv", "rows_loaded": 88, "import_id": "..."},
+      {"path": "c.xlsx", "status": "failed", "source_type": null, "rows_loaded": 0, "import_id": null, "error": "ValueError"}
+    ]
+  },
+  "metadata": {"sensitivity": "low", ...}
+}
+```
+
+`transforms_error` is set on the envelope when refresh failed; non-zero exit follows.
+
+**Concurrency.** The inbox lockfile serializes inbox drains within a profile. There is no equivalent lock around bare `moneybin import files` — two parallel invocations against the same profile race on the import log. The supported pattern is: serialize at the caller (one cron job, one agent worker), or drop files in the inbox and let the inbox lock handle ordering.
+
+**SIGTERM mid-import.** Not yet a guaranteed clean rollback. If a file is mid-load when the process dies, the import-log row may stay in `in_progress` state; rerun against a fresh process and the next `import files` against the same file is short-circuited by the file-hash log. A clean partial-batch rollback contract is planned but not shipped — for now, treat SIGTERM as "may need a manual `import revert` on the partial batch."
+
+## What's not supported yet
+
+The honest gap list. See the [roadmap](../roadmap.md) for current sequencing.
+
+- **Direct Beancount / hledger ingest.** No plain-text-accounting parsers; export to OFX or CSV instead.
+- **Automated migration from Monarch or Copilot.** No API pull; CSV-only.
+- **Broker / investment statements.** Plaid investment accounts load if exposed, but holdings, cost basis, and FIFO lot tracking land with the investments milestone.
+- **Multi-currency at import time.** Today MoneyBin treats every amount as USD. Original-currency preservation and FX gain/loss are planned.
+- **PDF ingest.** No PDF formats are currently supported. Account-statement, W-2, 1099, and receipt parsing aren't on the near-term roadmap.
+- **General-purpose row-level updates.** No `transactions update` command; use notes, tags, splits, categorize subcommands or revert and re-import.
+- **`--watch` mode for the inbox.** Cron or `launchd`/`systemd` is the supported pattern today.
+- **Bulk manual transaction entry.** One row at a time via `moneybin transactions create`; for batches, build a CSV and import it.

@@ -81,7 +81,9 @@ beyond what the schema files declare.
 | (app, audit_log) | target_id | RECORD_ID | references arbitrary internal IDs (transaction, rule, merchant); all are RECORD_ID-class in their home tables. |
 | (app, balance_assertions) | account_id | ACCOUNT_IDENTIFIER | account-bound external ID; same value as `dim_accounts.account_id`. |
 | (app, budgets) | budget_id | RECORD_ID | 12-char truncated UUID4 per identifiers.md; app-created entity with no natural key. |
+| (app, budgets) | category_id | RECORD_ID | FK to `core.dim_categories.category_id` (V014 dual-write); same class as the referenced column when held by a mutation table. |
 | (app, categorization_rules) | account_id | ACCOUNT_IDENTIFIER | optional account-bound external ID restricting the rule. |
+| (app, categorization_rules) | category_id | RECORD_ID | FK to `core.dim_categories.category_id` (V014 dual-write). |
 | (app, categorization_rules) | rule_id | RECORD_ID | 12-char truncated UUID4; app-created entity. |
 | (app, category_overrides) | category_id | CATEGORY | matches `seeds.categories.category_id` which is a semantic slug (e.g. `INC-SAL`); rule 9 classifies semantic-slug category IDs as CATEGORY. |
 | (app, imports) | import_id | RECORD_ID | FK to `raw.import_log.import_id`, a content-hash internal identifier. |
@@ -90,19 +92,24 @@ beyond what the schema files declare.
 | (app, match_decisions) | match_id | RECORD_ID | internal UUID PK for the decision row. |
 | (app, match_decisions) | source_transaction_id_a | RECORD_ID | transaction-level external ID (FITID, Plaid transaction_id, content hash); transaction-bound, not account-bound — rule 1 third bullet. |
 | (app, match_decisions) | source_transaction_id_b | RECORD_ID | same as `_a`. |
+| (app, proposed_rules) | category_id | RECORD_ID | FK to `core.dim_categories.category_id` (V014 dual-write). |
 | (app, proposed_rules) | proposed_rule_id | RECORD_ID | 12-char truncated UUID4 per identifiers.md. |
 | (app, proposed_rules) | sample_txn_ids | RECORD_ID | LIST of internal transaction IDs; transaction-bound, not account-bound. |
 | (app, rule_deactivations) | deactivation_id | RECORD_ID | 12-char truncated UUID4. |
+| (app, rule_deactivations) | new_category_id | RECORD_ID | FK to `core.dim_categories.category_id` (V014 dual-write) — converged category at deactivation. |
 | (app, rule_deactivations) | rule_id | RECORD_ID | soft reference to `categorization_rules.rule_id`. |
+| (app, transaction_categories) | category_id | RECORD_ID | FK to `core.dim_categories.category_id` (V014 dual-write). |
 | (app, transaction_categories) | merchant_id | RECORD_ID | 12-char truncated UUID4 from `app.user_merchants`. |
 | (app, transaction_categories) | rule_id | RECORD_ID | optional FK to `categorization_rules.rule_id`. |
 | (app, transaction_categories) | transaction_id | RECORD_ID | content-hash gold key per identifiers.md; transaction-bound. |
 | (app, transaction_notes) | note_id | RECORD_ID | 12-char truncated UUID4. |
 | (app, transaction_notes) | transaction_id | RECORD_ID | content-hash gold key. |
+| (app, transaction_splits) | category_id | RECORD_ID | FK to `core.dim_categories.category_id` (V014 dual-write). |
 | (app, transaction_splits) | split_id | RECORD_ID | 12-char truncated UUID4. |
 | (app, transaction_splits) | transaction_id | RECORD_ID | content-hash gold key. |
 | (app, transaction_tags) | transaction_id | RECORD_ID | content-hash gold key. |
 | (app, user_categories) | category_id | RECORD_ID | 12-char UUID hex assigned at creation; rule 9 says UUID4 `category_id` → RECORD_ID (distinct from the slug variant in `seeds.categories`). |
+| (app, user_merchants) | category_id | RECORD_ID | FK to `core.dim_categories.category_id` (V014 dual-write); merchant default category. |
 | (app, user_merchants) | merchant_id | RECORD_ID | 12-char UUID hex from `uuid.uuid4().hex[:12]`. |
 | (core, bridge_transfers) | credit_transaction_id | RECORD_ID | FK to `fct_transactions.transaction_id`; transaction-bound. |
 | (core, bridge_transfers) | debit_transaction_id | RECORD_ID | FK to `fct_transactions.transaction_id`; transaction-bound. |

@@ -1,17 +1,20 @@
-"""MatchingService — thin facade over TransactionMatcher.
+"""MatchingService — thin facade over the matching package's primitives.
 
-Exists so the scenario runner, MCP tools, and CLI can call
-``MatchingService(db).run()`` uniformly alongside other services.
+Exposes ``run``, ``seed_priority``, ``undo``, ``get_log``, and
+``count_pending`` so adapters and other services call
+``MatchingService(db).method(...)`` uniformly instead of importing
+:mod:`moneybin.matching.engine` / ``persistence`` / ``priority`` directly.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from moneybin.config import MatchingSettings, get_settings
 from moneybin.database import Database
 from moneybin.matching.engine import TransactionMatcher
+from moneybin.matching.persistence import get_match_log, undo_match
 from moneybin.matching.priority import seed_source_priority
 from moneybin.tables import MATCH_DECISIONS
 
@@ -53,3 +56,31 @@ class MatchingService:
         return TransactionMatcher(self._db, self._settings).run(
             auto_accept_transfers=auto_accept_transfers
         )
+
+    def seed_priority(self) -> None:
+        """Seed ``app.seed_source_priority`` from current MatchingSettings.
+
+        Exposed so callers that need only the seed step (e.g. SQLMesh
+        transforms that LEFT JOIN onto the priority table) can route
+        through the service rather than importing the matching module
+        directly.
+        """
+        seed_source_priority(self._db, self._settings)
+
+    def undo(self, match_id: str, *, reversed_by: str = "user") -> None:
+        """Reverse a match decision.
+
+        Wraps :func:`moneybin.matching.persistence.undo_match` so adapters
+        route through the service rather than importing the persistence
+        module directly.
+        """
+        undo_match(self._db, match_id, reversed_by=reversed_by)
+
+    def get_log(
+        self, *, limit: int = 50, match_type: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Return recent match decisions for display.
+
+        Wraps :func:`moneybin.matching.persistence.get_match_log`.
+        """
+        return get_match_log(self._db, limit=limit, match_type=match_type)

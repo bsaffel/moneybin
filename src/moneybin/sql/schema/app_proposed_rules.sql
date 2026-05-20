@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS app.proposed_rules (
     category VARCHAR NOT NULL, -- DEPRECATED in V014 (Phase 1 dual-write): display snapshot; category_id is the canonical reference. NOT NULL retained until Phase 2 drops the column.
     subcategory VARCHAR, -- DEPRECATED in V014 (Phase 1 dual-write): display snapshot; category_id is the canonical reference
     category_id VARCHAR, -- Foreign key to core.dim_categories.category_id; NULL only for orphaned legacy rows
+    rule_id VARCHAR, -- Foreign key to app.categorization_rules.rule_id; set when status='approved'. NULL until approval. Replaces the text-keyed proposal->rule linkage that V016 retired.
     status VARCHAR DEFAULT 'pending', -- Lifecycle state: tracking (sub-threshold accumulation), pending (awaiting decision), approved, rejected, or superseded
     trigger_count INTEGER DEFAULT 1, -- Number of categorizations that triggered or reinforced this proposal
     source VARCHAR DEFAULT 'pattern_detection', -- How proposal was generated: pattern_detection or ml
@@ -17,3 +18,7 @@ CREATE TABLE IF NOT EXISTS app.proposed_rules (
 
 CREATE INDEX IF NOT EXISTS idx_proposed_rules_pattern_status
     ON app.proposed_rules (merchant_pattern, status);
+
+-- idx_proposed_rules_rule_id lives in V016 because the rule_id column
+-- is added by that migration; the schema file runs before migrations,
+-- so an index DDL here would bind against the pre-V016 table shape.

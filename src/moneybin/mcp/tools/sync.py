@@ -25,29 +25,13 @@ from moneybin.privacy.payloads.sync import (
     SyncDisconnectPayload,
     SyncPullInstitutionRow,
     SyncPullPayload,
-    SyncSchedulePlaceholderPayload,
     SyncStatusPayload,
 )
 from moneybin.protocol.envelope import (
     ResponseEnvelope,
     build_envelope,
     build_error_envelope,
-    not_implemented_envelope,
 )
-
-_SPEC = "docs/specs/2026-05-13-plaid-sync-design.md"
-
-
-def _stub(action: str) -> ResponseEnvelope[SyncSchedulePlaceholderPayload]:
-    cli_verb = action.removeprefix("sync_").replace("_", " ")
-    return not_implemented_envelope(  # type: ignore[return-value]
-        action=action,
-        spec=_SPEC,
-        actions=[
-            f"Use the CLI: moneybin sync {cli_verb}",
-            f"See {_SPEC} for the planned MCP surface",
-        ],
-    )
 
 
 def _build_sync_client() -> Any:
@@ -250,24 +234,6 @@ def sync_disconnect(institution: str) -> ResponseEnvelope[SyncDisconnectPayload]
     )
 
 
-@mcp_tool(read_only=False)
-def sync_schedule_set(time: str) -> ResponseEnvelope[SyncSchedulePlaceholderPayload]:  # noqa: ARG001 — placeholder
-    """Install a daily sync at the given HH:MM."""
-    return _stub("sync_schedule_set")
-
-
-@mcp_tool()
-def sync_schedule_show() -> ResponseEnvelope[SyncSchedulePlaceholderPayload]:
-    """Show current scheduled sync details."""
-    return _stub("sync_schedule_show")
-
-
-@mcp_tool(read_only=False)
-def sync_schedule_remove() -> ResponseEnvelope[SyncSchedulePlaceholderPayload]:
-    """Uninstall the scheduled sync job."""
-    return _stub("sync_schedule_remove")
-
-
 SYNC_REVIEW_PROMPT = """\
 Review my MoneyBin sync state and flag anything that needs attention.
 
@@ -310,8 +276,5 @@ def register_sync_tools(mcp: FastMCP) -> None:
             "Pull transactions, accounts, and balances. Amounts use MoneyBin convention (negative = expense).",
         ),
         (sync_status, "Connected institutions, last-sync times, and errors."),
-        (sync_schedule_set, "Install a daily sync at HH:MM."),
-        (sync_schedule_show, "Show current scheduled sync."),
-        (sync_schedule_remove, "Uninstall the scheduled sync job."),
     ]:
         register(mcp, fn, fn.__name__, desc)

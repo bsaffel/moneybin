@@ -10,19 +10,15 @@ import pytest
 from moneybin.database import Database
 from moneybin.matching.transfer import (
     TransferCandidatePair,
-    compute_amount_roundness,
     compute_date_score,
     compute_keyword_score,
-    compute_pair_frequency,
     compute_transfer_confidence,
     get_candidates_transfers,
 )
 
 _DEFAULT_WEIGHTS: dict[str, float] = {
-    "date_distance": 0.4,
-    "keyword": 0.3,
-    "roundness": 0.15,
-    "pair_frequency": 0.15,
+    "date_distance": 0.6,
+    "keyword": 0.4,
 }
 
 
@@ -54,56 +50,6 @@ class TestComputeKeywordScore:
         assert compute_keyword_score("MARCH WIRELESS", "PURCHASE") == 0.0
 
 
-class TestComputeAmountRoundness:
-    """Tests for amount roundness scoring."""
-
-    def test_divisible_by_100(self) -> None:
-        assert compute_amount_roundness(Decimal("500")) == 1.0
-        assert compute_amount_roundness(Decimal("1000")) == 1.0
-
-    def test_divisible_by_10(self) -> None:
-        assert compute_amount_roundness(Decimal("50")) == 0.7
-        assert compute_amount_roundness(Decimal("130")) == 0.7
-
-    def test_whole_dollar(self) -> None:
-        assert compute_amount_roundness(Decimal("42")) == 0.5
-        assert compute_amount_roundness(Decimal("7")) == 0.5
-
-    def test_fractional(self) -> None:
-        assert compute_amount_roundness(Decimal("42.50")) == 0.3
-        assert compute_amount_roundness(Decimal("99.99")) == 0.3
-
-
-class TestComputePairFrequency:
-    """Tests for account pair frequency scoring."""
-
-    def test_single_pair(self) -> None:
-        counts = {("acct1", "acct2"): 1}
-        score = compute_pair_frequency("acct1", "acct2", counts, max_count=1)
-        assert score == 1.0
-
-    def test_frequent_pair(self) -> None:
-        counts = {("acct1", "acct2"): 5, ("acct1", "acct3"): 2}
-        score = compute_pair_frequency("acct1", "acct2", counts, max_count=5)
-        assert score == 1.0
-
-    def test_infrequent_pair(self) -> None:
-        counts = {("acct1", "acct2"): 5, ("acct1", "acct3"): 2}
-        score = compute_pair_frequency("acct1", "acct3", counts, max_count=5)
-        assert score == pytest.approx(0.4)  # type: ignore[reportUnknownMemberType] — pytest.approx stub incomplete
-
-    def test_order_independent(self) -> None:
-        counts = {("acct1", "acct2"): 3}
-        score_ab = compute_pair_frequency("acct1", "acct2", counts, max_count=3)
-        score_ba = compute_pair_frequency("acct2", "acct1", counts, max_count=3)
-        assert score_ab == score_ba
-
-    def test_unknown_pair(self) -> None:
-        counts = {("acct1", "acct2"): 3}
-        score = compute_pair_frequency("acct3", "acct4", counts, max_count=3)
-        assert score == 0.0
-
-
 class TestComputeTransferConfidence:
     """Tests for combined transfer confidence scoring."""
 
@@ -111,8 +57,6 @@ class TestComputeTransferConfidence:
         score = compute_transfer_confidence(
             date_score=compute_date_score(0, 3),
             keyword_score=1.0,
-            amount_roundness=1.0,
-            pair_frequency=1.0,
             weights=_DEFAULT_WEIGHTS,
         )
         assert score == pytest.approx(1.0)  # type: ignore[reportUnknownMemberType] — pytest.approx stub incomplete
@@ -121,8 +65,6 @@ class TestComputeTransferConfidence:
         score = compute_transfer_confidence(
             date_score=compute_date_score(3, 3),
             keyword_score=0.0,
-            amount_roundness=0.0,
-            pair_frequency=0.0,
             weights=_DEFAULT_WEIGHTS,
         )
         assert score == pytest.approx(0.0)  # type: ignore[reportUnknownMemberType] — pytest.approx stub incomplete
@@ -131,15 +73,11 @@ class TestComputeTransferConfidence:
         same_day = compute_transfer_confidence(
             date_score=compute_date_score(0, 3),
             keyword_score=0.5,
-            amount_roundness=0.5,
-            pair_frequency=0.5,
             weights=_DEFAULT_WEIGHTS,
         )
         one_day = compute_transfer_confidence(
             date_score=compute_date_score(1, 3),
             keyword_score=0.5,
-            amount_roundness=0.5,
-            pair_frequency=0.5,
             weights=_DEFAULT_WEIGHTS,
         )
         assert same_day > one_day
@@ -148,14 +86,10 @@ class TestComputeTransferConfidence:
         weights = {
             "date_distance": 1.0,
             "keyword": 0.0,
-            "roundness": 0.0,
-            "pair_frequency": 0.0,
         }
         score = compute_transfer_confidence(
             date_score=compute_date_score(0, 3),
             keyword_score=1.0,
-            amount_roundness=1.0,
-            pair_frequency=1.0,
             weights=weights,
         )
         assert score == pytest.approx(1.0)  # type: ignore[reportUnknownMemberType] — pytest.approx stub incomplete
@@ -166,8 +100,6 @@ class TestComputeTransferConfidence:
                 score = compute_transfer_confidence(
                     date_score=compute_date_score(days, 3),
                     keyword_score=kw,
-                    amount_roundness=0.5,
-                    pair_frequency=0.5,
                     weights=_DEFAULT_WEIGHTS,
                 )
                 assert 0.0 <= score <= 1.0
@@ -454,7 +386,7 @@ class TestGetCandidatesTransfers:
         )
         assert len(candidates) == 0
 
-    def test_scores_all_four_signals(self, transfer_table: Database) -> None:
+    def test_scores_both_signals(self, transfer_table: Database) -> None:
         _insert_transfer_row(
             transfer_table,
             source_transaction_id="csv_chk1",
@@ -481,8 +413,6 @@ class TestGetCandidatesTransfers:
         pair = candidates[0]
         assert pair.date_distance_score == 1.0
         assert pair.keyword_score > 0.0
-        assert pair.amount_roundness_score == 1.0
-        assert pair.pair_frequency_score > 0.0
         assert 0.0 < pair.confidence_score <= 1.0
 
     def test_debit_side_is_a_credit_side_is_b(self, transfer_table: Database) -> None:

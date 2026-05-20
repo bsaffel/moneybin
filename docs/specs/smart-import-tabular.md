@@ -604,8 +604,9 @@ Applies the confirmed mapping to produce the canonical raw schema shape.
   institution slug (multi-account files). Example: `--account-name "First National
   Checking"` → format name `first_national`. If a format with that name already
   exists, prompt to update it (or auto-update with `--yes`).
-- Trigger SQLMesh transforms unless `--skip-transform` is specified.
-- Apply deterministic categorization post-transform (merchant lookups + rules).
+- Trigger the end-of-batch refresh pipeline (matching + SQLMesh apply + deterministic
+  categorization) once after the batch completes, unless `--no-refresh` is specified.
+  Routed through `services/refresh.py` (PR #151).
 
 **Import reverting:** `moneybin import revert <import-id>` deletes all
 `raw.tabular_transactions` and `raw.tabular_accounts` rows matching that
@@ -810,7 +811,6 @@ handles renaming `source_system` → `source_type` in `core.dim_accounts` and
 | `pipe` | `raw.tabular_*` | Smart tabular importer |
 | `ofx` | `raw.ofx_*` | OFX importer (existing) |
 | `plaid` | `raw.plaid_*` | Plaid connector (future) |
-| `pdf_w2` | `raw.w2_*` | W-2 extractor (existing) |
 
 The raw tables are shared across all tabular formats (`raw.tabular_*`) because the data
 shape is identical once read. The `source_type` column distinguishes the original import
@@ -919,39 +919,44 @@ flowchart TD
 
 ### Primary import command
 
-The primary command is `moneybin import file` — format-agnostic, handles all tabular
-formats through the same entry point.
+The primary command is `moneybin import files` (variadic — accepts one or more paths) —
+format-agnostic, handles all tabular formats through the same entry point. Renamed from
+`moneybin import file` (singular) as part of the transform handoff spec; see
+`smart-import-transform.md`.
 
 ```bash
 # Happy path — format matches or detection succeeds
-moneybin import file statement.csv --account-name "Chase Checking"
+moneybin import files statement.csv --account-name "Chase Checking"
 
 # Explicit format
-moneybin import file statement.csv --account-name "Chase Checking" --format chase_credit
+moneybin import files statement.csv --account-name "Chase Checking" --format chase_credit
 
 # Multi-account file (no --account-name needed)
-moneybin import file tiller-export.csv
+moneybin import files tiller-export.csv
+
+# Batch — multiple files in one call
+moneybin import files chase-march.csv chase-april.csv --account-name "Chase Checking"
 
 # Non-interactive with overrides (AI agents and scripts)
-moneybin import file statement.csv --account-name "Chase Checking" \
+moneybin import files statement.csv --account-name "Chase Checking" \
   --override date="Post Date" \
   --override amount="Debit" \
   --yes --save-format
 
 # Skip confirmation, don't save format
-moneybin import file statement.csv --account-name "Chase Checking" --yes --no-save-format
+moneybin import files statement.csv --account-name "Chase Checking" --yes --no-save-format
 
 # Format/delimiter override for edge cases
-moneybin import file data.txt --account-name "Acme Checking" --delimiter="|" --encoding=latin-1
+moneybin import files data.txt --account-name "Acme Checking" --delimiter="|" --encoding=latin-1
 
 # Excel with sheet selection
-moneybin import file workbook.xlsx --account-name "Savings" --sheet="Transactions"
+moneybin import files workbook.xlsx --account-name "Savings" --sheet="Transactions"
 
 # Direct account ID (bypass name matching)
-moneybin import file statement.csv --account-id chase-checking
+moneybin import files statement.csv --account-id chase-checking
 
-# Skip SQLMesh transforms
-moneybin import file statement.csv --account-name "Checking" --skip-transform
+# Skip end-of-batch refresh pipeline (matching + SQLMesh apply + categorization)
+moneybin import files statement.csv --account-name "Checking" --no-refresh
 ```
 
 ### Interactive flow examples
@@ -959,7 +964,7 @@ moneybin import file statement.csv --account-name "Checking" --skip-transform
 **High confidence detection:**
 
 ```
-$ moneybin import file first-national-march-2026.csv --account-name "FN Checking"
+$ moneybin import files first-national-march-2026.csv --account-name "FN Checking"
 
 ⚙️  No matching format found. Analyzing columns...
 
@@ -1010,7 +1015,7 @@ Accept this mapping? [Y/edit/skip]
    No column parsed as dates (tried 8 formats on 6 columns).
 
 💡 Try specifying columns manually:
-   moneybin import file pivot-report.csv --account-name "Checking" \
+   moneybin import files pivot-report.csv --account-name "Checking" \
      --override date="Column Name" --override amount="Column Name" \
      --override description="Column Name"
 
@@ -1021,7 +1026,7 @@ Accept this mapping? [Y/edit/skip]
 **Multi-account file:**
 
 ```
-$ moneybin import file tiller-export.csv
+$ moneybin import files tiller-export.csv
 
 ⚙️  Detected Tiller format (built-in).
    Multi-account file: 4 accounts found.
@@ -1044,7 +1049,7 @@ Create 2 new accounts and import 582 transactions? [Y/edit/skip]
 **Account fuzzy matching:**
 
 ```
-$ moneybin import file statement.csv --account-name "Chase Check"
+$ moneybin import files statement.csv --account-name "Chase Check"
 
 ⚠️  No exact account match for "Chase Check". Did you mean:
   [1] Chase Checking (last import: 2026-04-01, 1,247 transactions)
@@ -1134,39 +1139,38 @@ Valid field names are the keys of `FIELD_ALIASES` plus `sign_convention` and
 
 MCP tools mirror CLI capabilities through the shared service layer.
 
-### `import_file` — primary import tool
+### `import_files` — primary import tool
+
+Renamed from `import_file` (singular) in the transform handoff PR. Takes a list of paths
+and runs the refresh pipeline once at end-of-batch by default.
 
 ```python
-def import_file(
-    file_path: str,
-    account_name: str | None = None,
-    account_id: str | None = None,
-    format_name: str | None = None,
-    overrides: dict[str, str] | None = None,
-    save_format: bool = True,
-    auto_confirm: bool = False,
-    sheet: str | None = None,
-    delimiter: str | None = None,
-    skip_transform: bool = False,
-) -> ImportResult:
+def import_files(
+    paths: list[str],
+    refresh: bool = True,
+    force: bool = False,
+) -> ResponseEnvelope:
 ```
 
-Returns one of:
-- `{"status": "success", "rows_imported": 347, "format_used": "chase_credit", "accounts": [...]}`
-- `{"status": "confirmation_required", "confidence": "high|medium", "detection": {...}, "accounts": [...], "token": "..."}`
-- `{"status": "failed", "confidence": "low", "reason": "...", "suggestions": [...]}`
+Returns a `ResponseEnvelope` with per-file results in `data.files`, aggregate
+`data.imported` / `data.failed` / `data.total` counts, and a `data.transforms`
+sub-block reflecting whether the end-of-batch refresh ran. Per-file failures do
+not abort the batch; if at least one file imported, the refresh pipeline (matching +
+SQLMesh apply + categorization) runs unless `refresh=False`.
+
+The high-confidence / confirmation-required / low-confidence detection-result
+shapes described above for the interactive CLI flow surface in `data.files[]`
+entries; the batch tool does not have a separate `import_confirm` step (see
+note below).
 
 ### `import_confirm` — confirm or override a pending detection
 
-```python
-def import_confirm(
-    token: str,
-    accept: bool = True,
-    overrides: dict[str, str] | None = None,
-    save_format: bool = True,
-    account_selections: dict[str, str] | None = None,
-) -> ImportResult:
-```
+Originally specified as a paired tool for the interactive confirmation flow.
+Not shipped as a standalone MCP tool: detection ambiguity surfaces in the
+`import_files` response envelope (per-file confidence + suggested overrides) and
+the caller retries with explicit `format_name=` or override flags rather than
+holding a confirmation token. Tracked as future work if interactive token-based
+flows become necessary.
 
 ### `import_preview` — preview file structure
 
@@ -1190,29 +1194,30 @@ def import_history(
 ### `import_revert` — undo an import batch
 
 ```python
-def import_revert(
-    import_id: str,
-    auto_confirm: bool = False,
-) -> RevertResult:
+def import_revert(import_id: str) -> RevertResult:
     # Returns: {"status": "reverted", "rows_deleted": 347, "accounts_affected": [...]}
     # or: {"status": "already_reverted", "reverted_at": "..."}
     # or: {"status": "not_found", "reason": "No import with ID ..."}
 ```
 
-### `list_formats` — list available formats
+### `import_formats` — list available formats
+
+Shipped as `import_formats` (not `list_formats` — `_list` suffixes dropped per
+shape-5 noun-only convention, PR #172).
 
 ```python
-def list_formats() -> list[FormatSummary]:
-    # Returns: name, institution_name, file_type, times_used, last_used_at, source
+def import_formats() -> ResponseEnvelope:
+    # data.formats: [{name, institution_name, file_type, times_used, last_used_at, source}]
 ```
 
 ### Renamed/replaced MCP tools
 
-| Current tool | New tool | Notes |
+| Original tool | Current tool | Notes |
 |---|---|---|
-| `csv_list_profiles` | `list_formats` | Format-neutral |
-| `csv_save_profile` | Absorbed into `import_file` via `save_format` flag | No standalone save — formats are saved as part of import |
+| `csv_list_profiles` | `import_formats` | Format-neutral; `_list` suffix dropped (PR #172) |
+| `csv_save_profile` | Absorbed into `import_files` via `save_format` flag | No standalone save — formats are saved as part of import |
 | `csv_preview_file` | `import_preview` | Format-neutral |
+| `import_file` (singular) | `import_files` (list, batch-shaped) | Renamed in transform handoff; runs refresh pipeline at end-of-batch |
 
 ---
 
@@ -1679,7 +1684,7 @@ is catastrophic. Fixtures are the primary defense against regression.
 | `src/moneybin/database.py` | Add `ingest_dataframe()` method |
 | `src/moneybin/services/import_service.py` | Replace CSV-specific import with tabular import pipeline |
 | `src/moneybin/cli/commands/import_cmd.py` | Update flags, add format management subcommands |
-| `src/moneybin/mcp/write_tools.py` | Replace `csv_*` tools with format-neutral tools |
+| `src/moneybin/mcp/tools/import_tools.py` | Format-neutral import MCP tools (`import_files`, `import_preview`, `import_status`, `import_revert`, `import_formats`); replaces the previous `csv_*` tools |
 | `sqlmesh/models/core/dim_accounts.sql` | Replace `csv` CTE with `tabular` |
 | `sqlmesh/models/core/fct_transactions.sql` | Replace `csv` CTE with `tabular` |
 

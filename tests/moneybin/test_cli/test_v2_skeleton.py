@@ -17,7 +17,6 @@ V2_GROUPS = [
     "categories",
     "merchants",
     "reports",
-    "tax",
     "system",
     "budget",
 ]

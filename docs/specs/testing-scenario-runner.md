@@ -4,17 +4,22 @@
 > [`testing-scenario-comprehensive.md`](testing-scenario-comprehensive.md);
 > this doc covers the runner mechanics (loader, registries, harness) only.
 
-> **Status update (2026-04-30):** The scenario runner has moved from
-> `src/moneybin/testing/scenarios/` to `tests/scenarios/_runner/`, and
-> scenarios now run via `make test-scenarios` (which invokes
-> `pytest tests/scenarios/ -m scenarios`) instead of the (now-removed)
-> `moneybin synthetic verify` CLI. See
+> **Status update (2026-04-30, refreshed 2026-05-17):** The scenario runner has
+> moved from `src/moneybin/testing/scenarios/` to `tests/scenarios/_runner/`,
+> and scenario YAML files live in `tests/scenarios/data/` (not under the
+> `_runner/` package). Scenarios now run via `make test-scenarios` (which
+> invokes `pytest tests/scenarios/ -m scenarios`) instead of the (now-removed)
+> `moneybin synthetic verify` CLI. The bespoke `ResponseEnvelope` result
+> shape was dropped in favor of `pytest-json-report`. See
 > [`testing-scenario-comprehensive.md`](testing-scenario-comprehensive.md)
-> for the migration plan. The architecture and assertion vocabulary
-> documented below are still accurate; path and CLI references in the
-> body describe the pre-relocation layout for historical context.
+> for the migration plan and taxonomy. The architecture and assertion
+> vocabulary documented below are still accurate; some path and CLI
+> references in the body describe the pre-relocation layout for historical
+> context — current canonical paths are `src/moneybin/validation/` (primitives),
+> `tests/scenarios/_runner/` (runner code), `tests/scenarios/data/*.yaml`
+> (scenarios), and `tests/scenarios/test_*.py` (pytest entry points).
 
-> Last updated: 2026-04-26
+> Last updated: 2026-05-17
 > Status: implemented
 > Type: Feature
 > Parent: [`testing-overview.md`](testing-overview.md)
@@ -77,9 +82,9 @@ The SQLMesh-catalog bug is one symptom, not the thesis. The runner exists for th
 
 ### Scenario format
 
-1. Scenarios are YAML files shipped with the package under `src/moneybin/testing/scenarios/data/`.
+1. Scenarios are YAML files under `tests/scenarios/data/` (Phase 1 relocation: previously `src/moneybin/testing/scenarios/data/`).
 2. Each scenario declares: `setup` (persona + seed + years + optional fixture overlays), `pipeline` (ordered list of step names), `assertions` (list of named primitives with args), `evaluations` (list of named scorers with thresholds), and `gates` (which assertions and evaluations are required for pass).
-3. Pydantic models in `src/moneybin/testing/scenarios/loader.py` validate every scenario at load time. Invalid YAML fails fast with field-level errors.
+3. Pydantic models in `tests/scenarios/_runner/loader.py` validate every scenario at load time. Invalid YAML fails fast with field-level errors.
 4. Fixture paths declared in `setup.fixtures[].path` must resolve under the repository's `tests/fixtures/` tree. Path traversal outside the tree is rejected per `.claude/rules/security.md`.
 
 ### Orchestration
@@ -112,7 +117,7 @@ The SQLMesh-catalog bug is one symptom, not the thesis. The runner exists for th
 
 ## Scenario file format
 
-Three fully worked examples follow. Each lives in `src/moneybin/testing/scenarios/data/`.
+Three fully worked examples follow. Each lives in `tests/scenarios/data/`.
 
 ### Example 1 — `family-full-pipeline.yaml`
 
@@ -299,7 +304,7 @@ flowchart TD
 
 ### Pipeline step registry
 
-Step names map to in-process callables registered in `src/moneybin/testing/scenarios/steps.py`:
+Step names map to in-process callables registered in `tests/scenarios/_runner/steps.py`:
 
 | Step | Implementation |
 |---|---|
@@ -307,7 +312,7 @@ Step names map to in-process callables registered in `src/moneybin/testing/scena
 | `load_fixtures` | Reads each `setup.fixtures[]` entry; calls the appropriate extractor; writes via `Database.ingest_dataframe()` |
 | `transform` | `with sqlmesh_context() as ctx: ctx.run()` against the temp DB |
 | `match` | `MatchingService(db, settings).run()` — runs same-record dedup (Tier 2b/3) and transfer detection (Tier 4) in one pass; thin wrapper around the existing `TransactionMatcher` primitive in `src/moneybin/matching/`. See §"Service-layer prerequisites." |
-| `categorize` | `CategorizationService(db).categorize_uncategorized_items()`; followed by `apply_pending_auto_rules()` once `categorization-auto-rules.md` ships. The categorization service class is introduced as part of `categorization-auto-rules.md` implementation. |
+| `categorize` | `CategorizationService(db).categorize_pending()` (method renamed from the originally-planned `categorize_uncategorized_items()` during the service split in PR #155). Auto-rule promotion is part of `categorize_pending()`'s cascade — no separate `apply_pending_auto_rules()` call needed. |
 | `migrate` | `MigrationRunner(db).run()` against an explicitly-set target version |
 | `transform_via_subprocess` | Shells out to `uv run moneybin transform apply` with the temp profile env |
 
@@ -408,7 +413,7 @@ Every primitive returns `AssertionResult` — no bare bools, no exceptions on as
 | Distributional | `assert_distribution_within_bounds(conn, table, col, min, max, mean_range)` | Column statistics within ranges |
 | Distributional | `assert_unique_value_count(conn, table, col, expected, tolerance_pct)` | Cardinality check |
 | Infrastructure | `assert_sqlmesh_catalog_matches(db)` | SQLMesh's adapter is bound to `db.path` |
-| Infrastructure | `assert_encryption_key_propagated_to_subprocess(db, command, expected_min_rows)` | Subprocess writes land in the same encrypted DB |
+| Infrastructure | `assert_min_rows(db, table_min_rows)` | Tables have at least the expected row counts (used by `encryption-key-propagation` after a subprocess transform; replaces the originally-planned `assert_encryption_key_propagated_to_subprocess` — the explicit-floor band was retired as observe-and-paste, see `testing-scenario-comprehensive.md`) |
 | Infrastructure | `assert_no_unencrypted_db_files(tmpdir)` | No bare `.duckdb` files in tmpdir other than the encrypted one |
 | Infrastructure | `assert_migrations_at_head(db)` | `app.versions` head matches the latest migration on disk |
 
@@ -500,7 +505,7 @@ labeled_overlaps:
     expected_confidence_min: 0.9
 ```
 
-The Pydantic model lives in `src/moneybin/testing/scenarios/loader.py` alongside the scenario models. Loader rejects unknown top-level keys so future fields fail loudly rather than silently being ignored.
+The Pydantic model lives in `tests/scenarios/_runner/loader.py` alongside the scenario models. Loader rejects unknown top-level keys so future fields fail loudly rather than silently being ignored.
 
 ## Database isolation
 
@@ -535,7 +540,16 @@ This isolation composes with `Database`/`get_database()` cleanly: no special tes
 
 ## CLI Interface
 
-The runner extends the existing `moneybin synthetic verify` command (already named in `testing-overview.md`).
+> **Superseded 2026-04-30 (per `testing-scenario-comprehensive.md`).** The
+> `moneybin synthetic verify` CLI surface described below was retired during
+> the relocation to `tests/scenarios/`. Scenarios now run via
+> `make test-scenarios` / `uv run pytest tests/scenarios/ -m scenarios`.
+> The `--list` / `--scenario` / `--all` flag concepts map to pytest's
+> `--collect-only`, file-path selection, and full-run modes respectively;
+> `--keep-tmpdir` is preserved as a `pytest --keep-tmpdir` plugin flag where
+> needed. The historical CLI sketch below is kept for reference.
+
+The runner originally extended a `moneybin synthetic verify` command.
 
 ```
 moneybin synthetic verify --list [--output=json]
@@ -711,7 +725,7 @@ This is in scope for the scenario-runner implementation plan.
 
 ### `CategorizationService` (introduced by `categorization-auto-rules.md`)
 
-The categorization auto-rules implementation plan promotes the existing module-level functions in `src/moneybin/services/categorization_service.py` to a `CategorizationService` class with at minimum `categorize_uncategorized_items()` and `apply_pending_auto_rules()` methods. The scenario runner consumes the resulting class; this spec does not own its design.
+The categorization auto-rules implementation plan promotes the existing module-level functions to a `CategorizationService` class. After the PR #155 split, the service is at `src/moneybin/services/categorization/` (package, with `orchestrator.py` and five collaborators), and the entry method is `categorize_pending()`. The scenario runner consumes the resulting class.
 
 If the categorization plan ships first, the runner uses the class from day one. If the runner ships first, the `categorize` step temporarily calls `categorize_items(db, ...)` directly and migrates to the class when it lands. Either ordering works; the scenario YAML format does not change.
 
@@ -724,28 +738,31 @@ If the categorization plan ships first, the runner uses the class from day one. 
 | `src/moneybin/validation/__init__.py` | Package init |
 | `src/moneybin/validation/result.py` | `AssertionResult`, `EvaluationResult` dataclasses |
 | `src/moneybin/validation/assertions/__init__.py` | Re-exports |
-| `src/moneybin/validation/assertions/relational.py` | FK, orphan, duplicate primitives |
-| `src/moneybin/validation/assertions/business.py` | Sign convention, balanced transfers, date continuity |
-| `src/moneybin/validation/assertions/distributional.py` | Distribution and cardinality checks |
+| `src/moneybin/validation/assertions/integrity.py` | FK, orphan primitives (shipped — module renamed from planned `relational.py` during Phase 2 reorganization; see `testing-scenario-comprehensive.md` PR #80) |
+| `src/moneybin/validation/assertions/uniqueness.py` | No-duplicates primitives |
+| `src/moneybin/validation/assertions/domain.py` | Sign convention, balanced transfers, date continuity, amount precision, date bounds (shipped — module renamed from planned `business.py`) |
+| `src/moneybin/validation/assertions/distribution.py` | Distribution / cardinality / ground-truth coverage checks (shipped — module renamed from planned `distributional.py`) |
+| `src/moneybin/validation/assertions/schema.py` | Schema snapshot / columns-exist / row-count primitives |
+| `src/moneybin/validation/assertions/completeness.py` | No-nulls, source-system populated |
 | `src/moneybin/validation/assertions/infrastructure.py` | Catalog, subprocess, migrations primitives |
 | `src/moneybin/validation/evaluations/__init__.py` | Re-exports |
 | `src/moneybin/validation/evaluations/categorization.py` | `score_categorization` |
 | `src/moneybin/validation/evaluations/matching.py` | `score_transfer_detection`, `score_dedup` |
 | `src/moneybin/services/matching_service.py` | `MatchingService` thin wrapper class — see §"Service-layer prerequisites" |
 | `tests/moneybin/test_services/test_matching_service.py` | Unit tests for the new service wrapper |
-| `src/moneybin/testing/scenarios/__init__.py` | Package init |
-| `src/moneybin/testing/scenarios/loader.py` | Pydantic models, YAML loader |
-| `src/moneybin/testing/scenarios/runner.py` | Orchestrator |
-| `src/moneybin/testing/scenarios/steps.py` | Pipeline step registry |
-| `src/moneybin/testing/scenarios/expectations.py` | Expectation kinds and verifiers |
-| `src/moneybin/testing/scenarios/data/*.yaml` | Six shipped scenarios |
+| `tests/scenarios/_runner/__init__.py` | Package init |
+| `tests/scenarios/_runner/loader.py` | Pydantic models, YAML loader |
+| `tests/scenarios/_runner/runner.py` | Orchestrator |
+| `tests/scenarios/_runner/steps.py` | Pipeline step registry |
+| `tests/scenarios/_runner/expectations.py` | Expectation kinds and verifiers |
+| `tests/scenarios/data/*.yaml` | Six shipped scenarios |
 | `tests/fixtures/dedup/chase_amazon_overlap.csv` | Hand-labeled overlap fixture |
 | `tests/fixtures/dedup/chase_amazon_overlap.expectations.yaml` | Fixture metadata (schema defined in this spec; see §"Fixture file format") |
-| `.github/workflows/scenarios.yml` | Parallel CI workflow running `moneybin synthetic verify --all` |
+| `.github/workflows/scenarios.yml` | Parallel CI workflow running `uv run pytest tests/ -m scenarios` (originally drafted as `moneybin synthetic verify --all`; replaced with pytest invocation when the CLI was retired — see `testing-scenario-comprehensive.md`) |
 | `tests/moneybin/test_validation/test_assertions_*.py` | Unit tests per assertion category |
 | `tests/moneybin/test_validation/test_evaluations.py` | Unit tests for evaluations |
 | `tests/integration/test_scenario_runner.py` | Integration tests for the runner |
-| `tests/e2e/test_e2e_synthetic_verify.py` | E2E tests for CLI extensions |
+| ~~`tests/e2e/test_e2e_synthetic_verify.py`~~ | (Not shipped — the `synthetic verify` CLI was retired in favor of direct pytest invocation; see `testing-scenario-comprehensive.md`.) |
 
 ### Files to Modify
 

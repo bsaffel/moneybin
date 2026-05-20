@@ -101,10 +101,6 @@ class TabularLoader:
             balance_validated=balance_validated,
         )
 
-    def revert_import(self, import_id: str) -> dict[str, str | int]:
-        """Delegate to import_log module."""
-        return import_log.revert_import(self.db, import_id)
-
     def get_import_history(
         self,
         *,

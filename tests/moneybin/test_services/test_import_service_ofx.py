@@ -54,7 +54,7 @@ class TestImportOFXBatchLifecycle:
         import_id = latest["import_id"]
         assert isinstance(import_id, str)
 
-        result = import_log.revert_import(db, import_id)
+        result = ImportService(db).revert(import_id)
         assert result["status"] == "reverted"
 
         remaining_row = db.execute(

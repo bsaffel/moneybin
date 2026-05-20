@@ -1,7 +1,9 @@
 # Feature: User-Facing Documentation Polish
 
 ## Status
-ready
+in-progress
+
+> **Progress note (2026-05-17).** The "now" batch (Requirements 1–12, 15–18) shipped: README rewrite, `CHANGELOG.md`, `docs/guides/threat-model.md`, `docs/guides/database-security.md` polish, `CONTRIBUTING.md` strategy pointer, `pyproject.toml` metadata. Remaining work is the M2B and M2C close-out (Requirements 13–14 — `docs/architecture.md` distillation gated on `architecture-shared-primitives.md` reaching `implemented`, plus the brew-install Quick Start flip and demo asset). The spec moves to `implemented` when those land. PR #153 renamed M2C from "brand surface" to "Install & Onboarding"; references in this spec to "M2C" continue to refer to the same milestone codepoint.
 
 ## Goal
 

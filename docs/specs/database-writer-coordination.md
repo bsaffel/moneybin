@@ -3,6 +3,8 @@
 ## Status
 implemented
 
+> **Tool-name drift since this spec landed.** The pattern is unchanged — every MCP tool acquires its own `get_database(read_only=...)` connection — but several tool names referenced in the body have evolved through coherence passes: noun-only reads (PR #172 dropped `_list`), `transactions_categorize_apply` → `_commit` (PR #171), per-field account writes consolidated into `accounts_set` (PR #170/#171), `refresh_run` umbrella retiring `transform_apply` from the user-intent layer (PR #173). The classification rule (read vs. write) is still the source of truth; the example lists below reflect today's surface.
+
 ## Goal
 
 Implement [ADR-010](../decisions/010-writer-coordination.md): replace the long-lived read-write singleton in `database.py` with short-lived, purpose-declared connections. Every caller acquires a connection, does its work, and releases it. Read-only connections skip `init_schemas()` and `refresh_views()` (~14 ms overhead) and coexist across processes. Write connections are exclusive (~79 ms) and retry on lock contention up to 5 seconds.
@@ -197,7 +199,7 @@ Match the full command-line string in priority order (first match wins):
 |---|---|
 | `moneybin mcp serve` | `"MCP server"` |
 | `moneybin transform apply` | `"transform pipeline"` |
-| `moneybin import inbox sync` | `"inbox sync"` |
+| `moneybin import inbox` | `"inbox sync"` |
 | `moneybin import` | `"import command"` |
 | `moneybin sync` | `"Plaid sync"` |
 | `moneybin web` or (`uvicorn` + `moneybin`) | `"Web UI server"` |
@@ -278,31 +280,32 @@ with Database(db_path, secret_store=store, no_auto_upgrade=False) as db:
 | `read_only=True` | Tool only SELECTs from `core.*`, `reports.*`, `app.*` |
 | `read_only=False` | Tool INSERTs/UPDATEs/DELETEs to `app.*` or `raw.*`, or runs import |
 
-**Read-only MCP tools** (representative; full list in `mcp/tools/`)
+**Read-only MCP tools** (representative; the file-level mapping at the bottom of "Files to Modify" is the full list)
 
-- All `reports.py` tools (networth, spending, cashflow, recurring, merchant_activity, etc.)
-- `accounts.py`: list, get, summary, balance history/list, resolve
-- `categories.py`: get_all, list_rules, stats, list_uncategorized
-- `transactions_categorize.py`: list_rules, stats, list_uncategorized, auto-rule review/stats
+- All `reports.py` tools (`reports_networth`, `reports_spending`, `reports_cashflow`, `reports_recurring`, `reports_merchants`, …)
+- `accounts.py`: `accounts`, `accounts_get`, `accounts_summary`, `accounts_balances`, `accounts_balance_history`, `accounts_balance_assertions`, `accounts_resolve`
+- `categories.py`: read tools (the create/toggle paths are write)
+- `transactions_categorize.py`: read paths (rules listing, stats, uncategorized review)
 - `transactions_categorize_assist.py`: all (redacted read-only)
-- `merchants.py`: list_merchants
-- `system.py`: status
-- `tax.py`: all read operations
-- `curation.py`: list_events (audit log read)
-- `mcp/resources.py`: all three resources
+- `merchants.py`: merchant listing
+- `system.py`: `system_status`, `system_audit`
+- `tax.py`: registered as read but the tools are not promoted today (backing spec `draft`; see `mcp-architecture.md` §3)
+- `curation.py`: audit-log read paths
+- `mcp/resources.py`: every resource (`moneybin://status`, `moneybin://accounts`, `moneybin://privacy`, `moneybin://schema`, `moneybin://tools`, `accounts://summary`, `moneybin://recent-curation`, `net-worth://summary`)
 
 **Write MCP tools** (representative)
 
-- `accounts.py`: rename, set_include_in_net_worth, archive, unarchive, settings_update, balance_reconcile, balance_assert, balance_delete_assertion
-- `categories.py`: create_category, toggle_category
-- `merchants.py`: update merchant settings/rules
-- `transactions_categorize.py`: categorize_items, create_rules, deactivate_rule, accept
-- `curation.py`: add/edit/delete note, set_tags, rename_tag, set_splits, set_labels
+- `accounts.py`: `accounts_set` (replaces the earlier per-field `rename` / `set_include_in_net_worth` / `archive` / `unarchive` / `settings_update` set), `accounts_balance_reconcile`, `accounts_balance_assert`, `accounts_balance_assertion_delete`
+- `categories.py`: `categories_create`, `categories_set` (folds the prior `toggle_category` into the typed `is_active` field)
+- `merchants.py`: merchant settings + rule writes
+- `transactions_categorize.py`: `transactions_categorize_commit` (formerly `_apply`), `transactions_categorize_run`, rule create/deactivate, auto-rule accept
+- `curation.py`: note add/edit/delete, tag set/rename, split set, label set
 - `import_tools.py`: all
-- `import_inbox.py`: sync
-- `budget.py`: write operations
-- `sql.py`: always write mode (conservative; the tool accepts arbitrary SQL)
-- `transactions.py`: transactions_create is write; list/search are read
+- `import_inbox.py`: `import_inbox_sync`
+- `sync.py`: `sync_pull`, `sync_connect`, `sync_disconnect`, schedule writes
+- `refresh.py` / `transform.py`: `refresh_run`, `transform_audit`
+- `sql.py`: `sql_query` is always write mode (conservative; accepts arbitrary SQL)
+- `transactions.py`: writes route through `transactions_categorize_*` and `curation.py`; the bare `transactions_*` tools today are read-only
 
 **Caller pattern**
 
@@ -545,7 +548,7 @@ Writers do not need to publish identity explicitly. `moneybin db ps` (already im
 
 - `moneybin transform apply` — the only long-duration write-lock holder; fully identifiable by argv
 - `moneybin mcp serve` — short-lived per-tool-call writes in the new model; rarely visible during contention
-- `moneybin import inbox sync` — batch duration (1–3 s); argv identifies it
+- `moneybin import inbox` — batch duration (1–3 s); argv identifies it (sync is the default callback, no explicit subcommand)
 
 The `DatabaseLockError` message should include a hint: `"Another moneybin process may be writing. Check with 'moneybin db ps'."` No lockfile, no `setproctitle`, no new dependencies.
 

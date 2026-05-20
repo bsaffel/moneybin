@@ -171,7 +171,7 @@ No schema changes. This spec adds tests and assertion primitives, and relocates 
 
 - `src/moneybin/validation/assertions/{schema,completeness,uniqueness,integrity,domain,distribution,infrastructure}.py` — assertion primitives, organized along industry-recognized data-quality categories. New Phase 3 primitives slot into the existing module that matches their shape (no new module names without a corresponding new category).
 - `src/moneybin/validation/expectations/{matching,transactions}.py` — per-record predicate library, decoupled from YAML loader. Public API: `verify_*` functions returning `ExpectationResult`.
-- `src/moneybin/testing/scenarios/_assertion_registry.py`, `_expectation_registry.py` — explicit YAML-name → callable maps. Adding a new YAML-callable primitive requires a registry entry.
+- `tests/scenarios/_runner/_assertion_registry.py`, `_expectation_registry.py`, `_evaluation_registry.py` — explicit YAML-name → callable maps. Adding a new YAML-callable primitive requires a registry entry. (Per Phase 1 relocation; the original draft placed these under `src/moneybin/testing/scenarios/`.)
 - Harness primitives (`assert_idempotent`, `assert_subprocess_parity`, `assert_incremental_safe`, `assert_empty_input_safe`, `assert_malformed_input_rejected`) live in `tests/scenarios/_harnesses.py` (Phase 4), **not** in `validation/`. They are pipeline-execution patterns, not data assertions.
 - `tests/scenarios/conftest.py` — shared fixtures: encrypted DB bootstrap, MONEYBIN_HOME isolation, persona generator helpers
 - `tests/scenarios/test_basic_full_pipeline.py` — port + add idempotency
@@ -221,12 +221,12 @@ The six phases ship as **four** PRs, not six — grouped by review-coherence rat
 |---|---|---|---|
 | **PR 1** | Phase 1 | _shipped_ | Pure relocation — runner moved to `tests/scenarios/_runner/`, scenarios driven via pytest. |
 | **PR 2a** | Phase 2 | _shipped (#80)_ | Validation-library reorganization, `Database` first-arg standardization, expectation decoupling, explicit registries. Locks the stable `moneybin.validation.*` contract. |
-| **PR 2b** | Phases 3 + 4 | _written after PR 2a merges_ | Tier 1 backfill (P3) adds the missing primitives and replaces `±15%`/`min_rows ≥ 100` with derived formulas; the four new scenarios (P4) need both PR 2a's library and the Tier 1 backfill to be authored cleanly. |
-| **PR 3** | Phases 5 + 6 | _written after PR 2b merges_ | Tier 2/4 enrichment (P5) and the contributor recipe (P6) are the documentation/quality polish layer; they don't gate each other but neither blocks anything downstream. |
+| **PR 2b** | Phases 3 + 4 | _shipped_ | Tier 1 backfill (`tests/scenarios/_tier1_backfill.py`) computes source attribution, schema snapshot, amount precision, and date bounds per scenario; replaces `±15%` and `min_rows ≥ 100` with derived formulas. The four new scenarios (`idempotency-rerun`, `dedup-negative-fixture`, `empty-input-handling`, `malformed-input-rejection`) ship in `tests/scenarios/`. |
+| **PR 3** | Phases 5 + 6 | _shipped_ | Tier 2/4 enrichment in `test_family_full_pipeline.py` / `test_dedup_cross_source.py` / `test_transfer_detection.py`; contributor recipe at `docs/guides/scenario-authoring.md`. |
 
 Each plan is written only after the prior PR merges, so it grounds in the real post-merge file layout instead of a predicted one.
 
-After PR 3 merges, this spec moves to `implemented` and becomes the binding architectural reference for all future scenario work.
+All four PRs shipped; this spec is `implemented` and is the binding architectural reference for all future scenario work.
 
 ### Deferred from Phase 1 (PR #73)
 
