@@ -40,50 +40,6 @@ Tests run in parallel via `pytest-xdist` (`-n auto` in `pyproject.toml`).
 Pass `-n0` to disable parallelism when you need `pdb`, ordered output,
 or are debugging a flaky test that may have inter-test state leaks.
 
-## Memory budget for parallel runs
-
-The pyproject default of `-n auto` resolves to one worker per logical
-CPU (~12 on a typical M-series Mac). Each xdist worker is a full Python
-process that imports the entire dependency graph at session start
-(moneybin + sqlmesh + sqlglot + duckdb + polars + pandas + fastmcp + the
-test conftest chain), landing around **2.5–6 GB resident per worker**.
-The full `tests/moneybin/` tree under `-n auto` runs in ~1 minute on a
-32 GB M1 Pro when it's the only large workload — that's the intended
-invocation for `make test` and for one-off main-session runs.
-
-The footprint becomes a problem when **multiple pytest processes spawn
-in parallel**: a single subagent dispatch that runs `uv run pytest` is
-one Claude Code conversation already holding ~400 MB plus 12 xdist
-workers at 2.5–6 GB each. Two such subagents running concurrently
-double the worker count without doubling the RAM budget, and have
-empirically driven this machine into compressor + swap saturation.
-
-The rule:
-
-- **Main session:** use the project default. `uv run pytest <paths>`
-  with no override is correct.
-- **Subagent dispatch prompts:** cap workers at 2 by overriding addopts.
-  Bake the cap into the prompt so the subagent inherits it explicitly:
-
-  ```bash
-  uv run pytest <paths> \
-    -o addopts="-ra -q --strict-markers --strict-config --dist=loadscope" \
-    -n 2
-  ```
-
-Notes:
-
-- `-o addopts="..."` **replaces** the pyproject value entirely — there
-  is no merge. Re-list every default flag you want to keep, especially
-  `--dist=loadscope` (required by xdist for our test layout).
-- Do **not** combine `-p no:xdist` with `-n` — the pyproject default
-  passes `-n auto`, which fails to parse once xdist is plugin-disabled.
-- If a single worker grows past ~6 GB during any run, that points to a
-  real fixture leak (the baseline import overhead alone is ~2.5–3.5
-  GB). Capture with `pytest-memray` (`--memray
-  --memray-bin-path=<dir>`) before treating it as a "just cap workers"
-  problem.
-
 ## Mocking Strategy
 
 - **Mock external dependencies**: APIs, databases, file systems.
