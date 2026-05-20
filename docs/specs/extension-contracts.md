@@ -166,8 +166,8 @@ requires:
 entry_points:
   tools:  "moneybin.packages.assets.tools:register"
   cli:    "moneybin.packages.assets.cli:register"
-  models: "moneybin.packages.assets.models"        # directory path
-  schema: "moneybin.packages.assets.schema"        # directory path
+  models: "moneybin.packages.assets.models"        # Python module path (resolved to filesystem at startup via importlib.resources)
+  schema: "moneybin.packages.assets.schema"        # Python module path (resolved to filesystem at startup via importlib.resources)
 ```
 
 For `us_tax`, the manifest emphasizes read-heavy capabilities (analytical layer, no new canonical entities):
@@ -195,7 +195,11 @@ capabilities:
   secrets: []
 requires:
   moneybin: ">=1.0.0,<2.0.0"
-entry_points: { ... }
+entry_points:
+  tools:  "moneybin.packages.us_tax.tools:register"
+  cli:    "moneybin.packages.us_tax.cli:register"
+  models: "moneybin.packages.us_tax.models"        # Python module path (resolved to filesystem at startup via importlib.resources)
+  schema: "moneybin.packages.us_tax.schema"        # Python module path (resolved to filesystem at startup via importlib.resources)
 ```
 
 The capability declarations are the package's contract with users — readable in `moneybin packages info <name>` before install. Users (or agents acting for them) decide trust based on declared behavior.
@@ -434,6 +438,49 @@ class Provider(Protocol):
         ...
 ```
 
+**Supporting types** (defined in `src/moneybin/extractors/_types.py` — see Plan 1):
+
+```python
+# src/moneybin/extractors/_types.py
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, TypeAlias
+import polars as pl
+from pydantic import BaseModel
+
+
+@dataclass(frozen=True, slots=True)
+class FilePath:
+    """A file on disk the provider reads (OFX, CSV, Parquet, etc.)."""
+    path: Path
+
+
+@dataclass(frozen=True, slots=True)
+class SyncResponse:
+    """A pre-fetched payload from a mediated sync provider (e.g., Plaid Hosted Link
+    delivers a SyncDataResponse via moneybin-server)."""
+    payload: Any
+    job_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class OAuthSession:
+    """An authenticated OAuth session for direct-connect providers
+    (reserved for future `connect-*` providers per docs/specs/connect-gsheet.md)."""
+    access_token: str
+    refresh_token: str | None = None
+    expires_at: int | None = None  # epoch seconds
+
+
+ProviderSource: TypeAlias = FilePath | SyncResponse | OAuthSession
+ExtractionResult: TypeAlias = dict[str, pl.DataFrame]
+
+
+class ProviderConfig(BaseModel):
+    """Base class for per-provider Pydantic config models."""
+    model_config = {"extra": "forbid", "frozen": True}
+```
+
 Per-provider configuration follows a uniform pattern via Pydantic models declared next to each provider:
 
 ```python
@@ -465,7 +512,7 @@ src/moneybin/extractors/<source>/
 └── README.md
 ```
 
-Existing extractors (OFX, Plaid, tabular, W2) migrate to this shape as part of pre-launch surgical work. The `loaders/` directory is collapsed into `extractors/<name>/` — every provider is unified under one location regardless of input shape.
+Existing extractors (OFX, Plaid, tabular) migrate to this shape as part of pre-launch surgical work. The `loaders/` directory is collapsed into `extractors/<name>/` — every provider is unified under one location regardless of input shape. (The W2 PDF-extraction provider was cut from M3E scope; tax-data ingestion will be re-designed as part of the broader tax-domain work.)
 
 ### Registration: filesystem discovery
 
@@ -490,7 +537,7 @@ The human-merge gate stays tight regardless of how the PR was drafted: maintaine
 | **Gold** | Signed releases, observability emits, edge cases handled | "Trusted" — production-quality |
 | **Platinum** | Scenario-test coverage, regression fixtures, schema-drift watch | "Reference quality" — sets the bar |
 
-The tier is declared in the manifest (`quality_scale: bronze|silver|gold|platinum`). Framework validates the declaration matches reality at registration — claiming Gold without signed releases, or Silver without code-owner declaration, fails to register.
+The tier is declared in the manifest (`quality_scale: bronze|silver|gold|platinum`). The framework validates mechanically-checkable evidence at registration — manifest validity, capability-vs-SQL match, prefix discipline, code-owner declared, tests/scenario tests/regression fixtures present at expected paths. Signed-release verification at registration is **post-launch hardening** (parallel to runtime reads/network enforcement, deferred per [§Launch shipping posture](#launch-shipping-posture)). Pre-launch, the signed-release claim is verified manually at PR review time for in-tree content; external content's signature claim is honor-system until the marketplace verification pipeline ships.
 
 ### Type-specific requirements
 
@@ -554,19 +601,19 @@ What ships at M3E vs. what's deferred:
 | Element | M3E launch | Post-launch hardening |
 |---|---|---|
 | `quality_scale` manifest field | ✅ Required for all extensions | — |
-| Bronze → Platinum validation at registration | ✅ Full mechanical validation for all four tiers | Test-coverage threshold enforcement, observability-emit detection (harder runtime checks) |
+| Bronze → Platinum tier validation at registration | ✅ Manifest validity, capability-vs-SQL match, prefix discipline, code-owner declared, tests/scenario tests/regression fixtures present | Signed-release signature verification, test-coverage threshold enforcement, observability-emit detection (harder runtime checks) |
 | **All in-tree extensions ship at Platinum** | ✅ assets, us_tax, all providers, all in-tree reports | — |
 | Verified publisher mechanism | ❌ Not at launch | Post-marketplace |
 | Promotion workflow (UI, request-to-promote) | ❌ Not at launch | Post-marketplace |
 | Marketplace badge surfaces | ❌ Not at launch | Post-marketplace |
 
-The Platinum-everywhere bar applies uniformly to in-tree content: assets, us_tax, all four providers (OFX, Plaid, tabular, W2), and the existing core reports (spending, recurring, networth, cash_flow). Each ships with scenario-test coverage, regression fixtures, observability emits, signed releases, named code owners, and the documentation surface its tier requires.
+The Platinum-everywhere bar applies uniformly to in-tree content: assets, us_tax, the three providers (OFX, Plaid, tabular), and the existing core reports (spending, recurring, networth, cash_flow). Each ships with scenario-test coverage, regression fixtures, observability emits, signed releases (signature verified manually at PR time pre-launch), named code owners, and the documentation surface its tier requires.
 
 External-content path unchanged: third-party packages start at Bronze, climb with evidence (signed releases, test coverage, code owner, scenario tests). Bronze remains the realistic on-ramp for community contribution.
 
 ## Contributor experience
 
-The piece that makes the rest feel inevitable rather than intimidating. Per the bias-to-UX/DX rule in [`AGENTS.md`](../../AGENTS.md): the contributor-facing surface gets the same rigor as the MCP surface.
+The piece that makes the rest feel inevitable rather than intimidating. The contributor-facing surface gets the same rigor as the MCP surface — same design discipline applied to the same kind of agent-driven interaction.
 
 ### Four guided-contribution skills
 
@@ -650,7 +697,7 @@ Items required to make the contracts in this spec describable cleanly. These lan
 | Item | Scope | Effort estimate |
 |---|---|---|
 | Define `Provider` Protocol + types module | New file `src/moneybin/extractors/_protocol.py`; codifies existing extractor shape | ~1 day |
-| Migrate OFX, Plaid, tabular, W2 to `extractors/<name>/` layout | Collapse `loaders/` into `extractors/<name>/`; update imports across codebase | ~2-3 days |
+| Migrate OFX, Plaid, tabular to `extractors/<name>/` layout | Collapse `loaders/` into `extractors/<name>/`; update imports across codebase | ~2-3 days |
 | Per-provider Pydantic config models | Each provider exports its config; merge into `MoneyBinSettings.providers.<name>` | ~1-2 days |
 | Decentralize `schema.py` 38-file list | Per-provider `schema_files()` enumeration; framework iterates registered providers | ~1 day |
 | Build `moneybin_package.yaml` parser + validator | Pydantic models for manifest + capability declarations | ~2-3 days |
@@ -663,7 +710,7 @@ Items required to make the contracts in this spec describable cleanly. These lan
 | Build four Claude Code skills | Skills invoking the scaffolder and validator | ~3-4 days |
 | Implement `assets` package at Platinum | Full package with scenario tests, regression fixtures, observability, signed release | ~1-2 weeks |
 | Implement `us_tax` package at Platinum | Same | ~1-2 weeks |
-| Platinum-ify existing providers (OFX, Plaid, tabular, W2) | Add scenario tests, regression fixtures, schema-drift detection, code-owner declarations | ~3-5 days per provider |
+| Platinum-ify existing providers (OFX, Plaid, tabular) | Add scenario tests, regression fixtures, schema-drift detection, code-owner declarations | ~3-5 days per provider |
 | Platinum-ify existing reports | Migrate to structured-comment shape; add fixture-based tests; write `docs/guides/reports/<name>.md` user guides | ~1-2 days per report |
 | Resolve audit B-tier reports items | Unregister `reports_budget` (gated on M3C); remove `reports_health` CLI stub; update `merchant_id` spec drift in `reports-recipe-library.md` | ~½ day |
 
