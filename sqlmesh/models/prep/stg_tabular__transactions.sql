@@ -31,6 +31,7 @@ WITH ranked AS (
     row_number,
     extracted_at,
     loaded_at,
+    deleted_from_source_at,
     ROW_NUMBER() OVER (PARTITION BY transaction_id, account_id ORDER BY loaded_at DESC) AS _row_num
   FROM raw.tabular_transactions
 )
@@ -63,4 +64,4 @@ SELECT
   loaded_at /* When record was loaded into database */
 FROM ranked
 WHERE
-  _row_num = 1
+  _row_num = 1 AND deleted_from_source_at IS NULL
