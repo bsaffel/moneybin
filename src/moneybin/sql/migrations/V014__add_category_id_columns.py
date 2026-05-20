@@ -3,7 +3,7 @@
 Phase 1 of the category-text -> category_id FK migration. Adds a nullable
 ``category_id`` column to six tables (and ``new_category_id`` to
 ``rule_deactivations`` when that table still exists — it was dropped in
-V017) and backfills from existing ``(category, subcategory)`` text via
+V018) and backfills from existing ``(category, subcategory)`` text via
 JOIN against the unified ``core.dim_categories`` view. Unresolvable rows
 (orphaned text — the referenced category was deleted or renamed before
 V014 shipped) are left with NULL FKs and keep their text columns as
@@ -16,12 +16,12 @@ Tables affected:
 - app.transaction_splits       (per-line category on splits)
 - app.categorization_rules     (rule target category)
 - app.proposed_rules           (proposed rule target category, pre-approval)
-- app.rule_deactivations       (only on existing installs where V017 hasn't run yet)
+- app.rule_deactivations       (only on existing installs where V018 hasn't run yet)
 
 Idempotent: ``ADD COLUMN IF NOT EXISTS`` is a no-op on replay; the
 backfill ``UPDATE`` only touches rows where the FK is still NULL; the
 rule_deactivations entry is skipped on fresh installs where the table
-was never created (schema.py omits it after V017 was introduced).
+was never created (schema.py omits it after V018 was introduced).
 
 Each backfill uses IS NOT DISTINCT FROM on subcategory so NULL matches
 NULL symmetrically. Budgets has no subcategory column at all — its
@@ -87,9 +87,9 @@ _BACKFILLS: tuple[tuple[str, str, str, str], ...] = (
     ),
 )
 
-# rule_deactivations was dropped in V017. Guard against running V014 on a
+# rule_deactivations was dropped in V018. Guard against running V014 on a
 # fresh install where the table was never created (schema.py omits it after
-# V017 was introduced). On existing installs the table exists until V017 runs.
+# V018 was introduced). On existing installs the table exists until V018 runs.
 _RULE_DEACTIVATIONS_BACKFILL = (
     "new_category_id",
     "app.rule_deactivations",
@@ -139,7 +139,7 @@ def migrate(conn: object) -> None:
         """
     )
 
-    # Check whether rule_deactivations still exists (it was dropped in V017;
+    # Check whether rule_deactivations still exists (it was dropped in V018;
     # on fresh installs schema.py never creates it).
     rule_deact_exists = bool(
         conn.execute(  # type: ignore[union-attr]
