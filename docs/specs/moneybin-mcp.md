@@ -1,8 +1,8 @@
 # MCP Tool Surface
 
-> Last updated: 2026-05-17
+> Last updated: 2026-05-20
 > Status: in-progress
-> Companion to: [`mcp-architecture.md`](mcp-architecture.md) (design philosophy, conventions, patterns)
+> Companion to: [`mcp-architecture.md`](mcp-architecture.md) (design philosophy, conventions, patterns), [`extension-contracts.md`](extension-contracts.md) (Analysis Packages and standalone Reports register `<pkg>_*`-prefixed tools and auto-generated reports into this server via entry points)
 > Supersedes: [`archived/mcp-read-tools.md`](archived/mcp-read-tools.md), [`archived/mcp-write-tools.md`](archived/mcp-write-tools.md)
 
 ## Purpose
@@ -1104,6 +1104,19 @@ Pipeline integrity check — confirms the data pipeline is self-consistent befor
 - **Service:** `DoctorService.run_all(verbose=False) -> DoctorReport`
 - **CLI:** `moneybin system doctor [--verbose] [--output json]`
 
+### `extension_validate`
+
+**Status:** planned. Backing spec [`extension-contracts.md`](extension-contracts.md) is `draft` — the tool is documented here for design alignment but NOT registered on the MCP surface until the spec reaches `in-progress` and the validator lands. See §17c dependency tracker.
+
+Validate an extension manifest (Analysis Package or standalone Report) against the framework's registration rules. Operator-territory: invoked by contributor skills, CI, and humans before opening a PR — not by user-facing agents in normal workflows.
+
+- **Sensitivity:** `low` — inputs are extension manifest paths, not financial data; outputs are validation findings (rule IDs, file paths, severity).
+- **Annotations:** `read_only=True`, `destructive=False`, `idempotent=True`, `open_world=False`.
+- **Unique parameters:** `path: str` (required) — filesystem path to a package directory (containing `moneybin_package.yaml`) or to a standalone-report manifest file.
+- **Behavior:** Runs the checks defined in [`extension-contracts.md`](extension-contracts.md) §"The extension validator": manifest schema validity, capability-vs-SQL match (every `CREATE TABLE`/`VIEW` covered by `capabilities.writes`), prefix discipline (tables, tools, CLI commands, schema files all start with `owns_prefix`), Quality Scale claim matches evidence, SQL compiles against the current canonical schema, no prefix collisions with already-registered extensions, and the package's own test suite passes. Returns the standard `ResponseEnvelope` so invoking agents can react programmatically; per-check results land in `data[]` as `{rule_id, severity, message, file?, line?}`.
+- **Service:** `ExtensionValidatorService.validate(path) -> ValidationReport` (planned).
+- **CLI:** `moneybin extension validate PATH` (per CLI↔MCP parity).
+
 > Note: a unified `reports_health` snapshot tool is **planned, not registered**. Today the agent composes the same view from `reports_networth` + `reports_spending` + `reports_cashflow` + `reports_budget`. Re-evaluate as a dedicated tool when agent-experience reports show the composition friction outweighs the surface cost.
 
 ### `reports_recurring`
@@ -1332,10 +1345,24 @@ Tools that depend on unbuilt subsystems are documented in the catalog with depen
 | **Annotations table schema** | Not written | `transactions_annotate` |
 | **Budget tracking spec** | Draft | `reports_budget_summary` rollover behavior; `budget_set` (de-registered 2026-05-17 — re-register when spec reaches `in-progress`) |
 | **Tax spec (none yet)** | Not written | `tax_w2`, `tax_deductions`, `tax_prep` prompt — **removed entirely** 2026-05-19; W-2 extraction pipeline cut; tax data ingestion to be re-designed from scratch when a new tax spec is written |
+| **[Extension contracts](extension-contracts.md)** | Draft | `extension_validate` (manifest + capability + prefix + Quality-Scale validator); `<pkg>_*` tools from Analysis Packages (e.g., `assets_*`, `us_tax_*` at M3E); standalone-Report auto-registered `reports_*` tools |
 
 ### Tools shippable without dependencies
 
 > **Surface status (2026-05-19):** All entries in §16 not marked "NOT registered" or de-registered are live and visible at connect. See the dependency tracker above for tools that remain blocked. `budget.*` and `transform_*` tool modules remain implemented but are **de-registered** in `src/moneybin/mcp/server.py:register_core_tools()`. `budget.*` re-registers when its backing spec reaches `in-progress`/`implemented`; `transform_*` are operator territory (category 2) and remain CLI-only (see §17). `tax.*` tools were **removed entirely** — the W-2 PDF extraction pipeline was cut; tax data ingestion will be re-designed from scratch when a new tax spec is written. A working implementation alone does not justify exposing a tool on the public surface.
+
+## 17d. Entry-points-registered tools
+
+**Status: planned, pending [`extension-contracts.md`](extension-contracts.md).** [`extension-contracts.md`](extension-contracts.md) is currently `draft`; the entry-points discovery path is documented here for design alignment but is NOT active at runtime until the spec reaches `in-progress` and the framework implementation lands (Plan 2 of the extension-contracts implementation graph). As of 2026-05-20, the tool catalog above is the complete registered surface — every tool is wired in by an explicit `register_*_tools(mcp)` call in `src/moneybin/mcp/server.py`.
+
+When the entry-points path ships: per [`mcp-architecture.md`](mcp-architecture.md) §"Tool registration paths" and [`extension-contracts.md`](extension-contracts.md), the framework will also enumerate the `moneybin.packages` setuptools entry points at startup and invoke each package's `tools.register(mcp)` hook after the explicit-call path completes.
+
+Two extension shapes will contribute tools through this second path:
+
+- **Analysis Packages** (`extension-contracts.md` §"Analysis Package contract") — `<pkg>_*`-prefixed tools registered programmatically. The M3E first-party lineup will be `assets_*` and `us_tax_*` (both shipped in the MoneyBin repo, both contributed via the entry-points path rather than explicit register-call imports — see [`asset-tracking.md`](asset-tracking.md) and §17b reservation for the assets namespace). Third-party packages installed via PyPI will register identically once they appear on the entry-point group.
+- **Standalone Reports** (`extension-contracts.md` §"Report contract") — `reports_*` tools auto-generated from structured comments on a single SQLMesh view, including the paired `TableRef` constant, `ReportsService` method, MCP tool, and CLI command. The contributor writes only the SQL with the `@name` / `@description` / `@param` / `@example` block; the framework derives the registration trinity.
+
+The §18 tool-catalog-discipline rule will apply symmetrically: a PR that adds a package- or report-contributed tool must update this spec (or its in-package equivalent) in the same change. The runtime-registered surface — explicit-register-call plus entry-points — must match what's documented.
 
 ---
 

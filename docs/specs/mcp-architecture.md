@@ -1,6 +1,6 @@
 # MCP Architecture & Design
 
-> Companions: [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) (AI data flow tiers, consent model), [`moneybin-mcp.md`](moneybin-mcp.md) (concrete tool/prompt/resource definitions), [ADR-003: MCP Primary Interface](../decisions/003-mcp-primary-interface.md)
+> Companions: [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) (AI data flow tiers, consent model), [`moneybin-mcp.md`](moneybin-mcp.md) (concrete tool/prompt/resource definitions), [`extension-contracts.md`](extension-contracts.md) (contributor-facing surface — packages and reports register tools into this server via entry points), [ADR-003: MCP Primary Interface](../decisions/003-mcp-primary-interface.md)
 > Supersedes: [`mcp-tier1-tools.md`](mcp-tier1-tools.md) (prototype-era tool list), [`archived/mcp-read-tools.md`](archived/mcp-read-tools.md), [`archived/mcp-write-tools.md`](archived/mcp-write-tools.md)
 
 ## Purpose
@@ -133,6 +133,33 @@ Tools use a hybrid namespace that reflects the most natural way an AI or user wo
 - **Noun = query.** `reports_spending`, `accounts_balances`, `transactions_review` — returns data. No `_list` suffix (PR #172); `_get` is reserved for single-entity-by-id reads (`accounts_get(account_id)`). See `.claude/rules/surface-design.md` "Verb conventions". `transactions_get` is a defended exception: filtered/paginated collection query rather than single-entity — the name was kept for "fetch the transactions I care about" intent over strict shape conformance; documented inline in its description.
 - **Verb = action.** `transactions_categorize_commit`, `refresh_run`, `import_files` — mutates state.
 - **Underscore separator.** `reports_spending`, `transactions_categorize_commit`. The MCP spec (rev 2025-11-25) and SEP-986 permit dot-separated namespaces (e.g. `reports.spending`), and dots were the original convention here. **Anthropic's and OpenAI's first-party clients enforce a stricter `^[a-zA-Z0-9_-]{1,64}$` regex** ([issue #1063](https://github.com/modelcontextprotocol/modelcontextprotocol/issues/1063)) and reject dots, so the portable subset is `[A-Za-z0-9_-]`. Reconsider if/when major clients align with SEP-986.
+
+### Tool registration paths
+
+Tools land on the FastMCP server through two discovery paths. Both will produce the same registered shape — the agent cannot distinguish them, and the surface-discipline, taxonomy, and sensitivity rules above apply identically to each.
+
+1. **In-tree imports.** Core MoneyBin tools live under `src/moneybin/mcp/` and are wired in by explicit `register_*_tools(mcp)` calls in `mcp/server.py`. This is the path every tool documented in `moneybin-mcp.md` takes today and the only path active at runtime as of 2026-05-20.
+2. **Entry-points discovery (planned, pending [`extension-contracts.md`](extension-contracts.md)).** [`extension-contracts.md`](extension-contracts.md) is currently `draft`; entry-points discovery is documented here for design alignment but is NOT active at runtime until the spec reaches `in-progress` and the framework implementation lands (Plan 2 of the extension-contracts implementation graph). When it ships: Analysis Packages and standalone Reports will declare themselves under the `moneybin.packages` setuptools entry-point group. At server startup, after the in-tree `register_*_tools()` calls complete, the framework will enumerate `moneybin.packages` entry points (in-tree-declared and pip-installed alike), load each manifest, validate capabilities and naming, and invoke the package's `tools.register(mcp)` hook. For Reports specifically, the registration trinity (`TableRef` constant, MCP tool, CLI command) will be auto-generated from the view's structured comments — see `extension-contracts.md` §"Auto-generation of the registration trinity".
+
+The naming conventions above are load-bearing for path 2: a package named `assets` may only register tools prefixed `assets_*`, and registration will refuse to start when a package's tool names violate its declared prefix. This is how the taxonomy will stay coherent as the registered set grows beyond what `mcp/server.py` imports directly.
+
+```mermaid
+flowchart LR
+    intree[In-tree modules<br/>src/moneybin/mcp/*]
+    pkg[Analysis Packages<br/>pip-installed or in-tree]
+    rep[Standalone Reports<br/>pip-installed or in-tree]
+    ep["moneybin.packages<br/>entry points"]
+    server["FastMCP server<br/>register_*_tools() + entry-point loop"]
+    surface[Registered tool surface]
+
+    intree -->|explicit register calls| server
+    pkg --> ep
+    rep --> ep
+    ep -->|enumerate + validate + register| server
+    server --> surface
+```
+
+For the consuming agent there is one surface, governed by one set of rules. The two paths exist for the contributor — they determine *who* can add a tool and through what review gate — not for the runtime.
 
 ### Tool disclosure: full surface, taxonomy-led
 
@@ -631,6 +658,7 @@ These decisions and their rationale should be documented in the 12-month plan.
 | [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) | Defines the privacy framework this spec consumes. MCP field minimization section references tool sensitivity declarations. |
 | [`smart-import-overview.md`](smart-import-overview.md) | Pillar F (AI-assisted parsing) uses the same consent/audit infrastructure. Import tools in this spec's surface replace the prototype `import_file` tool. |
 | [`matching-overview.md`](matching-overview.md) | Match review tools (`transactions_matches_pending`, etc.) will be defined in `moneybin-mcp.md`. Audit log is shared infrastructure. |
+| [`extension-contracts.md`](extension-contracts.md) | Defines how third-party Analysis Packages and standalone Reports register MCP tools into this server via Python entry points (`moneybin.packages`). Names, namespaces, and response envelopes defined here are inherited by every extension. |
 
 ## Resolved Decisions
 
