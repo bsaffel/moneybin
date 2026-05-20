@@ -189,8 +189,8 @@ Pull transactions from external services through the moneybin-server proxy. **`s
 |---|---|---|
 | `sync login` | Authenticate with moneybin-server via Device Authorization Flow. | `--no-browser` |
 | `sync logout` | Clear the stored JWT. | — |
-| `sync connect [<institution>]` | Connect a new institution via Plaid Hosted Link. Prints URL to stderr and (optionally) opens the browser. | `--no-browser` |
-| `sync connect-status` | Show pending connection state (after `sync connect` started). | — |
+| `sync link [<institution>]` | Link a new institution via Plaid Hosted Link. Prints URL to stderr and (optionally) opens the browser. | `--no-browser` |
+| `sync link-status` | Show pending link state (after `sync link` started). | — |
 | `sync disconnect <item-id>` | Disconnect a linked institution. | `-y, --yes` |
 | `sync pull [<item-id>]` | Pull new transactions and run the refresh pipeline. Use without an item-id to pull every connected institution. | `--refresh/--no-refresh`, `--since`, `--full` |
 | `sync status` | Show last-sync timestamps and pending-cursor state per linked institution. | — |

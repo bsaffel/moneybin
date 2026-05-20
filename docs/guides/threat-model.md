@@ -296,7 +296,7 @@ What to do when something has gone wrong. None of these paths are forensic-grade
 ### Suspected Plaid token leak (broker compromise or stolen device with broker auth)
 
 1. `moneybin sync disconnect --institution <name>` revokes the connection for that institution at the broker.
-2. Re-link via `moneybin sync connect` only if you have a clean machine and a clean broker.
+2. Re-link via `moneybin sync link` only if you have a clean machine and a clean broker.
 3. Plaid itself retains transaction history for as long as the broker holds the item; disconnect cuts off future pulls but does not retroactively delete history Plaid already saw.
 
 ### Suspected agent / LLM leak (you asked the agent something you wish you hadn't)

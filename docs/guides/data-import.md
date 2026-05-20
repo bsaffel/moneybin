@@ -136,7 +136,7 @@ A common migration pattern: bring years of history in from files, then connect P
 
 ```bash
 moneybin import files ~/Downloads/tiller-export.csv     # 5 years of history
-moneybin sync connect --institution "Chase"             # now connect live
+moneybin sync link --institution "Chase"                # now link live
 moneybin sync pull                                       # last 18 months from Plaid overlaps history; dedup handles it
 ```
 
@@ -256,7 +256,7 @@ One-time setup:
 
 ```bash
 moneybin sync login                                # device auth flow with moneybin-server
-moneybin sync connect --institution "Chase"        # opens Plaid Hosted Link in your browser
+moneybin sync link --institution "Chase"           # opens Plaid Hosted Link in your browser
 ```
 
 Pull on demand:

@@ -600,7 +600,7 @@ Specific existing-tool renames are enumerated in `moneybin-mcp.md` as part of v2
 | `config reset` | Too blunt. `profile delete` + `profile create` is more intentional |
 | `config path` | Developer convenience; `profile show` includes paths |
 | `config credentials validate` | Moves to relevant subsystems |
-| `config credentials list-services` | Provider discovery happens through `sync connect` |
+| `config credentials list-services` | Provider discovery happens through `sync link` |
 | `data extract ofx` | Superseded by `import file` |
 | `data extract csv` | Superseded by `import file` |
 | `data extract w2` | Superseded by `import file` |
