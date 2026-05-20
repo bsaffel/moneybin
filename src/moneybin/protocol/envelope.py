@@ -16,7 +16,7 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Literal
 
-from moneybin.errors import UserError
+from moneybin.errors import RecoveryAction, UserError
 
 
 class DetailLevel(StrEnum):
@@ -107,6 +107,8 @@ class ResponseEnvelope:
     - ``error``: populated when the tool failed with a classified user error;
       ``data`` is empty in this case
     - ``next_cursor``: opaque pagination token when more results are available
+    - ``recovery_actions``: structured actions an agent can execute to fix
+      a failure; carried from the UserError when present
     """
 
     summary: SummaryMeta
@@ -114,6 +116,7 @@ class ResponseEnvelope:
     actions: list[str] = field(default_factory=list)
     error: UserError | None = None
     next_cursor: str | None = None
+    recovery_actions: list[RecoveryAction] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to a plain dict suitable for JSON serialization."""
@@ -227,6 +230,7 @@ def build_error_envelope(
     error: UserError,
     sensitivity: Literal["low", "medium", "high"] = "low",
     actions: list[str] | None = None,
+    recovery_actions: list[RecoveryAction] | None = None,
 ) -> ResponseEnvelope:
     """Build a ResponseEnvelope carrying a classified user error.
 
@@ -234,7 +238,14 @@ def build_error_envelope(
     that the tool failed. Sensitivity defaults to ``low`` because error
     messages must not leak row-level data. ``actions`` preserves any
     caller-provided next-step hints (e.g. CLI fallbacks on stub tools).
+    ``recovery_actions`` can be passed explicitly to override any actions
+    on the UserError, or will be read from the error if not provided.
     """
+    # Resolve recovery_actions: explicit kwarg wins; fall back to error.recovery_actions;
+    # preserve empty list explicitly (different from None).
+    if recovery_actions is None and error.recovery_actions is not None:
+        recovery_actions = error.recovery_actions
+
     summary = SummaryMeta(
         total_count=0,
         returned_count=0,
@@ -242,5 +253,9 @@ def build_error_envelope(
         sensitivity=sensitivity,
     )
     return ResponseEnvelope(
-        summary=summary, data=[], actions=actions or [], error=error
+        summary=summary,
+        data=[],
+        actions=actions or [],
+        error=error,
+        recovery_actions=recovery_actions,
     )
