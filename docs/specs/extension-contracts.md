@@ -404,6 +404,7 @@ from typing import Protocol, runtime_checkable
 from pathlib import Path
 from .types import ProviderSource, ExtractionResult, ProviderConfig
 
+
 @runtime_checkable
 class Provider(Protocol):
     """A data source that ingests external data into raw.<source>_* tables.
@@ -412,9 +413,9 @@ class Provider(Protocol):
     See docs/specs/extension-contracts.md for the trust posture rationale.
     """
 
-    name: str                              # snake_case source identifier; matches raw.<name>_* prefix
-    source_type: str                       # written into source_type column on every row
-    config: ProviderConfig                 # Pydantic config model declared by the provider module
+    name: str  # snake_case source identifier; matches raw.<name>_* prefix
+    source_type: str  # written into source_type column on every row
+    config: ProviderConfig  # Pydantic config model declared by the provider module
 
     def extract(self, source: ProviderSource) -> ExtractionResult:
         """Extract data from the source into per-table DataFrames.
@@ -452,6 +453,7 @@ from pydantic import BaseModel
 @dataclass(frozen=True, slots=True)
 class FilePath:
     """A file on disk the provider reads (OFX, CSV, Parquet, etc.)."""
+
     path: Path
 
 
@@ -459,6 +461,7 @@ class FilePath:
 class SyncResponse:
     """A pre-fetched payload from a mediated sync provider (e.g., Plaid Hosted Link
     delivers a SyncDataResponse via moneybin-server)."""
+
     payload: Any
     job_id: str | None = None
 
@@ -467,6 +470,7 @@ class SyncResponse:
 class OAuthSession:
     """An authenticated OAuth session for direct-connect providers
     (reserved for future `connect-*` providers per docs/specs/connect-gsheet.md)."""
+
     access_token: str
     refresh_token: str | None = None
     expires_at: int | None = None  # epoch seconds
@@ -478,6 +482,7 @@ ExtractionResult: TypeAlias = dict[str, pl.DataFrame]
 
 class ProviderConfig(BaseModel):
     """Base class for per-provider Pydantic config models."""
+
     model_config = {"extra": "forbid", "frozen": True}
 ```
 
@@ -487,6 +492,7 @@ Per-provider configuration follows a uniform pattern via Pydantic models declare
 # src/moneybin/extractors/ofx/config.py
 class OFXProviderConfig(ProviderConfig):
     """Merged into MoneyBinSettings.providers.ofx at framework startup."""
+
     encoding: str = "auto"
     strict_validation: bool = False
     # ... fields
