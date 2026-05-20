@@ -8,10 +8,10 @@ extract() implementation.
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeAlias
 
 import polars as pl
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,10 +47,10 @@ class OAuthSession:
     expires_at: int | None = None  # epoch seconds
 
 
-type ProviderSource = FilePath | SyncResponse | OAuthSession
+ProviderSource: TypeAlias = FilePath | SyncResponse | OAuthSession  # noqa: UP040  # TypeAlias form for coherence (project has no PEP 695 usage)
 """Typed union of accepted provider input shapes."""
 
-type ExtractionResult = dict[str, pl.DataFrame]
+ExtractionResult: TypeAlias = dict[str, pl.DataFrame]  # noqa: UP040  # TypeAlias form for coherence (project has no PEP 695 usage)
 """Output of Provider.extract(): {raw_table_name: DataFrame}.
 
 The framework writes each DataFrame to its declared raw table via
@@ -66,4 +66,4 @@ class ProviderConfig(BaseModel):
     framework merges these into MoneyBinSettings.providers.<name>.
     """
 
-    model_config = {"extra": "forbid", "frozen": True}
+    model_config = ConfigDict(extra="forbid", frozen=True)

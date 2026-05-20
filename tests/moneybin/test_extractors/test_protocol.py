@@ -40,9 +40,16 @@ class _StubProvider:
 
 
 def test_stub_satisfies_protocol() -> None:
-    """A minimal stub conforms to the Protocol at runtime."""
+    """A minimal stub conforms to the Protocol's runtime + attribute shape.
+
+    @runtime_checkable Protocols verify method presence but NOT attribute
+    presence — so attribute conformance is asserted explicitly here.
+    """
     stub = _StubProvider()
     assert isinstance(stub, Provider)
+    assert isinstance(stub.name, str)
+    assert isinstance(stub.source_type, str)
+    assert isinstance(stub.config, ProviderConfig)
 
 
 def test_file_path_is_a_provider_source() -> None:
