@@ -300,6 +300,13 @@ def import_files_command(
                         no_size_limit=no_size_limit,
                         auto_accept=yes,
                     )
+                    if result.sign_correction_suggested:
+                        typer.echo(
+                            "⚠️  Sign convention may be inverted (running balance "
+                            "suggests negation). If amounts look wrong, re-run "
+                            "with --sign to override.",
+                            err=True,
+                        )
                     files_list = [
                         {
                             "path": str(file_paths[0]),
@@ -324,6 +331,14 @@ def import_files_command(
                         force=force,
                         interactive=interactive,
                     )
+                    if any(r.sign_correction_suggested for r in batch.per_file):
+                        typer.echo(
+                            "⚠️  Sign convention may be inverted for one or "
+                            "more imports (running balance suggests negation). "
+                            "If amounts look wrong, re-run with --sign to "
+                            "override.",
+                            err=True,
+                        )
                     files_list = [
                         {
                             "path": r.path,

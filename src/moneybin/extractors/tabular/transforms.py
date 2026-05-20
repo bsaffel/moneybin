@@ -91,8 +91,8 @@ class TransformResult:
     balance_validated: bool = False
     """True if running balance was checked and matched."""
 
-    sign_auto_corrected: bool = False
-    """True if amounts were negated to match running balance."""
+    sign_correction_suggested: bool = False
+    """True if running balance suggests sign inversion; amounts are NOT mutated."""
 
 
 def transform_dataframe(
@@ -487,9 +487,9 @@ def _validate_running_balance(
     Checks that sequential balance deltas (balance[n] - balance[n-1]) match
     the corresponding transaction amounts within a ±0.01 tolerance.
 
-    If the forward pass fails but succeeds after sign inversion, the amounts
-    in result.transactions are negated (auto-correcting an inverted sign
-    convention) and balance_validated is set to True.
+    If the forward pass fails but the inverted-sign pass succeeds, sets
+    ``sign_correction_suggested=True`` on the result and emits a warning.
+    Amounts are NOT mutated — the caller decides what to do.
 
     Args:
         result: Current TransformResult with a parsed ``transactions`` DataFrame.
@@ -502,8 +502,9 @@ def _validate_running_balance(
             i.e. ±$0.01).
 
     Returns:
-        Updated TransformResult with ``balance_validated`` set and, when
-        auto-correction fires, negated amounts in ``transactions``.
+        Updated TransformResult with ``balance_validated`` set. When inversion
+        would pass, ``sign_correction_suggested=True`` and ``balance_validated``
+        remains False.
     """
     _balance_tolerance = (Decimal(tolerance_cents) / Decimal(100)).quantize(
         Decimal("0.01")
@@ -562,15 +563,12 @@ def _validate_running_balance(
 
     if inverted_rate >= _pass_threshold:
         logger.warning(
-            f"⚠️  Running balance validated after sign inversion: "
-            f"{inverted_rate:.0%} pass rate — auto-correcting amounts. "
-            f"Use --sign to override if this is wrong."
+            f"Running balance suggests inverted signs: forward {forward_rate:.0%}, "
+            f"inverted {inverted_rate:.0%}. Amounts not auto-corrected — re-import "
+            f"with --sign if appropriate."
         )
-        result.transactions = result.transactions.with_columns(
-            (-pl.col("amount")).alias("amount")
-        )
-        result.balance_validated = True
-        result.sign_auto_corrected = True
+        result.sign_correction_suggested = True
+        result.balance_validated = False  # we did NOT validate; we suggested
         return result
 
     logger.warning(

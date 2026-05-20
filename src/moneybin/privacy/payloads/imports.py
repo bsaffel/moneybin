@@ -47,6 +47,7 @@ class ImportPerFileRow:
     rows_loaded: Annotated[int | None, DataClass.AGGREGATE]
     import_id: Annotated[str | None, DataClass.RECORD_ID]
     error: Annotated[str | None, DataClass.DESCRIPTION]
+    sign_correction_suggested: Annotated[bool, DataClass.TXN_TYPE] = False
 
 
 # ---------------------------------------------------------------------------
