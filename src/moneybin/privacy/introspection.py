@@ -33,17 +33,24 @@ class PrivacyContractError(Exception):
     """A surface-crossing return type failed the privacy classification contract."""
 
 
-def extract_data_classes(return_type: Any) -> set[DataClass]:
+@functools.cache
+def extract_data_classes(return_type: Any) -> frozenset[DataClass]:
     """Walk ``return_type`` and return every ``DataClass`` reachable via ``Annotated``.
 
     Recurses through ``list``, ``tuple``, ``set``, ``dict`` value types,
     ``Optional`` / ``Union``, and nested classes that themselves have
     type hints. Class walking treats dataclasses, Pydantic models, and
     TypedDicts uniformly via ``typing.get_type_hints(..., include_extras=True)``.
+
+    Cached per-type — the full graph walk is expensive (``get_type_hints``
+    resolves forward references) and the result is referentially stable for
+    any given class object. Returns ``frozenset`` so the cached value is
+    safe to share across callers; callers that need ordering use
+    ``sorted(...)``.
     """
     found: set[DataClass] = set()
     _walk(return_type, found, seen=set())
-    return found
+    return frozenset(found)
 
 
 def _walk(tp: Any, found: set[DataClass], seen: set[Any]) -> None:

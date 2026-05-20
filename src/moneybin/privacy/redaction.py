@@ -23,6 +23,7 @@ classes added to ``DataClass`` MUST have an entry in
 
 from __future__ import annotations
 
+import functools
 import logging
 import types
 import typing
@@ -32,6 +33,21 @@ from typing import Annotated, Any, cast, get_args, get_origin, get_type_hints
 from moneybin.privacy.taxonomy import DataClass
 
 logger = logging.getLogger(__name__)
+
+
+@functools.cache
+def _cached_type_hints(cls: type) -> dict[str, Any]:
+    """Return ``get_type_hints(cls, include_extras=True)``, cached per-class.
+
+    ``redact_typed`` walks every dataclass / TypedDict / annotated class on
+    every call. ``get_type_hints`` is not cheap — it resolves forward
+    references, walks ``__annotations__``, and unwraps ``Annotated``. For
+    a 100-row list payload the same class is hit 100 times. Caching
+    collapses that to one call per unique class for the process lifetime.
+    Type annotations on a class do not change at runtime, so the cache is
+    safe across the entire test suite.
+    """
+    return get_type_hints(cls, include_extras=True)
 
 
 @dataclass(frozen=True)
@@ -157,7 +173,7 @@ def _redact(value: Any, consent: ConsentSet | None, declared_type: Any) -> Any:
         # x is a dataclass instance, but pyright can't narrow through is_dataclass().
         dc_instance = cast(Any, value)
         # pyright: ignore[reportUnknownArgumentType] — dc_instance is Any by cast design.
-        hints = get_type_hints(type(dc_instance), include_extras=True)  # pyright: ignore[reportUnknownArgumentType]
+        hints = _cached_type_hints(type(dc_instance))  # pyright: ignore[reportUnknownArgumentType]
         kwargs: dict[str, Any] = {}
         for f in fields(dc_instance):
             field_value = getattr(dc_instance, f.name)
@@ -167,7 +183,7 @@ def _redact(value: Any, consent: ConsentSet | None, declared_type: Any) -> Any:
     # TypedDict instance (which is just a dict at runtime).
     if isinstance(value, dict) and isinstance(declared_type, type):
         try:
-            hints: dict[str, Any] = get_type_hints(declared_type, include_extras=True)
+            hints: dict[str, Any] = _cached_type_hints(declared_type)
         except (NameError, TypeError):
             hints = {}
         if hints:
@@ -178,7 +194,7 @@ def _redact(value: Any, consent: ConsentSet | None, declared_type: Any) -> Any:
     # Plain class with annotations — try the same dataclass-style rebuild.
     if isinstance(declared_type, type) and hasattr(declared_type, "__annotations__"):
         try:
-            hints = get_type_hints(declared_type, include_extras=True)
+            hints = _cached_type_hints(declared_type)
         except (NameError, TypeError):
             hints = {}
         if hints and not is_dataclass(value):  # pyright: ignore[reportUnknownArgumentType]

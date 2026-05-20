@@ -15,7 +15,7 @@ Tier derivation summary:
   (audit failure messages, validation error messages). Payloads that
   include a DESCRIPTION field derive Tier.MEDIUM.
 
-  - ``TransformStatusPayload``      → Tier.MEDIUM (error_message = DESCRIPTION)
+  - ``TransformStatusPayload``      → Tier.LOW (RECORD_ID + TXN_TYPE + TIMESTAMP_OBSERVABILITY)
   - ``TransformPlanPayload``        → Tier.LOW (model name lists = RECORD_ID, bool = TXN_TYPE)
   - ``TransformValidationError``    → Tier.MEDIUM (message = DESCRIPTION)
   - ``TransformValidatePayload``    → Tier.MEDIUM (via TransformValidationError)
@@ -46,13 +46,7 @@ from moneybin.privacy.taxonomy import DataClass
 
 @dataclass(frozen=True, slots=True)
 class TransformStatusPayload:
-    """Payload for ``transform_status`` — SQLMesh environment + freshness.
-
-    ``error_message`` is DESCRIPTION (Tier.MEDIUM) because SQLMesh error
-    strings can include model names that embed project-path fragments.
-    In practice transform_status does not return errors today, but the
-    field is reserved for future use.
-    """
+    """Payload for ``transform_status`` — SQLMesh environment + freshness."""
 
     environment: Annotated[str, DataClass.RECORD_ID]
     initialized: Annotated[bool, DataClass.TXN_TYPE]

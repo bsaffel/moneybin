@@ -5,19 +5,19 @@ middleware can derive sensitivity via ``derive_tier`` without inspecting
 tool source code directly.
 
 Tier derivation summary:
-  - ``CategorizeRunPayload``       → Tier.AGGREGATE (LOW)  — only counts
-  - ``CategorizeStatsPayload``     → Tier.AGGREGATE (LOW)  — only counts
-  - ``CategorizeCommitPayload``    → Tier.AGGREGATE (LOW)  — only counts
-  - ``RuleRow``                    → Tier.MEDIUM (ACCOUNT_IDENTIFIER via account_id)
-  - ``CategorizeRulesPayload``     → Tier.MEDIUM (via RuleRow.account_id)
-  - ``RulesCreatePayload``         → Tier.AGGREGATE (LOW)  — only IDs and counts
-  - ``RulesDeletePayload``         → Tier.RECORD_ID (LOW)  — rule_id only
+  - ``CategorizeRunPayload``       → Tier.LOW  (AGGREGATE only — counts)
+  - ``CategorizeStatsPayload``     → Tier.LOW  (AGGREGATE only — counts)
+  - ``CategorizeCommitPayload``    → Tier.LOW  (AGGREGATE only — counts)
+  - ``RuleRow``                    → Tier.CRITICAL (ACCOUNT_IDENTIFIER via account_id)
+  - ``CategorizeRulesPayload``     → Tier.CRITICAL (via RuleRow.account_id)
+  - ``RulesCreatePayload``         → Tier.LOW  (AGGREGATE only — counts + IDs)
+  - ``RulesDeletePayload``         → Tier.LOW  (RECORD_ID — rule_id only)
   - ``PendingTxnRow``              → Tier.CRITICAL (account_id present)
   - ``CatPendingPayload``          → Tier.CRITICAL (via PendingTxnRow.account_id)
   - ``AutoReviewProposalRow``      → Tier.MEDIUM (merchant_pattern = MERCHANT_NAME)
   - ``AutoReviewPayload``          → Tier.MEDIUM (via AutoReviewProposalRow)
-  - ``AutoAcceptPayload``          → Tier.AGGREGATE (LOW)  — only counts + IDs
-  - ``AutoStatsPayload``           → Tier.AGGREGATE (LOW)  — only counts
+  - ``AutoAcceptPayload``          → Tier.LOW  (AGGREGATE only — counts + IDs)
+  - ``AutoStatsPayload``           → Tier.LOW  (AGGREGATE only — counts)
   - ``AssistRow``                  → Tier.MEDIUM (description_redacted = DESCRIPTION)
   - ``CatAssistPayload``           → Tier.MEDIUM (via AssistRow)
 

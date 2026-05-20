@@ -58,16 +58,47 @@ def _file_date_utc(path: Path) -> str:
     return datetime.fromtimestamp(path.stat().st_mtime, tz=UTC).strftime("%Y-%m-%d")
 
 
-def _rotate_if_new_day(path: Path) -> None:
-    """Rename ``path`` to ``privacy.log.<YYYY-MM-DD>.jsonl`` if its mtime is yesterday."""
+def _rotate_if_new_day(path: Path) -> bool:
+    """Rotate yesterday's log if needed; return ``True`` if ``path`` is current.
+
+    Folds the existence check the caller would otherwise re-issue: returns
+    ``False`` when the file doesn't exist (fresh write needed) or was
+    rotated away (current-day file will be created on append). Returns
+    ``True`` when the existing file is today's and the caller can skip
+    the post-write ``chmod`` re-init.
+    """
     if not path.exists():
-        return
+        return False
     file_day = _file_date_utc(path)
     today = _today_utc()
     if file_day == today:
-        return
+        return True
     rotated = path.parent / f"{_ROTATED_PREFIX}{file_day}{_ROTATED_SUFFIX}"
     path.rename(rotated)
+    return False
+
+
+def build_tool_call_event(
+    *,
+    actor: str,
+    sensitivity: str,
+    classes_returned: list[str],
+    row_count: int,
+) -> dict[str, Any]:
+    """Construct the standard ``action="tool_call"`` event dict.
+
+    Shared by the MCP decorator and CLI render path so the event schema
+    is locked in one place — future additions (e.g. ``consent_mode``,
+    ``profile``) propagate to both surfaces automatically.
+    """
+    return {
+        "ts": datetime.now(UTC).isoformat(),
+        "actor": actor,
+        "action": "tool_call",
+        "sensitivity": sensitivity,
+        "classes_returned": classes_returned,
+        "row_count": row_count,
+    }
 
 
 def write_privacy_event(event: dict[str, Any]) -> None:
@@ -78,16 +109,15 @@ def write_privacy_event(event: dict[str, Any]) -> None:
     try:
         with _LOCK:
             log_dir = _resolve_privacy_log_dir()
+            log_dir.mkdir(parents=True, exist_ok=True)
             log_path = log_dir / _LOG_FILE
-            _rotate_if_new_day(log_path)
-            existed = log_path.exists()
+            is_current = _rotate_if_new_day(log_path)
             line = json.dumps(event, sort_keys=True, separators=(",", ":"))
             with log_path.open("a", encoding="utf-8") as f:
                 f.write(line + "\n")
-            if not existed:
-                # First write — restrict to 0o600. Don't chmod on every
-                # append (cheap but pointless; also some filesystems
-                # don't support repeated chmods cleanly).
+            if not is_current:
+                # First write of the day (file just created or just rotated).
+                # Restrict to 0o600. Don't chmod on every append.
                 log_path.chmod(0o600)
     except (OSError, PermissionError) as exc:
         logger.warning(f"privacy log write failed: {type(exc).__name__}: {exc}")

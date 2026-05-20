@@ -25,16 +25,16 @@ from __future__ import annotations
 import dataclasses
 import logging
 from collections.abc import Callable
-from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
 import typer
 
 from moneybin.errors import UserError
-from moneybin.privacy.introspection import extract_data_classes
-from moneybin.privacy.log import write_privacy_event
+from moneybin.privacy.introspection import derive_tier, extract_data_classes
+from moneybin.privacy.log import build_tool_call_event, write_privacy_event
 from moneybin.privacy.redaction import redact_typed
+from moneybin.privacy.taxonomy import Tier
 from moneybin.protocol.envelope import ResponseEnvelope, build_error_envelope
 
 logger = logging.getLogger(__name__)
@@ -116,8 +116,25 @@ def render_or_json(
             render_fn(envelope)
         return
 
-    # Redact CRITICAL fields before serialising.
-    if envelope.error is None and envelope.data is not None:  # pyright: ignore[reportUnknownMemberType]
+    # Capture the payload's declared classes BEFORE the json_fields filter
+    # mutates envelope.data into a bare list[dict] — otherwise the privacy
+    # log records classes_returned=[] for filtered responses, losing the
+    # audit signal.
+    original_data_type = (
+        type(envelope.data) if envelope.data is not None else type(None)
+    )  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
+
+    # Redact CRITICAL fields before serialising. Skip the walk for non-CRITICAL
+    # payloads — the result would be value-identical and the cost is real.
+    # Derive from the payload TYPE (same source the MCP decorator uses) rather
+    # than envelope.summary.sensitivity, which CLI commands set manually and
+    # often understate (e.g. accounts_resolve passes "low" but its payload
+    # contains ACCOUNT_IDENTIFIER → tier CRITICAL).
+    if (
+        envelope.error is None
+        and envelope.data is not None  # pyright: ignore[reportUnknownMemberType]
+        and _has_critical(original_data_type)  # pyright: ignore[reportUnknownArgumentType]
+    ):
         redacted_data = redact_typed(envelope.data, consent=None)  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
         envelope = dataclasses.replace(envelope, data=redacted_data)  # pyright: ignore[reportUnknownArgumentType]
 
@@ -130,18 +147,34 @@ def render_or_json(
         envelope = dataclasses.replace(envelope, data=filtered)  # pyright: ignore[reportUnknownArgumentType]
 
     if cli_actor is not None:
-        data_type = type(envelope.data) if envelope.data is not None else type(None)  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
-        classes_returned = [c.value for c in sorted(extract_data_classes(data_type))]
-        write_privacy_event({
-            "ts": datetime.now(UTC).isoformat(),
-            "actor": f"cli.{cli_actor}",
-            "action": "tool_call",
-            "sensitivity": envelope.summary.sensitivity,
-            "classes_returned": classes_returned,
-            "row_count": envelope.summary.returned_count,
-        })
+        classes_returned = [
+            c.value
+            for c in sorted(extract_data_classes(original_data_type))  # pyright: ignore[reportUnknownArgumentType]
+        ]
+        write_privacy_event(
+            build_tool_call_event(
+                actor=f"cli.{cli_actor}",
+                sensitivity=envelope.summary.sensitivity,
+                classes_returned=classes_returned,
+                row_count=envelope.summary.returned_count,
+            )
+        )
 
     typer.echo(envelope.to_json())
+
+
+def _has_critical(payload_type: type) -> bool:
+    """Return True if ``payload_type`` carries any CRITICAL-tier field.
+
+    Used by the JSON output path to skip ``redact_typed`` for payloads
+    that would pass through unchanged (every non-CRITICAL tier is
+    pass-through in PR 2). Mirrors the equivalent check in the
+    ``@mcp_tool`` decorator's wrapper.
+    """
+    try:
+        return derive_tier(payload_type) == Tier.CRITICAL
+    except Exception:  # noqa: BLE001 — bare types (list/dict) raise; treat as non-critical
+        return False
 
 
 def emit_json_error(user_error: UserError) -> None:

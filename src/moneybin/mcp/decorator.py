@@ -29,7 +29,6 @@ import logging
 import time
 import typing
 from collections.abc import Callable
-from datetime import UTC, datetime
 from typing import Any, cast
 
 from moneybin.database import (  # noqa: PLC2701 — private import for per-call tracking
@@ -43,8 +42,9 @@ from moneybin.privacy.introspection import (
     derive_tier,
     extract_data_classes,
 )
-from moneybin.privacy.log import write_privacy_event
+from moneybin.privacy.log import build_tool_call_event, write_privacy_event
 from moneybin.privacy.redaction import redact_typed
+from moneybin.privacy.taxonomy import Tier
 from moneybin.protocol.envelope import ResponseEnvelope, build_error_envelope
 
 logger = logging.getLogger(__name__)
@@ -267,6 +267,7 @@ def mcp_tool(
             sensitivity = Sensitivity.HIGH
             classes_for_log: list[str] = ["unclassified"]
             payload_type_arg: Any = None
+            has_critical = False
         else:
             return_hint = typing.get_type_hints(fn).get("return")
             if return_hint is None:
@@ -292,6 +293,11 @@ def mcp_tool(
             classes_for_log = [
                 c.value for c in sorted(extract_data_classes(payload_type_arg))
             ]
+            # Only payloads carrying at least one CRITICAL-tier field need
+            # to be walked by redact_typed. For LOW/MEDIUM/HIGH-only tools
+            # the walk would allocate a value-identical dataclass tree —
+            # pure overhead on the hot path.
+            has_critical = tier == Tier.CRITICAL
 
         is_coro = inspect.iscoroutinefunction(fn)
         if inspect.isasyncgenfunction(fn):
@@ -394,23 +400,28 @@ def mcp_tool(
                     sensitivity=sensitivity.value,  # pyright: ignore[reportArgumentType]
                 )
                 envelope = dataclasses.replace(envelope, summary=updated_summary)  # pyright: ignore[reportUnknownArgumentType]
-            # Redact CRITICAL fields before returning (unless dynamic/unclassified).
+            # Redact CRITICAL fields before returning. Skip the walk entirely
+            # for tools whose return type has no CRITICAL field — the result
+            # would be value-identical and the dataclass-tree rebuild is the
+            # most expensive thing on the hot path. Unclassified tools also
+            # skip (their payload shape is decided at call time).
             if (
-                not unclassified
+                has_critical
+                and not unclassified
                 and envelope.error is None
                 and envelope.data is not None  # pyright: ignore[reportUnknownMemberType]
             ):
                 redacted_data = redact_typed(envelope.data, consent=None)  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
                 envelope = dataclasses.replace(envelope, data=redacted_data)  # pyright: ignore[reportUnknownArgumentType]
             # Write a privacy.log.jsonl event for every tool call.
-            write_privacy_event({
-                "ts": datetime.now(UTC).isoformat(),
-                "actor": f"mcp.{fn.__name__}",
-                "action": "tool_call",
-                "sensitivity": sensitivity.value,
-                "classes_returned": classes_for_log,
-                "row_count": _envelope_row_count(envelope),  # pyright: ignore[reportUnknownArgumentType]
-            })
+            write_privacy_event(
+                build_tool_call_event(
+                    actor=f"mcp.{fn.__name__}",
+                    sensitivity=sensitivity.value,
+                    classes_returned=classes_for_log,
+                    row_count=_envelope_row_count(envelope),  # pyright: ignore[reportUnknownArgumentType]
+                )
+            )
             return envelope
 
         wrapper._mcp_sensitivity = sensitivity  # type: ignore[attr-defined]

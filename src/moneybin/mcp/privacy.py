@@ -9,12 +9,9 @@ import functools
 import logging
 import re
 from enum import StrEnum
-from typing import TYPE_CHECKING
 
 from moneybin.config import get_settings
-
-if TYPE_CHECKING:
-    from moneybin.privacy.taxonomy import Tier
+from moneybin.privacy.taxonomy import Tier
 
 logger = logging.getLogger(__name__)
 
@@ -34,28 +31,17 @@ class Sensitivity(StrEnum):
     CRITICAL = "critical"
 
 
-def tier_to_sensitivity(tier: "Tier") -> "Sensitivity":
+_TIER_TO_SENSITIVITY: dict[Tier, Sensitivity] = {
+    Tier.LOW: Sensitivity.LOW,
+    Tier.MEDIUM: Sensitivity.MEDIUM,
+    Tier.HIGH: Sensitivity.HIGH,
+    Tier.CRITICAL: Sensitivity.CRITICAL,
+}
+
+
+def tier_to_sensitivity(tier: Tier) -> Sensitivity:
     """Map a privacy ``Tier`` (numeric) to the MCP ``Sensitivity`` enum."""
     return _TIER_TO_SENSITIVITY[tier]
-
-
-# Import-time mapping. Lives at module bottom to keep imports clean.
-_TIER_TO_SENSITIVITY: "dict[Tier, Sensitivity]" = {}
-
-
-def _init_tier_mapping() -> None:
-    """Populate the Tier → Sensitivity map. Called once at module load."""
-    from moneybin.privacy.taxonomy import Tier  # noqa: PLC0415
-
-    _TIER_TO_SENSITIVITY.update({
-        Tier.LOW: Sensitivity.LOW,
-        Tier.MEDIUM: Sensitivity.MEDIUM,
-        Tier.HIGH: Sensitivity.HIGH,
-        Tier.CRITICAL: Sensitivity.CRITICAL,
-    })
-
-
-_init_tier_mapping()
 
 
 def log_tool_call(tool_name: str, sensitivity: Sensitivity) -> None:
