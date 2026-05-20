@@ -108,8 +108,13 @@ class ProfileService:
         except FileExistsError:
             raise ProfileExistsError(f"Profile '{normalized}' already exists") from None
         try:
+            # 0o700: profile dir holds the encrypted DB, privacy.log.jsonl,
+            # and other per-profile state; not readable by other users.
+            profile_dir.chmod(0o700)
             (profile_dir / "logs").mkdir()
+            (profile_dir / "logs").chmod(0o700)
             (profile_dir / "temp").mkdir()
+            (profile_dir / "temp").chmod(0o700)
             generate_profile_config(profile_dir, normalized)
             self._init_database(profile_dir, normalized)
             if init_inbox:
