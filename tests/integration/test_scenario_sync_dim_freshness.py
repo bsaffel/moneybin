@@ -23,14 +23,14 @@ from moneybin.connectors.sync_models import (
     SyncTriggerResponse,
 )
 from moneybin.database import Database
-from moneybin.loaders.plaid_loader import PlaidLoader
+from moneybin.extractors.plaid import PlaidExtractor
 from moneybin.services.sync_service import SyncService
 from moneybin.services.system_service import SystemService
 
 FIXTURE = (
     Path(__file__).parent.parent
     / "moneybin"
-    / "test_loaders"
+    / "test_extractors"
     / "fixtures"
     / "plaid_sync_response.yaml"
 )
@@ -79,7 +79,7 @@ def test_sync_pull_makes_new_accounts_visible_in_dim_accounts(
     )
     client.get_data.return_value = sync_data
 
-    loader = PlaidLoader(db)
+    loader = PlaidExtractor(db)
     service = SyncService(client=client, db=db, loader=loader)
     result = service.pull()
 
@@ -130,7 +130,7 @@ def test_sync_pull_no_refresh_leaves_dim_accounts_empty(
     )
     client.get_data.return_value = sync_data
 
-    loader = PlaidLoader(db)
+    loader = PlaidExtractor(db)
     service = SyncService(client=client, db=db, loader=loader)
     result = service.pull(refresh=False)
 

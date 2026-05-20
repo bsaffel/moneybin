@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 
 _SQL_DIR = Path(__file__).resolve().parent / "sql" / "schema"
 _OFX_SCHEMA_DIR = Path(__file__).resolve().parent / "extractors" / "ofx" / "schema"
+_PLAID_SCHEMA_DIR = Path(__file__).resolve().parent / "extractors" / "plaid" / "schema"
 
 
 # Entries are filenames resolved against ``_SQL_DIR`` by default; tuples of
@@ -56,9 +57,9 @@ _SCHEMA_FILES: list[_SchemaEntry] = [
     (_OFX_SCHEMA_DIR, "raw_ofx_accounts.sql"),
     (_OFX_SCHEMA_DIR, "raw_ofx_transactions.sql"),
     (_OFX_SCHEMA_DIR, "raw_ofx_balances.sql"),
-    "raw_plaid_accounts.sql",
-    "raw_plaid_balances.sql",
-    "raw_plaid_transactions.sql",
+    (_PLAID_SCHEMA_DIR, "raw_plaid_accounts.sql"),
+    (_PLAID_SCHEMA_DIR, "raw_plaid_balances.sql"),
+    (_PLAID_SCHEMA_DIR, "raw_plaid_transactions.sql"),
     "raw_tabular_transactions.sql",
     "raw_tabular_accounts.sql",
     "raw_import_log.sql",

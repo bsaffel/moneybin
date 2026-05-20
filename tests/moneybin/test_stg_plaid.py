@@ -15,12 +15,12 @@ import yaml
 
 from moneybin.connectors.sync_models import SyncDataResponse
 from moneybin.database import Database, sqlmesh_context
-from moneybin.loaders.plaid_loader import PlaidLoader
+from moneybin.extractors.plaid import PlaidExtractor
 
 pytestmark = pytest.mark.integration
 
 FIXTURE = (
-    Path(__file__).parent / "test_loaders" / "fixtures" / "plaid_sync_response.yaml"
+    Path(__file__).parent / "test_extractors" / "fixtures" / "plaid_sync_response.yaml"
 )
 
 
@@ -28,7 +28,7 @@ FIXTURE = (
 def db_with_data(db: Database) -> Database:
     with FIXTURE.open() as f:
         sync_data = SyncDataResponse.model_validate(yaml.safe_load(f))
-    loader = PlaidLoader(db)
+    loader = PlaidExtractor(db)
     loader.load(sync_data, job_id=sync_data.metadata.job_id)
     return db
 

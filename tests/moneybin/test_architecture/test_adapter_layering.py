@@ -74,18 +74,18 @@ ADAPTER_LAYERING_ALLOWLIST: frozenset[tuple[str, str, str]] = frozenset({
         "TabularLoader",
     ),
     # --- Dependency injection -------------------------------------------
-    # PlaidLoader is constructed by the sync adapters and passed into
+    # PlaidExtractor is constructed by the sync adapters and passed into
     # SyncService(loader=...) as a constructor argument. The adapter
     # never calls a method on it; SyncService is the only consumer.
     (
         "mcp/tools/sync.py",
-        "moneybin.loaders.plaid_loader",
-        "PlaidLoader",
+        "moneybin.extractors.plaid",
+        "PlaidExtractor",
     ),
     (
         "cli/commands/sync.py",
-        "moneybin.loaders.plaid_loader",
-        "PlaidLoader",
+        "moneybin.extractors.plaid",
+        "PlaidExtractor",
     ),
     # --- Pure type / format descriptors ---------------------------------
     # Format descriptors and column-mapping types from the tabular

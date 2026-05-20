@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 
 import polars as pl
 
@@ -22,13 +23,15 @@ from moneybin.connectors.sync_models import (
     SyncTransaction,
 )
 from moneybin.database import Database
+from moneybin.extractors._types import ExtractionResult, ProviderSource, SyncResponse
+from moneybin.extractors.plaid.config import PlaidProviderConfig
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
 class LoadResult:
-    """Per-table row counts returned by PlaidLoader.load()."""
+    """Per-table row counts returned by PlaidExtractor.load()."""
 
     accounts_loaded: int
     transactions_loaded: int
@@ -78,19 +81,52 @@ _BALANCES_SCHEMA = pl.Schema({
 })
 
 
-class PlaidLoader:
+class PlaidExtractor:
     """Load Plaid sync data into raw.plaid_* tables.
 
     Caller manages the Database connection lifetime per ADR-010:
 
         with get_database(read_only=False) as db:
-            loader = PlaidLoader(db)
-            result = loader.load(sync_data, job_id)
+            extractor = PlaidExtractor(db)
+            result = extractor.load(sync_data, job_id)
     """
 
-    def __init__(self, db: Database) -> None:
-        """Initialize with an active Database connection."""
+    name = "plaid"
+    """Provider name; matches raw.plaid_* table prefix."""
+
+    source_type = "plaid"
+    """Written into source_type column on every row produced by this provider."""
+
+    def __init__(self, db: Database, config: PlaidProviderConfig | None = None) -> None:
+        """Initialize with an active Database connection.
+
+        Args:
+            db: An active Database connection (caller-managed per ADR-010).
+            config: Provider configuration; defaults to empty PlaidProviderConfig.
+        """
         self.db = db
+        self.config = config or PlaidProviderConfig()
+
+    def extract(self, source: ProviderSource) -> ExtractionResult:
+        """Provider Protocol entry point.
+
+        Plaid accepts ``SyncResponse`` only. Framework decoration that
+        supplies ``import_id`` and ``source_origin`` lands in Plan 2;
+        existing callers continue to use ``load()`` directly.
+        """
+        if not isinstance(source, SyncResponse):
+            raise TypeError(
+                f"PlaidExtractor expects SyncResponse; got {type(source).__name__}"
+            )
+        raise NotImplementedError(
+            "PlaidExtractor.extract() will be wired in Plan 2 (framework "
+            "decoration). Use load() for now."
+        )
+
+    def schema_files(self) -> list[Path]:
+        """Return paths to raw.plaid_* DDL files bundled with this package."""
+        schema_dir = Path(__file__).parent / "schema"
+        return sorted(schema_dir.glob("raw_plaid_*.sql"))
 
     def load(self, sync_data: SyncDataResponse, job_id: str) -> LoadResult:
         """Load accounts, transactions, balances from one sync response.
