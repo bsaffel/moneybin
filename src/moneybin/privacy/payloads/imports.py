@@ -95,7 +95,7 @@ class ImportPreviewPayload:
     format: ImportFormatInfoPayload
     # column mapping fields — all metadata / structure, Tier.LOW
     mapping: Annotated[dict[str, Any], DataClass.TXN_TYPE]
-    confidence: Annotated[str | None, DataClass.TXN_TYPE]
+    confidence: Annotated[str | None, DataClass.AGGREGATE]
     date_format: Annotated[str | None, DataClass.TXN_TYPE]
     number_format: Annotated[str | None, DataClass.TXN_TYPE]
     sign_convention: Annotated[str | None, DataClass.TXN_TYPE]
@@ -149,14 +149,14 @@ class ImportRevertPayload:
 class ImportFormatRow:
     """One format entry in ImportFormatsPayload.formats."""
 
-    name: Annotated[str, DataClass.TXN_TYPE]
+    name: Annotated[str, DataClass.RECORD_ID]
     institution_name: Annotated[str | None, DataClass.INSTITUTION]
     file_type: Annotated[str, DataClass.TXN_TYPE]
     sign_convention: Annotated[str | None, DataClass.TXN_TYPE]
     date_format: Annotated[str | None, DataClass.TXN_TYPE]
     number_format: Annotated[str | None, DataClass.TXN_TYPE]
     multi_account: Annotated[bool, DataClass.TXN_TYPE]
-    header_signature: Annotated[list[str] | None, DataClass.TXN_TYPE]
+    header_signature: Annotated[list[str] | None, DataClass.DESCRIPTION]
 
 
 @dataclass(frozen=True, slots=True)
