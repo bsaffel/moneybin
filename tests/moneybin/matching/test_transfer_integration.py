@@ -132,8 +132,6 @@ class TestTransferPipeline:
         signals = json.loads(pending[0]["match_signals"])
         assert "date_distance" in signals
         assert "keyword" in signals
-        assert "roundness" in signals
-        assert "pair_frequency" in signals
 
     def test_cross_institution_ach_with_date_offset(self, db: Database) -> None:
         """Cross-institution ACH with 2-day offset, different descriptions."""

@@ -365,17 +365,15 @@ class MatchingSettings(BaseModel):
         description="Source types in priority order (first = highest priority)",
     )
     transfer_review_threshold: float = Field(
-        default=0.70,
+        default=0.55,
         ge=0.0,
         le=1.0,
         description="Review queue threshold for transfer pairs",
     )
     transfer_signal_weights: dict[str, float] = Field(
-        default={
-            "date_distance": 0.4,
-            "keyword": 0.3,
-            "roundness": 0.15,
-            "pair_frequency": 0.15,
+        default_factory=lambda: {
+            "date_distance": 0.6,
+            "keyword": 0.4,
         },
         description="Per-signal weights for transfer confidence scoring",
     )
@@ -392,10 +390,13 @@ class MatchingSettings(BaseModel):
     @classmethod
     def validate_transfer_weights(cls, v: dict[str, float]) -> dict[str, float]:
         """Ensure all required scoring keys are present and sum to 1.0."""
-        required = {"date_distance", "keyword", "roundness", "pair_frequency"}
+        required = {"date_distance", "keyword"}
         missing = required - v.keys()
         if missing:
             raise ValueError(f"transfer_signal_weights missing keys: {missing}")
+        extra = v.keys() - required
+        if extra:
+            raise ValueError(f"transfer_signal_weights has unrecognised keys: {extra}")
         negative = {k: w for k, w in v.items() if w < 0}
         if negative:
             raise ValueError(f"transfer_signal_weights has negative values: {negative}")
