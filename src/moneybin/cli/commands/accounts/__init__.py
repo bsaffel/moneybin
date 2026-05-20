@@ -71,7 +71,11 @@ def accounts_list(
                 include_archived=include_archived, type_filter=type_filter
             )
     if output == OutputFormat.JSON:
-        render_or_json(build_envelope(data=result, sensitivity="medium"), output)
+        render_or_json(
+            build_envelope(data=result, sensitivity="medium"),
+            output,
+            cli_actor="accounts_list",
+        )
         return
     for acct in result.rows:
         display = acct.display_name or acct.account_id
@@ -94,7 +98,11 @@ def accounts_get(
         logger.error(f"❌ Account not found: {account_id}")
         raise typer.Exit(1)
     if output == OutputFormat.JSON:
-        render_or_json(build_envelope(data=record, sensitivity="medium"), output)
+        render_or_json(
+            build_envelope(data=record, sensitivity="medium"),
+            output,
+            cli_actor="accounts_get",
+        )
         return
     import dataclasses
 
@@ -295,6 +303,7 @@ def accounts_resolve(
         render_or_json(
             build_envelope(data=payload, sensitivity="low"),
             output,
+            cli_actor="accounts_resolve",
         )
         return
 

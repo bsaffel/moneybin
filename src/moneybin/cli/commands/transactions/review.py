@@ -97,7 +97,11 @@ def _print_status(type_: str, output: OutputFormat) -> None:
             data = {"matches_pending": s.matches_pending}
         else:  # type_ == "categorize"
             data = {"categorize_pending": s.categorize_pending}
-        render_or_json(build_envelope(data=data, sensitivity="low"), output)
+        render_or_json(
+            build_envelope(data=data, sensitivity="low"),
+            output,
+            cli_actor="transactions_review",
+        )
         return
 
     if type_ == "matches":

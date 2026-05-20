@@ -25,11 +25,16 @@ from __future__ import annotations
 import dataclasses
 import logging
 from collections.abc import Callable
+from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Any
 
 import typer
 
 from moneybin.errors import UserError
+from moneybin.privacy.introspection import extract_data_classes
+from moneybin.privacy.log import write_privacy_event
+from moneybin.privacy.redaction import redact_typed
 from moneybin.protocol.envelope import ResponseEnvelope, build_error_envelope
 
 logger = logging.getLogger(__name__)
@@ -78,17 +83,31 @@ json_fields_option: str | None = typer.Option(
 
 
 def render_or_json(
-    envelope: ResponseEnvelope,
+    envelope: ResponseEnvelope[Any],
     output: OutputFormat,
-    render_fn: Callable[[ResponseEnvelope], None] | None = None,
+    render_fn: Callable[[ResponseEnvelope[Any]], None] | None = None,
     json_fields: str | None = None,
+    cli_actor: str | None = None,
 ) -> None:
     """Render a response envelope as text or JSON.
+
+    TEXT path: delegates to ``render_fn`` (caller owns text formatting and
+    is expected to display only appropriate fields such as last_4). No
+    redaction and no privacy.log event.
+
+    JSON path:
+    - Applies ``redact_typed`` to mask CRITICAL fields (e.g. ACCOUNT_IDENTIFIER)
+      before serialising, mirroring the ``@mcp_tool`` decorator's behaviour.
+    - When ``cli_actor`` is provided, writes a ``privacy.log.jsonl`` event with
+      ``actor="cli.<cli_actor>"`` and ``action="tool_call"``.
+    - ``json_fields`` field-filter (``--fields`` flag) runs post-redaction on
+      ``list`` payloads; typed dataclass payloads skip this filter (no-op
+      because Phase 5 migrated CLI commands to typed payloads).
 
     When ``json_fields`` is supplied (and non-empty) and ``output`` is JSON,
     only those comma-separated keys are kept in each ``data`` list item.
     An empty string ``""`` is treated the same as ``None`` — no filtering.
-    Silently skipped when ``data`` is a dict (write-result shape).
+    Silently skipped when ``data`` is not a list.
     Leading/trailing whitespace around each field name is stripped; empty
     segments (e.g. from ``"id,,amount"``) are silently ignored.
     """
@@ -96,12 +115,31 @@ def render_or_json(
         if render_fn is not None:
             render_fn(envelope)
         return
-    if json_fields and isinstance(envelope.data, list):
+
+    # Redact CRITICAL fields before serialising.
+    if envelope.error is None and envelope.data is not None:  # pyright: ignore[reportUnknownMemberType]
+        redacted_data = redact_typed(envelope.data, consent=None)  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
+        envelope = dataclasses.replace(envelope, data=redacted_data)  # pyright: ignore[reportUnknownArgumentType]
+
+    if json_fields and isinstance(envelope.data, list):  # pyright: ignore[reportUnknownMemberType]
         fields = {f.strip() for f in json_fields.split(",") if f.strip()}
         filtered = [
-            {k: v for k, v in row.items() if k in fields} for row in envelope.data
+            {k: v for k, v in row.items() if k in fields} for row in envelope.data  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
         ]
-        envelope = dataclasses.replace(envelope, data=filtered)
+        envelope = dataclasses.replace(envelope, data=filtered)  # pyright: ignore[reportUnknownArgumentType]
+
+    if cli_actor is not None:
+        data_type = type(envelope.data) if envelope.data is not None else type(None)  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
+        classes_returned = [c.value for c in sorted(extract_data_classes(data_type))]
+        write_privacy_event({
+            "ts": datetime.now(UTC).isoformat(),
+            "actor": f"cli.{cli_actor}",
+            "action": "tool_call",
+            "sensitivity": envelope.summary.sensitivity,
+            "classes_returned": classes_returned,
+            "row_count": envelope.summary.returned_count,
+        })
+
     typer.echo(envelope.to_json())
 
 

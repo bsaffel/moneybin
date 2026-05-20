@@ -167,7 +167,8 @@ class TestAccountsList:
             include_archived=True, type_filter=None
         )
         ids = [a["account_id"] for a in json.loads(result.stdout)["data"]["rows"]]
-        assert "acct_archived" in ids
+        # account_id is ACCOUNT_IDENTIFIER (CRITICAL) — redacted to ****<last4>
+        assert "****ived" in ids
 
     @pytest.mark.unit
     @patch("moneybin.cli.commands.accounts.get_database")
@@ -231,7 +232,8 @@ class TestAccountsGet:
         assert result.exit_code == 0, result.stderr
         data = json.loads(result.stdout)
         assert data["status"] == "ok"
-        assert data["data"]["account_id"] == "acct_a"
+        # account_id is ACCOUNT_IDENTIFIER (CRITICAL) — redacted to ****<last4>
+        assert data["data"]["account_id"] == "****ct_a"
 
     @pytest.mark.unit
     @patch("moneybin.cli.commands.accounts.get_database")
@@ -697,7 +699,8 @@ class TestAccountsResolve:
         payload = json.loads(result.stdout)
         assert payload["summary"]["sensitivity"] == "low"
         # data is {"matches": [...]} from AccountResolvePayload serialization
-        assert payload["data"]["matches"][0]["account_id"] == "a1"
+        # account_id is ACCOUNT_IDENTIFIER (CRITICAL) — <4 chars → "****"
+        assert payload["data"]["matches"][0]["account_id"] == "****"
         assert payload["data"]["matches"][0]["confidence"] == 1.0
 
     @pytest.mark.unit

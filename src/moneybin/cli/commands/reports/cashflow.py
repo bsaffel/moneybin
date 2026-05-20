@@ -55,4 +55,5 @@ def reports_cashflow(
         build_envelope(data=payload, sensitivity="low"),
         output,
         render_fn=_render_text,
+        cli_actor="reports_cashflow",
     )

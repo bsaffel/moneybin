@@ -693,7 +693,9 @@ def db_key_show(
 
         if output == OutputFormat.JSON:
             render_or_json(
-                build_envelope(data={"key": key}, sensitivity="high"), output
+                build_envelope(data={"key": key}, sensitivity="high"),
+                output,
+                cli_actor="db_key_show",
             )
             return
 

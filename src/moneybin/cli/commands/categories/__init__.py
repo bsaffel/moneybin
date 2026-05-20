@@ -84,6 +84,6 @@ def categories_delete(
         sensitivity="low",
     )
     if output == OutputFormat.JSON:
-        render_or_json(envelope, output)
+        render_or_json(envelope, output, cli_actor="categories_delete")
         return
     logger.info(f"✅ Deleted category {category_id}")

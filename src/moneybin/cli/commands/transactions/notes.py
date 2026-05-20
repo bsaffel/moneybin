@@ -60,7 +60,9 @@ def transactions_notes_add(
 
     if output == OutputFormat.JSON:
         render_or_json(
-            build_envelope(data=_note_payload(note), sensitivity="low"), output
+            build_envelope(data=_note_payload(note), sensitivity="low"),
+            output,
+            cli_actor="transactions_notes_add",
         )
         return
     logger.info(f"✅ Added note {note.note_id} to {transaction_id}")
@@ -83,6 +85,7 @@ def transactions_notes_list(
         render_or_json(
             build_envelope(data=[_note_payload(n) for n in notes], sensitivity="low"),
             output,
+            cli_actor="transactions_notes_list",
         )
         return
 
@@ -116,7 +119,9 @@ def transactions_notes_edit(
 
     if output == OutputFormat.JSON:
         render_or_json(
-            build_envelope(data=_note_payload(note), sensitivity="low"), output
+            build_envelope(data=_note_payload(note), sensitivity="low"),
+            output,
+            cli_actor="transactions_notes_edit",
         )
         return
     logger.info(f"✅ Updated note {note.note_id}")
@@ -148,6 +153,7 @@ def transactions_notes_delete(
         render_or_json(
             build_envelope(data=NoteDeletePayload(note_id=note_id), sensitivity="low"),
             output,
+            cli_actor="transactions_notes_delete",
         )
         return
     logger.info(f"✅ Deleted note {note_id}")

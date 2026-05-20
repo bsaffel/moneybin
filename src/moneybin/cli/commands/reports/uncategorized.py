@@ -58,4 +58,5 @@ def reports_uncategorized(
         build_envelope(data=payload, sensitivity="medium"),
         output,
         render_fn=_render_text,
+        cli_actor="reports_uncategorized",
     )

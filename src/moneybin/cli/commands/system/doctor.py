@@ -84,7 +84,7 @@ def doctor_command(
             if failing > 0
             else base
         )
-        render_or_json(envelope, output)
+        render_or_json(envelope, output, cli_actor="doctor_command")
         if failing > 0:
             raise typer.Exit(1)
         return

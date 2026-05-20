@@ -148,7 +148,9 @@ def categorize_commit(
                 code="categorization_errors",
             ),
         )
-    render_or_json(envelope, output, render_fn=_render_table)
+    render_or_json(
+        envelope, output, render_fn=_render_table, cli_actor="categorize_commit"
+    )
 
     if result.errors > 0 or result.skipped > 0:
         raise typer.Exit(1)
@@ -212,7 +214,9 @@ def categorize_run(
             logger.info(f"  {method}: {count}")
         logger.info(f"✅ Applied {payload.total_applied} total")
 
-    render_or_json(envelope, output, render_fn=_render_table)
+    render_or_json(
+        envelope, output, render_fn=_render_table, cli_actor="categorize_run"
+    )
 
 
 @app.command("assist")
@@ -300,7 +304,9 @@ def categorize_assist(
     def _render_table(_: object) -> None:
         logger.info(f"Returned {len(payload.transactions)} redacted record(s).")
 
-    render_or_json(envelope, output, render_fn=_render_table)
+    render_or_json(
+        envelope, output, render_fn=_render_table, cli_actor="categorize_assist"
+    )
 
 
 @app.command("stats")

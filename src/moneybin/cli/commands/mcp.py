@@ -606,7 +606,11 @@ def mcp_list_tools(
             }
             for tool in sorted_tools
         ]
-        render_or_json(build_envelope(data=tools_payload, sensitivity="low"), output)
+        render_or_json(
+            build_envelope(data=tools_payload, sensitivity="low"),
+            output,
+            cli_actor="mcp_list_tools",
+        )
         return
 
     for tool in sorted_tools:
@@ -652,7 +656,11 @@ def mcp_list_prompts(
             }
             for prompt in sorted_prompts
         ]
-        render_or_json(build_envelope(data=prompts_payload, sensitivity="low"), output)
+        render_or_json(
+            build_envelope(data=prompts_payload, sensitivity="low"),
+            output,
+            cli_actor="mcp_list_prompts",
+        )
         return
 
     if not sorted_prompts:

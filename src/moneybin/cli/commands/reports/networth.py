@@ -58,6 +58,7 @@ def reports_networth(
         build_envelope(data=snapshot, sensitivity="low"),
         output,
         render_fn=_render_text,
+        cli_actor="reports_networth",
     )
 
 
@@ -95,4 +96,5 @@ def reports_networth_history(
         build_envelope(data=payload, sensitivity="low"),
         output,
         render_fn=_render_text,
+        cli_actor="reports_networth_history",
     )

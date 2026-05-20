@@ -63,6 +63,7 @@ def accounts_balance_show(
         build_envelope(data=result, sensitivity="low"),
         output,
         render_fn=_render_text,
+        cli_actor="accounts_balance_show",
     )
 
 
@@ -93,6 +94,7 @@ def accounts_balance_history(
         build_envelope(data=result, sensitivity="low"),
         output,
         render_fn=_render_text,
+        cli_actor="accounts_balance_history",
     )
 
 
@@ -136,6 +138,7 @@ def accounts_balance_list(
         render_or_json(
             build_envelope(data=result, sensitivity="low"),
             output,
+            cli_actor="accounts_balance_list",
         )
         return
     for assertion in result.assertions:
@@ -181,6 +184,7 @@ def accounts_balance_reconcile(
         render_or_json(
             build_envelope(data=result, sensitivity="low"),
             output,
+            cli_actor="accounts_balance_reconcile",
         )
         return
     for obs in result.observations:

@@ -48,4 +48,5 @@ def transactions_audit(
         build_envelope(data=[e.to_dict() for e in events], sensitivity="low"),
         output,
         render_fn=_render_text,
+        cli_actor="transactions_audit",
     )

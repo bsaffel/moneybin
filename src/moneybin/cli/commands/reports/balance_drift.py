@@ -57,4 +57,5 @@ def reports_balance_drift(
         build_envelope(data=payload, sensitivity="medium"),
         output,
         render_fn=_render_text,
+        cli_actor="reports_balance_drift",
     )

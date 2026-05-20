@@ -55,6 +55,7 @@ def transactions_tags_add(
                 sensitivity="low",
             ),
             output,
+            cli_actor="transactions_tags_add",
         )
         return
     if added:
@@ -85,6 +86,7 @@ def transactions_tags_remove(
                 sensitivity="low",
             ),
             output,
+            cli_actor="transactions_tags_remove",
         )
         return
     if removed:
@@ -117,6 +119,7 @@ def transactions_tags_list(
                             sensitivity="low",
                         ),
                         output,
+                        cli_actor="transactions_tags_list",
                     )
                     return
                 if not tags:
@@ -136,6 +139,7 @@ def transactions_tags_list(
                 sensitivity="low",
             ),
             output,
+            cli_actor="transactions_tags_list",
         )
         return
     if not rows:
@@ -173,6 +177,7 @@ def transactions_tags_rename(
                 sensitivity="low",
             ),
             output,
+            cli_actor="transactions_tags_rename",
         )
         return
     logger.info(

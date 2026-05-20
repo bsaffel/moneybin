@@ -137,7 +137,12 @@ def categorize_commit_from_file(
                 code="categorization_errors",
             ),
         )
-    render_or_json(envelope, output, render_fn=_render_table)
+    render_or_json(
+        envelope,
+        output,
+        render_fn=_render_table,
+        cli_actor="categorize_commit_from_file",
+    )
 
     if result.errors > 0 or result.skipped > 0:
         raise typer.Exit(1)

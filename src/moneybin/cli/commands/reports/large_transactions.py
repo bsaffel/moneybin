@@ -48,4 +48,5 @@ def reports_large_transactions(
         build_envelope(data=payload, sensitivity="medium"),
         output,
         render_fn=_render_text,
+        cli_actor="reports_large_transactions",
     )

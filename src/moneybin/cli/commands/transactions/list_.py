@@ -138,4 +138,6 @@ def transactions_list(
         if result.next_cursor and not quiet:
             typer.echo(f"Next page: --cursor {result.next_cursor}", err=True)
 
-    render_or_json(envelope, output, render_fn=_render_text)
+    render_or_json(
+        envelope, output, render_fn=_render_text, cli_actor="transactions_list"
+    )

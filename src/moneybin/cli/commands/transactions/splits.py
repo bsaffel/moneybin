@@ -89,6 +89,7 @@ def transactions_splits_add(
                 sensitivity="low",
             ),
             output,
+            cli_actor="transactions_splits_add",
         )
     else:
         logger.info(f"✅ Added split {split.split_id} to {transaction_id}")
@@ -118,6 +119,7 @@ def transactions_splits_list(
                 sensitivity="low",
             ),
             output,
+            cli_actor="transactions_splits_list",
         )
         return
     if not splits:
@@ -173,6 +175,7 @@ def transactions_splits_remove(
                 sensitivity="low",
             ),
             output,
+            cli_actor="transactions_splits_remove",
         )
     else:
         logger.info(f"✅ Removed split {split_id}")
@@ -207,6 +210,7 @@ def transactions_splits_clear(
                 sensitivity="low",
             ),
             output,
+            cli_actor="transactions_splits_clear",
         )
         return
     logger.info(f"✅ Cleared splits on {transaction_id}")

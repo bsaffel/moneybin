@@ -79,6 +79,7 @@ def system_audit_list(
         build_envelope(data=[e.to_dict() for e in events], sensitivity="low"),
         output,
         render_fn=_render_text,
+        cli_actor="system_audit_list",
     )
 
 
@@ -115,4 +116,5 @@ def system_audit_show(
         build_envelope(data=[e.to_dict() for e in events], sensitivity="low"),
         output,
         render_fn=_render_text,
+        cli_actor="system_audit_show",
     )
