@@ -48,6 +48,9 @@ def setup_observability(
 
     What it does:
         1. Calls setup_logging() — handlers, formatters, sanitizer
+        2. For ``stream="cli"`` only, registers an atexit hook that calls
+           flush_metrics() at process shutdown. MCP shutdown is handled
+           via an explicit flush in mcp/server.py before close_db().
 
     Args:
         stream: Log stream name ("cli", "mcp", "sqlmesh").
@@ -77,8 +80,16 @@ def setup_observability(
         setup_logging(stream=stream, verbose=verbose)
 
     if not _initialized:
-        # Persistence is deferred until a write-transaction hook exists; see
-        # private/plans/ for the write-piggybacked metrics brainstorm.
+        # CLI commands don't explicitly close_db() before exiting, so atexit
+        # fires while the database singleton is still attached and flush_metrics
+        # can persist counters. MCP shutdown removed this hook because its
+        # explicit close_db() runs first and clears the singleton — MCP uses
+        # the explicit flush in mcp/server.py finally-block instead.
+        # Long-term: write-piggybacked persistence; see private/plans/.
+        if stream == "cli":
+            import atexit
+
+            atexit.register(flush_metrics)
         _initialized = True
 
     logger.debug(f"Observability initialized (stream={stream})")
@@ -94,7 +105,13 @@ def flush_metrics() -> None:
     for read-only sessions. This avoids opening a write lock at exit purely to
     persist counters when no business data was written.
 
-    Called explicitly by MCP serve before closing the database connection.
+    Two call paths:
+    - **CLI sessions** register this as an atexit hook in setup_observability().
+      Works because CLI commands don't explicitly close_db() before exiting,
+      so atexit fires while the database singleton is still attached.
+    - **MCP sessions** call this explicitly in mcp/server.py's finally-block
+      before close_db(). MCP cannot use atexit here — close_db() runs first
+      and clears the singleton, leaving atexit with nothing to flush to.
     """
     try:
         from moneybin.database import database_was_written, get_database

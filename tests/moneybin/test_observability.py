@@ -46,3 +46,36 @@ class TestSetupObservability:
         assert callable(setup_observability)
         assert callable(tracked)
         assert callable(track_duration)
+
+    @pytest.mark.unit
+    def test_cli_stream_registers_atexit_flush(self) -> None:
+        """CLI sessions register flush_metrics as an atexit hook.
+
+        Commands don't explicitly close_db() before the process ends, so
+        atexit runs while the database singleton is still attached.
+        """
+        with (
+            patch("moneybin.observability.setup_logging"),
+            patch("atexit.register") as mock_register,
+        ):
+            from moneybin.observability import flush_metrics, setup_observability
+
+            setup_observability(stream="cli")
+            mock_register.assert_called_once_with(flush_metrics)
+
+    @pytest.mark.unit
+    def test_mcp_stream_does_not_register_atexit(self) -> None:
+        """MCP sessions must NOT register atexit.
+
+        close_db() runs before atexit and would clear the database singleton,
+        leaving flush_metrics nothing to write to. MCP shutdown calls
+        flush_metrics explicitly in the mcp/server.py finally-block instead.
+        """
+        with (
+            patch("moneybin.observability.setup_logging"),
+            patch("atexit.register") as mock_register,
+        ):
+            from moneybin.observability import setup_observability
+
+            setup_observability(stream="mcp")
+            mock_register.assert_not_called()
