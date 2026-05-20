@@ -344,11 +344,13 @@ Extensibility:  extension, packages (planned, extension-contracts.md); plus dyna
 
 ### Top-level command count
 
-In-tree groups (20): `profile`, `import`, `sync`, `accounts`, `reports`, `transactions`, `assets`, `categories`, `merchants`, `privacy`, `budget`, `system`, `refresh`, `transform`, `synthetic`, `stats`, `export`, `mcp`, `db`, `logs`.
+In-tree groups (19): `profile`, `import`, `sync`, `accounts`, `reports`, `transactions`, `categories`, `merchants`, `privacy`, `budget`, `system`, `refresh`, `transform`, `synthetic`, `stats`, `export`, `mcp`, `db`, `logs`.
 
 Planned operator groups (2, pending [`extension-contracts.md`](extension-contracts.md)): `extension`, `packages`.
 
-Dynamic per-package groups: registered at startup from `moneybin.packages` entry-points; the launch lineup adds `assets` and `us-tax`. Count grows as packages install.
+Dynamic per-package groups (pending [`extension-contracts.md`](extension-contracts.md)): will register at startup from `moneybin.packages` entry-points once the package framework lands; the M3E launch lineup adds `assets` and `us-tax`. Count grows as packages install.
+
+> **Note on `assets`:** v2 of this spec originally listed `assets` among the in-tree top-level groups (per [`asset-tracking.md`](asset-tracking.md), still `draft`). [`extension-contracts.md`](extension-contracts.md) supersedes that positioning — `assets` is an Analysis Package at M3E, registered dynamically via the entry-points path above, not an in-tree group. Other places in this spec (the command tree, the per-protocol table, the migration history) still reflect the original v2 plan and will be reconciled when `asset-tracking.md` is updated to mark itself superseded by the package contract.
 
 ## Cross-Interface Taxonomy
 
