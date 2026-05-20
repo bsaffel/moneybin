@@ -85,6 +85,8 @@ class PerFileResult:
     rows_skipped: int = 0
     import_id: str | None = None
     error: str | None = None
+    sign_correction_suggested: bool = False
+    """True if running balance suggests sign inversion; amounts were NOT auto-corrected."""
 
 
 @dataclass(frozen=True)
@@ -1167,6 +1169,7 @@ class ImportService:
                         source_type=r.file_type,
                         rows_loaded=rows_loaded,
                         import_id=r.import_id,
+                        sign_correction_suggested=r.sign_correction_suggested,
                     )
                 )
                 any_succeeded = True

@@ -302,7 +302,7 @@ def import_files_command(
                     )
                     if result.sign_correction_suggested:
                         typer.echo(
-                            "⚠ Sign convention may be inverted (running balance "
+                            "⚠️  Sign convention may be inverted (running balance "
                             "suggests negation). If amounts look wrong, re-run "
                             "with --sign to override.",
                             err=True,
