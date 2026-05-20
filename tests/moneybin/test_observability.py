@@ -15,10 +15,10 @@ class TestSetupObservability:
     def _reset_root_logger(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> Generator[None, Any, None]:
-        """Clean up handlers and reset _initialized after each test."""
+        """Clean up handlers and reset module state after each test."""
         import moneybin.observability as obs_mod
 
-        monkeypatch.setattr(obs_mod, "_initialized", False)
+        monkeypatch.setattr(obs_mod, "_atexit_registered", False)
         root = logging.getLogger()
         original_handlers = list(root.handlers)
         original_level = root.level
@@ -49,33 +49,43 @@ class TestSetupObservability:
 
     @pytest.mark.unit
     def test_cli_stream_registers_atexit_flush(self) -> None:
-        """CLI sessions register flush_metrics as an atexit hook.
+        """CLI sessions register flush_metrics as an atexit hook."""
+        from moneybin.observability import flush_metrics, setup_observability
 
-        Commands don't explicitly close_db() before the process ends, so
-        atexit runs while the database singleton is still attached.
-        """
         with (
             patch("moneybin.observability.setup_logging"),
             patch("atexit.register") as mock_register,
         ):
-            from moneybin.observability import flush_metrics, setup_observability
-
             setup_observability(stream="cli")
             mock_register.assert_called_once_with(flush_metrics)
 
     @pytest.mark.unit
     def test_mcp_stream_does_not_register_atexit(self) -> None:
-        """MCP sessions must NOT register atexit.
+        """MCP sessions skip atexit — flush happens inside close_db()."""
+        from moneybin.observability import setup_observability
 
-        close_db() runs before atexit and would clear the database singleton,
-        leaving flush_metrics nothing to write to. MCP shutdown calls
-        flush_metrics explicitly in the mcp/server.py finally-block instead.
-        """
         with (
             patch("moneybin.observability.setup_logging"),
             patch("atexit.register") as mock_register,
         ):
-            from moneybin.observability import setup_observability
-
             setup_observability(stream="mcp")
             mock_register.assert_not_called()
+
+    @pytest.mark.unit
+    def test_cli_after_mcp_still_registers_atexit(self) -> None:
+        """Atexit gating is per-stream, not first-call-wins.
+
+        If a process boots with stream="mcp" or "sqlmesh" first and later
+        runs CLI work, the CLI atexit hook must still register — otherwise
+        write-path CLI counters never reach app.metrics.
+        """
+        from moneybin.observability import flush_metrics, setup_observability
+
+        with (
+            patch("moneybin.observability.setup_logging"),
+            patch("atexit.register") as mock_register,
+        ):
+            setup_observability(stream="mcp")
+            setup_observability(stream="sqlmesh")
+            setup_observability(stream="cli")
+            mock_register.assert_called_once_with(flush_metrics)

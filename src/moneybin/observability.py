@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["setup_observability", "tracked", "track_duration", "flush_metrics"]
 
-_initialized = False
+_atexit_registered = False
 
 
 def setup_observability(
@@ -49,8 +49,8 @@ def setup_observability(
     What it does:
         1. Calls setup_logging() — handlers, formatters, sanitizer
         2. For ``stream="cli"`` only, registers an atexit hook that calls
-           flush_metrics() at process shutdown. MCP shutdown is handled
-           via an explicit flush in mcp/server.py before close_db().
+           flush_metrics() at process shutdown. MCP sessions flush via
+           ``close_db()`` in mcp/server.py instead.
 
     Args:
         stream: Log stream name ("cli", "mcp", "sqlmesh").
@@ -59,7 +59,7 @@ def setup_observability(
             ``get_settings()``. When None (e.g. profile commands),
             console-only logging with defaults is used.
     """
-    global _initialized
+    global _atexit_registered
 
     # Configure logging (always — allows reconfiguration)
     # Resolve log config from settings when a profile is available.
@@ -79,18 +79,17 @@ def setup_observability(
     else:
         setup_logging(stream=stream, verbose=verbose)
 
-    if not _initialized:
-        # CLI commands don't explicitly close_db() before exiting, so atexit
-        # fires while the database singleton is still attached and flush_metrics
-        # can persist counters. MCP shutdown removed this hook because its
-        # explicit close_db() runs first and clears the singleton — MCP uses
-        # the explicit flush in mcp/server.py finally-block instead.
-        # Long-term: write-piggybacked persistence; see private/plans/.
-        if stream == "cli":
-            import atexit
+    # CLI sessions register an atexit flush so counters reach app.metrics
+    # at process exit. MCP sessions intentionally skip atexit — they call
+    # flush_metrics() inside close_db() in the server lifecycle instead.
+    # The gate is per-stream (not a one-shot init flag) so a process that
+    # first booted as mcp/sqlmesh and later runs CLI work still wires the
+    # hook up. Long-term: write-piggybacked persistence; see private/plans/.
+    if stream == "cli" and not _atexit_registered:
+        import atexit
 
-            atexit.register(flush_metrics)
-        _initialized = True
+        atexit.register(flush_metrics)
+        _atexit_registered = True
 
     logger.debug(f"Observability initialized (stream={stream})")
 
@@ -105,13 +104,9 @@ def flush_metrics() -> None:
     for read-only sessions. This avoids opening a write lock at exit purely to
     persist counters when no business data was written.
 
-    Two call paths:
-    - **CLI sessions** register this as an atexit hook in setup_observability().
-      Works because CLI commands don't explicitly close_db() before exiting,
-      so atexit fires while the database singleton is still attached.
-    - **MCP sessions** call this explicitly in mcp/server.py's finally-block
-      before close_db(). MCP cannot use atexit here — close_db() runs first
-      and clears the singleton, leaving atexit with nothing to flush to.
+    Call paths:
+    - CLI sessions: registered as an atexit hook in setup_observability().
+    - MCP sessions: called inside mcp/server.py:close_db().
     """
     try:
         from moneybin.database import database_was_written, get_database
