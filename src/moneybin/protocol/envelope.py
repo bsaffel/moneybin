@@ -17,6 +17,8 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Literal, cast
 
+from pydantic import BaseModel
+
 from moneybin.errors import UserError
 
 
@@ -99,11 +101,15 @@ class _PayloadEncoder(json.JSONEncoder):
         # New: dataclass instances → asdict (recurses through nested dataclasses)
         if is_dataclass(o) and not isinstance(o, type):
             return dataclasses.asdict(o)
-        # New: Pydantic v2 models → model_dump
-        o_any: Any = o  # widen to Any for duck-typed attribute access
-        if hasattr(o_any, "model_dump") and callable(o_any.model_dump):
+        # New: Pydantic v2 models → model_dump. isinstance(BaseModel) — NOT a
+        # duck-type `hasattr("model_dump")` — because MagicMock auto-generates
+        # any non-dunder attribute. With the duck check, a mock returned from a
+        # mocked service flowed into model_dump() which returned ANOTHER mock,
+        # and the JSON encoder looped allocating ~10 KiB per pass until the
+        # process OOMed. See test_payload_encoder_does_not_chain_mock_model_dump.
+        if isinstance(o, BaseModel):
             try:
-                return o_any.model_dump()
+                return o.model_dump()
             except Exception:  # noqa: BLE001,S110 — fall through to str()
                 pass
         # Existing fallback: str(o) for datetime, UUID, Enum, etc.
@@ -148,10 +154,10 @@ class ResponseEnvelope[T]:
         data_serialized: Any
         if is_dataclass(self.data) and not isinstance(self.data, type):
             data_serialized = dataclasses.asdict(self.data)
-        elif hasattr(self.data, "model_dump") and callable(
-            cast(Any, self.data).model_dump
-        ):
-            data_serialized = cast(Any, self.data).model_dump()
+        elif isinstance(self.data, BaseModel):
+            # isinstance(BaseModel), not duck-type — see _PayloadEncoder.default
+            # comment for the MagicMock-chain leak this guards against.
+            data_serialized = self.data.model_dump()
         else:
             data_serialized = self.data
         d: dict[str, Any] = {

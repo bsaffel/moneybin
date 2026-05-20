@@ -11,6 +11,11 @@ import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.main import app
+from moneybin.privacy.payloads.networth import (
+    NetWorthAccountRow,
+    NetWorthHistoryPayload,
+    NetWorthSnapshotPayload,
+)
 
 
 @pytest.fixture
@@ -35,37 +40,28 @@ class TestReportsNetworth:
 
     @pytest.mark.unit
     def test_returns_snapshot(self, runner: CliRunner) -> None:
-        per_account = [
-            {
-                "account_id": "acct_a",
-                "display_name": "Checking",
-                "balance": Decimal("5000.00"),
-                "observation_source": "ofx",
-            },
-        ]
-        mock_snapshot = MagicMock(
+        snapshot = NetWorthSnapshotPayload(
             balance_date=date(2026, 1, 31),
             net_worth=Decimal("12500.00"),
             total_assets=Decimal("15000.00"),
             total_liabilities=Decimal("-2500.00"),
             account_count=3,
-            per_account=per_account,
+            per_account=[
+                NetWorthAccountRow(
+                    account_id="acct_a",
+                    display_name="Checking",
+                    balance=Decimal("5000.00"),
+                    observation_source="ofx",
+                ),
+            ],
         )
-        mock_snapshot.to_dict.return_value = {
-            "balance_date": "2026-01-31",
-            "net_worth": Decimal("12500.00"),
-            "total_assets": Decimal("15000.00"),
-            "total_liabilities": Decimal("-2500.00"),
-            "account_count": 3,
-            "per_account": per_account,
-        }
         with (
             patch("moneybin.cli.commands.reports.networth.get_database"),
             patch(
                 "moneybin.cli.commands.reports.networth.NetworthService"
             ) as mock_service_class,
         ):
-            mock_service_class.return_value.current.return_value = mock_snapshot
+            mock_service_class.return_value.current.return_value = snapshot
             result = runner.invoke(app, ["reports", "networth", "--output", "json"])
         assert result.exit_code == 0, result.stderr
         payload = json.loads(result.stdout)
@@ -201,7 +197,9 @@ class TestReportsNetworthHistory:
                 "moneybin.cli.commands.reports.networth.NetworthService"
             ) as mock_service_class,
         ):
-            mock_service_class.return_value.history.return_value = []
+            mock_service_class.return_value.history.return_value = (
+                NetWorthHistoryPayload(points=[])
+            )
             result = runner.invoke(
                 app,
                 [
