@@ -1,1 +1,1 @@
-"""Test suite for error_codes module."""
+"""Tests for errors, error codes, and recovery action plumbing."""

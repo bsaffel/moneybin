@@ -18,6 +18,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from moneybin import error_codes
 from moneybin.connectors.sync_errors import SyncError
 from moneybin.database import (
     DatabaseKeyError,
@@ -108,8 +109,6 @@ def classify_user_error(exc: BaseException) -> UserError | None:
     should re-raise so programmer errors surface as failures rather than
     being translated into user-facing messages.
     """
-    from moneybin import error_codes
-
     if isinstance(exc, UserError):
         return exc
     if isinstance(exc, DatabaseNotInitializedError):
@@ -150,7 +149,11 @@ def classify_user_error(exc: BaseException) -> UserError | None:
             f"invalid decimal value: {exc}", code=error_codes.MUTATION_INVALID_INPUT
         )
     if isinstance(exc, LookupError) and not isinstance(exc, (KeyError, IndexError)):
-        return UserError(str(exc), code=error_codes.MUTATION_NOT_FOUND)
+        # Generic LookupError fires on read paths (account/category/note lookups)
+        # — INFRA_NOT_FOUND is prefix-neutral about write-vs-read context, unlike
+        # MUTATION_NOT_FOUND which would mis-signal "this was a write attempt"
+        # to agents branching on the code's prefix.
+        return UserError(str(exc), code=error_codes.INFRA_NOT_FOUND)
     if isinstance(exc, SyncError):
         return UserError(str(exc), code=error_codes.SYNC_ERROR)
     return None

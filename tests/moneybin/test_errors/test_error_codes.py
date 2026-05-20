@@ -93,6 +93,7 @@ class TestSpecificCodes:
             "undo_cascade_blocked",
             "recovery_no_path",
             "infra_database_locked",
+            "infra_not_found",
             "infra_file_not_found",
             "sync_error",
         ],

@@ -30,10 +30,16 @@ def test_classify_file_not_found_returns_user_error() -> None:
 
 
 def test_classify_lookup_error_returns_not_found() -> None:
-    """Plain LookupError maps to a UserError with code not_found."""
+    """Plain LookupError maps to a UserError with code infra_not_found.
+
+    Use INFRA_NOT_FOUND (prefix-neutral) rather than MUTATION_NOT_FOUND
+    because the classifier fires on read paths too (account/category/note
+    lookups). MUTATION_NOT_FOUND would mis-signal "write attempt" to
+    agents branching on the prefix.
+    """
     result = classify_user_error(LookupError("note abc not found"))
     assert result is not None
-    assert result.code == error_codes.MUTATION_NOT_FOUND
+    assert result.code == error_codes.INFRA_NOT_FOUND
     assert "not found" in result.message
 
 
