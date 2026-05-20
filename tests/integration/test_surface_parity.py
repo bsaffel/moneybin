@@ -50,7 +50,7 @@ introduction:
   ``transactions_tags_set`` / ``transactions_tags_{add,remove,list}``.
 - **C. MCP gaps.** CLI commands that need an MCP sibling but lack one:
   ``transactions_matches_*`` (4), ``transactions_categorize_ml_*`` (3),
-  ``tax_deductions``, ``privacy_redact``, ``sync_login``/``sync_logout``,
+  ``privacy_redact``, ``sync_login``/``sync_logout``,
   ``transactions_audit``, ``transactions_list``, ``transactions_review``,
   ``transactions_notes_list``, ``export_run``, ``budget_delete``,
   ``categories_delete``, ``system_audit_show``, ``import_history``,

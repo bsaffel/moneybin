@@ -34,10 +34,7 @@ if TYPE_CHECKING:
     from moneybin.extractors.tabular.formats import TabularFormat
 
 app = typer.Typer(
-    help=(
-        "Import financial files (OFX/QFX, CSV/TSV/Excel/Parquet, W-2 PDFs) "
-        "into MoneyBin"
-    ),
+    help=("Import financial files (OFX/QFX, CSV/TSV/Excel/Parquet) into MoneyBin"),
     no_args_is_help=True,
 )
 formats_app = typer.Typer(
@@ -210,7 +207,6 @@ def import_files_command(
       - OFX/QFX/QBO: Bank and credit card statements
       - CSV/TSV/Excel: Bank transaction exports (Chase, Citi, etc.)
       - Parquet/Feather: Data warehouse exports
-      - PDF: IRS Form W-2 wage and tax statements
 
     Per-file failures do not abort the batch. The refresh pipeline runs
     once at end of the batch by default; pass --no-refresh to defer.
@@ -223,7 +219,6 @@ def import_files_command(
         moneybin import files ~/Downloads/WellsFargo_2025.qfx
         moneybin import files ~/Downloads/*.ofx
         moneybin import files ~/Downloads/chase_activity.csv --account-name "Chase Checking"
-        moneybin import files ~/Downloads/2024_W2.pdf --no-refresh
         moneybin import files statement.ofx --output json
     """
     from moneybin.cli.output import render_or_json
@@ -310,7 +305,7 @@ def import_files_command(
                             "path": str(file_paths[0]),
                             "status": "imported",
                             "source_type": result.file_type,
-                            "rows_loaded": result.transactions or result.w2_forms,
+                            "rows_loaded": result.transactions,
                             "import_id": result.import_id,
                         }
                     ]

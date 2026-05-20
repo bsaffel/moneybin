@@ -42,7 +42,6 @@ OFX_INSTITUTIONS = TableRef("raw", "ofx_institutions")
 PLAID_ACCOUNTS = TableRef("raw", "plaid_accounts")
 PLAID_TRANSACTIONS = TableRef("raw", "plaid_transactions")
 PLAID_BALANCES = TableRef("raw", "plaid_balances")
-W2_FORMS = TableRef("raw", "w2_forms")
 
 # -- Raw tabular tables (replaces csv_* tables) --
 TABULAR_TRANSACTIONS = TableRef("raw", "tabular_transactions")

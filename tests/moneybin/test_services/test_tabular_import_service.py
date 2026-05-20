@@ -35,8 +35,10 @@ class TestDetectFileType:
     def test_ofx_still_works(self) -> None:
         assert _detect_file_type(Path("test.ofx")) == "ofx"
 
-    def test_pdf_still_works(self) -> None:
-        assert _detect_file_type(Path("test.pdf")) == "w2"
+    def test_pdf_raises(self) -> None:
+        """PDF is no longer supported — W-2 extraction pipeline removed."""
+        with pytest.raises(ValueError, match="Unsupported file type"):
+            _detect_file_type(Path("test.pdf"))
 
     def test_unsupported_extension_raises(self) -> None:
         with pytest.raises(ValueError, match="Unsupported file type"):

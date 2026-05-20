@@ -134,7 +134,7 @@ def onboarding() -> str:
         - reports_spending — first look at their data
 
         **Workflow:**
-        1. Ask the user what files they have (OFX/QFX, CSV, PDF W-2s)
+        1. Ask the user what files they have (OFX/QFX, CSV)
         2. Import the user's files in one call to import_files (pass a list of paths)
         3. Verify with accounts that accounts were created
         4. Check transactions_categorize_stats — if many uncategorized, offer to help
@@ -220,6 +220,5 @@ def review_curation_history() -> str:
     """)
 
 
-# tax_prep prompt removed alongside the tax_w2 / tax_deductions de-registration
-# (no backing tax spec in docs/specs/INDEX.md). Re-add when the tax tools
-# re-register against a real spec.
+# tax_prep prompt removed alongside the W-2 extraction pipeline.
+# Tax data ingestion will be re-designed in a future brainstorm.

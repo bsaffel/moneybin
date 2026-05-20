@@ -117,7 +117,7 @@ Tools use a hybrid namespace that reflects the most natural way an AI or user wo
 | `import.*` | Data ingestion | File import, status, source management |
 | `categorize.*` | Categorization pipeline | Rules, merchant mappings, categorization, auto-rule review |
 | `budget.*` | Budget tracking | Targets, status, rollovers |
-| `tax.*` | Tax information | W-2 data, future: capital gains, deductions |
+| `tax.*` | Tax information | (future; tax data ingestion deferred — no tools registered) |
 | `privacy.*` | Privacy & consent | Consent status, grants, revocations, audit log |
 | `overview.*` | Cross-domain summaries | Data status, financial health snapshot, system info |
 

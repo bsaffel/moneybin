@@ -15,7 +15,6 @@ Reference for engineers wiring automation against the import path and for migran
 | OFX / QFX / QBO | `ofx` | `raw.ofx_transactions`, `raw.ofx_accounts`, `raw.ofx_balances`, `raw.ofx_institutions` |
 | Plaid sync | `plaid` | `raw.plaid_transactions`, `raw.plaid_accounts`, `raw.plaid_balances` |
 | Manual entry | `manual` | `raw.manual_transactions` |
-| W-2 PDF | (W-2 only; not in `fct_transactions`) | `raw.w2_forms` |
 
 Tabular `source_type` is one of five file-format values — there is no single "tabular" family tag in core. Filter with `source_type IN ('csv','tsv','excel','parquet','feather')` when you want every tabular row regardless of file type. Every batch — regardless of source — registers an `import_id` in `raw.import_log` and stamps it on every row it produced. That id is the unit of `moneybin import revert`.
 
@@ -170,14 +169,6 @@ One extractor, three formats — Open Financial Exchange and its Quicken (QFX) a
 
 **Description cleanup.** `<NAME>` and `<MEMO>` are HTML-entity-decoded at extraction; banks that double-escape are unwound via a bounded triple-pass `html.unescape` loop.
 
-## PDF: W-2 wage statements
-
-PDF support today is W-2 only. There is no general-purpose PDF extractor — account statements, 1099 forms, receipts, and brokerage statements are NOT parsed. The extractor (`src/moneybin/extractors/w2_extractor.py`) uses a dual strategy: text extraction via `pdfplumber` and OCR via `pytesseract` + `pdf2image`. Results are cross-validated and a confidence score is recorded.
-
-MoneyBin parses W-2 boxes 1–14 (wages, federal/state withholding, FICA, Medicare, dependent-care benefits, nonqualified plans, box-12 codes, box-13 checkboxes, box-14 employer-defined) plus boxes 15–20 state and local info (JSON list). Full per-field mapping is in `W2FormSchema` (`src/moneybin/extractors/w2_extractor.py`). All monetary fields land as `DECIMAL(18,2)`. Tax year is parsed from the form itself, not a CLI flag (per the data-extraction rule that derivable values aren't surfaced as parameters).
-
-W-2 rows do NOT flow into `core.fct_transactions` — they're a parallel `raw.w2_forms` table that the tax surface reads directly.
-
 ## Plaid sync
 
 Live banking sync brokered through `moneybin-server`. Implementation: `src/moneybin/loaders/plaid_loader.py`, `src/moneybin/services/sync_service.py`, `src/moneybin/connectors/sync_client.py`. The client never talks to Plaid directly — it talks to the moneybin-server API, which holds the Plaid integration as an implementation detail.
@@ -285,7 +276,6 @@ Re-importing the same content produces no duplicates because every raw table ded
 | OFX | `(source_transaction_id, account_id, source_file)` | Source-provided `<FITID>`. Loader uses `on_conflict="upsert"`. | Same `source_file` caveat as tabular. |
 | Plaid | `transaction_id` | Source-provided. Loader upserts in place; Plaid's `removed_transactions` list triggers deletes. | Cursor-driven — incremental by default; `--force` resets and re-fetches. |
 | Manual | `source_transaction_id` (`manual_<uuid4>[:12]`) | New ID per `transactions create` call. | A second create call with identical fields creates a new row — there is no content-hash collapse for manual entries. |
-| W-2 | `(employee_ssn, employer_ein, tax_year)` | Parsed from the form. | Re-extracting the same PDF replaces the row. |
 
 There is no file-content SHA-256 short-circuit before extraction — re-running an unchanged file re-parses and upserts; row counts in `raw.import_log` reflect the upsert, not new inserts.
 
@@ -366,8 +356,8 @@ Honest gap list. See [`docs/roadmap.md`](../roadmap.md) for current sequencing.
 - **Broker / investment statements.** No eTrade, Schwab, Fidelity, or Vanguard CSV parsers. Plaid investment accounts load raw rows if exposed, but holdings, cost basis, and FIFO lot tracking are not implemented.
 - **HSA / 401(k) transaction history outside Plaid.** If Plaid exposes the account, raw rows land; otherwise unsupported.
 - **Multi-currency.** Every amount is treated as USD downstream. Source `currency` columns are read into `raw.tabular_transactions.currency` but original-currency preservation and FX gain/loss are not implemented.
-- **General-purpose PDFs.** Only W-2 statements are parsed. Bank-statement PDFs, 1099 forms, receipts, and brokerage statements are not extracted.
-- **Tax forms beyond W-2.** No 1040, 1099-INT/DIV/B, K-1, or state-form parsers.
+- **PDFs.** No PDF formats are supported. Bank-statement PDFs, W-2 forms, 1099 forms, receipts, and brokerage statements are not extracted.
+- **Tax forms.** No W-2, 1040, 1099-INT/DIV/B, K-1, or state-form parsers.
 - **Direct Monarch / Copilot API pulls.** CSV-only — export from the tool, import the file.
 - **Programmatic format-profile registration.** New profiles require a YAML file in the repo or interactive acceptance during smart-import; no external registration API.
 - **Bulk manual entry.** `moneybin transactions create` is one row per call. For batches, build a CSV.

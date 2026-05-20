@@ -694,7 +694,7 @@ Trigger the matching engine on-demand.
 
 ### `import_files`
 
-Import one or more financial data files into MoneyBin. Format detected automatically per file from extension (OFX/QFX/QBO, CSV/TSV/Excel/Parquet/Feather, PDF/W-2). Per-file failures do not abort the batch; transforms run once at end of batch by default.
+Import one or more financial data files into MoneyBin. Format detected automatically per file from extension (OFX/QFX/QBO, CSV/TSV/Excel/Parquet/Feather). Per-file failures do not abort the batch; transforms run once at end of batch by default.
 
 - **Sensitivity:** `low` — return envelope reports per-file counts and status, not transaction content.
 - **Unique parameters:** `paths: list[str]` (required, each path must be within the user's home directory), `refresh: bool = True`, `force: bool = False`.
@@ -1030,30 +1030,10 @@ Remove a budget for a category.
 
 ## 10. `tax.*` — Tax information
 
-**Service class:** `TaxService`
-
-**Status:** implemented but de-registered pending tax spec — `tax_w2` carries `@mcp_tool` decoration in `src/moneybin/mcp/tools/tax.py`, but `register_tax_tools` is not called from `register_core_tools()` in `src/moneybin/mcp/server.py`. `tax_deductions` is not implemented. Both surface when a tax spec lands and reaches `in-progress`. See §17c dependency tracker.
-
-### `tax_w2`
-
-W-2 tax form data for one or all years.
-
-- **Sensitivity:** `high` — contains SSN-adjacent data (EIN, wages, withholdings).
-- **Unique parameters:** `tax_year: int?` (omit for all years).
-- **Behavior:** Returns array of `{tax_year, employer_name, employer_ein, wages, federal_income_tax, social_security_wages, social_security_tax, medicare_wages, medicare_tax, state_local_info}`. EIN is masked for cloud backends. Degraded response returns year and employer name only with total wages as an aggregate.
-- **Service:** `TaxService.w2() -> list[W2Summary]`
-- **CLI:** `moneybin tax w2 [--year 2025]`
-
-### `tax_deductions`
-
-Search transactions for potentially deductible expenses.
-
-- **Sensitivity:** `medium` — row-level transaction data.
-- **Unique parameters:** `tax_year: int` (required), `categories: list[str]?` (filter to specific categories, e.g., `["Charitable Donations", "Medical"]`).
-- **Behavior:** Returns transactions in deduction-relevant categories for the tax year, with category totals. Includes a disclaimer that this is informational, not tax advice. Degraded response returns category totals only.
-- **Service:** `TaxService.deductions() -> DeductionSearchResult`
-- **CLI:** `moneybin tax deductions --year 2025 [--categories "Charitable Donations,Medical"]`
-- **Note:** v1 filters by category name pattern. Future enhancement: deduction-relevant category flags.
+**Status:** removed. `tax_w2` and the W-2 PDF extraction pipeline were cut entirely
+(W-2 extractor, loader, `raw.w2_forms` schema, `TaxService`, CLI `tax` command group
+all deleted). The `docs/specs/archived/w2-extraction.md` spec documents the removed
+design. Tax data ingestion will be re-designed from scratch in a future brainstorm.
 
 ---
 
@@ -1283,25 +1263,10 @@ Four goal-oriented workflow templates. Each defines the goal, relevant tools, gu
 
 **Decision points:** User provides file paths. User confirms column mappings. User decides whether to proceed to categorization.
 
-### `tax-prep` (Review)
+### `tax-prep` (Removed)
 
-**Goal:** Gather tax-relevant financial information for a tax year — W-2 data, deductible expenses, income summary.
-
-**Parameters:** `tax_year: str` (defaults to prior year).
-
-**Relevant tools:** `tax_w2`, `tax_deductions`, `reports_spending` (with category filters), `reports_cashflow`, `transactions_get`
-
-**Guardrails:**
-
-- Always include the disclaimer: informational summary, not tax advice, consult a tax professional
-- Start with W-2 data if available — wages, withholdings, employer info
-- Summarize income sources beyond W-2 (interest, dividends, side income) if visible in transactions
-- Search for potentially deductible expenses by category (charitable, medical, business)
-- If multiple W-2s exist, show both individual and combined totals
-- Highlight data gaps: "No W-2 data found for 2025" or "Medical expenses may be incomplete if not all accounts are imported"
-- Do not attempt to calculate tax liability or suggest filing strategies
-
-**Decision points:** None — read-only analysis. User decides what to share with their tax professional.
+**Status:** removed alongside the W-2 extraction pipeline. Tax data ingestion will be
+re-designed from scratch; this prompt will be revisited when a new tax spec lands.
 
 ---
 
@@ -1378,11 +1343,11 @@ Tools that depend on unbuilt subsystems are documented in the catalog with depen
 | **Corrections table schema** | Not written | `transactions_correct` |
 | **Annotations table schema** | Not written | `transactions_annotate` |
 | **Budget tracking spec** | Draft | `reports_budget_summary` rollover behavior; `budget_set` (de-registered 2026-05-17 — re-register when spec reaches `in-progress`) |
-| **Tax spec (none yet)** | Not written | `tax_w2`, `tax_deductions` (de-registered 2026-05-17 — re-register when a tax spec lands and reaches `in-progress`); `tax_prep` prompt (removed alongside) |
+| **Tax spec (none yet)** | Not written | `tax_w2`, `tax_deductions`, `tax_prep` prompt — **removed entirely** 2026-05-19; W-2 extraction pipeline cut; tax data ingestion to be re-designed from scratch when a new tax spec is written |
 
 ### Tools shippable without dependencies
 
-> **Surface status (2026-05-19):** All entries in §16 not marked "NOT registered" or de-registered are live and visible at connect. See the dependency tracker above for tools that remain blocked. `budget.*`, `tax.*`, and `transform_*` tool modules remain implemented but are **de-registered** in `src/moneybin/mcp/server.py:register_core_tools()`. `budget.*` and `tax.*` re-register when their backing specs reach `in-progress`/`implemented`. `transform_*` are operator territory (category 2) and remain CLI-only; see §17. A working implementation alone does not justify exposing a tool on the public surface.
+> **Surface status (2026-05-19):** All entries in §16 not marked "NOT registered" or de-registered are live and visible at connect. See the dependency tracker above for tools that remain blocked. `budget.*` and `transform_*` tool modules remain implemented but are **de-registered** in `src/moneybin/mcp/server.py:register_core_tools()`. `budget.*` re-registers when its backing spec reaches `in-progress`/`implemented`; `transform_*` are operator territory (category 2) and remain CLI-only (see §17). `tax.*` tools were **removed entirely** — the W-2 PDF extraction pipeline was cut; tax data ingestion will be re-designed from scratch when a new tax spec is written. A working implementation alone does not justify exposing a tool on the public surface.
 
 ---
 

@@ -77,7 +77,6 @@ _HELP_COMMANDS: list[list[str]] = [
     ["assets"],
     ["reports"],
     ["budget"],
-    ["tax"],
     ["system"],
     ["system", "audit"],
     ["system", "audit", "list"],

@@ -33,7 +33,6 @@ flowchart TD
 | Format | Extension | Content |
 |--------|-----------|---------|
 | OFX/Quicken | `.ofx`, `.qfx` | Bank statements with transactions |
-| PDF | `.pdf` | W-2 tax forms |
 
 ## Example Usage
 

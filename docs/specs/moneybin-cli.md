@@ -4,7 +4,7 @@
 <!-- draft | ready | in-progress | implemented -->
 in-progress
 
-> **v2 revision (2026-05-02, in-progress):** v1 of this spec is implemented. v2 supersedes the taxonomy decisions (dissolves the `track` group, introduces entity groups `accounts` and `transactions`, adds top-level `categories`, `merchants`, `assets`, `reports`, `system`, separates `tax`, unifies the rule across CLI / MCP / future HTTP). Profile system, pipeline orchestration, and infrastructure command groups are unchanged. Implementation pass moves status `ready` → `in-progress`. See [Revision History](#revision-history) and [Migration v1 → v2](#migration-v1--v2).
+> **v2 revision (2026-05-02, in-progress):** v1 of this spec is implemented. v2 supersedes the taxonomy decisions (dissolves the `track` group, introduces entity groups `accounts` and `transactions`, adds top-level `categories`, `merchants`, `assets`, `reports`, `system`, unifies the rule across CLI / MCP / future HTTP). Profile system, pipeline orchestration, and infrastructure command groups are unchanged. Implementation pass moves status `ready` → `in-progress`. See [Revision History](#revision-history) and [Migration v1 → v2](#migration-v1--v2).
 
 ## Goal
 
@@ -16,7 +16,7 @@ The current CLI grew organically during early development. Several pain points:
 
 - **`config` is a grab bag.** Profile management, credential validation, and config display are conflated. There's no way to list profiles or manage their lifecycle.
 - **`data` subgroup is incoherent.** It houses extractors (being superseded by smart import), SQLMesh transforms, and categorization — three unrelated concerns.
-- **`data extract *` causes confusion.** Users see both `import file` and `data extract ofx/csv/w2`. The old extractors should not compete with the smart importer.
+- **`data extract *` causes confusion.** Users see both `import file` and `data extract ofx/csv`. The old extractors should not compete with the smart importer.
 - **Profiles are implicit.** Created as a side effect of `db init`, with no way to enumerate, create, or delete them intentionally.
 - **`get_base_dir()` defaults to `cwd`.** This breaks for `pip install` users who have no repo checkout.
 - **MCP lock management lives under `mcp`.** `mcp show`/`mcp kill` are about database connections, not MCP.
@@ -56,7 +56,7 @@ Concretely:
 
 - `accounts` owns its per-account workflows (`balance`) and its aggregation (`networth`)
 - `transactions` owns its per-transaction workflows (`matches`, `categorize`) and entity ops (`list`, `show`, `search`)
-- `reports` holds analytical lenses on transaction-level data (spending, cashflow, tax, budget vs actual) — cross-cutting, read-only
+- `reports` holds analytical lenses on transaction-level data (spending, cashflow, budget vs actual) — cross-cutting, read-only
 
 The rule replaces v1's "domain commands are top-level" principle, which produced a flat surface (`matches`, `categorize`, `track`) that hid the entity hierarchy and forced unrelated things (balance, budget, recurring) into one bucket.
 
@@ -233,11 +233,6 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- budget                     -- (future spec) Budget vs actual report
 |   +-- health                     -- (future spec) Cross-domain financial health snapshot
 |
-+-- tax                            -- Tax domain (forms, deductions, capital gains, estimates)
-|   +-- w2 <year>                  -- W-2 form data
-|   +-- deductions <year>          -- Categorized deductible expenses
-|                                     Future: 1099, capital_gains, estimate, carryforward
-|
 +-- system                         -- System / data status meta-view
 |   +-- status                     -- What data exists, freshness, pending review queues
 |   +-- doctor                     -- Run pipeline integrity checks across all invariants
@@ -314,7 +309,6 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 Entity groups:  accounts (+ balance), transactions (+ matches, categorize, notes, tags, splits), assets
 Reference data: categories, merchants (taxonomies that transactions reference)
 Reports:        reports (networth, networth-history, spending, cashflow, recurring, merchants, uncategorized, large-transactions, balance-drift; budget + health stubbed)
-Tax:            tax (forms, deductions, future capital gains)
 System:         system (status, doctor, audit)
 Privacy:        privacy (redaction testing); synthetic (testing data generation)
 Data in:        import, sync
@@ -325,9 +319,9 @@ Operational:    logs, stats
 Infrastructure: profile, db, mcp, transform
 ```
 
-### Top-level command count: 21
+### Top-level command count: 20
 
-`profile`, `import`, `sync`, `accounts`, `reports`, `transactions`, `assets`, `categories`, `merchants`, `privacy`, `budget`, `tax`, `system`, `refresh`, `transform`, `synthetic`, `stats`, `export`, `mcp`, `db`, `logs`
+`profile`, `import`, `sync`, `accounts`, `reports`, `transactions`, `assets`, `categories`, `merchants`, `privacy`, `budget`, `system`, `refresh`, `transform`, `synthetic`, `stats`, `export`, `mcp`, `db`, `logs`
 
 ## Cross-Interface Taxonomy
 
@@ -568,7 +562,7 @@ This is a hard cut. No aliases, no deprecation period. v1 paths break in the sam
 | `categorize merchants / create-merchants` | `merchants list / create` | Reference-data taxonomy → top-level entity group |
 | (none) | `accounts list / get / set / resolve` | New entity ops; rename/include/archive/unarchive fold into `accounts set` flags per #164 |
 | (none) | `transactions list / get / search` | New entity ops |
-| (none) | `reports {spending, cashflow, tax, budget}` | New analytical group (subcommands future) |
+| (none) | `reports {spending, cashflow, budget}` | New analytical group (subcommands future) |
 
 The `track` group is dissolved entirely.
 
@@ -603,7 +597,6 @@ Specific existing-tool renames are enumerated in `moneybin-mcp.md` as part of v2
 | `config credentials list-services` | Provider discovery happens through `sync connect` |
 | `data extract ofx` | Superseded by `import file` |
 | `data extract csv` | Superseded by `import file` |
-| `data extract w2` | Superseded by `import file` |
 
 ### Moved/renamed commands
 
@@ -635,7 +628,6 @@ Restructure-only. Move and rename existing commands to the new tree; rename MCP 
 | Move `track balance` → `accounts balance` (preserve subcommands as stubs where they were) | Rename + reparent |
 | Move `track networth` → `reports networth` (preserve subcommands as stubs) | Rename + reparent into reports group |
 | Add top-level `assets` group (placeholder; workflows owned by `asset-tracking.md`) | New CLI module, all stubs |
-| Keep `tax` top-level (not nested in `reports`) | Stub initially; tools added by `tax-*.md` specs |
 | Create `transactions` group with `list`, `get`, `search` (thin entity ops) | New CLI module |
 | Move `matches` → `transactions matches` (existing functionality preserved) | Reparent + update tests |
 | Move `categorize` → `transactions categorize` (workflow tools + rules + auto + ml) | Reparent + update tests |
@@ -645,7 +637,7 @@ Restructure-only. Move and rename existing commands to the new tree; rename MCP 
 | Move `track recurring` → `transactions recurring` (still stub) | Reparent |
 | Move `track investments` → `accounts investments` (still stub) | Reparent |
 | Dissolve `track` group | Delete CLI module |
-| Add `reports` group with stubbed subcommands (`spending`, `cashflow`, `tax`, `budget`) | New CLI module, all stubs |
+| Add `reports` group with stubbed subcommands (`spending`, `cashflow`, `budget`) | New CLI module, all stubs |
 | Rename MCP tools to path-prefix-verb-suffix convention | Update tool registry, regenerate client configs via `mcp install` |
 | Collapse `transactions matches review` and `transactions categorize review` into unified `transactions review` (CLI). Add MCP `transactions_review` orientation tool | New CLI command + new MCP tool |
 | Rename `import_csv_preview` → `import_file_preview` (format-agnostic) | MCP tool rename + service method rename |

@@ -158,8 +158,6 @@ class TestStubCommands:
             ["reports", "health"],
             ["budget", "set", "Food", "500"],
             ["budget", "delete", "Food"],
-            ["tax", "w2", "2024"],
-            ["tax", "deductions", "2024"],
             ["export", "run"],
         ],
         ids=lambda c: " ".join(c),

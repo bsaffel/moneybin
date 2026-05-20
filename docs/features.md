@@ -9,7 +9,6 @@ What MoneyBin can do today. Each capability links to its guide; the [roadmap](ro
 
 - **Smart tabular import** — CSV, TSV, Excel, Parquet, and Feather through one pipeline. Heuristic column detection, three-tier confidence model, multi-account support, and first-class migration profiles for Tiller, Mint, YNAB, and Maybe. -> [Data import guide](guides/data-import.md)
 - **OFX / QFX / QBO import** — Same `import_log` infrastructure as tabular: re-import detection, `--force` override, institution-name auto-resolution, and batch revert via `moneybin import revert <id>`. OFX descriptions are HTML-entity-decoded at import. -> [Data import guide](guides/data-import.md)
-- **W-2 PDF extraction** — Pulls wage and withholding values from W-2 PDFs into the raw layer. (No dedicated guide yet.)
 - **Plaid bank sync** — Connect accounts through Plaid Hosted Link via moneybin-server (the Plaid integration backend you can self-host, or use the hosted instance of). Cursor-based incremental sync by default; `--force` for full re-fetch. Plaid data lands alongside OFX and CSV in the same canonical tables. Cash and credit-card accounts flow through the canonical pipeline today; investment, loan, mortgage, and HSA accounts get loaded if Plaid exposes them, but the holdings, cost-basis, and balance-sheet surfaces those account types deserve land with the investments milestone. -> [CLI reference](guides/cli-reference.md)
 - **Batch imports** — `moneybin import files PATHS...` (and `import_files` on MCP) ingests multiple files in a single call; per-file failures don't abort the batch. -> [Data import guide](guides/data-import.md)
 - **Watched-folder inbox** — Drop files into `~/Documents/MoneyBin/<profile>/inbox/`. `moneybin import inbox` drains successes to `processed/YYYY-MM/` and failures to `failed/YYYY-MM/` with YAML error sidecars. Per-profile lockfile with crash recovery. -> [Data import guide](guides/data-import.md)
@@ -120,4 +119,4 @@ These are visible gaps a migrant or agent author will notice. See [Roadmap](road
 - **Native mobile apps** — Not on the roadmap.
 - **Household / shared budgets** — Multi-user accounts within one profile. Not on the roadmap.
 
-Post-launch candidates (native PDF parsing beyond W-2, ML-powered categorization, MCP Apps, mobile read-only viewer, expanded privacy tiers) live on the same page.
+Post-launch candidates (PDF data extraction, ML-powered categorization, MCP Apps, mobile read-only viewer, expanded privacy tiers) live on the same page.

@@ -36,7 +36,7 @@ Smart Import decomposes into six independent subsystems. Each has its own child 
 | Pillar | Purpose | Touches cloud? | Child spec |
 |---|---|---|---|
 | **A+B.** Smart tabular import | Universal tabular importer: CSV, TSV, Excel, Parquet, Feather with heuristic column detection, multi-account support, and migration formats (Tiller, Mint, YNAB). Pillars A and B merged — Excel is just another file type reader feeding the same detection engine. JSON/JSONL deferred to a separate spec (nested types → DuckDB native STRUCT/LIST/MAP). | No | [`smart-import-tabular.md`](smart-import-tabular.md) |
-| **C.** Structured PDF import | Native-text PDFs via `pdfplumber`/`camelot`. Extends the `w2_extractor` pattern to statements and brokerage reports. | No | `smart-import-pdf.md` |
+| **C.** Structured PDF import | Native-text PDFs via `pdfplumber`/`camelot`. Targets statements and brokerage reports. | No | `smart-import-pdf.md` |
 | **D.** ML-powered categorization | Local scikit-learn (TF-IDF + SVM) trained on the user's own `transaction_categories`. High-confidence → auto-apply; medium → suggest; low → defer. | No | Owned by [`categorization-overview.md`](categorization-overview.md) |
 | **E.** Auto-rule generation | Hook `categorize_transaction()` / `categorize_items()` to synthesize rules and merchant mappings from user edits and high-confidence ML picks. | No | Owned by [`categorization-overview.md`](categorization-overview.md) |
 | **F.** AI-assisted parsing | LLM fallback for files A/B/C can't crack. Extracts structured data from document content. | **Yes — consent-gated** | `smart-import-ai-parsing.md`, gated by `docs/specs/privacy-and-ai-trust.md` |
@@ -111,7 +111,7 @@ Detailed rules — redaction fields, supported backends, audit log schema, conse
 2. **`matching-overview.md`** (umbrella + at least `matching-same-record-dedup.md` child) — foundational peer spec. Defines the provenance contract every ingestion surface must produce and owns the `source_type` taxonomy. Pillars A/B/C/F can't finalize their raw-row output until this lands.
 3. **Pillars A+B — [`smart-import-tabular.md`](smart-import-tabular.md)** — merged into a universal tabular importer. CSV, TSV, Excel, Parquet, Feather all handled by one detection engine. Establishes the file-type-agnostic architecture, `TabularFormat` system, `ingest_dataframe()` Database primitive, and multi-account support. Zero privacy risk. Proves the architecture for everything downstream. JSON/JSONL deferred to a separate spec — nested types map better to DuckDB's native STRUCT/LIST/MAP than to tabular flattening.
 4. **Pillars E & D** — now owned by [`categorization-overview.md`](categorization-overview.md). Build order: E (auto-rules) first, then D (ML). See that spec for rationale and sequencing. Migration-imported categories from the tabular importer serve as a bootstrap accelerator for both pillars.
-5. **Pillar C — `smart-import-pdf.md`** — independent; follows the `w2_extractor` pattern.
+5. **Pillar C — `smart-import-pdf.md`** — independent; targets native-text PDFs (statements, brokerage reports).
 6. **Pillar F — `smart-import-ai-parsing.md`** — last. Depends on the privacy framework and benefits from A+B/C being the trusted non-AI fallback when the user declines AI.
 
 ## Success criteria
