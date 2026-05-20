@@ -92,6 +92,8 @@ class TestSpecificCodes:
             "undo_already_undone",
             "undo_cascade_blocked",
             "recovery_no_path",
+            "infra_database_locked",
+            "sync_error",
         ],
     )
     def test_code_exists(self, code: str) -> None:

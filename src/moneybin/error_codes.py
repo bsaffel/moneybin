@@ -6,8 +6,8 @@ are part of the public surface contract.
 
 Adding a new code:
 1. Pick a prefix from VALID_PREFIXES below. If none fits, surface the
-   gap on `.claude/rules/data-recovery.md` and add a prefix to the rule
-   first — do not invent ad-hoc prefixes.
+   gap on `docs/specs/data-recovery-contract.md` Req 3 and update the
+   spec first — do not invent ad-hoc prefixes.
 2. Add the constant ordered alphabetically within its prefix group.
 3. The constant name is the value uppercased: IMPORT_PARSE_ERROR =
    "import_parse_error".
