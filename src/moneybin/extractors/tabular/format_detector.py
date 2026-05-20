@@ -150,7 +150,7 @@ def _verify_magic_bytes(path: Path, expected_type: str) -> None:
 def _check_size_limit(path: Path, file_type: str, file_size: int) -> None:
     from moneybin.config import get_settings
 
-    tabular_cfg = get_settings().data.tabular
+    tabular_cfg = get_settings().providers.tabular
     is_binary = file_type in ("excel", "parquet", "feather")
     limit_mb = (
         tabular_cfg.binary_size_limit_mb

@@ -60,9 +60,9 @@ class TabularExtractor:
         Args:
             db: An active Database connection (caller-managed per ADR-010).
             config: Provider configuration; defaults to empty
-                ``TabularProviderConfig``. Tabular tunables currently still
-                live on ``MoneyBinSettings.data.tabular`` — Task 5 migrates
-                them to this config.
+                ``TabularProviderConfig``. Tunables live on the same model
+                and are surfaced via
+                ``get_settings().providers.tabular`` at the service boundary.
         """
         self.db = db
         self.config = config or TabularProviderConfig()

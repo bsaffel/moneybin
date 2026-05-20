@@ -82,7 +82,7 @@ def read_file(
 
     from moneybin.config import get_settings
 
-    tabular_cfg = get_settings().data.tabular
+    tabular_cfg = get_settings().providers.tabular
     row_count = len(result.df)
     if row_count > tabular_cfg.row_refuse_threshold and not no_row_limit:
         raise ValueError(

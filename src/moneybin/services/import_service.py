@@ -816,7 +816,7 @@ class ImportService:
         elif account_name:
             from moneybin.config import get_settings
 
-            threshold = get_settings().data.tabular.account_match_threshold
+            threshold = get_settings().providers.tabular.account_match_threshold
             aid = self._resolve_account_via_matcher(
                 account_name=account_name,
                 account_number=None,  # no --account-number CLI flag yet
@@ -863,7 +863,7 @@ class ImportService:
         # Stage 4: Transform
         from moneybin.config import get_settings
 
-        tabular_cfg = get_settings().data.tabular
+        tabular_cfg = get_settings().providers.tabular
         try:
             transform_result = transform_dataframe(
                 df=df,

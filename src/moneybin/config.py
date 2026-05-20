@@ -14,6 +14,14 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Direct-path imports of provider configs. We import from the concrete
+# config modules (not the package ``__init__``) to avoid triggering
+# tabular/__init__.py's lazy ``__getattr__``, which gates polars and is
+# load-bearing for the CLI cold-start path.
+from moneybin.extractors.ofx.config import OFXProviderConfig
+from moneybin.extractors.plaid.config import PlaidProviderConfig
+from moneybin.extractors.tabular.config import TabularProviderConfig
+
 
 def _is_moneybin_repo(path: Path) -> bool:
     """Check if path is a moneybin repo checkout.
@@ -127,53 +135,6 @@ class DatabaseConfig(BaseModel):
         return v
 
 
-class TabularConfig(BaseModel):
-    """Tabular import pipeline limits and thresholds."""
-
-    model_config = ConfigDict(frozen=True)
-
-    text_size_limit_mb: int = Field(
-        default=25,
-        description="Maximum file size (MB) for text formats (CSV/TSV)",
-    )
-    binary_size_limit_mb: int = Field(
-        default=100,
-        description="Maximum file size (MB) for binary formats (Excel/Parquet/Feather)",
-    )
-    row_warn_threshold: int = Field(
-        default=10_000,
-        description="Row count above which a warning is logged",
-    )
-    row_refuse_threshold: int = Field(
-        default=50_000,
-        description="Row count above which import is refused (use --no-row-limit to override)",
-    )
-    balance_pass_threshold: float = Field(
-        default=0.90,
-        ge=0.0,
-        le=1.0,
-        description=(
-            "Minimum fraction of balance deltas that must match "
-            "for balance validation to pass"
-        ),
-    )
-    balance_tolerance_cents: int = Field(
-        default=1,
-        ge=0,
-        description="Per-delta tolerance in cents for balance validation",
-    )
-    account_match_threshold: float = Field(
-        default=0.6,
-        ge=0.0,
-        le=1.0,
-        description=(
-            "Fuzzy-match similarity threshold (difflib.SequenceMatcher.ratio) "
-            "for account-name matching. Below this threshold, candidates are "
-            "treated as 'no match'."
-        ),
-    )
-
-
 class DataConfig(BaseModel):
     """Data processing and storage configuration."""
 
@@ -188,7 +149,22 @@ class DataConfig(BaseModel):
     incremental_loading: bool = Field(
         default=True, description="Use incremental loading by default"
     )
-    tabular: TabularConfig = Field(default_factory=TabularConfig)
+
+
+class ProvidersSettings(BaseModel):
+    """Per-provider configuration nested under MoneyBinSettings.providers.<name>.
+
+    Each provider declares a ProviderConfig subclass in its package
+    (``extractors/<name>/config.py``); the framework merges them here.
+    Env-var override follows the standard nested-delimiter shape, e.g.
+    ``MONEYBIN_PROVIDERS__TABULAR__TEXT_SIZE_LIMIT_MB=20``.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    ofx: OFXProviderConfig = Field(default_factory=OFXProviderConfig)
+    plaid: PlaidProviderConfig = Field(default_factory=PlaidProviderConfig)
+    tabular: TabularProviderConfig = Field(default_factory=TabularProviderConfig)
 
 
 class LoggingConfig(BaseModel):
@@ -526,6 +502,10 @@ class MoneyBinSettings(BaseSettings):
     import_: ImportSettings = Field(
         default_factory=ImportSettings,
         alias="import",
+    )
+    providers: ProvidersSettings = Field(
+        default_factory=ProvidersSettings,
+        description="Per-provider configuration (OFX, Plaid, tabular).",
     )
 
     # Application settings
