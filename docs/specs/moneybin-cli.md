@@ -33,6 +33,7 @@ Related specs and docs:
 - [`observability.md`](observability.md) — `logs` and `stats` commands
 - [`database-migration.md`](database-migration.md) — `db migrate` commands
 - [`mcp-architecture.md`](mcp-architecture.md) / [`moneybin-mcp.md`](moneybin-mcp.md) — MCP tool/prompt enumeration
+- [`extension-contracts.md`](extension-contracts.md) — `extension validate`, `packages` subgroup, and package-contributed CLI subgroups (entry-points discovery)
 
 ## Design Principles
 
@@ -294,14 +295,35 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |         [--yes]                    Skip the install confirmation prompt
 |
 +-- transform
-    +-- plan [--apply]             -- Preview pending SQLMesh changes
-    +-- apply                      -- Execute SQLMesh changes (operator-only; user-intent caller is `refresh --step transform`)
-    +-- seed                       -- Re-materialize seed models in isolation
-    +-- status                     -- Show current model state and environment
-    +-- validate                   -- Check model SQL parses and resolves
-    +-- audit --start DATE --end DATE -- Run data quality assertions over a window
-    +-- restate --model NAME --start DATE [--end DATE] -- Force recompute for a date range (confirm)
+|   +-- plan [--apply]             -- Preview pending SQLMesh changes
+|   +-- apply                      -- Execute SQLMesh changes (operator-only; user-intent caller is `refresh --step transform`)
+|   +-- seed                       -- Re-materialize seed models in isolation
+|   +-- status                     -- Show current model state and environment
+|   +-- validate                   -- Check model SQL parses and resolves
+|   +-- audit --start DATE --end DATE -- Run data quality assertions over a window
+|   +-- restate --model NAME --start DATE [--end DATE] -- Force recompute for a date range (confirm)
+|
++-- extension                      -- (planned, extension-contracts.md) Extension authoring tools (operator/contributor)
+|   +-- validate <path>            -- Run framework validators on an extension directory
+|                                     (manifest schema, capability-vs-SQL match, prefix discipline,
+|                                     Quality Scale claim, SQL compiles, prefix-collision check,
+|                                     extension test suite). CLI↔MCP parity: `extension_validate`.
+|
++-- packages                       -- (planned, extension-contracts.md) Inspect registered analysis packages (operator)
+    +-- info <name>                -- Show manifest, declared capabilities, Quality Scale tier, verification status
+    +-- search [--include-unverified] -- List installed packages (verified-only by default)
 ```
+
+#### Package-contributed subgroups
+
+The hardcoded tree above is the in-tree CLI surface. **Analysis packages contribute their own top-level subgroups** dynamically at startup via `moneybin.packages` entry-points discovery (see [`extension-contracts.md`](extension-contracts.md) §"Registration via entry points"). The launch lineup adds:
+
+| Package | Contributed subgroup | Examples |
+|---|---|---|
+| `assets` | `moneybin assets ...` | `moneybin assets holdings`, `moneybin assets set` |
+| `us_tax` | `moneybin us-tax ...` | `moneybin us-tax schedule-d` |
+
+Naming follows [`extension-contracts.md`](extension-contracts.md) §"Naming and prefix discipline": **kebab-case in the CLI** (`us-tax`), **snake_case in Python** (`us_tax`). The framework refuses to register a package whose CLI commands fall outside its `<pkg>` subgroup. Package subgroups inherit the same universal flags (`--profile`, `--verbose`, `--output`, `--quiet`, `--yes`) as in-tree commands.
 
 ### Mental model
 
@@ -317,11 +339,16 @@ Pipeline:       refresh (post-load orchestration: match -> transform -> categori
 Mutation:       budget (target management; vs-actual report lives under reports/budget)
 Operational:    logs, stats
 Infrastructure: profile, db, mcp, transform
+Extensibility:  extension, packages (planned, extension-contracts.md); plus dynamic per-package subgroups via entry-points
 ```
 
-### Top-level command count: 20
+### Top-level command count
 
-`profile`, `import`, `sync`, `accounts`, `reports`, `transactions`, `assets`, `categories`, `merchants`, `privacy`, `budget`, `system`, `refresh`, `transform`, `synthetic`, `stats`, `export`, `mcp`, `db`, `logs`
+In-tree groups (20): `profile`, `import`, `sync`, `accounts`, `reports`, `transactions`, `assets`, `categories`, `merchants`, `privacy`, `budget`, `system`, `refresh`, `transform`, `synthetic`, `stats`, `export`, `mcp`, `db`, `logs`.
+
+Planned operator groups (2, pending [`extension-contracts.md`](extension-contracts.md)): `extension`, `packages`.
+
+Dynamic per-package groups: registered at startup from `moneybin.packages` entry-points; the launch lineup adds `assets` and `us-tax`. Count grows as packages install.
 
 ## Cross-Interface Taxonomy
 
