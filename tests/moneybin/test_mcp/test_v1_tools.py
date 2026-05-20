@@ -168,6 +168,65 @@ class TestCategorizePendingGet:
         ids = [row["transaction_id"] for row in parsed["data"]]
         assert ids == ["T3"]
 
+    @staticmethod
+    def _install_resolver_accounts() -> None:
+        """Add display_name / collision-pair rows to core.dim_accounts."""
+        with get_database() as db:
+            db.conn.execute("""
+                INSERT INTO core.dim_accounts
+                    (account_id, source_type, display_name, archived)
+                VALUES
+                ('A1', 'ofx', 'Alpha', false),
+                ('AJ1', 'ofx', 'Joint', false),
+                ('AJ2', 'ofx', 'Joint', false)
+            """)
+
+    @pytest.mark.unit
+    async def test_account_filter_accepts_display_name(self, mcp_db: Path) -> None:
+        # Install a queue row keyed to A1 and an Alpha→A1 dim_accounts row.
+        # The resolver must translate "Alpha" → "A1" before binding to SQL.
+        self._install_view()
+        self._install_resolver_accounts()
+        with get_database() as db:
+            db.conn.execute("""
+                CREATE OR REPLACE VIEW reports.uncategorized_queue AS
+                SELECT
+                    'TA' AS transaction_id, 'A1' AS account_id,
+                    'Alpha' AS account_name,
+                    DATE '2026-04-20' AS txn_date,
+                    CAST(-10.00 AS DECIMAL(18,2)) AS amount,
+                    'ALPHA TXN' AS description,
+                    CAST(NULL AS VARCHAR) AS merchant_id,
+                    'Alpha Txn' AS merchant_normalized,
+                    CAST(20 AS INTEGER) AS age_days,
+                    CAST(200.0 AS DOUBLE) AS priority_score,
+                    'ofx' AS source_type,
+                    CAST(NULL AS VARCHAR) AS source_id
+            """)  # noqa: S608  # test input, not executing dynamic SQL
+        parsed = (await transactions_categorize_pending(account="Alpha")).to_dict()
+        ids = [row["transaction_id"] for row in parsed["data"]]
+        assert ids == ["TA"]
+
+    @pytest.mark.unit
+    async def test_account_filter_unknown_returns_error_envelope(
+        self, mcp_db: Path
+    ) -> None:
+        self._install_view()
+        self._install_resolver_accounts()
+        result = await transactions_categorize_pending(account="Nonexistent")
+        parsed = result.to_dict()
+        assert parsed["error"]["code"] == "account_not_found"
+
+    @pytest.mark.unit
+    async def test_account_filter_ambiguous_returns_error_envelope(
+        self, mcp_db: Path
+    ) -> None:
+        self._install_view()
+        self._install_resolver_accounts()
+        result = await transactions_categorize_pending(account="Joint")
+        parsed = result.to_dict()
+        assert parsed["error"]["code"] == "account_ambiguous"
+
     @pytest.mark.unit
     async def test_limit_caps_rows(self, mcp_db: Path) -> None:
         self._install_view()

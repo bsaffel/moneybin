@@ -81,7 +81,7 @@ not-yet-built.
 | 20| Balance assertion drift by status category                       | `reports_balance_drift`                  | `reports balance-drift`                  | —          | live                  |
 | 21| Threshold-filtered balance mismatch by day                       | `accounts_balance_reconcile`             | `accounts balance reconcile`             | —          | live                  |
 
-| 17| Inspect SQLMesh model state (status/plan/validate/audit)        | — *(cat 2 — operator)*       | `transform status|plan|validate|audit`             | —          | live (CLI-only)       |
+| 22| Inspect SQLMesh model state (status/plan/validate/audit)        | — *(cat 2 — operator)*       | `transform status|plan|validate|audit`             | —          | live (CLI-only)       |
 
 *(Bootstrap rows only; full table populates incrementally as
 follow-up work closes the parity backlog. A prior row covering
