@@ -91,11 +91,24 @@ def import_files(
             "rows_loaded": r.rows_loaded,
             "import_id": r.import_id,
             **({"error": r.error} if r.error else {}),
+            **(
+                {"sign_correction_suggested": True}
+                if r.sign_correction_suggested
+                else {}
+            ),
         }
         for r in batch.per_file
     ]
 
     actions: list[str] = []
+    if any(r.sign_correction_suggested for r in batch.per_file):
+        actions.append(
+            "Sign convention may be inverted for one or more imports — "
+            "re-run via CLI with `moneybin import files <path> "
+            "--sign negative_is_income` (or another SignConventionType "
+            "value) to override. MCP import_files does not accept a "
+            "sign parameter today."
+        )
     if not batch.transforms_applied and batch.imported_count > 0:
         actions.append("Run refresh_run when ready to refresh derived tables")
     if batch.transforms_error:
