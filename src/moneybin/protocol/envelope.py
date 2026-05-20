@@ -251,7 +251,7 @@ def build_error_envelope(
 
     ``recovery_actions`` precedence:
 
-    - A non-empty list overrides ``error.recovery_actions``.
+    - An explicit list (including ``[]``) overrides ``error.recovery_actions``.
     - An empty list ``[]`` is honored and reaches the envelope — meaning
       "explicitly no recovery available; agent must escalate to the user".
     - ``None`` (the default) means "no opinion; use the error's actions".

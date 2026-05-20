@@ -78,6 +78,39 @@ def test_user_error_to_dict_omits_none_hint() -> None:
     assert err.to_dict() == {"message": "m", "code": "c"}
 
 
+def test_user_error_to_dict_serializes_recovery_actions() -> None:
+    """UserError.to_dict includes recovery_actions when populated."""
+    from moneybin.errors import RecoveryAction
+
+    err = UserError(
+        "m",
+        code=error_codes.MUTATION_NOT_FOUND,
+        recovery_actions=[
+            RecoveryAction(
+                tool="system_audit_undo",
+                arguments={"operation_id": "op_test"},
+                rationale="Restore pre-mutation state",
+                confidence="certain",
+                idempotent=True,
+            )
+        ],
+    )
+    d = err.to_dict()
+    assert "recovery_actions" in d
+    assert d["recovery_actions"][0]["tool"] == "system_audit_undo"
+    assert d["recovery_actions"][0]["confidence"] == "certain"
+
+
+def test_user_error_to_dict_omits_recovery_actions_when_none() -> None:
+    """UserError.to_dict omits recovery_actions when not set.
+
+    Preserves backward compat — to_dict shape unchanged for callers that
+    aren't aware of recovery_actions.
+    """
+    err = UserError("m", code=error_codes.MUTATION_NOT_FOUND)
+    assert "recovery_actions" not in err.to_dict()
+
+
 def test_user_error_to_dict_includes_hint() -> None:
     """UserError.to_dict includes the hint when populated."""
     err = UserError("m", code="c", hint="h")

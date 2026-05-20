@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
+from moneybin import error_codes
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.mcp.privacy import Sensitivity, log_tool_call
 from moneybin.protocol.envelope import ResponseEnvelope, SummaryMeta
@@ -290,7 +291,7 @@ async def test_max_items_over_cap_returns_error() -> None:
 
     result = await fn(items=["a", "b", "c"])
     assert result.error is not None
-    assert result.error.code == "too_many_items"
+    assert result.error.code == error_codes.INFRA_TOO_MANY_ITEMS
     assert result.error.details is not None
     assert result.error.details["limit"] == 2
     assert result.error.details["received"] == 3
@@ -343,7 +344,7 @@ async def test_max_items_default_inherits_settings(
 
     result = await fn(items=["a", "b", "c", "d"])
     assert result.error is not None
-    assert result.error.code == "too_many_items"
+    assert result.error.code == error_codes.INFRA_TOO_MANY_ITEMS
     assert result.error.details is not None
     assert result.error.details["limit"] == 3
 

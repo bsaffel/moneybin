@@ -99,6 +99,14 @@ class UserError(Exception):
             d["hint"] = self.hint
         if self.details is not None:
             d["details"] = self.details
+        if self.recovery_actions is not None:
+            # Coerce plain dicts defensively (mirrors ResponseEnvelope.to_dict):
+            # callers SHOULD pass RecoveryAction instances, but a dict slipping
+            # in (e.g., from deserialized JSON) would otherwise AttributeError.
+            d["recovery_actions"] = [
+                ra if isinstance(ra, dict) else ra.model_dump()
+                for ra in self.recovery_actions
+            ]
         return d
 
 

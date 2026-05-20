@@ -33,6 +33,16 @@ IMPORT_SUPERSEDED = "import_superseded"
 # Mutation — app-state writes (categories, accounts, rules, etc.)
 # ---------------------------------------------------------------------------
 
+# Note on MUTATION_INVALID_INPUT and MUTATION_NOT_FOUND vs. INFRA_*:
+# The exception classifier (`classify_user_error`) routes bare ValueError →
+# INFRA_INVALID_INPUT and bare LookupError → INFRA_NOT_FOUND because the
+# classifier sits across all tool paths and cannot distinguish read context
+# from write context. Write-side call sites that mean "the entity-shape you
+# tried to write is invalid" or "the entity you targeted does not exist"
+# should `raise UserError(code=MUTATION_INVALID_INPUT, ...)` (or
+# MUTATION_NOT_FOUND) directly at the site rather than rely on the
+# classifier. The per-domain retrofits in PRs 9a-N migrate write-site
+# raise ValueError/LookupError to explicit UserError(code=MUTATION_*) calls.
 MUTATION_AMBIGUOUS = "mutation_ambiguous"
 MUTATION_CONSTRAINT_VIOLATION = "mutation_constraint_violation"
 MUTATION_INVALID_INPUT = "mutation_invalid_input"
