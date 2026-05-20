@@ -17,6 +17,7 @@ from typing import Any, Literal
 import duckdb
 
 from moneybin.database import Database
+from moneybin.errors import UserError
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.tables import (
     CATEGORIES,
@@ -64,6 +65,20 @@ class CategorizationQueries:
     def __init__(self, db: Database) -> None:
         """Bind the queries collaborator to a database connection."""
         self._db = db
+
+    def _fct_transactions_exists(self) -> bool:
+        """Return True if core.fct_transactions is queryable.
+
+        Used to distinguish pre-first-import state (no fact table yet) from
+        schema drift (fact table present, derived views missing).
+        """
+        try:
+            self._db.execute(
+                f"SELECT 1 FROM {FCT_TRANSACTIONS.full_name} LIMIT 0"  # noqa: S608  # TableRef constant
+            )
+        except duckdb.CatalogException:
+            return False
+        return True
 
     def get_active_categories(self) -> list[dict[str, str | bool | None]]:
         """Get all active categories."""
@@ -204,8 +219,11 @@ class CategorizationQueries:
         - ``"date"``   — ``txn_date DESC`` (most recent first, default)
         - ``"impact"`` — ``priority_score DESC`` (ABS(amount) * age_days, largest first)
 
-        Returns ``None`` when the underlying tables don't exist yet so callers
-        can distinguish "no transactions" from "no schema".
+        Returns ``None`` only when the underlying fact table doesn't exist
+        yet (pre-first-import). When the fact table exists but the queue
+        view is missing — schema drift or unapplied refresh — raises
+        ``UserError(code="schema_out_of_date")`` so callers surface a
+        ``refresh_run`` remediation rather than misreporting "no data".
         """
         if sort not in {"date", "impact"}:
             raise ValueError(f"Unknown sort: {sort!r}; expected 'date' or 'impact'")
@@ -229,8 +247,17 @@ class CategorizationQueries:
             result = self._db.execute(sql, params)
             columns = [desc[0] for desc in result.description]
             rows = result.fetchall()
-        except duckdb.CatalogException:
-            return None
+        except duckdb.CatalogException as e:
+            if not self._fct_transactions_exists():
+                return None
+            raise UserError(
+                "Uncategorized-queue view is missing. The schema is out of "
+                "date — run `refresh_run` (MCP) or `moneybin refresh` (CLI) "
+                "to rebuild derived views.",
+                code="schema_out_of_date",
+                hint="refresh_run",
+                details={"missing_object": REPORTS_UNCATEGORIZED_QUEUE.full_name},
+            ) from e
 
         return [dict(zip(columns, row, strict=False)) for row in rows]
 

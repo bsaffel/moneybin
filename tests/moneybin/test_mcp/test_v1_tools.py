@@ -228,6 +228,28 @@ class TestCategorizePendingGet:
         assert parsed["error"]["code"] == "account_ambiguous"
 
     @pytest.mark.unit
+    async def test_missing_view_raises_schema_out_of_date(self, mcp_db: Path) -> None:
+        # fct_transactions exists (from conftest) but the queue view does not.
+        # This is the schema-drift case — must surface a structured error
+        # pointing at refresh_run, NOT silently collapse to "no data".
+        result = await transactions_categorize_pending()
+        parsed = result.to_dict()
+        assert parsed["error"]["code"] == "schema_out_of_date"
+        assert "refresh" in parsed["error"]["message"].lower()
+
+    @pytest.mark.unit
+    async def test_pre_import_returns_empty(self, mcp_db: Path) -> None:
+        # Pre-first-import case: drop fct_transactions so the resolver can
+        # tell "no data yet" apart from "schema drift". Returns empty data
+        # with an "import first" action hint, not an error.
+        with get_database() as db:
+            db.conn.execute("DROP TABLE core.fct_transactions")
+        result = await transactions_categorize_pending()
+        parsed = result.to_dict()
+        assert parsed["data"] == []
+        assert any("import" in a.lower() for a in parsed["actions"])
+
+    @pytest.mark.unit
     async def test_limit_caps_rows(self, mcp_db: Path) -> None:
         self._install_view()
         parsed = (
