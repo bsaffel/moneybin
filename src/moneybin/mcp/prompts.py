@@ -220,5 +220,5 @@ def review_curation_history() -> str:
     """)
 
 
-# tax_prep prompt removed alongside the W-2 extraction pipeline (PR #186).
+# tax_prep prompt removed alongside the W-2 extraction pipeline.
 # Tax data ingestion will be re-designed in a future brainstorm.
