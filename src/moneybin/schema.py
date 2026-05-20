@@ -76,6 +76,7 @@ _SCHEMA_FILES: list[str] = [
     "app_transaction_tags.sql",
     "app_transaction_splits.sql",
     "app_imports.sql",
+    "app_gsheet_connections.sql",
 ]
 
 
