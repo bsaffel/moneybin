@@ -311,10 +311,10 @@ def test_response_envelope_next_cursor_absent_when_none() -> None:
 
 @pytest.mark.unit
 def test_payload_encoder_does_not_chain_mock_model_dump() -> None:
-    """``_PayloadEncoder.default`` must not recurse into ``MagicMock.model_dump``.
+    """``PayloadEncoder.default`` must not recurse into ``MagicMock.model_dump``.
 
     Regression test for a memory leak introduced by Phase 5 batch 3a
-    (``391f80b``). Both ``_PayloadEncoder.default`` and
+    (``391f80b``). Both ``PayloadEncoder.default`` and
     ``ResponseEnvelope.to_dict`` used to duck-type-detect Pydantic models
     via ``hasattr(o, "model_dump") and callable(o.model_dump)``. A
     ``MagicMock`` auto-generates ``model_dump`` (non-dunder), so the check
@@ -332,17 +332,15 @@ def test_payload_encoder_does_not_chain_mock_model_dump() -> None:
     """
     from unittest.mock import MagicMock
 
-    from moneybin.protocol.envelope import (
-        _PayloadEncoder,  # noqa: PLC2701  # private encoder is the unit under test  # pyright: ignore[reportPrivateUsage]
-    )
+    from moneybin.protocol.envelope import PayloadEncoder
 
-    encoder = _PayloadEncoder()
+    encoder = PayloadEncoder()
     result = encoder.default(MagicMock())
 
     # Fixed: encoder returns str(mock) via the TypeError-fallback branch.
     # Buggy: encoder returns mock.model_dump() — another MagicMock.
     assert isinstance(result, str), (
-        f"_PayloadEncoder.default returned {type(result).__name__} on a "
+        f"PayloadEncoder.default returned {type(result).__name__} on a "
         "MagicMock payload; the model_dump duck-type check has regressed "
         "and will cause unbounded mock chaining inside json.dumps"
     )

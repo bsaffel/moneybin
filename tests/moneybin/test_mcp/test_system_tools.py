@@ -18,8 +18,8 @@ async def test_system_status_returns_response_envelope(mcp_db: object) -> None:
     assert "summary" in parsed
     assert "data" in parsed
     assert "actions" in parsed
-    # SystemStatusPayload has DESCRIPTION fields → Tier.MEDIUM derived sensitivity
-    assert parsed["summary"]["sensitivity"] == "medium"
+    # SystemStatusPayload is all AGGREGATE / TXN_TYPE / TIMESTAMP_OBSERVABILITY → Tier.LOW
+    assert parsed["summary"]["sensitivity"] == "low"
 
 
 @pytest.mark.unit

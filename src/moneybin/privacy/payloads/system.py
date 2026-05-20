@@ -22,7 +22,7 @@ Tier derivation summary:
   - ``TransformAuditRow``           → Tier.MEDIUM (detail = DESCRIPTION)
   - ``TransformAuditPayload``       → Tier.MEDIUM (via TransformAuditRow)
   - ``SystemStatusAccountsInfo``    → Tier.LOW (AGGREGATE only)
-  - ``SystemStatusTransactionsInfo``→ Tier.LOW (AGGREGATE + TIMESTAMP_OBSERVABILITY + TXN_DATE)
+  - ``SystemStatusTransactionsInfo``→ Tier.LOW (AGGREGATE + TIMESTAMP_OBSERVABILITY only)
   - ``SchemaDriftTable``            → Tier.LOW (RECORD_ID + TXN_TYPE)
   - ``SystemStatusPayload``         → Tier.LOW (no DESCRIPTION fields)
   - ``InvariantResultPayload``      → Tier.MEDIUM (detail = DESCRIPTION, affected_ids = RECORD_ID)
@@ -132,7 +132,9 @@ class SystemStatusTransactionsInfo:
     """Transaction count + range sub-object inside SystemStatusPayload."""
 
     count: Annotated[int, DataClass.AGGREGATE]
-    date_range: Annotated[list[str | None], DataClass.TXN_DATE]
+    # AGGREGATE not TXN_DATE: this is min/max of every transaction date — a
+    # 2-element summary of the dataset's span, not individual transaction dates.
+    date_range: Annotated[list[str | None], DataClass.AGGREGATE]
     last_import_at: Annotated[str | None, DataClass.TIMESTAMP_OBSERVABILITY]
 
 

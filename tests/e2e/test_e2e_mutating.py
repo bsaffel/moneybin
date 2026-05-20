@@ -720,7 +720,8 @@ class TestBalanceAssertions:
 
         result = run_cli("accounts", "balance", "list", "--output", "json", env=env)
         result.assert_success()
-        assert self._ACCOUNT in result.stdout
+        # account_id is CRITICAL → masked to ****<last4> in JSON output.
+        assert f"****{self._ACCOUNT[-4:]}" in result.stdout
         assert self._DATE in result.stdout
 
     def test_balance_assert_then_delete(

@@ -62,8 +62,17 @@ def handle_cli_errors() -> Generator[None, None, None]:
 
 
 def emit_json(key: str, payload: object) -> None:
-    """Emit a single-key JSON envelope to stdout."""
-    typer.echo(json.dumps({key: payload}, indent=2, default=str))
+    """Emit a single-key JSON envelope to stdout.
+
+    Uses ``_PayloadEncoder`` so typed dataclass / Pydantic payloads serialize
+    to dicts, not ``str(...)`` reprs. ``default=str`` would silently override
+    the encoder's dataclass handling — keep them mutually exclusive.
+    """
+    from moneybin.protocol.envelope import (  # noqa: PLC0415 — defer import
+        PayloadEncoder,
+    )
+
+    typer.echo(json.dumps({key: payload}, indent=2, cls=PayloadEncoder))
 
 
 def render_rich_table(cols: list[str], rows: list[tuple[object, ...]]) -> None:

@@ -71,7 +71,7 @@ class SummaryMeta:
         return d
 
 
-class _PayloadEncoder(json.JSONEncoder):
+class PayloadEncoder(json.JSONEncoder):
     """JSON encoder for envelope payloads.
 
     Extends the original Decimal-to-float semantics to also handle typed
@@ -95,6 +95,7 @@ class _PayloadEncoder(json.JSONEncoder):
     """
 
     def default(self, o: object) -> Any:
+        """Serialize types ``json`` can't handle natively (Decimal, dataclass, BaseModel)."""
         # Existing: Decimal → float
         if isinstance(o, Decimal):
             return float(o)
@@ -155,7 +156,7 @@ class ResponseEnvelope[T]:
         if is_dataclass(self.data) and not isinstance(self.data, type):
             data_serialized = dataclasses.asdict(self.data)
         elif isinstance(self.data, BaseModel):
-            # isinstance(BaseModel), not duck-type — see _PayloadEncoder.default
+            # isinstance(BaseModel), not duck-type — see PayloadEncoder.default
             # comment for the MagicMock-chain leak this guards against.
             data_serialized = self.data.model_dump()
         else:
@@ -173,15 +174,15 @@ class ResponseEnvelope[T]:
         return d
 
     def to_json(self) -> str:
-        """Serialize to JSON string via _PayloadEncoder.
+        """Serialize to JSON string via PayloadEncoder.
 
-        Uses ``_PayloadEncoder`` (which handles Decimal → float, dataclass
+        Uses ``PayloadEncoder`` (which handles Decimal → float, dataclass
         → dict, and falls back to str for other non-serializable types). Do
         NOT pass ``default=`` to ``json.dumps`` alongside ``cls=``:
         ``default=`` replaces the encoder's ``default()`` and silently breaks
         the Decimal-to-number conversion.
         """
-        return json.dumps(self.to_dict(), cls=_PayloadEncoder)
+        return json.dumps(self.to_dict(), cls=PayloadEncoder)
 
 
 def build_envelope(
