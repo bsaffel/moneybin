@@ -143,10 +143,15 @@ def classify_user_error(exc: BaseException) -> UserError | None:
         msg = f"{exc.strerror}: {exc.filename}" if exc.filename else str(exc)
         return UserError(msg, code=error_codes.INFRA_IO_ERROR)
     if isinstance(exc, ValueError):
-        return UserError(str(exc), code=error_codes.MUTATION_INVALID_INPUT)
+        # Generic ValueError fires on read paths too (date/enum/decimal parsing
+        # in reports, query filters, etc.) — INFRA_INVALID_INPUT is prefix-
+        # neutral about write-vs-read, parallel to INFRA_NOT_FOUND. Write
+        # callers that mean "the entity-shape you wrote is invalid" should
+        # raise UserError(code=MUTATION_INVALID_INPUT) directly at the site.
+        return UserError(str(exc), code=error_codes.INFRA_INVALID_INPUT)
     if isinstance(exc, InvalidOperation):
         return UserError(
-            f"invalid decimal value: {exc}", code=error_codes.MUTATION_INVALID_INPUT
+            f"invalid decimal value: {exc}", code=error_codes.INFRA_INVALID_INPUT
         )
     if isinstance(exc, LookupError) and not isinstance(exc, (KeyError, IndexError)):
         # Generic LookupError fires on read paths (account/category/note lookups)

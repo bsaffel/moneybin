@@ -59,10 +59,16 @@ def test_classify_unknown_exception_returns_none() -> None:
 
 
 def test_classify_value_error_returns_user_error() -> None:
-    """ValueError maps to a UserError so CLI date/decimal parse errors surface cleanly."""
+    """ValueError maps to a UserError with code infra_invalid_input.
+
+    Use INFRA_INVALID_INPUT (prefix-neutral) rather than MUTATION_INVALID_INPUT
+    because ValueError fires on read paths too (date/decimal parsing in
+    reports, query filters). MUTATION_INVALID_INPUT would mis-signal
+    "write attempt" to agents branching on the prefix.
+    """
     result = classify_user_error(ValueError("bad input"))
     assert result is not None
-    assert result.code == error_codes.MUTATION_INVALID_INPUT
+    assert result.code == error_codes.INFRA_INVALID_INPUT
     assert "bad input" in result.message
 
 

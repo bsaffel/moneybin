@@ -45,23 +45,50 @@ def _user_error_call_sites() -> list[tuple[pathlib.Path, int, ast.Call]]:
 
 
 def _site_domain(path: pathlib.Path) -> str | None:
-    """Map a file path to one of ENABLED_DOMAINS keys."""
+    """Map a file path to one of ENABLED_DOMAINS keys.
+
+    Scans MCP tools (`mcp/tools/*.py`), service modules
+    (`services/*.py` and `services/<group>/*.py`), and CLI commands
+    (`cli/commands/*.py` and `cli/commands/<group>/*.py`). Domain
+    classification is by filename/parent-directory prefix.
+
+    Returns None for files outside the scoped trees (e.g. extractors,
+    matching, repositories) — those error sites are not yet gated by
+    this property test.
+    """
     parts = path.parts
-    if "mcp" in parts and "tools" in parts:
-        # e.g. src/moneybin/mcp/tools/import_tools.py
-        tool_file = path.stem
-        if tool_file.startswith("import"):
+    stem = path.stem
+    parent = path.parent.name
+
+    def _classify(name: str) -> str | None:
+        if name.startswith("import"):
             return "import"
-        if tool_file.startswith("transactions_categorize") or tool_file == "categorize":
+        if name.startswith("transactions_categorize") or name.startswith("categoriz"):
             return "categorize"
-        if tool_file.startswith("accounts"):
+        if name.startswith("account"):
             return "accounts"
-        if "tags" in tool_file or "notes" in tool_file or "splits" in tool_file:
+        if "tags" in name or "notes" in name or "splits" in name or "curation" in name:
             return "curation"
-        if tool_file.startswith("budget"):
+        if name.startswith("budget"):
             return "budgets"
-        if tool_file.startswith("transform"):
+        if name.startswith("transform"):
             return "transform"
+        return None
+
+    # MCP tools: src/moneybin/mcp/tools/*.py
+    if "mcp" in parts and "tools" in parts:
+        return _classify(stem)
+
+    # Services: src/moneybin/services/*.py (flat) or
+    #           src/moneybin/services/<group>/*.py (packaged, e.g. categorization/)
+    if "services" in parts:
+        return _classify(stem) or _classify(parent)
+
+    # CLI commands: src/moneybin/cli/commands/*.py or
+    #               src/moneybin/cli/commands/<group>/*.py
+    if "cli" in parts and "commands" in parts:
+        return _classify(stem) or _classify(parent)
+
     return None
 
 
@@ -77,6 +104,12 @@ def _code_kwarg(call: ast.Call) -> str | None:
             if isinstance(kw.value, ast.Attribute):
                 # error_codes.SOMETHING — return the name
                 return kw.value.attr.lower()
+            if isinstance(kw.value, ast.Name):
+                # Bare-name reference (e.g. `from moneybin.error_codes import
+                # RECOVERY_NO_PATH; ... code=RECOVERY_NO_PATH`). Lower the
+                # constant name and trust the project's NAME == VALUE.upper()
+                # convention enforced by test_error_codes.
+                return kw.value.id.lower()
     return None
 
 

@@ -138,3 +138,31 @@ class TestEnvelopeSerialization:
         env = build_error_envelope(error=err, sensitivity="low")
         d = env.to_dict()
         assert d["recovery_actions"] == []
+
+    def test_to_dict_handles_plain_dict_recovery_actions(self):
+        """Plain dicts (e.g., from deserialized JSON) pass through unchanged.
+
+        Coercing defensively prevents a classified UserError from becoming
+        an internal AttributeError at the wire boundary.
+        """
+        plain = {
+            "tool": "system_audit_undo",
+            "arguments": {"operation_id": "op_test"},
+            "rationale": "Restore pre-mutation state",
+            "confidence": "certain",
+            "idempotent": True,
+        }
+        env = ResponseEnvelope(
+            summary=SummaryMeta(
+                total_count=0,
+                returned_count=0,
+                has_more=False,
+                sensitivity="low",
+                display_currency="USD",
+                degraded=False,
+            ),
+            data=[],
+            recovery_actions=[plain],  # type: ignore[list-item]
+        )
+        d = env.to_dict()
+        assert d["recovery_actions"][0] == plain

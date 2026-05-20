@@ -131,7 +131,15 @@ class ResponseEnvelope:
         if self.next_cursor is not None:
             d["next_cursor"] = self.next_cursor
         if self.recovery_actions is not None:
-            d["recovery_actions"] = [ra.model_dump() for ra in self.recovery_actions]
+            # Coerce plain dicts defensively: callers SHOULD pass
+            # RecoveryAction instances (the type annotation says so), but a
+            # dict slipping in (e.g., from deserialized JSON) would otherwise
+            # AttributeError here and convert a classified UserError into an
+            # internal failure at the wire boundary.
+            d["recovery_actions"] = [
+                ra if isinstance(ra, dict) else ra.model_dump()
+                for ra in self.recovery_actions
+            ]
         return d
 
     def to_json(self) -> str:
@@ -240,11 +248,21 @@ def build_error_envelope(
     that the tool failed. Sensitivity defaults to ``low`` because error
     messages must not leak row-level data. ``actions`` preserves any
     caller-provided next-step hints (e.g. CLI fallbacks on stub tools).
-    ``recovery_actions`` can be passed explicitly to override any actions
-    on the UserError, or will be read from the error if not provided.
+
+    ``recovery_actions`` precedence:
+
+    - A non-empty list overrides ``error.recovery_actions``.
+    - An empty list ``[]`` is honored and reaches the envelope — meaning
+      "explicitly no recovery available; agent must escalate to the user".
+    - ``None`` (the default) means "no opinion; use the error's actions".
+      Callers who want to clear recovery_actions for a specific surface
+      (e.g., redacting before sending to a low-trust client) MUST pass
+      ``[]``, not ``None`` — None is reserved for "fall through to the
+      error's value".
     """
-    # Resolve recovery_actions: explicit kwarg wins; fall back to error.recovery_actions;
-    # preserve empty list explicitly (different from None).
+    # Resolve recovery_actions: explicit list (including empty) overrides;
+    # None means "no opinion, fall back to error.recovery_actions" per the
+    # contract documented above.
     if recovery_actions is None and error.recovery_actions is not None:
         recovery_actions = error.recovery_actions
 
