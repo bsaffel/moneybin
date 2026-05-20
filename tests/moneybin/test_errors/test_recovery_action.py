@@ -51,8 +51,8 @@ class TestRecoveryActionConstruction:
                 tool="t",
                 arguments={},
                 rationale="r",
-                confidence="maybe",
-                idempotent=True,  # type: ignore[arg-type]
+                confidence="maybe",  # type: ignore[arg-type]
+                idempotent=True,
             )
 
     def test_tool_required(self):
