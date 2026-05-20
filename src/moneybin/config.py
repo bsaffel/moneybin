@@ -215,12 +215,6 @@ class MetricsConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    flush_interval_seconds: int = Field(
-        default=300,
-        ge=10,
-        description="Periodic flush interval for MCP stream (seconds)",
-    )
-
 
 class MCPConfig(BaseModel):
     """MCP server runtime configuration."""

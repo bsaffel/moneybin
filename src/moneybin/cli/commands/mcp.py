@@ -753,9 +753,5 @@ def serve(
     except KeyboardInterrupt:
         logger.info("MCP server stopped by user")
     finally:
-        # Flush metrics before closing — close_db() clears the singleton,
-        # so the atexit handler would find no DB to flush to.
-        from moneybin.observability import flush_metrics
-
-        flush_metrics()
+        # close_db() flushes metrics internally; no separate call needed.
         close_db()

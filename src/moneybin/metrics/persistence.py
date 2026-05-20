@@ -1,8 +1,8 @@
 """Metrics persistence: flush prometheus metrics to DuckDB, load on startup.
 
 Flush strategy:
-- On shutdown (atexit) — primary persistence path.
-- Periodic (every 5 min) — for long-running processes (MCP server).
+- Explicit call (e.g. MCP serve finally block) — only path today.
+- Future: write-piggybacked flush from inside write transactions.
 - Each flush appends a new snapshot row per metric.
 
 Load strategy:
