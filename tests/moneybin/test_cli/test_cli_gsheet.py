@@ -82,6 +82,7 @@ def _make_load_result(*, rows_inserted: int = 5, rows_upserted: int = 0) -> Load
 @patch("moneybin.cli.commands.gsheet._build_oauth_client")
 def test_gsheet_auth_command_runs_oauth(mock_build: MagicMock) -> None:
     client = MagicMock()
+    client.is_authorized.return_value = False
     mock_build.return_value = client
     result = runner.invoke(app, ["gsheet", "auth"])
     assert result.exit_code == 0, result.output
@@ -90,8 +91,39 @@ def test_gsheet_auth_command_runs_oauth(mock_build: MagicMock) -> None:
 
 @pytest.mark.unit
 @patch("moneybin.cli.commands.gsheet._build_oauth_client")
+def test_gsheet_auth_short_circuits_when_already_authorized(
+    mock_build: MagicMock,
+) -> None:
+    """Mirror of the MCP gsheet_auth short-circuit: don't re-open the browser."""
+    client = MagicMock()
+    client.is_authorized.return_value = True
+    mock_build.return_value = client
+    result = runner.invoke(app, ["gsheet", "auth"])
+    assert result.exit_code == 0, result.output
+    client.authorize.assert_not_called()
+    assert "Already authorized" in result.stdout
+    assert "--force" in result.stdout
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.gsheet._build_oauth_client")
+def test_gsheet_auth_force_reauthenticates_when_already_authorized(
+    mock_build: MagicMock,
+) -> None:
+    """--force bypasses the short-circuit even with a refresh token on file."""
+    client = MagicMock()
+    client.is_authorized.return_value = True
+    mock_build.return_value = client
+    result = runner.invoke(app, ["gsheet", "auth", "--force"])
+    assert result.exit_code == 0, result.output
+    client.authorize.assert_called_once()
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.gsheet._build_oauth_client")
 def test_gsheet_auth_json_output(mock_build: MagicMock) -> None:
     client = MagicMock()
+    client.is_authorized.return_value = False
     mock_build.return_value = client
     result = runner.invoke(app, ["gsheet", "auth", "--output", "json"])
     assert result.exit_code == 0, result.output

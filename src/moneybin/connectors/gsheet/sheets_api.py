@@ -8,6 +8,7 @@ to the project's typed exception hierarchy via `_map_error`.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -108,7 +109,7 @@ class SheetsClient:
                 .values()
                 .get(
                     spreadsheetId=spreadsheet_id,
-                    range=sheet_name,
+                    range=_quote_a1_sheet_name(sheet_name),
                     valueRenderOption="UNFORMATTED_VALUE",
                     dateTimeRenderOption="FORMATTED_STRING",
                 )
@@ -125,6 +126,25 @@ class SheetsClient:
 
         creds = Credentials(token=self._oauth.get_access_token())
         return build("sheets", "v4", credentials=creds, cache_discovery=False)
+
+
+_A1_BARE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _quote_a1_sheet_name(sheet_name: str) -> str:
+    """Wrap a sheet/tab name for safe use as an A1 range.
+
+    Google Sheets A1 notation requires single-quoting tab names that
+    contain anything other than letters / digits / underscore (and that
+    don't start with a digit). Embedded single quotes double up.
+
+    Names that are already safe pass through unchanged so the on-wire
+    range matches the bare form Google docs use in examples.
+    """
+    if _A1_BARE_RE.fullmatch(sheet_name):
+        return sheet_name
+    escaped = sheet_name.replace("'", "''")
+    return f"'{escaped}'"
 
 
 def _map_error(exc: Exception) -> Exception:

@@ -11,8 +11,8 @@ CREATE TABLE IF NOT EXISTS app.gsheet_connections (
     column_mapping JSON NOT NULL, -- {source_header: dest_field} pinned at connect/reconnect time; the contract for subsequent pulls
     header_signature JSON NOT NULL, -- Ordered list of source headers at connect/reconnect time; drift detection baseline
     date_format VARCHAR, -- Pinned strftime format (e.g. '%m/%d/%Y'); NULL means auto-detect on each pull
-    sign_convention VARCHAR, -- One of: negative_is_expense, negative_is_income, split_debit_credit, all_positive; NULL = auto
-    number_format VARCHAR, -- One of: us, european, swiss, zero_decimal; NULL = auto
+    sign_convention VARCHAR, -- One of: negative_is_expense, negative_is_income, split_debit_credit; NULL = auto
+    number_format VARCHAR, -- One of: us, european, swiss_french, zero_decimal; NULL = auto
     skip_rows INTEGER NOT NULL DEFAULT 0, -- Rows to skip before the header row (Tiller sheets often have a banner row)
     skip_trailing_patterns JSON, -- Optional list of regex strings flagging trailing junk rows; NULL = use default patterns, [] = none, ['^Total'] = custom
     status VARCHAR NOT NULL DEFAULT 'healthy' CHECK (status IN ('healthy', 'auth_expired', 'unreachable', 'drift_detected', 'rate_limited', 'failed', 'disconnected')), -- Connection health; drives pre-refresh hook decisions and the system_status gsheet block

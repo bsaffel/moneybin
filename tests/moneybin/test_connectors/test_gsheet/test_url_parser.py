@@ -82,6 +82,20 @@ class TestParseSheetURLValid:
         assert spreadsheet_id == "precedence_test"
         assert gid == 42
 
+    def test_multi_account_url_with_user_path(self):
+        """Google adds /u/<n>/ to URLs copied from a multi-account session."""
+        url = "https://docs.google.com/u/1/spreadsheets/d/multi_account/edit#gid=7"
+        spreadsheet_id, gid = parse_sheet_url(url)
+        assert spreadsheet_id == "multi_account"
+        assert gid == 7
+
+    def test_multi_account_url_with_user_path_and_query_gid(self):
+        """/u/<n>/ form with gid in query string (no fragment)."""
+        url = "https://docs.google.com/u/0/spreadsheets/d/multi_q/edit?gid=42"
+        spreadsheet_id, gid = parse_sheet_url(url)
+        assert spreadsheet_id == "multi_q"
+        assert gid == 42
+
 
 class TestParseSheetURLInvalid:
     """Invalid or malformed Google Sheets URLs."""

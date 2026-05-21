@@ -123,8 +123,8 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 +-- sync
 |   +-- login                      -- Authenticate with moneybin-server (device flow)
 |   +-- logout                     -- Clear stored JWT from keychain
-|   +-- connect                    -- Connect a bank account (opens provider UI)
-|   +-- connect-status             -- Poll the in-flight connect session
+|   +-- link                       -- Link a bank via mediated provider (Plaid: opens Link UI)
+|   +-- link-status                -- Poll the in-flight link session
 |   +-- disconnect --institution NAME -- Remove an institution
 |   +-- pull [--force] [--institution NAME] -- Pull data + full pipeline
 |   +-- status                     -- Connected institutions, health, errors

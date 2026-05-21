@@ -64,6 +64,11 @@ def _parse_column_mapping(raw: str | None) -> dict[str, str] | None:
 
 @app.command("auth")
 def gsheet_auth(
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Re-authenticate even if a refresh token is already on file.",
+    ),
     output: OutputFormat = output_option,
 ) -> None:
     """Run the Google OAuth installed-app flow and persist tokens.
@@ -72,12 +77,21 @@ def gsheet_auth(
     Google Sheets. Tokens are stored in the platform keychain via
     ``SecretStore``. Subsequent ``gsheet connect`` and ``gsheet pull``
     calls reuse the persisted refresh token automatically.
+
+    Short-circuits when a refresh token is already on file unless
+    ``--force`` is passed — mirrors the ``gsheet_auth`` MCP tool.
     """
     with handle_cli_errors():
         client = _build_oauth_client()
-        client.authorize()
+        if client.is_authorized() and not force:
+            status = "already_authorized"
+        else:
+            client.authorize()
+            status = "authorized"
     if output == OutputFormat.JSON:
-        typer.echo(json.dumps({"status": "authorized"}))
+        typer.echo(json.dumps({"status": status}))
+    elif status == "already_authorized":
+        typer.echo("✅ Already authorized. Pass --force to re-authenticate.")
     else:
         typer.echo("✅ Google Sheets authorized.")
 

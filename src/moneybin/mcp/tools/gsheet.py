@@ -107,7 +107,16 @@ def gsheet_auth(force_reauth: bool = False) -> ResponseEnvelope:
     )
 
 
-@mcp_tool(sensitivity="medium", read_only=False, idempotent=False, open_world=True)
+@mcp_tool(
+    sensitivity="medium",
+    read_only=False,
+    idempotent=False,
+    open_world=True,
+    # First-run before gsheet_auth() lands tokens, connect() will trigger
+    # the OAuth installed-app flow itself. Same 180s cap as gsheet_auth so
+    # the user has headroom to click Allow without the default 30s firing.
+    timeout_seconds=180.0,
+)
 def gsheet_connect(
     url: str,
     adapter: str | None = None,
@@ -215,8 +224,9 @@ def gsheet_pull(connection_id: str | None = None) -> ResponseEnvelope:
             actions.append(_reconnect_hint(r.connection_id))
         elif r.status == "auth_expired":
             actions.append(
-                "Re-authenticate with the CLI: `moneybin gsheet auth` "
-                "(OAuth flow opens a browser; not available via MCP)."
+                "Re-authenticate: call gsheet_auth() (MCP) or run "
+                "`moneybin gsheet auth` (CLI). Both drive the same "
+                "in-process OAuth flow."
             )
     return build_envelope(
         data={"pulls": pulls},

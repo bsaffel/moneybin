@@ -14,6 +14,7 @@ from moneybin.connectors.gsheet.errors import (
 from moneybin.connectors.gsheet.sheets_api import (
     SheetsAPI,
     _map_error,  # pyright: ignore[reportPrivateUsage]
+    _quote_a1_sheet_name,  # pyright: ignore[reportPrivateUsage]
 )
 from moneybin.connectors.gsheet.testing.fake_sheets_client import (
     FakeSheetTab,
@@ -201,3 +202,27 @@ def test_map_error_timeout_to_unreachable() -> None:
 def test_map_error_generic_to_api_error() -> None:
     mapped = _map_error(RuntimeError("unexpected"))
     assert isinstance(mapped, GSheetAPIError)
+
+
+def test_quote_a1_sheet_name_passes_through_safe_names() -> None:
+    """Identifier-shaped names need no quoting (matches Google's own docs)."""
+    assert _quote_a1_sheet_name("Sheet1") == "Sheet1"
+    assert _quote_a1_sheet_name("transactions_2026") == "transactions_2026"
+    assert _quote_a1_sheet_name("Sheet_A1") == "Sheet_A1"
+
+
+def test_quote_a1_sheet_name_quotes_names_with_spaces() -> None:
+    """Names with spaces, dashes, dots, etc. must be single-quoted."""
+    assert _quote_a1_sheet_name("Sheet One") == "'Sheet One'"
+    assert _quote_a1_sheet_name("Q1-2026") == "'Q1-2026'"
+    assert _quote_a1_sheet_name("2026 budget") == "'2026 budget'"
+
+
+def test_quote_a1_sheet_name_escapes_embedded_quotes() -> None:
+    """Embedded single quotes double up per A1 quoting rules."""
+    assert _quote_a1_sheet_name("Sheet's tab") == "'Sheet''s tab'"
+
+
+def test_quote_a1_sheet_name_quotes_names_starting_with_digit() -> None:
+    """Names that start with a digit aren't bare identifiers — quote them."""
+    assert _quote_a1_sheet_name("2026") == "'2026'"
