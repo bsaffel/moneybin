@@ -110,13 +110,15 @@ These are visible gaps a migrant or agent author will notice. See [Roadmap](road
 
 - **Plaintext export** — `moneybin export` (CSV / Excel / Sheets) for data exit. Planned, not shipped.
 - **Budgeting** — Envelopes, rollovers, period-over-period burn. Planned.
-- **Investment tracking** — Holdings, FIFO lots, cost basis, 1099-B reconciliation. Planned.
+- **Investment tracking** — Holdings, FIFO lots, cost basis, 1099-B reconciliation. Planned (core, not a package).
 - **Multi-currency** — FX gain/loss and non-USD accounts. Planned.
 - **Web UI dashboard** — Local web UI plus Streamable HTTP MCP transport (so remote clients like ChatGPT web can reach MoneyBin). Planned.
 - **Hosted tier** — Same code, hosted. Planned.
+- **Extension contract** — Add your own reports, analysis packages, and providers. Designed in [`extension-contracts.md`](specs/extension-contracts.md); ships at v1 with two reference packages (`assets`, `us_tax`) at Platinum quality.
+- **Reference package: `assets`** — Real estate, vehicles, and valuables. First reference package; demonstrates the package contract.
+- **Reference package: `us_tax`** — Locale-specific tax reporting helpers (realized gain/loss summaries, cost-basis snapshots). Built on top of investment tracking; not Schedule D generation.
 - **First-class split rows** — Today splits are annotations on the parent row; first-class split lines arrive with the curation polish work. Planned.
 - **Subscription-cancellation workflow** — `reports.recurring_subscriptions` surfaces the candidates; a "mark cancelled / paused" tracking surface is planned.
-- **Tax-year reporting** — Schedule-D-adjacent outputs and per-tax-year summaries. Not on the near-term roadmap.
 - **Native mobile apps** — Not on the roadmap.
 - **Household / shared budgets** — Multi-user accounts within one profile. Not on the roadmap.
 

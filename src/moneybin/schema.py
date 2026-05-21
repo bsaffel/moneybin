@@ -36,23 +36,31 @@ logger = logging.getLogger(__name__)
 
 _SQL_DIR = Path(__file__).resolve().parent / "sql" / "schema"
 
+# Provider-bundled DDL directories. Listed here as plain paths rather than
+# imported via ``Provider.schema_files()`` to avoid triggering each
+# provider package's lazy-import machinery — the extractor classes pull in
+# polars and other heavy deps, and ``init_schemas`` only needs to discover
+# `.sql` files. The provider package owns the contents of its schema
+# directory; this list owns only the location.
+_EXTRACTORS_DIR = Path(__file__).resolve().parent / "extractors"
+_PROVIDER_SCHEMA_DIRS: list[Path] = [
+    _EXTRACTORS_DIR / "ofx" / "schema",
+    _EXTRACTORS_DIR / "plaid" / "schema",
+    _EXTRACTORS_DIR / "tabular" / "schema",
+]
 
-_SCHEMA_FILES: list[str] = [
+
+# Cross-cutting (non-provider-owned) DDL files resolved against ``_SQL_DIR``.
+# Order matters where dependencies exist: schema-create statements
+# (``raw_schema.sql``, etc.) must run before any table DDL inside that
+# schema. Tables within a schema have no ordering dependency on each other.
+_NON_PROVIDER_SCHEMA_FILES: list[str] = [
     "raw_schema.sql",
     "core_schema.sql",
     "app_schema.sql",
     "analytics_schema.sql",
     "meta_schema.sql",
     "reports_schema.sql",
-    "raw_ofx_institutions.sql",
-    "raw_ofx_accounts.sql",
-    "raw_ofx_transactions.sql",
-    "raw_ofx_balances.sql",
-    "raw_plaid_accounts.sql",
-    "raw_plaid_balances.sql",
-    "raw_plaid_transactions.sql",
-    "raw_tabular_transactions.sql",
-    "raw_tabular_accounts.sql",
     "raw_import_log.sql",
     "raw_manual_transactions.sql",
     "app_categories.sql",
@@ -77,6 +85,25 @@ _SCHEMA_FILES: list[str] = [
     "app_gsheet_connections.sql",
     "raw_gsheet_seeds.sql",
 ]
+
+
+def _all_schema_files() -> list[Path]:
+    """Enumerate every DDL file: cross-cutting plus provider-bundled.
+
+    Schema-creation statements (cross-cutting) run first so provider
+    tables can reference ``raw.*`` / ``app.*`` / etc. Each provider
+    directory contributes every ``raw_*.sql`` it owns, discovered by
+    glob. The glob is intentionally permissive within a provider's
+    directory because the directory itself is the ownership boundary —
+    each provider owns the entire contents of its ``schema/`` dir.
+    By convention, provider files follow ``raw_<provider>_<entity>.sql``
+    naming (matching the per-provider ``schema_files()`` contract); the
+    permissive glob avoids re-declaring the prefix in two places.
+    """
+    files: list[Path] = [_SQL_DIR / name for name in _NON_PROVIDER_SCHEMA_FILES]
+    for schema_dir in _PROVIDER_SCHEMA_DIRS:
+        files.extend(sorted(schema_dir.glob("raw_*.sql")))
+    return files
 
 
 def _apply_comments(
@@ -189,17 +216,17 @@ def init_schemas(conn: duckdb.DuckDBPyConnection) -> None:
         conn: An active read-write DuckDB connection.
     """
     table_snapshot, column_snapshot = _snapshot_catalog_comments(conn)
-    for sql_file in _SCHEMA_FILES:
-        sql_path = _SQL_DIR / sql_file
+    schema_files = _all_schema_files()
+    for sql_path in schema_files:
         if not sql_path.exists():
-            logger.warning(f"Schema file not found, skipping: {sql_file}")
+            logger.warning(f"Schema file not found, skipping: {sql_path.name}")
             continue
         sql = sql_path.read_text()
         conn.execute(sql)
         _apply_comments(conn, sql, table_snapshot, column_snapshot)
-        logger.debug(f"Executed {sql_file}")
+        logger.debug(f"Executed {sql_path.name}")
 
-    logger.debug(f"Executed {len(_SCHEMA_FILES)} schema files from {_SQL_DIR}")
+    logger.debug(f"Executed {len(schema_files)} schema files")
 
     # Mirror the DataClass registry into the catalog (suffix comments
     # with `[class: ...]`).

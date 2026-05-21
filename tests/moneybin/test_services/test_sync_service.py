@@ -17,12 +17,12 @@ from moneybin.connectors.sync_models import (
     SyncTriggerResponse,
 )
 from moneybin.database import Database
-from moneybin.loaders.plaid_loader import PlaidLoader
+from moneybin.extractors.plaid import PlaidExtractor
 from moneybin.services.sync_service import SyncService
 
 FIXTURE = (
     Path(__file__).parent.parent
-    / "test_loaders"
+    / "test_extractors"
     / "fixtures"
     / "plaid_sync_response.yaml"
 )
@@ -35,8 +35,8 @@ def sync_data() -> SyncDataResponse:
 
 
 @pytest.fixture
-def loader(db: Database) -> PlaidLoader:
-    return PlaidLoader(db)
+def loader(db: Database) -> PlaidExtractor:
+    return PlaidExtractor(db)
 
 
 @pytest.fixture
@@ -54,7 +54,7 @@ def mock_client(sync_data: SyncDataResponse) -> MagicMock:
 def test_pull_happy_path(
     mock_client: MagicMock,
     db: Database,
-    loader: PlaidLoader,
+    loader: PlaidExtractor,
     sync_data: SyncDataResponse,
 ) -> None:
     service = SyncService(client=mock_client, db=db, loader=loader)
@@ -76,7 +76,7 @@ def test_pull_happy_path(
 
 
 def test_pull_with_institution_resolves_to_provider_item_id(
-    mock_client: MagicMock, db: Database, loader: PlaidLoader
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
 ) -> None:
     mock_client.list_institutions.return_value = [
         ConnectedInstitution(
@@ -97,7 +97,7 @@ def test_pull_with_institution_resolves_to_provider_item_id(
 
 
 def test_pull_with_unknown_institution_raises(
-    mock_client: MagicMock, db: Database, loader: PlaidLoader
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
 ) -> None:
     mock_client.list_institutions.return_value = []
     service = SyncService(client=mock_client, db=db, loader=loader)
@@ -106,7 +106,7 @@ def test_pull_with_unknown_institution_raises(
 
 
 def test_pull_with_provider_item_id_skips_resolution(
-    mock_client: MagicMock, db: Database, loader: PlaidLoader
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
 ) -> None:
     service = SyncService(client=mock_client, db=db, loader=loader)
     service.pull(provider_item_id="item_direct")
@@ -118,7 +118,7 @@ def test_pull_with_provider_item_id_skips_resolution(
 
 
 def test_pull_rejects_both_institution_and_provider_item_id(
-    mock_client: MagicMock, db: Database, loader: PlaidLoader
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
 ) -> None:
     service = SyncService(client=mock_client, db=db, loader=loader)
     with pytest.raises(ValueError, match="mutually exclusive"):
@@ -126,7 +126,7 @@ def test_pull_rejects_both_institution_and_provider_item_id(
 
 
 def test_pull_with_force_passes_reset_cursor(
-    mock_client: MagicMock, db: Database, loader: PlaidLoader
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
 ) -> None:
     service = SyncService(client=mock_client, db=db, loader=loader)
     service.pull(force=True)
@@ -139,7 +139,7 @@ def test_pull_with_force_passes_reset_cursor(
 def test_connect_new_institution_auto_pulls(
     mock_client: MagicMock,
     db: Database,
-    loader: PlaidLoader,
+    loader: PlaidExtractor,
     sync_data: SyncDataResponse,
 ) -> None:
     mock_client.initiate_connect.return_value = ConnectInitiateResponse(
@@ -168,7 +168,7 @@ def test_connect_new_institution_auto_pulls(
 
 
 def test_connect_no_pull_returns_without_pull_result(
-    mock_client: MagicMock, db: Database, loader: PlaidLoader
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
 ) -> None:
     mock_client.initiate_connect.return_value = ConnectInitiateResponse(
         session_id="sess_x",
@@ -190,7 +190,7 @@ def test_connect_no_pull_returns_without_pull_result(
 
 
 def test_connect_re_auth_resolves_institution_name(
-    mock_client: MagicMock, db: Database, loader: PlaidLoader
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
 ) -> None:
     mock_client.list_institutions.return_value = [
         ConnectedInstitution(
@@ -224,7 +224,7 @@ def test_connect_re_auth_resolves_institution_name(
 
 
 def test_connect_falls_through_to_new_when_institution_not_matched(
-    mock_client: MagicMock, db: Database, loader: PlaidLoader
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
 ) -> None:
     """Unknown institution name falls through to new-connection flow.
 
@@ -255,7 +255,7 @@ def test_connect_falls_through_to_new_when_institution_not_matched(
 
 
 def test_connect_invokes_on_initiate_callback_before_polling(
-    mock_client: MagicMock, db: Database, loader: PlaidLoader
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
 ) -> None:
     """on_initiate fires after initiate_connect, before polling.
 
@@ -283,7 +283,7 @@ def test_connect_invokes_on_initiate_callback_before_polling(
 
 
 def test_resolve_institution_raises_on_ambiguous_name(
-    mock_client: MagicMock, db: Database, loader: PlaidLoader
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
 ) -> None:
     """Two connections sharing institution_name must not silently map to one."""
     mock_client.list_institutions.return_value = [
@@ -310,7 +310,7 @@ def test_resolve_institution_raises_on_ambiguous_name(
 
 
 def test_list_connections_returns_views_with_guidance(
-    mock_client: MagicMock, db: Database, loader: PlaidLoader
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
 ) -> None:
     mock_client.list_institutions.return_value = [
         ConnectedInstitution(
@@ -343,7 +343,7 @@ def test_list_connections_returns_views_with_guidance(
 
 
 def test_list_connections_threads_error_code(
-    mock_client: MagicMock, db: Database, loader: PlaidLoader
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
 ) -> None:
     """error_code from ConnectedInstitution is surfaced in SyncConnectionView."""
     mock_client.list_institutions.return_value = [
@@ -383,7 +383,7 @@ def test_list_connections_threads_error_code(
 
 
 def test_list_connections_unrecognized_error_code_falls_back_to_generic_guidance(
-    mock_client: MagicMock, db: Database, loader: PlaidLoader
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
 ) -> None:
     """An error_code not in _ERROR_GUIDANCE falls back to generic guidance without raising."""
     mock_client.list_institutions.return_value = [
@@ -407,7 +407,7 @@ def test_list_connections_unrecognized_error_code_falls_back_to_generic_guidance
 
 
 def test_disconnect_resolves_institution_and_calls_client(
-    mock_client: MagicMock, db: Database, loader: PlaidLoader
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
 ) -> None:
     mock_client.list_institutions.return_value = [
         ConnectedInstitution(
@@ -425,7 +425,7 @@ def test_disconnect_resolves_institution_and_calls_client(
 
 
 def test_disconnect_unknown_institution_raises(
-    mock_client: MagicMock, db: Database, loader: PlaidLoader
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
 ) -> None:
     mock_client.list_institutions.return_value = []
     service = SyncService(client=mock_client, db=db, loader=loader)
@@ -446,7 +446,7 @@ class TestPullAutoRefreshes:
         self,
         mock_client: MagicMock,
         db: Database,
-        loader: PlaidLoader,
+        loader: PlaidExtractor,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         from moneybin.services import sync_service as mod
@@ -472,7 +472,7 @@ class TestPullAutoRefreshes:
         self,
         mock_client: MagicMock,
         db: Database,
-        loader: PlaidLoader,
+        loader: PlaidExtractor,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         from moneybin.services import sync_service as mod
@@ -497,7 +497,7 @@ class TestPullAutoRefreshes:
     def test_pull_skips_refresh_when_no_rows_loaded(
         self,
         db: Database,
-        loader: PlaidLoader,
+        loader: PlaidExtractor,
         sync_data: SyncDataResponse,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -533,7 +533,7 @@ class TestPullAutoRefreshes:
     def test_pull_refreshes_when_only_removals_landed(
         self,
         db: Database,
-        loader: PlaidLoader,
+        loader: PlaidExtractor,
         sync_data: SyncDataResponse,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -601,7 +601,7 @@ class TestPullAutoRefreshes:
         self,
         mock_client: MagicMock,
         db: Database,
-        loader: PlaidLoader,
+        loader: PlaidExtractor,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Refresh soft-fails — the SQLMesh error must reach the envelope."""

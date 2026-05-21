@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-05-17 -->
+<!-- Last reviewed: 2026-05-20 -->
 # Roadmap
 
 Pre-v1 roadmap. Each milestone is a coherent slice of work, not a calendar date — we don't commit dates pre-v1. Statuses below reflect what's merged to `main` today; the dated record of individual changes lives in [`CHANGELOG.md`](../CHANGELOG.md). For "is this for me?" see [`audience.md`](audience.md); for head-to-head fit, [`comparison.md`](comparison.md); for shipped capability detail, [`features.md`](features.md).
@@ -31,9 +31,11 @@ Each milestone has a one-line gloss for what it means to a user. Details below.
 | **M3B** | Investments / cost basis — holdings, lots, gain/loss tied to a real 1099-B. | 🗓️ planned |
 | **M3C** | Multi-currency + budgets — non-USD support and monthly budgets with rollovers. | 🗓️ planned |
 | **M3D** | Web UI — the dashboard you'll actually look at, plus remote MCP for ChatGPT web/mobile. | 🗓️ planned |
-| **M3E** | Hosted launch (v1) — opt-in cloud tier with per-user encrypted databases. | 🗓️ planned |
+| **M3E** | Hosted launch (v1) — opt-in cloud tier; reference packages (`assets`, `us_tax`) ship Platinum-quality. | 🗓️ planned |
 | **M3F** | Connect: live tabular sources — Google Sheets today; Airtable, Smartsheet, Notion planned. | ✅ shipped (gsheet) |
 | Post-launch | Anything after M3E. Listed without commitment. | 🗓️ planned |
+
+**A note on extensibility.** The contributor surface — adding reports, analysis packages, and providers — is a stated differentiator. The contract is specified in [`extension-contracts.md`](specs/extension-contracts.md) (📐 designed). Two reference packages ship at v1: `assets` (real estate, vehicles, valuables) and `us_tax` (locale-specific tax helpers built on top of M3B investments). Both at Platinum quality; both serve as worked examples for community packages post-launch.
 
 M3E closing = v1 launch. **Phase 1 of M3A** = cash and credit-card accounts via Plaid. Phase 2 = investment accounts, which overlaps with M3B.
 
@@ -202,6 +204,10 @@ The opt-in cloud tier. Local-first remains the default. M3E closing = v1 launch.
 | Zero-knowledge passphrase + recovery codes | 🗓️ | |
 | GDPR data export / delete | 🗓️ | Beta user downloads their full encrypted DuckDB. |
 | On-call ready | 🗓️ | |
+| Extension contract (Reports / Analysis Packages / Providers) | 📐 | [`extension-contracts.md`](specs/extension-contracts.md) — contributor-facing surface with Quality Scale (Bronze → Platinum). |
+| Reference package: `assets` (real estate, vehicles, valuables) | 📐 | First reference package; ships at Platinum. Demonstrates the package contract. |
+| Reference package: `us_tax` (locale-specific tax helpers) | 📐 | Second reference package; ships at Platinum. Depends on M3B investments-core. |
+| In-tree provider framework Platinum sweep | 📐 | Existing providers (OFX, Plaid, tabular) brought to Platinum at launch. |
 
 Pricing is not committed pre-launch. The local CLI + MCP stack will remain fully usable without a hosted account.
 
@@ -232,7 +238,7 @@ Designed but not gating launch. Listed without commitment.
 - **ML-powered categorization + merchant entity resolution.** Needs accumulated labeled data from real users.
 - **MCP Apps** (interactive UI inside Claude Desktop, VS Code). Revisit when client support widens.
 - **Multi-account-holder sharing.** Single-user is the v1 posture; revisit on user demand.
-- **Asset tracking** (real estate, vehicles, valuables) and **recurring-transaction storage**.
+- **Recurring-transaction storage** (storage table for scheduled definitions).
 
 ---
 
@@ -248,7 +254,7 @@ To keep solo capacity focused, these are **not on the roadmap** — many never w
 - **Real estate / illiquid assets** beyond manual tracking.
 - **Receipt scanning / per-item OCR.**
 - **Email forwarding ingestion.**
-- **Tax-form generation** (Schedule D, Form 8949). Use Beancount or a professional accountant.
+- **Tax-form generation** (Schedule D, Form 8949). Use Beancount or a professional accountant. The `us_tax` reference package ships *reporting* helpers (realized gain/loss summaries, cost-basis snapshots) on top of M3B investments — not official form output.
 - **Public REST API for third-party integrations.** Build when a real consumer requests it.
 - **Windows native distribution.** Linux works via PyPI; Mac is the curator audience.
 - **Enterprise / SOC 2 path.** Consumer + indie tier; revisit only on enterprise signal.
