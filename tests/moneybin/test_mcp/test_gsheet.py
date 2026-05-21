@@ -383,11 +383,31 @@ async def test_gsheet_reconnect_returns_envelope(mock_build: MagicMock) -> None:
 
     from moneybin.mcp.tools.gsheet import gsheet_reconnect
 
-    envelope = await gsheet_reconnect(connection_id="conn_abc")
+    envelope = await gsheet_reconnect(connection_id="conn_abc", yes=True)
     assert envelope.summary.sensitivity == "medium"
     data = _as_dict(envelope.data)
     assert data["connection"]["status"] == "healthy"
-    service.reconnect.assert_called_once_with("conn_abc")
+    service.reconnect.assert_called_once_with("conn_abc", yes=True)
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.gsheet._build_connection_service")
+async def test_gsheet_reconnect_passes_yes_flag_through(
+    mock_build: MagicMock,
+) -> None:
+    """Yes parameter must reach the service layer for medium-confidence remaps."""
+    service = MagicMock()
+    service.reconnect.return_value = ConnectResult(
+        connection=_make_connection(),
+        detection=_make_detection(),
+        initial_pull=None,
+    )
+    mock_build.return_value.__enter__.return_value = service
+
+    from moneybin.mcp.tools.gsheet import gsheet_reconnect
+
+    await gsheet_reconnect(connection_id="conn_abc")  # default yes=False
+    service.reconnect.assert_called_once_with("conn_abc", yes=False)
 
 
 # ---------------------------------------------------------------------------

@@ -164,12 +164,31 @@ class GSheetConnectionService:
             )
 
         # TransactionsAdapter.transform requires account_id (see transactions.py).
-        # Persisting without one creates a row that fails every pull.
-        if target_adapter == "transactions" and not req.account_id:
-            raise GSheetError(
-                "--account-id is required for the transactions adapter. "
-                "Pass --account-id=<dim_accounts.account_id>."
-            )
+        # Persisting without one creates a row that fails every pull. Accept
+        # account_name as a free-text alias and resolve to the canonical id
+        # at the service boundary (identifiers.md Guard 2 — bind filters to
+        # the id; resolve free-text at the boundary).
+        resolved_account_id: str | None = req.account_id
+        if target_adapter == "transactions" and not resolved_account_id:
+            if req.account_name:
+                from moneybin.services.account_service import (  # noqa: PLC0415
+                    AccountService,
+                )
+
+                # resolve_strict accepts an account_id or a display_name and
+                # raises AccountNotFoundError / AmbiguousAccountError (both
+                # UserError subclasses, surface cleanly via the MCP/CLI
+                # boundary handlers).
+                resolved_account_id = AccountService(self._db).resolve_strict(
+                    req.account_name
+                )
+            else:
+                raise GSheetError(
+                    "--account-id or --account-name is required for the "
+                    "transactions adapter. Pass --account-name=<display> "
+                    "(resolved via dim_accounts) or "
+                    "--account-id=<dim_accounts.account_id>."
+                )
 
         # For seed adapter the column_mapping field holds inferred typed_columns
         # (the raw_seed adapter reuses the field for its typed view).
@@ -189,7 +208,7 @@ class GSheetConnectionService:
             workbook_name=meta.title,
             adapter=target_adapter,
             alias=req.alias,
-            account_id=req.account_id,
+            account_id=resolved_account_id,
             account_name=req.account_name,
             column_mapping=column_mapping,
             header_signature=detection.header_signature,

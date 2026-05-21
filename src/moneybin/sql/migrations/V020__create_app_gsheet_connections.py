@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS app.gsheet_connections (
     skip_trailing_patterns JSON,
     status VARCHAR NOT NULL DEFAULT 'healthy'
         CHECK (status IN ('healthy', 'auth_expired', 'unreachable',
-                          'drift_detected', 'rate_limited', 'disconnected')),
+                          'drift_detected', 'rate_limited', 'failed',
+                          'disconnected')),
     last_pull_at TIMESTAMP,
     last_pull_import_id VARCHAR,
     last_success_at TIMESTAMP,

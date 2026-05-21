@@ -124,7 +124,15 @@ class GSheetPullService:
             logger.exception(f"gsheet rate-limited for connection={conn.connection_id}")
             return self._record_failure(conn, import_id, status="rate_limited")
 
-        df = rows_to_df(rows)
+        try:
+            df = rows_to_df(rows)
+        except Exception:
+            # rows_to_df raises GSheetError on duplicate headers (round-3
+            # guard). Without this wrap the import_log stays in
+            # "importing" — same bug class the transform/load guard below
+            # closes; the symmetric fix lives here.
+            logger.exception(f"rows_to_df failed for connection={conn.connection_id}")
+            return self._record_unexpected_failure(conn, import_id)
         drift = adapter.check_drift(conn, df)
         if drift.is_drift:
             self._close_import_log(import_id, status="failed", rows_imported=0)
@@ -154,12 +162,14 @@ class GSheetPullService:
             transformed = adapter.transform(df, conn)
             load_result = adapter.load(transformed, conn, self._db, import_id)
         except Exception:
-            # Without this guard the import_log row stays in "importing" forever
-            # — transform/load failures escape pull_connection's existing branch
-            # for fetch/drift errors and the outer pull_all_healthy catch never
-            # closes the log.
-            self._close_import_log(import_id, status="failed", rows_imported=0)
-            raise
+            # Without _record_unexpected_failure the import_log row stays
+            # in "importing" AND the connection row stays in "healthy"
+            # forever — list_healthy() keeps re-scheduling it on every
+            # refresh_run with no visible failure signal.
+            logger.exception(
+                f"transform/load failed for connection={conn.connection_id}"
+            )
+            return self._record_unexpected_failure(conn, import_id)
 
         self._close_import_log(
             import_id,
@@ -314,6 +324,44 @@ class GSheetPullService:
         return PullResult(
             connection_id=conn.connection_id,
             status=status,
+            error_message=message,
+        )
+
+    def _record_unexpected_failure(
+        self,
+        conn: GSheetConnection,
+        import_id: str,
+    ) -> PullResult:
+        """Mirror of _record_failure for non-classified exceptions.
+
+        Closes the import_log row, increments consecutive_failure_count,
+        and marks the connection status='failed'. Without this the
+        connection would stay in 'healthy' across repeated transform/load
+        failures and never surface as broken to gsheet_status.
+
+        Caller logs the exception details internally; the message
+        returned here is intentionally generic so internal state never
+        leaks via MCP.
+        """
+        message = "Unexpected pull failure; see application logs."
+        self._close_import_log(import_id, status="failed", rows_imported=0)
+        now = _utcnow_iso()
+        self._repo.update_after_pull(
+            conn.connection_id,
+            last_pull_at=now,
+            last_pull_import_id=import_id,
+            last_success_at=None,
+            status="failed",
+            consecutive_failure_count=conn.consecutive_failure_count + 1,
+        )
+        self._repo.update_status(
+            conn.connection_id,
+            status="failed",
+            reason=message,
+        )
+        return PullResult(
+            connection_id=conn.connection_id,
+            status="failed",
             error_message=message,
         )
 

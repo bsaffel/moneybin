@@ -182,21 +182,32 @@ def test_pull_all_healthy_skips_disconnected(in_memory_db: Database) -> None:
     assert results == []
 
 
-def test_pull_closes_import_log_on_transform_failure(in_memory_db: Database) -> None:
-    """Transform/load failure must close the import_log row, not leak in 'importing'."""
+def test_pull_closes_import_log_and_updates_status_on_transform_failure(
+    in_memory_db: Database,
+) -> None:
+    """Transform/load failure closes import_log AND moves the connection out of 'healthy'.
+
+    Without the connection-status update, list_healthy() keeps scheduling
+    the broken connection on every refresh_run with no failure signal.
+    """
     from unittest.mock import patch
 
     pull_svc, _sheets, cid = _setup(in_memory_db)
     boom = RuntimeError("simulated transform failure")
-    with (
-        patch(
-            "moneybin.connectors.gsheet.adapters.transactions.TransactionsAdapter.transform",
-            side_effect=boom,
-        ),
-        pytest.raises(RuntimeError, match="simulated transform failure"),
+    with patch(
+        "moneybin.connectors.gsheet.adapters.transactions.TransactionsAdapter.transform",
+        side_effect=boom,
     ):
-        pull_svc.pull_connection(cid)
+        result = pull_svc.pull_connection(cid)
 
+    # The exception is caught and translated to a PullResult(status="failed"),
+    # mirroring the fetch-failure branches' _record_failure pattern.
+    assert result.status == "failed"
+    assert result.error_message is not None
+    # error_message is the generic sanitized form — no internal stack text.
+    assert "simulated transform failure" not in result.error_message
+
+    # import_log row was closed.
     leaked = in_memory_db.execute(
         "SELECT COUNT(*) FROM raw.import_log WHERE status = 'importing'"
     ).fetchone()
@@ -208,3 +219,10 @@ def test_pull_closes_import_log_on_transform_failure(in_memory_db: Database) -> 
     ).fetchone()
     assert failed is not None
     assert failed[0] >= 1
+
+    # Connection row reflects the failure — status, count, last_pull_at.
+    conn_row = GSheetConnectionsRepo(in_memory_db).get(cid)
+    assert conn_row is not None
+    assert conn_row["status"] == "failed"
+    assert conn_row["consecutive_failure_count"] == 1
+    assert conn_row["last_pull_at"] is not None

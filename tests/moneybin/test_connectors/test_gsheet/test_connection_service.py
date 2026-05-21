@@ -199,7 +199,34 @@ def test_connect_falls_through_to_seed_offer_on_low_confidence(
     assert result.connection.alias == "custom"
 
 
-def test_connect_transactions_requires_account_id(in_memory_db: Database) -> None:
+def test_connect_transactions_requires_account_id_or_name(
+    in_memory_db: Database,
+) -> None:
+    """Neither account_id nor account_name supplied → connect refuses."""
+    svc, sheets, _ = _make_service(in_memory_db)
+    sheets.register_workbook("ss1", _tiller_workbook())
+    req = ConnectionRequest(
+        url="https://docs.google.com/spreadsheets/d/ss1/edit#gid=0",
+        adapter="transactions",
+        yes=True,
+    )
+    with pytest.raises(GSheetError, match="account-id or --account-name"):
+        svc.connect(req)
+
+
+def test_connect_transactions_resolves_account_name_to_id(
+    in_memory_db: Database,
+) -> None:
+    """account_name resolves via AccountService.resolve_strict at connect time.
+
+    The dim_accounts view is SQLMesh-built and isn't materialized in the
+    in_memory_db fixture; mocking resolve_strict tests the *wiring* (that
+    connect calls the resolver and stores its result as account_id),
+    which is what the surface contract guarantees. AccountService has
+    its own tests for the SQL lookup logic.
+    """
+    from unittest.mock import patch
+
     svc, sheets, _ = _make_service(in_memory_db)
     sheets.register_workbook("ss1", _tiller_workbook())
     req = ConnectionRequest(
@@ -207,9 +234,40 @@ def test_connect_transactions_requires_account_id(in_memory_db: Database) -> Non
         adapter="transactions",
         account_name="Chase Checking",
         yes=True,
+        no_initial_pull=True,
     )
-    with pytest.raises(GSheetError, match="account-id"):
-        svc.connect(req)
+    with patch(
+        "moneybin.services.account_service.AccountService.resolve_strict",
+        return_value="acct_chase_check",
+    ) as resolver:
+        result = svc.connect(req)
+    resolver.assert_called_once_with("Chase Checking")
+    assert result.connection.account_id == "acct_chase_check"
+    assert result.connection.account_name == "Chase Checking"
+
+
+def test_connect_transactions_account_name_not_found_surfaces_error(
+    in_memory_db: Database,
+) -> None:
+    """Unknown account_name → AccountNotFoundError surfaces (UserError subclass)."""
+    from unittest.mock import patch
+
+    from moneybin.services.account_service import AccountNotFoundError
+
+    svc, sheets, _ = _make_service(in_memory_db)
+    sheets.register_workbook("ss1", _tiller_workbook())
+    req = ConnectionRequest(
+        url="https://docs.google.com/spreadsheets/d/ss1/edit#gid=0",
+        adapter="transactions",
+        account_name="Nonexistent Account",
+        yes=True,
+    )
+    with patch(
+        "moneybin.services.account_service.AccountService.resolve_strict",
+        side_effect=AccountNotFoundError(query="Nonexistent Account", candidates=[]),
+    ):
+        with pytest.raises(AccountNotFoundError):
+            svc.connect(req)
 
 
 def _medium_confidence_workbook() -> FakeWorkbook:

@@ -11,8 +11,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-import httpx
-
 from moneybin.connectors.gsheet.errors import (
     GSheetAPIError,
     GSheetAuthError,
@@ -130,7 +128,14 @@ class SheetsClient:
 
 
 def _map_error(exc: Exception) -> Exception:
-    """Map google-api-python-client / network exceptions to project exceptions."""
+    """Map google-api-python-client / network exceptions to project exceptions.
+
+    google-api-python-client wraps API responses in
+    ``googleapiclient.errors.HttpError`` and surfaces transport-level
+    failures (DNS, TCP, TLS, socket timeouts) as ``OSError`` subclasses
+    via httplib2. Branch on those two; everything else falls through to
+    GSheetAPIError so the caller still gets a typed surface.
+    """
     from googleapiclient.errors import HttpError
 
     if isinstance(exc, HttpError):
@@ -142,6 +147,8 @@ def _map_error(exc: Exception) -> Exception:
         if status in (403, 404):
             return GSheetUnreachableError(str(exc))
         return GSheetAPIError(f"Google API HTTP {status}: {exc}")
-    if isinstance(exc, httpx.NetworkError | httpx.TimeoutException):
+    if isinstance(exc, OSError):
+        # DNS failures, refused connections, socket timeouts — all OSError
+        # subclasses via httplib2 / urllib3 under google-api-python-client.
         return GSheetUnreachableError(str(exc))
     return GSheetAPIError(str(exc))

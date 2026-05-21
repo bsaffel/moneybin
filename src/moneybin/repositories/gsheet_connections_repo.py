@@ -70,6 +70,7 @@ Status = Literal[
     "unreachable",
     "drift_detected",
     "rate_limited",
+    "failed",
     "disconnected",
 ]
 
@@ -428,6 +429,12 @@ class GSheetConnectionsRepo:
         """Return only connections in ``healthy`` status."""
         cols = ", ".join(_FULL_ROW_COLUMNS)
         rows = self._db.conn.execute(
-            f"SELECT {cols} FROM {GSHEET_CONNECTIONS.full_name} WHERE status = 'healthy' ORDER BY created_at ASC, connection_id ASC"  # noqa: S608  # TableRef + allowlisted column list
+            # Auto-retry transient statuses on each refresh_run. auth_expired
+            # / drift_detected / disconnected / failed stay sticky — those
+            # need explicit operator action; retrying would either fail in
+            # an identical way or surprise the user.
+            f"SELECT {cols} FROM {GSHEET_CONNECTIONS.full_name} "  # noqa: S608  # TableRef + allowlisted column list
+            "WHERE status IN ('healthy', 'rate_limited', 'unreachable') "
+            "ORDER BY created_at ASC, connection_id ASC"
         ).fetchall()
         return [_decode_row(r) for r in rows]

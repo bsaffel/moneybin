@@ -2,7 +2,6 @@
 
 from unittest.mock import MagicMock
 
-import httpx
 import pytest
 from googleapiclient.errors import HttpError
 
@@ -188,13 +187,14 @@ def test_map_error_500_to_api_error() -> None:
     )
 
 
-def test_map_error_network_to_unreachable() -> None:
-    mapped = _map_error(httpx.ConnectError("connection refused"))
+def test_map_error_oserror_to_unreachable() -> None:
+    """httplib2 raises OSError subclasses for transport-level failures."""
+    mapped = _map_error(ConnectionRefusedError("connection refused"))
     assert isinstance(mapped, GSheetUnreachableError)
 
 
 def test_map_error_timeout_to_unreachable() -> None:
-    mapped = _map_error(httpx.ConnectTimeout("timed out"))
+    mapped = _map_error(TimeoutError("timed out"))
     assert isinstance(mapped, GSheetUnreachableError)
 
 

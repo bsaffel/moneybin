@@ -131,9 +131,9 @@ def gsheet_connect(
     `#gid=N` so the tab is unambiguous.
 
     Mutation surface: writes app.gsheet_connections (audited). Revert with
-    gsheet_disconnect(connection_id, purge=True). Requires prior CLI
-    `moneybin gsheet auth` (the OAuth flow opens a browser and has no MCP
-    equivalent).
+    gsheet_disconnect(connection_id, purge=True). Requires prior gsheet_auth
+    (MCP) or `moneybin gsheet auth` (CLI) — both drive the same in-process
+    OAuth installed-app flow.
     """
     from moneybin.connectors.gsheet.connection_service import (  # noqa: PLC0415
         ConnectionRequest,
@@ -273,12 +273,16 @@ def gsheet_status(connection_id: str | None = None) -> ResponseEnvelope:
 
 
 @mcp_tool(sensitivity="medium", read_only=False, idempotent=False, open_world=True)
-def gsheet_reconnect(connection_id: str) -> ResponseEnvelope:
+def gsheet_reconnect(connection_id: str, yes: bool = False) -> ResponseEnvelope:
     """Re-detect the sheet structure, re-pin the mapping, and run a pull.
 
     Use after the source sheet changes shape (column added, header reworded)
     and a connection surfaces in drift_detected status. Amounts in loaded data
     follow MoneyBin's accounting convention: negative = expense, positive = income.
+
+    Pass yes=True to accept a medium-confidence column-mapping remap. Without
+    it, an ambiguous remap raises AmbiguousDetectionError so the agent can
+    confirm with the user before silently re-pinning the wrong mapping.
 
     Mutation surface: updates app.gsheet_connections.column_mapping +
     header_signature (audited) and writes raw rows via the pull side-effect.
@@ -286,7 +290,7 @@ def gsheet_reconnect(connection_id: str) -> ResponseEnvelope:
     sheet currently looks like. Run gsheet_status afterwards to verify.
     """
     with _build_connection_service() as service:
-        result = service.reconnect(connection_id)
+        result = service.reconnect(connection_id, yes=yes)
 
     data = {
         "connection": result.connection.to_dict(),
