@@ -106,6 +106,32 @@ class TestBuildErrorEnvelope:
         )
         assert env.recovery_actions == []
 
+    def test_explicit_override_does_not_leak_via_nested_error_dict(self):
+        """Suppression must take effect at the wire boundary, not just at env top-level.
+
+        Regression guard for the redaction use case: caller passes
+        recovery_actions=[] to redact actions for a low-trust surface, but
+        the original UserError still carries the un-redacted actions. The
+        envelope's to_dict() MUST NOT serialize them under d["error"] —
+        otherwise the override leaks the unsuppressed actions.
+        """
+        err = UserError(
+            "Boom",
+            code=error_codes.MUTATION_NOT_FOUND,
+            recovery_actions=[_sample_action()],
+        )
+        env = build_error_envelope(
+            error=err,
+            sensitivity="low",
+            recovery_actions=[],
+        )
+        d = env.to_dict()
+        assert d["recovery_actions"] == []
+        # Nested error dict must NOT carry the suppressed actions:
+        assert "recovery_actions" not in d["error"], (
+            f"Nested error.recovery_actions leaks original actions: {d['error']!r}"
+        )
+
     def test_error_envelope_empty_recovery_actions_preserved(self):
         """An explicit empty list reaches the envelope (not coerced to None)."""
         err = UserError(

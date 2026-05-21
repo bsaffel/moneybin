@@ -127,7 +127,18 @@ class ResponseEnvelope:
             "actions": self.actions,
         }
         if self.error is not None:
-            d["error"] = self.error.to_dict()
+            # Strip recovery_actions from the nested error dict: the envelope
+            # top-level field is the canonical wire location. Without this
+            # strip, an explicit override via build_error_envelope(
+            # recovery_actions=[]) would suppress the top-level field but leak
+            # the original actions through error.to_dict() — defeating the
+            # redaction use case the override is designed to support.
+            # Direct UserError.to_dict() callers (logging, debugging) still
+            # see recovery_actions; only the envelope-serialized nested form
+            # drops the field.
+            err_dict = self.error.to_dict()
+            err_dict.pop("recovery_actions", None)
+            d["error"] = err_dict
         if self.next_cursor is not None:
             d["next_cursor"] = self.next_cursor
         if self.recovery_actions is not None:
@@ -136,12 +147,6 @@ class ResponseEnvelope:
             # dict slipping in (e.g., from deserialized JSON) would otherwise
             # AttributeError here and convert a classified UserError into an
             # internal failure at the wire boundary.
-            #
-            # Note: when `error` is also set, `error.to_dict()` (above) emits
-            # the same `recovery_actions` list nested under `d["error"]`. The
-            # duplication is intentional — agents can read the field at the
-            # top level OR nested under the error without a second lookup.
-            # See docs/specs/data-recovery-contract.md Req 2.
             d["recovery_actions"] = [
                 ra if isinstance(ra, dict) else ra.model_dump()
                 for ra in self.recovery_actions
