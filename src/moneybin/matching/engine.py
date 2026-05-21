@@ -373,8 +373,6 @@ class TransactionMatcher:
                 match_signals={
                     "date_distance": round(pair.date_distance_score, 4),
                     "keyword": round(pair.keyword_score, 4),
-                    "roundness": round(pair.amount_roundness_score, 4),
-                    "pair_frequency": round(pair.pair_frequency_score, 4),
                 },
                 match_type=transfer_match_type,
                 match_tier=None,

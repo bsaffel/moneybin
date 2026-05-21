@@ -97,13 +97,13 @@ def review_auto_rules() -> str:
         they can promote useful rules to active and reject noisy ones.
 
         **Relevant tools:**
-        - transactions_categorize_auto_stats — pending proposal count and rule health
+        - transactions_categorize_stats(include_auto=True) — pending proposal count and rule health
         - transactions_categorize_auto_review — list pending proposals with samples
         - transactions_categorize_auto_accept — batch approve/reject proposals by ID
         - transactions_categorize_rules — review currently active rules
 
         **Workflow:**
-        1. Check transactions_categorize_auto_stats for pending proposal count
+        1. Check transactions_categorize_stats(include_auto=True) for pending proposal count
         2. Fetch proposals with transactions_categorize_auto_review
         3. For each proposal, show the merchant pattern, suggested
            category, sample matching transactions, and trigger count
@@ -134,7 +134,7 @@ def onboarding() -> str:
         - reports_spending — first look at their data
 
         **Workflow:**
-        1. Ask the user what files they have (OFX/QFX, CSV, PDF W-2s)
+        1. Ask the user what files they have (OFX/QFX, CSV)
         2. Import the user's files in one call to import_files (pass a list of paths)
         3. Verify with accounts that accounts were created
         4. Check transactions_categorize_stats — if many uncategorized, offer to help
@@ -220,6 +220,5 @@ def review_curation_history() -> str:
     """)
 
 
-# tax_prep prompt removed alongside the tax_w2 / tax_deductions de-registration
-# (no backing tax spec in docs/specs/INDEX.md). Re-add when the tax tools
-# re-register against a real spec.
+# tax_prep prompt removed alongside the W-2 extraction pipeline.
+# Tax data ingestion will be re-designed in a future brainstorm.

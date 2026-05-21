@@ -215,12 +215,6 @@ class MetricsConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    flush_interval_seconds: int = Field(
-        default=300,
-        ge=10,
-        description="Periodic flush interval for MCP stream (seconds)",
-    )
-
 
 class MCPConfig(BaseModel):
     """MCP server runtime configuration."""
@@ -397,17 +391,15 @@ class MatchingSettings(BaseModel):
         description="Source types in priority order (first = highest priority)",
     )
     transfer_review_threshold: float = Field(
-        default=0.70,
+        default=0.55,
         ge=0.0,
         le=1.0,
         description="Review queue threshold for transfer pairs",
     )
     transfer_signal_weights: dict[str, float] = Field(
-        default={
-            "date_distance": 0.4,
-            "keyword": 0.3,
-            "roundness": 0.15,
-            "pair_frequency": 0.15,
+        default_factory=lambda: {
+            "date_distance": 0.6,
+            "keyword": 0.4,
         },
         description="Per-signal weights for transfer confidence scoring",
     )
@@ -424,10 +416,13 @@ class MatchingSettings(BaseModel):
     @classmethod
     def validate_transfer_weights(cls, v: dict[str, float]) -> dict[str, float]:
         """Ensure all required scoring keys are present and sum to 1.0."""
-        required = {"date_distance", "keyword", "roundness", "pair_frequency"}
+        required = {"date_distance", "keyword"}
         missing = required - v.keys()
         if missing:
             raise ValueError(f"transfer_signal_weights missing keys: {missing}")
+        extra = v.keys() - required
+        if extra:
+            raise ValueError(f"transfer_signal_weights has unrecognised keys: {extra}")
         negative = {k: w for k, w in v.items() if w < 0}
         if negative:
             raise ValueError(f"transfer_signal_weights has negative values: {negative}")
@@ -447,46 +442,6 @@ class MatchingSettings(BaseModel):
                 f"high_confidence_threshold ({self.high_confidence_threshold})"
             )
         return self
-
-
-class MLTrainingWeights(BaseModel):
-    """Relative importance weights for training data sources in ML pipelines."""
-
-    user: float = Field(
-        default=1.0,
-        ge=0.0,
-        description="Weight for user-provided categorizations",
-    )
-    rule: float = Field(
-        default=1.0,
-        ge=0.0,
-        description="Weight for rule-matched transactions",
-    )
-    auto_rule: float = Field(
-        default=0.9,
-        ge=0.0,
-        description="Weight for auto-rule-matched transactions",
-    )
-    migration: float = Field(
-        default=0.85,
-        ge=0.0,
-        description="Weight for user-attested transactions migrated from prior tools",
-    )
-    plaid: float = Field(
-        default=0.7,
-        ge=0.0,
-        description="Weight for Plaid personal finance categories",
-    )
-    ai: float = Field(
-        default=0.8,
-        ge=0.0,
-        description="Weight for AI-generated suggestions (excluding seed)",
-    )
-    seed: float = Field(
-        default=0.5,
-        ge=0.0,
-        description="Weight for seed transactions; may be excluded after empirical evaluation",
-    )
 
 
 class CategorizationSettings(BaseModel):
@@ -553,18 +508,17 @@ class CategorizationSettings(BaseModel):
         le=500,
         description="Hard upper bound enforced server-side",
     )
-    training_weights: "MLTrainingWeights" = Field(
-        default_factory=lambda: MLTrainingWeights()
-    )
 
     @model_validator(mode="after")
     def proposal_threshold_lte_override_threshold(self) -> "CategorizationSettings":
         """Ensure proposal_threshold <= override_threshold.
 
-        If proposal > override, ``check_overrides`` deactivates a rule once
-        override count reaches override_threshold but the re-proposal lands
-        in ``tracking`` (count < proposal_threshold), hiding the corrected
-        category from ``categorize auto review`` until further user categorizations.
+        The deactivation bar must not be lower than the creation bar. If
+        ``override_threshold`` were less than ``proposal_threshold``, a
+        pattern could accumulate enough user corrections to deactivate its
+        rule (via ``check_overrides``) before enough auto-categorizations
+        had ever occurred to propose the rule (via ``record_categorization``)
+        — an obviously degenerate configuration.
         """
         if self.auto_rule_proposal_threshold > self.auto_rule_override_threshold:
             raise ValueError(

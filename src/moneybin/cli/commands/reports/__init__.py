@@ -14,7 +14,6 @@ from .merchants import reports_merchants
 from .networth import reports_networth, reports_networth_history
 from .recurring import reports_recurring
 from .spending import reports_spending
-from .uncategorized import reports_uncategorized
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +28,6 @@ app.command("cashflow")(reports_cashflow)
 app.command("spending")(reports_spending)
 app.command("recurring")(reports_recurring)
 app.command("merchants")(reports_merchants)
-app.command("uncategorized")(reports_uncategorized)
 app.command("large-transactions")(reports_large_transactions)
 app.command("balance-drift")(reports_balance_drift)
 

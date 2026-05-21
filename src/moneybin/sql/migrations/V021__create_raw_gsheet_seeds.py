@@ -1,4 +1,4 @@
-"""V019: create raw.gsheet_seeds.
+"""V021: create raw.gsheet_seeds.
 
 Row-level storage for the gsheet seed (catch-all) adapter. One row per
 (connection_id, row_hash); the JSON ``data`` column captures the source
@@ -83,7 +83,7 @@ _COLUMN_COMMENTS: list[tuple[str, str]] = [
 
 def migrate(conn: object) -> None:
     """Create raw.gsheet_seeds + apply column comments. Idempotent."""
-    logger.info("V019: CREATE TABLE IF NOT EXISTS raw.gsheet_seeds")
+    logger.info("V021: CREATE TABLE IF NOT EXISTS raw.gsheet_seeds")
     conn.execute(_CREATE_TABLE_SQL)  # type: ignore[union-attr]
 
     for column, comment in _COLUMN_COMMENTS:
@@ -97,4 +97,4 @@ def migrate(conn: object) -> None:
             f"IS '{escaped}'"
         )
 
-    logger.info("V019: raw.gsheet_seeds ready")
+    logger.info("V021: raw.gsheet_seeds ready")

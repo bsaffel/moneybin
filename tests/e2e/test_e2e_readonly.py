@@ -158,8 +158,6 @@ class TestStubCommands:
             ["reports", "health"],
             ["budget", "set", "Food", "500"],
             ["budget", "delete", "Food"],
-            ["tax", "w2", "2024"],
-            ["tax", "deductions", "2024"],
             ["export", "run"],
         ],
         ids=lambda c: " ".join(c),
@@ -223,9 +221,8 @@ class TestDBReadOnlyCommands:
         result.assert_success()
 
     def test_import_show_format(self, e2e_profile: dict[str, str]) -> None:
-        result = run_cli("import", "formats", "show", "chase_credit", env=e2e_profile)
-        # May exit 1 if format not found — no crash is the bar
-        assert "Traceback" not in result.stderr
+        result = run_cli("import", "formats", "show", "tiller", env=e2e_profile)
+        result.assert_success()
 
     # ── transactions categorize ──────────────────────────────────────────
 

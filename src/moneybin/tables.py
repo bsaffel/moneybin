@@ -42,7 +42,6 @@ OFX_INSTITUTIONS = TableRef("raw", "ofx_institutions")
 PLAID_ACCOUNTS = TableRef("raw", "plaid_accounts")
 PLAID_TRANSACTIONS = TableRef("raw", "plaid_transactions")
 PLAID_BALANCES = TableRef("raw", "plaid_balances")
-W2_FORMS = TableRef("raw", "w2_forms")
 
 # -- Raw tabular tables (replaces csv_* tables) --
 TABULAR_TRANSACTIONS = TableRef("raw", "tabular_transactions")
@@ -67,7 +66,6 @@ MERCHANTS = TableRef("core", "dim_merchants", audience="interface")
 USER_MERCHANTS = TableRef("app", "user_merchants")
 CATEGORIZATION_RULES = TableRef("app", "categorization_rules", audience="interface")
 PROPOSED_RULES = TableRef("app", "proposed_rules")
-RULE_DEACTIVATIONS = TableRef("app", "rule_deactivations")
 SCHEMA_MIGRATIONS = TableRef("app", "schema_migrations")
 VERSIONS = TableRef("app", "versions")
 

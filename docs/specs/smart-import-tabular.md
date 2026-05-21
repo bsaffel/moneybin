@@ -811,7 +811,6 @@ handles renaming `source_system` → `source_type` in `core.dim_accounts` and
 | `pipe` | `raw.tabular_*` | Smart tabular importer |
 | `ofx` | `raw.ofx_*` | OFX importer (existing) |
 | `plaid` | `raw.plaid_*` | Plaid connector (future) |
-| `pdf_w2` | `raw.w2_*` | W-2 extractor (existing) |
 
 The raw tables are shared across all tabular formats (`raw.tabular_*`) because the data
 shape is identical once read. The `source_type` column distinguishes the original import

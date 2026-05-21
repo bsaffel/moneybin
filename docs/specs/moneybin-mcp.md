@@ -1,8 +1,8 @@
 # MCP Tool Surface
 
-> Last updated: 2026-05-17
+> Last updated: 2026-05-20
 > Status: in-progress
-> Companion to: [`mcp-architecture.md`](mcp-architecture.md) (design philosophy, conventions, patterns)
+> Companion to: [`mcp-architecture.md`](mcp-architecture.md) (design philosophy, conventions, patterns), [`extension-contracts.md`](extension-contracts.md) (Analysis Packages and standalone Reports register `<pkg>_*`-prefixed tools and auto-generated reports into this server via entry points)
 > Supersedes: [`archived/mcp-read-tools.md`](archived/mcp-read-tools.md), [`archived/mcp-write-tools.md`](archived/mcp-write-tools.md)
 
 ## Purpose
@@ -694,7 +694,7 @@ Trigger the matching engine on-demand.
 
 ### `import_files`
 
-Import one or more financial data files into MoneyBin. Format detected automatically per file from extension (OFX/QFX/QBO, CSV/TSV/Excel/Parquet/Feather, PDF/W-2). Per-file failures do not abort the batch; transforms run once at end of batch by default.
+Import one or more financial data files into MoneyBin. Format detected automatically per file from extension (OFX/QFX/QBO, CSV/TSV/Excel/Parquet/Feather). Per-file failures do not abort the batch; transforms run once at end of batch by default.
 
 - **Sensitivity:** `low` — return envelope reports per-file counts and status, not transaction content.
 - **Unique parameters:** `paths: list[str]` (required, each path must be within the user's home directory), `refresh: bool = True`, `force: bool = False`.
@@ -812,13 +812,13 @@ Confirm and execute AI-assisted parsing for a file.
 
 ### `transactions_categorize_pending`
 
-Fetch transactions that haven't been categorized yet. The read side of the categorize-then-apply workflow.
+Fetch transactions that haven't been categorized yet. Absorbs the former `reports_uncategorized` tool.
 
 - **Sensitivity:** `medium` — returns transaction descriptions and amounts.
-- **Unique parameters:** `suggest: bool = false` — when true, include AI-suggested categories based on merchant mappings and existing rules (does not apply them).
-- **Behavior:** Returns array of `{transaction_id, date, amount, description, account_id, suggested_category?, suggested_subcategory?, suggestion_source?}`. Degraded response returns uncategorized count by account and time period.
-- **Service:** `CategorizationService.uncategorized() -> TransactionSearchResult`
-- **CLI:** `moneybin transactions categorize pending [--suggest] [--limit 50]`
+- **Unique parameters:** `limit: int = 50`, `sort: Literal["date", "impact"] = "date"` (`impact` sorts by `ABS(amount) × age_days` descending), `min_amount: Decimal = Decimal("0")` (filter to `ABS(amount) >= min_amount`), `account: str | None = None` (filter by account ID or display name; ambiguous display names raise `account_ambiguous`).
+- **Behavior:** Returns array of `{transaction_id, account_id, account_name, txn_date, amount, description, merchant_id, merchant_normalized, age_days, priority_score, source_type, source_id}` from `reports.uncategorized_queue`. Amounts use the accounting convention: negative = expense, positive = income. Degraded response returns uncategorized count by account and time period.
+- **Service:** `CategorizationService.list_uncategorized_transactions(limit, sort, min_amount, account_id)`
+- **CLI:** `moneybin transactions categorize pending [--limit N] [--sort date|impact] [--min-amount N] [--account NAME]`
 
 ### `transactions_categorize_commit`
 
@@ -932,12 +932,12 @@ Hard-delete a user-created category.
 
 ### `transactions_categorize_stats`
 
-Categorization coverage statistics.
+Categorization coverage statistics; optionally includes auto-rule health metrics.
 
 - **Sensitivity:** `low` — counts and percentages only.
-- **Unique parameters:** None.
-- **Behavior:** Returns `{total_transactions, categorized, uncategorized, percent_categorized, by_source}` where `by_source` breaks down by categorization source (user, rule, ai, plaid).
-- **Service:** `CategorizationService.stats() -> CategorizationStats`
+- **Unique parameters:** `include_auto: bool = False` — when true, appends auto-rule health to the response.
+- **Behavior:** Base response: `{total_transactions, categorized, uncategorized, percent_categorized, by_source}` where `by_source` breaks down by categorization source (user, rule, ai, plaid). With `include_auto=True`, returns `{overall: <base>, auto: {active_auto_rules, pending_proposals, transactions_categorized}}`. The `auto` block absorbs what was previously the standalone `transactions_categorize_auto_stats` tool.
+- **Service:** `CategorizationService.stats() -> CategorizationStats`; with `include_auto=True` also calls `AutoRuleService.stats() -> AutoStatsResult`.
 - **CLI:** `moneybin transactions categorize stats`
 
 ### `transactions_categorize_rules_apply`
@@ -969,53 +969,9 @@ Accept or reject proposed auto-generated rules. Takes two parallel ID lists.
 
 ### `transactions_categorize_auto_stats`
 
-Auto-rule health metrics.
+**Retired (MCP only).** The auto-rule health metrics are now available via `transactions_categorize_stats(include_auto=True)`. The CLI command `moneybin transactions categorize auto stats` remains — it calls `AutoRuleService.stats()` directly and is unaffected.
 
-- **Sensitivity:** `low`
-- **Unique parameters:** None.
-- **Behavior:** Returns `{active_rules, pending_proposals, rejected_proposals, override_rate, top_rules}` where `top_rules` is an array of the most-matched auto-rules with match counts. `override_rate` is the percentage of auto-rule categorizations that were later overridden by the user.
-- **Service:** `AutoRuleService.stats() -> AutoStatsResult`
-- **CLI:** `moneybin transactions categorize auto stats`
-- **Dependency:** [Categorization overview](categorization-overview.md) (Pillar E: auto-rule generation), [Auto-rule generation](categorization-auto-rules.md).
-
-### `transactions_categorize_ml_status`
-
-**Status:** blocked on [`categorization-ml.md`](categorization-ml.md) (planned) — NOT registered.
-
-ML model status and accuracy metrics.
-
-- **Sensitivity:** `low`
-- **Unique parameters:** None.
-- **Behavior:** Returns `{status, last_trained, training_samples, accuracy, confidence_distribution}` where `status` is `untrained`, `training`, or `ready`. `confidence_distribution` shows how many transactions fall in each confidence tier (high/moderate/low). Confidence scores are Platt-calibrated probabilities; user-facing output uses qualitative tiers (see [categorization overview](categorization-overview.md) Progressive Confidence Disclosure).
-- **Service:** `CategorizationService.ml_status() -> MLModelStatus`
-- **CLI:** `moneybin transactions categorize ml status`
-- **Dependency:** [Categorization overview](categorization-overview.md) (Pillar D: ML categorization).
-
-### `transactions_categorize_ml_train`
-
-**Status:** blocked on [`categorization-ml.md`](categorization-ml.md) (planned) — NOT registered.
-
-Trigger model training or retraining on current categorization history.
-
-- **Sensitivity:** `low` — training data stays local.
-- **Unique parameters:** None.
-- **Behavior:** Trains the model synchronously. Returns `{status, training_samples, accuracy, duration_seconds}`. Requires minimum number of categorized transactions to produce a useful model. Note: the pipeline auto-retrains when statistically significant new categorizations exist (see [categorization overview](categorization-overview.md)); this tool is a manual escape hatch.
-- **Service:** `CategorizationService.ml_train() -> MLTrainResult`
-- **CLI:** `moneybin transactions categorize ml train`
-- **Dependency:** [Categorization overview](categorization-overview.md) (Pillar D: ML categorization).
-
-### `transactions_categorize_ml_apply`
-
-**Status:** blocked on [`categorization-ml.md`](categorization-ml.md) (planned) — NOT registered. The `"ml"` literal will be added to `transactions_categorize_run(methods=...)` when ML categorization implementation lands.
-
-Run ML categorization at a given confidence threshold.
-
-- **Sensitivity:** `low`
-- **Unique parameters:** `min_confidence: float = 0.9` — only apply predictions above this threshold. `dry_run: bool = false`.
-- **Behavior:** Applies ML predictions to uncategorized transactions above the confidence threshold. Returns `{applied, below_threshold, already_categorized}`. With `dry_run`, returns predictions without applying.
-- **Service:** `CategorizationService.ml_apply() -> MLApplyResult`
-- **CLI:** `moneybin transactions categorize ml apply [--min-confidence 0.9] [--dry-run]`
-- **Dependency:** [Categorization overview](categorization-overview.md) (Pillar D: ML categorization).
+> ML-based categorization is deferred; see `categorization-ml.md` (planned) when work resumes.
 
 ---
 
@@ -1067,30 +1023,10 @@ Remove a budget for a category.
 
 ## 10. `tax.*` — Tax information
 
-**Service class:** `TaxService`
-
-**Status:** implemented but de-registered pending tax spec — `tax_w2` carries `@mcp_tool` decoration in `src/moneybin/mcp/tools/tax.py`, but `register_tax_tools` is not called from `register_core_tools()` in `src/moneybin/mcp/server.py`. `tax_deductions` is not implemented. Both surface when a tax spec lands and reaches `in-progress`. See §17c dependency tracker.
-
-### `tax_w2`
-
-W-2 tax form data for one or all years.
-
-- **Sensitivity:** `high` — contains SSN-adjacent data (EIN, wages, withholdings).
-- **Unique parameters:** `tax_year: int?` (omit for all years).
-- **Behavior:** Returns array of `{tax_year, employer_name, employer_ein, wages, federal_income_tax, social_security_wages, social_security_tax, medicare_wages, medicare_tax, state_local_info}`. EIN is masked for cloud backends. Degraded response returns year and employer name only with total wages as an aggregate.
-- **Service:** `TaxService.w2() -> list[W2Summary]`
-- **CLI:** `moneybin tax w2 [--year 2025]`
-
-### `tax_deductions`
-
-Search transactions for potentially deductible expenses.
-
-- **Sensitivity:** `medium` — row-level transaction data.
-- **Unique parameters:** `tax_year: int` (required), `categories: list[str]?` (filter to specific categories, e.g., `["Charitable Donations", "Medical"]`).
-- **Behavior:** Returns transactions in deduction-relevant categories for the tax year, with category totals. Includes a disclaimer that this is informational, not tax advice. Degraded response returns category totals only.
-- **Service:** `TaxService.deductions() -> DeductionSearchResult`
-- **CLI:** `moneybin tax deductions --year 2025 [--categories "Charitable Donations,Medical"]`
-- **Note:** v1 filters by category name pattern. Future enhancement: deduction-relevant category flags.
+**Status:** removed. `tax_w2` and the W-2 PDF extraction pipeline were cut entirely
+(W-2 extractor, loader, `raw.w2_forms` schema, `TaxService`, CLI `tax` command group
+all deleted). The `docs/specs/archived/w2-extraction.md` spec documents the removed
+design. Tax data ingestion will be re-designed from scratch in a future brainstorm.
 
 ---
 
@@ -1168,6 +1104,19 @@ Pipeline integrity check — confirms the data pipeline is self-consistent befor
 - **Service:** `DoctorService.run_all(verbose=False) -> DoctorReport`
 - **CLI:** `moneybin system doctor [--verbose] [--output json]`
 
+### `extension_validate`
+
+**Status:** planned. Backing spec [`extension-contracts.md`](extension-contracts.md) is `draft` — the tool is documented here for design alignment but NOT registered on the MCP surface until the spec reaches `in-progress` and the validator lands. See §17c dependency tracker.
+
+Validate an extension manifest (Analysis Package or standalone Report) against the framework's registration rules. Operator-territory: invoked by contributor skills, CI, and humans before opening a PR — not by user-facing agents in normal workflows.
+
+- **Sensitivity:** `low` — inputs are extension manifest paths, not financial data; outputs are validation findings (rule IDs, file paths, severity).
+- **Annotations:** `read_only=True`, `destructive=False`, `idempotent=True`, `open_world=False`.
+- **Unique parameters:** `path: str` (required) — filesystem path to a package directory (containing `moneybin_package.yaml`) or to a standalone-report manifest file.
+- **Behavior:** Runs the checks defined in [`extension-contracts.md`](extension-contracts.md) §"The extension validator": manifest schema validity, capability-vs-SQL match (every `CREATE TABLE`/`VIEW` covered by `capabilities.writes`), prefix discipline (tables, tools, CLI commands, schema files all start with `owns_prefix`), Quality Scale claim matches evidence, SQL compiles against the current canonical schema, no prefix collisions with already-registered extensions, and the package's own test suite passes. Returns the standard `ResponseEnvelope` so invoking agents can react programmatically; per-check results land in `data[]` as `{rule_id, severity, message, file?, line?}`.
+- **Service:** `ExtensionValidatorService.validate(path) -> ValidationReport` (planned).
+- **CLI:** `moneybin extension validate PATH` (per CLI↔MCP parity).
+
 > Note: a unified `reports_health` snapshot tool is **planned, not registered**. Today the agent composes the same view from `reports_networth` + `reports_spending` + `reports_cashflow` + `reports_budget`. Re-evaluate as a dedicated tool when agent-experience reports show the composition friction outweighs the surface cost.
 
 ### `reports_recurring`
@@ -1190,12 +1139,7 @@ Top merchants by lifetime activity.
 
 ### `reports_uncategorized`
 
-Uncategorized transactions queue, ranked by curator-impact.
-
-- **Sensitivity:** `medium` — row-level transactions.
-- **Unique parameters:** `min_amount: float = 0.0` (filter to `ABS(amount) >= min_amount`), `account: str | None = None` (filter by account name), `limit: int = 50`.
-- **Behavior:** Returns uncategorized rows from `reports.uncategorized_queue`. Amounts use the accounting convention: negative = expense, positive = income.
-- **CLI:** `moneybin reports uncategorized [--min-amount N] [--account NAME] [--limit N]`
+**Retired.** Folded into `transactions_categorize_pending` with the addition of `sort` (`"date"` or `"impact"`) and `account` filter parameters. The CLI command `moneybin reports uncategorized` has been removed; use `moneybin transactions categorize pending [--sort impact] [--min-amount N] [--account NAME]` instead.
 
 ### `reports_large_transactions`
 
@@ -1208,11 +1152,11 @@ Anomaly-flavored transaction lens — top-N by absolute amount, with optional pe
 
 ### `reports_balance_drift`
 
-Account-level reconciliation drift: difference between asserted balances and computed running totals.
+Categorical view of balance assertions by drift status.
 
 - **Sensitivity:** `medium` — balance amounts.
 - **Unique parameters:** `account: str | None = None` (filter by account name), `status: str = "all"` (`drift` | `warning` | `clean` | `no-data` | `all`), `since: str | None = None` (ISO date; only assertions on or after).
-- **Behavior:** Returns per-account drift rows from `reports.balance_drift`. Drift in `summary.display_currency`.
+- **Behavior:** Returns one row per assertion with computed drift from `reports.balance_drift`. Use when you want a status breakdown across all assertions. Amounts use the accounting convention: negative = expense, positive = income. Drift in `summary.display_currency`.
 - **CLI:** `moneybin reports balance-drift [--account NAME] [--status STATUS] [--since YYYY-MM-DD]`
 
 ### `refresh_run`
@@ -1223,7 +1167,7 @@ Run the post-load refresh pipeline: cross-source matching, SQLMesh apply, determ
 - **Unique parameters:**
   - `steps: list[Literal["match", "transform", "categorize"]] | None = None` — subset of canonical steps to run; defaults to None (full cascade). Steps execute in canonical order (match → transform → categorize) regardless of input order; dependencies enforce it (categorize reads SQLMesh-built views). Pass `steps=["transform"]` to run SQLMesh apply alone.
 - **Mutation surface:** rebuilds `core.*` and `reports.*` via SQLMesh; writes `app.transaction_categories` for newly-matched rules. No revert path — re-run after fixing inputs.
-- **Behavior:** Single user-facing entry point for the refresh domain. Idempotent; safe to retry after a failure. Matching and categorization steps are best-effort and log-only on failure — only SQLMesh apply errors surface in the response envelope. Returns `{applied, duration_seconds, error?}`. On apply failure, `actions[]` hints at `transform_plan` (per `mcp-server.md` infrastructure-verb carve-out) to inspect, or `refresh_run` to retry. When `steps` includes `match` but excludes `categorize`, `actions[]` includes a follow-up hint pointing at `refresh_run(steps=["categorize"])`. Unknown step names raise `UserError(code="UNKNOWN_REFRESH_STEP")`. Symmetric with `transactions_categorize_run(methods=...)`.
+- **Behavior:** Single user-facing entry point for the refresh domain. Idempotent; safe to retry after a failure. Matching and categorization steps are best-effort and log-only on failure — only SQLMesh apply errors surface in the response envelope. Returns `{applied, duration_seconds, error?}`. On apply failure, `actions[]` hints at `moneybin transform plan` (CLI operator tool) to inspect, or `refresh_run` to retry. When `steps` includes `match` but excludes `categorize`, `actions[]` includes a follow-up hint pointing at `refresh_run(steps=["categorize"])`. Unknown step names raise `UserError(code="UNKNOWN_REFRESH_STEP")`. Symmetric with `transactions_categorize_run(methods=...)`.
 - **Service:** `moneybin.services.refresh.refresh(db, *, steps=None) -> RefreshResult`
 - **CLI:** `moneybin refresh [--step STEP]... [--output json] [-q]`
 
@@ -1298,7 +1242,7 @@ Four goal-oriented workflow templates. Each defines the goal, relevant tools, gu
 - Present proposed categorizations to the user for confirmation before applying
 - After applying, propose merchant mappings and rules for patterns that appeared multiple times
 - Track progress: "X of Y categorized, Z remaining"
-- If `transactions_categorize_ml_status` shows a trained model, use `suggest=true` to leverage ML suggestions
+- ML-assisted suggestions (`suggest=true`) are deferred pending ML categorization implementation
 - Stop when the user says stop, not when the queue is empty
 
 **Decision points:** User confirms each batch of categorizations before `transactions_categorize_commit` is called. User confirms proposed rules before `transactions_categorize_rules_create` is called.
@@ -1320,77 +1264,20 @@ Four goal-oriented workflow templates. Each defines the goal, relevant tools, gu
 
 **Decision points:** User provides file paths. User confirms column mappings. User decides whether to proceed to categorization.
 
-### `tax-prep` (Review)
+### `tax-prep` (Removed)
 
-**Goal:** Gather tax-relevant financial information for a tax year — W-2 data, deductible expenses, income summary.
-
-**Parameters:** `tax_year: str` (defaults to prior year).
-
-**Relevant tools:** `tax_w2`, `tax_deductions`, `reports_spending` (with category filters), `reports_cashflow`, `transactions_get`
-
-**Guardrails:**
-
-- Always include the disclaimer: informational summary, not tax advice, consult a tax professional
-- Start with W-2 data if available — wages, withholdings, employer info
-- Summarize income sources beyond W-2 (interest, dividends, side income) if visible in transactions
-- Search for potentially deductible expenses by category (charitable, medical, business)
-- If multiple W-2s exist, show both individual and combined totals
-- Highlight data gaps: "No W-2 data found for 2025" or "Medical expenses may be incomplete if not all accounts are imported"
-- Do not attempt to calculate tax liability or suggest filing strategies
-
-**Decision points:** None — read-only analysis. User decides what to share with their tax professional.
+**Status:** removed alongside the W-2 extraction pipeline. Tax data ingestion will be
+re-designed from scratch; this prompt will be revisited when a new tax spec lands.
 
 ---
 
 ## 15. Resources
 
-Four ambient context endpoints loaded when the AI connects. Resources provide background context the AI needs to make informed first tool calls. They are read-only, compact, and change infrequently.
-
-### `moneybin://status`
-
-Data freshness dashboard. Contains: row counts per source, date ranges, last import timestamp, categorization coverage percentage, pending match count. Lets the AI know what data exists without a tool call.
-
-### `moneybin://accounts`
-
-Account list with types, institutions, and currencies. Lets the AI reference accounts by name and filter by type without calling `accounts` first. Excludes balances and account numbers.
-
-### `moneybin://privacy`
-
-Active consent grants, configured AI backend (name, type, is_local), consent mode. Lets the AI know what sensitivity tiers are available before hitting a consent wall. Ships with static defaults (no grants, no backend configured) until consent infrastructure lands.
+One ambient context endpoint: `moneybin://schema`. The seven resources removed in PR #185 (`moneybin://status`, `moneybin://accounts`, `moneybin://privacy`, `moneybin://tools`, `accounts://summary`, `moneybin://recent-curation`, `net-worth://summary`) were duplicates of tool responses and added context-window overhead without information gain. Their data remains available via the corresponding tools.
 
 ### `moneybin://schema`
 
-Core and app table schemas with column names, types, and descriptions. Lets the AI write accurate SQL for `sql_query` without calling a discovery tool first.
-
-### `accounts://summary`
-
-Cross-account summary: list of accounts with display name, type, institution, currency, include_in_net_worth flag, archived status, and last known balance. Mirrors the `accounts_summary` tool response — available as ambient context so the AI can reference accounts without an extra tool call.
-
-### `net-worth://summary`
-
-Current net worth snapshot: total net worth, assets vs liabilities breakdown, and per-account balance contributions. Refreshed on each connection. Lets the AI answer "what's my net worth?" from ambient context without calling `reports_networth`.
-
-### `moneybin://tools`
-
-Flat catalog of registered tool namespaces with one-line descriptions. All namespaces are visible at connect (see `mcp-architecture.md` §3 "Tool disclosure: full surface, taxonomy-led") — this resource is a cheaper-than-tool-listing way for the agent to scan the domain map without paying the schema-cost of every tool. Example (illustrative; current counts vary):
-
-```json
-{
-  "namespaces": [
-    {"namespace": "system", "tools": 2, "description": "Data status, pipeline integrity"},
-    {"namespace": "reports", "tools": 10, "description": "Spending, cashflow, budget, net worth, recurring, merchants"},
-    {"namespace": "accounts", "tools": 11, "description": "Listing, balances, balance assertions, settings, net worth"},
-    {"namespace": "transactions", "tools": 12, "description": "Search, curation (notes/tags/splits), review, categorize workflow"},
-    {"namespace": "categories", "tools": 4, "description": "Taxonomy reference data"},
-    {"namespace": "merchants", "tools": 2, "description": "Merchant mapping reference data"},
-    {"namespace": "import", "tools": 7, "description": "File import, inbox sweep, preview, revert, formats"},
-    {"namespace": "sync", "tools": 5, "description": "Plaid connect, pull, status"},
-    {"namespace": "sql", "tools": 2, "description": "Power-user escape hatch + schema"}
-  ]
-}
-```
-
-Static for a given server build — namespace and tool counts reflect what is registered (bounded by the surface-discipline rule in `.claude/rules/mcp-server.md`). The `core`/`extended`/`loaded`/`discover_tool` shape from the earlier progressive-disclosure design is retired. Two classes of namespaces are absent from this catalog: (1) phantoms — `privacy.*`, `transactions_matches.*`, `budget.*`, `tax.*`, and any other prefix with no registered tools today — they re-enter when their first tool registers under a backing spec that is `in-progress` or `implemented`; (2) the one *promotion* carve-out — `transform_*` tools (infrastructure verbs reached via `system_status` action hints, not a user-facing domain) still register and appear in `list_tools()` but do not surface here.
+Core and app table schemas with column names, types, and descriptions. Lets the AI write accurate SQL for `sql_query` without calling a discovery tool first. This resource has unique composition value: it provides a curated schema snapshot that is more useful for SQL generation than any single tool response.
 
 ---
 
@@ -1405,9 +1292,6 @@ Per the MCP exposure principle, sync is fully MCP-exposed except for credential-
 | `sync_disconnect <institution>` | medium | Removes institution by name. No revert path. |
 | `sync_pull [institution] [force] [refresh=true]` | medium | Triggers sync for one or all institutions; loads `raw.plaid_*` and propagates through SQLMesh. Amounts follow MoneyBin convention (negative = expense). When `refresh` (default true) and the sync changes raw state, the post-load refresh pipeline (matching + SQLMesh apply + categorization) runs once at end-of-pull so `core.dim_accounts` reflects new data before returning. Result envelope adds `transforms_applied`, `transforms_duration_seconds`, `transforms_error` (SQLMesh-step outcome — matching and categorization are log-only on failure). |
 | `sync_status` | low | Read-only: connected institutions, last-sync times, guidance for error states. |
-| `sync_schedule_set --time HH:MM` | low | Stub — installs daily sync (launchd/cron). |
-| `sync_schedule_show` | low | Stub — read-only schedule details. |
-| `sync_schedule_remove` | low | Stub — uninstalls scheduled job. |
 
 **CLI-only (security-justified):** `sync_login`, `sync_logout` (browser interaction + credential handling routed through LLM context is a security-model violation); `sync_rotate_key` — passphrase material through LLM context is a security-model violation.
 
@@ -1421,14 +1305,16 @@ Per the MCP exposure principle, sync is fully MCP-exposed except for credential-
 
 ## 17. `transform_*` — SQLMesh pipeline operations
 
-Read-only pipeline introspection. The mutating refresh path is `refresh_run` (§12); `transform_apply` was retired as a standalone MCP tool in favor of `refresh_run(steps=["transform"])`. See [`smart-import-transform.md`](smart-import-transform.md).
+**CLI-only (operator territory, category 2).** The `transform_*` functions are not registered on the MCP surface as of PR #185. They remain accessible via `moneybin transform <subcommand>` for operators performing hands-on SQLMesh introspection. The mutating refresh path is `refresh_run` (§12); on apply failure, `refresh_run` emits a hint pointing at `moneybin transform plan`.
 
-| Tool | Behavior |
+`transform_apply` was retired as a standalone MCP tool in favor of `refresh_run(steps=["transform"])`. See [`smart-import-transform.md`](smart-import-transform.md).
+
+| CLI command | Behavior |
 |---|---|
-| `transform_status` | Current model state, environment |
-| `transform_plan` | Preview pending SQLMesh changes (read-only) |
-| `transform_validate` | Check model SQL parses and resolves |
-| `transform_audit` | Run data quality assertions |
+| `moneybin transform status` | Current model state, environment |
+| `moneybin transform plan` | Preview pending SQLMesh changes (read-only) |
+| `moneybin transform validate` | Check model SQL parses and resolves |
+| `moneybin transform audit` | Run data quality assertions |
 
 **CLI-only (operator-territory):** `transform_restate` — destructive force-recompute for a date range, used for bug fixes / late-data backfill / schema reinterpretation. Power-user / data-engineering territory; preceded by code changes the AI doesn't drive.
 
@@ -1452,17 +1338,31 @@ Tools that depend on unbuilt subsystems are documented in the catalog with depen
 | **Provider profiles spec** | Not written | Verified-local bypass; `privacy_status` backend info |
 | **Transaction matching (Pillars A+C)** | Draft (umbrella) | All `transactions_matches.*` tools |
 | **Transaction matching (Pillar B)** | Draft (umbrella) | `transactions_matches.*` transfer-type filtering |
-| **[Categorization overview](categorization-overview.md)** | Draft | `transactions_categorize_ml_status`, `transactions_categorize_ml_train`, `transactions_categorize_ml_apply` (blocked on `categorization-ml.md`) |
+| **[Categorization overview](categorization-overview.md)** | Draft | ML tools deferred — see `categorization-ml.md` (planned) |
 | **Smart Import (Pillar A)** | Not written | `import_folder` |
 | **Smart Import (Pillar F) + Privacy** | Not written | `import_ai_preview`, `import_ai_parse` |
 | **Corrections table schema** | Not written | `transactions_correct` |
 | **Annotations table schema** | Not written | `transactions_annotate` |
 | **Budget tracking spec** | Draft | `reports_budget_summary` rollover behavior; `budget_set` (de-registered 2026-05-17 — re-register when spec reaches `in-progress`) |
-| **Tax spec (none yet)** | Not written | `tax_w2`, `tax_deductions` (de-registered 2026-05-17 — re-register when a tax spec lands and reaches `in-progress`); `tax_prep` prompt (removed alongside) |
+| **Tax spec (none yet)** | Not written | `tax_w2`, `tax_deductions`, `tax_prep` prompt — **removed entirely** 2026-05-19; W-2 extraction pipeline cut; tax data ingestion to be re-designed from scratch when a new tax spec is written |
+| **[Extension contracts](extension-contracts.md)** | Draft | `extension_validate` (manifest + capability + prefix + Quality-Scale validator); `<pkg>_*` tools from Analysis Packages (e.g., `assets_*`, `us_tax_*` at M3E); standalone-Report auto-registered `reports_*` tools |
 
 ### Tools shippable without dependencies
 
-> **Surface status (2026-05-18):** All entries in §16 (Migration) not marked "NOT registered" or de-registered above are live and visible at connect. See the dependency tracker above for the tools that remain blocked. `budget.*` and `tax.*` tool modules remain implemented but are **de-registered** in `src/moneybin/mcp/server.py:register_core_tools()` (matching the dependency-tracker rows above) — re-register when their backing specs reach `in-progress`/`implemented`. A working implementation alone does not justify exposing the tool on the public surface.
+> **Surface status (2026-05-19):** All entries in §16 not marked "NOT registered" or de-registered are live and visible at connect. See the dependency tracker above for tools that remain blocked. `budget.*` and `transform_*` tool modules remain implemented but are **de-registered** in `src/moneybin/mcp/server.py:register_core_tools()`. `budget.*` re-registers when its backing spec reaches `in-progress`/`implemented`; `transform_*` are operator territory (category 2) and remain CLI-only (see §17). `tax.*` tools were **removed entirely** — the W-2 PDF extraction pipeline was cut; tax data ingestion will be re-designed from scratch when a new tax spec is written. A working implementation alone does not justify exposing a tool on the public surface.
+
+## 17d. Entry-points-registered tools
+
+**Status: planned, pending [`extension-contracts.md`](extension-contracts.md).** [`extension-contracts.md`](extension-contracts.md) is currently `draft`; the entry-points discovery path is documented here for design alignment but is NOT active at runtime until the spec reaches `in-progress` and the framework implementation lands (Plan 2 of the extension-contracts implementation graph). As of 2026-05-20, the tool catalog above is the complete registered surface — every tool is wired in by an explicit `register_*_tools(mcp)` call in `src/moneybin/mcp/server.py`.
+
+When the entry-points path ships: per [`mcp-architecture.md`](mcp-architecture.md) §"Tool registration paths" and [`extension-contracts.md`](extension-contracts.md), the framework will also enumerate the `moneybin.packages` setuptools entry points at startup and invoke each package's `tools.register(mcp)` hook after the explicit-call path completes.
+
+Two extension shapes will contribute tools through this second path:
+
+- **Analysis Packages** (`extension-contracts.md` §"Analysis Package contract") — `<pkg>_*`-prefixed tools registered programmatically. The M3E first-party lineup will be `assets_*` and `us_tax_*` (both shipped in the MoneyBin repo, both contributed via the entry-points path rather than explicit register-call imports — see [`asset-tracking.md`](asset-tracking.md) and §17b reservation for the assets namespace). Third-party packages installed via PyPI will register identically once they appear on the entry-point group.
+- **Standalone Reports** (`extension-contracts.md` §"Report contract") — `reports_*` tools auto-generated from structured comments on a single SQLMesh view, including the paired `TableRef` constant, `ReportsService` method, MCP tool, and CLI command. The contributor writes only the SQL with the `@name` / `@description` / `@param` / `@example` block; the framework derives the registration trinity.
+
+The §18 tool-catalog-discipline rule will apply symmetrically: a PR that adds a package- or report-contributed tool must update this spec (or its in-package equivalent) in the same change. The runtime-registered surface — explicit-register-call plus entry-points — must match what's documented.
 
 ---
 

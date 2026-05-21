@@ -75,6 +75,13 @@ not-yet-built.
 | 14| Commit externally-decided categorizations (LLM workflow's terminal step) | `transactions_categorize_commit`        | `transactions categorize commit`        | —          | live                  |
 | 15| Run the categorization engine cascade (rules + merchants)        | `transactions_categorize_run`            | `transactions categorize run`            | —          | live                  |
 | 16| Get redacted batch for LLM categorization                        | `transactions_categorize_assist`         | `transactions categorize assist`         | —          | live                  |
+| 17| Categorization coverage statistics (with optional auto-rule health) | `transactions_categorize_stats` *(`include_auto=True` for auto metrics)* | `transactions categorize stats` | — | live |
+| 18| Fetch uncategorized transactions queue (sortable by date or impact) | `transactions_categorize_pending` *(`sort`, `min_amount`, `account`)* | `transactions categorize pending` | — | live |
+| 19| Check auto-rule health metrics in isolation                      | absorbed into row 17 (`include_auto=True`) | `transactions categorize auto stats` *(CLI-only after MCP tool retired)* | — | live |
+| 20| Balance assertion drift by status category                       | `reports_balance_drift`                  | `reports balance-drift`                  | —          | live                  |
+| 21| Threshold-filtered balance mismatch by day                       | `accounts_balance_reconcile`             | `accounts balance reconcile`             | —          | live                  |
+
+| 22| Inspect SQLMesh model state (status/plan/validate/audit)        | — *(cat 2 — operator)*       | `transform status|plan|validate|audit`             | —          | live (CLI-only)       |
 
 *(Bootstrap rows only; full table populates incrementally as
 follow-up work closes the parity backlog. A prior row covering
@@ -82,7 +89,10 @@ follow-up work closes the parity backlog. A prior row covering
 when client-driven progressive disclosure was retired (see
 [`mcp-architecture.md`](mcp-architecture.md) §3); the current
 rows 12–13 are unrelated and were added 2026-05-17 with the
-rules-CLI parity work.)*
+rules-CLI parity work. Row 17 added 2026-05-19: transform_* de-registered
+from MCP (PR #185) — operator territory per mcp-server.md category 2.
+`sync_schedule_set/show/remove` stubs removed from MCP (PR #185) — were
+not-implemented placeholders with no backing spec.)*
 
 ## Exemption categories
 

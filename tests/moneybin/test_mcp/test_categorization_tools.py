@@ -23,6 +23,7 @@ from moneybin.mcp.tools.merchants import register_merchants_tools
 from moneybin.mcp.tools.transactions_categorize import (
     register_transactions_categorize_tools,
     transactions_categorize_commit,
+    transactions_categorize_pending,
     transactions_categorize_stats,
 )
 from moneybin.mcp.tools.transactions_categorize_assist import (
@@ -81,11 +82,13 @@ class TestCategorizeToolRegistration:
     @pytest.mark.unit
     async def test_register_includes_auto_rule_tools(self) -> None:
         names = await _registered_names()
+        # transactions_categorize_auto_stats was removed — its functionality
+        # is now available via transactions_categorize_stats(include_auto=True).
         assert {
             "transactions_categorize_auto_review",
             "transactions_categorize_auto_accept",
-            "transactions_categorize_auto_stats",
         } <= names
+        assert "transactions_categorize_auto_stats" not in names
 
 
 class TestCategorySetWritePath:
@@ -261,3 +264,76 @@ class TestTransactionsCategorizeCommit:
                 ["txn-123"],
             ).fetchall()
         assert rows == [("Groceries",)]
+
+
+class TestCategorizationStatsIncludeAuto:
+    """transactions_categorize_stats with include_auto=True returns both scopes."""
+
+    @pytest.mark.unit
+    async def test_categorize_stats_include_auto_returns_both_scopes(
+        self, mcp_db: object
+    ) -> None:
+        result = (await transactions_categorize_stats(include_auto=True)).to_dict()
+        assert "overall" in result["data"]
+        assert "auto" in result["data"]
+
+    @pytest.mark.unit
+    async def test_categorize_stats_default_no_auto(self, mcp_db: object) -> None:
+        result = (await transactions_categorize_stats()).to_dict()
+        # Default (include_auto=False) returns flat stats, not nested overall/auto.
+        assert "total_transactions" in result["data"]
+        assert "auto" not in result["data"]
+
+
+class TestCategorizePendingSortParam:
+    """transactions_categorize_pending sort parameter."""
+
+    @staticmethod
+    def _install_view_with_transactions() -> None:
+        with get_database() as db:
+            db.execute("CREATE SCHEMA IF NOT EXISTS reports")
+            db.execute("""
+                CREATE OR REPLACE VIEW reports.uncategorized_queue AS
+                SELECT
+                    'T1' AS transaction_id, 'ACC001' AS account_id,
+                    'Test Bank Checking' AS account_name,
+                    DATE '2026-04-01' AS txn_date,
+                    CAST(-25.00 AS DECIMAL(18,2)) AS amount,
+                    'COFFEE SHOP' AS description,
+                    CAST(NULL AS VARCHAR) AS merchant_id,
+                    'Coffee Shop' AS merchant_normalized,
+                    CAST(39 AS INTEGER) AS age_days,
+                    CAST(975.0 AS DOUBLE) AS priority_score,
+                    'ofx' AS source_type,
+                    CAST(NULL AS VARCHAR) AS source_id
+                UNION ALL SELECT
+                    'T2', 'ACC001', 'Test Bank Checking',
+                    DATE '2026-04-10', CAST(-500.00 AS DECIMAL(18,2)),
+                    'BIG EXPENSE', NULL, 'Big Expense',
+                    CAST(30 AS INTEGER), 15000.0, 'ofx', NULL
+                UNION ALL SELECT
+                    'T3', 'ACC002', 'Other Bank Savings',
+                    DATE '2026-04-15', CAST(-5.00 AS DECIMAL(18,2)),
+                    'TINY', NULL, 'Tiny',
+                    CAST(25 AS INTEGER), 125.0, 'ofx', NULL
+            """)  # noqa: S608  # test input, not executing dynamic SQL
+
+    @pytest.mark.unit
+    async def test_categorize_pending_sort_impact(self, mcp_db: object) -> None:
+        self._install_view_with_transactions()
+        result = (
+            await transactions_categorize_pending(sort="impact", limit=10)
+        ).to_dict()
+        amounts = [r["amount"] for r in result["data"]]
+        ages = [r["age_days"] for r in result["data"]]
+        impacts = [abs(float(a)) * d for a, d in zip(amounts, ages, strict=True)]
+        assert impacts == sorted(impacts, reverse=True)
+
+    @pytest.mark.unit
+    async def test_categorize_pending_sort_date_default(self, mcp_db: object) -> None:
+        self._install_view_with_transactions()
+        result = (
+            await transactions_categorize_pending(sort="date", limit=10)
+        ).to_dict()
+        dates = [r["txn_date"] for r in result["data"]]
+        assert dates == sorted(dates, reverse=True)

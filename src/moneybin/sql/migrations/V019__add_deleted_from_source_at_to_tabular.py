@@ -1,4 +1,4 @@
-"""V017: add soft-delete tracking column to raw.tabular_transactions.
+"""V019: add soft-delete tracking column to raw.tabular_transactions.
 
 Adds ``deleted_from_source_at TIMESTAMP NULL`` so live-syncing tabular
 sources (gsheet adapter) can mark rows that disappeared from the source
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 def migrate(conn: object) -> None:
     """Add raw.tabular_transactions.deleted_from_source_at. Idempotent."""
     logger.info(
-        "V017: ADD COLUMN IF NOT EXISTS raw.tabular_transactions.deleted_from_source_at"
+        "V019: ADD COLUMN IF NOT EXISTS raw.tabular_transactions.deleted_from_source_at"
     )
     conn.execute(  # type: ignore[union-attr]
         "ALTER TABLE raw.tabular_transactions "

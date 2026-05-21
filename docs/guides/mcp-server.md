@@ -156,7 +156,7 @@ Per-tool input schemas are not in this guide on purpose; the `--help`-equivalent
 
 Two failure modes hide in this table — they look identical from the outside but mean different things:
 
-- **`budget_*` and `tax_*` are unregistered.** Their service implementations exist (`budget_set`, `tax_w2`) but the `register(...)` call is not invoked until the backing specs reach `in-progress`. Calling these tool names returns an MCP protocol-level "unknown tool" error — they are 404s, not envelope errors. The CLI counterparts (`moneybin budget set`, `moneybin tax w2`) work today.
+- **`budget_*` tools are unregistered.** The `budget_set` service implementation exists but the `register(...)` call is not invoked until the backing spec reaches `in-progress`. Calling `budget_set` returns an MCP protocol-level "unknown tool" error — a 404, not an envelope error. The CLI counterpart (`moneybin budget set`) works today.
 - **`sync_schedule_*` tools register but stub.** They are visible in `list-tools` and return a normal `status: "error"` envelope with `error.code = "not_implemented"` when called. The scheduler design is pending.
 
 No invented namespaces. If a tool name does not appear in the table above, it is not registered.

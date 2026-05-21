@@ -1,7 +1,7 @@
 <!-- Last reviewed: 2026-05-17 -->
 # Data Import
 
-MoneyBin ingests financial data from files you already have (CSV, TSV, Excel, Parquet, Feather, OFX/QFX/QBO, W-2 PDFs) and from Plaid-connected banks. Every file lands in `raw.*`, flows through the SQLMesh pipeline into `core.fct_transactions` / `core.dim_accounts`, and is queryable by the CLI, MCP server, and any DuckDB client. This guide walks through the entry points by source tool and by file format, plus the housekeeping commands you'll reach for after the first import.
+MoneyBin ingests financial data from files you already have (CSV, TSV, Excel, Parquet, Feather, OFX/QFX/QBO) and from Plaid-connected banks. Every file lands in `raw.*`, flows through the SQLMesh pipeline into `core.fct_transactions` / `core.dim_accounts`, and is queryable by the CLI, MCP server, and any DuckDB client. This guide walks through the entry points by source tool and by file format, plus the housekeeping commands you'll reach for after the first import.
 
 ## Before you import
 
@@ -231,22 +231,12 @@ moneybin import preview ~/Downloads/report.xlsx --sheet Sheet2
 | Flag | Purpose |
 |------|---------|
 | `-n, --account-name` | Account name when the file is single-account and the column doesn't carry one. |
-| `-f, --format` | Force a named format (`chase_credit`, `tiller`, etc.). |
+| `-f, --format` | Force a named format (`tiller`, `mint`, etc.). |
 | `--override` | Field-to-column override, repeatable (`--override date=Posted --override amount=Amt`). |
 | `--sign` | Sign convention override. |
 | `-y, --yes` | Auto-accept the top fuzzy account match without prompting. |
 
 Full flag list (institution overrides, date format, encoding, sheet, delimiter, safety-limit toggles, format-save toggles): [CLI reference](cli-reference.md).
-
-### PDF
-
-W-2 wage statements only today. Other PDF types (account statements, brokerage 1099s, receipts) aren't supported — see the [roadmap](../roadmap.md).
-
-```bash
-moneybin import files ~/Downloads/2024_W2.pdf
-```
-
-The W-2 extractor pulls employer info, wages and compensation, federal and state withholding, Social Security and Medicare amounts, and tax year.
 
 ## Live banking sync (Plaid)
 
@@ -354,7 +344,7 @@ moneybin import status                             # per-table row counts and da
 moneybin import history                            # batch log with IDs, status, confidence
 moneybin import history --import-id abc123        # one batch in detail
 moneybin import formats list                       # built-in and user-saved formats
-moneybin import formats show chase_credit          # field mapping and signature for one format
+moneybin import formats show tiller                # field mapping and signature for one format
 moneybin import formats delete my_custom_format    # remove a user-saved format (built-ins are protected)
 ```
 
@@ -413,7 +403,7 @@ The honest gap list. See the [roadmap](../roadmap.md) for current sequencing.
 - **Automated migration from Monarch or Copilot.** No API pull; CSV-only.
 - **Broker / investment statements.** Plaid investment accounts load if exposed, but holdings, cost basis, and FIFO lot tracking land with the investments milestone.
 - **Multi-currency at import time.** Today MoneyBin treats every amount as USD. Original-currency preservation and FX gain/loss are planned.
-- **General-purpose PDF ingest.** Only W-2 PDFs are parsed today; account-statement and 1099 parsing aren't on the near-term roadmap.
+- **PDF ingest.** No PDF formats are currently supported. Account-statement, W-2, 1099, and receipt parsing aren't on the near-term roadmap.
 - **General-purpose row-level updates.** No `transactions update` command; use notes, tags, splits, categorize subcommands or revert and re-import.
 - **`--watch` mode for the inbox.** Cron or `launchd`/`systemd` is the supported pattern today.
 - **Bulk manual transaction entry.** One row at a time via `moneybin transactions create`; for batches, build a CSV and import it.

@@ -1,17 +1,16 @@
 """transform_* tools — thin wrappers over ``TransformService``.
 
-Excludes ``transform_apply`` (folded into ``refresh_run(steps=["transform"])``
-per the refresh umbrella; see ``src/moneybin/mcp/tools/refresh.py``) and
-``transform_restate`` (operator territory: destructive force-recompute,
-CLI-only).
+CLI-only (operator territory, category 2). ``transform_apply`` was folded
+into ``refresh_run(steps=["transform"])`` per the refresh umbrella; see
+``src/moneybin/mcp/tools/refresh.py``. ``transform_restate`` is destructive
+force-recompute, CLI-only. The four introspection tools (status, plan,
+validate, audit) remain CLI-accessible via the same service layer but are
+not registered on the MCP surface.
 """
 
 from __future__ import annotations
 
-from fastmcp import FastMCP
-
 from moneybin.database import get_database
-from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 
@@ -98,37 +97,4 @@ def transform_audit(start: str, end: str) -> ResponseEnvelope:
             "audits": result.audits,
         },
         sensitivity="low",
-    )
-
-
-def register_transform_tools(mcp: FastMCP) -> None:
-    """Register all transform namespace tools with the FastMCP server."""
-    register(
-        mcp,
-        transform_status,
-        "transform_status",
-        "Current SQLMesh model state, environment name, last apply timestamp, "
-        "and pending-changes flag. Call to verify whether derived tables are fresh.",
-    )
-    register(
-        mcp,
-        transform_plan,
-        "transform_plan",
-        "Preview pending SQLMesh changes (directly modified, indirectly modified, "
-        "added, removed) without applying them.",
-    )
-    register(
-        mcp,
-        transform_validate,
-        "transform_validate",
-        "Parse and resolve every model. Reports parse/resolve errors without "
-        "applying any changes.",
-    )
-    register(
-        mcp,
-        transform_audit,
-        "transform_audit",
-        "Run SQLMesh data-quality audits over [start, end] (YYYY-MM-DD). "
-        "Returns per-audit pass/fail counts. "
-        "May write SQLMesh state tables on first Context init.",
     )

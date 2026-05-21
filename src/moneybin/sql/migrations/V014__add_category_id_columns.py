@@ -1,12 +1,13 @@
 """V014: add category_id FK columns across seven tables and backfill.
 
 Phase 1 of the category-text -> category_id FK migration. Adds a nullable
-``category_id`` column (``new_category_id`` for ``rule_deactivations`` to
-preserve its ``new_`` prefix convention) to seven tables and backfills
-from existing ``(category, subcategory)`` text via JOIN against the
-unified ``core.dim_categories`` view. Unresolvable rows (orphaned text —
-the referenced category was deleted or renamed before V014 shipped) are
-left with NULL FKs and keep their text columns as display fallback.
+``category_id`` column to six tables (and ``new_category_id`` to
+``rule_deactivations`` when that table still exists — it was dropped in
+V018) and backfills from existing ``(category, subcategory)`` text via
+JOIN against the unified ``core.dim_categories`` view. Unresolvable rows
+(orphaned text — the referenced category was deleted or renamed before
+V014 shipped) are left with NULL FKs and keep their text columns as
+display fallback.
 
 Tables affected:
 - app.transaction_categories  (per-transaction category assignment)
@@ -15,10 +16,12 @@ Tables affected:
 - app.transaction_splits       (per-line category on splits)
 - app.categorization_rules     (rule target category)
 - app.proposed_rules           (proposed rule target category, pre-approval)
-- app.rule_deactivations       (audit trail: converged category at deactivation)
+- app.rule_deactivations       (only on existing installs where V018 hasn't run yet)
 
 Idempotent: ``ADD COLUMN IF NOT EXISTS`` is a no-op on replay; the
-backfill ``UPDATE`` only touches rows where the FK is still NULL.
+backfill ``UPDATE`` only touches rows where the FK is still NULL; the
+rule_deactivations entry is skipped on fresh installs where the table
+was never created (schema.py omits it after V018 was introduced).
 
 Each backfill uses IS NOT DISTINCT FROM on subcategory so NULL matches
 NULL symmetrically. Budgets has no subcategory column at all — its
@@ -82,17 +85,21 @@ _BACKFILLS: tuple[tuple[str, str, str, str], ...] = (
         "category",
         "t.subcategory IS NOT DISTINCT FROM dc.subcategory",
     ),
-    (
-        "new_category_id",
-        "app.rule_deactivations",
-        "new_category",
-        "t.new_subcategory IS NOT DISTINCT FROM dc.subcategory",
-    ),
+)
+
+# rule_deactivations was dropped in V018. Guard against running V014 on a
+# fresh install where the table was never created (schema.py omits it after
+# V018 was introduced). On existing installs the table exists until V018 runs.
+_RULE_DEACTIVATIONS_BACKFILL = (
+    "new_category_id",
+    "app.rule_deactivations",
+    "new_category",
+    "t.new_subcategory IS NOT DISTINCT FROM dc.subcategory",
 )
 
 
 def migrate(conn: object) -> None:
-    """Add FK columns to seven tables and backfill from text via dim_categories."""
+    """Add FK columns to six (or seven) tables and backfill from text via dim_categories."""
     # Database.__init__ calls refresh_views() AFTER migrations, so on the
     # auto-upgrade path core.dim_categories does not yet exist when V014 runs.
     # Inline a minimal version of the view definition here (mirrors
@@ -132,13 +139,25 @@ def migrate(conn: object) -> None:
         """
     )
 
-    for fk_col, table, _text_col, _subcategory_pred in _BACKFILLS:
+    # Check whether rule_deactivations still exists (it was dropped in V018;
+    # on fresh installs schema.py never creates it).
+    rule_deact_exists = bool(
+        conn.execute(  # type: ignore[union-attr]
+            "SELECT 1 FROM information_schema.tables "
+            "WHERE table_schema = 'app' AND table_name = 'rule_deactivations'"
+        ).fetchone()
+    )
+    active_backfills = list(_BACKFILLS)
+    if rule_deact_exists:
+        active_backfills.append(_RULE_DEACTIVATIONS_BACKFILL)
+
+    for fk_col, table, _text_col, _subcategory_pred in active_backfills:
         logger.info(f"V014: ADD COLUMN IF NOT EXISTS {table}.{fk_col}")
         conn.execute(  # type: ignore[union-attr]  # noqa: S608  # constants from _BACKFILLS, no user input
             f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {fk_col} VARCHAR"
         )
 
-    for fk_col, table, text_col, subcategory_pred in _BACKFILLS:
+    for fk_col, table, text_col, subcategory_pred in active_backfills:
         backfill_sql = f"""
             UPDATE {table} AS t
             SET {fk_col} = dc.category_id

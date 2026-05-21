@@ -1,4 +1,4 @@
-"""V018: create app.gsheet_connections.
+"""V020: create app.gsheet_connections.
 
 The central state table for the gsheet connector. One row per connected
 (Google Sheets tab, adapter) — identity, adapter choice, pinned column
@@ -174,7 +174,7 @@ _COLUMN_COMMENTS: list[tuple[str, str]] = [
 
 def migrate(conn: object) -> None:
     """Create app.gsheet_connections + apply column comments. Idempotent."""
-    logger.info("V018: CREATE TABLE IF NOT EXISTS app.gsheet_connections")
+    logger.info("V020: CREATE TABLE IF NOT EXISTS app.gsheet_connections")
     conn.execute(_CREATE_TABLE_SQL)  # type: ignore[union-attr]
 
     for column, comment in _COLUMN_COMMENTS:
@@ -188,4 +188,4 @@ def migrate(conn: object) -> None:
             f"IS '{escaped}'"
         )
 
-    logger.info("V018: app.gsheet_connections ready")
+    logger.info("V020: app.gsheet_connections ready")

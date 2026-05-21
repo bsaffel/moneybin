@@ -43,6 +43,7 @@ This spec is the inaugurating implementation of that convention. It exercises th
 - [`net-worth.md`](net-worth.md) — owner of the existing `core.agg_net_worth` model, which this spec migrates. The two `NetworthService` SQL references are updated as part of the migration (no behavior change).
 - [`transaction-curation.md`](transaction-curation.md) — sibling M2A spec that introduces `app.audit_log`, `app.transaction_tags`, etc. This spec does not depend on its tables; the doctor spec ([`moneybin-doctor.md`](moneybin-doctor.md), drafted next) will.
 - [`mcp-architecture.md`](mcp-architecture.md) — sensitivity tiers. All `reports_*` tools are **Tier 1 (Account-Level)** — they expose aggregate financial state and category breakdowns, never raw PII or full transaction descriptions.
+- [`extension-contracts.md`](extension-contracts.md) — governance layer for the Report extension type. Defines the contributor-facing surface (manifest, structured-comment format, auto-generated registration trinity, Quality Scale tiers). This spec describes WHAT the v1 in-tree `reports.*` models are; `extension-contracts.md` describes HOW any report — in-tree or contributed — registers and is validated. The eight v1 models migrate to the structured-comment shape as part of `extension-contracts.md`'s pre-launch surgical work.
 
 ### Decisions made during design (cross-references for reviewers)
 
@@ -188,7 +189,8 @@ MCP: `reports_spending`. Tier 1.
 
 | Column | Type | Comment |
 |---|---|---|
-| `merchant_normalized` | `VARCHAR` | Normalized merchant string (joinable to core.dim_merchants) |
+| `merchant_id` | `VARCHAR` | Foreign key to `core.dim_merchants.merchant_id`; NULL for the `'(uncategorized)'` bucket. Projected at the view boundary per `.claude/rules/identifiers.md` Guard 1 so downstream aggregations bucket on ID, not display text. |
+| `merchant_normalized` | `VARCHAR` | Display label: `dim_merchants.canonical_name` for resolved merchants; `'(uncategorized)'` when `merchant_id IS NULL` |
 | `avg_amount` | `DECIMAL(18,2)` | Average absolute charge amount across this cluster |
 | `cadence` | `VARCHAR` | One of: weekly, biweekly, monthly, quarterly, yearly, irregular |
 | `interval_days_avg` | `DECIMAL(8,2)` | Mean days between consecutive charges |

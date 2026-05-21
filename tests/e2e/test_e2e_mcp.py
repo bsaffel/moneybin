@@ -229,13 +229,14 @@ class TestReportsNetworthTools:
                     "reports_cashflow",
                     "reports_recurring",
                     "reports_merchants",
-                    "reports_uncategorized",
                     "reports_large_transactions",
                     "reports_balance_drift",
                 }
                 missing = expected - tool_names
                 assert not missing, f"Missing reports view-backed tools: {missing}"
 
+                # reports_uncategorized removed — use transactions_categorize_pending instead
+                assert "reports_uncategorized" not in tool_names
                 # v1 tools removed
                 assert "reports_spending_summary" not in tool_names
                 assert "reports_spending_by_category" not in tool_names
@@ -276,12 +277,15 @@ class TestCurationTools:
 
 
 class TestNamespaceResources:
-    """MCP resource registration smoke tests."""
+    """MCP resource registration smoke tests.
 
-    async def test_accounts_summary_resource_registered(
-        self, mcp_env: dict[str, str]
-    ) -> None:
-        """accounts://summary resource is registered on the server."""
+    Only moneybin://schema remains after PR #185 removed seven duplicate resources
+    (status, accounts, privacy, tools, accounts://summary, recent-curation,
+    net-worth://summary) whose data is reachable via tools.
+    """
+
+    async def test_schema_resource_registered(self, mcp_env: dict[str, str]) -> None:
+        """moneybin://schema resource is registered on the server."""
         from mcp import ClientSession
         from mcp.client.stdio import StdioServerParameters, stdio_client
 
@@ -296,44 +300,12 @@ class TestNamespaceResources:
                 await session.initialize()
                 resources_result = await session.list_resources()
                 resource_uris = {str(r.uri) for r in resources_result.resources}
-                assert "accounts://summary" in resource_uris
-
-    async def test_recent_curation_resource_registered(
-        self, mcp_env: dict[str, str]
-    ) -> None:
-        """moneybin://recent-curation resource is registered on the server."""
-        from mcp import ClientSession
-        from mcp.client.stdio import StdioServerParameters, stdio_client
-
-        server_params = StdioServerParameters(
-            command="uv",  # noqa: S607
-            args=["run", "moneybin", "mcp", "serve"],
-            env=_server_env(mcp_env),
-        )
-
-        async with stdio_client(server_params) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                resources_result = await session.list_resources()
-                resource_uris = {str(r.uri) for r in resources_result.resources}
-                assert "moneybin://recent-curation" in resource_uris
-
-    async def test_networth_summary_resource_registered(
-        self, mcp_env: dict[str, str]
-    ) -> None:
-        """net-worth://summary resource is registered on the server."""
-        from mcp import ClientSession
-        from mcp.client.stdio import StdioServerParameters, stdio_client
-
-        server_params = StdioServerParameters(
-            command="uv",  # noqa: S607
-            args=["run", "moneybin", "mcp", "serve"],
-            env=_server_env(mcp_env),
-        )
-
-        async with stdio_client(server_params) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                resources_result = await session.list_resources()
-                resource_uris = {str(r.uri) for r in resources_result.resources}
-                assert "net-worth://summary" in resource_uris
+                assert "moneybin://schema" in resource_uris
+                # Removed resources must not appear.
+                assert "accounts://summary" not in resource_uris
+                assert "moneybin://recent-curation" not in resource_uris
+                assert "net-worth://summary" not in resource_uris
+                assert "moneybin://status" not in resource_uris
+                assert "moneybin://accounts" not in resource_uris
+                assert "moneybin://privacy" not in resource_uris
+                assert "moneybin://tools" not in resource_uris

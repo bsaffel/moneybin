@@ -1,172 +1,138 @@
-"""V019: create raw.gsheet_seeds.
+"""V019: add deleted_from_source_at to raw.tabular_transactions.
 
-Phase-2 schema work for connect-gsheet. This migration creates the
-row-level storage table for the seed (catch-all) adapter — one row per
-(connection_id, row_hash), with the JSON ``data`` column capturing the
-source row verbatim and per-connection views projecting JSON paths into
-typed columns.
+Pure additive ADD COLUMN with no DEFAULT — fixture seeds three realistic
+rows so a hypothetical backfill bug would surface, but the migration is
+expected to leave them NULL (currently-present-in-source semantic).
 
-The schema file (``raw_gsheet_seeds.sql``) is registered in
-``init_schemas`` so fresh databases get the table at open time; the V019
-migration is the backstop for pre-existing databases being upgraded.
-Both paths produce the same shape — ``CREATE TABLE IF NOT EXISTS`` keeps
-the migration idempotent.
-
-Pure additive DDL (new table) — fixtures are not required by
-``.claude/rules/database.md``, but PK/round-trip tests still need to
-insert representative rows to verify the schema actually enforces
-identity and accepts the expected types.
+Populated-fixture pattern per ``.claude/rules/database.md``: even pure
+additive DDL is tested against ≥3 rows so the assertion "existing rows
+are unchanged" has real data behind it.
 """
 
 from __future__ import annotations
 
-import duckdb
+from decimal import Decimal
+
 import pytest
 
 from moneybin.database import Database
-from moneybin.sql.migrations.V019__create_raw_gsheet_seeds import migrate
+from moneybin.sql.migrations.V019__add_deleted_from_source_at_to_tabular import (
+    migrate,
+)
 from tests.moneybin.migration_helpers import column_exists, run_migration
 
-_ALL_COLUMNS: tuple[str, ...] = (
-    "connection_id",
-    "spreadsheet_id",
-    "sheet_gid",
-    "row_number",
-    "row_hash",
-    "data",
-    "deleted_from_source_at",
-    "import_id",
-    "loaded_at",
-)
-
-
-def _insert_seed(
-    db: Database,
-    *,
-    connection_id: str,
-    row_hash: str,
-    spreadsheet_id: str = "1AbCDefGhIjKlMnOpQrStUvWxYz0123456789ABCDE",
-    sheet_gid: int = 0,
-    row_number: int = 1,
-    data: str = '{"Name":"Netflix","Amount":"15.99"}',
-    import_id: str = "imp-0001",
-) -> None:
-    """Insert a seed row with minimal required fields populated."""
-    db.execute(
-        "INSERT INTO raw.gsheet_seeds "
-        "(connection_id, spreadsheet_id, sheet_gid, row_number, row_hash, "
-        " data, import_id) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-        [
-            connection_id,
-            spreadsheet_id,
-            sheet_gid,
-            row_number,
-            row_hash,
-            data,
-            import_id,
-        ],
-    )
+CSV_TXN_ID = "csv_aaaa11112222bbbb"
+TSV_TXN_ID = "tsv_cccc33334444dddd"
+EXCEL_TXN_ID = "xls_eeee55556666ffff"
 
 
 @pytest.fixture()
-def v019_db(db: Database) -> Database:
-    """Database with V019 applied (idempotent on top of init_schemas)."""
-    run_migration(db, migrate)
+def v017_db(db: Database) -> Database:
+    """Three realistic raw.tabular_transactions rows from different sources."""
+    rows = [
+        (
+            CSV_TXN_ID,
+            "acct-chase-001",
+            "2025-11-01",
+            Decimal("-42.50"),
+            "STARBUCKS #1234",
+            "/imports/chase.csv",
+            "csv",
+            "chase_credit",
+            "imp-001",
+        ),
+        (
+            TSV_TXN_ID,
+            "acct-amex-002",
+            "2025-11-05",
+            Decimal("-128.00"),
+            "AMAZON.COM",
+            "/imports/amex.tsv",
+            "tsv",
+            "amex_blue",
+            "imp-002",
+        ),
+        (
+            EXCEL_TXN_ID,
+            "acct-fido-003",
+            "2025-11-10",
+            Decimal("2500.00"),
+            "PAYROLL DEPOSIT",
+            "/imports/fidelity.xlsx",
+            "excel",
+            "fidelity_brokerage",
+            "imp-003",
+        ),
+    ]
+    for txn_id, acct, date, amount, desc, src_file, src_type, src_origin, imp in rows:
+        db.execute(
+            """
+            INSERT INTO raw.tabular_transactions
+                (transaction_id, account_id, transaction_date, amount,
+                 description, source_file, source_type, source_origin, import_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [txn_id, acct, date, amount, desc, src_file, src_type, src_origin, imp],
+        )
     return db
 
 
-class TestV019CreateRawGsheetSeeds:
-    """V019 creates raw.gsheet_seeds — table, columns, primary key."""
+class TestV019AddDeletedFromSourceAt:
+    """V019 adds deleted_from_source_at to raw.tabular_transactions."""
 
-    def test_table_exists_after_migration(self, v019_db: Database) -> None:
-        row = v019_db.execute(
-            "SELECT 1 FROM duckdb_tables() "
-            "WHERE schema_name = 'raw' AND table_name = 'gsheet_seeds'"
-        ).fetchone()
-        assert row is not None
-
-    def test_all_columns_present(self, v019_db: Database) -> None:
-        for col in _ALL_COLUMNS:
-            assert column_exists(v019_db, "raw", "gsheet_seeds", col), (
-                f"missing column: {col}"
-            )
-        # Sanity check: count matches the spec exactly (no extras, no drops).
-        count_row = v019_db.execute(
-            "SELECT COUNT(*) FROM duckdb_columns() "
-            "WHERE schema_name = 'raw' AND table_name = 'gsheet_seeds'"
-        ).fetchone()
-        assert count_row is not None
-        assert count_row[0] == len(_ALL_COLUMNS)
-
-    def test_primary_key_is_connection_id_row_hash(self, v019_db: Database) -> None:
-        row = v019_db.execute(
-            "SELECT constraint_column_names FROM duckdb_constraints() "
-            "WHERE schema_name = 'raw' AND table_name = 'gsheet_seeds' "
-            "AND constraint_type = 'PRIMARY KEY'"
-        ).fetchone()
-        assert row is not None
-        (pk_cols,) = row
-        assert list(pk_cols) == ["connection_id", "row_hash"]
-
-    def test_pk_violation_on_duplicate_connection_id_row_hash(
-        self, v019_db: Database
-    ) -> None:
-        _insert_seed(v019_db, connection_id="conn-a", row_hash="hash-1")
-        with pytest.raises(duckdb.ConstraintException):
-            _insert_seed(v019_db, connection_id="conn-a", row_hash="hash-1")
-
-    def test_pk_allows_same_row_hash_across_connections(
-        self, v019_db: Database
-    ) -> None:
-        """Same row_hash under different connection_id is allowed by the composite PK."""
-        _insert_seed(v019_db, connection_id="conn-1", row_hash="hash-shared")
-        _insert_seed(v019_db, connection_id="conn-2", row_hash="hash-shared")
-        count_row = v019_db.execute(
-            "SELECT COUNT(*) FROM raw.gsheet_seeds WHERE row_hash = ?",
-            ["hash-shared"],
-        ).fetchone()
-        assert count_row is not None
-        assert count_row[0] == 2
-
-    def test_data_column_accepts_json(self, v019_db: Database) -> None:
-        _insert_seed(
-            v019_db,
-            connection_id="conn-json",
-            row_hash="hash-json",
-            data='{"col":"val"}',
+    def test_column_exists_after_migration(self, v017_db: Database) -> None:
+        run_migration(v017_db, migrate)
+        assert column_exists(
+            v017_db, "raw", "tabular_transactions", "deleted_from_source_at"
         )
-        row = v019_db.execute(
-            "SELECT data FROM raw.gsheet_seeds WHERE connection_id = ?",
-            ["conn-json"],
+
+    def test_column_is_nullable_timestamp(self, v017_db: Database) -> None:
+        run_migration(v017_db, migrate)
+        row = v017_db.execute(
+            "SELECT data_type, is_nullable FROM duckdb_columns() "
+            "WHERE schema_name = 'raw' "
+            "AND table_name = 'tabular_transactions' "
+            "AND column_name = 'deleted_from_source_at'"
         ).fetchone()
         assert row is not None
-        # DuckDB JSON round-trips as a string; canonical form preserves the content.
-        assert row[0] == '{"col":"val"}'
+        data_type, is_nullable = row
+        assert data_type == "TIMESTAMP"
+        assert bool(is_nullable) is True
 
-    def test_deleted_from_source_at_nullable(self, v019_db: Database) -> None:
-        _insert_seed(v019_db, connection_id="conn-null", row_hash="hash-null")
-        row = v019_db.execute(
-            "SELECT deleted_from_source_at FROM raw.gsheet_seeds "
-            "WHERE connection_id = ?",
-            ["conn-null"],
-        ).fetchone()
-        assert row is not None
-        assert row[0] is None
+    def test_existing_rows_get_null(self, v017_db: Database) -> None:
+        """Pre-existing rows stay NULL — semantic = 'present in source'."""
+        run_migration(v017_db, migrate)
+        rows = v017_db.execute(
+            "SELECT deleted_from_source_at FROM raw.tabular_transactions "
+            "ORDER BY transaction_id"
+        ).fetchall()
+        assert len(rows) == 3
+        assert all(r[0] is None for r in rows)
 
-    def test_loaded_at_default_current_timestamp(self, v019_db: Database) -> None:
-        _insert_seed(v019_db, connection_id="conn-ts", row_hash="hash-ts")
-        row = v019_db.execute(
-            "SELECT loaded_at FROM raw.gsheet_seeds WHERE connection_id = ?",
-            ["conn-ts"],
+    def test_column_accepts_timestamp_writes(self, v017_db: Database) -> None:
+        """Writers can stamp the column on the soft-delete diff path."""
+        run_migration(v017_db, migrate)
+        v017_db.execute(
+            "UPDATE raw.tabular_transactions "
+            "SET deleted_from_source_at = TIMESTAMP '2025-11-20 12:00:00' "
+            "WHERE transaction_id = ?",
+            [CSV_TXN_ID],
+        )
+        row = v017_db.execute(
+            "SELECT deleted_from_source_at FROM raw.tabular_transactions "
+            "WHERE transaction_id = ?",
+            [CSV_TXN_ID],
         ).fetchone()
         assert row is not None
         assert row[0] is not None
 
-    def test_idempotent(self, v019_db: Database) -> None:
+    def test_idempotent(self, v017_db: Database) -> None:
         """Re-running the migration on an already-migrated DB is harmless."""
-        run_migration(v019_db, migrate)
-        assert column_exists(v019_db, "raw", "gsheet_seeds", "connection_id")
+        run_migration(v017_db, migrate)
+        run_migration(v017_db, migrate)
+        assert column_exists(
+            v017_db, "raw", "tabular_transactions", "deleted_from_source_at"
+        )
 
 
 if __name__ == "__main__":

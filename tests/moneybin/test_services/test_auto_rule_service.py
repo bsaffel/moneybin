@@ -6,6 +6,7 @@ invariants — silencing ``reportPrivateUsage`` for this file is deliberate.
 
 # pyright: reportPrivateUsage=false
 
+import json
 from collections.abc import Generator
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -245,59 +246,6 @@ def test_approve_immediately_categorizes_existing_uncategorized(
     assert cat == ("Food & Drink", "auto_rule")
 
 
-def test_override_threshold_deactivates_rule_and_creates_new_proposal(
-    real_db: Database, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """When user overrides reach the threshold, deactivate the rule and propose the new category."""
-    monkeypatch.setenv("MONEYBIN_CATEGORIZATION__AUTO_RULE_OVERRIDE_THRESHOLD", "2")
-    clear_settings_cache()
-    # set_current_profile mutates module-level globals that monkeypatch.setenv
-    # cannot revert. Snapshot and restore via setattr so tests after this one
-    # don't pick up the "test" profile.
-    monkeypatch.setattr(config_module, "_current_profile", None)
-    monkeypatch.setattr(config_module, "_current_settings", None)
-    set_current_profile("test")
-
-    # Approve an auto-rule for STARBUCKS -> Food & Drink
-    _seed_transaction(real_db, "t1")
-    svc = AutoRuleService(real_db)
-    pid = svc.record_categorization("t1", "Food & Drink")
-    assert pid is not None
-    svc.accept(accept=[pid])
-
-    # Two user overrides correcting STARBUCKS to Groceries
-    for tid in ("t10", "t11"):
-        real_db.execute(
-            "INSERT INTO core.fct_transactions (transaction_id, account_id, transaction_date, amount, description, source_type) "
-            "VALUES (?, 'a1', DATE '2026-01-03', -8.00, 'STARBUCKS RESERVE', 'csv')",
-            [tid],
-        )
-        real_db.execute(
-            "INSERT INTO app.transaction_categories (transaction_id, category, categorized_at, categorized_by) "
-            "VALUES (?, 'Groceries', CURRENT_TIMESTAMP, 'user')",
-            [tid],
-        )
-
-    deactivated = svc.check_overrides()
-    assert deactivated == 1
-
-    active = real_db.execute(
-        "SELECT is_active FROM app.categorization_rules WHERE created_by = 'auto_rule'"
-    ).fetchone()
-    assert active == (False,)
-
-    new_proposal = real_db.execute(
-        f"SELECT category, status FROM {PROPOSED_RULES.full_name} WHERE status = 'pending'"  # noqa: S608  # building test input string, not executing SQL
-    ).fetchone()
-    assert new_proposal == ("Groceries", "pending")
-
-    # Audit row recorded with the override count and the new converged category.
-    audit = real_db.execute(
-        "SELECT reason, override_count, new_category FROM app.rule_deactivations"
-    ).fetchone()
-    assert audit == ("override_threshold", 2, "Groceries")
-
-
 def test_check_overrides_matches_memo_when_description_is_empty(
     real_db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -511,52 +459,6 @@ class TestPromoteProposedRuleDualWrite:
         assert row == ("PromoteMe", cat_id)
 
 
-class TestRuleDeactivationDualWrite:
-    """Phase 1 dual-write: override-threshold deactivation records new_category_id."""
-
-    def test_deactivation_row_carries_new_category_id(
-        self, real_db: Database, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("MONEYBIN_CATEGORIZATION__AUTO_RULE_OVERRIDE_THRESHOLD", "2")
-        clear_settings_cache()
-        monkeypatch.setattr(config_module, "_current_profile", None)
-        monkeypatch.setattr(config_module, "_current_settings", None)
-        set_current_profile("test")
-
-        # Pre-create the converged category so we can assert on its ID.
-        groceries_id = CategorizationService(real_db).create_category("Groceries")
-
-        # Approve an auto-rule for STARBUCKS -> Food & Drink.
-        _seed_transaction(real_db, "t1")
-        svc = AutoRuleService(real_db)
-        pid = svc.record_categorization("t1", "Food & Drink")
-        assert pid is not None
-        svc.accept(accept=[pid])
-
-        # Two user overrides correcting STARBUCKS to Groceries — meets the
-        # threshold and triggers the deactivation path that writes
-        # rule_deactivations.
-        for tid in ("t10", "t11"):
-            real_db.execute(
-                "INSERT INTO core.fct_transactions (transaction_id, account_id, transaction_date, amount, description, source_type) "
-                "VALUES (?, 'a1', DATE '2026-01-03', -8.00, 'STARBUCKS RESERVE', 'csv')",
-                [tid],
-            )
-            real_db.execute(
-                "INSERT INTO app.transaction_categories (transaction_id, category, categorized_at, categorized_by) "
-                "VALUES (?, 'Groceries', CURRENT_TIMESTAMP, 'user')",
-                [tid],
-            )
-
-        assert svc.check_overrides() == 1
-
-        row = real_db.execute(
-            "SELECT new_category, new_subcategory, new_category_id "
-            "FROM app.rule_deactivations"
-        ).fetchone()
-        assert row == ("Groceries", None, groceries_id)
-
-
 class TestProposedRulesDualWrite:
     """Phase 1 dual-write: proposed_rules writers populate category_id."""
 
@@ -575,17 +477,15 @@ class TestProposedRulesDualWrite:
         ).fetchone()
         assert row == ("Food & Drink", cat_id)
 
-    def test_re_proposed_rule_on_deactivation_carries_category_id(
+    def test_deactivation_does_not_create_re_proposal(
         self, real_db: Database, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Override-threshold re-proposal stores category_id on the new row."""
+        """Override-threshold deactivation no longer creates a re-proposal row."""
         monkeypatch.setenv("MONEYBIN_CATEGORIZATION__AUTO_RULE_OVERRIDE_THRESHOLD", "2")
         clear_settings_cache()
         monkeypatch.setattr(config_module, "_current_profile", None)
         monkeypatch.setattr(config_module, "_current_settings", None)
         set_current_profile("test")
-
-        groceries_id = CategorizationService(real_db).create_category("Groceries")
 
         _seed_transaction(real_db, "t1")
         svc = AutoRuleService(real_db)
@@ -607,23 +507,16 @@ class TestProposedRulesDualWrite:
 
         assert svc.check_overrides() == 1
 
-        # The newly-created re-proposal is the row with category = Groceries.
+        # No new proposal for Groceries — re-proposal logic was removed.
         row = real_db.execute(
-            f"SELECT category, subcategory, category_id FROM {PROPOSED_RULES.full_name} "  # noqa: S608  # TableRef constant
-            "WHERE category = 'Groceries'"
+            f"SELECT COUNT(*) FROM {PROPOSED_RULES.full_name} "  # noqa: S608  # TableRef constant
+            "WHERE source = 'pattern_detection' AND status IN ('pending', 'tracking')"
         ).fetchone()
-        assert row == ("Groceries", None, groceries_id)
+        assert row is not None and row[0] == 0
 
 
 class TestSupersessionByRuleId:
-    """Proposal->rule linkage is FK-keyed via rule_id, not merchant_pattern.
-
-    When two approved proposals share a merchant_pattern (e.g. a rule
-    was approved, manually deactivated, and a new proposal with the
-    same pattern was approved later), supersession must touch only the
-    proposal tied to the deactivated rule — the rule_id binding makes
-    that an opaque-id comparison instead of a text match.
-    """
+    """Proposal->rule linkage via rule_id FK; deactivation behavior on proposals."""
 
     def test_approve_writes_rule_id_to_proposal(self, real_db: Database) -> None:
         """approve() persists the minted rule_id back to its source proposal."""
@@ -641,15 +534,13 @@ class TestSupersessionByRuleId:
         ).fetchone()
         assert row == (rule_id,)
 
-    def test_supersession_only_touches_linked_proposal_when_patterns_collide(
+    def test_deactivation_does_not_flip_proposal_status(
         self, real_db: Database, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Verify FK-keyed supersession ignores stale same-pattern proposals.
+        """Deactivation no longer supersedes the linked proposal — proposals retain their status.
 
-        When two approved proposals share a merchant_pattern, only the one
-        tied via rule_id to the deactivated rule should flip to superseded.
-        The other -- a residual approved proposal from some earlier
-        promotion -- must stay 'approved'.
+        Re-proposal / supersession was removed with the Phase 3 logic.
+        Proposals stay in their current state; only the rule is deactivated.
         """
         monkeypatch.setenv("MONEYBIN_CATEGORIZATION__AUTO_RULE_OVERRIDE_THRESHOLD", "2")
         clear_settings_cache()
@@ -657,35 +548,11 @@ class TestSupersessionByRuleId:
         monkeypatch.setattr(config_module, "_current_settings", None)
         set_current_profile("test")
 
-        # Approve an auto-rule for STARBUCKS -> Food & Drink. After this,
-        # the proposal carries rule_id = the new rule's id, set by
-        # approve(). This is the LINKED proposal.
         _seed_transaction(real_db, "t1")
         svc = AutoRuleService(real_db)
         linked_pid = svc.record_categorization("t1", "Food & Drink")
         assert linked_pid is not None
         svc.accept(accept=[linked_pid])
-
-        # Plant a STALE approved proposal sharing the same merchant_pattern
-        # but rule_id NULL (a residual proposal from some earlier promotion
-        # whose rule was later manually deleted). Before V016/Phase 2 the
-        # supersession query targeted both rows via LOWER(merchant_pattern);
-        # after Phase 2 it targets WHERE rule_id = ?, so this row should
-        # remain 'approved'.
-        stale_pid = "prop-stale01"
-        real_db.execute(
-            f"""
-            INSERT INTO {PROPOSED_RULES.full_name}
-                (proposed_rule_id, merchant_pattern, match_type, category,
-                 subcategory, status, trigger_count, source, proposed_at,
-                 decided_at, decided_by, rule_id, sample_txn_ids)
-            VALUES (?, 'STARBUCKS', 'contains', 'Food & Drink', NULL,
-                    'approved', 5, 'pattern_detection',
-                    TIMESTAMP '2025-12-01 00:00:00',
-                    TIMESTAMP '2025-12-01 00:00:00', 'user', NULL, [])
-            """,  # noqa: S608  # TableRef constant
-            [stale_pid],
-        )
 
         # Two user overrides correcting STARBUCKS to Groceries.
         for tid in ("t10", "t11"):
@@ -702,14 +569,89 @@ class TestSupersessionByRuleId:
 
         assert svc.check_overrides() == 1
 
-        # Only the LINKED proposal flips to 'superseded'; the stale one
-        # remains 'approved' because rule_id linkage is FK-keyed now.
-        statuses = dict(
+        # The linked proposal stays 'approved' — no supersede step anymore.
+        status = real_db.execute(
+            f"SELECT status FROM {PROPOSED_RULES.full_name} WHERE proposed_rule_id = ?",  # noqa: S608  # TableRef constant
+            [linked_pid],
+        ).fetchone()
+        assert status == ("approved",)
+
+
+class TestDeactivateOverriddenRules:
+    """Threshold deactivation: keeps safety property, drops re-proposal logic."""
+
+    def test_threshold_deactivates_rule_and_emits_audit_event(
+        self, real_db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Threshold path: deactivate rule, emit audit_log event with full context, do not re-propose."""
+        monkeypatch.setenv("MONEYBIN_CATEGORIZATION__AUTO_RULE_OVERRIDE_THRESHOLD", "2")
+        clear_settings_cache()
+        monkeypatch.setattr(config_module, "_current_profile", None)
+        monkeypatch.setattr(config_module, "_current_settings", None)
+        set_current_profile("test")
+
+        # Approve an auto-rule for STARBUCKS -> Food & Drink.
+        _seed_transaction(real_db, "t1")
+        svc = AutoRuleService(real_db)
+        pid = svc.record_categorization("t1", "Food & Drink")
+        assert pid is not None
+        svc.accept(accept=[pid])
+
+        # Two user overrides correcting STARBUCKS to Groceries — meets threshold.
+        for tid in ("t10", "t11"):
             real_db.execute(
-                f"SELECT proposed_rule_id, status FROM {PROPOSED_RULES.full_name} "  # noqa: S608  # TableRef constant
-                "WHERE proposed_rule_id IN (?, ?)",
-                [linked_pid, stale_pid],
-            ).fetchall()
-        )
-        assert statuses[linked_pid] == "superseded"
-        assert statuses[stale_pid] == "approved"
+                "INSERT INTO core.fct_transactions "
+                "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+                "VALUES (?, 'a1', DATE '2026-01-03', -8.00, 'STARBUCKS RESERVE', 'csv')",
+                [tid],
+            )
+            real_db.execute(
+                "INSERT INTO app.transaction_categories "
+                "(transaction_id, category, categorized_at, categorized_by) "
+                "VALUES (?, 'Groceries', CURRENT_TIMESTAMP, 'user')",
+                [tid],
+            )
+
+        deactivated = svc.check_overrides()
+        assert deactivated == 1
+
+        # Rule must be deactivated.
+        row = real_db.execute(
+            "SELECT is_active FROM app.categorization_rules WHERE created_by = 'auto_rule'"
+        ).fetchone()
+        assert row == (False,)
+
+        # No new proposal created.
+        proposal_count = real_db.execute(
+            "SELECT COUNT(*) FROM app.proposed_rules WHERE source = 'pattern_detection' "
+            "AND status IN ('pending', 'tracking')"
+        ).fetchone()
+        assert proposal_count is not None and proposal_count[0] == 0
+
+        # Audit event emitted with full payload — exactly one row, all fields.
+        audit_count = real_db.execute(
+            "SELECT COUNT(*) FROM app.audit_log WHERE action = 'rule_deactivated'"
+        ).fetchone()
+        assert audit_count is not None and audit_count[0] == 1
+
+        audit_row = real_db.execute(
+            "SELECT action, actor, target_schema, target_table, target_id, context_json "
+            "FROM app.audit_log WHERE action = 'rule_deactivated'"
+        ).fetchone()
+        assert audit_row is not None
+        action, actor, target_schema, target_table, target_id, context_raw = audit_row
+        assert action == "rule_deactivated"
+        assert actor == "auto_rule_service"
+        assert target_schema == "app"
+        assert target_table == "categorization_rules"
+        # Verify target_id is the rule_id of the deactivated rule, not just
+        # any non-null value — guards against a bug that stores the wrong
+        # entity ID in the audit row.
+        rule_id_row = real_db.execute(
+            "SELECT rule_id FROM app.categorization_rules WHERE created_by = 'auto_rule'"
+        ).fetchone()
+        assert rule_id_row is not None
+        assert target_id == rule_id_row[0]
+        context = json.loads(context_raw)
+        assert context["override_count"] == 2
+        assert len(context["sample_ids"]) == 2

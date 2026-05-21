@@ -86,8 +86,9 @@ def _check_duckdb_cli() -> str | None:
 def _create_init_script(db_path: Path) -> Path:
     """Create a temporary SQL init script for DuckDB CLI with encrypted attach.
 
-    The script loads httpfs, attaches the encrypted database, and sets USE.
-    Created with 0600 permissions. Caller is responsible for cleanup.
+    The script installs+loads httpfs, attaches the encrypted database, and
+    sets USE. Created with 0600 permissions. Caller is responsible for
+    cleanup.
 
     Args:
         db_path: Path to the encrypted DuckDB database file.
@@ -105,6 +106,10 @@ def _create_init_script(db_path: Path) -> Path:
     fd, script_path = tempfile.mkstemp(suffix=".sql", prefix="moneybin_init_")
     try:
         with os.fdopen(fd, "w") as f:
+            # DuckDB CLI 1.5.3+ no longer auto-installs httpfs on LOAD; the
+            # explicit INSTALL is required for first run on a fresh CLI cache.
+            # Subsequent runs are no-ops.
+            f.write("INSTALL httpfs;\n")
             f.write("LOAD httpfs;\n")
             f.write(f"{build_attach_sql(db_path, encryption_key)};\n")
             f.write("USE moneybin;\n")

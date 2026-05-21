@@ -1,4 +1,4 @@
-"""V018: create app.gsheet_connections.
+"""V020: create app.gsheet_connections.
 
 Phase-2 schema work for connect-gsheet. This migration creates the
 central state table that holds every gsheet connection's identity,
@@ -6,7 +6,7 @@ adapter choice, pinned column mapping, drift signature, and health
 status.
 
 The schema file (``app_gsheet_connections.sql``) is registered in
-``init_schemas`` so fresh databases get the table at open time; the V018
+``init_schemas`` so fresh databases get the table at open time; the V020
 migration is the backstop for pre-existing databases being upgraded.
 Both paths produce the same shape — ``CREATE TABLE IF NOT EXISTS`` keeps
 the migration idempotent.
@@ -23,7 +23,7 @@ import duckdb
 import pytest
 
 from moneybin.database import Database
-from moneybin.sql.migrations.V018__create_app_gsheet_connections import migrate
+from moneybin.sql.migrations.V020__create_app_gsheet_connections import migrate
 from tests.moneybin.migration_helpers import column_exists, run_migration
 
 _ALL_COLUMNS: tuple[str, ...] = (
@@ -113,13 +113,13 @@ def _insert_connection(
 
 @pytest.fixture()
 def v018_db(db: Database) -> Database:
-    """Database with V018 applied (idempotent on top of init_schemas)."""
+    """Database with V020 applied (idempotent on top of init_schemas)."""
     run_migration(db, migrate)
     return db
 
 
-class TestV018CreateAppGsheetConnections:
-    """V018 creates app.gsheet_connections — table, columns, constraints."""
+class TestV020CreateAppGsheetConnections:
+    """V020 creates app.gsheet_connections — table, columns, constraints."""
 
     def test_table_exists_after_migration(self, v018_db: Database) -> None:
         row = v018_db.execute(

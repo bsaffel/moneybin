@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping, Sequence
+from decimal import Decimal
 from typing import Literal
 
 from fastmcp import FastMCP
@@ -14,10 +15,10 @@ from moneybin.mcp._registration import register
 from moneybin.mcp.adapters.categorize_adapters import (
     auto_accept_envelope,
     auto_review_envelope,
-    auto_stats_envelope,
 )
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.services.account_service import AccountService
 from moneybin.services.auto_rule_service import AutoRuleService
 from moneybin.services.categorization import (
     CategorizationResult,
@@ -49,34 +50,85 @@ def transactions_categorize_rules() -> ResponseEnvelope:
 
 
 @mcp_tool(sensitivity="low", domain="categorize")
-def transactions_categorize_stats() -> ResponseEnvelope:
+def transactions_categorize_stats(
+    include_auto: bool = False,
+) -> ResponseEnvelope:
     """Get categorization coverage statistics.
 
     Returns total transactions, categorized count, uncategorized count,
     percentage categorized, and breakdown by categorization source
     (user, ai, rule, plaid).
+
+    Args:
+        include_auto: When True, also return auto-rule health metrics
+            (active auto-rules, pending proposals, transactions categorized
+            by auto-rules). The response ``data`` becomes
+            ``{overall: {...}, auto: {...}}`` instead of the flat overall
+            shape. Default False returns the flat overall shape.
     """
     with get_database(read_only=True) as db:
-        result = CategorizationService(db).stats()
-    return result.to_envelope()
+        overall = CategorizationService(db).stats()
+        if not include_auto:
+            return overall.to_envelope()
+        auto_data = AutoRuleService(db).stats()
+    return build_envelope(
+        data={
+            "overall": {
+                "total_transactions": overall.total,
+                "categorized": overall.categorized,
+                "uncategorized": overall.uncategorized,
+                "percent_categorized": overall.percent_categorized,
+                "by_source": overall.by_source,
+            },
+            "auto": {
+                "active_auto_rules": auto_data.active_auto_rules,
+                "pending_proposals": auto_data.pending_proposals,
+                "transactions_categorized": auto_data.transactions_categorized,
+            },
+        },
+        sensitivity="low",
+        actions=[
+            "Use transactions_categorize_pending to see uncategorized transactions",
+            "Use transactions_categorize_auto_review to review pending proposals",
+        ],
+    )
 
 
 @mcp_tool(sensitivity="medium", domain="categorize")
 def transactions_categorize_pending(
     limit: int = 50,
+    sort: Literal["date", "impact"] = "date",
+    min_amount: Decimal = Decimal("0"),
+    account: str | None = None,
 ) -> ResponseEnvelope:
     """Find transactions that have not been categorized yet.
 
-    Returns transaction details for uncategorized transactions,
-    ordered by date descending. Use this to identify transactions
+    Returns uncategorized transactions from the curator-impact view (excludes
+    transfer pairs and archived accounts). Use this to identify transactions
     that need manual or AI-assisted categorization.
+
+    Amounts use the accounting convention: negative = expense, positive = income;
+    transfers exempt. Amounts are in the currency named by
+    ``summary.display_currency``.
 
     Args:
         limit: Maximum number of results (default 50, max 1000).
+        sort: ``date`` (most recent first, default) or ``impact`` (ABS(amount)
+            * age_days — highest-value/oldest transactions first).
+        min_amount: Filter to ABS(amount) >= this value. Default 0 returns all.
+        account: Filter to a specific account; accepts ``account_id`` or
+            case-insensitive display_name. Ambiguous matches raise. Default
+            None returns all accounts.
     """
     with get_database(read_only=True) as db:
+        account_id: str | None = None
+        if account is not None:
+            account_id = AccountService(db).resolve_strict(account)
         records = CategorizationService(db).list_uncategorized_transactions(
-            limit=min(limit, 1000)
+            limit=min(limit, 1000),
+            sort=sort,
+            min_amount=min_amount,
+            account_id=account_id,
         )
     if records is None:
         return build_envelope(
@@ -224,18 +276,6 @@ def transactions_categorize_auto_accept(
     return auto_accept_envelope(result)
 
 
-@mcp_tool(sensitivity="low", domain="categorize")
-def transactions_categorize_auto_stats() -> ResponseEnvelope:
-    """Auto-rule health metrics.
-
-    Returns counts of active auto-rules, pending proposals, and
-    transactions categorized by auto-rules.
-    """
-    with get_database(read_only=True) as db:
-        data = AutoRuleService(db).stats()
-    return auto_stats_envelope(data)
-
-
 @mcp_tool(sensitivity="medium", domain="categorize", read_only=False)
 def transactions_categorize_run(
     methods: list[Literal["rules", "merchants"]] | None = None,
@@ -278,14 +318,21 @@ def register_transactions_categorize_tools(mcp: FastMCP) -> None:
         mcp,
         transactions_categorize_stats,
         "transactions_categorize_stats",
-        "Get categorization coverage statistics: total, "
-        "categorized, uncategorized, percent, and breakdown by source.",
+        "Get categorization coverage statistics: total, categorized, uncategorized, "
+        "percent, and breakdown by source. Pass include_auto=True to also include "
+        "auto-rule health metrics (active rules, pending proposals, transactions "
+        "categorized by auto-rules); the response data becomes "
+        "{overall: {...}, auto: {...}} instead of the flat shape.",
     )
     register(
         mcp,
         transactions_categorize_pending,
         "transactions_categorize_pending",
         "Find transactions that have not been categorized yet. "
+        "Excludes transfer pairs and archived accounts. "
+        "sort='impact' ranks by ABS(amount)*age_days (largest-value/oldest first); "
+        "sort='date' (default) orders by most recent first. "
+        "Filter by min_amount (absolute value) and account (account_id or display_name). "
         "Amounts use the accounting convention: negative = expense, positive = income; transfers exempt. "
         "Amounts are in the currency named by `summary.display_currency`.",
     )
@@ -329,12 +376,6 @@ def register_transactions_categorize_tools(mcp: FastMCP) -> None:
         "proposals become active rules and immediately categorize "
         "matching transactions. "
         "Writes app.categorization_rules and app.transaction_categories; revert accepted rules with transactions_categorize_rules_delete (rejected proposals cannot be un-rejected).",
-    )
-    register(
-        mcp,
-        transactions_categorize_auto_stats,
-        "transactions_categorize_auto_stats",
-        "Auto-rule health: active count, pending proposals, transactions categorized.",
     )
     register(
         mcp,
