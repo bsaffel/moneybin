@@ -61,12 +61,14 @@ class Requires(BaseModel):
 class EntryPoints(BaseModel):
     """Module paths for the framework to import at registration time."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", populate_by_name=True)
 
     tools: str  # "module.path:callable" — invoked as tools.register(mcp)
     cli: str  # "module.path:callable" — invoked as cli.register(typer_app)
     models: str  # dotted module path to the models/ directory
-    schema: str  # type: ignore[assignment]  # pydantic v2 allows shadowing schema method
+    schema_module: str = Field(
+        alias="schema"
+    )  # dotted module path to the schema/ directory
 
 
 class PackageManifest(BaseModel):
