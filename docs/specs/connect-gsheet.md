@@ -6,7 +6,7 @@ First entry in the `connect-*` family: live tabular sources connected via direct
 
 ## Status
 <!-- draft | ready | in-progress | implemented -->
-ready
+implemented
 
 ## Goal
 
@@ -162,7 +162,7 @@ gsheet inverts that model. The client speaks Google's API directly. moneybin-ser
     - `gsheet_disconnect(connection_id, purge=False)` — shape 2 delete
     - `gsheet_reconnect(connection_id)` — shape 3
     - `gsheet_pull(connection_id=None)` — shape 3
-    - `gsheet_list()` — shape 5 collection
+    - `gsheet()` — shape 5 collection
     - `gsheet_status(connection_id=None)` — shape 5 status
     - `gsheet_auth` is CLI-only (interactive browser flow).
 35. **Refresh-step parameter.** `refresh_run` accepts `"gsheet"` in `steps=[...]`. Default `steps` list includes `"gsheet"` so the magical default holds.
@@ -689,7 +689,7 @@ Re-runs the OAuth PKCE flow. CLI-only (opens browser).
 | `gsheet_pull` | 3 | user-intent | Pull the latest content from connected sheets. With no `connection_id`, pulls all healthy connections. Per-connection isolation; failures don't block others. |
 | `gsheet_disconnect` | 2 | user-intent | Disconnect a sheet. Soft by default (data retained); `purge=True` for hard delete. |
 | `gsheet_reconnect` | 3 | user-intent | Re-establish a connection's column mapping after drift was detected. |
-| `gsheet_list` | 5 | user-intent | List all connections with status. |
+| `gsheet` | 5 | user-intent | List all connections with status. |
 | `gsheet_status` | 5 | user-intent | Get full status for one or all connections, including drift detail and recovery actions. |
 
 All tools return the standard `ResponseEnvelope`. Drift responses populate `actions[]` with `gsheet_status` and `gsheet_reconnect` hints. Auth-expired responses populate `actions[]` with `moneybin gsheet auth` CLI hint (no MCP equivalent — operator-territory).

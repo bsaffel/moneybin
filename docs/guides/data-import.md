@@ -277,6 +277,19 @@ Plaid rows land in `raw.plaid_*` and flow through SQLMesh into the same `core.fc
 moneybin sync status                               # connected institutions, last sync, health
 ```
 
+## Live tabular sync (Google Sheets)
+
+Google Sheets connects via direct OAuth — no aggregator, no moneybin-server mediation — and re-pulls on every `moneybin refresh`. Use for a Tiller-style ledger sheet (full matching/categorization pipeline) or any other sheet you maintain (lands as queryable JSON + typed views).
+
+```bash
+moneybin gsheet auth                                            # one-time OAuth (browser flow)
+moneybin gsheet connect "https://docs.google.com/spreadsheets/d/.../edit#gid=0"
+moneybin gsheet pull                                            # explicit pull (also runs on refresh)
+moneybin gsheet                                                  # list connected sheets
+```
+
+See the [Google Sheets guide](connect-gsheet.md) for adapter choice, drift recovery, and the limitations of the read-only OAuth scope.
+
 ## Inbox: drain a watched folder
 
 Drop files into the inbox directory and `moneybin import inbox` drains them in one batch.
