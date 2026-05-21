@@ -8,6 +8,7 @@ to the project's typed exception hierarchy via `_map_error`.
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -18,6 +19,8 @@ from moneybin.connectors.gsheet.errors import (
     GSheetRateLimitError,
     GSheetUnreachableError,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -155,20 +158,30 @@ def _map_error(exc: Exception) -> Exception:
     failures (DNS, TCP, TLS, socket timeouts) as ``OSError`` subclasses
     via httplib2. Branch on those two; everything else falls through to
     GSheetAPIError so the caller still gets a typed surface.
+
+    Exception messages stay status-code-only or generic. ``str(exc)`` on
+    a Google ``HttpError`` includes the full request URL (with any API
+    key query param) and response body — those must not flow into the
+    typed exception text where downstream ``logger.warning(str(e))`` or
+    error-envelope construction would leak them. Full detail is logged
+    internally via ``logger.debug(..., exc_info=True)``.
     """
     from googleapiclient.errors import HttpError
 
     if isinstance(exc, HttpError):
         status: int = exc.resp.status  # type: ignore[reportUnknownMemberType]
+        logger.debug("Google Sheets HttpError mapped", exc_info=exc)
         if status == 401:
-            return GSheetAuthError(str(exc))
+            return GSheetAuthError(f"Google Sheets HTTP {status}")
         if status == 429:
-            return GSheetRateLimitError(str(exc))
+            return GSheetRateLimitError(f"Google Sheets HTTP {status}")
         if status in (403, 404):
-            return GSheetUnreachableError(str(exc))
-        return GSheetAPIError(f"Google API HTTP {status}: {exc}")
+            return GSheetUnreachableError(f"Google Sheets HTTP {status}")
+        return GSheetAPIError(f"Google Sheets HTTP {status}")
     if isinstance(exc, OSError):
         # DNS failures, refused connections, socket timeouts — all OSError
         # subclasses via httplib2 / urllib3 under google-api-python-client.
-        return GSheetUnreachableError(str(exc))
-    return GSheetAPIError(str(exc))
+        logger.debug("Google Sheets transport error mapped", exc_info=exc)
+        return GSheetUnreachableError("Network unreachable")
+    logger.debug("Google Sheets unmapped error", exc_info=exc)
+    return GSheetAPIError("Unexpected Google Sheets API error")

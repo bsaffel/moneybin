@@ -131,6 +131,7 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
             pull_results = _run_gsheet_step(db)
             if pull_results:
                 completed = [r for r in pull_results if r.status == "complete"]
+                non_complete = [r for r in pull_results if r.status != "complete"]
                 if completed:
                     total_rows = sum(
                         r.load_result.rows_inserted + r.load_result.rows_upserted
@@ -139,6 +140,23 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
                     )
                     logger.info(
                         f"GSheet pull: {len(completed)} completed, {total_rows} total rows"
+                    )
+                if non_complete:
+                    # Surface non-success statuses at WARNING so refresh_run
+                    # callers (CLI users / agents) see degraded gsheet pulls
+                    # instead of a nominally-successful refresh hiding stale
+                    # data. pull_all_healthy isolates per-connection failures
+                    # — they don't reach the outer except block.
+                    status_counts: dict[str, int] = {}
+                    for r in non_complete:
+                        status_counts[r.status] = status_counts.get(r.status, 0) + 1
+                    summary = ", ".join(
+                        f"{count} {status}"
+                        for status, count in sorted(status_counts.items())
+                    )
+                    logger.warning(
+                        f"GSheet pull: {len(non_complete)} non-complete result(s) "
+                        f"({summary}); see gsheet_status for per-connection detail"
                     )
         except Exception:  # noqa: BLE001 — best-effort; sheets may not be reachable yet
             logger.debug(

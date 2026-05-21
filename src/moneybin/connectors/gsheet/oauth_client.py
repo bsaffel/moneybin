@@ -105,7 +105,14 @@ class GoogleOAuthClient:
                 bind_addr="127.0.0.1",
             )
         except Exception as exc:  # noqa: BLE001  # google-auth raises untyped errors
-            raise GSheetAuthError(f"OAuth flow failed: {exc}") from exc
+            # str(exc) on google_auth_oauthlib errors can include OAuth
+            # state params, redirect URIs, or CSRF token fragments — keep
+            # the typed exception message generic so downstream
+            # logger.warning(str(e)) or envelope construction doesn't leak.
+            logger.exception("OAuth authorization flow failed")
+            raise GSheetAuthError(
+                "OAuth authorization failed. See application logs for detail."
+            ) from exc
 
         refresh_token = getattr(creds, "refresh_token", None)
         access_token = getattr(creds, "token", None)
@@ -189,7 +196,12 @@ class GoogleOAuthClient:
         try:
             creds.refresh(Request())  # type: ignore[reportUnknownMemberType]
         except Exception as exc:  # noqa: BLE001  # google-auth raises untyped errors
-            raise GSheetAuthError(f"Token refresh failed: {exc}") from exc
+            # Same sanitization discipline as authorize() — google-auth
+            # error text can carry token fragments / endpoint URLs.
+            logger.exception("OAuth token refresh failed")
+            raise GSheetAuthError(
+                "OAuth token refresh failed. See application logs for detail."
+            ) from exc
 
         access_token = getattr(creds, "token", None)
         expiry = getattr(creds, "expiry", None)

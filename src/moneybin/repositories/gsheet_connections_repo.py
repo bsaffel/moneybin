@@ -107,7 +107,7 @@ class GSheetConnectionsRepo:
 
     def _fetch_full_row(self, connection_id: str) -> dict[str, Any] | None:
         cols = ", ".join(_FULL_ROW_COLUMNS)
-        row = self._db.conn.execute(
+        row = self._db.execute(
             f"SELECT {cols} FROM {GSHEET_CONNECTIONS.full_name} WHERE connection_id = ?",  # noqa: S608  # TableRef + allowlisted column list
             [connection_id],
         ).fetchone()
@@ -160,7 +160,7 @@ class GSheetConnectionsRepo:
         connection_id = uuid.uuid4().hex[:12]
         self._db.begin()
         try:
-            self._db.conn.execute(
+            self._db.execute(
                 f"""
                 INSERT INTO {GSHEET_CONNECTIONS.full_name} (
                     connection_id, spreadsheet_id, sheet_gid, sheet_name,
@@ -224,7 +224,7 @@ class GSheetConnectionsRepo:
             before = self._fetch_full_row(connection_id)
             if before is None:
                 raise ValueError(f"connection_id={connection_id!r} not found")
-            self._db.conn.execute(
+            self._db.execute(
                 f"""
                 UPDATE {GSHEET_CONNECTIONS.full_name}
                    SET status = ?, last_drift_reason = ?, updated_at = NOW()
@@ -272,7 +272,7 @@ class GSheetConnectionsRepo:
             before = self._fetch_full_row(connection_id)
             if before is None:
                 raise ValueError(f"connection_id={connection_id!r} not found")
-            self._db.conn.execute(
+            self._db.execute(
                 f"""
                 UPDATE {GSHEET_CONNECTIONS.full_name}
                    SET last_pull_at = ?,
@@ -331,7 +331,7 @@ class GSheetConnectionsRepo:
             before = self._fetch_full_row(connection_id)
             if before is None:
                 raise ValueError(f"connection_id={connection_id!r} not found")
-            self._db.conn.execute(
+            self._db.execute(
                 f"""
                 UPDATE {GSHEET_CONNECTIONS.full_name}
                    SET column_mapping = ?,
@@ -402,7 +402,7 @@ class GSheetConnectionsRepo:
             before = self._fetch_full_row(connection_id)
             if before is None:
                 raise ValueError(f"connection_id={connection_id!r} not found")
-            self._db.conn.execute(
+            self._db.execute(
                 f"DELETE FROM {GSHEET_CONNECTIONS.full_name} WHERE connection_id = ?",  # noqa: S608  # TableRef + parameterized value
                 [connection_id],
             )
@@ -430,7 +430,7 @@ class GSheetConnectionsRepo:
     def list_all(self) -> list[dict[str, Any]]:
         """Return every connection row, ordered by ``created_at`` ascending."""
         cols = ", ".join(_FULL_ROW_COLUMNS)
-        rows = self._db.conn.execute(
+        rows = self._db.execute(
             f"SELECT {cols} FROM {GSHEET_CONNECTIONS.full_name} ORDER BY created_at ASC, connection_id ASC"  # noqa: S608  # TableRef + allowlisted column list
         ).fetchall()
         return [_decode_row(r) for r in rows]
@@ -438,7 +438,7 @@ class GSheetConnectionsRepo:
     def list_healthy(self) -> list[dict[str, Any]]:
         """Return only connections in ``healthy`` status."""
         cols = ", ".join(_FULL_ROW_COLUMNS)
-        rows = self._db.conn.execute(
+        rows = self._db.execute(
             # Auto-retry transient statuses on each refresh_run. auth_expired
             # / drift_detected / disconnected / failed stay sticky — those
             # need explicit operator action; retrying would either fail in

@@ -204,6 +204,50 @@ def test_map_error_generic_to_api_error() -> None:
     assert isinstance(mapped, GSheetAPIError)
 
 
+def _make_http_error_with_leaky_text(status: int) -> Exception:
+    """Build an HttpError whose str() contains a URL + API key fragment.
+
+    Real google-api-python-client errors look like:
+        <HttpError 403 when requesting https://sheets.googleapis.com/...?key=AIza... returned "...">
+    """
+    from googleapiclient.errors import HttpError
+
+    resp = MagicMock()
+    resp.status = status
+    resp.reason = "Forbidden"
+    content = (
+        b'{"error": {"code": 403, "message": '
+        b'"https://sheets.googleapis.com/v4/spreadsheets/sensitive_ID?key=AIzaSyLEAK"}}'
+    )
+    return HttpError(resp, content, uri="https://sheets.googleapis.com/sensitive_ID")
+
+
+def test_map_error_strips_http_error_text_from_typed_exception() -> None:
+    """str(GSheet*) must not carry the raw HttpError text (URL, API key, body).
+
+    The raw text reaches logs via any caller doing logger.warning(str(e)) —
+    including the MCP decorator's catch-all envelope wrapping.
+    """
+    mapped = _map_error(_make_http_error_with_leaky_text(403))
+    assert isinstance(mapped, GSheetUnreachableError)
+    message = str(mapped)
+    assert "sensitive_ID" not in message
+    assert "AIzaSyLEAK" not in message
+    assert "googleapis.com" not in message
+    # Status code is fine — that's the whole point of typed errors.
+    assert "403" in message
+
+
+def test_map_error_strips_oserror_text() -> None:
+    """OSError str() can carry filesystem-style paths or local hostnames."""
+    mapped = _map_error(
+        ConnectionRefusedError("connection to 192.168.0.42:443 refused")
+    )
+    message = str(mapped)
+    assert "192.168.0.42" not in message
+    assert "443" not in message
+
+
 def test_quote_a1_sheet_name_passes_through_safe_names() -> None:
     """Identifier-shaped names need no quoting (matches Google's own docs)."""
     assert _quote_a1_sheet_name("Sheet1") == "Sheet1"
