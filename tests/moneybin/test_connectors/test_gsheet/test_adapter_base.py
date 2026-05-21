@@ -115,6 +115,6 @@ def test_gsheet_connection_frozen():
         pass
 
 
-def test_adapters_registry_starts_empty():
-    """ADAPTERS registry is initially empty."""
-    assert ADAPTERS == {}
+def test_adapters_registry_is_a_dict():
+    """ADAPTERS registry is a dict; populated by adapter modules at import time."""
+    assert isinstance(ADAPTERS, dict)

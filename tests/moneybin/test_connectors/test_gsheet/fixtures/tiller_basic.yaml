@@ -1,0 +1,10 @@
+sheet:
+  spreadsheet_id: "1abc"
+  gid: 12345
+  workbook_name: "Tiller Foundation"
+  sheet_name: "Transactions"
+  headers: ["Date", "Description", "Category", "Amount", "Account", "Tags"]
+  rows:
+    - ["2026-01-15", "Whole Foods", "Groceries", "-87.42", "Chase Checking", ""]
+    - ["2026-01-15", "Salary", "Income", "5000.00", "Chase Checking", ""]
+account_name: "Chase Checking"
