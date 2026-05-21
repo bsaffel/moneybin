@@ -352,15 +352,16 @@ def accounts_resolve(query: str, limit: int = 5) -> ResponseEnvelope:
         limit: Maximum number of candidates to return (default 5).
 
     Returns ranked candidates with confidence scores in [0, 1]. Empty result
-    or a top-match confidence below ``TabularConfig.account_match_threshold``
-    (the shared fuzzy-match cutoff used by the tabular importer) emits an
-    action hint suggesting the agent verify with the user.
+    or a top-match confidence below
+    ``TabularProviderConfig.account_match_threshold`` (the shared fuzzy-match
+    cutoff used by the tabular importer) emits an action hint suggesting the
+    agent verify with the user.
     """
     from moneybin.config import get_settings
 
     with get_database(read_only=True) as db:
         matches = AccountService(db).resolve(query=query, limit=limit)
-    threshold = get_settings().data.tabular.account_match_threshold
+    threshold = get_settings().providers.tabular.account_match_threshold
     actions: list[str] = []
     if not matches:
         actions.append(
@@ -436,12 +437,9 @@ def register_accounts_tools(mcp: FastMCP) -> None:
         mcp,
         accounts_balance_reconcile,
         "accounts_balance_reconcile",
-        "Show daily balance rows whose precomputed reconciliation_delta "
-        "exceeds the threshold (per-account, point-in-time). Reads "
-        "fct_balances_daily. For a per-assertion-date asserted-vs-computed "
-        "series with categorical drift status (drift / warning / clean / "
-        "no-data), use reports_balance_drift instead. "
-        "Amounts are in the currency named by `summary.display_currency`.",
+        "Threshold-filtered list of days where computed balance differs from asserted by more than `threshold`. "
+        "Returns one row per (account, day) with the magnitude of the delta. Use when you want to find magnitude-level mismatches. "
+        "Amounts use the accounting convention; currency named by summary.display_currency.",
     )
     register(
         mcp,

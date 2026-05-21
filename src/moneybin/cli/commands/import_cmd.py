@@ -300,6 +300,13 @@ def import_files_command(
                         no_size_limit=no_size_limit,
                         auto_accept=yes,
                     )
+                    if result.sign_correction_suggested:
+                        typer.echo(
+                            "⚠️  Sign convention may be inverted (running balance "
+                            "suggests negation). If amounts look wrong, re-run "
+                            "with --sign to override.",
+                            err=True,
+                        )
                     files_list = [
                         {
                             "path": str(file_paths[0]),
@@ -324,6 +331,14 @@ def import_files_command(
                         force=force,
                         interactive=interactive,
                     )
+                    if any(r.sign_correction_suggested for r in batch.per_file):
+                        typer.echo(
+                            "⚠️  Sign convention may be inverted for one or "
+                            "more imports (running balance suggests negation). "
+                            "If amounts look wrong, re-run with --sign to "
+                            "override.",
+                            err=True,
+                        )
                     files_list = [
                         {
                             "path": r.path,
@@ -423,12 +438,12 @@ def import_history(
     """
     from moneybin.cli.utils import handle_cli_errors
     from moneybin.database import get_database  # noqa: PLC0415 — deferred import
-    from moneybin.loaders.tabular_loader import TabularLoader
+    from moneybin.extractors.tabular import TabularExtractor
 
     with handle_cli_errors():
         with get_database(read_only=True) as db:
-            loader = TabularLoader(db)
-            records = loader.get_import_history(limit=limit, import_id=import_id)
+            extractor = TabularExtractor(db)
+            records = extractor.get_import_history(limit=limit, import_id=import_id)
 
     if output == OutputFormat.JSON:
         emit_json("imports", records)

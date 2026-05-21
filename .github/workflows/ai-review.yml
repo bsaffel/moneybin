@@ -33,7 +33,37 @@ jobs:
             - Security issues (SQL injection, path traversal, hardcoded secrets)
             - Violations of project standards (type hints, docstrings, error handling, sign conventions)
             - Test coverage gaps for new business logic
-            Post inline comments on specific lines where relevant. Summarize findings as a PR comment.
+
+            ## Tiered findings — required prefix on every comment
+
+            Every finding (inline comment AND summary bullet) MUST start with one of three tier markers:
+
+            - 🔴 **MUST FIX** — correctness bugs, security findings, breaking changes, missing tests
+              for new code paths, violations of explicit project rules. Gates merge; cannot ship as-is.
+
+            - 🟡 **CONSIDER** — substantive quality concerns: design issues, refactoring opportunities,
+              potential bugs that aren't certain, missing edge-case handling. Author/agent decides per
+              finding: fix-in-PR (when bounded) or defer (when fixing would meaningfully expand scope).
+
+            - 🔵 **NIT** — small consistency issues: docstring formatting, list-marker inconsistency,
+              naming drift, minor style. These ARE valuable — they catch real oversights — but they
+              are the lightest tier. Auto-deferred on later review iterations once main issues are
+              addressed.
+
+            Emit every finding you'd raise. The tier signal — not suppression — is what makes the
+            review scannable. Do NOT collapse a real 🔴 into a 🟡 to be polite; do NOT promote a
+            🔵 to a 🟡 to seem important. Pick the tier that matches the actual weight.
+
+            Format example for an inline comment:
+              🔵 NIT: this docstring uses `*` bullets while the rest of the file uses `-`; please
+              align for consistency.
+
+            Format example for a summary bullet:
+              - 🔴 MUST FIX: `subprocess.run(cmd, shell=True)` on line 42 with user-controlled
+                input — shell injection risk. Pass as list and drop `shell=True`.
+
+            Post inline comments on specific lines where relevant. Summarize findings as a PR
+            comment grouped by tier (🔴 MUST FIX first, then 🟡 CONSIDER, then 🔵 NIT).
 
             After completing your review, resolve any previously-posted review threads whose
             issues are now fixed in the current code. Use the gh CLI and environment variables
@@ -65,6 +95,21 @@ jobs:
             the current code against previously-raised review threads and any
             new concerns, using project conventions in CLAUDE.md and
             .claude/rules/.
+
+            ## Tiered findings — required prefix on every comment
+
+            Any new finding you raise (inline or in summary) MUST start with one
+            of three tier markers:
+
+            - 🔴 **MUST FIX** — correctness, security, breaking changes, missing
+              tests for new code paths, violations of explicit project rules.
+            - 🟡 **CONSIDER** — substantive quality concerns: design, refactoring,
+              potential bugs, missing edge cases.
+            - 🔵 **NIT** — small consistency issues: docstring formatting, naming
+              drift, minor style.
+
+            Emit every finding you'd raise; tier is the signal. Format:
+            `<emoji> <TIER>: <one-sentence finding + suggestion>`.
 
             Resolve any previously-posted review threads whose issues are now
             fixed in the current code. Use the gh CLI and environment variables

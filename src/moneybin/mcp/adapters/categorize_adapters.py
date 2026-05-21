@@ -14,7 +14,6 @@ if TYPE_CHECKING:
     from moneybin.services.auto_rule_service import (
         AutoConfirmResult,
         AutoReviewResult,
-        AutoStatsResult,
     )
 
 
@@ -41,16 +40,4 @@ def auto_accept_envelope(result: AutoConfirmResult) -> ResponseEnvelope:
             "rule_ids": result.rule_ids,
         },
         sensitivity="medium",
-    )
-
-
-def auto_stats_envelope(result: AutoStatsResult) -> ResponseEnvelope:
-    """Build a ResponseEnvelope for the transactions_categorize_auto_stats tool."""
-    return build_envelope(
-        data={
-            "active_auto_rules": result.active_auto_rules,
-            "pending_proposals": result.pending_proposals,
-            "transactions_categorized": result.transactions_categorized,
-        },
-        sensitivity="low",
     )

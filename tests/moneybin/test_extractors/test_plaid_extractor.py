@@ -1,4 +1,4 @@
-"""Unit tests for PlaidLoader."""
+"""Unit tests for PlaidExtractor."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import yaml
 
 from moneybin.connectors.sync_models import SyncDataResponse
 from moneybin.database import Database
-from moneybin.loaders.plaid_loader import PlaidLoader
+from moneybin.extractors.plaid import PlaidExtractor
 
 FIXTURE = Path(__file__).parent / "fixtures" / "plaid_sync_response.yaml"
 
@@ -23,7 +23,7 @@ def sync_data() -> SyncDataResponse:
 
 
 def test_loader_writes_accounts(db: Database, sync_data: SyncDataResponse) -> None:
-    loader = PlaidLoader(db)
+    loader = PlaidExtractor(db)
     result = loader.load(sync_data, job_id=sync_data.metadata.job_id)
     assert result.accounts_loaded == 2
 
@@ -47,7 +47,7 @@ def test_loader_writes_accounts(db: Database, sync_data: SyncDataResponse) -> No
 def test_loader_writes_transactions_preserving_plaid_sign(
     db: Database, sync_data: SyncDataResponse
 ) -> None:
-    loader = PlaidLoader(db)
+    loader = PlaidExtractor(db)
     result = loader.load(sync_data, job_id=sync_data.metadata.job_id)
     assert result.transactions_loaded == 3
 
@@ -70,7 +70,7 @@ def test_loader_writes_transactions_preserving_plaid_sign(
 def test_loader_upserts_on_same_transaction_id_and_source_origin(
     db: Database, sync_data: SyncDataResponse
 ) -> None:
-    loader = PlaidLoader(db)
+    loader = PlaidExtractor(db)
     loader.load(sync_data, job_id=sync_data.metadata.job_id)
 
     # Re-run the same load with a different job_id (different source_file)
@@ -96,7 +96,7 @@ def test_loader_pending_to_posted_transition(
     db: Database, sync_data: SyncDataResponse
 ) -> None:
     """A pending transaction in sync 1, posted (pending=false) in sync 2 → single row, pending=false."""
-    loader = PlaidLoader(db)
+    loader = PlaidExtractor(db)
     loader.load(sync_data, job_id=sync_data.metadata.job_id)
 
     # Sync 2: same transaction_id, pending now false
@@ -116,7 +116,7 @@ def test_loader_pending_to_posted_transition(
 
 
 def test_loader_writes_balances(db: Database, sync_data: SyncDataResponse) -> None:
-    loader = PlaidLoader(db)
+    loader = PlaidExtractor(db)
     result = loader.load(sync_data, job_id=sync_data.metadata.job_id)
     assert result.balances_loaded == 2
 
@@ -131,7 +131,7 @@ def test_loader_writes_balances(db: Database, sync_data: SyncDataResponse) -> No
 
 
 def test_handle_removed_transactions(db: Database, sync_data: SyncDataResponse) -> None:
-    loader = PlaidLoader(db)
+    loader = PlaidExtractor(db)
     loader.load(sync_data, job_id=sync_data.metadata.job_id)
 
     before = db.execute(
@@ -153,5 +153,5 @@ def test_handle_removed_transactions(db: Database, sync_data: SyncDataResponse) 
 
 
 def test_handle_removed_transactions_empty_list_is_noop(db: Database) -> None:
-    loader = PlaidLoader(db)
+    loader = PlaidExtractor(db)
     assert loader.handle_removed_transactions([]) == 0

@@ -23,7 +23,7 @@ from moneybin.connectors.sync_models import (
     SyncConnectionView,
 )
 from moneybin.database import Database
-from moneybin.loaders.plaid_loader import PlaidLoader
+from moneybin.extractors.plaid import PlaidExtractor
 from moneybin.metrics.registry import (
     SYNC_CONNECT_OUTCOMES,
     SYNC_INSTITUTION_ERRORS_TOTAL,
@@ -56,9 +56,9 @@ class SyncService:
         *,
         client: SyncClient,
         db: Database,
-        loader: PlaidLoader,
+        loader: PlaidExtractor,
     ) -> None:
-        """Bind the service to a SyncClient, open Database, and PlaidLoader."""
+        """Bind the service to a SyncClient, open Database, and PlaidExtractor."""
         self.client = client
         self.db = db
         self.loader = loader

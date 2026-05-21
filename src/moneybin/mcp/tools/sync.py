@@ -43,12 +43,12 @@ def _build_sync_client() -> Any:
 def _build_sync_service() -> Generator[Any, None, None]:
     """Context manager yielding a SyncService with active Database connection."""
     from moneybin.database import get_database  # noqa: PLC0415
-    from moneybin.loaders.plaid_loader import PlaidLoader  # noqa: PLC0415
+    from moneybin.extractors.plaid import PlaidExtractor  # noqa: PLC0415
     from moneybin.services.sync_service import SyncService  # noqa: PLC0415
 
     client = _build_sync_client()
     with get_database(read_only=False) as db:
-        loader = PlaidLoader(db)
+        loader = PlaidExtractor(db)
         yield SyncService(client=client, db=db, loader=loader)
 
 

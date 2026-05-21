@@ -1,8 +1,8 @@
 # MCP Tool Surface
 
-> Last updated: 2026-05-17
+> Last updated: 2026-05-20
 > Status: in-progress
-> Companion to: [`mcp-architecture.md`](mcp-architecture.md) (design philosophy, conventions, patterns)
+> Companion to: [`mcp-architecture.md`](mcp-architecture.md) (design philosophy, conventions, patterns), [`extension-contracts.md`](extension-contracts.md) (Analysis Packages and standalone Reports register `<pkg>_*`-prefixed tools and auto-generated reports into this server via entry points)
 > Supersedes: [`archived/mcp-read-tools.md`](archived/mcp-read-tools.md), [`archived/mcp-write-tools.md`](archived/mcp-write-tools.md)
 
 ## Purpose
@@ -812,13 +812,13 @@ Confirm and execute AI-assisted parsing for a file.
 
 ### `transactions_categorize_pending`
 
-Fetch transactions that haven't been categorized yet. The read side of the categorize-then-apply workflow.
+Fetch transactions that haven't been categorized yet. Absorbs the former `reports_uncategorized` tool.
 
 - **Sensitivity:** `medium` — returns transaction descriptions and amounts.
-- **Unique parameters:** `suggest: bool = false` — when true, include AI-suggested categories based on merchant mappings and existing rules (does not apply them).
-- **Behavior:** Returns array of `{transaction_id, date, amount, description, account_id, suggested_category?, suggested_subcategory?, suggestion_source?}`. Degraded response returns uncategorized count by account and time period.
-- **Service:** `CategorizationService.uncategorized() -> TransactionSearchResult`
-- **CLI:** `moneybin transactions categorize pending [--suggest] [--limit 50]`
+- **Unique parameters:** `limit: int = 50`, `sort: Literal["date", "impact"] = "date"` (`impact` sorts by `ABS(amount) × age_days` descending), `min_amount: Decimal = Decimal("0")` (filter to `ABS(amount) >= min_amount`), `account: str | None = None` (filter by account ID or display name; ambiguous display names raise `account_ambiguous`).
+- **Behavior:** Returns array of `{transaction_id, account_id, account_name, txn_date, amount, description, merchant_id, merchant_normalized, age_days, priority_score, source_type, source_id}` from `reports.uncategorized_queue`. Amounts use the accounting convention: negative = expense, positive = income. Degraded response returns uncategorized count by account and time period.
+- **Service:** `CategorizationService.list_uncategorized_transactions(limit, sort, min_amount, account_id)`
+- **CLI:** `moneybin transactions categorize pending [--limit N] [--sort date|impact] [--min-amount N] [--account NAME]`
 
 ### `transactions_categorize_commit`
 
@@ -932,12 +932,12 @@ Hard-delete a user-created category.
 
 ### `transactions_categorize_stats`
 
-Categorization coverage statistics.
+Categorization coverage statistics; optionally includes auto-rule health metrics.
 
 - **Sensitivity:** `low` — counts and percentages only.
-- **Unique parameters:** None.
-- **Behavior:** Returns `{total_transactions, categorized, uncategorized, percent_categorized, by_source}` where `by_source` breaks down by categorization source (user, rule, ai, plaid).
-- **Service:** `CategorizationService.stats() -> CategorizationStats`
+- **Unique parameters:** `include_auto: bool = False` — when true, appends auto-rule health to the response.
+- **Behavior:** Base response: `{total_transactions, categorized, uncategorized, percent_categorized, by_source}` where `by_source` breaks down by categorization source (user, rule, ai, plaid). With `include_auto=True`, returns `{overall: <base>, auto: {active_auto_rules, pending_proposals, transactions_categorized}}`. The `auto` block absorbs what was previously the standalone `transactions_categorize_auto_stats` tool.
+- **Service:** `CategorizationService.stats() -> CategorizationStats`; with `include_auto=True` also calls `AutoRuleService.stats() -> AutoStatsResult`.
 - **CLI:** `moneybin transactions categorize stats`
 
 ### `transactions_categorize_rules_apply`
@@ -969,14 +969,7 @@ Accept or reject proposed auto-generated rules. Takes two parallel ID lists.
 
 ### `transactions_categorize_auto_stats`
 
-Auto-rule health metrics.
-
-- **Sensitivity:** `low`
-- **Unique parameters:** None.
-- **Behavior:** Returns `{active_rules, pending_proposals, rejected_proposals, override_rate, top_rules}` where `top_rules` is an array of the most-matched auto-rules with match counts. `override_rate` is the percentage of auto-rule categorizations that were later overridden by the user.
-- **Service:** `AutoRuleService.stats() -> AutoStatsResult`
-- **CLI:** `moneybin transactions categorize auto stats`
-- **Dependency:** [Categorization overview](categorization-overview.md) (Pillar E: auto-rule generation), [Auto-rule generation](categorization-auto-rules.md).
+**Retired (MCP only).** The auto-rule health metrics are now available via `transactions_categorize_stats(include_auto=True)`. The CLI command `moneybin transactions categorize auto stats` remains — it calls `AutoRuleService.stats()` directly and is unaffected.
 
 > ML-based categorization is deferred; see `categorization-ml.md` (planned) when work resumes.
 
@@ -1111,6 +1104,19 @@ Pipeline integrity check — confirms the data pipeline is self-consistent befor
 - **Service:** `DoctorService.run_all(verbose=False) -> DoctorReport`
 - **CLI:** `moneybin system doctor [--verbose] [--output json]`
 
+### `extension_validate`
+
+**Status:** planned. Backing spec [`extension-contracts.md`](extension-contracts.md) is `draft` — the tool is documented here for design alignment but NOT registered on the MCP surface until the spec reaches `in-progress` and the validator lands. See §17c dependency tracker.
+
+Validate an extension manifest (Analysis Package or standalone Report) against the framework's registration rules. Operator-territory: invoked by contributor skills, CI, and humans before opening a PR — not by user-facing agents in normal workflows.
+
+- **Sensitivity:** `low` — inputs are extension manifest paths, not financial data; outputs are validation findings (rule IDs, file paths, severity).
+- **Annotations:** `read_only=True`, `destructive=False`, `idempotent=True`, `open_world=False`.
+- **Unique parameters:** `path: str` (required) — filesystem path to a package directory (containing `moneybin_package.yaml`) or to a standalone-report manifest file.
+- **Behavior:** Runs the checks defined in [`extension-contracts.md`](extension-contracts.md) §"The extension validator": manifest schema validity, capability-vs-SQL match (every `CREATE TABLE`/`VIEW` covered by `capabilities.writes`), prefix discipline (tables, tools, CLI commands, schema files all start with `owns_prefix`), Quality Scale claim matches evidence, SQL compiles against the current canonical schema, no prefix collisions with already-registered extensions, and the package's own test suite passes. Returns the standard `ResponseEnvelope` so invoking agents can react programmatically; per-check results land in `data[]` as `{rule_id, severity, message, file?, line?}`.
+- **Service:** `ExtensionValidatorService.validate(path) -> ValidationReport` (planned).
+- **CLI:** `moneybin extension validate PATH` (per CLI↔MCP parity).
+
 > Note: a unified `reports_health` snapshot tool is **planned, not registered**. Today the agent composes the same view from `reports_networth` + `reports_spending` + `reports_cashflow` + `reports_budget`. Re-evaluate as a dedicated tool when agent-experience reports show the composition friction outweighs the surface cost.
 
 ### `reports_recurring`
@@ -1133,12 +1139,7 @@ Top merchants by lifetime activity.
 
 ### `reports_uncategorized`
 
-Uncategorized transactions queue, ranked by curator-impact.
-
-- **Sensitivity:** `medium` — row-level transactions.
-- **Unique parameters:** `min_amount: float = 0.0` (filter to `ABS(amount) >= min_amount`), `account: str | None = None` (filter by account name), `limit: int = 50`.
-- **Behavior:** Returns uncategorized rows from `reports.uncategorized_queue`. Amounts use the accounting convention: negative = expense, positive = income.
-- **CLI:** `moneybin reports uncategorized [--min-amount N] [--account NAME] [--limit N]`
+**Retired.** Folded into `transactions_categorize_pending` with the addition of `sort` (`"date"` or `"impact"`) and `account` filter parameters. The CLI command `moneybin reports uncategorized` has been removed; use `moneybin transactions categorize pending [--sort impact] [--min-amount N] [--account NAME]` instead.
 
 ### `reports_large_transactions`
 
@@ -1151,11 +1152,11 @@ Anomaly-flavored transaction lens — top-N by absolute amount, with optional pe
 
 ### `reports_balance_drift`
 
-Account-level reconciliation drift: difference between asserted balances and computed running totals.
+Categorical view of balance assertions by drift status.
 
 - **Sensitivity:** `medium` — balance amounts.
 - **Unique parameters:** `account: str | None = None` (filter by account name), `status: str = "all"` (`drift` | `warning` | `clean` | `no-data` | `all`), `since: str | None = None` (ISO date; only assertions on or after).
-- **Behavior:** Returns per-account drift rows from `reports.balance_drift`. Drift in `summary.display_currency`.
+- **Behavior:** Returns one row per assertion with computed drift from `reports.balance_drift`. Use when you want a status breakdown across all assertions. Amounts use the accounting convention: negative = expense, positive = income. Drift in `summary.display_currency`.
 - **CLI:** `moneybin reports balance-drift [--account NAME] [--status STATUS] [--since YYYY-MM-DD]`
 
 ### `refresh_run`
@@ -1344,10 +1345,24 @@ Tools that depend on unbuilt subsystems are documented in the catalog with depen
 | **Annotations table schema** | Not written | `transactions_annotate` |
 | **Budget tracking spec** | Draft | `reports_budget_summary` rollover behavior; `budget_set` (de-registered 2026-05-17 — re-register when spec reaches `in-progress`) |
 | **Tax spec (none yet)** | Not written | `tax_w2`, `tax_deductions`, `tax_prep` prompt — **removed entirely** 2026-05-19; W-2 extraction pipeline cut; tax data ingestion to be re-designed from scratch when a new tax spec is written |
+| **[Extension contracts](extension-contracts.md)** | Draft | `extension_validate` (manifest + capability + prefix + Quality-Scale validator); `<pkg>_*` tools from Analysis Packages (e.g., `assets_*`, `us_tax_*` at M3E); standalone-Report auto-registered `reports_*` tools |
 
 ### Tools shippable without dependencies
 
 > **Surface status (2026-05-19):** All entries in §16 not marked "NOT registered" or de-registered are live and visible at connect. See the dependency tracker above for tools that remain blocked. `budget.*` and `transform_*` tool modules remain implemented but are **de-registered** in `src/moneybin/mcp/server.py:register_core_tools()`. `budget.*` re-registers when its backing spec reaches `in-progress`/`implemented`; `transform_*` are operator territory (category 2) and remain CLI-only (see §17). `tax.*` tools were **removed entirely** — the W-2 PDF extraction pipeline was cut; tax data ingestion will be re-designed from scratch when a new tax spec is written. A working implementation alone does not justify exposing a tool on the public surface.
+
+## 17d. Entry-points-registered tools
+
+**Status: planned, pending [`extension-contracts.md`](extension-contracts.md).** [`extension-contracts.md`](extension-contracts.md) is currently `draft`; the entry-points discovery path is documented here for design alignment but is NOT active at runtime until the spec reaches `in-progress` and the framework implementation lands (Plan 2 of the extension-contracts implementation graph). As of 2026-05-20, the tool catalog above is the complete registered surface — every tool is wired in by an explicit `register_*_tools(mcp)` call in `src/moneybin/mcp/server.py`.
+
+When the entry-points path ships: per [`mcp-architecture.md`](mcp-architecture.md) §"Tool registration paths" and [`extension-contracts.md`](extension-contracts.md), the framework will also enumerate the `moneybin.packages` setuptools entry points at startup and invoke each package's `tools.register(mcp)` hook after the explicit-call path completes.
+
+Two extension shapes will contribute tools through this second path:
+
+- **Analysis Packages** (`extension-contracts.md` §"Analysis Package contract") — `<pkg>_*`-prefixed tools registered programmatically. The M3E first-party lineup will be `assets_*` and `us_tax_*` (both shipped in the MoneyBin repo, both contributed via the entry-points path rather than explicit register-call imports — see [`asset-tracking.md`](asset-tracking.md) and §17b reservation for the assets namespace). Third-party packages installed via PyPI will register identically once they appear on the entry-point group.
+- **Standalone Reports** (`extension-contracts.md` §"Report contract") — `reports_*` tools auto-generated from structured comments on a single SQLMesh view, including the paired `TableRef` constant, `ReportsService` method, MCP tool, and CLI command. The contributor writes only the SQL with the `@name` / `@description` / `@param` / `@example` block; the framework derives the registration trinity.
+
+The §18 tool-catalog-discipline rule will apply symmetrically: a PR that adds a package- or report-contributed tool must update this spec (or its in-package equivalent) in the same change. The runtime-registered surface — explicit-register-call plus entry-points — must match what's documented.
 
 ---
 
