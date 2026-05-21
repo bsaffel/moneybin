@@ -136,6 +136,12 @@ class ResponseEnvelope:
             # dict slipping in (e.g., from deserialized JSON) would otherwise
             # AttributeError here and convert a classified UserError into an
             # internal failure at the wire boundary.
+            #
+            # Note: when `error` is also set, `error.to_dict()` (above) emits
+            # the same `recovery_actions` list nested under `d["error"]`. The
+            # duplication is intentional — agents can read the field at the
+            # top level OR nested under the error without a second lookup.
+            # See docs/specs/data-recovery-contract.md Req 2.
             d["recovery_actions"] = [
                 ra if isinstance(ra, dict) else ra.model_dump()
                 for ra in self.recovery_actions

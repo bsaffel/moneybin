@@ -16,8 +16,6 @@ Codes are stable. Renaming a code is a breaking change for any agent
 that branches on it; treat as one-way per .claude/rules/design-principles.md.
 """
 
-from __future__ import annotations
-
 # ---------------------------------------------------------------------------
 # Import — loading raw data
 # ---------------------------------------------------------------------------

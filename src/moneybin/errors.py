@@ -69,7 +69,8 @@ class UserError(Exception):
 
     Can be raised directly in tool code::
 
-        raise UserError("Category not found", code="NOT_FOUND")
+        from moneybin import error_codes
+        raise UserError("Category not found", code=error_codes.MUTATION_NOT_FOUND)
 
     The ``mcp_tool`` decorator catches this and converts it to an error
     ``ResponseEnvelope`` automatically.

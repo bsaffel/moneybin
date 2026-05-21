@@ -87,6 +87,25 @@ class TestBuildErrorEnvelope:
         )
         assert env.recovery_actions == override
 
+    def test_error_envelope_explicit_empty_overrides_non_empty_error_actions(self):
+        """Passing `[]` explicitly suppresses the error's own actions.
+
+        The most load-bearing precedence case: caller wants to clear
+        recovery_actions for this surface even though the UserError carries
+        some. Verifies `[]` is honored over the fall-back-to-error semantics.
+        """
+        err = UserError(
+            "Boom",
+            code=error_codes.MUTATION_NOT_FOUND,
+            recovery_actions=[_sample_action()],
+        )
+        env = build_error_envelope(
+            error=err,
+            sensitivity="low",
+            recovery_actions=[],
+        )
+        assert env.recovery_actions == []
+
     def test_error_envelope_empty_recovery_actions_preserved(self):
         """An explicit empty list reaches the envelope (not coerced to None)."""
         err = UserError(

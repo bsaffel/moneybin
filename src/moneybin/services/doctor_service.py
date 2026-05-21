@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from moneybin.database import Database, sqlmesh_context
+from moneybin.errors import RecoveryAction
 from moneybin.tables import FCT_TRANSACTIONS
 
 logger = logging.getLogger(__name__)
@@ -14,12 +15,19 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class InvariantResult:
-    """Result of one pipeline invariant check."""
+    """Result of one pipeline invariant check.
+
+    The optional ``recovery_actions`` field carries structured recovery
+    hints when an audit fails or warns. PR 4 (doctor recipe registry)
+    will populate this from per-audit recipes; for now it defaults to
+    ``None`` so existing call sites are unaffected.
+    """
 
     name: str
     status: Literal["pass", "fail", "warn", "skipped"]
     detail: str | None
     affected_ids: list[str]
+    recovery_actions: list[RecoveryAction] | None = None
 
 
 @dataclass(frozen=True)

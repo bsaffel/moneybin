@@ -126,11 +126,11 @@ async def test_classified_user_error_still_returned(
 
     @mcp_tool(sensitivity="low")
     def bad_tool() -> ResponseEnvelope:
-        raise UserError("nope", code="not_found")
+        raise UserError("nope", code=error_codes.MUTATION_NOT_FOUND)
 
     result = await bad_tool()
     assert result.error is not None
-    assert result.error.code == "not_found"
+    assert result.error.code == error_codes.MUTATION_NOT_FOUND
 
 
 @pytest.mark.unit
