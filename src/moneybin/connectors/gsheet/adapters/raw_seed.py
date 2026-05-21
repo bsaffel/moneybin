@@ -29,6 +29,7 @@ from moneybin.connectors.gsheet.diff import compute_diff
 from moneybin.connectors.gsheet.drift import DriftReport
 from moneybin.connectors.gsheet.view_generator import generate_seed_view_sql
 from moneybin.database import Database
+from moneybin.tables import GSHEET_SEEDS
 
 logger = logging.getLogger(__name__)
 
@@ -138,7 +139,7 @@ class RawSeedAdapter:
 
         # Active row hashes for this connection (soft-deletes excluded).
         active_rows = db.execute(
-            "SELECT row_hash FROM raw.gsheet_seeds "
+            f"SELECT row_hash FROM {GSHEET_SEEDS.full_name} "  # noqa: S608  # TableRef constant, no user input
             "WHERE connection_id = ? AND deleted_from_source_at IS NULL",
             [connection.connection_id],
         ).fetchall()
@@ -156,7 +157,7 @@ class RawSeedAdapter:
             hashes = sorted(diff.to_soft_delete)
             placeholders = ",".join(["?"] * len(hashes))
             sql = (
-                f"UPDATE raw.gsheet_seeds SET deleted_from_source_at = CURRENT_TIMESTAMP "  # noqa: S608  # placeholders are "?"-only, ids parameterized
+                f"UPDATE {GSHEET_SEEDS.full_name} SET deleted_from_source_at = CURRENT_TIMESTAMP "  # noqa: S608  # TableRef + placeholders, no user input
                 f"WHERE connection_id = ? AND row_hash IN ({placeholders})"
             )
             db.execute(sql, [connection.connection_id, *hashes])
@@ -170,14 +171,14 @@ class RawSeedAdapter:
                 pl.lit(import_id).alias("import_id"),
                 pl.lit(None, dtype=pl.Datetime("us")).alias("deleted_from_source_at"),
             )
-            db.ingest_dataframe("raw.gsheet_seeds", df, on_conflict="upsert")
+            db.ingest_dataframe(GSHEET_SEEDS.full_name, df, on_conflict="upsert")
 
             # Belt-and-suspenders undelete: ensure any returning row is active
             # even if a future upsert path forgets to project the column.
             hashes = sorted(current_hashes)
             placeholders = ",".join(["?"] * len(hashes))
             sql = (
-                f"UPDATE raw.gsheet_seeds SET deleted_from_source_at = NULL "  # noqa: S608  # placeholders are "?"-only, ids parameterized
+                f"UPDATE {GSHEET_SEEDS.full_name} SET deleted_from_source_at = NULL "  # noqa: S608  # TableRef + placeholders, no user input
                 f"WHERE connection_id = ? AND row_hash IN ({placeholders})"
             )
             db.execute(sql, [connection.connection_id, *hashes])

@@ -31,7 +31,7 @@ mcp = FastMCP(
         Top-level domains:
         - accounts, transactions (query/correct/annotate/match/categorize), reports (cross-domain analytics: networth, spending, cashflow, financial health, budget vs actual)
         - categories, merchants (taxonomy reference data)
-        - system (status, audit), import, sync, refresh (rebuild derived tables), sql (read-only escape hatch)
+        - system (status, audit), import, sync (Plaid-mediated), gsheet (Google Sheets live sync), refresh (rebuild derived tables), sql (read-only escape hatch)
 
         Tool names: domain_<sub>_verb, verb at end — transactions_categorize_commit, reports_networth, accounts_balance_assert.
 

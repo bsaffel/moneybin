@@ -16,13 +16,14 @@ from typing import Any, Literal
 
 from moneybin.database import Database
 from moneybin.services.audit_service import AuditService
+from moneybin.tables import GSHEET_CONNECTIONS
 
 logger = logging.getLogger(__name__)
 
 # Audit target tuple shared across every mutation: (target_schema, target_table).
 # Caller appends the row's connection_id to form the 3-tuple expected by
 # AuditService.record_audit_event(target=...).
-_AUDIT_TARGET = ("app", "gsheet_connections")
+_AUDIT_TARGET = (GSHEET_CONNECTIONS.schema, GSHEET_CONNECTIONS.name)
 
 # Columns selected for before_value / after_value capture. Per
 # app-integrity-invariant.md Req 4 (post-supersedes), we capture the FULL
@@ -106,7 +107,7 @@ class GSheetConnectionsRepo:
     def _fetch_full_row(self, connection_id: str) -> dict[str, Any] | None:
         cols = ", ".join(_FULL_ROW_COLUMNS)
         row = self._db.conn.execute(
-            f"SELECT {cols} FROM app.gsheet_connections WHERE connection_id = ?",  # noqa: S608  # column list is allowlisted constant
+            f"SELECT {cols} FROM {GSHEET_CONNECTIONS.full_name} WHERE connection_id = ?",  # noqa: S608  # TableRef + allowlisted column list
             [connection_id],
         ).fetchone()
         if row is None:
@@ -159,15 +160,15 @@ class GSheetConnectionsRepo:
         self._db.begin()
         try:
             self._db.conn.execute(
-                """
-                INSERT INTO app.gsheet_connections (
+                f"""
+                INSERT INTO {GSHEET_CONNECTIONS.full_name} (
                     connection_id, spreadsheet_id, sheet_gid, sheet_name,
                     workbook_name, adapter, account_id, account_name,
                     column_mapping, header_signature,
                     date_format, sign_convention, number_format,
                     skip_rows, skip_trailing_patterns, alias
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
+                """,  # noqa: S608  # TableRef + parameterized values
                 [
                     connection_id,
                     spreadsheet_id,
@@ -223,11 +224,11 @@ class GSheetConnectionsRepo:
             if before is None:
                 raise ValueError(f"connection_id={connection_id!r} not found")
             self._db.conn.execute(
-                """
-                UPDATE app.gsheet_connections
+                f"""
+                UPDATE {GSHEET_CONNECTIONS.full_name}
                    SET status = ?, last_drift_reason = ?, updated_at = NOW()
                  WHERE connection_id = ?
-                """,
+                """,  # noqa: S608  # TableRef + parameterized values
                 [status, reason, connection_id],
             )
             after = self._fetch_full_row(connection_id)
@@ -263,8 +264,8 @@ class GSheetConnectionsRepo:
             if before is None:
                 raise ValueError(f"connection_id={connection_id!r} not found")
             self._db.conn.execute(
-                """
-                UPDATE app.gsheet_connections
+                f"""
+                UPDATE {GSHEET_CONNECTIONS.full_name}
                    SET last_pull_at = ?,
                        last_pull_import_id = ?,
                        last_success_at = COALESCE(?, last_success_at),
@@ -272,7 +273,7 @@ class GSheetConnectionsRepo:
                        consecutive_failure_count = ?,
                        updated_at = NOW()
                  WHERE connection_id = ?
-                """,
+                """,  # noqa: S608  # TableRef + parameterized values
                 [
                     last_pull_at,
                     last_pull_import_id,
@@ -320,8 +321,8 @@ class GSheetConnectionsRepo:
             if before is None:
                 raise ValueError(f"connection_id={connection_id!r} not found")
             self._db.conn.execute(
-                """
-                UPDATE app.gsheet_connections
+                f"""
+                UPDATE {GSHEET_CONNECTIONS.full_name}
                    SET column_mapping = ?,
                        header_signature = ?,
                        date_format = ?,
@@ -333,7 +334,7 @@ class GSheetConnectionsRepo:
                        last_drift_reason = NULL,
                        updated_at = NOW()
                  WHERE connection_id = ?
-                """,
+                """,  # noqa: S608  # TableRef + parameterized values
                 [
                     json.dumps(column_mapping),
                     json.dumps(header_signature),
@@ -391,7 +392,7 @@ class GSheetConnectionsRepo:
             if before is None:
                 raise ValueError(f"connection_id={connection_id!r} not found")
             self._db.conn.execute(
-                "DELETE FROM app.gsheet_connections WHERE connection_id = ?",
+                f"DELETE FROM {GSHEET_CONNECTIONS.full_name} WHERE connection_id = ?",  # noqa: S608  # TableRef + parameterized value
                 [connection_id],
             )
             self._audit.record_audit_event(
@@ -419,7 +420,7 @@ class GSheetConnectionsRepo:
         """Return every connection row, ordered by ``created_at`` ascending."""
         cols = ", ".join(_FULL_ROW_COLUMNS)
         rows = self._db.conn.execute(
-            f"SELECT {cols} FROM app.gsheet_connections ORDER BY created_at ASC, connection_id ASC"  # noqa: S608  # column list is allowlisted constant
+            f"SELECT {cols} FROM {GSHEET_CONNECTIONS.full_name} ORDER BY created_at ASC, connection_id ASC"  # noqa: S608  # TableRef + allowlisted column list
         ).fetchall()
         return [_decode_row(r) for r in rows]
 
@@ -427,6 +428,6 @@ class GSheetConnectionsRepo:
         """Return only connections in ``healthy`` status."""
         cols = ", ".join(_FULL_ROW_COLUMNS)
         rows = self._db.conn.execute(
-            f"SELECT {cols} FROM app.gsheet_connections WHERE status = 'healthy' ORDER BY created_at ASC, connection_id ASC"  # noqa: S608  # column list is allowlisted constant
+            f"SELECT {cols} FROM {GSHEET_CONNECTIONS.full_name} WHERE status = 'healthy' ORDER BY created_at ASC, connection_id ASC"  # noqa: S608  # TableRef + allowlisted column list
         ).fetchall()
         return [_decode_row(r) for r in rows]
