@@ -447,6 +447,28 @@ def test_legacy_data_tabular_env_var_fails_loudly(
         MoneyBinSettings()
 
 
+def test_legacy_data_tabular_dotenv_key_fails_loudly(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Legacy keys in the active .env file fail the same way os.environ does.
+
+    pydantic-settings reads ``.env.{profile}`` (or ``.env``) via
+    ``DotEnvSettingsSource`` and silently drops unknown keys. The startup
+    validator scans the dotenv file too so operators on either
+    configuration path get a clear migration message.
+    """
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    # No matching env var in os.environ — the deprecated key lives in the file.
+    monkeypatch.delenv("MONEYBIN_DATA__TABULAR__TEXT_SIZE_LIMIT_MB", raising=False)
+    (tmp_path / ".env.test").write_text(
+        "# pre-existing operator overrides\n"
+        "MONEYBIN_DATA__TABULAR__TEXT_SIZE_LIMIT_MB=999\n"
+    )
+
+    with pytest.raises(ValueError, match="MONEYBIN_PROVIDERS__TABULAR"):
+        MoneyBinSettings(profile="test")
+
+
 class TestSqlmeshConfigProfileGating:
     """Regression tests for the profile gate in ``sqlmesh/config.py``.
 

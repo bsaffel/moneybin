@@ -85,6 +85,14 @@ def get_base_dir() -> Path:
     return (Path.home() / ".moneybin").resolve()
 
 
+# Retired tabular env-var namespace. ``MoneyBinSettings.__init__`` errors out
+# if any key with this prefix appears in ``os.environ`` or the active dotenv
+# file — the knobs moved to ``MONEYBIN_PROVIDERS__TABULAR__*`` in Plan 1 of
+# the extension-contracts implementation and pydantic-settings would
+# otherwise silently ignore the old names (``extra="ignore"``).
+_LEGACY_TABULAR_PREFIX = "MONEYBIN_DATA__TABULAR__"
+
+
 class DatabaseConfig(BaseModel):
     """Database configuration settings."""
 
@@ -536,6 +544,40 @@ class MoneyBinSettings(BaseSettings):
         except ValueError as e:
             raise ValueError(f"Invalid profile name: {e}") from e
 
+    @staticmethod
+    def _raise_on_deprecated_tabular_keys(profile: str) -> None:
+        """Fail loudly if retired ``MONEYBIN_DATA__TABULAR__*`` keys are set.
+
+        Scans both ``os.environ`` and the active dotenv file (the same
+        lookup ``settings_customise_sources`` uses for the live load) so
+        operators on either configuration path get a clear migration
+        message rather than silently falling back to defaults.
+        """
+        offenders: list[str] = sorted(
+            k for k in os.environ if k.startswith(_LEGACY_TABULAR_PREFIX)
+        )
+
+        base = get_base_dir()
+        for env_file in (base / f".env.{profile}", base / ".env"):
+            if not env_file.exists():
+                continue
+            for raw_line in env_file.read_text().splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key = line.split("=", 1)[0].strip()
+                if key.startswith(_LEGACY_TABULAR_PREFIX):
+                    offenders.append(f"{env_file.name}:{key}")
+            break  # Match settings_customise_sources: first existing file wins.
+
+        if offenders:
+            raise ValueError(
+                "Deprecated env var(s) found: "
+                f"{', '.join(offenders)}. Tabular provider settings moved "
+                "to the MONEYBIN_PROVIDERS__TABULAR__* namespace. Rename "
+                "each variable accordingly and re-run."
+            )
+
     def __init__(self, **kwargs: Any):
         """Initialize settings with profile-based directory layout.
 
@@ -544,27 +586,20 @@ class MoneyBinSettings(BaseSettings):
         """
         from moneybin.utils.user_config import normalize_profile_name
 
-        # Fail loudly on the retired tabular env-var namespace. Tabular
-        # provider knobs moved from ``MONEYBIN_DATA__TABULAR__*`` to
-        # ``MONEYBIN_PROVIDERS__TABULAR__*`` (Plan 1 of extension-contracts).
-        # pydantic-settings silently ignores unknown env vars, so without
-        # this check an operator who set the old names would silently fall
-        # back to defaults after upgrade.
-        _legacy_tabular_env = sorted(
-            k for k in os.environ if k.startswith("MONEYBIN_DATA__TABULAR__")
-        )
-        if _legacy_tabular_env:
-            raise ValueError(
-                "Deprecated env var(s) found: "
-                f"{', '.join(_legacy_tabular_env)}. Tabular provider settings "
-                "moved to the MONEYBIN_PROVIDERS__TABULAR__* namespace. "
-                "Rename each variable accordingly and re-run."
-            )
-
         # Get and normalize profile name BEFORE using it for paths
         # This ensures directories are created with normalized names
         raw_profile = kwargs.get("profile", "default")
         profile = normalize_profile_name(raw_profile)
+
+        # Fail loudly on the retired tabular env-var namespace. Tabular
+        # provider knobs moved from ``MONEYBIN_DATA__TABULAR__*`` to
+        # ``MONEYBIN_PROVIDERS__TABULAR__*`` (Plan 1 of extension-contracts).
+        # pydantic-settings silently ignores unknown env vars and unknown
+        # dotenv keys (``extra="ignore"``), so this check scans both
+        # ``os.environ`` and the active ``.env`` file (the same lookup the
+        # settings_customise_sources hook uses) to catch operators on either
+        # configuration path.
+        self._raise_on_deprecated_tabular_keys(profile=profile)
 
         # Update kwargs with normalized profile name
         kwargs["profile"] = profile
