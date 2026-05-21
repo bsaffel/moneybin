@@ -192,26 +192,27 @@ def sync_link_status(session_id: str) -> ResponseEnvelope:
 
 # Deprecated aliases — will be removed in the next minor release. The decorator
 # does not accept a `deprecated=` flag; the description string + warning log
-# carry the deprecation signal. Aliases are async so they can await the
-# canonical tool through its mcp_tool-decorated async wrapper.
+# carry the deprecation signal. Call sync_link.__wrapped__ (the raw undecorated
+# function) so the alias's own @mcp_tool wrapper handles audit/timeout once —
+# otherwise the canonical tool's decorator fires a second time per call.
 @mcp_tool(sensitivity="medium", read_only=False, idempotent=False, open_world=True)
-async def sync_connect(institution: str | None = None) -> ResponseEnvelope:
+def sync_connect(institution: str | None = None) -> ResponseEnvelope:
     """Deprecated alias for `sync_link`. Will be removed in the next minor release."""
     logger.warning(
         "MCP tool `sync_connect` is deprecated; use `sync_link`. "
         "The alias will be removed in the next minor release."
     )
-    return await sync_link(institution=institution)
+    return sync_link.__wrapped__(institution=institution)  # type: ignore[attr-defined]
 
 
 @mcp_tool(sensitivity="low")
-async def sync_connect_status(session_id: str) -> ResponseEnvelope:
+def sync_connect_status(session_id: str) -> ResponseEnvelope:
     """Deprecated alias for `sync_link_status`. Will be removed in the next minor release."""
     logger.warning(
         "MCP tool `sync_connect_status` is deprecated; use `sync_link_status`. "
         "The alias will be removed in the next minor release."
     )
-    return await sync_link_status(session_id=session_id)
+    return sync_link_status.__wrapped__(session_id=session_id)  # type: ignore[attr-defined]
 
 
 @mcp_tool(sensitivity="medium", read_only=False, open_world=True)

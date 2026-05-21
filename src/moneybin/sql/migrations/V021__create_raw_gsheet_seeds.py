@@ -72,7 +72,7 @@ _COLUMN_COMMENTS: list[tuple[str, str]] = [
     ),
     (
         "import_id",
-        "Import run that wrote this row (FK to import_runs)",
+        "Import run that wrote this row (FK to raw.import_log)",
     ),
     (
         "loaded_at",

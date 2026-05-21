@@ -73,7 +73,7 @@ def _null_ratio(col: pl.Series) -> float:
         return 0.0
     nulls = col.null_count()
     blanks_val = 0
-    if col.dtype == pl.Utf8:
-        blanks_sum = col.cast(pl.Utf8, strict=False).str.strip_chars().eq("").sum()  # type: ignore[reportUnknownMemberType]
+    if col.dtype == pl.String:
+        blanks_sum = col.cast(pl.String, strict=False).str.strip_chars().eq("").sum()  # type: ignore[reportUnknownMemberType]
         blanks_val = int(blanks_sum) if blanks_sum else 0
     return (nulls + blanks_val) / col.len()

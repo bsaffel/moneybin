@@ -46,6 +46,10 @@ class LowConfidenceError(GSheetError):
     """Transactions adapter returned low confidence and no override was given."""
 
 
+class AmbiguousDetectionError(GSheetError):
+    """Detection returned medium confidence and user has not accepted with --yes."""
+
+
 @dataclass
 class ConnectionRequest:
     """Inputs for ``GSheetConnectionService.connect``."""
@@ -135,11 +139,35 @@ class GSheetConnectionService:
                     "--adapter=seed --alias=<name>."
                 )
 
+        # Medium confidence: ambiguous column matches. Require explicit
+        # acceptance (--yes) or an override (--column-mapping) before
+        # persisting — otherwise wrong mappings can land silently and
+        # corrupt the initial pull.
+        if (
+            target_adapter == "transactions"
+            and detection.confidence == "medium"
+            and req.column_mapping is None
+            and not req.yes
+        ):
+            raise AmbiguousDetectionError(
+                "Medium-confidence transactions detection. "
+                "Re-run with --yes to accept the inferred mapping, "
+                "or pass --column-mapping to override."
+            )
+
         if target_adapter == "seed" and not req.alias:
             raise GSheetError(
                 "--alias=<slug> is required when --adapter=seed. "
                 "Pick a short identifier; it becomes the view name "
                 "raw.gsheet_<alias>."
+            )
+
+        # TransactionsAdapter.transform requires account_id (see transactions.py).
+        # Persisting without one creates a row that fails every pull.
+        if target_adapter == "transactions" and not req.account_id:
+            raise GSheetError(
+                "--account-id is required for the transactions adapter. "
+                "Pass --account-id=<dim_accounts.account_id>."
             )
 
         # For seed adapter the column_mapping field holds inferred typed_columns
@@ -323,10 +351,24 @@ def rows_to_df(rows: list[list[str]]) -> pl.DataFrame:
 
     Ragged rows (Google Sheets trims trailing empty cells) are padded to the
     header width with ``None`` so polars receives uniform-length columns.
+
+    Rejects duplicate header text — keying by header collapses duplicates
+    into one dict entry and silently corrupts row cardinality.
     """
     if not rows:
         return pl.DataFrame()
     headers, *data = rows
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    for h in headers:
+        if h in seen and h not in duplicates:
+            duplicates.append(h)
+        seen.add(h)
+    if duplicates:
+        raise GSheetError(
+            f"Duplicate header(s) in sheet: {duplicates}. "
+            "Rename to make headers unique before connecting."
+        )
     columns: dict[str, list[str | None]] = {h: [] for h in headers}
     for row in data:
         for i, header in enumerate(headers):

@@ -457,3 +457,19 @@ def test_gsheet_disconnect_purge_with_yes_proceeds(mock_build: MagicMock) -> Non
     assert result.exit_code == 0, result.output
     service.disconnect.assert_called_once_with("conn_abc123", purge=True)
     assert "Purged" in result.stdout
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.gsheet.sys")
+@patch("moneybin.cli.commands.gsheet._build_connection_service")
+def test_gsheet_disconnect_purge_non_tty_requires_yes(
+    mock_build: MagicMock, mock_sys: MagicMock
+) -> None:
+    """In non-TTY (script/agent), --purge without --yes must fail loudly, not auto-confirm."""
+    service = MagicMock()
+    mock_build.return_value.__enter__.return_value = service
+    mock_sys.stdin.isatty.return_value = False
+    result = runner.invoke(app, ["gsheet", "disconnect", "conn_abc123", "--purge"])
+    assert result.exit_code == 2
+    service.disconnect.assert_not_called()
+    assert "--yes" in result.stderr or "--yes" in result.output

@@ -5,9 +5,11 @@ from __future__ import annotations
 import pytest
 
 from moneybin.connectors.gsheet.connection_service import (
+    AmbiguousDetectionError,
     ConnectionRequest,
     GSheetConnectionService,
     LowConfidenceError,
+    rows_to_df,
 )
 from moneybin.connectors.gsheet.errors import GSheetError
 from moneybin.connectors.gsheet.testing.fake_oauth_client import TestOAuthClient
@@ -195,6 +197,62 @@ def test_connect_falls_through_to_seed_offer_on_low_confidence(
     result = svc.connect(req)
     assert result.connection.adapter == "seed"
     assert result.connection.alias == "custom"
+
+
+def test_connect_transactions_requires_account_id(in_memory_db: Database) -> None:
+    svc, sheets, _ = _make_service(in_memory_db)
+    sheets.register_workbook("ss1", _tiller_workbook())
+    req = ConnectionRequest(
+        url="https://docs.google.com/spreadsheets/d/ss1/edit#gid=0",
+        adapter="transactions",
+        account_name="Chase Checking",
+        yes=True,
+    )
+    with pytest.raises(GSheetError, match="account-id"):
+        svc.connect(req)
+
+
+def _medium_confidence_workbook() -> FakeWorkbook:
+    """Header set that map_columns scores at medium confidence."""
+    return FakeWorkbook(
+        title="Ambiguous Sheet",
+        tabs=[
+            FakeSheetTab(
+                name="Transactions",
+                gid=0,
+                headers=["When", "Memo", "Bucket", "Amt"],
+                rows=[["2026-01-01", "Coffee", "Food", "-4.50"]],
+            )
+        ],
+    )
+
+
+def test_connect_transactions_medium_confidence_requires_yes(
+    in_memory_db: Database,
+) -> None:
+    svc, sheets, _ = _make_service(in_memory_db)
+    sheets.register_workbook("ssM", _medium_confidence_workbook())
+    req = ConnectionRequest(
+        url="https://docs.google.com/spreadsheets/d/ssM/edit#gid=0",
+        adapter="transactions",
+        account_name="Chase Checking",
+        account_id="acct_chase",
+        yes=False,
+    )
+    # Either rejected as ambiguous (medium) or low-confidence — both are
+    # acceptable for this header set; the guarantee is that it does NOT
+    # silently persist without explicit acceptance.
+    with pytest.raises((AmbiguousDetectionError, LowConfidenceError)):
+        svc.connect(req)
+
+
+def test_rows_to_df_rejects_duplicate_headers() -> None:
+    rows = [
+        ["Date", "Amount", "Amount", "Description"],
+        ["2026-01-01", "10", "20", "Coffee"],
+    ]
+    with pytest.raises(GSheetError, match="Duplicate header"):
+        rows_to_df(rows)
 
 
 def test_connect_no_initial_pull_skips_pull(in_memory_db: Database) -> None:

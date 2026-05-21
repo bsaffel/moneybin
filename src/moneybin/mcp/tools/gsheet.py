@@ -256,7 +256,13 @@ def gsheet_reconnect(connection_id: str) -> ResponseEnvelope:
     )
 
 
-@mcp_tool(sensitivity="medium", read_only=False, destructive=True, open_world=True)
+@mcp_tool(
+    sensitivity="medium",
+    read_only=False,
+    idempotent=False,
+    destructive=True,
+    open_world=True,
+)
 def gsheet_disconnect(connection_id: str, purge: bool = False) -> ResponseEnvelope:
     """Soft-disconnect (default) or purge a Google Sheets connection.
 

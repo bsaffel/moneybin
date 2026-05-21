@@ -410,7 +410,14 @@ def gsheet_disconnect(
     output: OutputFormat = output_option,
 ) -> None:
     """Soft-disconnect (default) or purge a Google Sheets connection."""
-    if purge and not yes and sys.stdin.isatty():
+    if purge and not yes:
+        if not sys.stdin.isatty():
+            typer.echo(
+                "❌ --purge requires --yes when stdin is not a TTY "
+                "(non-interactive contexts cannot show the confirmation prompt).",
+                err=True,
+            )
+            raise typer.Exit(2)
         if not typer.confirm(
             f"Purge {connection_id} (drops raw rows + view)?",
             default=False,

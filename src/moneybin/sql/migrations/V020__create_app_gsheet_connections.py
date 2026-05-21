@@ -111,11 +111,11 @@ _COLUMN_COMMENTS: list[tuple[str, str]] = [
     (
         "sign_convention",
         "One of: negative_is_expense, negative_is_income, "
-        "split_debit_credit, all_positive; NULL = auto",
+        "split_debit_credit; NULL = auto",
     ),
     (
         "number_format",
-        "One of: us, european, swiss, zero_decimal; NULL = auto",
+        "One of: us, european, swiss_french, zero_decimal; NULL = auto",
     ),
     (
         "skip_rows",

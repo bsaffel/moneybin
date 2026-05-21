@@ -32,6 +32,7 @@ from moneybin.extractors.tabular.formats import (
     SignConventionType,
 )
 from moneybin.extractors.tabular.transforms import transform_dataframe
+from moneybin.tables import TABULAR_TRANSACTIONS
 
 logger = logging.getLogger(__name__)
 
@@ -161,7 +162,7 @@ class TransactionsAdapter:
 
         # Fetch all currently-active (not soft-deleted) ids for this connection.
         active_rows = db.execute(
-            "SELECT transaction_id FROM raw.tabular_transactions "
+            f"SELECT transaction_id FROM {TABULAR_TRANSACTIONS.full_name} "  # noqa: S608  # TableRef constant, no user input
             "WHERE source_origin = ? AND deleted_from_source_at IS NULL",
             [connection.connection_id],
         ).fetchall()
@@ -176,7 +177,9 @@ class TransactionsAdapter:
             # soft-delete state because the new row has
             # deleted_from_source_at = NULL (Polars frame has no such column,
             # so DuckDB applies the table default of NULL).
-            db.ingest_dataframe("raw.tabular_transactions", df, on_conflict="upsert")
+            db.ingest_dataframe(
+                TABULAR_TRANSACTIONS.full_name, df, on_conflict="upsert"
+            )
             rows_inserted = len(diff.to_insert)
             rows_upserted = len(df) - rows_inserted
 
@@ -185,7 +188,7 @@ class TransactionsAdapter:
         if diff.to_soft_delete:
             ids = sorted(diff.to_soft_delete)
             placeholders = ",".join(["?"] * len(ids))
-            sql = f"UPDATE raw.tabular_transactions SET deleted_from_source_at = CURRENT_TIMESTAMP WHERE source_origin = ? AND transaction_id IN ({placeholders})"  # noqa: S608  # placeholders are "?"-only, ids parameterized
+            sql = f"UPDATE {TABULAR_TRANSACTIONS.full_name} SET deleted_from_source_at = CURRENT_TIMESTAMP WHERE source_origin = ? AND transaction_id IN ({placeholders})"  # noqa: S608  # placeholders are "?"-only, ids parameterized
             db.execute(sql, [connection.connection_id, *ids])
             rows_soft_deleted = len(ids)
 

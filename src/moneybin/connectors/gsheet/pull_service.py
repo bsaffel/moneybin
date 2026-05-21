@@ -140,8 +140,16 @@ class GSheetPullService:
                 drift_reason=drift.reason,
             )
 
-        transformed = adapter.transform(df, conn)
-        load_result = adapter.load(transformed, conn, self._db, import_id)
+        try:
+            transformed = adapter.transform(df, conn)
+            load_result = adapter.load(transformed, conn, self._db, import_id)
+        except Exception:
+            # Without this guard the import_log row stays in "importing" forever
+            # — transform/load failures escape pull_connection's existing branch
+            # for fetch/drift errors and the outer pull_all_healthy catch never
+            # closes the log.
+            self._close_import_log(import_id, status="failed", rows_imported=0)
+            raise
 
         self._close_import_log(
             import_id,

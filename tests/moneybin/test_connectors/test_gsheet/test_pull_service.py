@@ -170,3 +170,31 @@ def test_pull_all_healthy_skips_disconnected(in_memory_db: Database) -> None:
     GSheetConnectionsRepo(in_memory_db).soft_disconnect(cid)
     results = pull_svc.pull_all_healthy()
     assert results == []
+
+
+def test_pull_closes_import_log_on_transform_failure(in_memory_db: Database) -> None:
+    """Transform/load failure must close the import_log row, not leak in 'importing'."""
+    from unittest.mock import patch
+
+    pull_svc, _sheets, cid = _setup(in_memory_db)
+    boom = RuntimeError("simulated transform failure")
+    with (
+        patch(
+            "moneybin.connectors.gsheet.adapters.transactions.TransactionsAdapter.transform",
+            side_effect=boom,
+        ),
+        pytest.raises(RuntimeError, match="simulated transform failure"),
+    ):
+        pull_svc.pull_connection(cid)
+
+    leaked = in_memory_db.execute(
+        "SELECT COUNT(*) FROM raw.import_log WHERE status = 'importing'"
+    ).fetchone()
+    assert leaked is not None
+    assert leaked[0] == 0, "import_log row should be marked failed, not left importing"
+
+    failed = in_memory_db.execute(
+        "SELECT COUNT(*) FROM raw.import_log WHERE status = 'failed'"
+    ).fetchone()
+    assert failed is not None
+    assert failed[0] >= 1
