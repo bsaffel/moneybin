@@ -481,10 +481,12 @@ class CategorizationSettings(BaseModel):
     def proposal_threshold_lte_override_threshold(self) -> "CategorizationSettings":
         """Ensure proposal_threshold <= override_threshold.
 
-        If proposal > override, ``check_overrides`` deactivates a rule once
-        override count reaches override_threshold but the re-proposal lands
-        in ``tracking`` (count < proposal_threshold), hiding the corrected
-        category from ``categorize auto review`` until further user categorizations.
+        The deactivation bar must not be lower than the creation bar. If
+        ``override_threshold`` were less than ``proposal_threshold``, a
+        pattern could accumulate enough user corrections to deactivate its
+        rule (via ``check_overrides``) before enough auto-categorizations
+        had ever occurred to propose the rule (via ``record_categorization``)
+        — an obviously degenerate configuration.
         """
         if self.auto_rule_proposal_threshold > self.auto_rule_override_threshold:
             raise ValueError(

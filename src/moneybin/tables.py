@@ -66,7 +66,6 @@ MERCHANTS = TableRef("core", "dim_merchants", audience="interface")
 USER_MERCHANTS = TableRef("app", "user_merchants")
 CATEGORIZATION_RULES = TableRef("app", "categorization_rules", audience="interface")
 PROPOSED_RULES = TableRef("app", "proposed_rules")
-RULE_DEACTIVATIONS = TableRef("app", "rule_deactivations")
 SCHEMA_MIGRATIONS = TableRef("app", "schema_migrations")
 VERSIONS = TableRef("app", "versions")
 
