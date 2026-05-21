@@ -246,54 +246,6 @@ def test_approve_immediately_categorizes_existing_uncategorized(
     assert cat == ("Food & Drink", "auto_rule")
 
 
-def test_override_threshold_deactivates_rule_and_emits_audit_event(
-    real_db: Database, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """When user overrides reach the threshold, deactivate the rule and emit an audit_log event."""
-    monkeypatch.setenv("MONEYBIN_CATEGORIZATION__AUTO_RULE_OVERRIDE_THRESHOLD", "2")
-    clear_settings_cache()
-    # set_current_profile mutates module-level globals that monkeypatch.setenv
-    # cannot revert. Snapshot and restore via setattr so tests after this one
-    # don't pick up the "test" profile.
-    monkeypatch.setattr(config_module, "_current_profile", None)
-    monkeypatch.setattr(config_module, "_current_settings", None)
-    set_current_profile("test")
-
-    # Approve an auto-rule for STARBUCKS -> Food & Drink
-    _seed_transaction(real_db, "t1")
-    svc = AutoRuleService(real_db)
-    pid = svc.record_categorization("t1", "Food & Drink")
-    assert pid is not None
-    svc.accept(accept=[pid])
-
-    # Two user overrides correcting STARBUCKS to Groceries
-    for tid in ("t10", "t11"):
-        real_db.execute(
-            "INSERT INTO core.fct_transactions (transaction_id, account_id, transaction_date, amount, description, source_type) "
-            "VALUES (?, 'a1', DATE '2026-01-03', -8.00, 'STARBUCKS RESERVE', 'csv')",
-            [tid],
-        )
-        real_db.execute(
-            "INSERT INTO app.transaction_categories (transaction_id, category, categorized_at, categorized_by) "
-            "VALUES (?, 'Groceries', CURRENT_TIMESTAMP, 'user')",
-            [tid],
-        )
-
-    deactivated = svc.check_overrides()
-    assert deactivated == 1
-
-    active = real_db.execute(
-        "SELECT is_active FROM app.categorization_rules WHERE created_by = 'auto_rule'"
-    ).fetchone()
-    assert active == (False,)
-
-    # Audit event recorded in audit_log (not in rule_deactivations).
-    audit = real_db.execute(
-        "SELECT action, actor FROM app.audit_log WHERE action = 'rule_deactivated'"
-    ).fetchone()
-    assert audit == ("rule_deactivated", "auto_rule_service")
-
-
 def test_check_overrides_matches_memo_when_description_is_empty(
     real_db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -507,53 +459,6 @@ class TestPromoteProposedRuleDualWrite:
         assert row == ("PromoteMe", cat_id)
 
 
-class TestRuleDeactivationAuditLog:
-    """Deactivation emits a rule_deactivated event to audit_log with context."""
-
-    def test_deactivation_audit_event_carries_override_count_and_sample_ids(
-        self, real_db: Database, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("MONEYBIN_CATEGORIZATION__AUTO_RULE_OVERRIDE_THRESHOLD", "2")
-        clear_settings_cache()
-        monkeypatch.setattr(config_module, "_current_profile", None)
-        monkeypatch.setattr(config_module, "_current_settings", None)
-        set_current_profile("test")
-
-        _seed_transaction(real_db, "t1")
-        svc = AutoRuleService(real_db)
-        pid = svc.record_categorization("t1", "Food & Drink")
-        assert pid is not None
-        svc.accept(accept=[pid])
-
-        for tid in ("t10", "t11"):
-            real_db.execute(
-                "INSERT INTO core.fct_transactions (transaction_id, account_id, transaction_date, amount, description, source_type) "
-                "VALUES (?, 'a1', DATE '2026-01-03', -8.00, 'STARBUCKS RESERVE', 'csv')",
-                [tid],
-            )
-            real_db.execute(
-                "INSERT INTO app.transaction_categories (transaction_id, category, categorized_at, categorized_by) "
-                "VALUES (?, 'Groceries', CURRENT_TIMESTAMP, 'user')",
-                [tid],
-            )
-
-        assert svc.check_overrides() == 1
-
-        row = real_db.execute(
-            "SELECT action, actor, target_schema, target_table, context_json "
-            "FROM app.audit_log WHERE action = 'rule_deactivated'"
-        ).fetchone()
-        assert row is not None
-        action, actor, target_schema, target_table, context_raw = row
-        assert action == "rule_deactivated"
-        assert actor == "auto_rule_service"
-        assert target_schema == "app"
-        assert target_table == "categorization_rules"
-        context = json.loads(context_raw)
-        assert context["override_count"] == 2
-        assert len(context["sample_ids"]) == 2
-
-
 class TestProposedRulesDualWrite:
     """Phase 1 dual-write: proposed_rules writers populate category_id."""
 
@@ -672,13 +577,13 @@ class TestSupersessionByRuleId:
         assert status == ("approved",)
 
 
-class TestDeactivateOverriddenRulesSimplified:
-    """Simplified deactivation: keeps safety property, drops re-proposal logic."""
+class TestDeactivateOverriddenRules:
+    """Threshold deactivation: keeps safety property, drops re-proposal logic."""
 
-    def test_deactivate_overridden_rules_simplified(
+    def test_threshold_deactivates_rule_and_emits_audit_event(
         self, real_db: Database, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Threshold deactivation: rule deactivated, no new proposal, audit_log event emitted."""
+        """Threshold path: deactivate rule, emit audit_log event with full context, do not re-propose."""
         monkeypatch.setenv("MONEYBIN_CATEGORIZATION__AUTO_RULE_OVERRIDE_THRESHOLD", "2")
         clear_settings_cache()
         monkeypatch.setattr(config_module, "_current_profile", None)
@@ -723,20 +628,23 @@ class TestDeactivateOverriddenRulesSimplified:
         ).fetchone()
         assert proposal_count is not None and proposal_count[0] == 0
 
-        # Audit event emitted — check count and content.
+        # Audit event emitted with full payload — exactly one row, all fields.
         audit_count = real_db.execute(
             "SELECT COUNT(*) FROM app.audit_log WHERE action = 'rule_deactivated'"
         ).fetchone()
         assert audit_count is not None and audit_count[0] == 1
 
         audit_row = real_db.execute(
-            "SELECT action, actor, target_id, context_json "
+            "SELECT action, actor, target_schema, target_table, target_id, context_json "
             "FROM app.audit_log WHERE action = 'rule_deactivated'"
         ).fetchone()
         assert audit_row is not None
-        assert audit_row[0] == "rule_deactivated"
-        assert audit_row[1] == "auto_rule_service"
-        assert audit_row[2] is not None  # target_id = rule_id
-        context = json.loads(audit_row[3])
-        assert "override_count" in context
-        assert "sample_ids" in context
+        action, actor, target_schema, target_table, target_id, context_raw = audit_row
+        assert action == "rule_deactivated"
+        assert actor == "auto_rule_service"
+        assert target_schema == "app"
+        assert target_table == "categorization_rules"
+        assert target_id is not None  # rule_id
+        context = json.loads(context_raw)
+        assert context["override_count"] == 2
+        assert len(context["sample_ids"]) == 2
