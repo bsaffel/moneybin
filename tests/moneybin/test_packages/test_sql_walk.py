@@ -62,11 +62,43 @@ def test_iter_table_refs_returns_referenced_schemas(tmp_path: Path) -> None:
     assert ("app", "test_synthetic_state") in refs
 
 
+def test_iter_table_refs_ignores_unqualified_refs(tmp_path: Path) -> None:
+    """Unqualified table references (no schema) are skipped."""
+    sql = "SELECT * FROM scratch JOIN core.fct_transactions t ON t.id = scratch.id;"
+    sql_file = tmp_path / "unq.sql"
+    sql_file.write_text(sql)
+
+    refs = list(iter_table_refs(sql_file))
+
+    assert ("core", "fct_transactions") in refs
+    assert not any(name == "scratch" for _, name in refs)
+
+
+def test_iter_table_refs_with_cte(tmp_path: Path) -> None:
+    """CTE aliases are not yielded as schema-qualified refs."""
+    sql = """
+    WITH summary AS (SELECT id, amount FROM core.fct_transactions)
+    SELECT s.*
+    FROM summary s
+    JOIN app.test_state st ON st.id = s.id;
+    """
+    sql_file = tmp_path / "cte.sql"
+    sql_file.write_text(sql)
+
+    refs = list(iter_table_refs(sql_file))
+
+    assert ("core", "fct_transactions") in refs
+    assert ("app", "test_state") in refs
+    assert not any(name == "summary" for _, name in refs)
+
+
 def test_extract_create_targets_raises_on_unparseable(tmp_path: Path) -> None:
     """Malformed SQL surfaces a precise error, not a sqlglot internal."""
     sql = "CREATE TABLE oops syntax error;;;"
     sql_file = tmp_path / "bad.sql"
     sql_file.write_text(sql)
 
+    # sqlglot falls back to a Command node (rather than raising) for this input;
+    # _parse must detect the Command and raise ValueError itself.
     with pytest.raises(ValueError, match="failed to parse"):
         extract_create_targets(sql_file)

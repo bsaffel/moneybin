@@ -32,6 +32,9 @@ class CapabilityViolation(ValidationError):  # noqa: N818  # "Violation" disting
     sql_file: str
     target: str  # "schema.name" of the offending CREATE statement
 
+    def __str__(self) -> str:
+        return f"[{self.package_name}] {self.message} (file: {self.sql_file}, target: {self.target})"
+
 
 @dataclass(frozen=True)
 class PrefixViolation(ValidationError):  # noqa: N818  # "Violation" distinguishes validation failure from unexpected error
@@ -45,6 +48,9 @@ class PrefixViolation(ValidationError):  # noqa: N818  # "Violation" distinguish
     surface: str  # "sql_write" | "mcp_tool" | "cli_command" | "schema_file"
     offender: str  # the offending name (table, tool, command, filename)
 
+    def __str__(self) -> str:
+        return f"[{self.package_name}] {self.message} (surface: {self.surface}, offender: {self.offender})"
+
 
 @dataclass(frozen=True)
 class QualityScaleViolation(ValidationError):  # noqa: N818  # "Violation" distinguishes validation failure from unexpected error
@@ -57,3 +63,6 @@ class QualityScaleViolation(ValidationError):  # noqa: N818  # "Violation" disti
 
     claimed_tier: str  # "bronze" | "silver" | "gold" | "platinum"
     missing_evidence: str  # human-readable description of the failed check
+
+    def __str__(self) -> str:
+        return f"[{self.package_name}] {self.message} (claimed: {self.claimed_tier}, missing: {self.missing_evidence})"

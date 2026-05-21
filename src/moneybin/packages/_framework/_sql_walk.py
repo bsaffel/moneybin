@@ -24,12 +24,7 @@ from sqlglot import ParseError
 
 
 def _parse(sql_file: Path) -> Sequence[exp.Expr | None]:
-    """Parse sql_file with the duckdb dialect; raise ValueError on failure.
-
-    sqlglot returns a Command node (instead of raising) for unsupported or
-    malformed syntax. Command nodes are treated as parse failures here because
-    package SQL files must be fully parseable for validation to be meaningful.
-    """
+    """Parse sql_file with the duckdb dialect; raise ValueError on failure."""
     sql = sql_file.read_text()
     try:
         statements = sqlglot.parse(sql, dialect="duckdb")
