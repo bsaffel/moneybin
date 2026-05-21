@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeAlias
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, SecretStr
 
 if TYPE_CHECKING:
     import polars as pl
@@ -42,16 +42,16 @@ class OAuthSession:
     Reserved for `connect-*` providers per docs/specs/connect-gsheet.md;
     no current provider uses this shape, but the type is declared so the
     Protocol's input union is complete.
+
+    Token fields use ``SecretStr`` so accidental logging or repr emits
+    ``'**********'`` instead of the cleartext credential (CLAUDE.md /
+    .claude/rules/security.md). The first ``connect-*`` provider may
+    additionally route through ``SecretStore`` for at-rest storage; this
+    type only guards in-memory exposure.
     """
 
-    # TODO(connect-providers): tokens must route through SecretStore before
-    # the first `connect-*` provider lands — plain `str` violates the
-    # project security rule on credential storage (CLAUDE.md / .claude/
-    # rules/security.md). Either wrap as `SecretStr` (Pydantic) or have
-    # OAuthSession reference a SecretStore key instead of holding the
-    # token value. Decision deferred to the first connect provider PR.
-    access_token: str
-    refresh_token: str | None = None
+    access_token: SecretStr
+    refresh_token: SecretStr | None = None
     expires_at: int | None = None  # epoch seconds
 
 

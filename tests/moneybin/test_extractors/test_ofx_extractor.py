@@ -82,8 +82,10 @@ def test_extractor_initialization(extractor_config: OFXProviderConfig) -> None:
     extractor = OFXExtractor(extractor_config)
 
     assert extractor.config == extractor_config
-    assert extractor.config.raw_data_path is not None  # Set during initialization
-    assert extractor.config.raw_data_path.exists()
+    # raw_data_path is resolved into an extractor instance attribute; the
+    # frozen config itself stays unmutated. Pre-fix this asserted the
+    # mutation on extractor.config.raw_data_path.
+    assert extractor.raw_data_path.exists()
 
 
 @pytest.mark.unit

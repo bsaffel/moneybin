@@ -165,18 +165,14 @@ class OFXExtractor:
 
         self.config = config or OFXProviderConfig()
 
-        # Use profile-aware path if not explicitly provided.
-        # OFXProviderConfig overrides ProviderConfig's frozen=True for this
-        # one initialization mutation; treat as effectively immutable otherwise.
-        if self.config.raw_data_path is None:
-            self.config.raw_data_path = get_raw_data_path() / "ofx"
-
-        # Ensure output directory exists
-        self.config.raw_data_path.mkdir(parents=True, exist_ok=True)
-
-        logger.info(
-            f"Initialized OFX extractor with output: {self.config.raw_data_path}"
+        # Resolve raw_data_path locally so the (frozen) config stays
+        # immutable. When None, fall back to the profile-aware default.
+        self.raw_data_path: Path = (
+            self.config.raw_data_path or get_raw_data_path() / "ofx"
         )
+        self.raw_data_path.mkdir(parents=True, exist_ok=True)
+
+        logger.info(f"Initialized OFX extractor with output: {self.raw_data_path}")
 
     def extract(self, source: ProviderSource) -> ExtractionResult:
         """Provider Protocol entry point.

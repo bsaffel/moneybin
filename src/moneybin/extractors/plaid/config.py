@@ -1,6 +1,10 @@
 """Plaid provider configuration.
 
 Merged into MoneyBinSettings.providers.plaid at framework startup.
+
+Not yet read by the extractor: ``PlaidExtractor`` instances are constructed
+directly without consulting the singleton under ``settings.providers.plaid``.
+Wiring lands in Plan 2 of the extension-contracts implementation.
 """
 
 from moneybin.extractors._types import ProviderConfig

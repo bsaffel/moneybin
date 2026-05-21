@@ -544,6 +544,23 @@ class MoneyBinSettings(BaseSettings):
         """
         from moneybin.utils.user_config import normalize_profile_name
 
+        # Fail loudly on the retired tabular env-var namespace. Tabular
+        # provider knobs moved from ``MONEYBIN_DATA__TABULAR__*`` to
+        # ``MONEYBIN_PROVIDERS__TABULAR__*`` (Plan 1 of extension-contracts).
+        # pydantic-settings silently ignores unknown env vars, so without
+        # this check an operator who set the old names would silently fall
+        # back to defaults after upgrade.
+        _legacy_tabular_env = sorted(
+            k for k in os.environ if k.startswith("MONEYBIN_DATA__TABULAR__")
+        )
+        if _legacy_tabular_env:
+            raise ValueError(
+                "Deprecated env var(s) found: "
+                f"{', '.join(_legacy_tabular_env)}. Tabular provider settings "
+                "moved to the MONEYBIN_PROVIDERS__TABULAR__* namespace. "
+                "Rename each variable accordingly and re-run."
+            )
+
         # Get and normalize profile name BEFORE using it for paths
         # This ensures directories are created with normalized names
         raw_profile = kwargs.get("profile", "default")

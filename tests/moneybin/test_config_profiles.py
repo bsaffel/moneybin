@@ -413,6 +413,40 @@ def test_tabular_config_account_match_threshold_override() -> None:
     assert cfg.account_match_threshold == 0.85
 
 
+def test_providers_tabular_env_var_nesting_overrides_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """MONEYBIN_PROVIDERS__TABULAR__* nested env vars reach the settings root.
+
+    Catches a regression where the providers nesting drifts out of sync
+    with Pydantic Settings' env_nested_delimiter and the override silently
+    falls back to defaults.
+    """
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    monkeypatch.setenv("MONEYBIN_PROVIDERS__TABULAR__TEXT_SIZE_LIMIT_MB", "999")
+
+    settings = MoneyBinSettings()
+
+    assert settings.providers.tabular.text_size_limit_mb == 999
+
+
+def test_legacy_data_tabular_env_var_fails_loudly(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """MONEYBIN_DATA__TABULAR__* env vars from before Plan 1 must error.
+
+    Tabular provider knobs moved out of ``data.tabular`` into
+    ``providers.tabular``. pydantic-settings would silently ignore the old
+    names; the startup validator catches them and tells the operator to
+    migrate.
+    """
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    monkeypatch.setenv("MONEYBIN_DATA__TABULAR__TEXT_SIZE_LIMIT_MB", "999")
+
+    with pytest.raises(ValueError, match="MONEYBIN_PROVIDERS__TABULAR"):
+        MoneyBinSettings()
+
+
 class TestSqlmeshConfigProfileGating:
     """Regression tests for the profile gate in ``sqlmesh/config.py``.
 
