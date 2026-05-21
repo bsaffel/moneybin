@@ -22,6 +22,7 @@ from .commands import (
     assets,
     categories,
     db,
+    gsheet,
     import_cmd,
     logs,
     mcp,
@@ -127,6 +128,11 @@ app.add_typer(
     sync.app,
     name="sync",
     help="Sync transactions from external services",
+)
+app.add_typer(
+    gsheet.app,
+    name="gsheet",
+    help="Connect Google Sheets workbooks (direct OAuth, user-controlled storage)",
 )
 app.add_typer(
     accounts.app,
