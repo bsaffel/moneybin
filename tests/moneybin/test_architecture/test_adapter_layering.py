@@ -64,28 +64,28 @@ ADAPTER_LAYERING_ALLOWLIST: frozenset[tuple[str, str, str]] = frozenset({
         "moneybin.loaders",
         "import_log",
     ),
-    # TabularLoader.get_import_history() is the CLI's read path for
+    # TabularExtractor.get_import_history() is the CLI's read path for
     # `moneybin import history` — class method but read-only (opens DB
     # read_only=True). Functionally equivalent to a module-level read
     # helper.
     (
         "cli/commands/import_cmd.py",
-        "moneybin.loaders.tabular_loader",
-        "TabularLoader",
+        "moneybin.extractors.tabular",
+        "TabularExtractor",
     ),
     # --- Dependency injection -------------------------------------------
-    # PlaidLoader is constructed by the sync adapters and passed into
+    # PlaidExtractor is constructed by the sync adapters and passed into
     # SyncService(loader=...) as a constructor argument. The adapter
     # never calls a method on it; SyncService is the only consumer.
     (
         "mcp/tools/sync.py",
-        "moneybin.loaders.plaid_loader",
-        "PlaidLoader",
+        "moneybin.extractors.plaid",
+        "PlaidExtractor",
     ),
     (
         "cli/commands/sync.py",
-        "moneybin.loaders.plaid_loader",
-        "PlaidLoader",
+        "moneybin.extractors.plaid",
+        "PlaidExtractor",
     ),
     # --- Pure type / format descriptors ---------------------------------
     # Format descriptors and column-mapping types from the tabular

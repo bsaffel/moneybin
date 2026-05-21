@@ -44,12 +44,12 @@ def _build_sync_client():
 def _build_sync_service():
     """Yield a SyncService with an active Database connection (per ADR-010)."""
     from moneybin.database import get_database  # noqa: PLC0415
-    from moneybin.loaders.plaid_loader import PlaidLoader  # noqa: PLC0415
+    from moneybin.extractors.plaid import PlaidExtractor  # noqa: PLC0415
     from moneybin.services.sync_service import SyncService  # noqa: PLC0415
 
     client = _build_sync_client()
     with get_database(read_only=False) as db:
-        loader = PlaidLoader(db)
+        loader = PlaidExtractor(db)
         yield SyncService(client=client, db=db, loader=loader)
 
 
