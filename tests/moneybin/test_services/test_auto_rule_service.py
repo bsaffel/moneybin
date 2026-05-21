@@ -513,8 +513,6 @@ class TestRuleDeactivationAuditLog:
     def test_deactivation_audit_event_carries_override_count_and_sample_ids(
         self, real_db: Database, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        import json
-
         monkeypatch.setenv("MONEYBIN_CATEGORIZATION__AUTO_RULE_OVERRIDE_THRESHOLD", "2")
         clear_settings_cache()
         monkeypatch.setattr(config_module, "_current_profile", None)
