@@ -191,6 +191,7 @@ def register_core_tools() -> None:
     from moneybin.mcp.tools.accounts import register_accounts_tools
     from moneybin.mcp.tools.categories import register_categories_tools
     from moneybin.mcp.tools.curation import register_curation_tools
+    from moneybin.mcp.tools.gsheet import register_gsheet_tools
     from moneybin.mcp.tools.import_inbox import register_inbox_tools
     from moneybin.mcp.tools.import_tools import register_import_tools
     from moneybin.mcp.tools.merchants import register_merchants_tools
@@ -231,6 +232,7 @@ def register_core_tools() -> None:
     register_inbox_tools(mcp)
     register_sync_tools(mcp)
     register_sync_prompts(mcp)
+    register_gsheet_tools(mcp)
     register_refresh_tools(mcp)
     register_transform_tools(mcp)
     register_sql_tools(mcp)
