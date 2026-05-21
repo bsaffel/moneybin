@@ -644,7 +644,14 @@ class TestDeactivateOverriddenRules:
         assert actor == "auto_rule_service"
         assert target_schema == "app"
         assert target_table == "categorization_rules"
-        assert target_id is not None  # rule_id
+        # Verify target_id is the rule_id of the deactivated rule, not just
+        # any non-null value — guards against a bug that stores the wrong
+        # entity ID in the audit row.
+        rule_id_row = real_db.execute(
+            "SELECT rule_id FROM app.categorization_rules WHERE created_by = 'auto_rule'"
+        ).fetchone()
+        assert rule_id_row is not None
+        assert target_id == rule_id_row[0]
         context = json.loads(context_raw)
         assert context["override_count"] == 2
         assert len(context["sample_ids"]) == 2

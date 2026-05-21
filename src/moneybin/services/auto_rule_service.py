@@ -588,7 +588,10 @@ class AutoRuleService:
                         CATEGORIZATION_RULES.name,
                         rule_id,
                     ),
-                    before=None,
+                    # Rule must have been active prior to deactivation — the scan
+                    # query above filters on `is_active = true`, so before-state
+                    # is known without an extra read.
+                    before={"is_active": True},
                     after={"is_active": False},
                     context={
                         "override_count": override_count,
