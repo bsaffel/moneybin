@@ -40,7 +40,7 @@ import logging
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from moneybin.database import Database
 from moneybin.services.transform_service import TransformService
@@ -62,8 +62,13 @@ class RefreshResult:
     error: str | None = None
 
 
-RefreshStep = Literal["match", "transform", "categorize"]
-CANONICAL_STEPS: tuple[RefreshStep, ...] = ("match", "transform", "categorize")
+RefreshStep = Literal["gsheet", "match", "transform", "categorize"]
+CANONICAL_STEPS: tuple[RefreshStep, ...] = (
+    "gsheet",
+    "match",
+    "transform",
+    "categorize",
+)
 
 
 def expand_steps(steps: Sequence[str] | None) -> frozenset[str]:
@@ -77,13 +82,13 @@ def expand_steps(steps: Sequence[str] | None) -> frozenset[str]:
 
 
 def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
-    """Run the post-load pipeline: matching → SQLMesh apply → categorization.
+    """Run the post-load pipeline: gsheet pull → matching → SQLMesh apply → categorization.
 
     When ``steps`` is None (default), the full cascade runs — same behavior
     as the pre-``steps`` signature, preserved for all existing callers.
 
     When ``steps`` is provided, only the named steps execute, in canonical
-    order (``match`` → ``transform`` → ``categorize``) regardless of the
+    order (``gsheet`` → ``match`` → ``transform`` → ``categorize``) regardless of the
     input list's order. Dependencies enforce the order: categorize reads
     SQLMesh-built views, so running it after transform is mandatory; the
     parameter cannot reorder this.
@@ -95,8 +100,8 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
 
     Args:
         db: Database handle to run against.
-        steps: Subset of ``("match", "transform", "categorize")`` to run.
-            Defaults to all three when None.
+        steps: Subset of ``("gsheet", "match", "transform", "categorize")`` to run.
+            Defaults to all four when None.
 
     Raises:
         UserError(code="UNKNOWN_REFRESH_STEP"): if any element of ``steps``
@@ -120,6 +125,25 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
             )
 
     requested = expand_steps(steps)
+
+    if "gsheet" in requested:
+        try:
+            pull_results = _run_gsheet_step(db)
+            if pull_results:
+                completed = [r for r in pull_results if r.status == "complete"]
+                if completed:
+                    total_rows = sum(
+                        r.load_result.rows_inserted + r.load_result.rows_upserted
+                        for r in completed
+                        if r.load_result
+                    )
+                    logger.info(
+                        f"GSheet pull: {len(completed)} completed, {total_rows} total rows"
+                    )
+        except Exception:  # noqa: BLE001 — best-effort; sheets may not be reachable yet
+            logger.debug(
+                "GSheet pull skipped (connections may not exist yet)", exc_info=True
+            )
 
     if "match" in requested:
         try:
@@ -157,6 +181,40 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
         applied=True,
         duration_seconds=apply_result.duration_seconds,
     )
+
+
+def _run_gsheet_step(db: Database) -> list[Any]:
+    """Best-effort GSheet pull step. Failures log-only — never propagated."""
+    from moneybin.config import get_settings  # noqa: PLC0415
+    from moneybin.connectors.gsheet.oauth_client import (
+        GoogleOAuthClient,  # noqa: PLC0415
+    )
+    from moneybin.connectors.gsheet.pull_service import (
+        GSheetPullService,  # noqa: PLC0415
+    )
+    from moneybin.connectors.gsheet.sheets_api import SheetsClient  # noqa: PLC0415
+    from moneybin.secrets import SecretStore  # noqa: PLC0415
+
+    gsheet_start = time.monotonic()
+    try:
+        secret_store = SecretStore()
+        settings = get_settings()
+        oauth_client = GoogleOAuthClient(secrets=secret_store, settings=settings)
+        sheets_client = SheetsClient(oauth=oauth_client)
+        service = GSheetPullService(
+            db=db, sheets_client=sheets_client, oauth_client=oauth_client
+        )
+        results = service.pull_all_healthy()
+        return results
+    except Exception:  # noqa: BLE001 — best-effort; surfaces in logs only
+        logger.debug(
+            "GSheet pull skipped (no connections or setup incomplete)", exc_info=True
+        )
+        return []
+    finally:
+        logger.debug(
+            f"GSheet pull step finished in {time.monotonic() - gsheet_start:.2f}s"
+        )
 
 
 def _run_categorize_step(db: Database) -> None:

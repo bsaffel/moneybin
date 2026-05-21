@@ -177,9 +177,7 @@ class GSheetConnectionService:
             # Refresh the connection state after the pull updated counters.
             stored = self._repo.get(connection_id)
             if stored is None:
-                raise RuntimeError(
-                    f"connection vanished mid-pull: {connection_id}"
-                )
+                raise RuntimeError(f"connection vanished mid-pull: {connection_id}")
             connection = row_to_connection(stored)
 
         logger.info(
@@ -285,9 +283,7 @@ class GSheetConnectionService:
         pull = pull_svc.pull_connection(connection_id)
         refreshed = self._repo.get(connection_id)
         if refreshed is None:
-            raise RuntimeError(
-                f"connection vanished mid-reconnect: {connection_id}"
-            )
+            raise RuntimeError(f"connection vanished mid-reconnect: {connection_id}")
         return ConnectResult(
             connection=row_to_connection(refreshed),
             detection=detection,

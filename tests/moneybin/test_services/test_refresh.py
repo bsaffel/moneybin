@@ -1,11 +1,12 @@
 """Unit tests for the refresh service-layer cascade.
 
-These tests mock the three dependent services (MatchingService,
-TransformService, CategorizationService) and assert that ``refresh()``:
+These tests mock the four dependent services (GSheetPullService,
+MatchingService, TransformService, CategorizationService) and assert
+that ``refresh()``:
 
 - Runs the full cascade when ``steps=None`` (current default).
 - Runs only the requested subset when ``steps`` is a list.
-- Executes steps in canonical order (match → transform → categorize)
+- Executes steps in canonical order (gsheet → match → transform → categorize)
   regardless of input-list order.
 - Raises ``UserError(code="UNKNOWN_REFRESH_STEP")`` on unknown step names.
 """
@@ -29,7 +30,8 @@ def _make_apply_result(applied: bool = True) -> ApplyResult:
 
 @pytest.fixture
 def patched_services() -> Iterator[dict[str, MagicMock]]:
-    """Patch all three step backends and yield handles for call inspection."""
+    """Patch all four step backends and yield handles for call inspection."""
+    gsheet_pull = MagicMock(return_value=[])
     matcher_run = MagicMock(
         return_value=MagicMock(has_matches=False, has_pending=False)
     )
@@ -42,6 +44,10 @@ def patched_services() -> Iterator[dict[str, MagicMock]]:
     # and the other backends via deferred imports, so patching the source
     # modules wouldn't intercept the call paths used here.
     with (
+        patch(
+            "moneybin.services.refresh._run_gsheet_step",
+            gsheet_pull,
+        ),
         patch(
             "moneybin.services.matching_service.MatchingService.run",
             matcher_run,
@@ -60,6 +66,7 @@ def patched_services() -> Iterator[dict[str, MagicMock]]:
         ),
     ):
         yield {
+            "gsheet_pull": gsheet_pull,
             "matcher_run": matcher_run,
             "transform_apply": transform_apply,
             "categorize_pending": categorize_pending,
@@ -70,10 +77,11 @@ def patched_services() -> Iterator[dict[str, MagicMock]]:
 def test_refresh_steps_none_runs_full_cascade(
     patched_services: dict[str, MagicMock],
 ) -> None:
-    """``steps=None`` (default) preserves current behavior: all three steps run."""
+    """``steps=None`` (default) preserves current behavior: all four steps run."""
     result = refresh(MagicMock())
     assert isinstance(result, RefreshResult)
     assert result.applied is True
+    assert patched_services["gsheet_pull"].call_count == 1
     assert patched_services["matcher_run"].call_count == 1
     assert patched_services["transform_apply"].call_count == 1
     assert patched_services["categorize_pending"].call_count == 1
@@ -81,9 +89,10 @@ def test_refresh_steps_none_runs_full_cascade(
 
 @pytest.mark.unit
 def test_refresh_steps_transform_only(patched_services: dict[str, MagicMock]) -> None:
-    """``steps=["transform"]`` skips match and categorize."""
+    """``steps=["transform"]`` skips gsheet, match, and categorize."""
     result = refresh(MagicMock(), steps=["transform"])
     assert result.applied is True
+    assert patched_services["gsheet_pull"].call_count == 0
     assert patched_services["matcher_run"].call_count == 0
     assert patched_services["transform_apply"].call_count == 1
     assert patched_services["categorize_pending"].call_count == 0
@@ -112,8 +121,12 @@ def test_refresh_steps_match_and_categorize_skips_transform(
 def test_refresh_steps_canonical_order_enforced(
     patched_services: dict[str, MagicMock],
 ) -> None:
-    """Input-list order is ignored; canonical order match→transform→categorize wins."""
+    """Input-list order is ignored; canonical order gsheet→match→transform→categorize wins."""
     call_log: list[str] = []
+
+    def _gsheet_side(*a: Any, **kw: Any) -> list[Any]:
+        call_log.append("gsheet")
+        return []
 
     def _match_side(*a: Any, **kw: Any) -> MagicMock:
         call_log.append("match")
@@ -127,12 +140,13 @@ def test_refresh_steps_canonical_order_enforced(
         call_log.append("categorize")
         return {"total": 0, "rule": 0, "merchant": 0}
 
+    patched_services["gsheet_pull"].side_effect = _gsheet_side
     patched_services["matcher_run"].side_effect = _match_side
     patched_services["transform_apply"].side_effect = _transform_side
     patched_services["categorize_pending"].side_effect = _categorize_side
 
-    refresh(MagicMock(), steps=["categorize", "transform", "match"])
-    assert call_log == ["match", "transform", "categorize"]
+    refresh(MagicMock(), steps=["categorize", "transform", "match", "gsheet"])
+    assert call_log == ["gsheet", "match", "transform", "categorize"]
 
 
 @pytest.mark.unit
@@ -143,10 +157,12 @@ def test_refresh_unknown_step_raises_user_error(
     with pytest.raises(UserError) as excinfo:
         refresh(MagicMock(), steps=["transform", "bogus"])
     assert excinfo.value.code == "UNKNOWN_REFRESH_STEP"
+    assert "gsheet" in (excinfo.value.hint or "")
     assert "match" in (excinfo.value.hint or "")
     assert "transform" in (excinfo.value.hint or "")
     assert "categorize" in (excinfo.value.hint or "")
     # None of the step backends should run when validation fails.
+    assert patched_services["gsheet_pull"].call_count == 0
     assert patched_services["matcher_run"].call_count == 0
     assert patched_services["transform_apply"].call_count == 0
     assert patched_services["categorize_pending"].call_count == 0
@@ -160,6 +176,47 @@ def test_refresh_empty_steps_list_runs_nothing(
     result = refresh(MagicMock(), steps=[])
     assert result.applied is False
     assert result.duration_seconds is None
+    assert patched_services["gsheet_pull"].call_count == 0
     assert patched_services["matcher_run"].call_count == 0
     assert patched_services["transform_apply"].call_count == 0
     assert patched_services["categorize_pending"].call_count == 0
+
+
+@pytest.mark.unit
+def test_refresh_step_order_puts_gsheet_before_match(
+    patched_services: dict[str, MagicMock],
+) -> None:
+    """Gsheet runs before match (pulled rows feed downstream matching)."""
+    call_log: list[str] = []
+
+    def _gsheet_side(*a: Any, **kw: Any) -> list[Any]:
+        call_log.append("gsheet")
+        return []
+
+    def _match_side(*a: Any, **kw: Any) -> MagicMock:
+        call_log.append("match")
+        return MagicMock(has_matches=False, has_pending=False)
+
+    patched_services["gsheet_pull"].side_effect = _gsheet_side
+    patched_services["matcher_run"].side_effect = _match_side
+
+    refresh(MagicMock(), steps=["gsheet", "match"])
+    assert call_log == ["gsheet", "match"]
+    # Verify both ran
+    assert patched_services["gsheet_pull"].call_count == 1
+    assert patched_services["matcher_run"].call_count == 1
+
+
+@pytest.mark.unit
+def test_refresh_gsheet_step_skippable(
+    patched_services: dict[str, MagicMock],
+) -> None:
+    """Gsheet step can be skipped via steps parameter."""
+    result = refresh(MagicMock(), steps=["match", "transform", "categorize"])
+    # Verify gsheet did not run
+    assert patched_services["gsheet_pull"].call_count == 0
+    # But others did
+    assert patched_services["matcher_run"].call_count == 1
+    assert patched_services["transform_apply"].call_count == 1
+    assert patched_services["categorize_pending"].call_count == 1
+    assert result.applied is True
