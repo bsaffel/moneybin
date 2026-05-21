@@ -236,7 +236,10 @@ def transactions_tags_rename(
         res = TransactionService(db).rename_tag(old_tag, new_tag, actor="mcp")
     return build_envelope(
         data=TagRenamePayload(
-            row_count=res.row_count, parent_audit_id=res.parent_audit_id
+            old_tag=old_tag,
+            new_tag=new_tag,
+            row_count=res.row_count,
+            parent_audit_id=res.parent_audit_id,
         )
     )
 

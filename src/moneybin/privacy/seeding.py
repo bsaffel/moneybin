@@ -23,6 +23,7 @@ schema migration.
 from __future__ import annotations
 
 import secrets
+import threading
 
 from moneybin.secrets import SecretNotFoundError, SecretStore
 
@@ -30,6 +31,12 @@ REDACTION_KEY_NAME = "PRIVACY__REDACTION_KEY"
 _KEY_BYTES = 32
 
 _CACHE: dict[str, bytes] = {}
+# Serialises the check-then-store across the SecretStore round-trip. Without
+# the lock, two concurrent cold misses on the same profile could each generate
+# and persist a fresh key — overwriting one another and breaking any
+# previously-emitted deterministic identifier. dict ops are GIL-safe but the
+# get_key → set_key sequence between them is not.
+_CACHE_LOCK = threading.Lock()
 # Cache slot used when no profile has been resolved (single-user bootstrap path
 # before the profile resolver fires). Distinct from any real profile name.
 _NO_PROFILE_KEY = "__base__"
@@ -56,14 +63,15 @@ def get_redaction_key() -> bytes:
         profile = get_current_profile()
     except RuntimeError:
         profile = _NO_PROFILE_KEY
-    if profile in _CACHE:
-        return _CACHE[profile]
-    store = SecretStore()
-    try:
-        hex_value = store.get_key(REDACTION_KEY_NAME)
-        key = bytes.fromhex(hex_value)
-    except SecretNotFoundError:
-        key = secrets.token_bytes(_KEY_BYTES)
-        store.set_key(REDACTION_KEY_NAME, key.hex())
-    _CACHE[profile] = key
-    return key
+    with _CACHE_LOCK:
+        if profile in _CACHE:
+            return _CACHE[profile]
+        store = SecretStore()
+        try:
+            hex_value = store.get_key(REDACTION_KEY_NAME)
+            key = bytes.fromhex(hex_value)
+        except SecretNotFoundError:
+            key = secrets.token_bytes(_KEY_BYTES)
+            store.set_key(REDACTION_KEY_NAME, key.hex())
+        _CACHE[profile] = key
+        return key

@@ -148,8 +148,15 @@ class TagsPayload:
 
 @dataclass(frozen=True, slots=True)
 class TagRenamePayload:
-    """Payload for transactions_tags_rename."""
+    """Payload for transactions_tags_rename.
 
+    ``old_tag`` / ``new_tag`` echo the rename arguments so JSON consumers can
+    confirm which rename actually applied without rebuilding it from their
+    own state. Tag names are USER_NOTE — no privacy reason to omit.
+    """
+
+    old_tag: Annotated[str, DataClass.USER_NOTE]
+    new_tag: Annotated[str, DataClass.USER_NOTE]
     row_count: Annotated[int, DataClass.AGGREGATE]
     parent_audit_id: Annotated[str, DataClass.RECORD_ID]
 

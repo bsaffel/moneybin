@@ -697,7 +697,9 @@ class TestAccountsResolve:
         )
         assert result.exit_code == 0, result.stderr
         payload = json.loads(result.stdout)
-        assert payload["summary"]["sensitivity"] == "low"
+        # AccountResolvePayload carries account_id (ACCOUNT_IDENTIFIER → CRITICAL);
+        # render_or_json stamps the derived tier over the command's "low".
+        assert payload["summary"]["sensitivity"] == "critical"
         # data is {"matches": [...]} from AccountResolvePayload serialization
         # account_id is ACCOUNT_IDENTIFIER (CRITICAL) — <4 chars → "****"
         assert payload["data"]["matches"][0]["account_id"] == "****"

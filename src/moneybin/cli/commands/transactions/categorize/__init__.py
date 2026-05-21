@@ -116,7 +116,9 @@ def categorize_pending(
         rows = [tuple(r.values()) for r in records]
         render_rich_table(cols, rows)
 
-    render_or_json(envelope, output, render_fn=_render_table)
+    render_or_json(
+        envelope, output, render_fn=_render_table, cli_actor="categorize_pending"
+    )
 
 
 @app.command("commit")

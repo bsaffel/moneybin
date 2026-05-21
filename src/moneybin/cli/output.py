@@ -138,6 +138,22 @@ def render_or_json(
         redacted_data = redact_typed(envelope.data, consent=None)  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
         envelope = dataclasses.replace(envelope, data=redacted_data)  # pyright: ignore[reportUnknownArgumentType]
 
+    # Stamp summary.sensitivity from the derived tier so the emitted envelope's
+    # summary matches what was actually returned. Mirrors the MCP decorator's
+    # post-call correction. Agents using `summary.sensitivity` to decide trust
+    # level would otherwise underestimate the tier whenever a CLI command
+    # passes a too-low value to build_envelope().
+    derived_sensitivity = _derive_log_sensitivity(
+        original_data_type,  # pyright: ignore[reportUnknownArgumentType]
+        envelope.summary.sensitivity,
+    )
+    if derived_sensitivity != envelope.summary.sensitivity:
+        updated_summary = dataclasses.replace(
+            envelope.summary,
+            sensitivity=derived_sensitivity,  # pyright: ignore[reportArgumentType]
+        )
+        envelope = dataclasses.replace(envelope, summary=updated_summary)  # pyright: ignore[reportUnknownArgumentType]
+
     if json_fields and isinstance(envelope.data, list):  # pyright: ignore[reportUnknownMemberType]
         fields = {f.strip() for f in json_fields.split(",") if f.strip()}
         filtered = [
@@ -151,16 +167,13 @@ def render_or_json(
             c.value
             for c in sorted(extract_data_classes(original_data_type))  # pyright: ignore[reportUnknownArgumentType]
         ]
-        # Derive sensitivity from the payload TYPE — envelope.summary.sensitivity
-        # is set manually by CLI commands and frequently understates the actual
-        # tier (e.g. accounts_resolve passes "low" while returning ACCOUNT_IDENTIFIER
-        # data). Auditing must reflect what was actually returned, not what the
-        # command guessed.
-        log_sensitivity = _derive_log_sensitivity(original_data_type)  # pyright: ignore[reportUnknownArgumentType]
+        # envelope.summary.sensitivity is the derived value (stamped above) for
+        # typed payloads, or the command's declared value for bare list/dict
+        # payloads — either way it's the authoritative tier for the audit log.
         write_privacy_event(
             build_tool_call_event(
                 actor=f"cli.{cli_actor}",
-                sensitivity=log_sensitivity,
+                sensitivity=envelope.summary.sensitivity,
                 classes_returned=classes_returned,
                 row_count=envelope.summary.returned_count,
             )
@@ -169,15 +182,18 @@ def render_or_json(
     typer.echo(envelope.to_json())
 
 
-def _derive_log_sensitivity(payload_type: type) -> str:
+def _derive_log_sensitivity(payload_type: type, envelope_sensitivity: str) -> str:
     """Return the audit-log sensitivity string derived from ``payload_type``.
 
-    Falls back to ``"low"`` for bare list/dict/None payloads (legacy CLI
-    commands not yet migrated to typed payloads) — those carry no class
-    metadata, so there's nothing to derive against.
+    For bare list/dict/None payloads (legacy CLI commands not yet migrated to
+    typed payloads), falls back to ``envelope_sensitivity`` — the command's
+    own declaration is the only signal we have when the type carries no
+    class metadata. ``db_key_show`` passes ``{"key": ...}`` with
+    ``sensitivity="high"``; the audit log must preserve that, not flatten
+    every dict payload to ``"low"``.
     """
     if payload_type in (list, dict, tuple, set, type(None)):
-        return "low"
+        return envelope_sensitivity
     return derive_tier(payload_type).name.lower()
 
 

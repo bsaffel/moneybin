@@ -7,9 +7,12 @@ with its own database, logs, and configuration.
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import os
 import re
 import shutil
+from collections.abc import Generator
 from pathlib import Path
 
 import yaml
@@ -25,6 +28,20 @@ from moneybin.utils.user_config import (
 logger = logging.getLogger(__name__)
 
 _SAFE_KEY = re.compile(r"^[a-z][a-z0-9_]*$")
+
+
+@contextlib.contextmanager
+def _restrictive_umask() -> Generator[None, None, None]:
+    """Force ``os.umask(0o077)`` for the wrapped block.
+
+    Used around ``mkdir`` calls so directories land at ``0o700`` atomically,
+    without a window at the default umask between ``mkdir`` and ``chmod``.
+    """
+    prev = os.umask(0o077)
+    try:
+        yield
+    finally:
+        os.umask(prev)
 
 
 def _read_yaml(path: Path) -> dict[str, object]:
@@ -103,18 +120,19 @@ class ProfileService:
         """
         normalized = normalize_profile_name(name)
         profile_dir = self._profile_dir(name)
+        # 0o700: profile dir holds the encrypted DB, privacy.log.jsonl, and
+        # other per-profile state; not readable by other users. Restrictive
+        # umask makes the perms apply at creation time — no window where the
+        # dir exists at the umask-default (typically 0o755).
         try:
-            profile_dir.mkdir(parents=True, exist_ok=False)
+            with _restrictive_umask():
+                profile_dir.mkdir(parents=True, exist_ok=False, mode=0o700)
         except FileExistsError:
             raise ProfileExistsError(f"Profile '{normalized}' already exists") from None
         try:
-            # 0o700: profile dir holds the encrypted DB, privacy.log.jsonl,
-            # and other per-profile state; not readable by other users.
-            profile_dir.chmod(0o700)
-            (profile_dir / "logs").mkdir()
-            (profile_dir / "logs").chmod(0o700)
-            (profile_dir / "temp").mkdir()
-            (profile_dir / "temp").chmod(0o700)
+            with _restrictive_umask():
+                (profile_dir / "logs").mkdir(mode=0o700)
+                (profile_dir / "temp").mkdir(mode=0o700)
             generate_profile_config(profile_dir, normalized)
             self._init_database(profile_dir, normalized)
             if init_inbox:

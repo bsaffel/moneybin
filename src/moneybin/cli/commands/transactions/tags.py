@@ -171,6 +171,8 @@ def transactions_tags_rename(
         render_or_json(
             build_envelope(
                 data=TagRenamePayload(
+                    old_tag=old,
+                    new_tag=new,
                     row_count=result.row_count,
                     parent_audit_id=result.parent_audit_id,
                 ),

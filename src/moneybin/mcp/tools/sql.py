@@ -40,6 +40,13 @@ def sql_query(query: str) -> ResponseEnvelope[Any]:
     For schema, columns, and example queries, read resource
     `moneybin://schema` before composing non-trivial queries.
 
+    Note: privacy redaction is not applied to ``sql_query`` results — the
+    payload shape is decided by the caller's query, so the static-type-driven
+    redaction the rest of the surface uses cannot kick in. Avoid selecting
+    CRITICAL-tier columns directly (``account_id``, ``routing_number``,
+    ``last_four``); prefer the dedicated tools that mask those values. PR 4
+    replaces this opt-out with sqlglot column-lineage redaction.
+
     Args:
         query: The SQL query to execute.
     """
