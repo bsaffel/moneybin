@@ -1,0 +1,158 @@
+"""Tests for PackageManifest parsing and validation.
+
+The manifest model is the framework's first line of defence — malformed
+manifests fail to parse, eliminating downstream cascading failures.
+"""
+
+from pathlib import Path
+from textwrap import dedent
+
+import pytest
+from pydantic import ValidationError as PydanticValidationError
+
+from moneybin.packages._framework.manifest import PackageManifest
+
+
+def _write_manifest(tmp_path: Path, body: str) -> Path:
+    path = tmp_path / "moneybin_package.yaml"
+    path.write_text(dedent(body).strip())
+    return path
+
+
+def test_valid_manifest_parses(tmp_path: Path) -> None:
+    """A complete, well-formed manifest parses into a PackageManifest."""
+    manifest_path = _write_manifest(
+        tmp_path,
+        """
+        name: test_synthetic
+        display_name: Test Synthetic
+        version: 1.0.0
+        quality_scale: bronze
+        owns_prefix: test_synthetic
+        publisher:
+          name: MoneyBin Core
+          url: https://moneybin.app
+          verified: true
+        description: |
+          Minimal synthetic package used to exercise the framework.
+        capabilities:
+          writes:
+            - app.test_synthetic_*
+            - reports.test_synthetic_*
+          reads:
+            - core.fct_transactions
+          network: []
+          secrets: []
+        requires:
+          moneybin: ">=1.0.0,<2.0.0"
+        entry_points:
+          tools: moneybin.packages.test_synthetic.tools:register
+          cli: moneybin.packages.test_synthetic.cli:register
+          models: moneybin.packages.test_synthetic.models
+          schema: moneybin.packages.test_synthetic.schema
+        """,
+    )
+
+    manifest = PackageManifest.from_yaml(manifest_path)
+
+    assert manifest.name == "test_synthetic"
+    assert manifest.quality_scale == "bronze"
+    assert manifest.owns_prefix == "test_synthetic"
+    assert manifest.publisher.verified is True
+    assert "app.test_synthetic_*" in manifest.capabilities.writes
+    assert manifest.entry_points.tools == (
+        "moneybin.packages.test_synthetic.tools:register"
+    )
+
+
+def test_name_must_match_owns_prefix(tmp_path: Path) -> None:
+    """Coherence: a package's name and prefix must match.
+
+    Mismatched name/prefix is the single most common authoring bug a
+    contributor could make; surfacing it at manifest load saves the
+    cascading failures it would otherwise cause downstream.
+    """
+    manifest_path = _write_manifest(
+        tmp_path,
+        """
+        name: assets
+        display_name: Assets
+        version: 1.0.0
+        quality_scale: bronze
+        owns_prefix: real_estate
+        publisher: {name: x, verified: false}
+        description: ok
+        capabilities: {writes: [], reads: [], network: [], secrets: []}
+        requires: {moneybin: ">=1.0.0"}
+        entry_points: {tools: x:y, cli: x:y, models: x, schema: x}
+        """,
+    )
+
+    with pytest.raises(PydanticValidationError, match="must match owns_prefix"):
+        PackageManifest.from_yaml(manifest_path)
+
+
+def test_quality_scale_must_be_known(tmp_path: Path) -> None:
+    """Only bronze/silver/gold/platinum are valid claims."""
+    manifest_path = _write_manifest(
+        tmp_path,
+        """
+        name: test_synthetic
+        display_name: Test
+        version: 1.0.0
+        quality_scale: titanium
+        owns_prefix: test_synthetic
+        publisher: {name: x, verified: false}
+        description: ok
+        capabilities: {writes: [], reads: [], network: [], secrets: []}
+        requires: {moneybin: ">=1.0.0"}
+        entry_points: {tools: x:y, cli: x:y, models: x, schema: x}
+        """,
+    )
+
+    with pytest.raises(PydanticValidationError):
+        PackageManifest.from_yaml(manifest_path)
+
+
+def test_version_must_be_semver(tmp_path: Path) -> None:
+    """Version field rejects non-semver strings."""
+    manifest_path = _write_manifest(
+        tmp_path,
+        """
+        name: test_synthetic
+        display_name: Test
+        version: v1
+        quality_scale: bronze
+        owns_prefix: test_synthetic
+        publisher: {name: x, verified: false}
+        description: ok
+        capabilities: {writes: [], reads: [], network: [], secrets: []}
+        requires: {moneybin: ">=1.0.0"}
+        entry_points: {tools: x:y, cli: x:y, models: x, schema: x}
+        """,
+    )
+
+    with pytest.raises(PydanticValidationError, match="semver"):
+        PackageManifest.from_yaml(manifest_path)
+
+
+def test_missing_required_field_fails(tmp_path: Path) -> None:
+    """Required fields are required."""
+    manifest_path = _write_manifest(
+        tmp_path,
+        """
+        name: test_synthetic
+        version: 1.0.0
+        quality_scale: bronze
+        owns_prefix: test_synthetic
+        publisher: {name: x, verified: false}
+        description: ok
+        capabilities: {writes: [], reads: [], network: [], secrets: []}
+        requires: {moneybin: ">=1.0.0"}
+        entry_points: {tools: x:y, cli: x:y, models: x, schema: x}
+        """,
+    )
+
+    # display_name omitted
+    with pytest.raises(PydanticValidationError):
+        PackageManifest.from_yaml(manifest_path)
