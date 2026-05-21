@@ -53,9 +53,21 @@ def generate_seed_view_sql(
 
     view_name = f"gsheet_{alias}"
     select_parts: list[str] = []
+    seen_normalized: dict[str, str] = {}
 
     for header, sql_type in typed_columns.items():
         col_name = _normalize_col_name(header)
+        # Catch collisions like "Amount USD" + "Amount_USD" → both become
+        # "amount_usd". Without this guard, DuckDB raises an opaque duplicate-
+        # alias error during CREATE VIEW; here we point at the conflicting
+        # headers so the user knows what to rename in their sheet.
+        if col_name in seen_normalized:
+            raise ValueError(
+                f"Headers {seen_normalized[col_name]!r} and {header!r} both "
+                f"normalize to {col_name!r}. Rename one of the conflicting "
+                "columns in the sheet before connecting."
+            )
+        seen_normalized[col_name] = header
         # data->>'<header>' extracts as text; CAST to the inferred type.
         # Escape single-quotes in header for the SQL string literal.
         header_lit = header.replace("'", "''")

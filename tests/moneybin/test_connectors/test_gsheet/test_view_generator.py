@@ -139,3 +139,21 @@ class TestGenerateSeedViewSql:
                 connection_id="conn-1",
                 typed_columns={"Col": "INT"},
             )
+
+    def test_headers_normalizing_to_same_name_rejected(self):
+        """Two headers that produce the same column-name alias fail at connect.
+
+        Without the guard, ``Amount USD`` and ``Amount_USD`` both normalize
+        to ``amount_usd`` and DuckDB raises an opaque duplicate-alias error
+        during ``CREATE VIEW``. The pre-loop check points at the offending
+        headers.
+        """
+        with pytest.raises(ValueError, match=r"normalize to 'amount_usd'"):
+            generate_seed_view_sql(
+                alias="test",
+                connection_id="conn-1",
+                typed_columns={
+                    "Amount USD": "DECIMAL(18,2)",
+                    "Amount_USD": "VARCHAR",
+                },
+            )

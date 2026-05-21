@@ -30,23 +30,10 @@ class GSheetAPIError(GSheetError):
     """Other Google API errors not classified above."""
 
 
-class GSheetDriftError(GSheetError):
-    """Sheet structure no longer matches pinned mapping."""
-
-    def __init__(
-        self,
-        reason: str,
-        missing: list[str] | None = None,
-        type_changed: list[str] | None = None,
-    ) -> None:
-        """Initialize with reason and optional lists of drift details.
-
-        Args:
-            reason: Description of the schema mismatch
-            missing: Columns that were expected but are missing
-            type_changed: Columns whose types have changed
-        """
-        super().__init__(reason)
-        self.reason = reason
-        self.missing = missing if missing is not None else []
-        self.type_changed = type_changed if type_changed is not None else []
+# Note: drift is propagated via the DriftReport return value from
+# detect_drift() / GSheetAdapter.check_drift(), not via an exception. The
+# pull pipeline converts a drift_report.is_drift=True into PullResult(
+# status="drift_detected", drift_reason=...) and an app.gsheet_connections
+# status update — no exception leaves the adapter. If a future call-site
+# needs the exception form, define it then; we intentionally don't keep a
+# dead class around.

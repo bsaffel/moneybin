@@ -90,6 +90,10 @@ def test_load_writes_json_rows_to_gsheet_seeds(in_memory_db: Database) -> None:
     transformed = adapter.transform(df, conn)
     result = adapter.load(transformed, conn, in_memory_db, import_id="imp1")
     assert result.rows_inserted == 3
+    # rows_upserted counts ONLY pre-existing rows that were updated. On a
+    # first pull, every row is brand new, so rows_upserted must be 0 —
+    # otherwise import_log.rows_imported would double-count to 6.
+    assert result.rows_upserted == 0
 
     row = in_memory_db.execute(
         "SELECT COUNT(*) FROM raw.gsheet_seeds WHERE connection_id = ?",
@@ -97,6 +101,22 @@ def test_load_writes_json_rows_to_gsheet_seeds(in_memory_db: Database) -> None:
     ).fetchone()
     assert row is not None
     assert row[0] == 3
+
+
+def test_second_load_upserts_unchanged_rows(in_memory_db: Database) -> None:
+    """Second pull with identical data → rows_upserted == 3, rows_inserted == 0."""
+    adapter = RawSeedAdapter()
+    fix = load("seed_subscriptions.yaml")
+    conn = make_seed_connection()
+    df = df_from(fix)
+    transformed = adapter.transform(df, conn)
+    adapter.load(transformed, conn, in_memory_db, import_id="imp1")
+
+    # Same data, second pull
+    result2 = adapter.load(transformed, conn, in_memory_db, import_id="imp2")
+    assert result2.rows_inserted == 0
+    assert result2.rows_upserted == 3
+    assert result2.rows_soft_deleted == 0
 
 
 def test_load_creates_per_connection_view(in_memory_db: Database) -> None:

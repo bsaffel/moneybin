@@ -192,16 +192,21 @@ class RawSeedAdapter:
         )
         db.execute(view_sql)
 
+        # rows_upserted counts ONLY rows that already existed and were
+        # updated this pull. Newly inserted rows live in diff.to_insert,
+        # not in rows_upserted — otherwise CLI / import_log inflates by N
+        # on first pull (matches the transactions adapter convention).
+        rows_upserted = len(current_hashes) - len(diff.to_insert)
         logger.info(
             f"gsheet seed load: connection={connection.connection_id} "
             f"import_id={import_id} inserted={len(diff.to_insert)} "
-            f"upserted={len(current_hashes)} soft_deleted={rows_soft_deleted}"
+            f"upserted={rows_upserted} soft_deleted={rows_soft_deleted}"
         )
 
         return LoadResult(
             rows_inserted=len(diff.to_insert),
             rows_soft_deleted=rows_soft_deleted,
-            rows_upserted=len(current_hashes),
+            rows_upserted=rows_upserted,
         )
 
 
