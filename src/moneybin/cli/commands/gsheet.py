@@ -23,6 +23,8 @@ from moneybin.cli.utils import handle_cli_errors
 if TYPE_CHECKING:
     from moneybin.connectors.gsheet.connection_service import GSheetConnectionService
     from moneybin.connectors.gsheet.oauth_client import GoogleOAuthClient
+    from moneybin.connectors.gsheet.pull_service import GSheetPullService
+    from moneybin.database import Database
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +60,30 @@ def _build_connection_service() -> Generator[GSheetConnectionService, None, None
         yield GSheetConnectionService(
             db=db, sheets_client=sheets_client, oauth_client=oauth_client
         )
+
+
+@contextmanager
+def _build_pull_service() -> Generator[tuple[GSheetPullService, Database], None, None]:
+    """Yield ``(GSheetPullService, Database)`` with an active connection.
+
+    Mirrors ``_build_connection_service`` so both commands share one
+    construction point — a single seam tests patch to inject fakes. The
+    bare Database is also returned because the refresh chain runs on the
+    same connection after the pull.
+    """
+    from moneybin.connectors.gsheet.pull_service import (  # noqa: PLC0415
+        GSheetPullService,
+    )
+    from moneybin.connectors.gsheet.sheets_api import SheetsClient  # noqa: PLC0415
+    from moneybin.database import get_database  # noqa: PLC0415
+
+    oauth_client = _build_oauth_client()
+    sheets_client = SheetsClient(oauth=oauth_client)
+    with get_database(read_only=False) as db:
+        service = GSheetPullService(
+            db=db, sheets_client=sheets_client, oauth_client=oauth_client
+        )
+        yield service, db
 
 
 def _parse_column_mapping(raw: str | None) -> dict[str, str] | None:
@@ -257,20 +283,10 @@ def gsheet_pull(
     quiet: bool = quiet_option,
 ) -> None:
     """Pull a single connection by ID, or every healthy connection."""
-    from moneybin.connectors.gsheet.pull_service import (  # noqa: PLC0415
-        GSheetPullService,
-    )
-    from moneybin.connectors.gsheet.sheets_api import SheetsClient  # noqa: PLC0415
-    from moneybin.database import get_database  # noqa: PLC0415
     from moneybin.services.refresh import refresh as run_refresh  # noqa: PLC0415
 
     with handle_cli_errors():
-        oauth_client = _build_oauth_client()
-        sheets_client = SheetsClient(oauth=oauth_client)
-        with get_database(read_only=False) as db:
-            service = GSheetPullService(
-                db=db, sheets_client=sheets_client, oauth_client=oauth_client
-            )
+        with _build_pull_service() as (service, db):
             if not quiet and output == OutputFormat.TEXT:
                 typer.echo("⚙️  Pulling Google Sheets…")
             if connection_id is None:
