@@ -526,6 +526,7 @@ def build_schema_doc() -> dict[str, Any]:
         })
 
     tables = list(tables_by_name.values())
+    tables.extend(_gsheet_seed_views())
     logger.info(f"Schema doc built: {len(tables)} interface tables present")
 
     return {
@@ -538,3 +539,72 @@ def build_schema_doc() -> dict[str, Any]:
             "catalog_query": _BEYOND_QUERY,
         },
     }
+
+
+def _gsheet_seed_views() -> list[dict[str, Any]]:
+    """Return one entry per active seed connection whose view exists in the catalog.
+
+    Skips disconnected connections, connections without an alias (transactions
+    adapter), and aliases whose view hasn't been materialized yet (e.g. a
+    connection created but never pulled). Mirrors interface-table entry shape.
+    """
+    with get_database(read_only=True) as db:
+        try:
+            connections = db.execute(
+                """
+                SELECT connection_id, alias
+                FROM app.gsheet_connections
+                WHERE adapter = 'seed'
+                  AND status != 'disconnected'
+                  AND alias IS NOT NULL
+                ORDER BY created_at ASC, connection_id ASC
+                """
+            ).fetchall()
+        except Exception:  # noqa: BLE001 — table may not exist on bare DBs
+            return []
+
+        if not connections:
+            return []
+
+        # Catalog membership filter — skip aliases without a materialized view.
+        live_views = {
+            row[0]
+            for row in db.execute(
+                """
+                SELECT view_name FROM duckdb_views()
+                WHERE schema_name = 'raw' AND view_name LIKE 'gsheet_%'
+                """
+            ).fetchall()
+        }
+
+        entries: list[dict[str, Any]] = []
+        for _connection_id, alias in connections:
+            view_name = f"gsheet_{alias}"
+            if view_name not in live_views:
+                continue
+            cols = db.execute(
+                """
+                SELECT column_name, data_type
+                FROM duckdb_columns()
+                WHERE schema_name = 'raw' AND table_name = ?
+                ORDER BY column_index
+                """,
+                [view_name],
+            ).fetchall()
+            entries.append({
+                "name": f"raw.{view_name}",
+                "purpose": (
+                    f"Live mirror of Google Sheets seed connection (alias={alias})."
+                ),
+                "columns": [
+                    {
+                        "name": col_name,
+                        "type": dtype,
+                        "nullable": True,
+                        "comment": "",
+                    }
+                    for col_name, dtype in cols
+                ],
+                "examples": [],
+            })
+        return entries
