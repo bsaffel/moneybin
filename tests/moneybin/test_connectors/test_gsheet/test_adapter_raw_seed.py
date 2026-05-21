@@ -196,6 +196,90 @@ def test_load_raises_when_alias_missing(in_memory_db: Database) -> None:
         adapter.load(transformed, conn, in_memory_db, import_id="imp1")
 
 
+def test_row_hash_is_content_only_not_position_sensitive(
+    in_memory_db: Database,
+) -> None:
+    """Inserting a row above existing rows must NOT soft-delete those rows.
+
+    Regression for the round-3 finding: the prior hash formula included a
+    1-based row index, so prepending a row reshuffled every downstream
+    hash and cascaded soft-delete + re-insert through the entire sheet.
+    With a content-only hash, only the truly-new row inserts.
+    """
+    adapter = RawSeedAdapter()
+    fix = load("seed_subscriptions.yaml")
+    conn = make_seed_connection()
+    initial = adapter.load(
+        adapter.transform(df_from(fix), conn), conn, in_memory_db, "imp1"
+    )
+    assert initial.rows_inserted == 3
+
+    # Capture the hashes from the first pull so we can verify they survive
+    # the insertion.
+    first_pull_hashes = {
+        r[0]
+        for r in in_memory_db.execute(
+            "SELECT row_hash FROM raw.gsheet_seeds "
+            "WHERE connection_id = ? AND deleted_from_source_at IS NULL",
+            [conn.connection_id],
+        ).fetchall()
+    }
+    assert len(first_pull_hashes) == 3
+
+    # Prepend a new row above the existing three.
+    fix2 = dict(fix)
+    fix2["sheet"] = dict(fix["sheet"])
+    fix2["sheet"]["rows"] = [
+        ["Hulu", "12.99", "2026-02-20", ""],
+        *fix["sheet"]["rows"],
+    ]
+    second = adapter.load(
+        adapter.transform(df_from(fix2), conn), conn, in_memory_db, "imp2"
+    )
+    # Exactly one new row, no soft-deletes — the original three rows
+    # retain their content-only hashes despite shifting down by one
+    # position.
+    assert second.rows_inserted == 1
+    assert second.rows_soft_deleted == 0
+
+    # All three original hashes must still be active in the table.
+    after = {
+        r[0]
+        for r in in_memory_db.execute(
+            "SELECT row_hash FROM raw.gsheet_seeds "
+            "WHERE connection_id = ? AND deleted_from_source_at IS NULL",
+            [conn.connection_id],
+        ).fetchall()
+    }
+    assert first_pull_hashes <= after, (
+        "Original rows' content-only hashes must survive a prepend; "
+        f"missing: {first_pull_hashes - after}"
+    )
+
+
+def test_transform_rejects_duplicate_content_rows(in_memory_db: Database) -> None:
+    """Two rows with byte-identical content must raise an explicit error.
+
+    Pure content hashing means the PRIMARY KEY (connection_id, row_hash)
+    would otherwise collide silently and one of the duplicates would be
+    lost. We surface the collision before SQL runs, with a message that
+    tells the user how to fix it (add an ID/Note column).
+    """
+    from moneybin.connectors.gsheet.errors import GSheetError
+
+    _ = in_memory_db  # fixture not needed; transform is pure
+    adapter = RawSeedAdapter()
+    conn = make_seed_connection()
+    df = pl.DataFrame({
+        "Name": ["Netflix", "Netflix"],
+        "Amount": ["15.49", "15.49"],
+        "Next Charge": ["2026-02-15", "2026-02-15"],
+        "Notes": ["", ""],
+    })
+    with pytest.raises(GSheetError, match="duplicate row"):
+        adapter.transform(df, conn)
+
+
 def test_load_with_empty_df_creates_view_but_inserts_zero(
     in_memory_db: Database,
 ) -> None:

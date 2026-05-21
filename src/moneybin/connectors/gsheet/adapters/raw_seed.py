@@ -27,6 +27,7 @@ from moneybin.connectors.gsheet.adapters.base import (
 )
 from moneybin.connectors.gsheet.diff import compute_diff
 from moneybin.connectors.gsheet.drift import DriftReport
+from moneybin.connectors.gsheet.errors import GSheetError
 from moneybin.connectors.gsheet.view_generator import generate_seed_view_sql
 from moneybin.database import Database
 from moneybin.tables import GSHEET_SEEDS
@@ -85,18 +86,32 @@ class RawSeedAdapter:
     ) -> pl.DataFrame:
         """Build the `raw.gsheet_seeds` insert frame from a current pull.
 
-        Each row gets a content-stable `row_hash` derived from
-        `connection_id|row_index|json(row)`. Returns an empty frame with the
-        correct schema when the input is empty so callers can pass it through
-        unchanged.
+        Each row gets a **content-only** ``row_hash`` derived from
+        ``SHA-256(connection_id|json(row))[:16]``. The hash is position-
+        independent — moving a row up or down in the sheet leaves its hash
+        unchanged, so attached metadata (notes, tags, category assignments
+        keyed on this row's transaction_id downstream) survives reorderings.
+
+        Two rows with byte-identical content collide on the
+        ``(connection_id, row_hash)`` primary key. Rather than silently
+        keeping only one, we surface the duplicate explicitly so the user
+        can disambiguate (typically by adding an ID/Note column in the
+        sheet). Returns an empty frame with the correct schema when the
+        input is empty.
         """
         records = df.to_dicts()
         rows: list[dict[str, object]] = []
+        seen_hashes: dict[str, int] = {}
+        duplicates: list[tuple[int, int, str]] = []
         for idx, rec in enumerate(records, start=1):
             data_json = json.dumps(rec, sort_keys=True, default=str)
             row_hash = hashlib.sha256(
-                f"{connection.connection_id}|{idx}|{data_json}".encode()
+                f"{connection.connection_id}|{data_json}".encode()
             ).hexdigest()[:16]
+            if row_hash in seen_hashes:
+                duplicates.append((seen_hashes[row_hash], idx, data_json))
+                continue
+            seen_hashes[row_hash] = idx
             rows.append({
                 "connection_id": connection.connection_id,
                 "spreadsheet_id": connection.spreadsheet_id,
@@ -106,16 +121,28 @@ class RawSeedAdapter:
                 "data": data_json,
             })
 
+        if duplicates:
+            # Surface the first collision pair so the user can find it. The
+            # PRIMARY KEY (connection_id, row_hash) would otherwise raise
+            # an opaque constraint error inside ingest_dataframe.
+            first, second, sample = duplicates[0]
+            raise GSheetError(
+                f"Sheet has {len(duplicates)} duplicate row(s) by content. "
+                f"Rows {first} and {second} have identical content: {sample}. "
+                "Add a disambiguating column (e.g. ID, Note) in the sheet, "
+                "or remove the duplicates, before connecting."
+            )
+
         if rows:
             return pl.DataFrame(rows)
         return pl.DataFrame(
             schema={
-                "connection_id": pl.Utf8,
-                "spreadsheet_id": pl.Utf8,
+                "connection_id": pl.String,
+                "spreadsheet_id": pl.String,
                 "sheet_gid": pl.Int64,
                 "row_number": pl.Int64,
-                "row_hash": pl.Utf8,
-                "data": pl.Utf8,
+                "row_hash": pl.String,
+                "data": pl.String,
             }
         )
 

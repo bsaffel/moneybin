@@ -2,8 +2,12 @@
 
 User-controlled-storage `connect-*` family per
 `.claude/rules/surface-design.md` verb vocabulary. Mirrors the CLI subgroup
-1:1 in functional shape; `gsheet_auth` is intentionally CLI-only because
-the OAuth installed-app flow opens a browser, which has no MCP equivalent.
+1:1: `gsheet_auth` runs the OAuth installed-app flow inside the local MCP
+server process (opens the browser, listens on a 127.0.0.1 callback) so
+agents can drive end-to-end onboarding without dropping the user to a
+terminal. The MCP server is local-only today (per mcp-server.md
+"Connection Model"); a hosted-MCP variant would need a return-URL shape
+instead, but that's outside the launch trigger.
 
 Connections that surface in drift_detected status carry an `actions[]` hint
 pointing at `gsheet_reconnect(connection_id=...)` so an agent inspecting
@@ -19,6 +23,9 @@ from fastmcp import FastMCP
 
 from moneybin.connectors.gsheet.service_factory import (
     build_connection_service as _build_connection_service,
+)
+from moneybin.connectors.gsheet.service_factory import (
+    build_oauth_client as _build_oauth_client,
 )
 from moneybin.connectors.gsheet.service_factory import (
     build_pull_service as _build_pull_service,
@@ -50,6 +57,54 @@ def _drift_hints(connections: list[dict[str, Any]]) -> list[str]:
         for c in connections
         if c.get("status") == "drift_detected"
     ]
+
+
+@mcp_tool(
+    sensitivity="medium",
+    read_only=False,
+    idempotent=False,
+    open_world=True,
+    # Interactive OAuth: user has to click Allow in their browser. Give the
+    # full flow generous headroom — default 30s timeout would routinely
+    # fire before a human completes the consent screen.
+    timeout_seconds=180.0,
+)
+def gsheet_auth(force_reauth: bool = False) -> ResponseEnvelope:
+    """Authenticate with Google Sheets via OAuth 2.0 PKCE (installed-app flow).
+
+    Opens the Google consent screen in the user's browser and listens on a
+    127.0.0.1 loopback port for the callback. Tokens are persisted to the
+    system keychain via SecretStore — they never flow through the MCP wire
+    or the LLM context window. Read-only `spreadsheets.readonly` scope only;
+    Drive is not requested.
+
+    Returns immediately with ``status='already_authorized'`` when a refresh
+    token is already on file unless ``force_reauth=True`` is passed.
+
+    Mutation surface: writes the OAuth refresh + access tokens to
+    SecretStore. Reverse by visiting
+    https://myaccount.google.com/permissions and revoking access, then
+    re-running this tool.
+    """
+    oauth = _build_oauth_client()
+    if oauth.is_authorized() and not force_reauth:
+        return build_envelope(
+            data={"status": "already_authorized"},
+            sensitivity="medium",
+            actions=[
+                "Run gsheet_connect(url='https://docs.google.com/spreadsheets/...') "
+                "to bind a sheet."
+            ],
+        )
+    oauth.authorize()
+    return build_envelope(
+        data={"status": "authorized"},
+        sensitivity="medium",
+        actions=[
+            "Run gsheet_connect(url='https://docs.google.com/spreadsheets/...') "
+            "to bind a sheet."
+        ],
+    )
 
 
 @mcp_tool(sensitivity="medium", read_only=False, idempotent=False, open_world=True)
@@ -290,11 +345,19 @@ def register_gsheet_tools(mcp: FastMCP) -> None:
     """Register all gsheet_* namespace tools with the FastMCP server."""
     for fn, desc in [
         (
+            gsheet_auth,
+            "Authenticate with Google Sheets via OAuth PKCE — opens a browser, "
+            "completes consent, and stores tokens in the system keychain. "
+            "Tokens never enter the MCP wire or LLM context. Call this once "
+            "before gsheet_connect; subsequent calls short-circuit unless "
+            "force_reauth=True.",
+        ),
+        (
             gsheet_connect,
             "Bind a Google Sheet to MoneyBin via direct OAuth (user-controlled "
             "storage). Detects column mapping, persists app.gsheet_connections, "
             "and runs the initial pull by default. Amounts use MoneyBin convention "
-            "(negative = expense). Requires prior CLI `moneybin gsheet auth`.",
+            "(negative = expense). Run gsheet_auth first if not yet authorized.",
         ),
         (
             gsheet_pull,

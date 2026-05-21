@@ -94,6 +94,7 @@ def _as_list(data: list[dict[str, Any]] | dict[str, Any]) -> list[dict[str, Any]
 
 
 _EXPECTED_GSHEET_TOOLS = {
+    "gsheet_auth",
     "gsheet",
     "gsheet_connect",
     "gsheet_pull",
@@ -105,13 +106,72 @@ _EXPECTED_GSHEET_TOOLS = {
 
 @pytest.mark.unit
 async def test_register_gsheet_tools_registers_expected_tools() -> None:
-    """All six gsheet_* MCP tools register; gsheet_auth is CLI-only and absent."""
+    """All seven gsheet_* MCP tools (including gsheet_auth) register."""
     srv = FastMCP("test")
     register_gsheet_tools(srv)
     names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
     assert _EXPECTED_GSHEET_TOOLS <= names
-    # gsheet_auth opens a browser — intentionally CLI-only.
-    assert "gsheet_auth" not in names
+
+
+# ---------------------------------------------------------------------------
+# gsheet_auth
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.gsheet._build_oauth_client")
+async def test_gsheet_auth_short_circuits_when_already_authorized(
+    mock_build: MagicMock,
+) -> None:
+    """Already-authorized + no force → no browser flow, returns short-circuit envelope."""
+    oauth = MagicMock()
+    oauth.is_authorized.return_value = True
+    mock_build.return_value = oauth
+
+    from moneybin.mcp.tools.gsheet import gsheet_auth
+
+    envelope = await gsheet_auth()
+    assert envelope.summary.sensitivity == "medium"
+    data = _as_dict(envelope.data)
+    assert data["status"] == "already_authorized"
+    oauth.authorize.assert_not_called()
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.gsheet._build_oauth_client")
+async def test_gsheet_auth_runs_authorize_when_not_authorized(
+    mock_build: MagicMock,
+) -> None:
+    """Not-yet-authorized → authorize() runs, returns 'authorized' envelope."""
+    oauth = MagicMock()
+    oauth.is_authorized.return_value = False
+    mock_build.return_value = oauth
+
+    from moneybin.mcp.tools.gsheet import gsheet_auth
+
+    envelope = await gsheet_auth()
+    assert envelope.summary.sensitivity == "medium"
+    data = _as_dict(envelope.data)
+    assert data["status"] == "authorized"
+    oauth.authorize.assert_called_once()
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.gsheet._build_oauth_client")
+async def test_gsheet_auth_force_reauth_runs_authorize_even_when_authorized(
+    mock_build: MagicMock,
+) -> None:
+    """force_reauth=True bypasses the short-circuit even when a token exists."""
+    oauth = MagicMock()
+    oauth.is_authorized.return_value = True
+    mock_build.return_value = oauth
+
+    from moneybin.mcp.tools.gsheet import gsheet_auth
+
+    envelope = await gsheet_auth(force_reauth=True)
+    data = _as_dict(envelope.data)
+    assert data["status"] == "authorized"
+    oauth.authorize.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

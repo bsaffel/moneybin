@@ -77,7 +77,7 @@ gsheet inverts that model. The client speaks Google's API directly. moneybin-ser
 6. **Initial pull.** After save, trigger a normal pull (same path as subsequent pulls). Triggers end-of-pull refresh pipeline by default.
 7. **Reconnect** via `moneybin gsheet reconnect <id>` — re-runs detection against the sheet's current state, updates the pinned mapping if the user confirms, clears any drift state.
 8. **Disconnect** soft by default: `app.gsheet_connections.status='disconnected'`, raw rows retained for audit. `--purge` hard-deletes the connection row + all rows in `raw.tabular_transactions` with matching `source_origin`.
-9. **Re-authentication** via `moneybin gsheet auth` (CLI-only) — re-runs OAuth flow when the refresh token has been revoked.
+9. **Re-authentication** via `moneybin gsheet auth` CLI or `gsheet_auth` MCP tool — re-runs OAuth flow when the refresh token has been revoked. Both surfaces drive the same installed-app + PKCE flow inside the local process; tokens never leave SecretStore.
 
 ### Pull semantics
 
@@ -158,15 +158,15 @@ gsheet inverts that model. The client speaks Google's API directly. moneybin-ser
     - `list`
     - `status [<id>]`
 34. **MCP tools** mirroring the CLI 1:1 in functional shape (not necessarily 1:1 in name, per `feedback_parity_functional_not_nominal`):
+    - `gsheet_auth(force_reauth=False)` — shape 3; opens browser inside the local MCP server, listens on 127.0.0.1 callback, persists tokens to SecretStore. Per-tool timeout raised to 180s so the consent click-through has headroom.
     - `gsheet_connect(url, adapter, account_name=None, ...)` — shape 3
     - `gsheet_disconnect(connection_id, purge=False)` — shape 2 delete
     - `gsheet_reconnect(connection_id)` — shape 3
     - `gsheet_pull(connection_id=None)` — shape 3
     - `gsheet()` — shape 5 collection
     - `gsheet_status(connection_id=None)` — shape 5 status
-    - `gsheet_auth` is CLI-only (interactive browser flow).
 35. **Refresh-step parameter.** `refresh_run` accepts `"gsheet"` in `steps=[...]`. Default `steps` list includes `"gsheet"` so the magical default holds.
-36. **Audience layering.** `connect`, `pull`, `list`, `status`, `reconnect`, `disconnect` are user-intent (promoted in `instructions`, surfaced in `actions[]` from other user-intent tools). `auth` is operator-territory (low-frequency, surfaced only via error `actions[]` when authentication is broken).
+36. **Audience layering.** `auth`, `connect`, `pull`, `list`, `status`, `reconnect`, `disconnect` are user-intent (promoted in `instructions`, surfaced in `actions[]` from other user-intent tools). `auth` is low-frequency in steady state but first-class in the onboarding flow — surfacing it via MCP makes agent-driven setup possible end-to-end.
 
 ### Non-functional
 
@@ -677,7 +677,7 @@ With ID: full snapshot — pinned mapping, header signature, recent pull history
 
 ### `moneybin gsheet auth`
 
-Re-runs the OAuth PKCE flow. CLI-only (opens browser).
+Re-runs the OAuth PKCE flow. Opens a browser and listens on a 127.0.0.1 loopback port for the callback. Tokens land in SecretStore. The same flow is exposed via the `gsheet_auth` MCP tool — see below.
 
 ---
 
@@ -685,16 +685,17 @@ Re-runs the OAuth PKCE flow. CLI-only (opens browser).
 
 | Tool | Shape | Audience | Description (used by agent) |
 |---|---|---|---|
-| `gsheet_connect` | 3 | user-intent | Connect a Google Sheet for live sync. Opens browser for OAuth on first call, runs column detection, returns the pinned mapping and initial pull result. |
+| `gsheet_auth` | 3 | user-intent | Authenticate with Google Sheets via OAuth PKCE. Opens a browser, listens on 127.0.0.1 callback, persists tokens to SecretStore. Short-circuits when already authorized unless `force_reauth=True`. |
+| `gsheet_connect` | 3 | user-intent | Connect a Google Sheet for live sync. Runs column detection, returns the pinned mapping and initial pull result. Requires prior `gsheet_auth`. |
 | `gsheet_pull` | 3 | user-intent | Pull the latest content from connected sheets. With no `connection_id`, pulls all healthy connections. Per-connection isolation; failures don't block others. |
 | `gsheet_disconnect` | 2 | user-intent | Disconnect a sheet. Soft by default (data retained); `purge=True` for hard delete. |
 | `gsheet_reconnect` | 3 | user-intent | Re-establish a connection's column mapping after drift was detected. |
 | `gsheet` | 5 | user-intent | List all connections with status. |
 | `gsheet_status` | 5 | user-intent | Get full status for one or all connections, including drift detail and recovery actions. |
 
-All tools return the standard `ResponseEnvelope`. Drift responses populate `actions[]` with `gsheet_status` and `gsheet_reconnect` hints. Auth-expired responses populate `actions[]` with `moneybin gsheet auth` CLI hint (no MCP equivalent — operator-territory).
+All tools return the standard `ResponseEnvelope`. Drift responses populate `actions[]` with `gsheet_status` and `gsheet_reconnect` hints. Auth-expired responses populate `actions[]` with `gsheet_auth` (re-authenticate via the agent) and `moneybin gsheet auth` (CLI equivalent).
 
-The `gsheet_auth` operation has no MCP tool — it requires browser interaction the MCP server can't drive headlessly. Agent surfaces this via `actions[]` when needed.
+`gsheet_auth` is local-MCP-only by design: it opens a browser on the same machine as the MCP server. The launch-trigger MCP server (M3E hosted) will need a redirect-URL shape; that's tracked separately and does not block launch.
 
 ### `instructions` field updates
 
