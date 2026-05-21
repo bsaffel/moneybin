@@ -33,7 +33,33 @@ jobs:
             - Security issues (SQL injection, path traversal, hardcoded secrets)
             - Violations of project standards (type hints, docstrings, error handling, sign conventions)
             - Test coverage gaps for new business logic
-            Post inline comments on specific lines where relevant. Summarize findings as a PR comment.
+
+            ## Tiered findings — required prefix on every comment
+
+            Every finding (inline comment AND summary bullet) MUST start with one of two tier markers:
+
+            - 🔴 **MUST FIX** — correctness bugs, security findings, breaking changes, missing tests
+              for new code paths, violations of explicit project rules. Cannot ship as-is; must be
+              addressed in this PR or explicitly deferred with override rationale.
+
+            - 🟡 **CONSIDER** — quality, maintainability, refactoring, naming, small design
+              improvements. The author/agent decides per finding: fix-in-PR (when bounded) or
+              defer (when fixing would meaningfully expand scope). Either resolution closes the PR
+              cleanly; deferrals are tracked, not ignored.
+
+            **No third tier. No nits.** If a finding doesn't earn 🔴 or 🟡, do not raise it — the
+            tokens are not worth the noise. Be opinionated: each comment must justify its weight.
+
+            Format example for an inline comment:
+              🟡 CONSIDER: variable name `tmp` obscures intent here; `parsed_response` would
+              match the rest of the function.
+
+            Format example for a summary bullet:
+              - 🔴 MUST FIX: `subprocess.run(cmd, shell=True)` on line 42 with user-controlled
+                input — shell injection risk. Pass as list and drop `shell=True`.
+
+            Post inline comments on specific lines where relevant. Summarize findings as a PR
+            comment grouped by tier (🔴 MUST FIX first, then 🟡 CONSIDER).
 
             After completing your review, resolve any previously-posted review threads whose
             issues are now fixed in the current code. Use the gh CLI and environment variables
@@ -65,6 +91,19 @@ jobs:
             the current code against previously-raised review threads and any
             new concerns, using project conventions in CLAUDE.md and
             .claude/rules/.
+
+            ## Tiered findings — required prefix on every comment
+
+            Any new finding you raise (inline or in summary) MUST start with one
+            of two tier markers:
+
+            - 🔴 **MUST FIX** — correctness, security, breaking changes, missing
+              tests for new code paths, violations of explicit project rules.
+            - 🟡 **CONSIDER** — quality, maintainability, refactoring, naming,
+              small design improvements.
+
+            **No third tier. No nits.** If a finding doesn't earn 🔴 or 🟡, do
+            not raise it. Format: `🟡 CONSIDER: <one-sentence finding + suggestion>`.
 
             Resolve any previously-posted review threads whose issues are now
             fixed in the current code. Use the gh CLI and environment variables

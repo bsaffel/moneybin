@@ -160,6 +160,25 @@ gh pr create
 CI must pass before merge. Commits land as authored (no mandatory squash);
 force-pushes during review are fine for fixups.
 
+### Reading the AI review
+
+After you open a PR, the `AI Code Review` workflow posts inline comments
+and a summary. Every finding starts with one of two tier markers — there
+is no third "nit" tier; if a finding doesn't earn one of these labels,
+the reviewer suppresses it:
+
+- 🔴 **MUST FIX** — correctness bugs, security findings, breaking changes,
+  missing tests for new code paths, violations of explicit project rules.
+  Address before merge. If you genuinely need to defer one, file a
+  followup and call out the override in the PR description.
+- 🟡 **CONSIDER** — quality, maintainability, refactoring, naming, small
+  design improvements. Your call per finding: fix in this PR (when
+  bounded) or defer to `private/followups.md` (when fixing would
+  meaningfully expand scope). Either resolution closes the PR cleanly.
+
+Re-running the reviewer (`@claude` in a PR comment) re-evaluates against
+the current code and auto-resolves threads whose issues are now fixed.
+
 ### 7. After it ships
 
 If the change is user-visible, update the docs surface per
