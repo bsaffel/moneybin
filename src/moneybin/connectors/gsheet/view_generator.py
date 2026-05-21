@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 
+from moneybin.tables import GSHEET_SEEDS
+
 _SAFE_ALIAS_RE = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 _SAFE_CONN_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 _SAFE_SQL_TYPES = frozenset({
@@ -86,7 +88,7 @@ def generate_seed_view_sql(
     return (
         f"CREATE OR REPLACE VIEW raw.{view_name} AS\n"
         f"SELECT\n    {select_clause}\n"
-        f"FROM raw.gsheet_seeds\n"
+        f"FROM {GSHEET_SEEDS.full_name}\n"
         f"WHERE connection_id = '{connection_id}'\n"
         f"  AND deleted_from_source_at IS NULL;"
     )

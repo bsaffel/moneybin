@@ -93,15 +93,25 @@ def test_pull_isolates_per_connection_failure(in_memory_db: Database) -> None:
 
 def test_pull_marks_auth_expired(in_memory_db: Database) -> None:
     pull_svc, sheets, cid = _setup(in_memory_db)
-    sheets.inject_error(GSheetAuthError("token revoked"))
+    # Inject an exception whose str() would leak internal detail (URL, token
+    # fragment); the sanitized message must NOT contain that text.
+    leaky = "https://sheets.googleapis.com/v4/spreadsheets/ss1: token=abc123 revoked"
+    sheets.inject_error(GSheetAuthError(leaky))
     result = pull_svc.pull_connection(cid)
     assert result.status == "auth_expired"
-    # Connection row reflects the new state.
+    # Surfaced error_message is sanitized + actionable, not the raw exception.
+    assert result.error_message is not None
+    assert "abc123" not in result.error_message
+    assert "googleapis.com" not in result.error_message
+    assert "moneybin gsheet auth" in result.error_message
+    # Connection row reflects the new state with the sanitized reason.
     repo = GSheetConnectionsRepo(in_memory_db)
     conn_row = repo.get(cid)
     assert conn_row is not None
     assert conn_row["status"] == "auth_expired"
-    assert conn_row["last_drift_reason"] == "token revoked"
+    assert conn_row["last_drift_reason"] is not None
+    assert "abc123" not in conn_row["last_drift_reason"]
+    assert "googleapis.com" not in conn_row["last_drift_reason"]
 
 
 def test_pull_handles_rate_limit_with_retry(in_memory_db: Database) -> None:

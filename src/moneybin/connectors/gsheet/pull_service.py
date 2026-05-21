@@ -42,6 +42,23 @@ logger = logging.getLogger(__name__)
 _RETRY_MAX = 3
 _RETRY_BACKOFF_BASE = 1.5
 
+# Sanitized messages surfaced via PullResult.error_message + last_drift_reason.
+# Raw upstream exceptions (Google HttpError, etc.) include URLs, IDs, and
+# quota text that must not flow to the MCP wire (see security.md "Minimize
+# data in errors"). Full detail is logged internally via logger.exception.
+_SANITIZED_FAILURE_MESSAGES: dict[str, str] = {
+    "auth_expired": (
+        "OAuth token revoked or expired. Re-authenticate with `moneybin gsheet auth`."
+    ),
+    "unreachable": (
+        "Sheet unreachable. Verify the URL and that the sheet is shared "
+        "with the authorized Google account."
+    ),
+    "rate_limited": (
+        "Google Sheets API rate limit reached. Retry after a short delay."
+    ),
+}
+
 PullStatus = Literal[
     "complete",
     "drift_detected",
@@ -86,33 +103,26 @@ class GSheetPullService:
             raise GSheetError(f"Unknown connection: {connection_id}")
         conn = row_to_connection(conn_row)
         adapter = ADAPTERS[conn.adapter]
-        import_id = uuid.uuid4().hex[:16]
+        import_id = uuid.uuid4().hex[:12]
 
         self._open_import_log(import_id, conn)
 
         try:
             rows = self._fetch_with_retry(conn)
-        except GSheetAuthError as exc:
-            return self._record_failure(
-                conn,
-                import_id,
-                status="auth_expired",
-                reason=str(exc),
-            )
-        except GSheetUnreachableError as exc:
-            return self._record_failure(
-                conn,
-                import_id,
-                status="unreachable",
-                reason=str(exc),
-            )
-        except GSheetRateLimitError as exc:
-            return self._record_failure(
-                conn,
-                import_id,
-                status="rate_limited",
-                reason=str(exc),
-            )
+        except GSheetAuthError:
+            # security.md: log full detail internally, return a generic
+            # message to callers. str(exc) on Google HttpError leaks the
+            # spreadsheet URL, response body, and quota details into the
+            # MCP wire via PullResult.error_message and the
+            # last_drift_reason column.
+            logger.exception(f"gsheet auth failed for connection={conn.connection_id}")
+            return self._record_failure(conn, import_id, status="auth_expired")
+        except GSheetUnreachableError:
+            logger.exception(f"gsheet unreachable for connection={conn.connection_id}")
+            return self._record_failure(conn, import_id, status="unreachable")
+        except GSheetRateLimitError:
+            logger.exception(f"gsheet rate-limited for connection={conn.connection_id}")
+            return self._record_failure(conn, import_id, status="rate_limited")
 
         df = rows_to_df(rows)
         drift = adapter.check_drift(conn, df)
@@ -274,9 +284,14 @@ class GSheetPullService:
         import_id: str,
         *,
         status: Literal["auth_expired", "unreachable", "rate_limited"],
-        reason: str,
     ) -> PullResult:
-        """Close the import-log + update connection state for a pull failure."""
+        """Close the import-log + update connection state for a pull failure.
+
+        Surfaces a sanitized, actionable message in PullResult.error_message
+        and on the connection row's last_drift_reason — never the raw
+        upstream exception text, which can include URLs, IDs, and quota.
+        """
+        message = _SANITIZED_FAILURE_MESSAGES[status]
         self._close_import_log(import_id, status="failed", rows_imported=0)
         now = _utcnow_iso()
         # update_after_pull tracks counters; last_success_at unchanged (None
@@ -294,12 +309,12 @@ class GSheetPullService:
         self._repo.update_status(
             conn.connection_id,
             status=status,
-            reason=reason,
+            reason=message,
         )
         return PullResult(
             connection_id=conn.connection_id,
             status=status,
-            error_message=reason,
+            error_message=message,
         )
 
 

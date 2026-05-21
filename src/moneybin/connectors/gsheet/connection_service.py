@@ -32,6 +32,7 @@ from moneybin.connectors.gsheet.sheets_api import SheetsAPI
 from moneybin.connectors.gsheet.url_parser import parse_sheet_url
 from moneybin.database import Database
 from moneybin.repositories.gsheet_connections_repo import GSheetConnectionsRepo
+from moneybin.tables import GSHEET_SEEDS, TABULAR_TRANSACTIONS
 
 logger = logging.getLogger(__name__)
 
@@ -269,12 +270,12 @@ class GSheetConnectionService:
                 )
                 self._db.execute(f"DROP VIEW IF EXISTS raw.{safe_view};")  # noqa: S608  # alias regex-validated + sqlglot-quoted
             self._db.execute(
-                "DELETE FROM raw.gsheet_seeds WHERE connection_id = ?",
+                f"DELETE FROM {GSHEET_SEEDS.full_name} WHERE connection_id = ?",  # noqa: S608  # TableRef + parameterized value
                 [connection_id],
             )
         else:
             self._db.execute(
-                "DELETE FROM raw.tabular_transactions WHERE source_origin = ?",
+                f"DELETE FROM {TABULAR_TRANSACTIONS.full_name} WHERE source_origin = ?",  # noqa: S608  # TableRef + parameterized value
                 [connection_id],
             )
 
