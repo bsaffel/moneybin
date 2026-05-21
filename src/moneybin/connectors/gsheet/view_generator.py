@@ -55,7 +55,15 @@ def generate_seed_view_sql(
 
     view_name = f"gsheet_{alias}"
     select_parts: list[str] = []
-    seen_normalized: dict[str, str] = {}
+    # Pre-populate with the lifecycle columns we append after the user-column
+    # loop. A sheet header that normalizes to one of these (e.g. "Row Number"
+    # → row_number) now produces the same clear error as a user/user collision
+    # rather than an opaque DuckDB duplicate-alias failure at view creation.
+    seen_normalized: dict[str, str] = {
+        "row_number": "<lifecycle reserved>",
+        "deleted_from_source_at": "<lifecycle reserved>",
+        "loaded_at": "<lifecycle reserved>",
+    }
 
     for header, sql_type in typed_columns.items():
         col_name = _normalize_col_name(header)

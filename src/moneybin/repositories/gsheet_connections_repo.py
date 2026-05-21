@@ -255,10 +255,18 @@ class GSheetConnectionsRepo:
         last_success_at: str | None,
         status: Status,
         consecutive_failure_count: int,
+        last_drift_reason: str | None = None,
         actor: str = "system",
         parent_audit_id: str | None = None,
     ) -> None:
-        """Persist pull-attempt results; emit audit row."""
+        """Persist pull-attempt results; emit audit row.
+
+        ``last_drift_reason`` is passed through inside the same UPDATE so
+        callers don't need a paired ``update_status`` write for the
+        reason column — that pattern previously emitted two audit rows
+        per failed pull. None clears the column (intentional: a clean
+        pull should clear any stale reason from the previous attempt).
+        """
         self._db.begin()
         try:
             before = self._fetch_full_row(connection_id)
@@ -272,6 +280,7 @@ class GSheetConnectionsRepo:
                        last_success_at = COALESCE(?, last_success_at),
                        status = ?,
                        consecutive_failure_count = ?,
+                       last_drift_reason = ?,
                        updated_at = NOW()
                  WHERE connection_id = ?
                 """,  # noqa: S608  # TableRef + parameterized values
@@ -281,6 +290,7 @@ class GSheetConnectionsRepo:
                     last_success_at,
                     status,
                     consecutive_failure_count,
+                    last_drift_reason,
                     connection_id,
                 ],
             )

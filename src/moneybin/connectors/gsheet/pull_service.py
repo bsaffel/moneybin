@@ -144,13 +144,7 @@ class GSheetPullService:
                 last_success_at=None,
                 status="drift_detected",
                 consecutive_failure_count=conn.consecutive_failure_count + 1,
-            )
-            # Carry the drift reason onto the connection row separately —
-            # update_after_pull doesn't touch last_drift_reason.
-            self._repo.update_status(
-                connection_id,
-                status="drift_detected",
-                reason=drift.reason,
+                last_drift_reason=drift.reason,
             )
             return PullResult(
                 connection_id=connection_id,
@@ -232,9 +226,12 @@ class GSheetPullService:
                 meta = self._sheets.get_workbook_metadata(conn.spreadsheet_id)
                 sheet = next((s for s in meta.sheets if s.gid == conn.sheet_gid), None)
                 if sheet is None:
+                    # str(exc) reaches logger.exception in pull_connection;
+                    # connection_id alone is enough for correlation and
+                    # keeps spreadsheet_id out of the log per security.md.
                     raise GSheetUnreachableError(
-                        f"gid={conn.sheet_gid} no longer present in workbook "
-                        f"{conn.spreadsheet_id}; the tab was deleted"
+                        "Sheet tab is no longer present in the workbook "
+                        "(deleted or renamed beyond gid resolution)."
                     )
                 return self._sheets.read_sheet_values(conn.spreadsheet_id, sheet.name)
             except GSheetRateLimitError as exc:
@@ -304,8 +301,9 @@ class GSheetPullService:
         message = _SANITIZED_FAILURE_MESSAGES[status]
         self._close_import_log(import_id, status="failed", rows_imported=0)
         now = _utcnow_iso()
-        # update_after_pull tracks counters; last_success_at unchanged (None
-        # is treated as COALESCE-keep in the repo).
+        # Single repo write — last_drift_reason flows through
+        # update_after_pull, avoiding the double-audit pattern (one row
+        # for counter update, another for reason update).
         self._repo.update_after_pull(
             conn.connection_id,
             last_pull_at=now,
@@ -313,13 +311,7 @@ class GSheetPullService:
             last_success_at=None,
             status=status,
             consecutive_failure_count=conn.consecutive_failure_count + 1,
-        )
-        # Separate update_status call so last_drift_reason carries the human
-        # explanation. update_after_pull does not touch last_drift_reason.
-        self._repo.update_status(
-            conn.connection_id,
-            status=status,
-            reason=message,
+            last_drift_reason=message,
         )
         return PullResult(
             connection_id=conn.connection_id,
@@ -353,11 +345,7 @@ class GSheetPullService:
             last_success_at=None,
             status="failed",
             consecutive_failure_count=conn.consecutive_failure_count + 1,
-        )
-        self._repo.update_status(
-            conn.connection_id,
-            status="failed",
-            reason=message,
+            last_drift_reason=message,
         )
         return PullResult(
             connection_id=conn.connection_id,

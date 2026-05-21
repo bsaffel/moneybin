@@ -11,7 +11,14 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Direct-path imports of provider configs. We import from the concrete
@@ -277,7 +284,7 @@ class SyncConfig(BaseModel):
         default=None,
         description="OAuth2 client ID (for Auth0 integration)",
     )
-    oauth_client_secret: str | None = Field(
+    oauth_client_secret: SecretStr | None = Field(
         default=None,
         description="OAuth2 client secret (for Auth0 integration)",
     )

@@ -83,6 +83,16 @@ not-yet-built.
 
 | 22| Inspect SQLMesh model state (status/plan/validate/audit)        | — *(cat 2 — operator)*       | `transform status|plan|validate|audit`             | —          | live (CLI-only)       |
 
+| 23| Authenticate with Google Sheets (OAuth installed-app + PKCE)     | `gsheet_auth` *(`force_reauth=True` to override short-circuit)* | `gsheet auth` *(`--force`)*                       | —          | live                  |
+| 24| Bind a Google Sheet for live sync                                | `gsheet_connect` *(`url`, `adapter`, `alias`, `account_name`, `account_id`, `column_mapping`, `yes`, `accept_seed_fallback`, `no_initial_pull`)* | `gsheet connect <url>` *(same options)*           | —          | live                  |
+| 25| Pull latest content from connected sheets                        | `gsheet_pull` *(`connection_id`)* | `gsheet pull` *(`--connection-id`, `--refresh/--no-refresh`)*                       | —          | live                  |
+| 26| List Google Sheets connections                                   | `gsheet`                     | `gsheet list`                                      | —          | live                  |
+| 27| Get status for one or all Google Sheets connections              | `gsheet_status` *(`connection_id`)* | `gsheet status` *(`--connection-id`)*       | —          | live                  |
+| 28| Re-detect column mapping after sheet drift                       | `gsheet_reconnect` *(`yes` for medium-confidence remaps)* | `gsheet reconnect` *(`--yes`)*           | —          | live                  |
+| 29| Disconnect a Google Sheet (soft or purge)                        | `gsheet_disconnect` *(`purge=True` permanent)* | `gsheet disconnect` *(`--purge`, `--yes`)* | —          | live                  |
+| 30| Link a bank via mediated provider (Plaid)                        | `sync_link` *(`institution` for re-auth)* | `sync link` *(formerly `sync connect`)*  | —          | live                  |
+| 31| Poll an in-flight bank-link session                              | `sync_link_status` *(`session_id`)* | `sync link-status` *(formerly `sync connect-status`)* | —          | live                  |
+
 *(Bootstrap rows only; full table populates incrementally as
 follow-up work closes the parity backlog. A prior row covering
 "Discover currently-hidden MCP tools" was removed 2026-05-17
@@ -92,7 +102,9 @@ rows 12–13 are unrelated and were added 2026-05-17 with the
 rules-CLI parity work. Row 17 added 2026-05-19: transform_* de-registered
 from MCP (PR #185) — operator territory per mcp-server.md category 2.
 `sync_schedule_set/show/remove` stubs removed from MCP (PR #185) — were
-not-implemented placeholders with no backing spec.)*
+not-implemented placeholders with no backing spec. Rows 23–29 added
+2026-05-21 with the connect-gsheet PR; rows 30–31 capture the
+`sync_connect` → `sync_link` rename co-shipped in the same PR.)*
 
 ## Exemption categories
 

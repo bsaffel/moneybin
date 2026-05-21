@@ -34,7 +34,10 @@ from moneybin.tables import GSHEET_SEEDS
 
 logger = logging.getLogger(__name__)
 
-_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
+# Full-match anchored to both ends — otherwise an ISO datetime like
+# "2024-01-15T12:00:00" would prefix-match and get typed as DATE, deferring the
+# failure to view-query time instead of surfacing it at detection.
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 class RawSeedAdapter:
@@ -102,14 +105,14 @@ class RawSeedAdapter:
         records = df.to_dicts()
         rows: list[dict[str, object]] = []
         seen_hashes: dict[str, int] = {}
-        duplicates: list[tuple[int, int, str]] = []
+        duplicates: list[tuple[int, int]] = []
         for idx, rec in enumerate(records, start=1):
             data_json = json.dumps(rec, sort_keys=True, default=str)
             row_hash = hashlib.sha256(
                 f"{connection.connection_id}|{data_json}".encode()
             ).hexdigest()[:16]
             if row_hash in seen_hashes:
-                duplicates.append((seen_hashes[row_hash], idx, data_json))
+                duplicates.append((seen_hashes[row_hash], idx))
                 continue
             seen_hashes[row_hash] = idx
             rows.append({
@@ -124,11 +127,13 @@ class RawSeedAdapter:
         if duplicates:
             # Surface the first collision pair so the user can find it. The
             # PRIMARY KEY (connection_id, row_hash) would otherwise raise
-            # an opaque constraint error inside ingest_dataframe.
-            first, second, sample = duplicates[0]
+            # an opaque constraint error inside ingest_dataframe. Row content
+            # is intentionally NOT included in the message — financial data
+            # in error messages would violate security.md "No PII in errors".
+            first, second = duplicates[0]
             raise GSheetError(
                 f"Sheet has {len(duplicates)} duplicate row(s) by content. "
-                f"Rows {first} and {second} have identical content: {sample}. "
+                f"Rows {first} and {second} have identical content. "
                 "Add a disambiguating column (e.g. ID, Note) in the sheet, "
                 "or remove the duplicates, before connecting."
             )
