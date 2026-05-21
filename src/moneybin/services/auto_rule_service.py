@@ -569,12 +569,9 @@ class AutoRuleService:
                 continue
 
             # Deactivate + emit audit event in a single transaction.
-            # REVISIT when sophisticated-rule design lands: this path currently
-            # only deactivates; the supersede-and-re-propose logic (pick the
-            # winning override bucket, insert a new pattern_detection proposal)
-            # was removed because the system didn't yet have signal on what
-            # shape the replacement should take. Rebuilding informed by real
-            # usage is cheaper than maintaining speculative sophistication.
+            # REVISIT: re-proposal (insert a new pattern_detection rule shaped
+            # by the winning override bucket) is intentionally omitted — the
+            # replacement-rule heuristic lacks production signal.
             self._db.begin()
             try:
                 self._db.execute(
