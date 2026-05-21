@@ -469,6 +469,41 @@ def test_legacy_data_tabular_dotenv_key_fails_loudly(
         MoneyBinSettings(profile="test")
 
 
+def test_legacy_data_tabular_env_var_lowercase_fails_loudly(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Lowercase legacy env vars also trip the guard.
+
+    Pydantic-settings runs with ``case_sensitive=False``, so lowercase
+    or mixed-case variants would still be picked up by the loader (and
+    silently dropped under ``extra="ignore"``). The guard normalizes via
+    ``str.upper()`` so the migration error fires regardless of casing.
+    """
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    monkeypatch.setenv("moneybin_data__tabular__text_size_limit_mb", "999")
+
+    with pytest.raises(ValueError, match="MONEYBIN_PROVIDERS__TABULAR"):
+        MoneyBinSettings()
+
+
+def test_legacy_data_tabular_dotenv_lowercase_key_fails_loudly(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Lowercase legacy keys in the active .env file also trip the guard.
+
+    Same rationale as the os.environ case — dotenv keys flow through the
+    same case-insensitive loader, so the dotenv-scan branch normalizes
+    casing too.
+    """
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    (tmp_path / ".env.test").write_text(
+        "moneybin_data__tabular__text_size_limit_mb=999\n"
+    )
+
+    with pytest.raises(ValueError, match="MONEYBIN_PROVIDERS__TABULAR"):
+        MoneyBinSettings(profile="test")
+
+
 class TestSqlmeshConfigProfileGating:
     """Regression tests for the profile gate in ``sqlmesh/config.py``.
 

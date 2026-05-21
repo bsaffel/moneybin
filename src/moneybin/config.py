@@ -552,9 +552,14 @@ class MoneyBinSettings(BaseSettings):
         lookup ``settings_customise_sources`` uses for the live load) so
         operators on either configuration path get a clear migration
         message rather than silently falling back to defaults.
+
+        Prefix matching is case-insensitive to mirror pydantic-settings'
+        ``case_sensitive=False`` config — lowercase or mixed-case legacy
+        keys still get absorbed by the loader, so the guard must catch
+        them too.
         """
         offenders: list[str] = sorted(
-            k for k in os.environ if k.startswith(_LEGACY_TABULAR_PREFIX)
+            k for k in os.environ if k.upper().startswith(_LEGACY_TABULAR_PREFIX)
         )
 
         base = get_base_dir()
@@ -566,7 +571,7 @@ class MoneyBinSettings(BaseSettings):
                 if not line or line.startswith("#") or "=" not in line:
                     continue
                 key = line.split("=", 1)[0].strip()
-                if key.startswith(_LEGACY_TABULAR_PREFIX):
+                if key.upper().startswith(_LEGACY_TABULAR_PREFIX):
                     offenders.append(f"{env_file.name}:{key}")
             break  # Match settings_customise_sources: first existing file wins.
 
