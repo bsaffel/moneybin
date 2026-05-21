@@ -355,9 +355,11 @@ def test_gsheet_pull_json_output(
     )
     assert result.exit_code == 0, result.output
     payload = json.loads(result.stdout)
-    assert payload[0]["connection_id"] == "conn_abc123"
-    assert payload[0]["status"] == "complete"
-    assert payload[0]["rows_inserted"] == 7
+    # Envelope shape: {"pulls": [...], "refresh_error": str | None}
+    assert payload["refresh_error"] is None
+    assert payload["pulls"][0]["connection_id"] == "conn_abc123"
+    assert payload["pulls"][0]["status"] == "complete"
+    assert payload["pulls"][0]["rows_inserted"] == 7
 
 
 # -------------------------------------------------------------------- list ---

@@ -15,8 +15,8 @@ class TestGenerateSeedViewSql:
             connection_id="conn-123",
             typed_columns={"Name": "VARCHAR"},
         )
-        assert "CREATE OR REPLACE VIEW raw.gsheet_subscriptions" in sql
-        assert "CAST(data->>'Name' AS VARCHAR) AS name" in sql
+        assert 'CREATE OR REPLACE VIEW raw."gsheet_subscriptions"' in sql
+        assert "CAST(data->>'Name' AS VARCHAR) AS \"name\"" in sql
         assert "connection_id = 'conn-123'" in sql
         assert "deleted_from_source_at IS NULL" in sql
 
@@ -31,9 +31,9 @@ class TestGenerateSeedViewSql:
                 "Description": "VARCHAR",
             },
         )
-        assert "CAST(data->>'Amount' AS DECIMAL(18,2)) AS amount" in sql
-        assert "CAST(data->>'Date' AS DATE) AS date" in sql
-        assert "CAST(data->>'Description' AS VARCHAR) AS description" in sql
+        assert "CAST(data->>'Amount' AS DECIMAL(18,2)) AS \"amount\"" in sql
+        assert "CAST(data->>'Date' AS DATE) AS \"date\"" in sql
+        assert "CAST(data->>'Description' AS VARCHAR) AS \"description\"" in sql
 
     def test_header_with_spaces_normalized(self):
         """Header 'First Name' → normalized to 'first_name'."""
@@ -42,7 +42,7 @@ class TestGenerateSeedViewSql:
             connection_id="conn-789",
             typed_columns={"First Name": "VARCHAR"},
         )
-        assert "CAST(data->>'First Name' AS VARCHAR) AS first_name" in sql
+        assert "CAST(data->>'First Name' AS VARCHAR) AS \"first_name\"" in sql
 
     def test_lifecycle_columns_always_included(self):
         """row_number, deleted_from_source_at, loaded_at always in output."""
@@ -71,7 +71,7 @@ class TestGenerateSeedViewSql:
             connection_id="conn-1",
             typed_columns={},
         )
-        assert "CREATE OR REPLACE VIEW raw.gsheet_empty" in sql
+        assert 'CREATE OR REPLACE VIEW raw."gsheet_empty"' in sql
         assert "row_number" in sql
         assert "deleted_from_source_at" in sql
         assert "loaded_at" in sql

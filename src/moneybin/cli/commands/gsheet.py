@@ -47,7 +47,17 @@ def _parse_column_mapping(raw: str | None) -> dict[str, str] | None:
     if not raw:
         return None
     if raw.startswith("{"):
-        parsed: object = json.loads(raw)
+        try:
+            parsed: object = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            # Without this guard, malformed JSON raises before
+            # handle_cli_errors() wraps the call — automation sees a raw
+            # JSONDecodeError traceback instead of the documented exit-2
+            # validation error contract.
+            raise typer.BadParameter(
+                f"--column-mapping JSON is malformed: {exc.msg} "
+                f"(line {exc.lineno}, column {exc.colno})"
+            ) from exc
         if not isinstance(parsed, dict):
             raise typer.BadParameter("--column-mapping JSON must be an object")
         return {str(k): str(v) for k, v in parsed.items()}  # type: ignore[reportUnknownVariableType]
@@ -227,6 +237,7 @@ def gsheet_pull(
     """Pull a single connection by ID, or every healthy connection."""
     from moneybin.services.refresh import refresh as run_refresh  # noqa: PLC0415
 
+    refresh_error: str | None = None
     with handle_cli_errors():
         with _build_pull_service() as (service, db):
             if not quiet and output == OutputFormat.TEXT:
@@ -238,32 +249,46 @@ def gsheet_pull(
 
             if refresh:
                 # Skip the "gsheet" step — we just ran the pull directly.
-                run_refresh(db, steps=["match", "transform", "categorize"])
+                # run_refresh soft-fails by returning a RefreshResult with
+                # applied=False + error set, instead of raising. Capture
+                # the error so the CLI can surface a non-zero exit + a
+                # warning line; agents parsing --output json see it on the
+                # envelope too.
+                refresh_result = run_refresh(
+                    db, steps=["match", "transform", "categorize"]
+                )
+                if not refresh_result.applied and refresh_result.error is not None:
+                    refresh_error = refresh_result.error
 
     if output == OutputFormat.JSON:
         typer.echo(
             json.dumps(
-                [
-                    {
-                        "connection_id": r.connection_id,
-                        "status": r.status,
-                        "rows_inserted": (
-                            r.load_result.rows_inserted if r.load_result else 0
-                        ),
-                        "rows_upserted": (
-                            r.load_result.rows_upserted if r.load_result else 0
-                        ),
-                        "rows_soft_deleted": (
-                            r.load_result.rows_soft_deleted if r.load_result else 0
-                        ),
-                        "drift_reason": r.drift_reason,
-                        "error_message": r.error_message,
-                    }
-                    for r in results
-                ],
+                {
+                    "pulls": [
+                        {
+                            "connection_id": r.connection_id,
+                            "status": r.status,
+                            "rows_inserted": (
+                                r.load_result.rows_inserted if r.load_result else 0
+                            ),
+                            "rows_upserted": (
+                                r.load_result.rows_upserted if r.load_result else 0
+                            ),
+                            "rows_soft_deleted": (
+                                r.load_result.rows_soft_deleted if r.load_result else 0
+                            ),
+                            "drift_reason": r.drift_reason,
+                            "error_message": r.error_message,
+                        }
+                        for r in results
+                    ],
+                    "refresh_error": refresh_error,
+                },
                 indent=2,
             )
         )
+        if refresh_error is not None:
+            raise typer.Exit(1)
         return
 
     for r in results:
@@ -281,6 +306,13 @@ def gsheet_pull(
                 f"❌ {r.connection_id}: {r.status}"
                 + (f" — {r.error_message}" if r.error_message else "")
             )
+
+    if refresh_error is not None:
+        typer.echo(
+            f"❌ Pull completed but refresh pipeline failed: {refresh_error}",
+            err=True,
+        )
+        raise typer.Exit(1)
 
 
 @app.command("list")

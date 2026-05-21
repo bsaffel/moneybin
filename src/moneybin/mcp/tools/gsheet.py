@@ -171,18 +171,35 @@ def gsheet_connect(
         },
         "initial_pull": (
             {
+                "status": result.initial_pull_status,
                 "rows_inserted": result.initial_pull.rows_inserted,
                 "rows_upserted": result.initial_pull.rows_upserted,
                 "rows_soft_deleted": result.initial_pull.rows_soft_deleted,
             }
             if result.initial_pull is not None
-            else None
+            # Pull ran but produced no rows (e.g. drift_detected,
+            # auth_expired) — surface the failure status + reason so
+            # agents distinguish this from --no-initial-pull.
+            else (
+                {
+                    "status": result.initial_pull_status,
+                    "error": result.initial_pull_error,
+                }
+                if result.initial_pull_status is not None
+                else None
+            )
         ),
     }
     actions = [
         f"Run gsheet_pull(connection_id='{result.connection.connection_id}') to refresh.",
         "Use gsheet_status to check connection health going forward.",
     ]
+    if result.initial_pull_status not in (None, "complete"):
+        actions.insert(
+            0,
+            f"Initial pull returned status={result.initial_pull_status!r}; "
+            "run gsheet_status for detail before assuming data is loaded.",
+        )
     return build_envelope(data=data, sensitivity="medium", actions=actions)
 
 
@@ -310,12 +327,20 @@ def gsheet_reconnect(connection_id: str, yes: bool = False) -> ResponseEnvelope:
         },
         "initial_pull": (
             {
+                "status": result.initial_pull_status,
                 "rows_inserted": result.initial_pull.rows_inserted,
                 "rows_upserted": result.initial_pull.rows_upserted,
                 "rows_soft_deleted": result.initial_pull.rows_soft_deleted,
             }
             if result.initial_pull is not None
-            else None
+            else (
+                {
+                    "status": result.initial_pull_status,
+                    "error": result.initial_pull_error,
+                }
+                if result.initial_pull_status is not None
+                else None
+            )
         ),
     }
     return build_envelope(

@@ -68,11 +68,19 @@ class ConnectionRequest:
 
 @dataclass
 class ConnectResult:
-    """Outputs of ``GSheetConnectionService.connect``."""
+    """Outputs of ``GSheetConnectionService.connect``.
+
+    ``initial_pull_status`` and ``initial_pull_error`` surface auto-pull
+    failures that previously got swallowed when callers only retained
+    ``.load_result``. The connection is persisted regardless — callers
+    can inspect the pull state and decide whether to retry.
+    """
 
     connection: GSheetConnection
     detection: DetectionResult
     initial_pull: LoadResult | None
+    initial_pull_status: str | None = None
+    initial_pull_error: str | None = None
 
 
 class GSheetConnectionService:
@@ -197,6 +205,14 @@ class GSheetConnectionService:
         if target_adapter == "seed":
             column_mapping = detection.typed_columns
         elif req.column_mapping is not None:
+            # User override: schema-validate before persisting. Without this,
+            # a missing or typo'd required dest (e.g. `amount`) creates a
+            # "healthy" connection whose pulls fail with zero rows loaded —
+            # silent ingestion failure indistinguishable from an empty sheet.
+            _validate_transactions_column_mapping(
+                user_mapping=req.column_mapping,
+                sheet_headers=list(df.columns),
+            )
             column_mapping = req.column_mapping
         else:
             column_mapping = detection.column_mapping
@@ -226,6 +242,8 @@ class GSheetConnectionService:
         connection = row_to_connection(stored)
 
         initial_pull: LoadResult | None = None
+        initial_pull_status: str | None = None
+        initial_pull_error: str | None = None
         if not req.no_initial_pull:
             # Late import — Task 21 (pull_service) imports helpers from here.
             from moneybin.connectors.gsheet.pull_service import GSheetPullService
@@ -235,7 +253,10 @@ class GSheetConnectionService:
                 sheets_client=self._sheets,
                 oauth_client=self._oauth,
             )
-            initial_pull = pull_svc.pull_connection(connection_id).load_result
+            pull = pull_svc.pull_connection(connection_id)
+            initial_pull = pull.load_result
+            initial_pull_status = pull.status
+            initial_pull_error = pull.error_message
             # Refresh the connection state after the pull updated counters.
             stored = self._repo.get(connection_id)
             if stored is None:
@@ -244,12 +265,14 @@ class GSheetConnectionService:
 
         logger.info(
             f"gsheet connect: connection_id={connection_id} "
-            f"adapter={target_adapter} initial_pull={initial_pull is not None}"
+            f"adapter={target_adapter} initial_pull_status={initial_pull_status}"
         )
         return ConnectResult(
             connection=connection,
             detection=detection,
             initial_pull=initial_pull,
+            initial_pull_status=initial_pull_status,
+            initial_pull_error=initial_pull_error,
         )
 
     def list_connections(self) -> list[GSheetConnection]:
@@ -271,34 +294,46 @@ class GSheetConnectionService:
         if conn is None:
             raise GSheetError(f"Unknown connection: {connection_id}")
 
-        if conn["adapter"] == "seed":
-            alias = conn.get("alias")
-            if alias:
-                # Defense-in-depth: re-validate the alias before interpolating
-                # into DROP VIEW. The insert path already validated via
-                # view_generator, but a malformed alias on disk would otherwise
-                # land here unchecked.
-                if not _SAFE_ALIAS_RE.fullmatch(alias):
-                    raise GSheetError(
-                        f"Refusing to DROP VIEW for unsafe alias: {alias!r}"
+        # Atomic purge: DROP VIEW + raw DELETE + audited row DELETE all run
+        # inside one transaction. A failure at any step rolls back the
+        # whole purge so the connection row never desyncs from its raw
+        # data. repo.delete cooperates via in_outer_txn=True.
+        self._db.begin()
+        try:
+            if conn["adapter"] == "seed":
+                alias = conn.get("alias")
+                if alias:
+                    # Defense-in-depth: re-validate the alias before
+                    # interpolating into DROP VIEW. The insert path
+                    # already validated via view_generator, but a
+                    # malformed alias on disk would otherwise land here
+                    # unchecked.
+                    if not _SAFE_ALIAS_RE.fullmatch(alias):
+                        raise GSheetError(
+                            f"Refusing to DROP VIEW for unsafe alias: {alias!r}"
+                        )
+                    # security.md: quote dynamic identifiers via sqlglot
+                    # even after regex validation — defense in depth, the
+                    # rule is explicit.
+                    safe_view = exp.to_identifier(f"gsheet_{alias}", quoted=True).sql(
+                        "duckdb"
                     )
-                # security.md: quote dynamic identifiers via sqlglot even after
-                # regex validation — defense in depth, the rule is explicit.
-                safe_view = exp.to_identifier(f"gsheet_{alias}", quoted=True).sql(
-                    "duckdb"
+                    self._db.execute(f"DROP VIEW IF EXISTS raw.{safe_view};")  # noqa: S608  # alias regex-validated + sqlglot-quoted
+                self._db.execute(
+                    f"DELETE FROM {GSHEET_SEEDS.full_name} WHERE connection_id = ?",  # noqa: S608  # TableRef + parameterized value
+                    [connection_id],
                 )
-                self._db.execute(f"DROP VIEW IF EXISTS raw.{safe_view};")  # noqa: S608  # alias regex-validated + sqlglot-quoted
-            self._db.execute(
-                f"DELETE FROM {GSHEET_SEEDS.full_name} WHERE connection_id = ?",  # noqa: S608  # TableRef + parameterized value
-                [connection_id],
-            )
-        else:
-            self._db.execute(
-                f"DELETE FROM {TABULAR_TRANSACTIONS.full_name} WHERE source_origin = ?",  # noqa: S608  # TableRef + parameterized value
-                [connection_id],
-            )
+            else:
+                self._db.execute(
+                    f"DELETE FROM {TABULAR_TRANSACTIONS.full_name} WHERE source_origin = ?",  # noqa: S608  # TableRef + parameterized value
+                    [connection_id],
+                )
 
-        self._repo.delete(connection_id)
+            self._repo.delete(connection_id, in_outer_txn=True)
+            self._db.commit()
+        except Exception:
+            self._db.rollback()
+            raise
 
     def reconnect(self, connection_id: str, *, yes: bool = False) -> ConnectResult:
         """Re-detect against the current sheet, re-pin mapping, run a pull."""
@@ -374,6 +409,48 @@ class GSheetConnectionService:
             connection=row_to_connection(refreshed),
             detection=detection,
             initial_pull=pull.load_result,
+            initial_pull_status=pull.status,
+            initial_pull_error=pull.error_message,
+        )
+
+
+# Dest fields the transactions transform requires to produce a non-empty
+# row. Caller-supplied --column-mapping omitting these creates a healthy
+# connection whose pulls all fail with zero rows loaded.
+_REQUIRED_TRANSACTIONS_DEST_FIELDS = ("transaction_date", "amount")
+
+
+def _validate_transactions_column_mapping(
+    *,
+    user_mapping: dict[str, str],
+    sheet_headers: list[str],
+) -> None:
+    """Verify a user-supplied --column-mapping is schema-complete.
+
+    Mapping shape is ``{source_header: dest_field}``. Two failure modes:
+
+    1. Required dest field missing — pulls will fail every run.
+    2. Source header referenced but not present in the sheet — header
+       lookup fails at transform-time, leaks Polars error to MCP.
+
+    Raises GSheetError with a message that names the missing field /
+    unknown header so the user can fix the mapping without a stack-
+    trace dig.
+    """
+    dest_fields = set(user_mapping.values())
+    missing = [f for f in _REQUIRED_TRANSACTIONS_DEST_FIELDS if f not in dest_fields]
+    if missing:
+        raise GSheetError(
+            f"--column-mapping is missing required dest field(s): {missing}. "
+            f"The transactions adapter needs {list(_REQUIRED_TRANSACTIONS_DEST_FIELDS)} "
+            "to produce rows."
+        )
+    sheet_header_set = set(sheet_headers)
+    unknown_sources = [src for src in user_mapping if src not in sheet_header_set]
+    if unknown_sources:
+        raise GSheetError(
+            f"--column-mapping references header(s) not in the sheet: "
+            f"{unknown_sources}. Available headers: {sheet_headers}."
         )
 
 

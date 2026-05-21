@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 
+from sqlglot import exp
+
 from moneybin.tables import GSHEET_SEEDS
 
 _SAFE_ALIAS_RE = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
@@ -80,8 +82,12 @@ def generate_seed_view_sql(
         seen_normalized[col_name] = header
         # data->>'<header>' extracts as text; CAST to the inferred type.
         # Escape single-quotes in header for the SQL string literal.
+        # security.md: always sqlglot-quote dynamic identifiers as
+        # defense-in-depth, even after _normalize_col_name reduces to
+        # [a-z0-9_]. The same discipline applies to view_name below.
         header_lit = header.replace("'", "''")
-        select_parts.append(f"CAST(data->>'{header_lit}' AS {sql_type}) AS {col_name}")
+        safe_col = exp.to_identifier(col_name, quoted=True).sql("duckdb")
+        select_parts.append(f"CAST(data->>'{header_lit}' AS {sql_type}) AS {safe_col}")
 
     # Carry through lifecycle columns from raw.gsheet_seeds.
     select_parts.append("row_number")
@@ -93,8 +99,9 @@ def generate_seed_view_sql(
     # _SAFE_CONN_ID_RE validates it is UUID4-hex-shaped (alphanumeric / underscore
     # / dash, ≤64 chars), so inline interpolation is safe by the project's
     # allowlist-then-quote convention.
+    safe_view = exp.to_identifier(view_name, quoted=True).sql("duckdb")
     return (
-        f"CREATE OR REPLACE VIEW raw.{view_name} AS\n"
+        f"CREATE OR REPLACE VIEW raw.{safe_view} AS\n"
         f"SELECT\n    {select_clause}\n"
         f"FROM {GSHEET_SEEDS.full_name}\n"
         f"WHERE connection_id = '{connection_id}'\n"

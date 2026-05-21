@@ -395,9 +395,17 @@ class GSheetConnectionsRepo:
         *,
         actor: str = "cli",
         parent_audit_id: str | None = None,
+        in_outer_txn: bool = False,
     ) -> None:
-        """Hard-delete the connection row; emit audit row with full before."""
-        self._db.begin()
+        """Hard-delete the connection row; emit audit row with full before.
+
+        ``in_outer_txn=True`` skips begin/commit/rollback so a caller can
+        wrap this with other side-effects in a single transaction
+        (purge-with-raw-data is the canonical use case). The caller is
+        then responsible for the transaction lifecycle.
+        """
+        if not in_outer_txn:
+            self._db.begin()
         try:
             before = self._fetch_full_row(connection_id)
             if before is None:
@@ -414,9 +422,11 @@ class GSheetConnectionsRepo:
                 actor=actor,
                 parent_audit_id=parent_audit_id,
             )
-            self._db.commit()
+            if not in_outer_txn:
+                self._db.commit()
         except Exception:
-            self._db.rollback()
+            if not in_outer_txn:
+                self._db.rollback()
             raise
 
     # ------------------------------------------------------------------
