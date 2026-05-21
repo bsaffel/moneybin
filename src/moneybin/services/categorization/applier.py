@@ -648,11 +648,6 @@ class MatchApplier:
         all six tables are deleted before the ``app.user_categories`` row
         itself is removed.
 
-        ``app.rule_deactivations`` is intentionally excluded from the cascade:
-        it is audit-trail data and historical rows must survive category
-        deletion. Its ``new_category_id`` becomes an unresolvable FK by design,
-        preserving the "what was once true" semantic of the audit log.
-
         Default (seeded) categories cannot be hard-deleted — operators disable
         them via :meth:`toggle_category` so that ``app.category_overrides``
         records the deactivation without destroying the canonical taxonomy row.

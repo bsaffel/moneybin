@@ -443,10 +443,8 @@ class ImportService:
             InstitutionResolutionError,
             resolve_institution,
         )
-        from moneybin.extractors.ofx_extractor import (
-            OFXExtractor,
-            preprocess_ofx_content,
-        )
+        from moneybin.extractors.ofx import OFXExtractor
+        from moneybin.extractors.ofx.extractor import preprocess_ofx_content
         from moneybin.loaders import import_log
         from moneybin.metrics.registry import OFX_IMPORT_BATCHES
 
@@ -672,6 +670,7 @@ class ImportService:
         """
         import polars as pl
 
+        from moneybin.extractors.tabular import TabularExtractor
         from moneybin.extractors.tabular.column_mapper import map_columns
         from moneybin.extractors.tabular.format_detector import detect_format
         from moneybin.extractors.tabular.formats import (
@@ -683,7 +682,6 @@ class ImportService:
         )
         from moneybin.extractors.tabular.readers import read_file
         from moneybin.extractors.tabular.transforms import transform_dataframe
-        from moneybin.loaders.tabular_loader import TabularLoader
         from moneybin.utils import slugify
 
         result = ImportResult(file_path=str(file_path), file_type="tabular")
@@ -818,7 +816,7 @@ class ImportService:
         elif account_name:
             from moneybin.config import get_settings
 
-            threshold = get_settings().data.tabular.account_match_threshold
+            threshold = get_settings().providers.tabular.account_match_threshold
             aid = self._resolve_account_via_matcher(
                 account_name=account_name,
                 account_number=None,  # no --account-number CLI flag yet
@@ -851,8 +849,8 @@ class ImportService:
         )
 
         # Create import batch
-        loader = TabularLoader(self._db)
-        import_id = loader.create_import_batch(
+        extractor = TabularExtractor(self._db)
+        import_id = extractor.create_import_batch(
             source_file=str(file_path),
             source_type=source_type,
             source_origin=source_origin,
@@ -865,7 +863,7 @@ class ImportService:
         # Stage 4: Transform
         from moneybin.config import get_settings
 
-        tabular_cfg = get_settings().data.tabular
+        tabular_cfg = get_settings().providers.tabular
         try:
             transform_result = transform_dataframe(
                 df=df,
@@ -882,7 +880,7 @@ class ImportService:
                 balance_tolerance_cents=tabular_cfg.balance_tolerance_cents,
             )
         except Exception as e:  # noqa: BLE001  # re-raised as ValueError after recording rejection in DB
-            loader.finalize_import_batch(
+            extractor.finalize_import_batch(
                 import_id=import_id,
                 rows_total=len(df),
                 rows_imported=0,
@@ -910,10 +908,10 @@ class ImportService:
             "import_id": [import_id] * len(unique_ids),
         })
 
-        rows_imported = loader.load_transactions(transform_result.transactions)
-        loader.load_accounts(account_df)
+        rows_imported = extractor.load_transactions(transform_result.transactions)
+        extractor.load_accounts(account_df)
 
-        loader.finalize_import_batch(
+        extractor.finalize_import_batch(
             import_id=import_id,
             rows_total=len(df),
             rows_imported=rows_imported,
@@ -1176,7 +1174,7 @@ class ImportService:
                 if r.file_type in ("ofx", "tabular"):
                     any_transformable = True
             except Exception as e:  # noqa: BLE001 — per-file failure must not abort batch
-                # error_type only; raw str(e) may embed PII per ofx_extractor.py:228-232
+                # error_type only; raw str(e) may embed PII per extractors/ofx/extractor.py
                 error_type = type(e).__name__
                 logger.warning(f"Import failed for {path}: {error_type}")
                 per_file.append(

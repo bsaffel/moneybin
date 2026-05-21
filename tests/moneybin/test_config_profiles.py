@@ -380,37 +380,128 @@ class TestProfileDirectoryLayout:
 
 
 def test_tabular_config_balance_validation_defaults() -> None:
-    """TabularConfig exposes balance validation tunables with safe defaults."""
-    from moneybin.config import TabularConfig
+    """TabularProviderConfig exposes balance validation tunables with safe defaults."""
+    from moneybin.extractors.tabular.config import TabularProviderConfig
 
-    cfg = TabularConfig()
+    cfg = TabularProviderConfig()
     assert cfg.balance_pass_threshold == 0.90
     assert cfg.balance_tolerance_cents == 1
 
 
 def test_tabular_config_balance_validation_overrides() -> None:
     """Caller can override balance validation tunables."""
-    from moneybin.config import TabularConfig
+    from moneybin.extractors.tabular.config import TabularProviderConfig
 
-    cfg = TabularConfig(balance_pass_threshold=0.95, balance_tolerance_cents=5)
+    cfg = TabularProviderConfig(balance_pass_threshold=0.95, balance_tolerance_cents=5)
     assert cfg.balance_pass_threshold == 0.95
     assert cfg.balance_tolerance_cents == 5
 
 
 def test_tabular_config_account_match_threshold_default() -> None:
-    """TabularConfig exposes the fuzzy account-match threshold with default 0.6."""
-    from moneybin.config import TabularConfig
+    """TabularProviderConfig exposes the fuzzy account-match threshold with default 0.6."""
+    from moneybin.extractors.tabular.config import TabularProviderConfig
 
-    cfg = TabularConfig()
+    cfg = TabularProviderConfig()
     assert cfg.account_match_threshold == 0.6
 
 
 def test_tabular_config_account_match_threshold_override() -> None:
     """Caller can tighten or loosen the fuzzy match threshold."""
-    from moneybin.config import TabularConfig
+    from moneybin.extractors.tabular.config import TabularProviderConfig
 
-    cfg = TabularConfig(account_match_threshold=0.85)
+    cfg = TabularProviderConfig(account_match_threshold=0.85)
     assert cfg.account_match_threshold == 0.85
+
+
+def test_providers_tabular_env_var_nesting_overrides_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """MONEYBIN_PROVIDERS__TABULAR__* nested env vars reach the settings root.
+
+    Catches a regression where the providers nesting drifts out of sync
+    with Pydantic Settings' env_nested_delimiter and the override silently
+    falls back to defaults.
+    """
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    monkeypatch.setenv("MONEYBIN_PROVIDERS__TABULAR__TEXT_SIZE_LIMIT_MB", "999")
+
+    settings = MoneyBinSettings()
+
+    assert settings.providers.tabular.text_size_limit_mb == 999
+
+
+def test_legacy_data_tabular_env_var_fails_loudly(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """MONEYBIN_DATA__TABULAR__* env vars from before Plan 1 must error.
+
+    Tabular provider knobs moved out of ``data.tabular`` into
+    ``providers.tabular``. pydantic-settings would silently ignore the old
+    names; the startup validator catches them and tells the operator to
+    migrate.
+    """
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    monkeypatch.setenv("MONEYBIN_DATA__TABULAR__TEXT_SIZE_LIMIT_MB", "999")
+
+    with pytest.raises(ValueError, match="MONEYBIN_PROVIDERS__TABULAR"):
+        MoneyBinSettings()
+
+
+def test_legacy_data_tabular_dotenv_key_fails_loudly(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Legacy keys in the active .env file fail the same way os.environ does.
+
+    pydantic-settings reads ``.env.{profile}`` (or ``.env``) via
+    ``DotEnvSettingsSource`` and silently drops unknown keys. The startup
+    validator scans the dotenv file too so operators on either
+    configuration path get a clear migration message.
+    """
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    # No matching env var in os.environ — the deprecated key lives in the file.
+    monkeypatch.delenv("MONEYBIN_DATA__TABULAR__TEXT_SIZE_LIMIT_MB", raising=False)
+    (tmp_path / ".env.test").write_text(
+        "# pre-existing operator overrides\n"
+        "MONEYBIN_DATA__TABULAR__TEXT_SIZE_LIMIT_MB=999\n"
+    )
+
+    with pytest.raises(ValueError, match="MONEYBIN_PROVIDERS__TABULAR"):
+        MoneyBinSettings(profile="test")
+
+
+def test_legacy_data_tabular_env_var_lowercase_fails_loudly(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Lowercase legacy env vars also trip the guard.
+
+    Pydantic-settings runs with ``case_sensitive=False``, so lowercase
+    or mixed-case variants would still be picked up by the loader (and
+    silently dropped under ``extra="ignore"``). The guard normalizes via
+    ``str.upper()`` so the migration error fires regardless of casing.
+    """
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    monkeypatch.setenv("moneybin_data__tabular__text_size_limit_mb", "999")
+
+    with pytest.raises(ValueError, match="MONEYBIN_PROVIDERS__TABULAR"):
+        MoneyBinSettings()
+
+
+def test_legacy_data_tabular_dotenv_lowercase_key_fails_loudly(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Lowercase legacy keys in the active .env file also trip the guard.
+
+    Same rationale as the os.environ case — dotenv keys flow through the
+    same case-insensitive loader, so the dotenv-scan branch normalizes
+    casing too.
+    """
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    (tmp_path / ".env.test").write_text(
+        "moneybin_data__tabular__text_size_limit_mb=999\n"
+    )
+
+    with pytest.raises(ValueError, match="MONEYBIN_PROVIDERS__TABULAR"):
+        MoneyBinSettings(profile="test")
 
 
 class TestSqlmeshConfigProfileGating:

@@ -1,4 +1,4 @@
-"""End-to-end smoke: mocked SyncClient → SyncService → PlaidLoader → raw → SQLMesh → core."""
+"""End-to-end smoke: mocked SyncClient → SyncService → PlaidExtractor → raw → SQLMesh → core."""
 
 from __future__ import annotations
 
@@ -11,13 +11,13 @@ import yaml
 
 from moneybin.connectors.sync_models import SyncDataResponse, SyncTriggerResponse
 from moneybin.database import Database, sqlmesh_context
-from moneybin.loaders.plaid_loader import PlaidLoader
+from moneybin.extractors.plaid import PlaidExtractor
 from moneybin.services.sync_service import SyncService
 
 pytestmark = pytest.mark.integration
 
 FIXTURE = (
-    Path(__file__).parent / "test_loaders" / "fixtures" / "plaid_sync_response.yaml"
+    Path(__file__).parent / "test_extractors" / "fixtures" / "plaid_sync_response.yaml"
 )
 
 
@@ -36,7 +36,7 @@ def test_full_sync_pipeline_to_core(db: Database) -> None:
     client.get_data.return_value = sync_data
     client.list_institutions.return_value = []
 
-    loader = PlaidLoader(db)
+    loader = PlaidExtractor(db)
     service = SyncService(client=client, db=db, loader=loader)
 
     result = service.pull()

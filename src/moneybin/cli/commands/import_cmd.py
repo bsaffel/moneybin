@@ -438,12 +438,12 @@ def import_history(
     """
     from moneybin.cli.utils import handle_cli_errors
     from moneybin.database import get_database  # noqa: PLC0415 — deferred import
-    from moneybin.loaders.tabular_loader import TabularLoader
+    from moneybin.extractors.tabular import TabularExtractor
 
     with handle_cli_errors():
         with get_database(read_only=True) as db:
-            loader = TabularLoader(db)
-            records = loader.get_import_history(limit=limit, import_id=import_id)
+            extractor = TabularExtractor(db)
+            records = extractor.get_import_history(limit=limit, import_id=import_id)
 
     if output == OutputFormat.JSON:
         emit_json("imports", records)

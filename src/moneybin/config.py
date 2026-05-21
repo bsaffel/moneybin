@@ -14,6 +14,14 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Direct-path imports of provider configs. We import from the concrete
+# config modules (not the package ``__init__``) to avoid triggering
+# tabular/__init__.py's lazy ``__getattr__``, which gates polars and is
+# load-bearing for the CLI cold-start path.
+from moneybin.extractors.ofx.config import OFXProviderConfig
+from moneybin.extractors.plaid.config import PlaidProviderConfig
+from moneybin.extractors.tabular.config import TabularProviderConfig
+
 
 def _is_moneybin_repo(path: Path) -> bool:
     """Check if path is a moneybin repo checkout.
@@ -77,6 +85,14 @@ def get_base_dir() -> Path:
     return (Path.home() / ".moneybin").resolve()
 
 
+# Retired tabular env-var namespace. ``MoneyBinSettings.__init__`` errors out
+# if any key with this prefix appears in ``os.environ`` or the active dotenv
+# file — the knobs moved to ``MONEYBIN_PROVIDERS__TABULAR__*`` in Plan 1 of
+# the extension-contracts implementation and pydantic-settings would
+# otherwise silently ignore the old names (``extra="ignore"``).
+_LEGACY_TABULAR_PREFIX = "MONEYBIN_DATA__TABULAR__"
+
+
 class DatabaseConfig(BaseModel):
     """Database configuration settings."""
 
@@ -127,53 +143,6 @@ class DatabaseConfig(BaseModel):
         return v
 
 
-class TabularConfig(BaseModel):
-    """Tabular import pipeline limits and thresholds."""
-
-    model_config = ConfigDict(frozen=True)
-
-    text_size_limit_mb: int = Field(
-        default=25,
-        description="Maximum file size (MB) for text formats (CSV/TSV)",
-    )
-    binary_size_limit_mb: int = Field(
-        default=100,
-        description="Maximum file size (MB) for binary formats (Excel/Parquet/Feather)",
-    )
-    row_warn_threshold: int = Field(
-        default=10_000,
-        description="Row count above which a warning is logged",
-    )
-    row_refuse_threshold: int = Field(
-        default=50_000,
-        description="Row count above which import is refused (use --no-row-limit to override)",
-    )
-    balance_pass_threshold: float = Field(
-        default=0.90,
-        ge=0.0,
-        le=1.0,
-        description=(
-            "Minimum fraction of balance deltas that must match "
-            "for balance validation to pass"
-        ),
-    )
-    balance_tolerance_cents: int = Field(
-        default=1,
-        ge=0,
-        description="Per-delta tolerance in cents for balance validation",
-    )
-    account_match_threshold: float = Field(
-        default=0.6,
-        ge=0.0,
-        le=1.0,
-        description=(
-            "Fuzzy-match similarity threshold (difflib.SequenceMatcher.ratio) "
-            "for account-name matching. Below this threshold, candidates are "
-            "treated as 'no match'."
-        ),
-    )
-
-
 class DataConfig(BaseModel):
     """Data processing and storage configuration."""
 
@@ -188,7 +157,22 @@ class DataConfig(BaseModel):
     incremental_loading: bool = Field(
         default=True, description="Use incremental loading by default"
     )
-    tabular: TabularConfig = Field(default_factory=TabularConfig)
+
+
+class ProvidersSettings(BaseModel):
+    """Per-provider configuration nested under MoneyBinSettings.providers.<name>.
+
+    Each provider declares a ProviderConfig subclass in its package
+    (``extractors/<name>/config.py``); the framework merges them here.
+    Env-var override follows the standard nested-delimiter shape, e.g.
+    ``MONEYBIN_PROVIDERS__TABULAR__TEXT_SIZE_LIMIT_MB=20``.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    ofx: OFXProviderConfig = Field(default_factory=OFXProviderConfig)
+    plaid: PlaidProviderConfig = Field(default_factory=PlaidProviderConfig)
+    tabular: TabularProviderConfig = Field(default_factory=TabularProviderConfig)
 
 
 class LoggingConfig(BaseModel):
@@ -481,10 +465,12 @@ class CategorizationSettings(BaseModel):
     def proposal_threshold_lte_override_threshold(self) -> "CategorizationSettings":
         """Ensure proposal_threshold <= override_threshold.
 
-        If proposal > override, ``check_overrides`` deactivates a rule once
-        override count reaches override_threshold but the re-proposal lands
-        in ``tracking`` (count < proposal_threshold), hiding the corrected
-        category from ``categorize auto review`` until further user categorizations.
+        The deactivation bar must not be lower than the creation bar. If
+        ``override_threshold`` were less than ``proposal_threshold``, a
+        pattern could accumulate enough user corrections to deactivate its
+        rule (via ``check_overrides``) before enough auto-categorizations
+        had ever occurred to propose the rule (via ``record_categorization``)
+        — an obviously degenerate configuration.
         """
         if self.auto_rule_proposal_threshold > self.auto_rule_override_threshold:
             raise ValueError(
@@ -525,6 +511,10 @@ class MoneyBinSettings(BaseSettings):
         default_factory=ImportSettings,
         alias="import",
     )
+    providers: ProvidersSettings = Field(
+        default_factory=ProvidersSettings,
+        description="Per-provider configuration (OFX, Plaid, tabular).",
+    )
 
     # Application settings
     debug: bool = Field(default=False, description="Enable debug mode")
@@ -554,6 +544,45 @@ class MoneyBinSettings(BaseSettings):
         except ValueError as e:
             raise ValueError(f"Invalid profile name: {e}") from e
 
+    @staticmethod
+    def _raise_on_deprecated_tabular_keys(profile: str) -> None:
+        """Fail loudly if retired ``MONEYBIN_DATA__TABULAR__*`` keys are set.
+
+        Scans both ``os.environ`` and the active dotenv file (the same
+        lookup ``settings_customise_sources`` uses for the live load) so
+        operators on either configuration path get a clear migration
+        message rather than silently falling back to defaults.
+
+        Prefix matching is case-insensitive to mirror pydantic-settings'
+        ``case_sensitive=False`` config — lowercase or mixed-case legacy
+        keys still get absorbed by the loader, so the guard must catch
+        them too.
+        """
+        offenders: list[str] = sorted(
+            k for k in os.environ if k.upper().startswith(_LEGACY_TABULAR_PREFIX)
+        )
+
+        base = get_base_dir()
+        for env_file in (base / f".env.{profile}", base / ".env"):
+            if not env_file.exists():
+                continue
+            for raw_line in env_file.read_text().splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key = line.split("=", 1)[0].strip()
+                if key.upper().startswith(_LEGACY_TABULAR_PREFIX):
+                    offenders.append(f"{env_file.name}:{key}")
+            break  # Match settings_customise_sources: first existing file wins.
+
+        if offenders:
+            raise ValueError(
+                "Deprecated env var(s) found: "
+                f"{', '.join(offenders)}. Tabular provider settings moved "
+                "to the MONEYBIN_PROVIDERS__TABULAR__* namespace. Rename "
+                "each variable accordingly and re-run."
+            )
+
     def __init__(self, **kwargs: Any):
         """Initialize settings with profile-based directory layout.
 
@@ -566,6 +595,16 @@ class MoneyBinSettings(BaseSettings):
         # This ensures directories are created with normalized names
         raw_profile = kwargs.get("profile", "default")
         profile = normalize_profile_name(raw_profile)
+
+        # Fail loudly on the retired tabular env-var namespace. Tabular
+        # provider knobs moved from ``MONEYBIN_DATA__TABULAR__*`` to
+        # ``MONEYBIN_PROVIDERS__TABULAR__*`` (Plan 1 of extension-contracts).
+        # pydantic-settings silently ignores unknown env vars and unknown
+        # dotenv keys (``extra="ignore"``), so this check scans both
+        # ``os.environ`` and the active ``.env`` file (the same lookup the
+        # settings_customise_sources hook uses) to catch operators on either
+        # configuration path.
+        self._raise_on_deprecated_tabular_keys(profile=profile)
 
         # Update kwargs with normalized profile name
         kwargs["profile"] = profile

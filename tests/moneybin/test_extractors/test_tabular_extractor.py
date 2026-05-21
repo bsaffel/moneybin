@@ -1,11 +1,11 @@
-"""Tests for the tabular loader (Stage 5)."""
+"""Tests for the tabular extractor (Stage 5)."""
 
 import json
 from unittest.mock import MagicMock
 
 import pytest
 
-from moneybin.loaders.tabular_loader import TabularLoader
+from moneybin.extractors.tabular import TabularExtractor
 
 
 @pytest.fixture()
@@ -21,8 +21,8 @@ class TestCreateImportBatch:
     """Tests for import batch creation."""
 
     def test_creates_import_log_entry(self, mock_db: MagicMock) -> None:
-        loader = TabularLoader(mock_db)
-        import_id = loader.create_import_batch(
+        extractor = TabularExtractor(mock_db)
+        import_id = extractor.create_import_batch(
             source_file="/tmp/test.csv",  # noqa: S108  # test fixture path, not real temp file
             source_type="csv",
             source_origin="test_bank",
@@ -33,14 +33,14 @@ class TestCreateImportBatch:
         assert mock_db.execute.called
 
     def test_import_id_is_unique(self, mock_db: MagicMock) -> None:
-        loader = TabularLoader(mock_db)
-        id1 = loader.create_import_batch(
+        extractor = TabularExtractor(mock_db)
+        id1 = extractor.create_import_batch(
             source_file="/tmp/test1.csv",  # noqa: S108  # test fixture path, not real temp file
             source_type="csv",
             source_origin="test_bank",
             account_names=["Test"],
         )
-        id2 = loader.create_import_batch(
+        id2 = extractor.create_import_batch(
             source_file="/tmp/test2.csv",  # noqa: S108  # test fixture path, not real temp file
             source_type="csv",
             source_origin="test_bank",
@@ -53,8 +53,8 @@ class TestFinalizeImportBatch:
     """Tests for import batch finalization."""
 
     def test_finalize_sets_partial_status(self, mock_db: MagicMock) -> None:
-        loader = TabularLoader(mock_db)
-        loader.finalize_import_batch(
+        extractor = TabularExtractor(mock_db)
+        extractor.finalize_import_batch(
             import_id="test-123",
             rows_total=100,
             rows_imported=95,
@@ -70,8 +70,8 @@ class TestFinalizeImportBatch:
         assert params[0] == "partial"  # rows_rejected=5 → "partial"
 
     def test_finalize_sets_complete_status(self, mock_db: MagicMock) -> None:
-        loader = TabularLoader(mock_db)
-        loader.finalize_import_batch(
+        extractor = TabularExtractor(mock_db)
+        extractor.finalize_import_batch(
             import_id="test-123",
             rows_total=100,
             rows_imported=100,
@@ -81,8 +81,8 @@ class TestFinalizeImportBatch:
         assert params[0] == "complete"
 
     def test_finalize_sets_failed_status(self, mock_db: MagicMock) -> None:
-        loader = TabularLoader(mock_db)
-        loader.finalize_import_batch(
+        extractor = TabularExtractor(mock_db)
+        extractor.finalize_import_batch(
             import_id="test-123",
             rows_total=10,
             rows_imported=0,
@@ -92,8 +92,8 @@ class TestFinalizeImportBatch:
         assert params[0] == "failed"
 
     def test_finalize_persists_rejection_details(self, mock_db: MagicMock) -> None:
-        loader = TabularLoader(mock_db)
-        loader.finalize_import_batch(
+        extractor = TabularExtractor(mock_db)
+        extractor.finalize_import_batch(
             import_id="test-123",
             rows_total=10,
             rows_imported=8,

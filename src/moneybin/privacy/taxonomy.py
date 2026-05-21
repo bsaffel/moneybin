@@ -213,16 +213,6 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "subcategory": DataClass.CATEGORY,
         "trigger_count": DataClass.AGGREGATE,
     },
-    ("app", "rule_deactivations"): {
-        "deactivated_at": DataClass.TIMESTAMP_OBSERVABILITY,
-        "deactivation_id": DataClass.RECORD_ID,
-        "new_category": DataClass.CATEGORY,
-        "new_category_id": DataClass.RECORD_ID,
-        "new_subcategory": DataClass.CATEGORY,
-        "override_count": DataClass.AGGREGATE,
-        "reason": DataClass.TXN_TYPE,
-        "rule_id": DataClass.RECORD_ID,
-    },
     ("app", "schema_migrations"): {
         "applied_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "checksum": DataClass.RECORD_ID,
