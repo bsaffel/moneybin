@@ -13,12 +13,16 @@ status sees the recovery path without a second tool call.
 from __future__ import annotations
 
 import logging
-from collections.abc import Generator
-from contextlib import contextmanager
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from fastmcp import FastMCP
 
+from moneybin.connectors.gsheet.service_factory import (
+    build_connection_service as _build_connection_service,
+)
+from moneybin.connectors.gsheet.service_factory import (
+    build_pull_service as _build_pull_service,
+)
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
@@ -28,77 +32,7 @@ from moneybin.protocol.envelope import (
     build_error_envelope,
 )
 
-if TYPE_CHECKING:
-    from moneybin.connectors.gsheet.adapters.base import GSheetConnection
-    from moneybin.connectors.gsheet.connection_service import GSheetConnectionService
-    from moneybin.connectors.gsheet.pull_service import GSheetPullService
-
 logger = logging.getLogger(__name__)
-
-
-def _build_oauth_client() -> Any:
-    """Construct a GoogleOAuthClient from current settings."""
-    from moneybin.config import get_settings  # noqa: PLC0415
-    from moneybin.connectors.gsheet.oauth_client import (  # noqa: PLC0415
-        GoogleOAuthClient,
-    )
-    from moneybin.secrets import SecretStore  # noqa: PLC0415
-
-    return GoogleOAuthClient(secrets=SecretStore(), settings=get_settings())
-
-
-@contextmanager
-def _build_connection_service() -> Generator[GSheetConnectionService, None, None]:
-    """Yield a GSheetConnectionService with an active Database connection."""
-    from moneybin.connectors.gsheet.connection_service import (  # noqa: PLC0415
-        GSheetConnectionService,
-    )
-    from moneybin.connectors.gsheet.sheets_api import SheetsClient  # noqa: PLC0415
-    from moneybin.database import get_database  # noqa: PLC0415
-
-    oauth_client = _build_oauth_client()
-    sheets_client = SheetsClient(oauth=oauth_client)
-    with get_database(read_only=False) as db:
-        yield GSheetConnectionService(
-            db=db, sheets_client=sheets_client, oauth_client=oauth_client
-        )
-
-
-@contextmanager
-def _build_pull_service() -> Generator[GSheetPullService, None, None]:
-    """Yield a GSheetPullService with an active Database connection."""
-    from moneybin.connectors.gsheet.pull_service import (  # noqa: PLC0415
-        GSheetPullService,
-    )
-    from moneybin.connectors.gsheet.sheets_api import SheetsClient  # noqa: PLC0415
-    from moneybin.database import get_database  # noqa: PLC0415
-
-    oauth_client = _build_oauth_client()
-    sheets_client = SheetsClient(oauth=oauth_client)
-    with get_database(read_only=False) as db:
-        yield GSheetPullService(
-            db=db, sheets_client=sheets_client, oauth_client=oauth_client
-        )
-
-
-def _connection_to_dict(conn: GSheetConnection) -> dict[str, Any]:
-    """Serialize a GSheetConnection dataclass for envelope output."""
-    return {
-        "connection_id": conn.connection_id,
-        "spreadsheet_id": conn.spreadsheet_id,
-        "sheet_gid": conn.sheet_gid,
-        "sheet_name": conn.sheet_name,
-        "workbook_name": conn.workbook_name,
-        "adapter": conn.adapter,
-        "alias": conn.alias,
-        "account_id": conn.account_id,
-        "account_name": conn.account_name,
-        "status": conn.status,
-        "last_pull_at": conn.last_pull_at,
-        "last_success_at": conn.last_success_at,
-        "last_drift_reason": conn.last_drift_reason,
-        "consecutive_failure_count": conn.consecutive_failure_count,
-    }
 
 
 def _reconnect_hint(connection_id: str) -> str:
@@ -165,7 +99,7 @@ def gsheet_connect(
         result = service.connect(req)
 
     data: dict[str, Any] = {
-        "connection": _connection_to_dict(result.connection),
+        "connection": result.connection.to_dict(),
         "detection": {
             "confidence": result.detection.confidence,
             "column_mapping": result.detection.column_mapping,
@@ -245,7 +179,7 @@ def gsheet() -> ResponseEnvelope:
     """
     with _build_connection_service() as service:
         connections = service.list_connections()
-    data = [_connection_to_dict(c) for c in connections]
+    data = [c.to_dict() for c in connections]
     return build_envelope(
         data=data,
         sensitivity="low",
@@ -275,7 +209,7 @@ def gsheet_status(connection_id: str | None = None) -> ResponseEnvelope:
                     ),
                 )
             connections = [single]
-    data = [_connection_to_dict(c) for c in connections]
+    data = [c.to_dict() for c in connections]
     return build_envelope(
         data=data,
         sensitivity="low",
@@ -300,7 +234,7 @@ def gsheet_reconnect(connection_id: str) -> ResponseEnvelope:
         result = service.reconnect(connection_id)
 
     data = {
-        "connection": _connection_to_dict(result.connection),
+        "connection": result.connection.to_dict(),
         "detection": {
             "confidence": result.detection.confidence,
             "column_mapping": result.detection.column_mapping,

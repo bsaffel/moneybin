@@ -27,6 +27,7 @@ from moneybin.connectors.gsheet.connection_service import (
 )
 from moneybin.connectors.gsheet.errors import (
     GSheetAuthError,
+    GSheetError,
     GSheetRateLimitError,
     GSheetUnreachableError,
 )
@@ -82,7 +83,7 @@ class GSheetPullService:
         """Pull one connection. Maps adapter exceptions to PullResult statuses."""
         conn_row = self._repo.get(connection_id)
         if conn_row is None:
-            raise ValueError(f"Unknown connection: {connection_id}")
+            raise GSheetError(f"Unknown connection: {connection_id}")
         conn = row_to_connection(conn_row)
         adapter = ADAPTERS[conn.adapter]
         import_id = uuid.uuid4().hex[:16]

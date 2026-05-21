@@ -26,7 +26,7 @@ from moneybin.connectors.gsheet.adapters.base import (
     GSheetConnection,
     LoadResult,
 )
-from moneybin.connectors.gsheet.errors import GSheetError
+from moneybin.connectors.gsheet.errors import GSheetError, GSheetUnreachableError
 from moneybin.connectors.gsheet.sheets_api import SheetsAPI
 from moneybin.connectors.gsheet.url_parser import parse_sheet_url
 from moneybin.database import Database
@@ -94,16 +94,23 @@ class GSheetConnectionService:
         meta = self._sheets.get_workbook_metadata(spreadsheet_id)
         sheet = next((s for s in meta.sheets if s.gid == gid), None)
         if sheet is None:
-            raise ValueError(f"gid={gid} not found in workbook {spreadsheet_id}")
+            raise GSheetUnreachableError(
+                f"gid={gid} not found in workbook {spreadsheet_id}"
+            )
 
         rows = self._sheets.read_sheet_values(spreadsheet_id, sheet.name)
         if not rows:
-            raise ValueError("Sheet has no data")
+            raise GSheetError("Sheet has no data")
 
         df = rows_to_df(rows)
 
         # Adapter selection: explicit override wins; None tries transactions first.
         target_adapter = req.adapter or "transactions"
+        if target_adapter not in ADAPTERS:
+            raise GSheetError(
+                f"Unknown adapter: {target_adapter!r}. "
+                f"Valid options: {sorted(ADAPTERS)}"
+            )
         adapter = ADAPTERS[target_adapter]
         detection = adapter.detect(df, account_name=req.account_name)
 
@@ -125,7 +132,7 @@ class GSheetConnectionService:
                 )
 
         if target_adapter == "seed" and not req.alias:
-            raise ValueError(
+            raise GSheetError(
                 "--alias=<slug> is required when --adapter=seed. "
                 "Pick a short identifier; it becomes the view name "
                 "raw.gsheet_<alias>."
@@ -207,7 +214,7 @@ class GSheetConnectionService:
 
         conn = self._repo.get(connection_id)
         if conn is None:
-            raise ValueError(f"Unknown connection: {connection_id}")
+            raise GSheetError(f"Unknown connection: {connection_id}")
 
         if conn["adapter"] == "seed":
             alias = conn.get("alias")
@@ -217,7 +224,7 @@ class GSheetConnectionService:
                 # view_generator, but a malformed alias on disk would otherwise
                 # land here unchecked.
                 if not _SAFE_ALIAS_RE.fullmatch(alias):
-                    raise ValueError(
+                    raise GSheetError(
                         f"Refusing to DROP VIEW for unsafe alias: {alias!r}"
                     )
                 self._db.execute(f"DROP VIEW IF EXISTS raw.gsheet_{alias};")  # noqa: S608  # alias is regex-validated on the line above
@@ -238,13 +245,13 @@ class GSheetConnectionService:
         _ = yes  # CLI confirmation flag; service layer accepts but doesn't prompt
         existing = self._repo.get(connection_id)
         if existing is None:
-            raise ValueError(f"Unknown connection: {connection_id}")
+            raise GSheetError(f"Unknown connection: {connection_id}")
 
         rows = self._sheets.read_sheet_values(
             existing["spreadsheet_id"], existing["sheet_name"]
         )
         if not rows:
-            raise ValueError("Sheet has no data")
+            raise GSheetError("Sheet has no data")
         df = rows_to_df(rows)
 
         adapter = ADAPTERS[existing["adapter"]]

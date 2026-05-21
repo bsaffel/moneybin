@@ -68,6 +68,25 @@ class GSheetConnection:
     last_drift_reason: str | None
     consecutive_failure_count: int
 
+    def to_dict(self) -> dict[str, object]:
+        """Serialize for JSON/envelope output. Mapping + signature fields omitted."""
+        return {
+            "connection_id": self.connection_id,
+            "spreadsheet_id": self.spreadsheet_id,
+            "sheet_gid": self.sheet_gid,
+            "sheet_name": self.sheet_name,
+            "workbook_name": self.workbook_name,
+            "adapter": self.adapter,
+            "alias": self.alias,
+            "account_id": self.account_id,
+            "account_name": self.account_name,
+            "status": self.status,
+            "last_pull_at": self.last_pull_at,
+            "last_success_at": self.last_success_at,
+            "last_drift_reason": self.last_drift_reason,
+            "consecutive_failure_count": self.consecutive_failure_count,
+        }
+
 
 class GSheetAdapter(Protocol):
     """Protocol for adapters that handle specific sheet types (transactions, seeds)."""

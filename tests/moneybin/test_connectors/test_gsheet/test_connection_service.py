@@ -9,6 +9,7 @@ from moneybin.connectors.gsheet.connection_service import (
     GSheetConnectionService,
     LowConfidenceError,
 )
+from moneybin.connectors.gsheet.errors import GSheetError
 from moneybin.connectors.gsheet.testing.fake_oauth_client import TestOAuthClient
 from moneybin.connectors.gsheet.testing.fake_sheets_client import (
     FakeSheetTab,
@@ -108,7 +109,7 @@ def test_connect_seed_requires_alias(in_memory_db: Database) -> None:
         alias=None,
         yes=True,
     )
-    with pytest.raises(ValueError, match="alias"):
+    with pytest.raises(GSheetError, match="alias"):
         svc.connect(req)
 
 

@@ -10,6 +10,7 @@ from moneybin.connectors.gsheet.connection_service import (
 )
 from moneybin.connectors.gsheet.errors import (
     GSheetAuthError,
+    GSheetError,
     GSheetRateLimitError,
     GSheetUnreachableError,
 )
@@ -159,7 +160,7 @@ def test_pull_connection_unknown_raises(in_memory_db: Database) -> None:
     pull_svc = GSheetPullService(
         db=in_memory_db, sheets_client=sheets, oauth_client=oauth
     )
-    with pytest.raises(ValueError, match="Unknown connection"):
+    with pytest.raises(GSheetError, match="Unknown connection"):
         pull_svc.pull_connection("bogus")
 
 

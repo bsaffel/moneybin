@@ -11,20 +11,20 @@ from __future__ import annotations
 import json
 import logging
 import sys
-from collections.abc import Generator
-from contextlib import contextmanager
-from typing import TYPE_CHECKING, Any
 
 import typer
 
 from moneybin.cli.output import OutputFormat, output_option, quiet_option
 from moneybin.cli.utils import handle_cli_errors
-
-if TYPE_CHECKING:
-    from moneybin.connectors.gsheet.connection_service import GSheetConnectionService
-    from moneybin.connectors.gsheet.oauth_client import GoogleOAuthClient
-    from moneybin.connectors.gsheet.pull_service import GSheetPullService
-    from moneybin.database import Database
+from moneybin.connectors.gsheet.service_factory import (
+    build_connection_service as _build_connection_service,
+)
+from moneybin.connectors.gsheet.service_factory import (
+    build_oauth_client as _build_oauth_client,
+)
+from moneybin.connectors.gsheet.service_factory import (
+    build_pull_service_with_db as _build_pull_service,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,58 +32,6 @@ app = typer.Typer(
     help="Connect Google Sheets workbooks as transaction sources or raw seed data",
     no_args_is_help=True,
 )
-
-
-def _build_oauth_client() -> GoogleOAuthClient:
-    """Construct a GoogleOAuthClient from current settings. Extracted for tests."""
-    from moneybin.config import get_settings  # noqa: PLC0415
-    from moneybin.connectors.gsheet.oauth_client import (  # noqa: PLC0415
-        GoogleOAuthClient,
-    )
-    from moneybin.secrets import SecretStore  # noqa: PLC0415
-
-    return GoogleOAuthClient(secrets=SecretStore(), settings=get_settings())
-
-
-@contextmanager
-def _build_connection_service() -> Generator[GSheetConnectionService, None, None]:
-    """Yield a GSheetConnectionService with an active Database connection."""
-    from moneybin.connectors.gsheet.connection_service import (  # noqa: PLC0415
-        GSheetConnectionService,
-    )
-    from moneybin.connectors.gsheet.sheets_api import SheetsClient  # noqa: PLC0415
-    from moneybin.database import get_database  # noqa: PLC0415
-
-    oauth_client = _build_oauth_client()
-    sheets_client = SheetsClient(oauth=oauth_client)
-    with get_database(read_only=False) as db:
-        yield GSheetConnectionService(
-            db=db, sheets_client=sheets_client, oauth_client=oauth_client
-        )
-
-
-@contextmanager
-def _build_pull_service() -> Generator[tuple[GSheetPullService, Database], None, None]:
-    """Yield ``(GSheetPullService, Database)`` with an active connection.
-
-    Mirrors ``_build_connection_service`` so both commands share one
-    construction point — a single seam tests patch to inject fakes. The
-    bare Database is also returned because the refresh chain runs on the
-    same connection after the pull.
-    """
-    from moneybin.connectors.gsheet.pull_service import (  # noqa: PLC0415
-        GSheetPullService,
-    )
-    from moneybin.connectors.gsheet.sheets_api import SheetsClient  # noqa: PLC0415
-    from moneybin.database import get_database  # noqa: PLC0415
-
-    oauth_client = _build_oauth_client()
-    sheets_client = SheetsClient(oauth=oauth_client)
-    with get_database(read_only=False) as db:
-        service = GSheetPullService(
-            db=db, sheets_client=sheets_client, oauth_client=oauth_client
-        )
-        yield service, db
 
 
 def _parse_column_mapping(raw: str | None) -> dict[str, str] | None:
@@ -112,26 +60,6 @@ def _parse_column_mapping(raw: str | None) -> dict[str, str] | None:
         key, value = pair.split("=", 1)
         mapping[key.strip()] = value.strip()
     return mapping
-
-
-def _connection_to_dict(conn: Any) -> dict[str, Any]:
-    """Serialize a ``GSheetConnection`` dataclass for JSON output."""
-    return {
-        "connection_id": conn.connection_id,
-        "spreadsheet_id": conn.spreadsheet_id,
-        "sheet_gid": conn.sheet_gid,
-        "sheet_name": conn.sheet_name,
-        "workbook_name": conn.workbook_name,
-        "adapter": conn.adapter,
-        "alias": conn.alias,
-        "account_id": conn.account_id,
-        "account_name": conn.account_name,
-        "status": conn.status,
-        "last_pull_at": conn.last_pull_at,
-        "last_success_at": conn.last_success_at,
-        "last_drift_reason": conn.last_drift_reason,
-        "consecutive_failure_count": conn.consecutive_failure_count,
-    }
 
 
 @app.command("auth")
@@ -234,7 +162,7 @@ def gsheet_connect(
 
     if output == OutputFormat.JSON:
         payload = {
-            "connection": _connection_to_dict(result.connection),
+            "connection": result.connection.to_dict(),
             "detection": {
                 "confidence": result.detection.confidence,
                 "column_mapping": result.detection.column_mapping,
@@ -351,7 +279,7 @@ def gsheet_list(
             connections = service.list_connections()
 
     if output == OutputFormat.JSON:
-        typer.echo(json.dumps([_connection_to_dict(c) for c in connections], indent=2))
+        typer.echo(json.dumps([c.to_dict() for c in connections], indent=2))
         return
 
     if not connections:
@@ -392,7 +320,7 @@ def gsheet_status(
                 connections = [conn]
 
     if output == OutputFormat.JSON:
-        typer.echo(json.dumps([_connection_to_dict(c) for c in connections], indent=2))
+        typer.echo(json.dumps([c.to_dict() for c in connections], indent=2))
         return
 
     if not connections:
@@ -433,7 +361,7 @@ def gsheet_reconnect(
         typer.echo(
             json.dumps(
                 {
-                    "connection": _connection_to_dict(result.connection),
+                    "connection": result.connection.to_dict(),
                     "detection": {
                         "confidence": result.detection.confidence,
                         "column_mapping": result.detection.column_mapping,
