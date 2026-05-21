@@ -282,7 +282,6 @@ class GSheetConnectionService:
 
     def reconnect(self, connection_id: str, *, yes: bool = False) -> ConnectResult:
         """Re-detect against the current sheet, re-pin mapping, run a pull."""
-        _ = yes  # CLI confirmation flag; service layer accepts but doesn't prompt
         existing = self._repo.get(connection_id)
         if existing is None:
             raise GSheetError(f"Unknown connection: {connection_id}")
@@ -309,6 +308,18 @@ class GSheetConnectionService:
             raise LowConfidenceError(
                 "Reconnect detection returned low confidence; "
                 "the sheet structure may have changed substantially."
+            )
+
+        # Symmetric to connect(): a medium-confidence remap can silently
+        # re-pin the wrong mapping, so require explicit acceptance via --yes.
+        if (
+            existing["adapter"] == "transactions"
+            and detection.confidence == "medium"
+            and not yes
+        ):
+            raise AmbiguousDetectionError(
+                "Reconnect detection returned medium confidence. "
+                "Re-run with --yes to accept the inferred mapping."
             )
 
         column_mapping = (

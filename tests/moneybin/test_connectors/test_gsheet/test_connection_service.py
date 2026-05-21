@@ -246,6 +246,31 @@ def test_connect_transactions_medium_confidence_requires_yes(
         svc.connect(req)
 
 
+def test_reconnect_medium_confidence_requires_yes(in_memory_db: Database) -> None:
+    """Symmetric guard to connect: reconnect must not silently re-pin a medium mapping."""
+    svc, sheets, _ = _make_service(in_memory_db)
+    sheets.register_workbook("ssR", _tiller_workbook())
+    # Establish a healthy connection first.
+    result = svc.connect(
+        ConnectionRequest(
+            url="https://docs.google.com/spreadsheets/d/ssR/edit#gid=0",
+            adapter="transactions",
+            account_name="Chase Checking",
+            account_id="acct_chase",
+            yes=True,
+            no_initial_pull=True,
+        )
+    )
+    cid = result.connection.connection_id
+
+    # Swap the sheet for an ambiguous one — same workbook id, new shape.
+    sheets.register_workbook("ssR", _medium_confidence_workbook())
+
+    # Reconnect WITHOUT yes — must refuse a medium-confidence remap.
+    with pytest.raises((AmbiguousDetectionError, LowConfidenceError)):
+        svc.reconnect(cid, yes=False)
+
+
 def test_rows_to_df_rejects_duplicate_headers() -> None:
     rows = [
         ["Date", "Amount", "Amount", "Description"],
