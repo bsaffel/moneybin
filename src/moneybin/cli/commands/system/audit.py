@@ -76,7 +76,11 @@ def system_audit_list(
             )
 
     render_or_json(
-        build_envelope(data=[e.to_dict() for e in events], sensitivity="low"),
+        # AuditEvent.before_value / after_value carry TXN_AMOUNT (HIGH); the
+        # payload is a bare list[dict] so render_or_json can't derive the tier
+        # from a typed class. Declare HIGH explicitly to keep audit rows
+        # correctly classified.
+        build_envelope(data=[e.to_dict() for e in events], sensitivity="high"),
         output,
         render_fn=_render_text,
         cli_actor="system_audit_list",
@@ -113,7 +117,11 @@ def system_audit_show(
                 typer.echo(f"{marker}  context: {e.context_json}")
 
     render_or_json(
-        build_envelope(data=[e.to_dict() for e in events], sensitivity="low"),
+        # AuditEvent.before_value / after_value carry TXN_AMOUNT (HIGH); the
+        # payload is a bare list[dict] so render_or_json can't derive the tier
+        # from a typed class. Declare HIGH explicitly to keep audit rows
+        # correctly classified.
+        build_envelope(data=[e.to_dict() for e in events], sensitivity="high"),
         output,
         render_fn=_render_text,
         cli_actor="system_audit_show",

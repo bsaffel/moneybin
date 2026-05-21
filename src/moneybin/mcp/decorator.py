@@ -443,7 +443,15 @@ def mcp_tool(
                     raise
                 _emit_privacy_event(err_env)
                 return err_env
-            envelope = _check_envelope(fn.__name__, result)
+            # _check_envelope raises TypeError when a tool returns a non-
+            # ResponseEnvelope. That's an envelope-contract violation that
+            # belongs in the audit trail like any other crash path; emit
+            # before propagating to the server's mask_error_details boundary.
+            try:
+                envelope = _check_envelope(fn.__name__, result)
+            except BaseException:
+                _emit_privacy_event(_build_unclassified_failure_envelope(fn.__name__))
+                raise
             # Stamp summary.sensitivity with the decorator-derived tier so the
             # envelope reflects the statically-derived classification regardless
             # of what build_envelope() defaulted to in the tool body.
