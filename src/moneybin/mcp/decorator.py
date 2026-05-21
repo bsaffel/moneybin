@@ -196,6 +196,20 @@ def _classify_or_raise(fn_name: str, exc: Exception) -> ResponseEnvelope[Any]:
     return build_error_envelope(error=classified, sensitivity="low")
 
 
+def _build_unclassified_failure_envelope(fn_name: str) -> ResponseEnvelope[Any]:
+    """Synthetic envelope for an audit emit on unclassified exception paths.
+
+    Used only as the row_count source before the original exception
+    propagates — never returned to a caller. The exception still re-raises
+    so the server boundary's ``mask_error_details`` handler runs.
+    """
+    err = UserError(
+        f"Tool {fn_name} raised unclassified exception",
+        code="unclassified_error",
+    )
+    return build_error_envelope(error=err, sensitivity="low")
+
+
 def _build_timeout_envelope(
     fn_name: str, elapsed_s: float, timeout_s: float
 ) -> ResponseEnvelope[Any]:
@@ -386,7 +400,14 @@ def mcp_tool(
                         )
             except TimeoutError as exc:
                 if not cm.expired():
-                    err_env = _classify_or_raise(fn.__name__, exc)
+                    try:
+                        err_env = _classify_or_raise(fn.__name__, exc)
+                    except BaseException:
+                        # Unclassified — emit a crash audit row, then propagate.
+                        _emit_privacy_event(
+                            _build_unclassified_failure_envelope(fn.__name__)
+                        )
+                        raise
                     _emit_privacy_event(err_env)
                     return err_env
                 elapsed = time.monotonic() - started
@@ -411,7 +432,15 @@ def mcp_tool(
                 _emit_privacy_event(timeout_env)
                 return timeout_env
             except Exception as exc:
-                err_env = _classify_or_raise(fn.__name__, exc)
+                try:
+                    err_env = _classify_or_raise(fn.__name__, exc)
+                except BaseException:
+                    # Unclassified — emit a crash audit row, then propagate
+                    # so the server boundary's mask_error_details runs.
+                    _emit_privacy_event(
+                        _build_unclassified_failure_envelope(fn.__name__)
+                    )
+                    raise
                 _emit_privacy_event(err_env)
                 return err_env
             envelope = _check_envelope(fn.__name__, result)

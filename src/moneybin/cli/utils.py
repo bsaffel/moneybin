@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 
 @contextmanager
-def handle_cli_errors() -> Generator[None, None, None]:
+def handle_cli_errors(*, cli_actor: str | None = None) -> Generator[None, None, None]:
     """Cross-cutting CLI error handler.
 
     Catches classified user-facing exceptions (DatabaseKeyError,
@@ -33,6 +33,13 @@ def handle_cli_errors() -> Generator[None, None, None]:
     code 1. When the active output format is JSON (set via ``output_option``
     callback), emits a structured error envelope to stdout; otherwise logs
     with the standard ❌ prefix. Unrecognized exceptions propagate unchanged.
+
+    On JSON-mode failure, writes a ``privacy.log.jsonl`` audit row mirroring
+    the success-path entry render_or_json writes — keeps failed/blocked CLI
+    invocations in the same audit trail. ``cli_actor`` names the command
+    (e.g. ``"accounts_get"``) when known; defaults to ``"unknown"`` so call
+    sites can adopt incrementally without changing observed behavior on
+    text-mode paths.
 
     Does NOT open or yield a Database — commands acquire their own
     connections with ``get_database(read_only=...)``.
@@ -52,8 +59,23 @@ def handle_cli_errors() -> Generator[None, None, None]:
         if _flags.output == OutputFormat.JSON:
             # JSON-mode errors bypass logger.error intentionally: stdout stays
             # machine-readable for agents and the structured envelope carries
-            # the full error context. The agent's transcript is the audit trail.
+            # the full error context.
             emit_json_error(user_error)
+            # Mirror the MCP decorator's error-path audit emission so JSON-mode
+            # failures appear in privacy.log.jsonl alongside success rows.
+            from moneybin.privacy.log import (  # noqa: PLC0415 — defer import
+                build_tool_call_event,
+                write_privacy_event,
+            )
+
+            write_privacy_event(
+                build_tool_call_event(
+                    actor=f"cli.{cli_actor or 'unknown'}",
+                    sensitivity="low",
+                    classes_returned=[],
+                    row_count=0,
+                )
+            )
         else:
             logger.error(f"❌ {user_error.message}")
             if user_error.hint:

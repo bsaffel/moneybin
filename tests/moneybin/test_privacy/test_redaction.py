@@ -116,6 +116,25 @@ def test_consent_set_is_placeholder_dataclass() -> None:
     assert cs == ConsentSet()
 
 
+def test_transforms_covers_every_data_class() -> None:
+    """Every ``DataClass`` value must have a ``_TRANSFORMS`` entry.
+
+    Without this guard, adding a new ``DataClass`` to ``taxonomy.py`` would
+    silently fall through to ``_TRANSFORMS.get(meta, _passthrough)`` — a
+    future CRITICAL class would pass through unredacted with no failure.
+    The redaction-module docstring promises "the unit tests will fail
+    otherwise"; this test makes the promise enforceable.
+    """
+    from moneybin.privacy.redaction import (  # noqa: PLC0415
+        _TRANSFORMS,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    missing = set(DataClass) - set(_TRANSFORMS)
+    assert not missing, (
+        f"DataClass values missing from _TRANSFORMS: {sorted(m.name for m in missing)}"
+    )
+
+
 def test_unclassified_type_passes_through_with_warning(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
