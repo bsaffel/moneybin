@@ -19,6 +19,7 @@ from datetime import datetime
 from typing import Any
 
 import polars as pl
+from sqlglot import exp
 
 from moneybin.connectors.gsheet.adapters import ADAPTERS
 from moneybin.connectors.gsheet.adapters.base import (
@@ -90,7 +91,10 @@ class GSheetConnectionService:
         if not self._oauth.is_authorized():
             self._oauth.authorize()
 
-        spreadsheet_id, gid = parse_sheet_url(req.url)
+        try:
+            spreadsheet_id, gid = parse_sheet_url(req.url)
+        except ValueError as exc:
+            raise GSheetError(f"Invalid Google Sheets URL: {exc}") from exc
         meta = self._sheets.get_workbook_metadata(spreadsheet_id)
         sheet = next((s for s in meta.sheets if s.gid == gid), None)
         if sheet is None:
@@ -140,11 +144,14 @@ class GSheetConnectionService:
 
         # For seed adapter the column_mapping field holds inferred typed_columns
         # (the raw_seed adapter reuses the field for its typed view).
-        column_mapping = (
-            detection.typed_columns
-            if target_adapter == "seed"
-            else detection.column_mapping
-        )
+        # For transactions, a user-supplied override (req.column_mapping) wins
+        # over detection — that's the whole point of letting the user pass it.
+        if target_adapter == "seed":
+            column_mapping = detection.typed_columns
+        elif req.column_mapping is not None:
+            column_mapping = req.column_mapping
+        else:
+            column_mapping = detection.column_mapping
 
         connection_id = self._repo.insert(
             spreadsheet_id=spreadsheet_id,
@@ -227,7 +234,12 @@ class GSheetConnectionService:
                     raise GSheetError(
                         f"Refusing to DROP VIEW for unsafe alias: {alias!r}"
                     )
-                self._db.execute(f"DROP VIEW IF EXISTS raw.gsheet_{alias};")  # noqa: S608  # alias is regex-validated on the line above
+                # security.md: quote dynamic identifiers via sqlglot even after
+                # regex validation — defense in depth, the rule is explicit.
+                safe_view = exp.to_identifier(f"gsheet_{alias}", quoted=True).sql(
+                    "duckdb"
+                )
+                self._db.execute(f"DROP VIEW IF EXISTS raw.{safe_view};")  # noqa: S608  # alias regex-validated + sqlglot-quoted
             self._db.execute(
                 "DELETE FROM raw.gsheet_seeds WHERE connection_id = ?",
                 [connection_id],
@@ -247,9 +259,17 @@ class GSheetConnectionService:
         if existing is None:
             raise GSheetError(f"Unknown connection: {connection_id}")
 
-        rows = self._sheets.read_sheet_values(
-            existing["spreadsheet_id"], existing["sheet_name"]
-        )
+        # Resolve the current tab title by gid — sheet_name on the stored row
+        # may be stale if the user renamed the tab between connect and reconnect.
+        spreadsheet_id = existing["spreadsheet_id"]
+        meta = self._sheets.get_workbook_metadata(spreadsheet_id)
+        sheet = next((s for s in meta.sheets if s.gid == existing["sheet_gid"]), None)
+        if sheet is None:
+            raise GSheetUnreachableError(
+                f"gid={existing['sheet_gid']} no longer present in workbook "
+                f"{spreadsheet_id}; the tab was deleted"
+            )
+        rows = self._sheets.read_sheet_values(spreadsheet_id, sheet.name)
         if not rows:
             raise GSheetError("Sheet has no data")
         df = rows_to_df(rows)
@@ -307,13 +327,12 @@ def rows_to_df(rows: list[list[str]]) -> pl.DataFrame:
     if not rows:
         return pl.DataFrame()
     headers, *data = rows
-    width = len(headers)
     columns: dict[str, list[str | None]] = {h: [] for h in headers}
     for row in data:
         for i, header in enumerate(headers):
             columns[header].append(row[i] if i < len(row) else None)
-        # Ignore extra columns past the header width — they have no name to bind.
-        _ = width
+        # Extra columns past the header width have no header to bind to and
+        # are dropped implicitly by the header-keyed loop above.
     return pl.DataFrame(columns)
 
 

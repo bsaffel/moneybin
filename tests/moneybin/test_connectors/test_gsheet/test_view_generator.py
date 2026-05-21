@@ -26,12 +26,12 @@ class TestGenerateSeedViewSql:
             alias="transactions",
             connection_id="conn-456",
             typed_columns={
-                "Amount": "DECIMAL(18, 2)",
+                "Amount": "DECIMAL(18,2)",
                 "Date": "DATE",
                 "Description": "VARCHAR",
             },
         )
-        assert "CAST(data->>'Amount' AS DECIMAL(18, 2)) AS amount" in sql
+        assert "CAST(data->>'Amount' AS DECIMAL(18,2)) AS amount" in sql
         assert "CAST(data->>'Date' AS DATE) AS date" in sql
         assert "CAST(data->>'Description' AS VARCHAR) AS description" in sql
 
@@ -49,7 +49,7 @@ class TestGenerateSeedViewSql:
         sql = generate_seed_view_sql(
             alias="test",
             connection_id="conn-100",
-            typed_columns={"Col": "INT"},
+            typed_columns={"Col": "BIGINT"},
         )
         assert "row_number" in sql
         assert "deleted_from_source_at" in sql
@@ -121,3 +121,21 @@ class TestGenerateSeedViewSql:
         )
         # Single quote in header should be doubled for SQL escaping.
         assert "data->>'User''s Name'" in sql
+
+    def test_sql_injection_in_type_rejected(self):
+        """Allowlist rejects values that aren't canonical DuckDB types."""
+        with pytest.raises(ValueError, match="Unsafe SQL type"):
+            generate_seed_view_sql(
+                alias="test",
+                connection_id="conn-1",
+                typed_columns={"Col": "VARCHAR); DROP TABLE raw.gsheet_seeds; --"},
+            )
+
+    def test_typo_in_type_rejected(self):
+        """Common typos (e.g. INT vs BIGINT) fail closed rather than passing through."""
+        with pytest.raises(ValueError, match="Unsafe SQL type"):
+            generate_seed_view_sql(
+                alias="test",
+                connection_id="conn-1",
+                typed_columns={"Col": "INT"},
+            )

@@ -170,7 +170,10 @@ class GSheetPullService:
             connection_id = row["connection_id"]
             try:
                 results.append(self.pull_connection(connection_id))
-            except Exception as exc:  # noqa: BLE001  # per-connection isolation
+            except Exception:  # noqa: BLE001  # per-connection isolation
+                # security.md: log full detail internally, return a generic
+                # message to callers. str(exc) could surface DuckDB error
+                # text, stack-trace fragments, or internal field values.
                 logger.exception(
                     f"Pull failed unexpectedly for connection={connection_id}"
                 )
@@ -178,7 +181,7 @@ class GSheetPullService:
                     PullResult(
                         connection_id=connection_id,
                         status="failed",
-                        error_message=str(exc),
+                        error_message="Unexpected pull failure; see application logs.",
                     )
                 )
         return results
@@ -188,13 +191,24 @@ class GSheetPullService:
     # ------------------------------------------------------------------
 
     def _fetch_with_retry(self, conn: GSheetConnection) -> list[list[str]]:
-        """Read sheet values with exponential backoff on rate-limit errors only."""
+        """Read sheet values with exponential backoff on rate-limit errors only.
+
+        Resolves the current sheet title by ``gid`` on each attempt — sheet
+        titles are user-editable, but ``gid`` is the stable identifier
+        Google issues at tab creation. This lets pulls survive a non-
+        destructive tab rename instead of failing as unreachable.
+        """
         last_exc: GSheetRateLimitError | None = None
         for attempt in range(_RETRY_MAX):
             try:
-                return self._sheets.read_sheet_values(
-                    conn.spreadsheet_id, conn.sheet_name
-                )
+                meta = self._sheets.get_workbook_metadata(conn.spreadsheet_id)
+                sheet = next((s for s in meta.sheets if s.gid == conn.sheet_gid), None)
+                if sheet is None:
+                    raise GSheetUnreachableError(
+                        f"gid={conn.sheet_gid} no longer present in workbook "
+                        f"{conn.spreadsheet_id}; the tab was deleted"
+                    )
+                return self._sheets.read_sheet_values(conn.spreadsheet_id, sheet.name)
             except GSheetRateLimitError as exc:
                 last_exc = exc
                 time.sleep(_RETRY_BACKOFF_BASE**attempt)

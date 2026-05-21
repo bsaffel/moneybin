@@ -95,12 +95,13 @@ class GoogleOAuthClient:
         flow = InstalledAppFlow.from_client_config(  # type: ignore[reportUnknownMemberType]
             client_config, _SCOPES
         )
-        gsheet = self._settings.gsheet
         try:
             creds = flow.run_local_server(  # type: ignore[reportUnknownMemberType]
+                # port=0 → google-auth-oauthlib picks any free ephemeral port.
+                # The redirect_port_min/max settings on GSheetSettings are
+                # reserved for a future wired-up implementation and currently
+                # do not constrain port selection.
                 port=0,
-                # google-auth-oauthlib picks the first free port in the
-                # range when port=0 is paired with these bounds.
                 bind_addr="127.0.0.1",
             )
         except Exception as exc:  # noqa: BLE001  # google-auth raises untyped errors
@@ -121,11 +122,7 @@ class GoogleOAuthClient:
                 GSHEET_ACCESS_TOKEN_EXPIRES_KEY,
                 str(int(expiry.timestamp())),
             )
-        logger.info(
-            "gsheet OAuth authorize completed; "
-            f"redirect_port_min={gsheet.oauth_redirect_port_min} "
-            f"redirect_port_max={gsheet.oauth_redirect_port_max}"
-        )
+        logger.info("gsheet OAuth authorize completed")
 
     def revoke(self) -> None:
         """Clear all persisted OAuth secrets.
