@@ -248,6 +248,27 @@ def test_map_error_strips_oserror_text() -> None:
     assert "443" not in message
 
 
+def test_sheets_client_wires_api_timeout_into_httplib2() -> None:
+    """SheetsSettings.api_timeout_seconds must reach the httplib2.Http transport.
+
+    Without this wiring, calls hang on a frozen Google API at the OS TCP
+    default — defeating the per-tool timeout cap entirely.
+    """
+    import httplib2
+
+    from moneybin.connectors.gsheet.sheets_api import SheetsClient
+
+    fake_oauth = MagicMock()
+    fake_oauth.get_access_token.return_value = "fake_token"
+    client = SheetsClient(oauth=fake_oauth, timeout_seconds=7.5)
+
+    service = client._build_service()  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001
+    # google_auth_httplib2.AuthorizedHttp wraps an httplib2.Http on .http
+    http = service._http.http  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]  # noqa: SLF001
+    assert isinstance(http, httplib2.Http)
+    assert http.timeout == 7.5
+
+
 def test_quote_a1_sheet_name_passes_through_safe_names() -> None:
     """Identifier-shaped names need no quoting (matches Google's own docs)."""
     assert _quote_a1_sheet_name("Sheet1") == "Sheet1"

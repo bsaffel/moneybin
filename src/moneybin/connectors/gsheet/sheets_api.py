@@ -72,9 +72,21 @@ class SheetsClient:
     Raises typed `GSheet*` exceptions; never leaks Google library exceptions.
     """
 
-    def __init__(self, oauth: OAuthCredentialsProvider) -> None:
-        """Initialize with an OAuth credentials provider."""
+    def __init__(
+        self,
+        oauth: OAuthCredentialsProvider,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> None:
+        """Initialize with an OAuth credentials provider.
+
+        ``timeout_seconds`` caps every HTTP request the underlying
+        googleapiclient makes (transport-level, applied to the httplib2
+        Http object). None resolves to ``GSheetSettings.api_timeout_seconds``
+        at first build, so callers can override per-instance for tests.
+        """
         self._oauth = oauth
+        self._timeout_seconds = timeout_seconds
 
     def get_workbook_metadata(self, spreadsheet_id: str) -> WorkbookMetadata:
         """Fetch workbook title and per-tab metadata."""
@@ -124,11 +136,26 @@ class SheetsClient:
 
     def _build_service(self) -> Any:
         """Build the Google Sheets v4 service with the current access token."""
-        from google.oauth2.credentials import Credentials
-        from googleapiclient.discovery import build
+        import google_auth_httplib2  # noqa: PLC0415
+        import httplib2  # noqa: PLC0415
+        from google.oauth2.credentials import Credentials  # noqa: PLC0415
+        from googleapiclient.discovery import build  # noqa: PLC0415
 
         creds = Credentials(token=self._oauth.get_access_token())
-        return build("sheets", "v4", credentials=creds, cache_discovery=False)
+        timeout = self._timeout_seconds
+        if timeout is None:
+            from moneybin.config import get_settings  # noqa: PLC0415
+
+            timeout = get_settings().gsheet.api_timeout_seconds
+        # Wrap httplib2.Http with the timeout, then bind credentials via
+        # google_auth_httplib2.AuthorizedHttp. Passing http= to build()
+        # disables build()'s default Credentials-derived transport so
+        # OUR timeout-bound transport is used end-to-end.
+        http_with_timeout = google_auth_httplib2.AuthorizedHttp(
+            credentials=creds,
+            http=httplib2.Http(timeout=timeout),
+        )
+        return build("sheets", "v4", http=http_with_timeout, cache_discovery=False)
 
 
 _A1_BARE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")

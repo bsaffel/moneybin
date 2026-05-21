@@ -71,8 +71,9 @@ def _gsheet_action_hints(needs_attention: list[dict[str, Any]]) -> list[str]:
             )
         elif status == "auth_expired":
             hints.append(
-                "Re-authenticate with the CLI: `moneybin gsheet auth` "
-                "(OAuth flow opens a browser; not available via MCP)."
+                "Re-authenticate: call gsheet_auth() (MCP) or run "
+                "`moneybin gsheet auth` (CLI). Both drive the same "
+                "in-process OAuth flow."
             )
         else:
             hints.append(
