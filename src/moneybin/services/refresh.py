@@ -42,6 +42,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+import duckdb
+
 from moneybin.database import Database
 from moneybin.services.transform_service import TransformService
 
@@ -182,6 +184,7 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
                     f"({summary}); see gsheet_status for per-connection detail"
                 )
 
+    matching_error: str | None = None
     if "match" in requested:
         try:
             match_result = MatchingService(db).run()
@@ -191,8 +194,14 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
                     logger.info(
                         "Run 'moneybin transactions review --type matches' when ready"
                     )
-        except Exception:  # noqa: BLE001 — best-effort; first load may precede SQLMesh views
+        except (duckdb.CatalogException, duckdb.BinderException):
+            # Views not built yet (first load precedes SQLMesh apply) — an
+            # expected precondition, not a crash. Stay quiet; no error surfaced
+            # so a fresh DB's first refresh doesn't report a false failure.
             logger.debug("Matching skipped (views may not exist yet)", exc_info=True)
+        except Exception as exc:  # noqa: BLE001 — surface a real crash; never abort the pipeline
+            matching_error = str(exc)
+            logger.error(f"Matching failed during refresh: {exc}", exc_info=True)
 
     if "transform" not in requested:
         # Caller asked for a partial cascade that omits transform. Return
@@ -201,7 +210,11 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
         # against whatever SQLMesh-built views are already on disk.
         if "categorize" in requested:
             _run_categorize_step(db)
-        return RefreshResult(applied=False, duration_seconds=None)
+        return RefreshResult(
+            applied=False,
+            duration_seconds=None,
+            matching_error=matching_error,
+        )
 
     apply_result = TransformService(db).apply()
     if not apply_result.applied:
@@ -209,6 +222,7 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
             applied=False,
             duration_seconds=apply_result.duration_seconds,
             error=apply_result.error,
+            matching_error=matching_error,
         )
 
     if "categorize" in requested:
@@ -217,6 +231,7 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
     return RefreshResult(
         applied=True,
         duration_seconds=apply_result.duration_seconds,
+        matching_error=matching_error,
     )
 
 

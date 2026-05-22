@@ -17,6 +17,7 @@ from collections.abc import Iterator
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import duckdb
 import pytest
 
 from moneybin.errors import UserError
@@ -99,6 +100,27 @@ def test_refresh_result_has_error_surfacing_fields() -> None:
     assert r2.matching_error == "boom"
     assert r2.categorization_error == "bang"
     assert r2.self_heal_actions[0].recipe_id == "orphan_categorizations_cleanup"
+
+
+@pytest.mark.unit
+def test_refresh_matcher_crash_populates_matching_error(
+    patched_services: dict[str, MagicMock],
+) -> None:
+    """A real matcher crash sets matching_error; pipeline continues to transform."""
+    patched_services["matcher_run"].side_effect = RuntimeError("matcher boom")
+    result = refresh(MagicMock())
+    assert result.matching_error == "matcher boom"
+    assert result.applied is True  # transform still ran despite the matcher crash
+
+
+@pytest.mark.unit
+def test_refresh_matcher_missing_views_is_not_an_error(
+    patched_services: dict[str, MagicMock],
+) -> None:
+    """CatalogException (views not built on first load) is expected, not surfaced."""
+    patched_services["matcher_run"].side_effect = duckdb.CatalogException("no view")
+    result = refresh(MagicMock())
+    assert result.matching_error is None
 
 
 @pytest.mark.unit
