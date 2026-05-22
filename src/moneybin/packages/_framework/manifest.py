@@ -106,6 +106,14 @@ class EntryPoints(BaseModel):
     Plan 4 wires model-path and schema registration and will read them. A
     SQL-less Bronze package still declares them (pointing at its package module)
     so the manifest contract stays uniform across tiers.
+
+    Deferred (Plan 4): module-path *existence* is not validated here — only that
+    the four keys are present non-empty strings. `tools`/`cli` are resolved (and
+    so existence-checked) lazily by register_package's _resolve_entry_point_callable
+    when the surfaces register; `models`/`schema` existence checks land with the
+    Plan 4 wiring that imports them. Validating all four eagerly at parse time
+    would force an import of the package's modules during discovery, defeating
+    the validate-before-import posture this module's docstring establishes.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid", populate_by_name=True)
@@ -205,6 +213,14 @@ class PackageManifest(BaseModel):
                 raise ValueError(
                     f"write glob '{glob}' must be "
                     f"'<schema>.{self.owns_prefix}_*' (explicit schema required)"
+                )
+            if "." in table:
+                # Targets are exactly 'schema.name' (one dot); a glob with extra
+                # dots passes the prefix check but can never match a real target,
+                # leaving a silently-dead capability. Reject it at parse time.
+                raise ValueError(
+                    f"write glob '{glob}' must be '<schema>.{self.owns_prefix}_*' "
+                    f"— extra '.' segments never match a schema.name target"
                 )
             if set(schema) & set("*?[]"):
                 raise ValueError(

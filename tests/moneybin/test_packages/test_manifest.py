@@ -157,6 +157,7 @@ def test_owns_prefix_rejects_malformed_snake_case(
         ("['core.foo_x']", "not package-writable"),
         ("['foo_x']", "explicit schema required"),
         ("['app.other_x']", "must start with 'foo_'"),
+        ("['app.foo_x.y']", "extra '.' segments"),
     ],
 )
 def test_writes_globs_must_be_prefix_scoped(

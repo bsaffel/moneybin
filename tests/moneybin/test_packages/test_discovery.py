@@ -41,13 +41,17 @@ def _fake_ep(
     pkg_dir: Path,
     *,
     name: str = "fake_pkg",
-    module: str = "fake_pkg.tools",
+    module: str | None = None,
     manifest_in_metadata: bool = True,
 ) -> MagicMock:
     """Build a fake EntryPoint whose dist exposes the manifest via file records.
 
     No `.load()` is configured — discovery must resolve the manifest from
     metadata without importing. A test that calls `.load()` would raise.
+
+    module defaults to ``<pkg_dir.name>.tools`` so the entry point's module path
+    sits under the manifest's directory (the realistic layout _locate_manifest
+    matches on). Pass module explicitly to exercise a mismatch.
     """
     files: list[MagicMock] = []
     if manifest_in_metadata:
@@ -62,7 +66,7 @@ def _fake_ep(
 
     fake_ep = MagicMock()
     fake_ep.name = name
-    fake_ep.module = module
+    fake_ep.module = module if module is not None else f"{pkg_dir.name}.tools"
     fake_ep.dist = fake_dist
     # Importing during discovery is a security regression — make it loud.
     fake_ep.load.side_effect = AssertionError("discovery must not import the package")
@@ -129,7 +133,7 @@ def test_no_dist_skips_with_warning(
             result = discover_packages()
 
     assert result == []
-    assert any("could not locate" in rec.message.lower() for rec in caplog.records)
+    assert any("could not resolve" in rec.message.lower() for rec in caplog.records)
 
 
 def test_manifest_recorded_but_absent_on_disk_skips(
@@ -196,6 +200,86 @@ def test_invalid_manifest_skips_with_warning(
     assert any(
         "could not be discovered" in rec.message.lower() for rec in caplog.records
     )
+
+
+def _manifest_pp(parts: tuple[str, ...]) -> MagicMock:
+    """A fake dist file record for a manifest at the given path parts."""
+    pp = MagicMock()
+    pp.name = "moneybin_package.yaml"
+    pp.parts = parts
+    return pp
+
+
+def test_multi_manifest_picks_most_specific(tmp_path: Path) -> None:
+    """A package-dir manifest beats a root-level manifest for the same module.
+
+    A root-level manifest matches every module (empty dir prefix); the package
+    whose directory is the longest prefix of the entry point's module must win,
+    not the root-level one.
+    """
+    pkg_dir = tmp_path / "pkg_a"
+    pkg_dir.mkdir()
+    (pkg_dir / "moneybin_package.yaml").write_text(
+        _MANIFEST_BODY.replace("fake_pkg", "pkg_a")
+    )
+    root_manifest = tmp_path / "moneybin_package.yaml"
+    root_manifest.write_text(_MANIFEST_BODY)  # name=fake_pkg if wrongly chosen
+
+    root_pp = _manifest_pp(("moneybin_package.yaml",))
+    sub_pp = _manifest_pp(("pkg_a", "moneybin_package.yaml"))
+    fake_dist = MagicMock()
+    fake_dist.files = [root_pp, sub_pp]
+
+    def _locate(pp: object) -> Path:
+        return root_manifest if pp is root_pp else pkg_dir / "moneybin_package.yaml"
+
+    fake_dist.locate_file.side_effect = _locate
+
+    fake_ep = MagicMock()
+    fake_ep.name = "pkg_a"
+    fake_ep.module = "pkg_a.tools"
+    fake_ep.dist = fake_dist
+    fake_ep.load.side_effect = AssertionError("discovery must not import")
+
+    with patch("moneybin.packages._framework.discovery.entry_points") as mock_eps:
+        mock_eps.return_value = [fake_ep]
+        result = discover_packages()
+
+    assert len(result) == 1
+    assert result[0].manifest.name == "pkg_a"
+    assert result[0].root == pkg_dir
+
+
+def test_single_manifest_not_matching_module_is_skipped(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A lone manifest that doesn't prefix the entry point's module is not guessed.
+
+    There is no single-candidate fallback: assigning the wrong manifest would
+    mis-scope every validator in a multi-entry-point distribution.
+    """
+    pkg_dir = tmp_path / "pkg_a"
+    pkg_dir.mkdir()
+    (pkg_dir / "moneybin_package.yaml").write_text(_MANIFEST_BODY)
+
+    sub_pp = _manifest_pp(("pkg_a", "moneybin_package.yaml"))
+    fake_dist = MagicMock()
+    fake_dist.files = [sub_pp]
+    fake_dist.locate_file.return_value = pkg_dir / "moneybin_package.yaml"
+
+    fake_ep = MagicMock()
+    fake_ep.name = "unrelated"
+    fake_ep.module = "unrelated.tools"  # not under pkg_a/
+    fake_ep.dist = fake_dist
+    fake_ep.load.side_effect = AssertionError("discovery must not import")
+
+    with patch("moneybin.packages._framework.discovery.entry_points") as mock_eps:
+        mock_eps.return_value = [fake_ep]
+        with caplog.at_level("ERROR"):
+            result = discover_packages()
+
+    assert result == []
+    assert any("could not resolve" in rec.message.lower() for rec in caplog.records)
 
 
 def test_yaml_syntax_error_skips_with_warning(

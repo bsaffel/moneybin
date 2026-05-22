@@ -57,12 +57,18 @@ def _locate_manifest(ep: EntryPoint) -> Path | None:
     Reads the entry point's distribution file records (importlib.metadata)
     rather than importing the module, so package code never runs before the
     validation gate. When a distribution ships several manifests (e.g. multiple
-    in-tree packages under one wheel), the one whose directory prefixes the
-    entry point's module path is selected.
+    in-tree packages under one wheel), the one whose package directory is the
+    *longest* prefix of the entry point's module path is selected — a root-level
+    manifest matches any module but loses to a more specific package-dir
+    manifest.
 
-    Returns None when the manifest can't be resolved from metadata — no
-    distribution, an empty file list (some editable installs), or an ambiguous
-    multi-manifest dist with no module-path match. The caller logs and skips.
+    Returns None when no unique manifest resolves: no distribution, an empty
+    file list (some editable installs), no manifest whose directory prefixes the
+    entry point's module path, or a tie between equally-specific manifests. The
+    caller logs and skips. There is deliberately NO single-candidate fallback —
+    assigning a non-matching manifest would mis-scope every validator (wrong
+    owns_prefix / root), silently validating the wrong package in a multi-package
+    or multi-entry-point distribution.
     """
     dist = ep.dist
     if dist is None or not dist.files:
@@ -76,14 +82,17 @@ def _locate_manifest(ep: EntryPoint) -> Path | None:
     matched = [
         pp for pp in candidates if module_parts[: len(pp.parts) - 1] == pp.parts[:-1]
     ]
-    if len(matched) == 1:
-        chosen = matched[0]
-    elif not matched and len(candidates) == 1:
-        chosen = candidates[0]
-    else:
+    if not matched:
+        return None
+    # Longest directory prefix wins (parts includes the filename, so a deeper
+    # package dir has more parts). A tie at the deepest level is genuinely
+    # ambiguous → skip rather than guess.
+    max_depth = max(len(pp.parts) for pp in matched)
+    most_specific = [pp for pp in matched if len(pp.parts) == max_depth]
+    if len(most_specific) != 1:
         return None
 
-    return Path(str(dist.locate_file(chosen))).resolve()
+    return Path(str(dist.locate_file(most_specific[0]))).resolve()
 
 
 def discover_packages() -> list[PackageInfo]:
@@ -108,9 +117,10 @@ def discover_packages() -> list[PackageInfo]:
             manifest_path = _locate_manifest(ep)
             if manifest_path is None:
                 logger.error(
-                    f"Entry point '{ep.name}': could not locate {_MANIFEST_NAME} "
-                    f"from distribution metadata without importing the package; "
-                    f"skipping"
+                    f"Entry point '{ep.name}': could not resolve a unique "
+                    f"{_MANIFEST_NAME} from distribution metadata — none recorded, "
+                    f"none matching the entry point's module path, or multiple "
+                    f"ambiguous matches; skipping (package not imported)"
                 )
                 continue
             if not manifest_path.exists():
