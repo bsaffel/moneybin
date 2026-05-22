@@ -107,17 +107,24 @@ class BudgetService:
         # the top-level dim row by passing None on the subcategory axis.
         category_id = resolve_category_id(self._db, category, None)
         if existing:
+            # Name the columns explicitly so a future SELECT-list change can't
+            # silently shift which value lands where (check_sql selects
+            # budget_id, start_month in that order).
+            existing_budget_id, existing_start_month = (
+                str(existing[0]),
+                str(existing[1]),
+            )
             # Re-resolve on update so a NULL FK from V014's backfill window heals
             # the first time the user touches this budget after creating the
             # matching user_category.
             self._budgets_repo.update(
-                str(existing[0]),
+                existing_budget_id,
                 monthly_amount=monthly_amount,
                 category_id=category_id,
                 actor=actor,
             )
             action = "updated"
-            result_start_month = str(existing[1])  # the affected row's window
+            result_start_month = existing_start_month  # the affected row's window
         else:
             self._budgets_repo.insert(
                 category=category,

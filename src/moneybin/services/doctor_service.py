@@ -189,8 +189,10 @@ class DoctorService:
         ``pk_expr`` overrides how the row's ``target_id`` is projected: most
         tables key on a single ``pk_col``, but a composite-PK table (e.g.
         ``balance_assertions``) passes a code-supplied SQL expression that
-        reconstructs the same composite ``target_id`` its repo emits. ``pk_col``
-        still names the check; ``pk_expr``, when given, replaces the projection.
+        reconstructs the same composite ``target_id`` its repo emits. The check
+        name always derives from ``table_ref.name``; ``pk_col`` is only the
+        single-column projection fallback, used when ``pk_expr`` is ``None`` (and
+        otherwise ignored).
 
         Limitations (by design — this is a sampled runtime *heuristic*, not a
         proof): it scans rows that currently exist and keys on the watermark, so
