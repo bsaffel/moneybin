@@ -73,7 +73,15 @@ def _rotate_if_new_day(path: Path) -> None:
     if file_day == _today_utc():
         return
     rotated = path.parent / f"{_ROTATED_PREFIX}{file_day}{_ROTATED_SUFFIX}"
-    path.rename(rotated)
+    try:
+        path.rename(rotated)
+    except FileNotFoundError:
+        # Another process (e.g. a concurrent MCP server + CLI run) rotated the
+        # same file first. Each holds only its own in-process _LOCK, so the
+        # rename can race. The current-day file is already gone; the caller's
+        # os.open recreates it. Swallow rather than let the outer handler drop
+        # this process's event as a generic failure.
+        pass
 
 
 def build_tool_call_event(
@@ -108,24 +116,29 @@ def write_privacy_event(event: dict[str, Any]) -> None:
         with _LOCK:
             log_dir = _resolve_privacy_log_dir()
             # The privacy log dir may be created here on the bootstrap /
-            # no-profile path before any profile dir exists. mkdir(mode=0o700)
-            # only applies the mode to the LEAF — intermediate parents created
-            # by parents=True inherit the umask (typically 0o755, world-
-            # readable). Don't toggle the process-wide umask to force 0o700:
-            # umask is process-global, not thread-local, so a concurrent thread
-            # creating files (e.g. MCP tool work via asyncio.to_thread) could
-            # inherit it and get unintended permissions. Instead, snapshot which
-            # ancestors are missing, create the tree, then chmod exactly the dirs
-            # WE created to 0o700 — never touching pre-existing shared dirs.
+            # no-profile path before any profile dir exists. We want every dir
+            # WE create to land at 0o700 (matching the 0o600 file inside) while
+            # never tightening perms on dirs another process owns. Toggling the
+            # process-wide umask is unsafe (it's process-global, not
+            # thread-local — a concurrent asyncio.to_thread worker would inherit
+            # it). Instead, create each missing ancestor individually, outermost
+            # first, with a bare mkdir(): a successful mkdir means WE created it,
+            # so we chmod it; a FileExistsError means another process won the
+            # race, so we leave its perms alone. This closes the TOCTOU window a
+            # pre-snapshot + mkdir(parents=True) approach leaves open.
             missing_dirs = [p for p in (log_dir, *log_dir.parents) if not p.exists()]
-            log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-            for created in missing_dirs:
+            for created in reversed(missing_dirs):  # outermost → innermost
                 try:
+                    created.mkdir(mode=0o700)
                     created.chmod(0o700)
+                except FileExistsError:
+                    # Another process created this dir between the snapshot and
+                    # now — don't touch a dir we didn't create.
+                    continue
                 except OSError:
-                    # Best-effort: a TOCTOU race or platform quirk on one dir
-                    # must not break the audit write (fail-soft contract).
-                    pass
+                    # Platform quirk on one dir must not break the audit write
+                    # (fail-soft contract).
+                    continue
             log_path = log_dir / _LOG_FILE
             _rotate_if_new_day(log_path)
             line = json.dumps(event, sort_keys=True, separators=(",", ":"))

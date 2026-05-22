@@ -299,8 +299,12 @@ def accounts_resolve(
             payload = AccountService(db).resolve(query=query, limit=limit)
 
     if output == OutputFormat.JSON:
+        # No explicit sensitivity: AccountResolvePayload carries
+        # ACCOUNT_IDENTIFIER (CRITICAL), and render_or_json derives the real
+        # tier via _derive_log_sensitivity. A literal "low" here understates it
+        # at the call site even though the emitted value is corrected.
         render_or_json(
-            build_envelope(data=payload, sensitivity="low"),
+            build_envelope(data=payload),
             output,
             cli_actor="accounts_resolve",
         )

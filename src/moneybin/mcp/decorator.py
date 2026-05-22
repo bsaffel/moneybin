@@ -516,12 +516,21 @@ def mcp_tool(
                 # TimeoutError and Exception handlers above. Without this branch
                 # the aborted invocation never reaches _emit_privacy_event and is
                 # missing from privacy.log.jsonl, leaving a hole in the tool-call
-                # audit surface. Emit the crash row, then re-raise — cancellation
-                # must never be swallowed. (Same emit-then-propagate pattern the
-                # timeout-cleanup sleep above already uses for this case.)
-                await _emit_privacy_event(
-                    _build_unclassified_failure_envelope(fn.__name__)
-                )
+                # audit surface. shield() so the audit write completes even under
+                # multiple concurrent cancel() calls (rapid reconnect / shutdown),
+                # where a bare await inside the handler would be re-cancelled
+                # before the write lands. Then re-raise — cancellation must never
+                # be swallowed.
+                try:
+                    await asyncio.shield(
+                        _emit_privacy_event(
+                            _build_unclassified_failure_envelope(fn.__name__)
+                        )
+                    )
+                except asyncio.CancelledError:
+                    # The shielded emit keeps running in the background; this
+                    # re-cancel only interrupts our wait, not the write.
+                    pass
                 raise
             # _check_envelope raises TypeError when a tool returns a non-
             # ResponseEnvelope. That's an envelope-contract violation that
