@@ -40,6 +40,7 @@ def budget_set(
             category=category,
             monthly_amount=Decimal(monthly_amount),
             start_month=start_month,
+            actor="mcp",
         )
     return build_envelope(
         data=result.to_payload(),

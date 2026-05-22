@@ -14,6 +14,13 @@ ready
 > - **Rule deactivation unified on the `categorization_rule.deactivate` audit action** (taxonomy-conformant `<entity>.<verb>`), replacing the legacy non-conformant `rule_deactivated`. Override forensics (`reason`, `override_count`, `sample_ids`) moved to the audit `context`. The set/clear categorization paths kept their established `category.set` / `category.clear` actions but now capture the **full** row (Req 4), superseding their prior column-subset payload.
 > - **`delete_category`'s 6-table cascade stays raw** until `budgets` + `transaction_splits` get repos (AI-PR12), so it can thread `parent_audit_id` through all six in one coherent pass rather than a half-threaded mix. The lint rule (PR 13) lands after that.
 
+> **Batch C reconciliation (2026-05-22).** Implementing PRs 6, 9, 10 (`AccountSettingsRepo`, `BalanceAssertionsRepo`, `BudgetsRepo`) surfaced five spec↔code drifts, resolved as follows:
+> - **`account_service` already had a non-audited `AccountSettingsRepository` data-access class** (load/upsert/delete) — a near-namesake of the new `AccountSettingsRepo`. Two repository-shaped classes for one table is the coherence smell Invariant 10 exists to retire, so the old class was removed: its `load` (a read) folded into `AccountService` directly (matching how `list_accounts`/`get_account`/`summary` already read), and its `upsert`/`delete` migrated to the audited `AccountSettingsRepo`. Its `delete` had **zero production callers** (test-only) but is retained on the repo per Req 6's protected-mutation contract.
+> - **`app.balance_assertions` has a composite primary key** `(account_id, assertion_date)`, but `audit_log.target_id` and the `_run_app_audit_coverage` helper assume a single key. The repo emits a composite `target_id` of `"{account_id}|{assertion_date ISO}"`; the coverage helper gained an optional `pk_expr` parameter (same generalize-the-helper precedent as Batch B's `updated_col`) so the doctor projects the matching composite key.
+> - **`app.budgets.category_id` is nullable** (NULL for orphaned legacy rows from V014's dual-write backfill), so the FK doctor check skips NULLs (`IS NOT NULL` guard, mirroring `_run_proposed_rules_rule_fk`).
+> - **The CLI `budget set` command is a stub** (`_not_implemented`); only the MCP `budget_set` tool calls `BudgetService.set_budget`, so `actor` is threaded from MCP only. The deprecated `AccountService` delegates (`rename`/`archive`/`unarchive`/`set_include_in_net_worth`) are test-only; they default `actor="system"` (the `MatchApplier.add_merchant` precedent for programmatic callers) while the canonical `settings_update` requires an explicit `actor`.
+> - **Audit actions follow the upsert `.set` verb, not `.insert`.** `account_settings.set`, `balance_assertion.set`, and `budget.set` (insert + update branches) all use `.set` — matching the existing `category.set` upsert taxonomy — with `.delete` for removals. (The earlier `balance_assertion.insert` working-name was dropped: the write is an `ON CONFLICT DO UPDATE` upsert, so `.set` is the accurate, coherent verb.)
+
 ## Goal
 
 `app.*` holds the only non-reconstructible state in MoneyBin — user categories, merchant patterns, categorization rules, account settings, balance assertions, budgets, curation notes/tags/splits, match decisions, tabular-format profiles. A bad service mutation today can silently corrupt any of those tables: audit routing is enforced by convention, not structure, and `audit_service.record_audit_event()` is called at only a fraction of the mutation sites. The doctor has no `app.*` invariants — only pipeline ones. The hosted tier (M3D/M3E) cannot ship without per-user `app.*` integrity, and the agent-first thesis means bulk LLM-driven mutations need recoverability to be trustworthy. This spec adds **Invariant 10** to the architecture, introduces a `*Repo` layer that owns every protected `app.*` write, bakes in the data captured for a future undo surface, and enforces the contract via a lint rule and doctor checks. The undo *consumer* (CLI/MCP/UndoService) is deliberately deferred to Phase 2.
@@ -219,6 +226,8 @@ Phase 1 lands as a sequence of small reviewable PRs. Each PR after PR 1 adds one
 - `account_service.py:259, 294` → `AccountSettingsRepo`.
 - Doctor invariant: audit coverage; FK from `account_id` to `core.dim_accounts`.
 
+> Shipped in Batch C. The pre-existing `AccountSettingsRepository` data-access class was removed (its `load` folded into `AccountService`; its writes migrated to the audited repo) — see the Batch C reconciliation note above. Actions: `account_settings.set` (upsert) / `account_settings.delete`.
+
 ### PR 7 — `TabularFormatsRepo`
 
 - `extractors/tabular/formats.py:178` (`INSERT OR REPLACE INTO app.tabular_formats …` — verified at HEAD) and `extractors/tabular/formats.py:312` (`DELETE FROM app.tabular_formats WHERE name = ?`) → `TabularFormatsRepo`. The existence-check `SELECT` at L306 stays in the extractor module (reads remain free per Req 2). Repository surface: `upsert(name, …, actor, parent_audit_id=None)` (mirroring the INSERT-OR-REPLACE shape — the writer needs idempotency on `name` since it's the natural key) and `delete(name, …, actor, parent_audit_id=None)`. This is the awkward case where the writer lives outside `services/`; the spec confirms repositories may be invoked from non-service callers (extractors are loaders, not services, but the protection boundary is the `app.*` table, not the caller).
@@ -234,10 +243,14 @@ Phase 1 lands as a sequence of small reviewable PRs. Each PR after PR 1 adds one
 - `balance_service.py:151, 170` → `BalanceAssertionsRepo`. Not in the original plan; identified during spec drafting (see [Resolved Design Decisions](#resolved-design-decisions) §3).
 - Doctor invariant: audit coverage; FK from `account_id` to `core.dim_accounts`.
 
+> Shipped in Batch C. Composite PK `(account_id, assertion_date)` → composite `target_id`; coverage helper gained `pk_expr` — see the Batch C reconciliation note above. Actions: `balance_assertion.set` (upsert) / `balance_assertion.delete`.
+
 ### PR 10 — `BudgetsRepo`
 
 - `budget_service.py:142, 153` → `BudgetsRepo`. Not in the original plan; identified during spec drafting.
 - Doctor invariant: audit coverage; FK from category fields where applicable.
+
+> Shipped in Batch C. The assignment-then-execute `update_sql`/`insert_sql` locals migrated to `BudgetsRepo.update` / `.insert`; FK `category_id → core.dim_categories` skips NULLs — see the Batch C reconciliation note above. Action: `budget.set` (both branches). The lint rule that must parse the assignment-then-execute shape is AI-PR13, not this batch.
 
 ### PR 11 — `ImportLabelsRepo`
 

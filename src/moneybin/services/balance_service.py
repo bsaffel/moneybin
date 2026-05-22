@@ -19,6 +19,7 @@ from moneybin.privacy.payloads.balances import (
     BalanceObservationRow,
 )
 from moneybin.services.account_service import assert_account_exists
+from moneybin.services.audit_service import AuditService
 from moneybin.tables import BALANCE_ASSERTIONS, FCT_BALANCES_DAILY
 
 logger = logging.getLogger(__name__)
@@ -57,9 +58,23 @@ def _assertion_row_from_db(row: tuple[object, ...]) -> BalanceAssertionRow:
 class BalanceService:
     """Balance queries, history, reconciliation, and assertion CRUD."""
 
-    def __init__(self, db: Database) -> None:
-        """Initialize with an open Database connection."""
+    def __init__(self, db: Database, *, audit: AuditService | None = None) -> None:
+        """Initialize with an open Database connection.
+
+        Composes :class:`BalanceAssertionsRepo` for audited
+        ``app.balance_assertions`` writes (Invariant 10), sharing this service's
+        ``AuditService``.
+        """
+        # Deferred import: `services/__init__` eagerly imports this module, and
+        # the repo's `base` imports `services.audit_service` — a module-level repo
+        # import would close that loop and fail when the repo is imported first.
+        from moneybin.repositories.balance_assertions_repo import (  # noqa: PLC0415
+            BalanceAssertionsRepo,
+        )
+
         self._db = db
+        self._audit = audit if audit is not None else AuditService(db)
+        self._assertions_repo = BalanceAssertionsRepo(db, audit=self._audit)
 
     def _assert_account_exists(self, account_id: str) -> None:
         """Raise UserError if account_id is not in core.dim_accounts."""
@@ -73,8 +88,10 @@ class BalanceService:
         assertion_date: date,
         balance: Decimal,
         notes: str | None = None,
+        *,
+        actor: str,
     ) -> BalanceAssertionPayload:
-        """Insert or update a balance assertion.
+        """Insert or update a balance assertion (audited via ``BalanceAssertionsRepo``).
 
         On the INSERT path, created_at and updated_at are both populated from
         the column DEFAULT. On the UPDATE path, created_at is preserved (it
@@ -83,33 +100,19 @@ class BalanceService:
         spec.
         """
         self._assert_account_exists(account_id)
-        self._db.execute(
-            f"""
-            INSERT INTO {BALANCE_ASSERTIONS.full_name}
-                (account_id, assertion_date, balance, notes)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT (account_id, assertion_date) DO UPDATE SET
-                balance = excluded.balance,
-                notes = excluded.notes,
-                updated_at = NOW()
-            """,
-            # `NOW()` rather than `CURRENT_TIMESTAMP` inside the DO UPDATE SET
-            # clause: DuckDB's parser treats `CURRENT_TIMESTAMP` as an
-            # identifier in that position, not a function call.
-            [account_id, assertion_date, balance, notes],
+        self._assertions_repo.set(
+            account_id, assertion_date, balance=balance, notes=notes, actor=actor
         )
         logger.info(f"Asserted balance for account {account_id} on {assertion_date}")
         return BalanceAssertionPayload(
             assertion=self._load_assertion(account_id, assertion_date)
         )
 
-    def delete_assertion(self, account_id: str, assertion_date: date) -> None:
+    def delete_assertion(
+        self, account_id: str, assertion_date: date, *, actor: str
+    ) -> None:
         """Delete the assertion for (account_id, assertion_date). Silent no-op if absent."""
-        self._db.execute(
-            f"DELETE FROM {BALANCE_ASSERTIONS.full_name} "
-            "WHERE account_id = ? AND assertion_date = ?",
-            [account_id, assertion_date],
-        )
+        self._assertions_repo.delete(account_id, assertion_date, actor=actor)
         logger.info(
             f"Deleted balance assertion for account {account_id} on {assertion_date}"
         )

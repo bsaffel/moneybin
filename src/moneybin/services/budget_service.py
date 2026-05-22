@@ -8,7 +8,6 @@ them. Consumed by both MCP tools and CLI commands.
 from __future__ import annotations
 
 import logging
-import uuid
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -20,6 +19,8 @@ from moneybin.privacy.payloads.budget import (
     BudgetSetPayload,
     BudgetStatusPayload,
 )
+from moneybin.repositories.budgets_repo import BudgetsRepo
+from moneybin.services.audit_service import AuditService
 from moneybin.services.categorization._shared import resolve_category_id
 from moneybin.tables import BUDGETS, FCT_TRANSACTIONS, TRANSACTION_CATEGORIES
 
@@ -48,15 +49,23 @@ class BudgetSetResult:
 class BudgetService:
     """Budget management operations."""
 
-    def __init__(self, db: Database) -> None:
-        """Initialize BudgetService with an open Database connection."""
+    def __init__(self, db: Database, *, audit: AuditService | None = None) -> None:
+        """Initialize BudgetService with an open Database connection.
+
+        Composes :class:`BudgetsRepo` for audited ``app.budgets`` writes
+        (Invariant 10), sharing this service's ``AuditService``.
+        """
         self._db = db
+        self._audit = audit if audit is not None else AuditService(db)
+        self._budgets_repo = BudgetsRepo(db, audit=self._audit)
 
     def set_budget(
         self,
         category: str,
         monthly_amount: Decimal,
         start_month: str | None = None,
+        *,
+        actor: str,
     ) -> BudgetSetResult:
         """Create or update a budget target for a category.
 
@@ -68,6 +77,8 @@ class BudgetService:
             monthly_amount: Monthly spending target in USD.
             start_month: First active month (YYYY-MM). Defaults to current
                 month.
+            actor: Audit actor recorded on the ``budget.set`` event
+                (``"cli"`` / ``"mcp"``).
 
         Returns:
             BudgetSetResult indicating whether the budget was created or
@@ -95,27 +106,20 @@ class BudgetService:
             # Re-resolve on update so a NULL FK from V014's backfill window heals
             # the first time the user touches this budget after creating the
             # matching user_category.
-            update_sql = f"""
-                UPDATE {BUDGETS.full_name}
-                SET monthly_amount = ?,
-                    category_id = ?,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE budget_id = ?
-            """
-            self._db.execute(
-                update_sql, [monthly_amount, category_id, str(existing[0])]
+            self._budgets_repo.update(
+                str(existing[0]),
+                monthly_amount=monthly_amount,
+                category_id=category_id,
+                actor=actor,
             )
             action = "updated"
         else:
-            budget_id = uuid.uuid4().hex[:12]
-            insert_sql = f"""
-                INSERT INTO {BUDGETS.full_name}
-                    (budget_id, category, category_id, monthly_amount, start_month)
-                VALUES (?, ?, ?, ?, ?)
-            """
-            self._db.execute(
-                insert_sql,
-                [budget_id, category, category_id, monthly_amount, start_month],
+            self._budgets_repo.insert(
+                category=category,
+                category_id=category_id,
+                monthly_amount=monthly_amount,
+                start_month=start_month,
+                actor=actor,
             )
             action = "created"
 

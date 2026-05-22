@@ -25,6 +25,7 @@ from moneybin.privacy.payloads.accounts import (
     AccountSummary,
     AccountSummaryStats,
 )
+from moneybin.services.audit_service import AuditService
 from moneybin.tables import (
     ACCOUNT_SETTINGS,
     DIM_ACCOUNTS,
@@ -218,92 +219,6 @@ class AccountSettings:
             raise ValueError("credit_limit must be non-negative")
 
 
-class AccountSettingsRepository:
-    """SQL-layer access to app.account_settings.
-
-    All methods use parameterized queries — no string interpolation.
-    Per .claude/rules/database.md, this is the only place that touches
-    the app.account_settings table directly.
-    """
-
-    def __init__(self, db: Database) -> None:
-        """Initialize with an open Database connection."""
-        self._db = db
-
-    def load(self, account_id: str) -> AccountSettings | None:
-        """Load settings for an account; None if no row exists."""
-        row = self._db.execute(
-            f"""
-            SELECT account_id, display_name, official_name, last_four,
-                   account_subtype, holder_category, iso_currency_code,
-                   credit_limit, archived, include_in_net_worth
-            FROM {ACCOUNT_SETTINGS.full_name}
-            WHERE account_id = ?
-            """,
-            [account_id],
-        ).fetchone()
-        if row is None:
-            return None
-        return AccountSettings(
-            account_id=row[0],
-            display_name=row[1],
-            official_name=row[2],
-            last_four=row[3],
-            account_subtype=row[4],
-            holder_category=row[5],
-            iso_currency_code=row[6],
-            credit_limit=row[7],
-            archived=row[8],
-            include_in_net_worth=row[9],
-        )
-
-    def upsert(self, settings: AccountSettings) -> None:
-        """Insert or update by account_id; refreshes updated_at.
-
-        Uses NOW() instead of CURRENT_TIMESTAMP — DuckDB treats CURRENT_TIMESTAMP
-        as an identifier (not a function call) inside ON CONFLICT DO UPDATE clauses.
-        """
-        self._db.execute(
-            f"""
-            INSERT INTO {ACCOUNT_SETTINGS.full_name} (
-                account_id, display_name, official_name, last_four,
-                account_subtype, holder_category, iso_currency_code,
-                credit_limit, archived, include_in_net_worth
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT (account_id) DO UPDATE SET
-                display_name         = excluded.display_name,
-                official_name        = excluded.official_name,
-                last_four            = excluded.last_four,
-                account_subtype      = excluded.account_subtype,
-                holder_category      = excluded.holder_category,
-                iso_currency_code    = excluded.iso_currency_code,
-                credit_limit         = excluded.credit_limit,
-                archived             = excluded.archived,
-                include_in_net_worth = excluded.include_in_net_worth,
-                updated_at           = NOW()
-            """,
-            [
-                settings.account_id,
-                settings.display_name,
-                settings.official_name,
-                settings.last_four,
-                settings.account_subtype,
-                settings.holder_category,
-                settings.iso_currency_code,
-                settings.credit_limit,
-                settings.archived,
-                settings.include_in_net_worth,
-            ],
-        )
-
-    def delete(self, account_id: str) -> None:
-        """Delete the settings row for an account."""
-        self._db.execute(
-            f"DELETE FROM {ACCOUNT_SETTINGS.full_name} WHERE account_id = ?",
-            [account_id],
-        )
-
-
 _RESOLVE_STRICT_CANDIDATE_CAP = 25
 
 
@@ -406,14 +321,54 @@ class AccountService:
     All methods return typed payload dataclasses with Annotated field markers.
     """
 
-    def __init__(self, db: Database) -> None:
-        """Initialize AccountService with an open Database connection."""
+    def __init__(self, db: Database, *, audit: AuditService | None = None) -> None:
+        """Initialize AccountService with an open Database connection.
+
+        Composes :class:`AccountSettingsRepo` for audited ``app.account_settings``
+        writes (Invariant 10); the repo shares this service's ``AuditService`` so
+        its writes participate in any caller-opened transaction.
+        """
+        # Deferred import: `services/__init__` eagerly imports this module, and
+        # the repo's `base` imports `services.audit_service` — a module-level repo
+        # import would close that loop and fail when the repo is imported first.
+        from moneybin.repositories.account_settings_repo import (  # noqa: PLC0415
+            AccountSettingsRepo,
+        )
+
         self._db = db
-        self._settings_repo = AccountSettingsRepository(db)
+        self._audit = audit if audit is not None else AuditService(db)
+        self._settings_repo = AccountSettingsRepo(db, audit=self._audit)
 
     def _assert_account_exists(self, account_id: str) -> None:
         """Raise UserError if account_id is not in core.dim_accounts."""
         assert_account_exists(self._db, account_id)
+
+    def _load_settings(self, account_id: str) -> AccountSettings | None:
+        """Load settings for an account; ``None`` if no row exists (read, free)."""
+        row = self._db.execute(
+            f"""
+            SELECT account_id, display_name, official_name, last_four,
+                   account_subtype, holder_category, iso_currency_code,
+                   credit_limit, archived, include_in_net_worth
+            FROM {ACCOUNT_SETTINGS.full_name}
+            WHERE account_id = ?
+            """,
+            [account_id],
+        ).fetchone()
+        if row is None:
+            return None
+        return AccountSettings(
+            account_id=row[0],
+            display_name=row[1],
+            official_name=row[2],
+            last_four=row[3],
+            account_subtype=row[4],
+            holder_category=row[5],
+            iso_currency_code=row[6],
+            credit_limit=row[7],
+            archived=row[8],
+            include_in_net_worth=row[9],
+        )
 
     def list_accounts(
         self,
@@ -590,52 +545,59 @@ class AccountService:
 
     def _load_or_default(self, account_id: str) -> AccountSettings:
         """Load existing settings or construct a default for the given account."""
-        return self._settings_repo.load(account_id) or AccountSettings(
-            account_id=account_id
-        )
+        return self._load_settings(account_id) or AccountSettings(account_id=account_id)
 
-    def rename(self, account_id: str, display_name: str) -> AccountSettings:
+    def rename(
+        self, account_id: str, display_name: str, *, actor: str = "system"
+    ) -> AccountSettings:
         """Set or clear display_name. Empty string clears the override.
 
         Deprecated: prefer ``settings_update(display_name=...)``. Kept as a
-        thin delegate for internal callers that haven't migrated.
+        thin delegate for internal callers that haven't migrated; ``actor``
+        defaults to ``"system"`` (the programmatic-caller convention from
+        ``MatchApplier.add_merchant``) since no surface drives this path.
         """
         # Empty-string-clears semantics live in this delegate; settings_update
         # uses the CLEAR sentinel for nullable text fields.
         new_value: str | object = display_name if display_name else CLEAR
-        settings, _ = self.settings_update(account_id, display_name=new_value)
+        settings, _ = self.settings_update(
+            account_id, display_name=new_value, actor=actor
+        )
         return settings
 
     def set_include_in_net_worth(
-        self, account_id: str, include: bool
+        self, account_id: str, include: bool, *, actor: str = "system"
     ) -> AccountSettings:
         """Toggle include_in_net_worth flag. Idempotent.
 
         Deprecated: prefer ``settings_update(include_in_net_worth=...)``.
         """
-        settings, _ = self.settings_update(account_id, include_in_net_worth=include)
+        settings, _ = self.settings_update(
+            account_id, include_in_net_worth=include, actor=actor
+        )
         return settings
 
-    def archive(self, account_id: str) -> AccountSettings:
+    def archive(self, account_id: str, *, actor: str = "system") -> AccountSettings:
         """Set archived=TRUE; cascades include_in_net_worth=FALSE in the same write.
 
         Deprecated: prefer ``settings_update(archived=True)``.
         """
-        settings, _ = self.settings_update(account_id, archived=True)
+        settings, _ = self.settings_update(account_id, archived=True, actor=actor)
         return settings
 
-    def unarchive(self, account_id: str) -> AccountSettings:
+    def unarchive(self, account_id: str, *, actor: str = "system") -> AccountSettings:
         """Set archived=FALSE; does NOT restore include_in_net_worth (per spec).
 
         Deprecated: prefer ``settings_update(archived=False)``.
         """
-        settings, _ = self.settings_update(account_id, archived=False)
+        settings, _ = self.settings_update(account_id, archived=False, actor=actor)
         return settings
 
     def settings_update(
         self,
         account_id: str,
         *,
+        actor: str,
         official_name: str | None | object = None,
         last_four: str | None | object = None,
         account_subtype: str | None | object = None,
@@ -707,7 +669,19 @@ class AccountService:
             })
 
         updated = dataclasses.replace(current, **cast(dict[str, Any], diff))
-        self._settings_repo.upsert(updated)
+        self._settings_repo.upsert(
+            account_id=updated.account_id,
+            display_name=updated.display_name,
+            official_name=updated.official_name,
+            last_four=updated.last_four,
+            account_subtype=updated.account_subtype,
+            holder_category=updated.holder_category,
+            iso_currency_code=updated.iso_currency_code,
+            credit_limit=updated.credit_limit,
+            archived=updated.archived,
+            include_in_net_worth=updated.include_in_net_worth,
+            actor=actor,
+        )
         logger.info(
             f"Updated settings for account {account_id}: fields={sorted(diff.keys())}"
         )

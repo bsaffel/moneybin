@@ -79,7 +79,7 @@ class TestSetBudget:
     def test_creates_new_budget(self, budget_db: Database) -> None:
         service = BudgetService(budget_db)
         result = service.set_budget(
-            "Food & Drink", Decimal("200.00"), start_month="2026-04"
+            "Food & Drink", Decimal("200.00"), start_month="2026-04", actor="cli"
         )
         assert isinstance(result, BudgetSetResult)
         assert result.category == "Food & Drink"
@@ -90,10 +90,12 @@ class TestSetBudget:
     def test_updates_existing_budget(self, budget_db: Database) -> None:
         service = BudgetService(budget_db)
         # Create first
-        service.set_budget("Food & Drink", Decimal("200.00"), start_month="2026-04")
+        service.set_budget(
+            "Food & Drink", Decimal("200.00"), start_month="2026-04", actor="cli"
+        )
         # Update
         result = service.set_budget(
-            "Food & Drink", Decimal("300.00"), start_month="2026-04"
+            "Food & Drink", Decimal("300.00"), start_month="2026-04", actor="cli"
         )
         assert result.action == "updated"
         assert result.monthly_amount == Decimal("300.00")
@@ -102,7 +104,7 @@ class TestSetBudget:
     def test_to_payload_shape(self, budget_db: Database) -> None:
         service = BudgetService(budget_db)
         result = service.set_budget(
-            "Food & Drink", Decimal("200.00"), start_month="2026-04"
+            "Food & Drink", Decimal("200.00"), start_month="2026-04", actor="cli"
         )
         payload = result.to_payload()
         assert isinstance(payload, BudgetSetPayload)
@@ -119,7 +121,9 @@ class TestBudgetStatus:
     def test_returns_status_result(self, budget_db: Database) -> None:
         service = BudgetService(budget_db)
         # Set a budget first
-        service.set_budget("Food & Drink", Decimal("200.00"), start_month="2026-04")
+        service.set_budget(
+            "Food & Drink", Decimal("200.00"), start_month="2026-04", actor="cli"
+        )
         result = service.status(month="2026-04")
         assert isinstance(result, BudgetStatusPayload)
         assert result.month == "2026-04"
@@ -128,7 +132,9 @@ class TestBudgetStatus:
     @pytest.mark.unit
     def test_status_fields(self, budget_db: Database) -> None:
         service = BudgetService(budget_db)
-        service.set_budget("Food & Drink", Decimal("200.00"), start_month="2026-04")
+        service.set_budget(
+            "Food & Drink", Decimal("200.00"), start_month="2026-04", actor="cli"
+        )
         result = service.status(month="2026-04")
         cat = result.categories[0]
         assert isinstance(cat, BudgetCategoryStatusRow)
@@ -143,7 +149,9 @@ class TestBudgetStatus:
     def test_status_over_budget(self, budget_db: Database) -> None:
         service = BudgetService(budget_db)
         # Set budget lower than spending (80.00)
-        service.set_budget("Food & Drink", Decimal("50.00"), start_month="2026-04")
+        service.set_budget(
+            "Food & Drink", Decimal("50.00"), start_month="2026-04", actor="cli"
+        )
         result = service.status(month="2026-04")
         cat = result.categories[0]
         assert cat.status == "OVER"
@@ -153,7 +161,9 @@ class TestBudgetStatus:
     def test_status_warning_threshold(self, budget_db: Database) -> None:
         service = BudgetService(budget_db)
         # Budget of 90 with 80 spent = 88.9% => WARNING
-        service.set_budget("Food & Drink", Decimal("90.00"), start_month="2026-04")
+        service.set_budget(
+            "Food & Drink", Decimal("90.00"), start_month="2026-04", actor="cli"
+        )
         result = service.status(month="2026-04")
         cat = result.categories[0]
         assert cat.status == "WARNING"
@@ -164,7 +174,9 @@ class TestBudgetStatus:
         from moneybin.protocol.envelope import build_envelope
 
         service = BudgetService(budget_db)
-        service.set_budget("Food & Drink", Decimal("200.00"), start_month="2026-04")
+        service.set_budget(
+            "Food & Drink", Decimal("200.00"), start_month="2026-04", actor="cli"
+        )
         result = service.status(month="2026-04")
         envelope = build_envelope(
             data=result,
@@ -198,7 +210,7 @@ class TestSetBudgetCategoryIdResolution:
         seed_categories_view(budget_db)
         cat_id = CategorizationService(budget_db).create_category("Hobbies")
         BudgetService(budget_db).set_budget(
-            "Hobbies", Decimal("100.00"), start_month="2026-05"
+            "Hobbies", Decimal("100.00"), start_month="2026-05", actor="cli"
         )
         row = budget_db.execute(
             "SELECT category_id FROM app.budgets WHERE category = 'Hobbies'"
@@ -209,7 +221,7 @@ class TestSetBudgetCategoryIdResolution:
     def test_orphan_text_stays_null(self, budget_db: Database) -> None:
         seed_categories_view(budget_db)
         BudgetService(budget_db).set_budget(
-            "NeverDefined", Decimal("50.00"), start_month="2026-05"
+            "NeverDefined", Decimal("50.00"), start_month="2026-05", actor="cli"
         )
         row = budget_db.execute(
             "SELECT category, category_id FROM app.budgets "
