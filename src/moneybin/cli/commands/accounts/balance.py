@@ -66,7 +66,7 @@ def accounts_balance_show(
             )
 
     render_or_json(
-        build_envelope(data=result, sensitivity="low"),
+        build_envelope(data=result),
         output,
         render_fn=_render_text,
         cli_actor="accounts_balance_show",
@@ -100,7 +100,7 @@ def accounts_balance_history(
             )
 
     render_or_json(
-        build_envelope(data=result, sensitivity="low"),
+        build_envelope(data=result),
         output,
         render_fn=_render_text,
         cli_actor="accounts_balance_history",
@@ -147,7 +147,7 @@ def accounts_balance_list(
             result = BalanceService(db).list_assertions(account)
     if output == OutputFormat.JSON:
         render_or_json(
-            build_envelope(data=result, sensitivity="low"),
+            build_envelope(data=result),
             output,
             cli_actor="accounts_balance_list",
         )
@@ -196,7 +196,7 @@ def accounts_balance_reconcile(
             )
     if output == OutputFormat.JSON:
         render_or_json(
-            build_envelope(data=result, sensitivity="low"),
+            build_envelope(data=result),
             output,
             cli_actor="accounts_balance_reconcile",
         )
