@@ -30,7 +30,14 @@ def _step_crash_recovery_actions(result: RefreshResult) -> list[RecoveryAction]:
     diagnostic ``system_doctor`` call. ``system_doctor`` takes no MCP
     parameters, so ``arguments`` is empty — a recovery action must stay
     directly executable.
+
+    Returns ``[]`` when the SQLMesh apply itself failed (``result.error``):
+    that is the blocking failure, surfaced via the ``error`` field and the
+    apply-failed ``actions`` hint. A best-effort step retry here would
+    misdirect the agent to chase the secondary crash before the blocker.
     """
+    if result.error is not None:
+        return []
     actions: list[RecoveryAction] = []
     if result.matching_error is not None:
         actions.append(

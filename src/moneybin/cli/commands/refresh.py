@@ -81,18 +81,24 @@ def refresh_command(
             raise typer.Exit(1)
         return
 
+    # Best-effort step crashes (matcher/categorizer) don't fail the command,
+    # but they are warnings, not informational output — surface them even under
+    # --quiet (per cli.md, -q suppresses status/✅, not warnings) so a
+    # partial-pipeline failure is never silent.
+    if result.matching_error is not None:
+        logger.warning(f"⚠️  Matching step failed: {result.matching_error}")
+    if result.categorization_error is not None:
+        logger.warning(f"⚠️  Categorization step failed: {result.categorization_error}")
+    has_step_error = (
+        result.matching_error is not None or result.categorization_error is not None
+    )
+
     if quiet:
         if result.error is not None:
             raise typer.Exit(1)
         return
 
-    # Best-effort step crashes (matcher/categorizer) don't fail the command,
-    # but surface them so a partially-refreshed pipeline isn't silent.
-    if result.matching_error is not None:
-        logger.warning(f"⚠️  Matching step failed: {result.matching_error}")
-    if result.categorization_error is not None:
-        logger.warning(f"⚠️  Categorization step failed: {result.categorization_error}")
-    if result.matching_error is not None or result.categorization_error is not None:
+    if has_step_error:
         logger.info(
             "💡 Re-run the failed step (e.g. `moneybin refresh --step match`) "
             "or run `moneybin system doctor` to diagnose."
@@ -100,9 +106,22 @@ def refresh_command(
 
     if result.applied:
         duration = result.duration_seconds or 0.0
-        logger.info(f"✅ Refresh complete in {duration:.2f}s")
+        # No ✅ when a best-effort step crashed — the warning above already
+        # told the truth, and a success banner would contradict it.
+        if has_step_error:
+            logger.info(
+                f"Refresh complete in {duration:.2f}s (best-effort step failures above)"
+            )
+        else:
+            logger.info(f"✅ Refresh complete in {duration:.2f}s")
         return
     if result.error is not None:
         logger.error(f"❌ Refresh failed: {result.error}")
         raise typer.Exit(1)
-    logger.info(f"✅ Partial refresh complete (steps: {', '.join(sorted(requested))})")
+    steps_str = ", ".join(sorted(requested))
+    if has_step_error:
+        logger.info(
+            f"Partial refresh complete (steps: {steps_str}; best-effort failures above)"
+        )
+    else:
+        logger.info(f"✅ Partial refresh complete (steps: {steps_str})")

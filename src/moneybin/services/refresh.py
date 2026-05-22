@@ -86,7 +86,9 @@ class RefreshResult:
     error: str | None = None
     matching_error: str | None = None
     categorization_error: str | None = None
-    self_heal_actions: list[SelfHealRecord] = field(default_factory=list)
+    # tuple, not list: frozen=True blocks reassignment but not in-place
+    # mutation of a list field — a tuple keeps the result carrier truly immutable.
+    self_heal_actions: tuple[SelfHealRecord, ...] = field(default_factory=tuple)
 
 
 RefreshStep = Literal["gsheet", "match", "transform", "categorize"]
@@ -336,6 +338,8 @@ def _run_categorize_step(db: Database) -> str | None:
         logger.error(f"Categorization failed during refresh: {exc}", exc_info=True)
         return str(exc)
     finally:
+        # "attempted", not "finished": this fires on every exit path,
+        # including the missing-table skip, where the step didn't complete.
         logger.debug(
-            f"Categorization step finished in {time.monotonic() - cat_start:.2f}s"
+            f"Categorization step attempted in {time.monotonic() - cat_start:.2f}s"
         )

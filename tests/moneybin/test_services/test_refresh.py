@@ -82,7 +82,7 @@ def test_refresh_result_has_error_surfacing_fields() -> None:
     r = RefreshResult(applied=True, duration_seconds=1.0)
     assert r.matching_error is None
     assert r.categorization_error is None
-    assert r.self_heal_actions == []
+    assert r.self_heal_actions == ()
 
     rec = SelfHealRecord(
         recipe_id="orphan_categorizations_cleanup",
@@ -95,7 +95,7 @@ def test_refresh_result_has_error_surfacing_fields() -> None:
         duration_seconds=1.0,
         matching_error="boom",
         categorization_error="bang",
-        self_heal_actions=[rec],
+        self_heal_actions=(rec,),
     )
     assert r2.matching_error == "boom"
     assert r2.categorization_error == "bang"
@@ -114,11 +114,15 @@ def test_refresh_matcher_crash_populates_matching_error(
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "exc",
+    [duckdb.CatalogException("no view"), duckdb.BinderException("no col")],
+)
 def test_refresh_matcher_missing_views_is_not_an_error(
-    patched_services: dict[str, MagicMock],
+    patched_services: dict[str, MagicMock], exc: Exception
 ) -> None:
-    """CatalogException (views not built on first load) is expected, not surfaced."""
-    patched_services["matcher_run"].side_effect = duckdb.CatalogException("no view")
+    """Catalog/Binder exceptions (views not built on first load) are expected, not surfaced."""
+    patched_services["matcher_run"].side_effect = exc
     result = refresh(MagicMock())
     assert result.matching_error is None
 
@@ -135,11 +139,15 @@ def test_refresh_categorizer_crash_populates_categorization_error(
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "exc",
+    [duckdb.CatalogException("nope"), duckdb.BinderException("no col")],
+)
 def test_refresh_categorizer_missing_tables_is_not_an_error(
-    patched_services: dict[str, MagicMock],
+    patched_services: dict[str, MagicMock], exc: Exception
 ) -> None:
-    """CatalogException (tables not built on first load) is expected, not surfaced."""
-    patched_services["categorize_pending"].side_effect = duckdb.CatalogException("nope")
+    """Catalog/Binder exceptions (tables not built on first load) are expected, not surfaced."""
+    patched_services["categorize_pending"].side_effect = exc
     result = refresh(MagicMock())
     assert result.categorization_error is None
 

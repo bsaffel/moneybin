@@ -35,7 +35,7 @@ def test_envelope_serializes_self_heal_records() -> None:
         timestamp="2026-05-22T00:00:00Z",
     )
     env = refresh_envelope(
-        RefreshResult(applied=True, duration_seconds=1.0, self_heal_actions=[rec]),
+        RefreshResult(applied=True, duration_seconds=1.0, self_heal_actions=(rec,)),
         requested=expand_steps(None),
     )
     assert _data(env)["self_heal_actions"][0]["recipe_id"] == (
@@ -114,6 +114,27 @@ def test_categorize_followup_still_fires_on_clean_match_only() -> None:
         requested=expand_steps(["match"]),
     )
     assert REFRESH_CATEGORIZE_FOLLOWUP_HINT in env.actions
+
+
+@pytest.mark.unit
+def test_apply_failure_suppresses_step_recovery_actions() -> None:
+    """When apply failed, the apply error is the blocker — don't emit step retries.
+
+    A matcher crash can co-occur with an apply failure (match runs before
+    transform). Surfacing 'retry match' would misdirect the agent from the
+    blocking apply error, which is carried by error + the apply-failed hint.
+    """
+    env = refresh_envelope(
+        RefreshResult(
+            applied=False,
+            duration_seconds=1.0,
+            error="model boom",
+            matching_error="matcher boom",
+        ),
+        requested=expand_steps(None),
+    )
+    assert env.recovery_actions is None
+    assert _data(env)["matching_error"] == "matcher boom"  # still surfaced in data
 
 
 @pytest.mark.unit

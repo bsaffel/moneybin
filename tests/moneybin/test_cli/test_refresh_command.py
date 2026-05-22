@@ -34,6 +34,9 @@ def test_refresh_json_success(runner: CliRunner) -> None:
     assert payload["data"]["applied"] is True
     assert payload["data"]["duration_seconds"] == 4.2
     assert payload["data"].get("error") is None
+    # self_heal_actions is always emitted (empty until the safelist lands) so
+    # agents see a stable key — guard that "always-present" contract.
+    assert payload["data"]["self_heal_actions"] == []
     assert payload["actions"] == []
 
 
@@ -187,6 +190,36 @@ def test_refresh_matcher_crash_warns_in_text(runner: CliRunner) -> None:
 
     assert result.exit_code == 0
     assert "Matching step failed" in result.output
+
+
+def test_refresh_matcher_crash_warns_even_in_quiet(runner: CliRunner) -> None:
+    """--quiet suppresses ✅/status but NOT a best-effort step-crash warning."""
+    fake_result = RefreshResult(
+        applied=True, duration_seconds=2.0, matching_error="matcher boom"
+    )
+    with (
+        patch("moneybin.services.refresh.refresh", return_value=fake_result),
+        patch("moneybin.database.get_database") as get_db,
+    ):
+        get_db.return_value.__enter__.return_value = MagicMock()
+        result = runner.invoke(app, ["refresh", "--quiet"])
+
+    assert result.exit_code == 0  # best-effort crash doesn't fail the command
+    assert "Matching step failed" in result.output  # warning still surfaced
+
+
+def test_refresh_clean_success_keeps_check_banner(runner: CliRunner) -> None:
+    """A clean run still prints the ✅ success banner (no contradictory output)."""
+    fake_result = RefreshResult(applied=True, duration_seconds=2.0)
+    with (
+        patch("moneybin.services.refresh.refresh", return_value=fake_result),
+        patch("moneybin.database.get_database") as get_db,
+    ):
+        get_db.return_value.__enter__.return_value = MagicMock()
+        result = runner.invoke(app, ["refresh"])
+
+    assert result.exit_code == 0
+    assert "✅ Refresh complete" in result.output
 
 
 def test_refresh_unknown_step_rejected_at_parse_time(runner: CliRunner) -> None:
