@@ -120,10 +120,10 @@ def validate_quality_scale(
 ) -> list[QualityScaleViolation]:
     """Validate the package's evidence at `claimed_tier`.
 
-    The claimed_tier must equal the manifest's declared tier (the validator
-    cannot inflate a claim). Each tier's check is cumulative: claiming Gold
-    runs Bronze + Silver + Gold checks. Returns every violation found so
-    contributors see the full gap.
+    claimed_tier must not exceed the manifest's declared quality_scale (the
+    validator cannot inflate a claim; claiming a lower tier is allowed). Each
+    tier's check is cumulative: claiming Gold runs Bronze + Silver + Gold
+    checks. Returns every violation found so contributors see the full gap.
 
     Raises:
         ValueError: if claimed_tier is unknown or exceeds the manifest's
