@@ -19,7 +19,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Literal
 
-from moneybin.repositories.base import BaseRepo
+from moneybin.repositories.base import BaseRepo, quote_ident
 from moneybin.tables import GSHEET_CONNECTIONS
 
 logger = logging.getLogger(__name__)
@@ -406,7 +406,7 @@ class GSheetConnectionsRepo(BaseRepo):
 
     def list_all(self) -> list[dict[str, Any]]:
         """Return every connection row, ordered by ``created_at`` ascending."""
-        cols = ", ".join(_FULL_ROW_COLUMNS)
+        cols = ", ".join(quote_ident(c) for c in _FULL_ROW_COLUMNS)
         rows = self._db.execute(
             f"SELECT {cols} FROM {GSHEET_CONNECTIONS.full_name} ORDER BY created_at ASC, connection_id ASC"  # noqa: S608  # TableRef + allowlisted column list
         ).fetchall()
@@ -421,7 +421,7 @@ class GSheetConnectionsRepo(BaseRepo):
         explicit operator action and are excluded. Name kept for caller
         stability; see the query comment for the per-status rationale.
         """
-        cols = ", ".join(_FULL_ROW_COLUMNS)
+        cols = ", ".join(quote_ident(c) for c in _FULL_ROW_COLUMNS)
         rows = self._db.execute(
             # Auto-retry transient statuses on each refresh_run. auth_expired
             # / drift_detected / disconnected / failed stay sticky — those

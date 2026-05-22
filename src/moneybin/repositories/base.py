@@ -31,7 +31,7 @@ from moneybin.services.audit_service import AuditEvent, AuditService
 from moneybin.tables import TableRef
 
 
-def _quote_ident(name: str) -> str:
+def quote_ident(name: str) -> str:
     """Double-quote a SQL identifier (security.md defense-in-depth for interpolation).
 
     Repository column/PK names are code-supplied constants, but per
@@ -118,6 +118,14 @@ class BaseRepo:
         without routing through here shows up as a gap between
         ``app_mutation_audit_emitted_total`` and ``audit_events_emitted_total`` —
         the contract-violation signal Invariant 10 exists to catch.
+
+        Both counters increment here, inside the caller's transaction and before
+        its commit (matching the pre-existing ``audit_events_emitted_total``
+        behavior). A subsequent commit failure therefore over-counts both by one
+        relative to durable rows — an accepted trade-off: the two counters stay in
+        lockstep (so the contract-violation gap *between* them is unaffected), and
+        a rollback after a successful audit insert is rare. Prometheus counters are
+        best-effort telemetry, not a durable ledger.
         """
         event = self._audit.record_audit_event(
             action=action,
@@ -149,8 +157,8 @@ class BaseRepo:
         the raw tuple; the default zips ``columns`` to the row. ``pk_col`` is a
         code-supplied column name, never user input.
         """
-        cols = ", ".join(_quote_ident(c) for c in columns)
-        safe_pk = _quote_ident(pk_col)
+        cols = ", ".join(quote_ident(c) for c in columns)
+        safe_pk = quote_ident(pk_col)
         row = self._db.execute(
             f"SELECT {cols} FROM {table_ref.full_name} WHERE {safe_pk} = ?",  # noqa: S608  # TableRef + sqlglot-quoted identifiers
             [pk_value],

@@ -11,7 +11,14 @@ from sqlglot import exp
 from moneybin.config import get_settings
 from moneybin.database import Database, sqlmesh_context
 from moneybin.errors import RecoveryAction
-from moneybin.tables import AUDIT_LOG, FCT_TRANSACTIONS, USER_CATEGORIES, TableRef
+from moneybin.tables import (
+    AUDIT_LOG,
+    CATEGORY_OVERRIDES,
+    FCT_TRANSACTIONS,
+    GSHEET_CONNECTIONS,
+    USER_CATEGORIES,
+    TableRef,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -85,12 +92,17 @@ class DoctorService:
     def _run_app_integrity(self, *, full: bool) -> list[InvariantResult]:
         """Per-table integrity checks for protected ``app.*`` tables (Invariant 10).
 
-        Audit-coverage and uniqueness for ``app.user_categories`` land here; later
-        repository PRs append one coverage call per newly-wrapped table plus that
-        table's FK/orphan specifics.
+        Covers every table this PR wraps in a repo (``user_categories``,
+        ``category_overrides``, ``gsheet_connections``); later repository PRs
+        append one coverage call per newly-wrapped table plus that table's
+        FK/orphan specifics.
         """
         return [
             self._run_app_audit_coverage(USER_CATEGORIES, "category_id", full=full),
+            self._run_app_audit_coverage(CATEGORY_OVERRIDES, "category_id", full=full),
+            self._run_app_audit_coverage(
+                GSHEET_CONNECTIONS, "connection_id", full=full
+            ),
             self._run_user_categories_uniqueness(),
         ]
 

@@ -338,7 +338,10 @@ class GSheetConnectionService:
 
             self._repo.delete(connection_id, actor=actor, in_outer_txn=True)
             self._db.commit()
-        except Exception:
+        except BaseException:
+            # BaseException, not Exception: a KeyboardInterrupt/SystemExit between
+            # the raw DELETEs and the repo delete must still roll back the open
+            # transaction. Matches BaseRepo._transaction / MatchApplier._transaction.
             self._db.rollback()
             raise
 
