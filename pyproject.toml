@@ -121,6 +121,11 @@ moneybin = [
 # Unified CLI entry point using Typer
 moneybin = "moneybin.cli.main:main"
 
+[project.entry-points."moneybin.packages"]
+# Reference packages register here in Plan 4:
+# assets = "moneybin.packages.assets"
+# us_tax = "moneybin.packages.us_tax"
+
 [dependency-groups]
 # Documentation: https://peps.python.org/pep-0735/
 # Modern dependency groups standard (PEP 735) for optional/development dependencies
