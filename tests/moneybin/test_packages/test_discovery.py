@@ -282,6 +282,40 @@ def test_single_manifest_not_matching_module_is_skipped(
     assert any("could not resolve" in rec.message.lower() for rec in caplog.records)
 
 
+def test_duplicate_manifest_across_entry_points_discovered_once(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Two entry points resolving to the same manifest yield one PackageInfo.
+
+    A malformed dist sharing one (e.g. root-level) manifest across several entry
+    points must not produce duplicate PackageInfos — that would crash
+    register_package with an opaque 'already registered'. Discover once, warn.
+    """
+    root_manifest = tmp_path / "moneybin_package.yaml"
+    root_manifest.write_text(_MANIFEST_BODY)
+    root_pp = _manifest_pp(("moneybin_package.yaml",))
+
+    def _mk_ep(name: str, module: str) -> MagicMock:
+        dist = MagicMock()
+        dist.files = [root_pp]
+        dist.locate_file.return_value = root_manifest
+        ep = MagicMock()
+        ep.name = name
+        ep.module = module
+        ep.dist = dist
+        ep.load.side_effect = AssertionError("discovery must not import")
+        return ep
+
+    eps = [_mk_ep("pkg_a", "pkg_a.tools"), _mk_ep("pkg_b", "pkg_b.tools")]
+    with patch("moneybin.packages._framework.discovery.entry_points") as mock_eps:
+        mock_eps.return_value = eps
+        with caplog.at_level("WARNING"):
+            result = discover_packages()
+
+    assert len(result) == 1
+    assert any("already discovered" in rec.message.lower() for rec in caplog.records)
+
+
 def test_yaml_syntax_error_skips_with_warning(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:

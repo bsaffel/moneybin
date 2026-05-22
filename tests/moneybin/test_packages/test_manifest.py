@@ -158,6 +158,7 @@ def test_owns_prefix_rejects_malformed_snake_case(
         ("['foo_x']", "explicit schema required"),
         ("['app.other_x']", "must start with 'foo_'"),
         ("['app.foo_x.y']", "extra '.' segments"),
+        ("['app.foo_']", "bare prefix"),
     ],
 )
 def test_writes_globs_must_be_prefix_scoped(
@@ -170,12 +171,49 @@ def test_writes_globs_must_be_prefix_scoped(
 
 
 def test_writes_globs_accept_prefix_scoped(tmp_path: Path) -> None:
-    """Valid prefix-scoped writes across writable schemas parse cleanly."""
+    """Valid prefix-scoped writes parse cleanly — including exact (no-wildcard) tables.
+
+    'app.foo_state' has no wildcard but is a legitimate exact-table declaration
+    (it matches that one table); only the bare prefix 'app.foo_' is rejected.
+    """
     manifest_path = _write_manifest(
         tmp_path, _manifest_body(writes="['app.foo_state', 'reports.foo_summary']")
     )
     manifest = PackageManifest.from_yaml(manifest_path)
     assert manifest.capabilities.writes == ["app.foo_state", "reports.foo_summary"]
+
+
+@pytest.mark.parametrize(
+    ("entry_points", "match"),
+    [
+        ("{tools: no_colon, cli: x:y, models: x, schema: x}", "entry_points.tools"),
+        ("{tools: x:y, cli: 'bad mod:y', models: x, schema: x}", "entry_points.cli"),
+        (
+            "{tools: x:y, cli: x:y, models: 'bad-dash', schema: x}",
+            "entry_points.models",
+        ),
+        ("{tools: x:y, cli: x:y, models: x, schema: 'a:b'}", "entry_points.schema"),
+    ],
+)
+def test_entry_points_must_be_well_formed(
+    tmp_path: Path, entry_points: str, match: str
+) -> None:
+    """Entry-point strings are syntactically validated at parse time (no import)."""
+    body = f"""
+        name: foo
+        display_name: Foo
+        version: 1.0.0
+        quality_scale: bronze
+        owns_prefix: foo
+        publisher: {{name: x, verified: false}}
+        description: ok
+        capabilities: {{writes: [], reads: [], network: [], secrets: []}}
+        requires: {{moneybin: ">=1.0.0"}}
+        entry_points: {entry_points}
+    """
+    manifest_path = _write_manifest(tmp_path, body)
+    with pytest.raises(PydanticValidationError, match=match):
+        PackageManifest.from_yaml(manifest_path)
 
 
 def test_version_must_be_semver(tmp_path: Path) -> None:

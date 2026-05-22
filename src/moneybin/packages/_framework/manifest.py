@@ -68,6 +68,10 @@ _SEMVER_RE = re.compile(
     r"(?:\+(?P<build>[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$"
 )
 
+# A dotted Python module path (e.g. 'mypkg.tools'). Used to syntactically
+# validate entry-point strings at parse time without importing the module.
+_MODULE_PATH_RE = re.compile(r"^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*$")
+
 
 class Publisher(BaseModel):
     """Manifest-declared publisher metadata."""
@@ -124,6 +128,33 @@ class EntryPoints(BaseModel):
     schema_module: str = Field(
         alias="schema"
     )  # dotted module path to the schema/ directory (Plan 4)
+
+    @model_validator(mode="after")
+    def _entry_points_well_formed(self) -> EntryPoints:
+        """Syntactically validate the four entry-point strings (no import).
+
+        Existence is checked lazily — tools/cli when register_package resolves
+        them, models/schema when Plan 4 wires them — to preserve the
+        validate-before-import posture. This format check still catches a typo
+        at manifest-load time (a malformed 'module.path:callable' or dotted
+        path) rather than deferring every mistake to registration.
+        """
+        for field_name, value in (("tools", self.tools), ("cli", self.cli)):
+            module, sep, attr = value.partition(":")
+            if not (sep and _MODULE_PATH_RE.match(module) and attr.isidentifier()):
+                raise ValueError(
+                    f"entry_points.{field_name} '{value}' must be "
+                    f"'module.path:callable'"
+                )
+        for field_name, value in (
+            ("models", self.models),
+            ("schema", self.schema_module),
+        ):
+            if not _MODULE_PATH_RE.match(value):
+                raise ValueError(
+                    f"entry_points.{field_name} '{value}' must be a dotted module path"
+                )
+        return self
 
 
 class PackageManifest(BaseModel):
@@ -235,6 +266,17 @@ class PackageManifest(BaseModel):
                 raise ValueError(
                     f"write glob '{glob}' table must start with "
                     f"'{self.owns_prefix}_' to stay inside the package's prefix"
+                )
+            if table == f"{self.owns_prefix}_":
+                # Bare prefix, no suffix, no wildcard: matches only a table named
+                # literally '<prefix>_' — almost always a forgotten '*'. (An exact
+                # glob with a real suffix, e.g. 'app.foo_state', is legitimate and
+                # left alone — it matches that one table.) Reject at parse time so
+                # the typo surfaces here, not as a confusing capability violation
+                # on every real CREATE target.
+                raise ValueError(
+                    f"write glob '{glob}' is just the bare prefix — "
+                    f"did you mean '{schema}.{self.owns_prefix}_*'?"
                 )
         return self
 

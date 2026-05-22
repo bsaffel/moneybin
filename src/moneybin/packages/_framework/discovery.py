@@ -107,6 +107,7 @@ def discover_packages() -> list[PackageInfo]:
             logged and skipped.
     """
     discovered: list[PackageInfo] = []
+    seen_manifests: set[Path] = set()
     for ep in entry_points(group=_ENTRY_POINT_GROUP):
         # Broad catch: discovery faces arbitrary third-party-controlled
         # entry-point strings. A malformed value makes EntryPoint.module raise
@@ -136,6 +137,18 @@ def discover_packages() -> list[PackageInfo]:
                 f"{type(exc).__name__}: {exc}; skipping"
             )
             continue
+
+        if manifest_path in seen_manifests:
+            # Two entry points resolved to the same manifest — e.g. a malformed
+            # dist that ships one shared manifest for several packages. Discover
+            # it once; skipping the rest with a clear log beats the opaque
+            # "already registered" error register_package would otherwise raise.
+            logger.warning(
+                f"Entry point '{ep.name}' resolves to manifest {manifest_path}, "
+                f"already discovered via another entry point; skipping duplicate"
+            )
+            continue
+        seen_manifests.add(manifest_path)
 
         discovered.append(PackageInfo(manifest=manifest, root=manifest_path.parent))
         logger.info(

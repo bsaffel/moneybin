@@ -250,17 +250,17 @@ def register_package(
         tools_callable(mcp)
         cli_callable(cli)
     except Exception:
-        # Roll back the registry entry so a failed callable leaves no
-        # half-registered package in the registry — re-registration won't trip
-        # the duplicate-name guard in add().
+        # Remove the registry entry so a failed callable leaves no
+        # half-registered package recorded.
         #
-        # Caveat (partial rollback): the registry entry is reverted, but FastMCP's
-        # tool surface is not. If tools_callable(mcp) succeeded before
-        # cli_callable(cli) raised, the package's MCP tools are already mutated
-        # in and can't be un-registered, so retrying re-runs tools_callable and
-        # double-registers them. So registration is retryable at the registry
-        # layer, NOT idempotent at the MCP layer. Full MCP-surface rollback is
-        # deferred to Plan 4 (ties to the registry-injection followup).
+        # Limitation (partial rollback): the registry entry is removed, but
+        # FastMCP's tool surface is not. If tools_callable(mcp) succeeded before
+        # cli_callable(cli) raised, those MCP tools are already registered and
+        # FastMCP exposes no un-register API to undo them. Re-running registration
+        # would then double-register the package's MCP tools, so recovery from a
+        # partial failure requires a process restart, not a retry. Atomic
+        # registration (full MCP-surface rollback) is deferred to Plan 4 (ties to
+        # the registry-injection followup).
         _global_registry.remove(info.manifest.name)
         raise
     logger.info(
