@@ -11,6 +11,7 @@ import pytest
 
 from moneybin.packages._framework._sql_walk import (
     extract_create_targets,
+    find_disallowed_statements,
     iter_table_refs,
 )
 
@@ -105,6 +106,51 @@ def test_iter_table_refs_with_cte(tmp_path: Path) -> None:
     assert ("core", "fct_transactions") in refs
     assert ("app", "test_state") in refs
     assert not any(name == "summary" for _, name in refs)
+
+
+def test_find_disallowed_statements_detects_dml_and_ddl(tmp_path: Path) -> None:
+    """Non-CREATE-TABLE/VIEW statements are returned as descriptors."""
+    sql = (
+        "CREATE TABLE app.x (id TEXT);\n"
+        "DELETE FROM core.fct WHERE id = '1';\n"
+        "DROP TABLE app.y;\n"
+        "CREATE INDEX idx ON app.x (id);"
+    )
+    sql_file = tmp_path / "mixed.sql"
+    sql_file.write_text(sql)
+
+    disallowed = find_disallowed_statements(sql_file)
+
+    assert "DELETE" in disallowed
+    assert "DROP" in disallowed
+    assert "CREATE INDEX" in disallowed
+    # The CREATE TABLE is allowed and not reported.
+    assert "CREATE TABLE" not in disallowed
+
+
+def test_find_disallowed_statements_empty_for_create_only(tmp_path: Path) -> None:
+    """A CREATE TABLE/VIEW-only file yields no disallowed statements."""
+    sql = (
+        "CREATE TABLE app.x (id TEXT);\n"
+        "CREATE OR REPLACE VIEW reports.v AS SELECT 1 AS y;"
+    )
+    sql_file = tmp_path / "clean.sql"
+    sql_file.write_text(sql)
+
+    assert find_disallowed_statements(sql_file) == []
+
+
+def test_parse_wraps_read_error_as_value_error(tmp_path: Path) -> None:
+    """An unreadable SQL path raises ValueError, not a bare OSError.
+
+    A directory at the SQL path makes read_text raise IsADirectoryError (an
+    OSError); _parse wraps it so the validators' ValueError catches still hold.
+    """
+    not_a_file = tmp_path / "is_a_dir.sql"
+    not_a_file.mkdir()
+
+    with pytest.raises(ValueError, match="failed to read"):
+        extract_create_targets(not_a_file)
 
 
 def test_extract_create_targets_raises_on_unparseable(tmp_path: Path) -> None:

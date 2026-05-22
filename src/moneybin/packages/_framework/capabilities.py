@@ -13,7 +13,10 @@ import fnmatch
 from collections.abc import Iterable
 from pathlib import Path
 
-from moneybin.packages._framework._sql_walk import extract_create_targets
+from moneybin.packages._framework._sql_walk import (
+    extract_create_targets,
+    find_disallowed_statements,
+)
 from moneybin.packages._framework.errors import CapabilityViolation
 from moneybin.packages._framework.manifest import CapabilityDeclarations
 
@@ -75,4 +78,47 @@ def validate_writes(
                         target=target,
                     )
                 )
+    return violations
+
+
+def validate_statement_types(
+    *,
+    package_name: str,
+    sql_files: Iterable[Path],
+) -> list[CapabilityViolation]:
+    """Flag any schema statement that isn't CREATE TABLE / CREATE VIEW.
+
+    The write-glob check (validate_writes) inspects only CREATE targets, so DML
+    (INSERT/UPDATE/DELETE) and destructive DDL (DROP/ALTER/TRUNCATE) would slip
+    through and run unchecked when Plan 4 executes the SQL. Restricting schema
+    files to table/view declarations closes that bypass: anything else is a
+    capability violation. Returns violations rather than raising.
+    """
+    violations: list[CapabilityViolation] = []
+    for sql_file in sql_files:
+        try:
+            disallowed = find_disallowed_statements(sql_file)
+        except ValueError as exc:
+            violations.append(
+                CapabilityViolation(
+                    package_name=package_name,
+                    message=f"could not parse {sql_file.name}: {exc}",
+                    sql_file=str(sql_file),
+                    target="(unparseable)",
+                )
+            )
+            continue
+        for descriptor in disallowed:
+            violations.append(
+                CapabilityViolation(
+                    package_name=package_name,
+                    message=(
+                        f"schema file {sql_file.name} contains a {descriptor} "
+                        f"statement; package schema/ may only declare CREATE "
+                        f"TABLE / CREATE VIEW"
+                    ),
+                    sql_file=str(sql_file),
+                    target=f"({descriptor})",
+                )
+            )
     return violations

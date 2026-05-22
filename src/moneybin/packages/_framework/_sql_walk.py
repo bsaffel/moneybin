@@ -32,7 +32,14 @@ def _parse(sql_file: Path) -> Sequence[exp.Expr | None]:
     extract_create_targets() relies on isinstance(None, exp.Create) == False;
     iter_table_refs() has an explicit ``if statement is None: continue`` guard.
     """
-    sql = sql_file.read_text(encoding="utf-8")
+    try:
+        sql = sql_file.read_text(encoding="utf-8")
+    except OSError as exc:
+        # Wrap read failures (permissions, dangling symlink, race deletion) as
+        # ValueError so every extract_*/find_* helper raises a single type the
+        # validators already catch — keeps their "return violations, never
+        # raise" contract intact even when a schema file is unreadable.
+        raise ValueError(f"failed to read {sql_file}: {exc}") from exc
     try:
         statements = sqlglot.parse(sql, dialect="duckdb")
     except ParseError as exc:
@@ -98,6 +105,34 @@ def extract_create_targets(sql_file: Path) -> list[tuple[str, str]]:
         name = table.name.lower()
         targets.append((schema, name))
     return targets
+
+
+def find_disallowed_statements(sql_file: Path) -> list[str]:
+    """Return a descriptor for every statement that isn't CREATE TABLE/VIEW.
+
+    A package's schema/ SQL may only declare its own tables and views. Any other
+    statement type — DML (INSERT/UPDATE/DELETE), destructive DDL (DROP/ALTER/
+    TRUNCATE), or a non-table/view CREATE (INDEX/SCHEMA) — can read, mutate, or
+    drop tables the capability/prefix validators never inspect (those look only
+    at CREATE targets). Flagging the statement type closes that bypass.
+
+    Returns an empty list when every statement is an allowed CREATE TABLE/VIEW.
+
+    Raises:
+        ValueError: if sqlglot cannot parse the file.
+    """
+    statements = _parse(sql_file)
+    disallowed: list[str] = []
+    for statement in statements:
+        if statement is None:
+            continue
+        if isinstance(statement, exp.Create):
+            if statement.kind in ("TABLE", "VIEW"):
+                continue
+            disallowed.append(f"CREATE {statement.kind}")
+        else:
+            disallowed.append(statement.key.upper())
+    return disallowed
 
 
 def iter_table_refs(sql_file: Path) -> Iterator[tuple[str, str]]:

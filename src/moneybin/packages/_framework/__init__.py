@@ -5,7 +5,11 @@ The public surface re-exported here is the API other modules consume;
 internal helpers like _sql_walk stay private.
 """
 
-from moneybin.packages._framework.capabilities import is_write_allowed, validate_writes
+from moneybin.packages._framework.capabilities import (
+    is_write_allowed,
+    validate_statement_types,
+    validate_writes,
+)
 from moneybin.packages._framework.discovery import PackageInfo, discover_packages
 from moneybin.packages._framework.errors import (
     CapabilityViolation,
@@ -40,5 +44,6 @@ __all__ = [
     "register_package",
     "validate_package",
     "validate_quality_scale",
+    "validate_statement_types",
     "validate_writes",
 ]

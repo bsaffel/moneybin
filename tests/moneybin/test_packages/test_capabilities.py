@@ -6,6 +6,7 @@ from textwrap import dedent
 from moneybin.packages._framework.capabilities import (
     CapabilityViolation,
     is_write_allowed,
+    validate_statement_types,
     validate_writes,
 )
 from moneybin.packages._framework.manifest import CapabilityDeclarations
@@ -17,6 +18,53 @@ def _make_sql_dir(tmp_path: Path, files: dict[str, str]) -> Path:
     for name, body in files.items():
         (sql_dir / name).write_text(dedent(body).strip())
     return sql_dir
+
+
+def test_statement_types_flags_dml_and_destructive_ddl(tmp_path: Path) -> None:
+    """DML / DROP / ALTER in a schema file are flagged (they bypass write-glob).
+
+    validate_writes only inspects CREATE targets, so without this check a
+    DELETE/INSERT/DROP would run unvalidated when Plan 4 executes the SQL.
+    """
+    sql_dir = _make_sql_dir(
+        tmp_path,
+        {
+            "ok.sql": "CREATE TABLE app.test_synthetic_state (id TEXT);",
+            "bad.sql": (
+                "DELETE FROM core.fct_transactions WHERE id = '1';\n"
+                "DROP TABLE app.other;"
+            ),
+        },
+    )
+
+    violations = validate_statement_types(
+        package_name="test_synthetic",
+        sql_files=sorted(sql_dir.glob("*.sql")),
+    )
+
+    descriptors = {v.target for v in violations}
+    assert "(DELETE)" in descriptors
+    assert "(DROP)" in descriptors
+    # The clean CREATE-only file produces no statement-type violation.
+    assert all("ok.sql" not in v.sql_file for v in violations)
+
+
+def test_statement_types_passes_create_table_and_view(tmp_path: Path) -> None:
+    """A schema file of only CREATE TABLE/VIEW yields no statement-type violation."""
+    sql_dir = _make_sql_dir(
+        tmp_path,
+        {
+            "ok.sql": (
+                "CREATE TABLE app.test_synthetic_state (id TEXT);\n"
+                "CREATE VIEW reports.test_synthetic_v AS SELECT 1 AS x;"
+            ),
+        },
+    )
+    violations = validate_statement_types(
+        package_name="test_synthetic",
+        sql_files=sorted(sql_dir.glob("*.sql")),
+    )
+    assert violations == []
 
 
 def test_unparseable_sql_returns_violation_not_raise(tmp_path: Path) -> None:

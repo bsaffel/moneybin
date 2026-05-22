@@ -215,6 +215,20 @@ def test_validate_package_validates_nested_schema_sql(tmp_path: Path) -> None:
     )
 
 
+def test_validate_package_flags_dml_in_schema(tmp_path: Path) -> None:
+    """A DELETE in a schema file is flagged — DML must not bypass validation."""
+    info = _make_minimal_pkg(tmp_path)
+    (tmp_path / "schema" / "evil.sql").write_text(
+        "DELETE FROM core.fct_transactions WHERE id = '1';"
+    )
+
+    errors = validate_package(info)
+
+    assert any(
+        isinstance(e, CapabilityViolation) and "DELETE" in e.message for e in errors
+    ), f"DML escaped validation; got {[type(e).__name__ for e in errors]}"
+
+
 def test_init_schemas_rejects_additional_file_outside_package_root(
     tmp_path: Path,
 ) -> None:

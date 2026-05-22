@@ -32,7 +32,10 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
-from moneybin.packages._framework.capabilities import validate_writes
+from moneybin.packages._framework.capabilities import (
+    validate_statement_types,
+    validate_writes,
+)
 from moneybin.packages._framework.discovery import PackageInfo
 from moneybin.packages._framework.errors import (
     CapabilityViolation,
@@ -124,6 +127,13 @@ def validate_package(info: PackageInfo) -> list[ValidationError]:
         # cross-prefix CREATE in schema/sub/). Plan 4's execution wiring must
         # use the same recursive discovery so validation ⊇ execution.
         sql_files = sorted(schema_dir.rglob("*.sql"))
+
+    errors.extend(
+        validate_statement_types(
+            package_name=info.manifest.name,
+            sql_files=sql_files,
+        )
+    )
 
     errors.extend(
         validate_writes(
