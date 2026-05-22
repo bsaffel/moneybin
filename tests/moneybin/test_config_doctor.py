@@ -17,6 +17,10 @@ class TestDoctorSettings:
         with pytest.raises(ValueError, match="audit_coverage_lookback_days"):
             DoctorSettings(audit_coverage_lookback_days=0)
 
+    def test_sample_cap_must_be_positive(self) -> None:
+        with pytest.raises(ValueError, match="audit_coverage_sample_cap"):
+            DoctorSettings(audit_coverage_sample_cap=0)
+
     def test_available_on_root_settings(self) -> None:
         settings = MoneyBinSettings(profile="test")
         assert settings.doctor.audit_coverage_lookback_days == 7
