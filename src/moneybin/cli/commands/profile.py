@@ -82,7 +82,11 @@ def profile_list(
     profiles = svc.list()
 
     if output == OutputFormat.JSON:
-        render_or_json(build_envelope(data=profiles, sensitivity="low"), output)
+        render_or_json(
+            build_envelope(data=profiles, sensitivity="low"),
+            output,
+            cli_actor="profile_list",
+        )
         return
 
     if not profiles:
@@ -157,7 +161,11 @@ def profile_show(
     try:
         info = svc.show(name)
         if output == OutputFormat.JSON:
-            render_or_json(build_envelope(data=info, sensitivity="low"), output)
+            render_or_json(
+                build_envelope(data=info, sensitivity="low"),
+                output,
+                cli_actor="profile_show",
+            )
             return
         marker = " (active)" if info["active"] else ""
         logger.info(f"Profile: {info['name']}{marker}")

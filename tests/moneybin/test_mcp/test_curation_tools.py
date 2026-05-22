@@ -142,7 +142,8 @@ class TestTransactionsCreate:
                 ],
             )
         ).to_dict()
-        assert env["summary"]["sensitivity"] == "medium"
+        # ManualBatchPayload has only RECORD_ID fields → Tier.LOW derived sensitivity
+        assert env["summary"]["sensitivity"] == "low"
         data: dict[str, Any] = dict(env["data"])
         assert data["batch_id"]
         results: list[dict[str, Any]] = list(data["results"])
@@ -257,10 +258,10 @@ class TestSplitsSet:
                 ],
             )
         ).to_dict()
-        data: list[dict[str, Any]] = list(env["data"])
-        assert len(data) == 2
-        assert [s["category"] for s in data] == ["Food", "Travel"]
-        assert all(s["amount"] for s in data)
+        splits: list[dict[str, Any]] = list(env["data"]["splits"])
+        assert len(splits) == 2
+        assert [s["category"] for s in splits] == ["Food", "Travel"]
+        assert all(s["amount"] for s in splits)
 
 
 # ---------- import labels ----------
@@ -300,7 +301,8 @@ class TestSystemAudit:
         env = (
             await system_audit(filters={"action_pattern": "tag.%"}, limit=50)
         ).to_dict()
-        assert env["summary"]["sensitivity"] == "medium"
-        events: list[dict[str, Any]] = list(env["data"])
+        # SystemAuditEventPayload has TXN_AMOUNT fields → Tier.HIGH derived sensitivity
+        assert env["summary"]["sensitivity"] == "high"
+        events: list[dict[str, Any]] = env["data"]["events"]
         assert len(events) >= 1
         assert all(str(e["action"]).startswith("tag.") for e in events)

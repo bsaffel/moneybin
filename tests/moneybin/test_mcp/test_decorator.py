@@ -1,6 +1,7 @@
 # tests/moneybin/test_mcp/test_decorator.py
 """Tests for MCP tool decorator and sensitivity middleware."""
 
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -52,25 +53,27 @@ class TestMCPToolDecorator:
 
     @pytest.mark.unit
     def test_decorator_sets_sensitivity_attribute(self) -> None:
-        @mcp_tool(sensitivity="low")
-        def my_tool() -> str:
-            return "result"
+        """unclassified=True tools default to HIGH sensitivity."""
 
-        assert my_tool._mcp_sensitivity == "low"  # type: ignore[attr-defined]
+        @mcp_tool(unclassified=True)
+        def my_tool() -> ResponseEnvelope[Any]:  # type: ignore[return]
+            ...
+
+        assert my_tool._mcp_sensitivity == Sensitivity.HIGH  # type: ignore[attr-defined]
 
     @pytest.mark.unit
     def test_decorator_preserves_function_name(self) -> None:
-        @mcp_tool(sensitivity="medium")
-        def reports_spending_summary() -> str:
-            return "data"
+        @mcp_tool(unclassified=True)
+        def reports_spending_summary() -> ResponseEnvelope[Any]:  # type: ignore[return]
+            ...
 
         assert reports_spending_summary.__name__ == "reports_spending_summary"
 
     @pytest.mark.unit
     async def test_decorator_calls_log_tool_call(self) -> None:
 
-        @mcp_tool(sensitivity="medium")
-        def my_tool() -> ResponseEnvelope:
+        @mcp_tool(unclassified=True)
+        def my_tool() -> ResponseEnvelope[Any]:
             return ResponseEnvelope(
                 summary=SummaryMeta(total_count=0, returned_count=0),
                 data=[],
@@ -81,14 +84,14 @@ class TestMCPToolDecorator:
             mock_log.assert_called_once()
             args = mock_log.call_args[0]
             assert args[0] == "my_tool"
-            assert args[1] == Sensitivity.MEDIUM
+            assert args[1] == Sensitivity.HIGH  # unclassified=True → HIGH
 
     @pytest.mark.unit
     def test_decorator_supports_domain(self) -> None:
         """The mcp_tool decorator carries the domain string as an attribute."""
 
-        @mcp_tool(sensitivity="medium", domain="categorize")
-        def example_tool() -> ResponseEnvelope:  # type: ignore[return]
+        @mcp_tool(unclassified=True, domain="categorize")
+        def example_tool() -> ResponseEnvelope[Any]:  # type: ignore[return]
             ...
 
         assert example_tool._mcp_domain == "categorize"  # type: ignore[attr-defined]
@@ -97,8 +100,8 @@ class TestMCPToolDecorator:
     def test_decorator_default_domain_is_none(self) -> None:
         """Tools without an explicit domain are core tools (always visible)."""
 
-        @mcp_tool(sensitivity="low")
-        def example_tool() -> ResponseEnvelope:  # type: ignore[return]
+        @mcp_tool(unclassified=True)
+        def example_tool() -> ResponseEnvelope[Any]:  # type: ignore[return]
             ...
 
         assert example_tool._mcp_domain is None  # type: ignore[attr-defined]
@@ -107,8 +110,8 @@ class TestMCPToolDecorator:
     async def test_decorator_returns_response_envelope(self) -> None:
         """When a tool returns a ResponseEnvelope, the decorator returns it directly."""
 
-        @mcp_tool(sensitivity="low")
-        def my_tool() -> ResponseEnvelope:
+        @mcp_tool(unclassified=True)
+        def my_tool() -> ResponseEnvelope[Any]:
             return ResponseEnvelope(
                 summary=SummaryMeta(total_count=1, returned_count=1),
                 data=[{"value": 42}],
@@ -117,14 +120,14 @@ class TestMCPToolDecorator:
         result = await my_tool()
         assert isinstance(result, ResponseEnvelope)
         assert result.summary.total_count == 1
-        assert result.data == [{"value": 42}]
+        assert result.data == [{"value": 42}]  # pyright: ignore[reportUnknownMemberType]
 
     @pytest.mark.unit
     async def test_decorator_raises_type_error_for_non_envelope(self) -> None:
         """Tools that return non-ResponseEnvelope raise TypeError."""
         import pytest
 
-        @mcp_tool(sensitivity="low")
+        @mcp_tool(unclassified=True)
         def my_tool() -> str:  # type: ignore[return]
             return "plain string result"  # type: ignore[return-value]
 
@@ -136,8 +139,8 @@ class TestMCPToolDecorator:
 def test_mcp_tool_default_annotations() -> None:
     """Defaults: read_only=True, destructive=False, idempotent=True, open_world=False."""
 
-    @mcp_tool(sensitivity="low")
-    def example() -> ResponseEnvelope:  # type: ignore[return]
+    @mcp_tool(unclassified=True)
+    def example() -> ResponseEnvelope[Any]:  # type: ignore[return]
         ...
 
     assert example._mcp_read_only is True  # type: ignore[attr-defined]
@@ -249,13 +252,13 @@ def test_mcp_tool_explicit_annotations() -> None:
     """Explicit kwargs override defaults."""
 
     @mcp_tool(
-        sensitivity="medium",
+        unclassified=True,
         read_only=False,
         destructive=True,
         idempotent=False,
         open_world=True,
     )
-    def example() -> ResponseEnvelope:  # type: ignore[return]
+    def example() -> ResponseEnvelope[Any]:  # type: ignore[return]
         ...
 
     assert example._mcp_read_only is False  # type: ignore[attr-defined]
@@ -270,9 +273,9 @@ async def test_max_items_under_cap_passes() -> None:
     from moneybin.mcp.decorator import mcp_tool
     from moneybin.protocol.envelope import build_envelope
 
-    @mcp_tool(sensitivity="low", max_items=10)
-    def fn(items: list[str]) -> ResponseEnvelope:
-        return build_envelope(data={"count": len(items)}, sensitivity="low")
+    @mcp_tool(unclassified=True, max_items=10)
+    def fn(items: list[str]) -> ResponseEnvelope[Any]:
+        return build_envelope(data={"count": len(items)})
 
     result = await fn(items=["a", "b", "c"])
     assert result.error is None
@@ -285,9 +288,9 @@ async def test_max_items_over_cap_returns_error() -> None:
     from moneybin.mcp.decorator import mcp_tool
     from moneybin.protocol.envelope import build_envelope
 
-    @mcp_tool(sensitivity="low", max_items=2)
-    def fn(items: list[str]) -> ResponseEnvelope:
-        return build_envelope(data={"count": len(items)}, sensitivity="low")
+    @mcp_tool(unclassified=True, max_items=2)
+    def fn(items: list[str]) -> ResponseEnvelope[Any]:
+        return build_envelope(data={"count": len(items)})
 
     result = await fn(items=["a", "b", "c"])
     assert result.error is not None
@@ -304,9 +307,9 @@ async def test_max_items_empty_list_passes() -> None:
     from moneybin.mcp.decorator import mcp_tool
     from moneybin.protocol.envelope import build_envelope
 
-    @mcp_tool(sensitivity="low", max_items=2)
-    def fn(items: list[str]) -> ResponseEnvelope:
-        return build_envelope(data={"count": len(items)}, sensitivity="low")
+    @mcp_tool(unclassified=True, max_items=2)
+    def fn(items: list[str]) -> ResponseEnvelope[Any]:
+        return build_envelope(data={"count": len(items)})
 
     result = await fn(items=[])
     assert result.error is None
@@ -318,9 +321,9 @@ async def test_max_items_disabled_with_none() -> None:
     from moneybin.mcp.decorator import mcp_tool
     from moneybin.protocol.envelope import build_envelope
 
-    @mcp_tool(sensitivity="low", max_items=None)
-    def fn(items: list[str]) -> ResponseEnvelope:
-        return build_envelope(data={"count": len(items)}, sensitivity="low")
+    @mcp_tool(unclassified=True, max_items=None)
+    def fn(items: list[str]) -> ResponseEnvelope[Any]:
+        return build_envelope(data={"count": len(items)})
 
     result = await fn(items=["a"] * 10000)
     assert result.error is None
@@ -335,9 +338,9 @@ async def test_max_items_default_inherits_settings(
     from moneybin.mcp.decorator import mcp_tool
     from moneybin.protocol.envelope import build_envelope
 
-    @mcp_tool(sensitivity="low")
-    def fn(items: list[str]) -> ResponseEnvelope:
-        return build_envelope(data={"count": len(items)}, sensitivity="low")
+    @mcp_tool(unclassified=True)
+    def fn(items: list[str]) -> ResponseEnvelope[Any]:
+        return build_envelope(data={"count": len(items)})
 
     # Patch the cap getter rather than mutating the frozen settings object.
     monkeypatch.setattr("moneybin.mcp.decorator._get_max_items", lambda: 3)
@@ -355,11 +358,9 @@ async def test_max_items_multiple_list_params_each_capped() -> None:
     from moneybin.mcp.decorator import mcp_tool
     from moneybin.protocol.envelope import build_envelope
 
-    @mcp_tool(sensitivity="low", max_items=2)
-    def fn(accept: list[str], reject: list[str]) -> ResponseEnvelope:
-        return build_envelope(
-            data={"a": len(accept), "r": len(reject)}, sensitivity="low"
-        )
+    @mcp_tool(unclassified=True, max_items=2)
+    def fn(accept: list[str], reject: list[str]) -> ResponseEnvelope[Any]:
+        return build_envelope(data={"a": len(accept), "r": len(reject)})
 
     # accept under, reject over → reject triggers
     result = await fn(accept=["x"], reject=["a", "b", "c"])
@@ -377,13 +378,13 @@ async def test_register_emits_tool_annotations() -> None:
     from moneybin.protocol.envelope import build_envelope
 
     @mcp_tool(
-        sensitivity="medium",
+        unclassified=True,
         read_only=False,
         destructive=True,
         idempotent=False,
     )
-    def write_tool(items: list[str]) -> ResponseEnvelope:
-        return build_envelope(data={"n": len(items)}, sensitivity="medium")
+    def write_tool(items: list[str]) -> ResponseEnvelope[Any]:
+        return build_envelope(data={"n": len(items)})
 
     mcp = FastMCP("test")
     register(mcp, write_tool, "write_tool", "Write tool description.")

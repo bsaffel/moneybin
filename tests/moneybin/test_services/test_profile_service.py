@@ -47,6 +47,20 @@ class TestProfileCreate:
         with pytest.raises(ProfileExistsError):
             svc.create("alice")
 
+    def test_create_sets_restrictive_dir_perms(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Profile dir + logs/ + temp/ are created at 0o700, not the umask default."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        svc = ProfileService()
+        svc.create("alice")
+        profile_dir = tmp_path / "profiles" / "alice"
+        # Mode 0o700 — owner rwx only; group/other have no access. Asserts
+        # the umask-around-mkdir path in profile_service applied atomically.
+        assert (profile_dir.stat().st_mode & 0o777) == 0o700
+        assert ((profile_dir / "logs").stat().st_mode & 0o777) == 0o700
+        assert ((profile_dir / "temp").stat().st_mode & 0o777) == 0o700
+
     def test_create_normalizes_name(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

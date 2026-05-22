@@ -4,7 +4,7 @@ Reporting-shaped reads (taxonomy listings, rule and merchant catalogs,
 uncategorized inventory, coverage stats) consumed by the CLI and MCP
 surface. Distinct from ``matcher.py``'s read paths — those serve the
 matching loop and return matcher-internal shapes; these return
-presentation-ready dicts and typed envelopes for the user-facing tools.
+presentation-ready dicts and typed payloads for the user-facing tools.
 """
 
 from __future__ import annotations
@@ -18,7 +18,17 @@ import duckdb
 
 from moneybin.database import Database
 from moneybin.errors import UserError
-from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.privacy.payloads.categories import (
+    CategoriesPayload,
+    CategoryRow,
+    MerchantRow,
+    MerchantsPayload,
+)
+from moneybin.privacy.payloads.categorize import (
+    CategorizeRulesPayload,
+    CategorizeStatsPayload,
+    RuleRow,
+)
 from moneybin.tables import (
     CATEGORIES,
     CATEGORIZATION_RULES,
@@ -41,21 +51,14 @@ class CategorizationStats:
     percent_categorized: float
     by_source: dict[str, int]
 
-    def to_envelope(self) -> ResponseEnvelope:
-        """Build a ResponseEnvelope from this categorization stats result."""
-        data: dict[str, Any] = {
-            "total_transactions": self.total,
-            "categorized": self.categorized,
-            "uncategorized": self.uncategorized,
-            "percent_categorized": self.percent_categorized,
-            "by_source": self.by_source,
-        }
-        return build_envelope(
-            data=data,
-            sensitivity="low",
-            actions=[
-                "Use transactions_categorize_pending to see uncategorized transactions"
-            ],
+    def to_payload(self) -> CategorizeStatsPayload:
+        """Return a typed payload for the MCP/CLI envelope boundary."""
+        return CategorizeStatsPayload(
+            total_transactions=self.total,
+            categorized=self.categorized,
+            uncategorized=self.uncategorized,
+            percent_categorized=self.percent_categorized,
+            by_source=self.by_source,
         )
 
 
@@ -107,9 +110,7 @@ class CategorizationQueries:
             for r in rows
         ]
 
-    def get_all_categories(
-        self, *, include_inactive: bool
-    ) -> list[dict[str, str | bool | None]]:
+    def get_all_categories(self, *, include_inactive: bool) -> CategoriesPayload:
         """Get categories with consistent field shape including is_active.
 
         Active-only views can use ``get_active_categories()`` to omit
@@ -128,22 +129,24 @@ class CategorizationQueries:
                 """  # noqa: S608  # constant clause, not user input
             ).fetchall()
         except duckdb.CatalogException:
-            return []
+            return CategoriesPayload(categories=[])
 
-        return [
-            {
-                "category_id": r[0],
-                "category": r[1],
-                "subcategory": r[2],
-                "description": r[3],
-                "is_default": r[4],
-                "is_active": r[5],
-                "plaid_detailed": r[6],
-            }
-            for r in rows
-        ]
+        return CategoriesPayload(
+            categories=[
+                CategoryRow(
+                    category_id=r[0],
+                    category=r[1],
+                    subcategory=r[2],
+                    description=r[3],
+                    is_default=bool(r[4]) if r[4] is not None else None,
+                    is_active=bool(r[5]) if r[5] is not None else None,
+                    plaid_detailed=r[6],
+                )
+                for r in rows
+            ]
+        )
 
-    def list_rules(self) -> list[dict[str, Any]]:
+    def list_rules(self) -> CategorizeRulesPayload:
         """List all categorization rules (active and inactive) ordered by priority."""
         try:
             rows = self._db.execute(
@@ -156,26 +159,28 @@ class CategorizationQueries:
                 """
             ).fetchall()
         except duckdb.CatalogException:
-            return []
+            return CategorizeRulesPayload(rules=[])
 
-        return [
-            {
-                "rule_id": r[0],
-                "name": r[1],
-                "merchant_pattern": r[2],
-                "match_type": r[3],
-                "min_amount": r[4],
-                "max_amount": r[5],
-                "account_id": r[6],
-                "category": r[7],
-                "subcategory": r[8],
-                "priority": r[9],
-                "is_active": r[10],
-            }
-            for r in rows
-        ]
+        return CategorizeRulesPayload(
+            rules=[
+                RuleRow(
+                    rule_id=r[0],
+                    name=r[1],
+                    merchant_pattern=r[2],
+                    match_type=r[3],
+                    min_amount=float(r[4]) if r[4] is not None else None,
+                    max_amount=float(r[5]) if r[5] is not None else None,
+                    account_id=r[6],
+                    category=r[7],
+                    subcategory=r[8],
+                    priority=int(r[9]) if r[9] is not None else None,
+                    is_active=bool(r[10]) if r[10] is not None else None,
+                )
+                for r in rows
+            ]
+        )
 
-    def list_merchants(self) -> list[dict[str, str | None]]:
+    def list_merchants(self) -> MerchantsPayload:
         """List all merchant name mappings ordered by canonical name."""
         try:
             rows = self._db.execute(
@@ -187,19 +192,21 @@ class CategorizationQueries:
                 """
             ).fetchall()
         except duckdb.CatalogException:
-            return []
+            return MerchantsPayload(merchants=[])
 
-        return [
-            {
-                "merchant_id": r[0],
-                "raw_pattern": r[1],
-                "match_type": r[2],
-                "canonical_name": r[3],
-                "category": r[4],
-                "subcategory": r[5],
-            }
-            for r in rows
-        ]
+        return MerchantsPayload(
+            merchants=[
+                MerchantRow(
+                    merchant_id=r[0],
+                    raw_pattern=r[1],
+                    match_type=r[2],
+                    canonical_name=r[3],
+                    category=r[4],
+                    subcategory=r[5],
+                )
+                for r in rows
+            ]
+        )
 
     def list_uncategorized_transactions(
         self,

@@ -21,15 +21,17 @@ async def test_transactions_get_returns_envelope(mcp_db: object) -> None:
     assert "summary" in d
     assert "data" in d
     assert "actions" in d
-    assert d["summary"]["sensitivity"] == "medium"
+    # TransactionGetPayload → TransactionRow has account_id: ACCOUNT_IDENTIFIER → CRITICAL
+    assert d["summary"]["sensitivity"] == "critical"
 
 
 @pytest.mark.unit
-async def test_transactions_get_data_is_list(mcp_db: object) -> None:
-    """Data field is a list (may be empty on fresh DB)."""
+async def test_transactions_get_data_has_transactions_list(mcp_db: object) -> None:
+    """Data field is a TransactionGetPayload dict with a 'transactions' list."""
     result = await transactions_get()
     d = result.to_dict()
-    assert isinstance(d["data"], list)
+    assert isinstance(d["data"], dict)
+    assert isinstance(d["data"]["transactions"], list)
 
 
 @pytest.mark.unit

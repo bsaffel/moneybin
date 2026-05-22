@@ -18,14 +18,15 @@ from moneybin.database import get_database
 from moneybin.mcp._registration import register
 from moneybin.mcp.adapters.refresh_adapters import refresh_envelope
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.privacy.payloads.system import RefreshRunPayload
 from moneybin.protocol.envelope import ResponseEnvelope
 from moneybin.services.refresh import RefreshStep, expand_steps, refresh
 
 
-@mcp_tool(sensitivity="low", read_only=False)
+@mcp_tool(read_only=False)
 def refresh_run(
     steps: list[RefreshStep] | None = None,
-) -> ResponseEnvelope:
+) -> ResponseEnvelope[RefreshRunPayload]:
     """Run the post-load refresh pipeline: matching → SQLMesh apply → categorization.
 
     The single user-facing entry point for refreshing derived state from raw

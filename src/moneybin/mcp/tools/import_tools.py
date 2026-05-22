@@ -12,7 +12,6 @@ Tools:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 from fastmcp import FastMCP
 
@@ -20,6 +19,16 @@ from moneybin.database import get_database
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.privacy.payloads.imports import (
+    ImportFilesPayload,
+    ImportFormatInfoPayload,
+    ImportFormatRow,
+    ImportFormatsPayload,
+    ImportPerFileRow,
+    ImportPreviewPayload,
+    ImportRevertPayload,
+    ImportStatusPayload,
+)
 from moneybin.protocol.envelope import (
     ResponseEnvelope,
     build_envelope,
@@ -40,12 +49,10 @@ def _validate_file_path(file_path: str) -> Path:
     return resolved
 
 
-@mcp_tool(sensitivity="low", read_only=False, idempotent=False)
+@mcp_tool(read_only=False, idempotent=False)
 def import_files(
-    paths: list[str],
-    refresh: bool = True,
-    force: bool = False,
-) -> ResponseEnvelope:
+    paths: list[str], refresh: bool = True, force: bool = False
+) -> ResponseEnvelope[ImportFilesPayload]:
     """Import one or more financial data files into MoneyBin.
 
     Supported formats (auto-detected by extension):
@@ -78,25 +85,19 @@ def import_files(
     validated = [_validate_file_path(p) for p in paths]
     with get_database() as db:
         batch = ImportService(db).import_files(
-            [str(p) for p in validated],
-            refresh=refresh,
-            force=force,
+            [str(p) for p in validated], refresh=refresh, force=force
         )
 
     files = [
-        {
-            "path": r.path,
-            "status": r.status,
-            "source_type": r.source_type,
-            "rows_loaded": r.rows_loaded,
-            "import_id": r.import_id,
-            **({"error": r.error} if r.error else {}),
-            **(
-                {"sign_correction_suggested": True}
-                if r.sign_correction_suggested
-                else {}
-            ),
-        }
+        ImportPerFileRow(
+            path=r.path,
+            status=r.status,
+            source_type=r.source_type,
+            rows_loaded=r.rows_loaded,
+            import_id=r.import_id,
+            error=r.error,
+            sign_correction_suggested=r.sign_correction_suggested,
+        )
         for r in batch.per_file
     ]
 
@@ -115,26 +116,22 @@ def import_files(
         actions.append("Refresh failed after import — call refresh_run to retry")
     actions.append("Use system_status to confirm refreshed counts")
 
-    data: dict[str, Any] = {
-        "imported_count": batch.imported_count,
-        "failed_count": batch.failed_count,
-        "total_count": batch.total_count,
-        "transforms_applied": batch.transforms_applied,
-        "transforms_duration_seconds": batch.transforms_duration_seconds,
-        "files": files,
-    }
-    if batch.transforms_error:
-        data["transforms_error"] = batch.transforms_error
-
     return build_envelope(
-        data=data,
-        sensitivity="low",
+        data=ImportFilesPayload(
+            imported_count=batch.imported_count,
+            failed_count=batch.failed_count,
+            total_count=batch.total_count,
+            transforms_applied=batch.transforms_applied,
+            transforms_duration_seconds=batch.transforms_duration_seconds,
+            transforms_error=batch.transforms_error,
+            files=files,
+        ),
         actions=actions,
     )
 
 
-@mcp_tool(sensitivity="low")
-def import_preview(file_path: str) -> ResponseEnvelope:
+@mcp_tool()
+def import_preview(file_path: str) -> ResponseEnvelope[ImportPreviewPayload]:
     """Preview a tabular file's structure and detected column mapping.
 
     Runs the first 3 stages of the tabular pipeline (detect, read, map)
@@ -156,31 +153,27 @@ def import_preview(file_path: str) -> ResponseEnvelope:
     except ValueError as e:
         raise UserError(str(e), code="preview_error") from e
 
-    preview = {
-        "file": validated.name,
-        "format": {
-            "file_type": format_info.file_type,
-            "delimiter": format_info.delimiter,
-            "encoding": format_info.encoding,
-            "file_size_bytes": format_info.file_size,
-        },
-        "columns": {
-            "mapping": mapping_result.field_mapping,
-            "confidence": mapping_result.confidence,
-            "date_format": mapping_result.date_format,
-            "number_format": mapping_result.number_format,
-            "sign_convention": mapping_result.sign_convention,
-            "is_multi_account": mapping_result.is_multi_account,
-            "unmapped_columns": mapping_result.unmapped_columns,
-            "flagged_fields": mapping_result.flagged_fields,
-        },
-        "sample_values": mapping_result.sample_values,
-        "rows_read": len(read_result.df),
-        "rows_skipped_trailing": read_result.rows_skipped_trailing,
-    }
     return build_envelope(
-        data=preview,
-        sensitivity="low",
+        data=ImportPreviewPayload(
+            file=validated.name,
+            format=ImportFormatInfoPayload(
+                file_type=format_info.file_type,
+                delimiter=format_info.delimiter,
+                encoding=format_info.encoding,
+                file_size_bytes=format_info.file_size,
+            ),
+            mapping=mapping_result.field_mapping,
+            confidence=mapping_result.confidence,
+            date_format=mapping_result.date_format,
+            number_format=mapping_result.number_format,
+            sign_convention=mapping_result.sign_convention,
+            is_multi_account=mapping_result.is_multi_account,
+            unmapped_columns=mapping_result.unmapped_columns,
+            flagged_fields=mapping_result.flagged_fields,
+            sample_values=mapping_result.sample_values,
+            rows_read=len(read_result.df),
+            rows_skipped_trailing=read_result.rows_skipped_trailing,
+        ),
         actions=[
             "Use import_files to import after reviewing the preview",
             "Use import_formats for available named formats",
@@ -188,11 +181,10 @@ def import_preview(file_path: str) -> ResponseEnvelope:
     )
 
 
-@mcp_tool(sensitivity="low")
+@mcp_tool()
 def import_status(
-    limit: int = 20,
-    import_id: str | None = None,
-) -> ResponseEnvelope:
+    limit: int = 20, import_id: str | None = None
+) -> ResponseEnvelope[ImportStatusPayload]:
     """List past import batches with status and row counts.
 
     Returns import ID, source file, status, row counts, and detection
@@ -206,21 +198,18 @@ def import_status(
 
     with get_database(read_only=True) as db:
         records = import_log.get_import_history(
-            db,
-            limit=min(limit, 200),
-            import_id=import_id,
+            db, limit=min(limit, 200), import_id=import_id
         )
     return build_envelope(
-        data=records,
-        sensitivity="low",
+        data=ImportStatusPayload(records=records),
         actions=[
             "Use import_files to import a new file",
         ],
     )
 
 
-@mcp_tool(sensitivity="low", read_only=False, destructive=True, idempotent=False)
-def import_revert(import_id: str) -> ResponseEnvelope:
+@mcp_tool(read_only=False, destructive=True, idempotent=False)
+def import_revert(import_id: str) -> ResponseEnvelope[ImportRevertPayload]:
     """Undo an import batch by deleting all rows it produced.
 
     Looks up source_type from raw.import_log and deletes rows tagged with
@@ -239,8 +228,13 @@ def import_revert(import_id: str) -> ResponseEnvelope:
 
     if status == "reverted":
         return build_envelope(
-            data=result,
-            sensitivity="low",
+            data=ImportRevertPayload(
+                import_id=import_id,
+                status="reverted",
+                rows_deleted=int(result["rows_deleted"])
+                if "rows_deleted" in result
+                else None,
+            ),
             actions=[
                 "Use import_status to confirm the batch shows status='reverted'",
             ],
@@ -249,13 +243,12 @@ def import_revert(import_id: str) -> ResponseEnvelope:
         error=UserError(
             str(result.get("reason") or f"Cannot revert (status={status})"),
             code=f"revert_{status}",
-        ),
-        sensitivity="low",
+        )
     )
 
 
-@mcp_tool(sensitivity="low")
-def import_formats() -> ResponseEnvelope:
+@mcp_tool()
+def import_formats() -> ResponseEnvelope[ImportFormatsPayload]:
     """List all available tabular import formats (built-in and user-saved).
 
     Returns format name, institution, sign convention, date format, and
@@ -275,22 +268,21 @@ def import_formats() -> ResponseEnvelope:
     except Exception:  # noqa: BLE001 -- DB may not exist; fall back to built-in
         formats = builtin
 
-    format_list = [
-        {
-            "name": fmt.name,
-            "institution_name": fmt.institution_name,
-            "file_type": fmt.file_type,
-            "sign_convention": fmt.sign_convention,
-            "date_format": fmt.date_format,
-            "number_format": fmt.number_format,
-            "multi_account": fmt.multi_account,
-            "header_signature": fmt.header_signature,
-        }
+    format_rows = [
+        ImportFormatRow(
+            name=fmt.name,
+            institution_name=fmt.institution_name,
+            file_type=fmt.file_type,
+            sign_convention=fmt.sign_convention,
+            date_format=fmt.date_format,
+            number_format=fmt.number_format,
+            multi_account=fmt.multi_account,
+            header_signature=fmt.header_signature,
+        )
         for fmt in sorted(formats.values(), key=lambda f: f.name)
     ]
     return build_envelope(
-        data=format_list,
-        sensitivity="low",
+        data=ImportFormatsPayload(formats=format_rows),
         actions=[
             "Use import_preview to test a format against a file",
             "Use import_files to import a file once you have the format name available",

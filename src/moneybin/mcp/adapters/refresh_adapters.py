@@ -7,9 +7,8 @@ mapping so the two surfaces cannot drift.
 
 from __future__ import annotations
 
-from dataclasses import asdict
-
 from moneybin.errors import RecoveryAction
+from moneybin.privacy.payloads.system import RefreshRunPayload, SelfHealActionRow
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.refresh import RefreshResult
 
@@ -83,7 +82,7 @@ def _step_crash_recovery_actions(result: RefreshResult) -> list[RecoveryAction]:
 
 def refresh_envelope(
     result: RefreshResult, *, requested: frozenset[str]
-) -> ResponseEnvelope:
+) -> ResponseEnvelope[RefreshRunPayload]:
     """Build the standard response envelope for a refresh invocation.
 
     Args:
@@ -92,22 +91,6 @@ def refresh_envelope(
             ``expand_steps(...)`` result). Used to decide whether the
             categorize follow-up hint applies.
     """
-    data: dict[str, object] = {
-        "applied": result.applied,
-        "duration_seconds": result.duration_seconds,
-        # Always emit (empty until the self-heal safelist lands) so agents
-        # see a stable key rather than a sometimes-present field. asdict (not
-        # model_dump) because SelfHealRecord is a @dataclass like RefreshResult,
-        # not a Pydantic model; if it ever migrates to BaseModel, switch here.
-        "self_heal_actions": [asdict(r) for r in result.self_heal_actions],
-    }
-    if result.error is not None:
-        data["error"] = result.error
-    if result.matching_error is not None:
-        data["matching_error"] = result.matching_error
-    if result.categorization_error is not None:
-        data["categorization_error"] = result.categorization_error
-
     actions: list[str] = []
     if not result.applied and result.error is not None:
         actions.append(REFRESH_APPLY_FAILED_HINT)
@@ -124,7 +107,6 @@ def refresh_envelope(
         and "categorize" not in requested
     ):
         actions.append(REFRESH_CATEGORIZE_FOLLOWUP_HINT)
-
     recovery = _step_crash_recovery_actions(result)
     # `or None` (omit the key when empty) is correct here: refresh always uses
     # build_envelope, whose ResponseEnvelope.error is None, so there is no
@@ -132,7 +114,22 @@ def refresh_envelope(
     # fallthrough distinction (relevant only to build_error_envelope) doesn't
     # apply. Both the clean and apply-failed cases simply omit the key.
     return build_envelope(
-        data=data,
+        data=RefreshRunPayload(
+            applied=result.applied,
+            duration_seconds=result.duration_seconds,
+            error=result.error,
+            matching_error=result.matching_error,
+            categorization_error=result.categorization_error,
+            self_heal_actions=[
+                SelfHealActionRow(
+                    recipe_id=r.recipe_id,
+                    rows_affected=r.rows_affected,
+                    operation_id=r.operation_id,
+                    timestamp=r.timestamp,
+                )
+                for r in result.self_heal_actions
+            ],
+        ),
         sensitivity="low",
         actions=actions,
         recovery_actions=recovery or None,

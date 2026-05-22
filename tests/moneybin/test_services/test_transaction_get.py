@@ -211,18 +211,16 @@ class TestTransactionGet:
         assert result.next_cursor is None
 
     @pytest.mark.unit
-    def test_to_envelope_sensitivity_medium(self, txn_db: Database) -> None:
+    def test_result_has_transactions_and_cursor(self, txn_db: Database) -> None:
+        """TransactionGetResult carries typed transactions and cursor."""
         result = TransactionService(txn_db).get()
-        d = result.to_envelope().to_dict()
-        assert d["summary"]["sensitivity"] == "medium"
-        assert isinstance(d["data"], list)
+        assert len(result.transactions) == 4
+        assert result.next_cursor is None
 
     @pytest.mark.unit
-    def test_to_envelope_next_cursor_propagated(self, txn_db: Database) -> None:
+    def test_next_cursor_propagated_on_paginated_result(self, txn_db: Database) -> None:
         result = TransactionService(txn_db).get(limit=2)
-        d = result.to_envelope().to_dict()
-        assert "next_cursor" in d
-        assert d["next_cursor"] == result.next_cursor
+        assert result.next_cursor is not None
 
     @pytest.mark.unit
     def test_limit_zero_raises(self, txn_db: Database) -> None:

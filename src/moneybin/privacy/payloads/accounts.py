@@ -1,0 +1,116 @@
+# src/moneybin/privacy/payloads/accounts.py
+"""Typed payload dataclasses for the accounts surface.
+
+Each field carries ``Annotated[T, DataClass.X]`` metadata so the Phase 6
+middleware can derive sensitivity via ``derive_tier`` without inspecting
+tool source code directly.
+
+CRITICAL fields (``ACCOUNT_IDENTIFIER``, ``INSTITUTION_ACCOUNT_NUMBER``,
+``ROUTING_NUMBER``) propagate to ``Tier.CRITICAL`` for ``AccountDetail``
+and ``AccountSettingsPayload``. The middleware masks them in PR 2.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from decimal import Decimal
+from typing import Annotated
+
+from moneybin.privacy.taxonomy import DataClass
+
+
+@dataclass(frozen=True, slots=True)
+class AccountSummary:
+    """One row in the list view. last_four / credit_limit included; middleware masks."""
+
+    account_id: Annotated[str, DataClass.ACCOUNT_IDENTIFIER]
+    display_name: Annotated[str | None, DataClass.USER_NOTE]
+    institution_name: Annotated[str | None, DataClass.INSTITUTION]
+    account_type: Annotated[str, DataClass.TXN_TYPE]
+    account_subtype: Annotated[str | None, DataClass.TXN_TYPE]
+    holder_category: Annotated[str | None, DataClass.TXN_TYPE]
+    iso_currency_code: Annotated[str, DataClass.CURRENCY]
+    archived: Annotated[bool, DataClass.TXN_TYPE]
+    include_in_net_worth: Annotated[bool, DataClass.TXN_TYPE]
+    last_four: Annotated[str | None, DataClass.INSTITUTION_ACCOUNT_NUMBER]
+    credit_limit: Annotated[Decimal | None, DataClass.BALANCE]
+
+
+@dataclass(frozen=True, slots=True)
+class AccountListPayload:
+    """Payload for accounts (list)."""
+
+    rows: list[AccountSummary]
+
+
+@dataclass(frozen=True, slots=True)
+class AccountDetail:
+    """Full account record for accounts_get. Includes routing_number (CRITICAL)."""
+
+    account_id: Annotated[str, DataClass.ACCOUNT_IDENTIFIER]
+    display_name: Annotated[str | None, DataClass.USER_NOTE]
+    official_name: Annotated[str | None, DataClass.INSTITUTION]
+    institution_name: Annotated[str | None, DataClass.INSTITUTION]
+    account_type: Annotated[str, DataClass.TXN_TYPE]
+    account_subtype: Annotated[str | None, DataClass.TXN_TYPE]
+    holder_category: Annotated[str | None, DataClass.TXN_TYPE]
+    iso_currency_code: Annotated[str, DataClass.CURRENCY]
+    last_four: Annotated[str | None, DataClass.INSTITUTION_ACCOUNT_NUMBER]
+    routing_number: Annotated[str | None, DataClass.ROUTING_NUMBER]
+    credit_limit: Annotated[Decimal | None, DataClass.BALANCE]
+    archived: Annotated[bool, DataClass.TXN_TYPE]
+    include_in_net_worth: Annotated[bool, DataClass.TXN_TYPE]
+    source_type: Annotated[str | None, DataClass.TXN_TYPE]
+
+
+@dataclass(frozen=True, slots=True)
+class AccountSummaryStats:
+    """Aggregates-only snapshot for accounts_summary."""
+
+    total_accounts: Annotated[int, DataClass.AGGREGATE]
+    count_by_type: Annotated[dict[str, int], DataClass.AGGREGATE]
+    count_by_subtype: Annotated[dict[str, int], DataClass.AGGREGATE]
+    count_archived: Annotated[int, DataClass.AGGREGATE]
+    count_excluded_from_net_worth: Annotated[int, DataClass.AGGREGATE]
+    count_with_recent_activity: Annotated[int, DataClass.AGGREGATE]
+
+
+@dataclass(frozen=True, slots=True)
+class AccountResolutionItem:
+    """One candidate in the accounts_resolve result."""
+
+    account_id: Annotated[str, DataClass.ACCOUNT_IDENTIFIER]
+    display_name: Annotated[str | None, DataClass.USER_NOTE]
+    account_subtype: Annotated[str | None, DataClass.TXN_TYPE]
+    institution_name: Annotated[str | None, DataClass.INSTITUTION]
+    confidence: Annotated[float, DataClass.AGGREGATE]
+
+
+@dataclass(frozen=True, slots=True)
+class AccountResolvePayload:
+    """Payload for accounts_resolve."""
+
+    matches: list[AccountResolutionItem]
+
+
+@dataclass(frozen=True, slots=True)
+class AccountSettingsPayload:
+    """Result of accounts_set. Mirrors AccountSettings.to_dict() plus optional extras.
+
+    NOTE: the existing AccountSettings dataclass in account_service.py is a
+    persistence-layer record (used by the repo). Don't add Annotated to it; build
+    this payload from settings.to_dict() at the tool boundary instead.
+    """
+
+    account_id: Annotated[str, DataClass.ACCOUNT_IDENTIFIER]
+    display_name: Annotated[str | None, DataClass.USER_NOTE]
+    official_name: Annotated[str | None, DataClass.INSTITUTION]
+    last_four: Annotated[str | None, DataClass.INSTITUTION_ACCOUNT_NUMBER]
+    account_subtype: Annotated[str | None, DataClass.TXN_TYPE]
+    holder_category: Annotated[str | None, DataClass.TXN_TYPE]
+    iso_currency_code: Annotated[str | None, DataClass.CURRENCY]
+    credit_limit: Annotated[Decimal | None, DataClass.BALANCE]
+    include_in_net_worth: Annotated[bool, DataClass.TXN_TYPE]
+    archived: Annotated[bool, DataClass.TXN_TYPE]
+    warnings: Annotated[list[str], DataClass.DESCRIPTION] = field(default_factory=list)
+    cascaded_include_in_net_worth: Annotated[bool | None, DataClass.TXN_TYPE] = None

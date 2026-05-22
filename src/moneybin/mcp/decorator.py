@@ -22,12 +22,14 @@ unit calls) — see ``docs/specs/mcp-tool-timeouts.md`` Out of Scope.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import functools
 import inspect
 import logging
 import time
+import typing
 from collections.abc import Callable
-from typing import Any, Literal, cast
+from typing import Any, cast
 
 from moneybin import error_codes
 from moneybin.database import (  # noqa: PLC2701 — private import for per-call tracking
@@ -35,7 +37,14 @@ from moneybin.database import (  # noqa: PLC2701 — private import for per-call
     interrupt_and_reset_database,
 )
 from moneybin.errors import UserError, classify_user_error
-from moneybin.mcp.privacy import Sensitivity, log_tool_call
+from moneybin.mcp.privacy import Sensitivity, log_tool_call, tier_to_sensitivity
+from moneybin.privacy.introspection import (
+    PrivacyContractError,
+    derive_tier,
+    extract_data_classes,
+)
+from moneybin.privacy.log import build_tool_call_event, write_privacy_event
+from moneybin.privacy.redaction import has_active_transform, redact_typed
 from moneybin.protocol.envelope import ResponseEnvelope, build_error_envelope
 
 logger = logging.getLogger(__name__)
@@ -77,7 +86,7 @@ def _check_collection_caps(
     list_params: list[str],
     bound_args: dict[str, Any],
     cap: int | None,
-) -> ResponseEnvelope | None:
+) -> ResponseEnvelope[Any] | None:
     """Return an error envelope if any list param exceeds ``cap``, else None."""
     if cap is None:
         return None
@@ -168,7 +177,7 @@ def _find_list_params(fn: Callable[..., Any]) -> list[str]:
     return list_params
 
 
-def _check_envelope(fn_name: str, result: Any) -> ResponseEnvelope:
+def _check_envelope(fn_name: str, result: Any) -> ResponseEnvelope[Any]:
     if not isinstance(result, ResponseEnvelope):
         # mask_error_details=True at the server boundary swallows the TypeError
         # into a generic ToolError, so log the contract violation first.
@@ -178,7 +187,7 @@ def _check_envelope(fn_name: str, result: Any) -> ResponseEnvelope:
     return result
 
 
-def _classify_or_raise(fn_name: str, exc: Exception) -> ResponseEnvelope:
+def _classify_or_raise(fn_name: str, exc: Exception) -> ResponseEnvelope[Any]:
     """Convert a classified domain exception to an error envelope, else re-raise."""
     classified = classify_user_error(exc)
     if classified is None:
@@ -187,9 +196,23 @@ def _classify_or_raise(fn_name: str, exc: Exception) -> ResponseEnvelope:
     return build_error_envelope(error=classified, sensitivity="low")
 
 
+def _build_unclassified_failure_envelope(fn_name: str) -> ResponseEnvelope[Any]:
+    """Synthetic envelope for an audit emit on unclassified exception paths.
+
+    Used only as the row_count source before the original exception
+    propagates — never returned to a caller. The exception still re-raises
+    so the server boundary's ``mask_error_details`` handler runs.
+    """
+    err = UserError(
+        f"Tool {fn_name} raised unclassified exception",
+        code="unclassified_error",
+    )
+    return build_error_envelope(error=err, sensitivity="low")
+
+
 def _build_timeout_envelope(
     fn_name: str, elapsed_s: float, timeout_s: float
-) -> ResponseEnvelope:
+) -> ResponseEnvelope[Any]:
     err = UserError(
         f"Tool {fn_name} exceeded {timeout_s:.1f}s cap",
         code=error_codes.INFRA_TIMED_OUT,
@@ -202,21 +225,31 @@ def _build_timeout_envelope(
     return build_error_envelope(error=err, sensitivity="low")
 
 
+def _envelope_row_count(envelope: ResponseEnvelope[Any]) -> int:
+    """Best-effort row count for the privacy log."""
+    return envelope.summary.returned_count
+
+
 def mcp_tool(
     *,
-    sensitivity: Literal["low", "medium", "high"],
     domain: str | None = None,
     read_only: bool = True,
     destructive: bool = False,
     idempotent: bool = True,
     open_world: bool = False,
     max_items: int | None | _UnsetType = _UNSET,
+    unclassified: bool = False,  # DEPRECATED: unclassified=True — PR 4 wires sqlglot lineage
     timeout_seconds: float | _UnsetType = _UNSET,
 ) -> Callable[..., Any]:
-    """Mark a function as an MCP tool with a sensitivity tier and optional domain.
+    """Mark a function as an MCP tool. Sensitivity is derived from the return type.
+
+    The return type must be ``ResponseEnvelope[T]`` where ``T`` is a
+    typed dataclass / Pydantic model / TypedDict whose fields carry
+    ``Annotated[..., DataClass.X]`` metadata. Registration fails with
+    ``PrivacyContractError`` if the return type lacks classified
+    metadata.
 
     Args:
-        sensitivity: Sensitivity tier (low/medium/high).
         domain: Optional namespace tag stored as a FastMCP tag. Dormant
             metadata today — client-driven progressive disclosure was retired
             2026-05-17 (see docs/specs/mcp-architecture.md §3). Preserved for a
@@ -228,16 +261,87 @@ def mcp_tool(
         open_world: MCP openWorldHint — defaults to False (closed-world).
         max_items: Per-tool override for ``MCPConfig.max_items``. ``None``
             disables the cap. Sentinel ``_UNSET`` inherits from settings.
+        unclassified: Opt-out for tools whose return shape is determined at
+            call time (e.g. dynamic SQL). When True, sensitivity defaults to
+            HIGH, redact_typed is skipped, and the privacy log records
+            classes_returned=["unclassified"]. DEPRECATED — PR 4 replaces
+            this with sqlglot lineage derivation.
         timeout_seconds: Per-tool override for ``MCPConfig.tool_timeout_seconds``.
             Sentinel ``_UNSET`` inherits from settings. Use this for tools whose
             natural runtime exceeds the default cap (e.g. interactive OAuth
             flows that wait for a user browser click).
 
-    Every tool is wrapped in a wall-clock timeout guard — see module docstring.
+    Every tool is wrapped with:
+    1. Wall-clock timeout guard (unchanged from prior behavior)
+    2. Privacy redaction via ``redact_typed`` (PR 2: CRITICAL masks, unless unclassified)
+    3. ``privacy.log.jsonl`` event write per call
     """
-    tier = Sensitivity(sensitivity)
 
     def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
+        # Derive sensitivity at registration time from the return type annotation.
+        # Raises PrivacyContractError if the return type isn't ResponseEnvelope[T]
+        # with classified T — unless unclassified=True is set.
+        if unclassified:
+            # Dynamic-return tool: can't classify statically. Default to HIGH.
+            sensitivity = Sensitivity.HIGH
+            classes_for_log: list[str] = ["unclassified"]
+            payload_type_arg: Any = None
+            has_critical = False
+        else:
+            # get_type_hints resolves string annotations (from __future__ import
+            # annotations). A payload class defined below the @mcp_tool fn in the
+            # same module, or imported lazily/conditionally, raises NameError at
+            # decoration time. Re-raise as PrivacyContractError so the failure
+            # names the contract instead of surfacing a bare NameError — the same
+            # guarding _find_list_params applies to this call.
+            try:
+                return_hint = typing.get_type_hints(fn).get("return")
+            except (NameError, TypeError) as exc:
+                raise PrivacyContractError(
+                    f"{fn.__name__}: could not resolve return annotation ({exc}); "
+                    "ensure the payload type is imported at decoration time"
+                ) from exc
+            if return_hint is None:
+                raise PrivacyContractError(
+                    f"{fn.__name__} has no return annotation; "
+                    "every @mcp_tool must declare -> ResponseEnvelope[T]"
+                )
+            # Unwrap ResponseEnvelope[T] → T. Require the origin to be
+            # ResponseEnvelope specifically, not merely "some generic" — a
+            # `list[Payload]` or `dict[str, Payload]` annotation would otherwise
+            # pass and derive sensitivity from the wrong type argument, bypassing
+            # the envelope contract.
+            if typing.get_origin(return_hint) is not ResponseEnvelope:
+                raise PrivacyContractError(
+                    f"{fn.__name__} return type must be ResponseEnvelope[T], "
+                    f"got {return_hint!r}"
+                )
+            payload_type_args = typing.get_args(return_hint)
+            if not payload_type_args:
+                raise PrivacyContractError(
+                    f"{fn.__name__} return type ResponseEnvelope must be parameterized "
+                    "(e.g. ResponseEnvelope[AccountListPayload])"
+                )
+            payload_type_arg = payload_type_args[0]
+            # derive_tier raises PrivacyContractError naming the *payload type*;
+            # re-raise naming the tool too, so a registration-time failure points
+            # at which @mcp_tool needs the fix, not just the orphaned payload.
+            try:
+                tier = derive_tier(payload_type_arg)
+            except PrivacyContractError as exc:
+                raise PrivacyContractError(f"{fn.__name__}: {exc}") from exc
+            sensitivity = tier_to_sensitivity(tier)
+            classes_for_log = [
+                c.value for c in sorted(extract_data_classes(payload_type_arg))
+            ]
+            # Skip the redact_typed walk for payloads that would pass through
+            # unchanged. Derived from _TRANSFORMS (not `tier == CRITICAL`) so
+            # the gate stays correct automatically when PR3 wires real
+            # HIGH/MEDIUM transforms: the moment a DataClass stops being
+            # _passthrough, every payload carrying it starts being walked. No
+            # CRITICAL-only trap. Today this is exactly the CRITICAL set.
+            has_critical = has_active_transform(payload_type_arg)
+
         is_coro = inspect.iscoroutinefunction(fn)
         if inspect.isasyncgenfunction(fn):
             raise TypeError(
@@ -253,9 +357,43 @@ def mcp_tool(
         # and tools with list_params would otherwise rebuild it on every call.
         cached_sig = inspect.signature(fn) if list_params else None
 
+        async def _emit_privacy_event(env: ResponseEnvelope[Any]) -> None:
+            """Write the per-call privacy.log event off the event loop.
+
+            Called on every return path (success, cap violation, timeout,
+            classified error) so the audit trail covers blocked / failed
+            invocations, not just successes. The write (lock + file I/O) runs
+            via asyncio.to_thread so a slow/NFS log mount can't stall the event
+            loop and serialize concurrent tool calls.
+            """
+            event = build_tool_call_event(
+                actor=f"mcp.{fn.__name__}",
+                sensitivity=sensitivity.value,
+                classes_returned=classes_for_log,
+                # Generic envelope type erased; _envelope_row_count handles Any.
+                row_count=_envelope_row_count(env),  # pyright: ignore[reportUnknownArgumentType]
+            )
+            await asyncio.to_thread(write_privacy_event, event)
+
+        def _stamp_sensitivity(env: ResponseEnvelope[Any]) -> ResponseEnvelope[Any]:
+            """Override summary.sensitivity with the decorator-derived tier.
+
+            Error envelopes from build_error_envelope hardcode "low"; without
+            this a CRITICAL-tier tool (e.g. accounts_get) that raises would
+            report summary.sensitivity="low" in its error response and audit
+            row, understating the tier. Applied on every error return path.
+            """
+            if sensitivity.value == env.summary.sensitivity:
+                return env
+            updated = dataclasses.replace(
+                env.summary,
+                sensitivity=sensitivity.value,  # pyright: ignore[reportArgumentType]
+            )
+            return dataclasses.replace(env, summary=updated)  # pyright: ignore[reportUnknownArgumentType]
+
         @functools.wraps(fn)
-        async def wrapper(*args: Any, **kwargs: Any) -> ResponseEnvelope:
-            log_tool_call(fn.__name__, tier)
+        async def wrapper(*args: Any, **kwargs: Any) -> ResponseEnvelope[Any]:
+            log_tool_call(fn.__name__, sensitivity)
             # Resolve cap: explicit per-tool override wins; otherwise inherit settings.
             cap_attr = cast(
                 "int | None | _UnsetType",
@@ -273,6 +411,8 @@ def mcp_tool(
                     bound = {}
                 cap_error = _check_collection_caps(fn.__name__, list_params, bound, cap)
                 if cap_error is not None:
+                    cap_error = _stamp_sensitivity(cap_error)
+                    await _emit_privacy_event(cap_error)
                     return cap_error
             timeout_attr = cast(
                 "float | _UnsetType",
@@ -314,7 +454,17 @@ def mcp_tool(
                         )
             except TimeoutError as exc:
                 if not cm.expired():
-                    return _classify_or_raise(fn.__name__, exc)
+                    try:
+                        err_env = _classify_or_raise(fn.__name__, exc)
+                    except BaseException:
+                        # Unclassified — emit a crash audit row, then propagate.
+                        await _emit_privacy_event(
+                            _build_unclassified_failure_envelope(fn.__name__)
+                        )
+                        raise
+                    err_env = _stamp_sensitivity(err_env)
+                    await _emit_privacy_event(err_env)
+                    return err_env
                 elapsed = time.monotonic() - started
                 logger.warning(
                     f"Tool {fn.__name__} timed out after {elapsed:.2f}s "
@@ -332,11 +482,91 @@ def mcp_tool(
                 # any per-tool resources (e.g. InboxService.acquire_lock's
                 # flock). Without this, an immediate retry hits inbox_busy
                 # while the previous thread is still in its finally block.
-                await asyncio.sleep(0.5)
-                return _build_timeout_envelope(fn.__name__, elapsed, timeout_s)
+                try:
+                    await asyncio.sleep(0.5)
+                except BaseException:
+                    # CancelledError (a BaseException, not Exception) raised here
+                    # would escape both the TimeoutError and Exception handlers
+                    # with no audit row. Emit the crash event, then propagate.
+                    await _emit_privacy_event(
+                        _build_unclassified_failure_envelope(fn.__name__)
+                    )
+                    raise
+                timeout_env = _stamp_sensitivity(
+                    _build_timeout_envelope(fn.__name__, elapsed, timeout_s)
+                )
+                await _emit_privacy_event(timeout_env)
+                return timeout_env
             except Exception as exc:
-                return _classify_or_raise(fn.__name__, exc)
-            return _check_envelope(fn.__name__, result)
+                try:
+                    err_env = _classify_or_raise(fn.__name__, exc)
+                except BaseException:
+                    # Unclassified — emit a crash audit row, then propagate
+                    # so the server boundary's mask_error_details runs.
+                    await _emit_privacy_event(
+                        _build_unclassified_failure_envelope(fn.__name__)
+                    )
+                    raise
+                err_env = _stamp_sensitivity(err_env)
+                await _emit_privacy_event(err_env)
+                return err_env
+            except asyncio.CancelledError:
+                # External cancellation (client disconnect / server shutdown)
+                # raises CancelledError — a BaseException that bypasses the
+                # TimeoutError and Exception handlers above. Without this branch
+                # the aborted invocation never reaches _emit_privacy_event and is
+                # missing from privacy.log.jsonl, leaving a hole in the tool-call
+                # audit surface. shield() so the audit write completes even under
+                # multiple concurrent cancel() calls (rapid reconnect / shutdown),
+                # where a bare await inside the handler would be re-cancelled
+                # before the write lands. Then re-raise — cancellation must never
+                # be swallowed.
+                try:
+                    await asyncio.shield(
+                        _emit_privacy_event(
+                            _build_unclassified_failure_envelope(fn.__name__)
+                        )
+                    )
+                except asyncio.CancelledError:
+                    # The shielded emit keeps running in the background; this
+                    # re-cancel only interrupts our wait, not the write.
+                    pass
+                raise
+            # _check_envelope raises TypeError when a tool returns a non-
+            # ResponseEnvelope. That's an envelope-contract violation that
+            # belongs in the audit trail like any other crash path; emit
+            # before propagating to the server's mask_error_details boundary.
+            try:
+                envelope = _check_envelope(fn.__name__, result)
+            except BaseException:
+                await _emit_privacy_event(
+                    _build_unclassified_failure_envelope(fn.__name__)
+                )
+                raise
+            # Stamp summary.sensitivity with the decorator-derived tier so the
+            # envelope reflects the statically-derived classification regardless
+            # of what build_envelope() defaulted to in the tool body. Same helper
+            # the error-return paths use.
+            envelope = _stamp_sensitivity(envelope)
+            # Redact CRITICAL fields before returning. Skip the walk entirely
+            # for tools whose return type has no CRITICAL field — the result
+            # would be value-identical and the dataclass-tree rebuild is the
+            # most expensive thing on the hot path. Unclassified tools also
+            # skip (their payload shape is decided at call time).
+            if (
+                has_critical
+                and not unclassified
+                and envelope.error is None
+                # ResponseEnvelope.data type param is erased after the
+                # dataclasses.replace above; pyright can't see it's narrowable.
+                and envelope.data is not None  # pyright: ignore[reportUnknownMemberType]
+            ):
+                # Same reason: envelope.data is `Unknown` after the generic erase.
+                redacted_data = redact_typed(envelope.data, consent=None)  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
+                envelope = dataclasses.replace(envelope, data=redacted_data)  # pyright: ignore[reportUnknownArgumentType]
+            # Write a privacy.log.jsonl event for every tool call.
+            await _emit_privacy_event(envelope)
+            return envelope
 
         wrapper._mcp_sensitivity = sensitivity  # type: ignore[attr-defined]
         wrapper._mcp_domain = domain  # type: ignore[attr-defined]

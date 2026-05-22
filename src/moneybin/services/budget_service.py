@@ -12,10 +12,14 @@ import uuid
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
-from typing import Any, Literal
+from typing import Literal
 
 from moneybin.database import Database
-from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.privacy.payloads.budget import (
+    BudgetCategoryStatusRow,
+    BudgetSetPayload,
+    BudgetStatusPayload,
+)
 from moneybin.services.categorization._shared import resolve_category_id
 from moneybin.tables import BUDGETS, FCT_TRANSACTIONS, TRANSACTION_CATEGORIES
 
@@ -29,73 +33,20 @@ class BudgetSetResult:
     category: str
     monthly_amount: Decimal
     action: Literal["created", "updated"]
+    start_month: str
 
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to a plain dict for JSON serialization."""
-        return {
-            "category": self.category,
-            "monthly_amount": self.monthly_amount,
-            "action": self.action,
-        }
-
-    def to_envelope(self) -> ResponseEnvelope:
-        """Build a ResponseEnvelope for MCP/CLI output."""
-        return build_envelope(
-            data=self.to_dict(),
-            sensitivity="low",
-            actions=[
-                "Use reports_budget to see spending vs budget",
-                "Use reports_spending for category breakdown",
-            ],
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class BudgetCategoryStatus:
-    """Budget status for a single category."""
-
-    category: str
-    budget: Decimal
-    spent: Decimal
-    remaining: Decimal
-    status: Literal["OK", "WARNING", "OVER"]
-
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to a plain dict for JSON serialization."""
-        return {
-            "category": self.category,
-            "budget": self.budget,
-            "spent": self.spent,
-            "remaining": self.remaining,
-            "status": self.status,
-        }
-
-
-@dataclass(slots=True)
-class BudgetStatusResult:
-    """Result of budget status query."""
-
-    categories: list[BudgetCategoryStatus]
-    month: str
-
-    def to_envelope(self) -> ResponseEnvelope:
-        """Build a ResponseEnvelope for MCP/CLI output."""
-        return build_envelope(
-            data=[c.to_dict() for c in self.categories],
-            sensitivity="low",
-            period=self.month,
-            actions=[
-                "Use `moneybin budget set` (CLI) to adjust a budget target",
-                "Use reports_spending for detailed category breakdown",
-            ],
+    def to_payload(self) -> BudgetSetPayload:
+        """Convert to a typed BudgetSetPayload for MCP/CLI envelopes."""
+        return BudgetSetPayload(
+            category=self.category,
+            monthly_amount=self.monthly_amount,
+            action=self.action,
+            start_month=self.start_month,
         )
 
 
 class BudgetService:
-    """Budget management operations.
-
-    All methods return typed dataclasses with a ``to_envelope()`` method.
-    """
+    """Budget management operations."""
 
     def __init__(self, db: Database) -> None:
         """Initialize BudgetService with an open Database connection."""
@@ -173,9 +124,10 @@ class BudgetService:
             category=category,
             monthly_amount=monthly_amount,
             action=action,
+            start_month=start_month,
         )
 
-    def status(self, month: str | None = None) -> BudgetStatusResult:
+    def status(self, month: str | None = None) -> BudgetStatusPayload:
         """Get budget vs actual spending for a month.
 
         Joins budget targets with actual spending aggregated from
@@ -185,7 +137,7 @@ class BudgetService:
             month: Month to check (YYYY-MM). Defaults to current month.
 
         Returns:
-            BudgetStatusResult with per-category budget status.
+            BudgetStatusPayload with per-category budget status.
         """
         if month is None:
             month = date.today().strftime("%Y-%m")
@@ -211,21 +163,21 @@ class BudgetService:
         result = self._db.execute(sql, [month, month, month])
         rows = result.fetchall()
 
-        categories: list[BudgetCategoryStatus] = []
+        categories: list[BudgetCategoryStatusRow] = []
         for row in rows:
             budget_amount = Decimal(str(row[1]))
             spent = Decimal(str(row[2]))
             remaining = budget_amount - spent
 
             if spent > budget_amount:
-                status = "OVER"
+                status: Literal["OK", "WARNING", "OVER"] = "OVER"
             elif spent > budget_amount * Decimal("0.8"):
                 status = "WARNING"
             else:
                 status = "OK"
 
             categories.append(
-                BudgetCategoryStatus(
+                BudgetCategoryStatusRow(
                     category=str(row[0]),
                     budget=budget_amount,
                     spent=spent,
@@ -235,4 +187,4 @@ class BudgetService:
             )
 
         logger.info(f"Budget status: {len(categories)} categories for {month}")
-        return BudgetStatusResult(categories=categories, month=month)
+        return BudgetStatusPayload(categories=categories, month=month)
