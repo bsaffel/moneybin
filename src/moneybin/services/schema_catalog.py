@@ -12,7 +12,9 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from moneybin.database import get_database
+import duckdb
+
+from moneybin.database import Database, get_database
 from moneybin.tables import INTERFACE_TABLES
 
 logger = logging.getLogger(__name__)
@@ -503,6 +505,9 @@ def build_schema_doc() -> dict[str, Any]:
             """,  # noqa: S608  # INTERFACE_TABLES is a compile-time allowlist, not user input
             interface_names,
         ).fetchall()
+        # Build seed-view entries while db is open — reuses this one
+        # connection rather than opening a second.
+        seed_view_entries = _gsheet_seed_views(db)
 
     tables_by_name: dict[str, dict[str, Any]] = {}
     for full_name, table_comment, col_name, dtype, nullable, col_comment in rows:
@@ -526,7 +531,7 @@ def build_schema_doc() -> dict[str, Any]:
         })
 
     tables = list(tables_by_name.values())
-    tables.extend(_gsheet_seed_views())
+    tables.extend(seed_view_entries)
     logger.info(f"Schema doc built: {len(tables)} interface tables present")
 
     return {
@@ -541,70 +546,73 @@ def build_schema_doc() -> dict[str, Any]:
     }
 
 
-def _gsheet_seed_views() -> list[dict[str, Any]]:
+def _gsheet_seed_views(db: Database) -> list[dict[str, Any]]:
     """Return one entry per active seed connection whose view exists in the catalog.
 
     Skips disconnected connections, connections without an alias (transactions
     adapter), and aliases whose view hasn't been materialized yet (e.g. a
     connection created but never pulled). Mirrors interface-table entry shape.
+
+    Takes the caller's live read-only ``db`` rather than opening a second
+    connection — build_schema_doc already holds one open.
     """
-    with get_database(read_only=True) as db:
-        try:
-            connections = db.execute(
-                """
-                SELECT connection_id, alias
-                FROM app.gsheet_connections
-                WHERE adapter = 'seed'
-                  AND status != 'disconnected'
-                  AND alias IS NOT NULL
-                ORDER BY created_at ASC, connection_id ASC
-                """
-            ).fetchall()
-        except Exception:  # noqa: BLE001 — table may not exist on bare DBs
-            return []
+    try:
+        connections = db.execute(
+            """
+            SELECT connection_id, alias
+            FROM app.gsheet_connections
+            WHERE adapter = 'seed'
+              AND status != 'disconnected'
+              AND alias IS NOT NULL
+            ORDER BY created_at ASC, connection_id ASC
+            """
+        ).fetchall()
+    except duckdb.CatalogException:
+        # Table absent on bare DBs before init_schemas — no seed views to add.
+        return []
 
-        if not connections:
-            return []
+    if not connections:
+        return []
 
-        # Catalog membership filter — skip aliases without a materialized view.
-        live_views = {
-            row[0]
-            for row in db.execute(
-                """
-                SELECT view_name FROM duckdb_views()
-                WHERE schema_name = 'raw' AND view_name LIKE 'gsheet_%'
-                """
-            ).fetchall()
-        }
+    # Catalog membership filter — skip aliases without a materialized view.
+    live_views = {
+        row[0]
+        for row in db.execute(
+            """
+            SELECT view_name FROM duckdb_views()
+            WHERE schema_name = 'raw' AND view_name LIKE 'gsheet_%'
+            """
+        ).fetchall()
+    }
 
-        entries: list[dict[str, Any]] = []
-        for _connection_id, alias in connections:
-            view_name = f"gsheet_{alias}"
-            if view_name not in live_views:
-                continue
-            cols = db.execute(
-                """
-                SELECT column_name, data_type
-                FROM duckdb_columns()
-                WHERE schema_name = 'raw' AND table_name = ?
-                ORDER BY column_index
-                """,
-                [view_name],
-            ).fetchall()
-            entries.append({
-                "name": f"raw.{view_name}",
-                "purpose": (
-                    f"Live mirror of Google Sheets seed connection (alias={alias})."
-                ),
-                "columns": [
-                    {
-                        "name": col_name,
-                        "type": dtype,
-                        "nullable": True,
-                        "comment": "",
-                    }
-                    for col_name, dtype in cols
-                ],
-                "examples": [],
-            })
-        return entries
+    entries: list[dict[str, Any]] = []
+    for _connection_id, alias in connections:
+        view_name = f"gsheet_{alias}"
+        if view_name not in live_views:
+            continue
+        cols = db.execute(
+            """
+            SELECT column_name, data_type
+            FROM duckdb_columns()
+            WHERE schema_name = 'raw' AND table_name = ?
+            ORDER BY column_index
+            """,
+            [view_name],
+        ).fetchall()
+        entries.append({
+            "name": f"raw.{view_name}",
+            "purpose": (
+                f"Live mirror of Google Sheets seed connection (alias={alias})."
+            ),
+            "columns": [
+                {
+                    "name": col_name,
+                    "type": dtype,
+                    "nullable": True,
+                    "comment": "",
+                }
+                for col_name, dtype in cols
+            ],
+            "examples": [],
+        })
+    return entries

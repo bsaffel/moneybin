@@ -306,6 +306,34 @@ def test_gsheet_pull_single_connection_runs_refresh(
 @patch("moneybin.connectors.gsheet.sheets_api.SheetsClient")
 @patch("moneybin.connectors.gsheet.pull_service.GSheetPullService")
 @patch("moneybin.cli.commands.gsheet._build_oauth_client")
+def test_gsheet_pull_nonzero_exit_on_failed_pull(
+    mock_oauth: MagicMock,
+    mock_service_cls: MagicMock,
+    mock_sheets_cls: MagicMock,  # noqa: ARG001
+    mock_get_db: MagicMock,
+    mock_refresh: MagicMock,  # noqa: ARG001  # --no-refresh isolates the pull-exit path
+) -> None:
+    """A non-complete pull status makes `gsheet pull` exit 1 (CI/agent signal)."""
+    service = MagicMock()
+    service.pull_connection.return_value = PullResult(
+        connection_id="conn_abc123",
+        status="auth_expired",
+        error_message="OAuth token revoked.",
+    )
+    mock_service_cls.return_value = service
+    mock_oauth.return_value = MagicMock()
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+
+    result = runner.invoke(app, ["gsheet", "pull", "conn_abc123", "--no-refresh"])
+    assert result.exit_code == 1, result.output
+
+
+@pytest.mark.unit
+@patch("moneybin.services.refresh.refresh")
+@patch("moneybin.database.get_database")
+@patch("moneybin.connectors.gsheet.sheets_api.SheetsClient")
+@patch("moneybin.connectors.gsheet.pull_service.GSheetPullService")
+@patch("moneybin.cli.commands.gsheet._build_oauth_client")
 def test_gsheet_pull_no_refresh_skips_pipeline(
     mock_oauth: MagicMock,
     mock_service_cls: MagicMock,

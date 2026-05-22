@@ -134,6 +134,13 @@ class GSheetPullService:
         except GSheetRateLimitError:
             logger.exception(f"gsheet rate-limited for connection={conn.connection_id}")
             return self._record_failure(conn, import_id, status="rate_limited")
+        except Exception:
+            # GSheetAPIError (Sheets HTTP 500 etc.) and any other unclassified
+            # fetch error must still close the import_log row + mark the
+            # connection failed. Without this the row stays "importing" forever
+            # and list_healthy keeps rescheduling it with no failure signal.
+            logger.exception(f"gsheet fetch failed for connection={conn.connection_id}")
+            return self._record_unexpected_failure(conn, import_id)
 
         try:
             df = rows_to_df(rows)

@@ -278,6 +278,12 @@ def gsheet_pull(
                 if not refresh_result.applied and refresh_result.error is not None:
                     refresh_error = refresh_result.error
 
+    # Any non-complete pull (auth_expired, unreachable, rate_limited, failed,
+    # drift_detected) is a runtime failure — exit non-zero so CI/agents detect
+    # it without parsing output. drift_detected counts: the pull did not load
+    # cleanly and needs reconnect.
+    pull_failed = any(r.status != "complete" for r in results)
+
     if output == OutputFormat.JSON:
         typer.echo(
             json.dumps(
@@ -305,7 +311,7 @@ def gsheet_pull(
                 indent=2,
             )
         )
-        if refresh_error is not None:
+        if refresh_error is not None or pull_failed:
             raise typer.Exit(1)
         return
 
@@ -330,6 +336,7 @@ def gsheet_pull(
             f"❌ Pull completed but refresh pipeline failed: {refresh_error}",
             err=True,
         )
+    if refresh_error is not None or pull_failed:
         raise typer.Exit(1)
 
 

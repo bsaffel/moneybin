@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import duckdb
 from fastmcp import FastMCP
 
 from moneybin.mcp._registration import register
@@ -28,7 +29,11 @@ def _gsheet_block(db: Any) -> dict[str, Any]:
             ORDER BY created_at ASC, connection_id ASC
             """
         ).fetchall()
-    except Exception:  # noqa: BLE001 — table may not exist on bare DBs before init_schemas
+    except duckdb.CatalogException:
+        # Table absent on bare DBs before init_schemas — report empty rather
+        # than error. Narrowed from a blanket except so real DB/query problems
+        # (corruption, permission, a broken schema) surface instead of being
+        # masked as total_connections=0 and suppressing recovery hints.
         return {"total_connections": 0, "by_status": {}, "needs_attention": []}
 
     by_status: dict[str, int] = {}

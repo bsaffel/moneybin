@@ -34,6 +34,11 @@ WITH ranked AS (
     deleted_from_source_at,
     ROW_NUMBER() OVER (PARTITION BY transaction_id, account_id ORDER BY loaded_at DESC) AS _row_num
   FROM raw.tabular_transactions
+  -- Exclude soft-deleted rows BEFORE ranking. Otherwise a soft-deleted row
+  -- with a newer loaded_at ranks #1 and is then dropped by the outer filter,
+  -- while a valid same-key row at #2 is also excluded — silently losing the
+  -- transaction. Filtering pre-rank lets the valid row take #1.
+  WHERE deleted_from_source_at IS NULL
 )
 SELECT
   transaction_id, /* Deterministic ID: source-provided or SHA-256 hash */
@@ -64,4 +69,4 @@ SELECT
   loaded_at /* When record was loaded into database */
 FROM ranked
 WHERE
-  _row_num = 1 AND deleted_from_source_at IS NULL
+  _row_num = 1

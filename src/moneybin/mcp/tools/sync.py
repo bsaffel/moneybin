@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Generator
 from contextlib import contextmanager
+from dataclasses import replace
 from typing import Any
 
 from fastmcp import FastMCP
@@ -202,7 +203,17 @@ def sync_connect(institution: str | None = None) -> ResponseEnvelope:
         "MCP tool `sync_connect` is deprecated; use `sync_link`. "
         "The alias will be removed in the next minor release."
     )
-    return sync_link.__wrapped__(institution=institution)  # type: ignore[attr-defined]
+    result = sync_link.__wrapped__(institution=institution)  # type: ignore[attr-defined]
+    # Surface the deprecation in the response too (logger.warning never reaches
+    # the agent; envelope is frozen → dataclasses.replace).
+    return replace(
+        result,
+        actions=[
+            "DEPRECATED: `sync_connect` is an alias for `sync_link`, removed "
+            "next minor release — switch to `sync_link`.",
+            *result.actions,
+        ],
+    )
 
 
 @mcp_tool(sensitivity="low")
@@ -212,7 +223,15 @@ def sync_connect_status(session_id: str) -> ResponseEnvelope:
         "MCP tool `sync_connect_status` is deprecated; use `sync_link_status`. "
         "The alias will be removed in the next minor release."
     )
-    return sync_link_status.__wrapped__(session_id=session_id)  # type: ignore[attr-defined]
+    result = sync_link_status.__wrapped__(session_id=session_id)  # type: ignore[attr-defined]
+    return replace(
+        result,
+        actions=[
+            "DEPRECATED: `sync_connect_status` is an alias for "
+            "`sync_link_status`, removed next minor release — switch to it.",
+            *result.actions,
+        ],
+    )
 
 
 @mcp_tool(

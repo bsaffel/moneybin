@@ -447,7 +447,14 @@ class GSheetConnectionsRepo:
         return [_decode_row(r) for r in rows]
 
     def list_healthy(self) -> list[dict[str, Any]]:
-        """Return only connections in ``healthy`` status."""
+        """Return connections eligible for an auto-pull on refresh_run.
+
+        That's ``healthy`` plus the transient retryable statuses
+        ``rate_limited`` and ``unreachable`` (a retry can clear those). Sticky
+        states — auth_expired, drift_detected, disconnected, failed — need
+        explicit operator action and are excluded. Name kept for caller
+        stability; see the query comment for the per-status rationale.
+        """
         cols = ", ".join(_FULL_ROW_COLUMNS)
         rows = self._db.execute(
             # Auto-retry transient statuses on each refresh_run. auth_expired

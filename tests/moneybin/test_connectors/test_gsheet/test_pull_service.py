@@ -94,6 +94,28 @@ def test_pull_connection_refuses_disconnected(in_memory_db: Database) -> None:
         pull_svc.pull_connection(cid)
 
 
+def test_pull_unexpected_api_error_marks_failed(in_memory_db: Database) -> None:
+    """Unclassified fetch errors (HTTP 500 etc.) close import_log + mark failed.
+
+    Verifies the GSheetAPIError catch: the connection is marked failed and the
+    import_log row is terminal, never left stuck in 'importing'.
+    """
+    from moneybin.connectors.gsheet.errors import GSheetAPIError
+
+    pull_svc, sheets, cid = _setup(in_memory_db)
+    sheets.inject_error(GSheetAPIError("Google Sheets HTTP 500"))
+    result = pull_svc.pull_connection(cid)
+    assert result.status == "failed"
+    # import_log row must be terminal, not stuck in 'importing'.
+    row = in_memory_db.execute(
+        "SELECT status FROM raw.import_log WHERE source_origin = ? "
+        "ORDER BY started_at DESC LIMIT 1",
+        [cid],
+    ).fetchone()
+    assert row is not None
+    assert row[0] == "failed"
+
+
 def test_pull_isolates_per_connection_failure(in_memory_db: Database) -> None:
     """One unhealthy connection in the batch doesn't crash the others.
 
