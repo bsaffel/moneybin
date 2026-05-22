@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from moneybin.repositories.base import BaseRepo
+from moneybin.repositories.base import BaseRepo, quote_ident
 from moneybin.services.audit_service import AuditEvent
 from moneybin.tables import TRANSACTION_CATEGORIES
 
@@ -219,7 +219,7 @@ class TransactionCategoriesRepo(BaseRepo):
         full prior state (Req 4). Higher-priority sources (user/migration/ml/
         plaid) referencing this ``rule_id`` are left intact.
         """
-        cols = ", ".join(_TRANSACTION_CATEGORIES_COLUMNS)
+        cols = ", ".join(quote_ident(c) for c in _TRANSACTION_CATEGORIES_COLUMNS)
         with self._transaction(in_outer_txn=in_outer_txn):
             rows = self._db.execute(
                 f"SELECT {cols} FROM {TRANSACTION_CATEGORIES.full_name} "  # noqa: S608  # TableRef + code-constant columns + parameterized value

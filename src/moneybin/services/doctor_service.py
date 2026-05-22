@@ -272,7 +272,7 @@ class DoctorService:
         return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
 
     def _run_user_merchants_orphans(self) -> InvariantResult:
-        """Warn on merchants no categorization references (warn-only by design).
+        """Warn on merchants with no categorization references (warn-only by design).
 
         Deleting a categorization does not delete the merchant it referenced
         (categorization-matching-mechanics.md), so orphaned merchants accumulate
