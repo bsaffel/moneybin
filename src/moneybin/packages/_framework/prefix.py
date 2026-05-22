@@ -51,7 +51,13 @@ def validate_schema_filenames(
     owns_prefix: str,
     schema_files: Iterable[Path],
 ) -> list[PrefixViolation]:
-    """Confirm every SQL file in schema/ matches (raw|app)_<prefix>_*.sql."""
+    """Confirm every SQL file in schema/ matches (raw|app)_<prefix>_*.sql.
+
+    Only raw and app are allowed: packages own their raw landing tables and
+    app-layer state, but core/prep/reports are framework-managed layers
+    (SQLMesh models, staging views) a package must not write DDL into — those
+    surfaces come from models/, not schema/.
+    """
     violations: list[PrefixViolation] = []
     for sql_file in schema_files:
         name = sql_file.name
