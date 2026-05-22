@@ -20,8 +20,32 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # Opt out of automated review for a specific push by putting [skip-review]
+      # (or [skip review]) in the tip commit message — used when merging an
+      # already-approved PR and a re-review would only churn nits. The
+      # pull_request event payload does not carry the head commit message, so we
+      # read it via the API rather than from the checked-out tree (keeps the
+      # reviewer's checkout untouched). HEAD_SHA is passed via env, never
+      # interpolated into the shell, per .claude/rules/security.md.
+      - name: Check for review opt-out
+        id: optout
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # Fail open: if the commit can't be read (transient error, fork PR
+          # head not resolvable from base repo), msg is empty and review runs.
+          msg=$(gh api "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA" --jq '.commit.message' 2>/dev/null || true)
+          if printf '%s' "$msg" | grep -qiE '\[skip[ -]review\]'; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Review opt-out keyword found in tip commit; skipping automated review."
+          fi
+
       - name: Automated PR review
-        if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+        if: |
+          (github.event_name == 'pull_request' && steps.optout.outputs.skip != 'true')
+          || github.event_name == 'workflow_dispatch'
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
