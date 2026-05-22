@@ -128,8 +128,22 @@ def write_privacy_event(event: dict[str, Any]) -> None:
                 os.O_WRONLY | os.O_CREAT | os.O_APPEND,
                 0o600,
             )
-            with os.fdopen(fd, "a", encoding="utf-8") as f:
-                f.write(line + "\n")
+            # os.open applies `mode & ~umask`, so a umask that strips owner-write
+            # (e.g. 0o200) would create the file read-only and the very next
+            # append would raise PermissionError — silently killing the audit
+            # log. fchmod the open fd to force 0o600 regardless of umask.
+            try:
+                os.fchmod(fd, 0o600)
+                with os.fdopen(fd, "a", encoding="utf-8") as f:
+                    f.write(line + "\n")
+            except BaseException:
+                # fdopen takes ownership of fd on success; if fchmod (before
+                # fdopen) raised, close the raw fd ourselves to avoid a leak.
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+                raise
     except Exception as exc:  # noqa: BLE001 — fail-soft: a missing audit row must
         # never break a tool call. json.dumps can raise TypeError/ValueError on a
         # non-serializable event; file I/O raises OSError/PermissionError; the

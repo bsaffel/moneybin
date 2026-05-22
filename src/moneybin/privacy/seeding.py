@@ -70,7 +70,14 @@ def get_redaction_key() -> bytes:
         try:
             hex_value = store.get_key(REDACTION_KEY_NAME)
             key = bytes.fromhex(hex_value)
-        except SecretNotFoundError:
+            # A malformed/odd-length entry (bytes.fromhex raises ValueError) or a
+            # short key from a prior code path would otherwise crash every tool
+            # call or silently weaken the HMAC. Treat both as "regenerate".
+            if len(key) != _KEY_BYTES:
+                raise ValueError(
+                    f"stored redaction key is {len(key)} bytes, expected {_KEY_BYTES}"
+                )
+        except (SecretNotFoundError, ValueError):
             key = secrets.token_bytes(_KEY_BYTES)
             store.set_key(REDACTION_KEY_NAME, key.hex())
         _CACHE[profile] = key

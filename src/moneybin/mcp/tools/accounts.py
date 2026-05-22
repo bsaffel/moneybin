@@ -29,6 +29,7 @@ from decimal import Decimal
 
 from fastmcp import FastMCP
 
+from moneybin import error_codes
 from moneybin.database import get_database
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
@@ -98,7 +99,9 @@ def accounts_get(account_id: str) -> ResponseEnvelope[AccountDetail]:
     with get_database(read_only=True) as db:
         record = AccountService(db).get_account(account_id)
     if record is None:
-        raise UserError(f"Account not found: {account_id}", code="account_not_found")
+        raise UserError(
+            f"Account not found: {account_id}", code=error_codes.INFRA_NOT_FOUND
+        )
     return build_envelope(data=record)
 
 

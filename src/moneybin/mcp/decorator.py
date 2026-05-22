@@ -315,7 +315,12 @@ def mcp_tool(
             # Only payloads carrying at least one CRITICAL-tier field need
             # to be walked by redact_typed. For LOW/MEDIUM/HIGH-only tools
             # the walk would allocate a value-identical dataclass tree —
-            # pure overhead on the hot path.
+            # pure overhead on the hot path. Safe ONLY while every
+            # HIGH/MEDIUM/LOW DataClass maps to _passthrough in _TRANSFORMS.
+            # FIXME(PR3): when PR3 wires real BALANCE/TXN_AMOUNT/MERCHANT_NAME
+            # transforms, widen to `tier >= Tier.MEDIUM` (or whichever is the
+            # lowest tier with a non-passthrough transform) — otherwise
+            # HIGH/MEDIUM tools silently emit raw values.
             has_critical = tier == Tier.CRITICAL
 
         is_coro = inspect.iscoroutinefunction(fn)
