@@ -60,6 +60,7 @@ def transform_plan(
                 sensitivity="low",
             ),
             output,
+            cli_actor="transform_plan",
         )
         return
 
@@ -105,7 +106,11 @@ def transform_apply(
         }
         if result.error is not None:
             data["error"] = result.error
-        render_or_json(build_envelope(data=data, sensitivity="low"), output)
+        render_or_json(
+            build_envelope(data=data, sensitivity="low"),
+            output,
+            cli_actor="transform_apply",
+        )
         # JSON mode must still exit non-zero on failure so scripts can detect
         # it from $?; the envelope alone isn't enough for shell pipelines.
         if not result.applied:
@@ -179,6 +184,7 @@ def transform_status(
                 actions=actions,
             ),
             output,
+            cli_actor="transform_status",
         )
         return
 
@@ -219,6 +225,7 @@ def transform_validate(
                 sensitivity="low",
             ),
             output,
+            cli_actor="transform_validate",
         )
         if not result.valid:
             raise typer.Exit(1)
@@ -264,6 +271,7 @@ def transform_audit(
                 sensitivity="low",
             ),
             output,
+            cli_actor="transform_audit",
         )
         if result.failed:
             raise typer.Exit(1)

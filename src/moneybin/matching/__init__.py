@@ -1,6 +1,9 @@
 """Transaction matching and dedup engine."""
 
-UNIONED_TABLE = "prep.int_transactions__unioned"
+from moneybin.tables import INT_TRANSACTIONS_UNIONED
+
+# Canonical source table for matching; single source of truth is the TableRef.
+UNIONED_TABLE = INT_TRANSACTIONS_UNIONED.full_name
 
 
 def quote_table_ref(table: str) -> str:

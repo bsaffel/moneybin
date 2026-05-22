@@ -17,6 +17,8 @@ from moneybin.tables import (
     CATEGORY_OVERRIDES,
     FCT_TRANSACTIONS,
     GSHEET_CONNECTIONS,
+    INT_TRANSACTIONS_UNIONED,
+    MATCH_DECISIONS,
     PROPOSED_RULES,
     TRANSACTION_CATEGORIES,
     USER_CATEGORIES,
@@ -87,10 +89,15 @@ class DoctorService:
         """
         transaction_count = self._get_transaction_count()
         sqlmesh_results = self._run_sqlmesh_audits(verbose)
-        staging = self._run_staging_coverage()
+        dedup_reconciliation = self._run_dedup_reconciliation()
         categorization = self._run_categorization_coverage()
         app_integrity = self._run_app_integrity(full=full)
-        invariants = [*sqlmesh_results, staging, categorization, *app_integrity]
+        invariants = [
+            *sqlmesh_results,
+            dedup_reconciliation,
+            categorization,
+            *app_integrity,
+        ]
         return DoctorReport(invariants=invariants, transaction_count=transaction_count)
 
     def _run_app_integrity(self, *, full: bool) -> list[InvariantResult]:
@@ -459,16 +466,92 @@ class DoctorService:
             )
         return results
 
-    def _run_staging_coverage(self) -> InvariantResult:
-        # app.match_decisions has no is_primary column — cannot compute
-        # dedup secondary count. Mark skipped rather than silently wrong.
-        # Revisit when match_decisions gains a primary/secondary designation.
+    def _run_dedup_reconciliation(self) -> InvariantResult:
+        """Reconcile raw→core row counts against recorded dedup decisions.
+
+        Every imported row that disappears between the unioned staging layer
+        and the core fact table must be explained by an accepted dedup match
+        decision. The invariant:
+
+            raw_total - core_count == dedup_absorbed
+
+        where ``dedup_absorbed`` is the count of accepted, non-reversed dedup
+        decisions. Each such decision collapses exactly one secondary row into
+        its group — so the decision count equals the expected number of
+        absorbed rows. A mismatch means rows collapsed without a decision (a
+        leak) or a decision failed to collapse its rows (an un-applied match).
+
+        The ``dedup_absorbed == COUNT(decisions)`` identity holds only while
+        matching stays 1:1 (each transaction in at most one match — the
+        invariant the matcher enforces and ``int_transactions__matched.sql``
+        relies on). If multi-hop (3+ way) merges are ever introduced, this
+        formula must change to ``SUM(group_size - 1)`` over the connected
+        components, in lockstep with that model.
+        """
+        try:
+            raw_total = self._scalar_int(
+                f"SELECT COUNT(*) FROM {INT_TRANSACTIONS_UNIONED.full_name}"  # noqa: S608 — TableRef constant
+            )
+            core_count = self._scalar_int(
+                f"SELECT COUNT(DISTINCT transaction_id) FROM {FCT_TRANSACTIONS.full_name}"  # noqa: S608 — TableRef constant
+            )
+            dedup_absorbed = self._scalar_int(
+                f"""
+                SELECT COUNT(*) FROM {MATCH_DECISIONS.full_name}
+                WHERE match_status = 'accepted'
+                  AND reversed_at IS NULL
+                  AND match_type = 'dedup'
+                """  # noqa: S608 — TableRef constant
+            )
+        except Exception as e:  # noqa: BLE001 — degrade gracefully; surface cause at DEBUG
+            # Expected case: prep/core views absent before the first transform.
+            # Bind + exc_info so a real fault (renamed column, permissions) is
+            # diagnosable rather than masked by the static skip detail.
+            logger.debug(f"dedup_reconciliation skipped: {e}", exc_info=True)
+            return InvariantResult(
+                name="dedup_reconciliation",
+                status="skipped",
+                detail="prep/core layer not available; run transform first",
+                affected_ids=[],
+            )
+        observed_absorbed = raw_total - core_count
+        if observed_absorbed < 0:
+            # core can't legitimately hold more rows than staging — report the
+            # impossible direction plainly instead of a nonsensical negative
+            # "absorbed" count an agent can't act on.
+            return InvariantResult(
+                name="dedup_reconciliation",
+                status="fail",
+                detail=(
+                    f"core has more rows than staging "
+                    f"(core_count={core_count} > raw_total={raw_total}); "
+                    "a transaction reached core without passing through the "
+                    "staging layer"
+                ),
+                affected_ids=[],
+            )
+        if observed_absorbed == dedup_absorbed:
+            return InvariantResult(
+                name="dedup_reconciliation",
+                status="pass",
+                detail=None,
+                affected_ids=[],
+            )
         return InvariantResult(
-            name="staging_coverage",
-            status="skipped",
-            detail="requires is_primary column in app.match_decisions — schema not yet available",
+            name="dedup_reconciliation",
+            status="fail",
+            detail=(
+                f"expected {dedup_absorbed} absorbed row(s) from accepted dedup "
+                f"decisions but observed {observed_absorbed} "
+                f"(raw_total={raw_total}, core_count={core_count})"
+            ),
             affected_ids=[],
         )
+
+    def _scalar_int(self, sql: str) -> int:
+        """Execute a single-row query and return column 0 as an int (0 if no row)."""
+        row = self._db.execute(sql).fetchone()
+        return int(row[0]) if row else 0
 
     def _run_categorization_coverage(self) -> InvariantResult:
         """Warn (not fail) when <50% of non-transfer transactions are categorized."""

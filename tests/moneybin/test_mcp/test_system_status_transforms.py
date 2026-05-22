@@ -74,7 +74,7 @@ async def test_system_status_omits_schema_drift_when_healthy(mcp_db: object) -> 
     """No schema_drift key when all core tables match EXPECTED_CORE_COLUMNS."""
     env = await system_status()
     data = env.to_dict()["data"]
-    assert "schema_drift" not in data
+    assert data.get("schema_drift") is None
 
 
 @pytest.mark.unit
@@ -86,7 +86,7 @@ async def test_system_status_surfaces_schema_drift_when_columns_missing(
         db.execute("ALTER TABLE core.dim_accounts DROP COLUMN display_name")
     env = await system_status()
     data = env.to_dict()["data"]
-    assert "schema_drift" in data
+    assert data.get("schema_drift") is not None
     tables = data["schema_drift"]["tables"]
     entry = next(t for t in tables if t["name"] == "core.dim_accounts")
     assert "display_name" in entry["missing_columns"]

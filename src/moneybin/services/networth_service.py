@@ -8,40 +8,19 @@ monthly intervals with period-over-period change.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
-from typing import Any
 
 from moneybin.database import Database
+from moneybin.privacy.payloads.networth import (
+    NetWorthAccountRow,
+    NetWorthHistoryPayload,
+    NetWorthHistoryPoint,
+    NetWorthSnapshotPayload,
+)
 from moneybin.tables import DIM_ACCOUNTS, FCT_BALANCES_DAILY, REPORTS_NET_WORTH
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass(slots=True)
-class NetWorthSnapshot:
-    """Net worth at a point in time, with optional per-account breakdown."""
-
-    balance_date: date
-    net_worth: Decimal
-    total_assets: Decimal
-    total_liabilities: Decimal
-    account_count: int
-    per_account: list[dict[str, Any]] = field(default_factory=list)
-
-    def to_dict(self, *, include_per_account: bool = True) -> dict[str, Any]:
-        """Serialize snapshot for JSON / envelope transport."""
-        payload: dict[str, Any] = {
-            "balance_date": self.balance_date.isoformat(),
-            "net_worth": self.net_worth,
-            "total_assets": self.total_assets,
-            "total_liabilities": self.total_liabilities,
-            "account_count": self.account_count,
-        }
-        if include_per_account:
-            payload["per_account"] = self.per_account
-        return payload
 
 
 class NetworthService:
@@ -57,7 +36,7 @@ class NetworthService:
         self,
         as_of_date: date | None = None,
         account_ids: list[str] | None = None,
-    ) -> NetWorthSnapshot:
+    ) -> NetWorthSnapshotPayload:
         """Latest net worth snapshot, optionally as-of a date.
 
         Returns a zero-snapshot if no reports.net_worth rows exist.
@@ -76,7 +55,7 @@ class NetworthService:
         """  # noqa: S608  # parameterized via params
         row = self._db.execute(sql, params).fetchone()
         if row is None:
-            return NetWorthSnapshot(
+            return NetWorthSnapshotPayload(
                 balance_date=date.today(),
                 net_worth=Decimal("0"),
                 total_assets=Decimal("0"),
@@ -85,7 +64,7 @@ class NetworthService:
                 per_account=[],
             )
         per_account = self._per_account_breakdown(row[0], account_ids)
-        return NetWorthSnapshot(
+        return NetWorthSnapshotPayload(
             balance_date=row[0],
             net_worth=row[1],
             total_assets=row[2],
@@ -96,7 +75,7 @@ class NetworthService:
 
     def _per_account_breakdown(
         self, on_date: date, account_ids: list[str] | None
-    ) -> list[dict[str, Any]]:
+    ) -> list[NetWorthAccountRow]:
         """Per-account balances on a date, joining dim for include/archive filtering."""
         params: list[object] = [on_date]
         where = ""
@@ -112,12 +91,12 @@ class NetworthService:
             ORDER BY a.display_name
         """  # noqa: S608  # parameterized
         return [
-            {
-                "account_id": row[0],
-                "display_name": row[1],
-                "balance": row[2],
-                "observation_source": row[3],
-            }
+            NetWorthAccountRow(
+                account_id=row[0],
+                display_name=row[1],
+                balance=row[2],
+                observation_source=row[3],
+            )
             for row in self._db.execute(sql, params).fetchall()
         ]
 
@@ -126,7 +105,7 @@ class NetworthService:
         from_date: date,
         to_date: date,
         interval: str = "monthly",
-    ) -> list[dict[str, Any]]:
+    ) -> NetWorthHistoryPayload:
         """Period-bucketed time series with period-over-period change."""
         if interval not in self._VALID_INTERVALS:
             raise ValueError(
@@ -160,12 +139,13 @@ class NetworthService:
             FROM with_change ORDER BY period
         """  # noqa: S608  # bucket_expr from allowlist; values parameterized
         rows = self._db.execute(sql, [from_date, to_date]).fetchall()
-        return [
-            {
-                "period": row[0].isoformat() if row[0] else None,
-                "net_worth": row[1],
-                "change_abs": row[2],
-                "change_pct": row[3],
-            }
+        points = [
+            NetWorthHistoryPoint(
+                period=row[0].isoformat() if row[0] else None,
+                net_worth=row[1],
+                change_abs=row[2],
+                change_pct=row[3],
+            )
             for row in rows
         ]
+        return NetWorthHistoryPayload(points=points)

@@ -25,8 +25,10 @@ from moneybin.protocol.envelope import (
 from moneybin.services.schema_catalog import build_schema_doc
 
 
-@mcp_tool(sensitivity="medium")
-def sql_query(query: str) -> ResponseEnvelope:
+@mcp_tool(
+    unclassified=True
+)  # DEPRECATED: unclassified=True — PR 4 wires sqlglot lineage
+def sql_query(query: str) -> ResponseEnvelope[Any]:
     """Execute a read-only SQL query against the database.
 
     Only SELECT, WITH, DESCRIBE, SHOW, PRAGMA, and EXPLAIN queries
@@ -37,6 +39,13 @@ def sql_query(query: str) -> ResponseEnvelope:
 
     For schema, columns, and example queries, read resource
     `moneybin://schema` before composing non-trivial queries.
+
+    Note: privacy redaction is not applied to ``sql_query`` results — the
+    payload shape is decided by the caller's query, so the static-type-driven
+    redaction the rest of the surface uses cannot kick in. Avoid selecting
+    CRITICAL-tier columns directly (``account_id``, ``routing_number``,
+    ``last_four``); prefer the dedicated tools that mask those values. PR 4
+    replaces this opt-out with sqlglot column-lineage redaction.
 
     Args:
         query: The SQL query to execute.
@@ -60,8 +69,10 @@ def sql_query(query: str) -> ResponseEnvelope:
     return build_envelope(data=records, sensitivity="medium")
 
 
-@mcp_tool(sensitivity="low")
-def sql_schema(table: str | None = None) -> ResponseEnvelope:
+@mcp_tool(
+    unclassified=True
+)  # DEPRECATED: unclassified=True — PR 4 wires sqlglot lineage
+def sql_schema(table: str | None = None) -> ResponseEnvelope[Any]:
     """Return the curated database schema for ad-hoc SQL composition.
 
     Equivalent to reading the ``moneybin://schema`` MCP resource. Provided

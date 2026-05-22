@@ -9,6 +9,7 @@ display_name, include_in_net_worth, and is_archived fold in via flags
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import sys
 from collections.abc import Callable
@@ -25,6 +26,11 @@ from moneybin.cli.output import (
 from moneybin.cli.utils import emit_json as emit_json
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
+from moneybin.privacy.payloads.accounts import (
+    AccountDetail,
+    AccountListPayload,
+    AccountResolvePayload,
+)
 from moneybin.protocol.envelope import build_envelope
 from moneybin.services.account_service import (
     CLEAR,
@@ -62,20 +68,25 @@ def accounts_list(
     ),
 ) -> None:
     """List accounts. Hides archived accounts by default."""
-    with handle_cli_errors():
+    with handle_cli_errors(cli_actor="accounts_list", payload_type=AccountListPayload):
         with get_database(read_only=True) as db:
             result = AccountService(db).list_accounts(
                 include_archived=include_archived, type_filter=type_filter
             )
     if output == OutputFormat.JSON:
+        # No explicit sensitivity: AccountSummary carries ACCOUNT_IDENTIFIER
+        # (CRITICAL); render_or_json derives the real tier. A literal "medium"
+        # understates it at the call site.
         render_or_json(
-            build_envelope(data=result.accounts, sensitivity="medium"), output
+            build_envelope(data=result),
+            output,
+            cli_actor="accounts_list",
         )
         return
-    for acct in result.accounts:
-        display = acct.get("display_name") or acct.get("account_id")
-        institution = acct.get("institution_name", "")
-        acct_type = acct.get("account_type", "")
+    for acct in result.rows:
+        display = acct.display_name or acct.account_id
+        institution = acct.institution_name or ""
+        acct_type = acct.account_type
         typer.echo(f"  {display}  [{institution}]  {acct_type}")
 
 
@@ -86,16 +97,21 @@ def accounts_get(
     quiet: bool = quiet_option,  # noqa: ARG001
 ) -> None:
     """Show one account's full settings + dim record."""
-    with handle_cli_errors():
+    with handle_cli_errors(cli_actor="accounts_get", payload_type=AccountDetail):
         with get_database(read_only=True) as db:
             record = AccountService(db).get_account(account_id)
     if record is None:
         logger.error(f"❌ Account not found: {account_id}")
         raise typer.Exit(1)
     if output == OutputFormat.JSON:
-        render_or_json(build_envelope(data=record, sensitivity="medium"), output)
+        # AccountDetail carries CRITICAL fields; render_or_json derives the tier.
+        render_or_json(
+            build_envelope(data=record),
+            output,
+            cli_actor="accounts_get",
+        )
         return
-    for k, v in record.items():
+    for k, v in dataclasses.asdict(record).items():
         typer.echo(f"  {k}: {v}")
 
 
@@ -284,27 +300,34 @@ def accounts_resolve(
     Use this before commands that need an account_id when you only have a
     natural-language reference.
     """
-    with handle_cli_errors():
+    with handle_cli_errors(
+        cli_actor="accounts_resolve", payload_type=AccountResolvePayload
+    ):
         with get_database(read_only=True) as db:
-            matches = AccountService(db).resolve(query=query, limit=limit)
+            payload = AccountService(db).resolve(query=query, limit=limit)
 
     if output == OutputFormat.JSON:
+        # No explicit sensitivity: AccountResolvePayload carries
+        # ACCOUNT_IDENTIFIER (CRITICAL), and render_or_json derives the real
+        # tier via derive_log_sensitivity. A literal "low" here understates it
+        # at the call site even though the emitted value is corrected.
         render_or_json(
-            build_envelope(data=[m.to_dict() for m in matches], sensitivity="low"),
+            build_envelope(data=payload),
             output,
+            cli_actor="accounts_resolve",
         )
         return
 
-    if not matches:
+    if not payload.matches:
         if not quiet:
             typer.echo(f"No accounts matched '{query}'.", err=True)
         return
-    for m in matches:
+    for m in payload.matches:
         subtype = m.account_subtype or "-"
         institution = m.institution_name or "-"
         typer.echo(
             f"{m.account_id}\t{m.display_name}\t{subtype}\t{institution}\t"
-            f"{m.confidence:.3f}"
+            f"{round(m.confidence, 3):.3f}"
         )
 
 

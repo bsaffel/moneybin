@@ -52,6 +52,7 @@ def import_labels_add(
                 data={"import_id": import_id, "labels": updated}, sensitivity="low"
             ),
             output,
+            cli_actor="import_labels_add",
         )
         return
     logger.info(f"✅ Labels on {import_id}: {', '.join(updated) if updated else '-'}")
@@ -82,6 +83,7 @@ def import_labels_remove(
                 data={"import_id": import_id, "labels": updated}, sensitivity="low"
             ),
             output,
+            cli_actor="import_labels_remove",
         )
         return
     logger.info(f"✅ Labels on {import_id}: {', '.join(updated) if updated else '-'}")
@@ -110,6 +112,7 @@ def import_labels_list(
                             sensitivity="low",
                         ),
                         output,
+                        cli_actor="import_labels_list",
                     )
                     return
                 if not labels:
@@ -129,6 +132,7 @@ def import_labels_list(
                 sensitivity="low",
             ),
             output,
+            cli_actor="import_labels_list",
         )
         return
     if not rows:

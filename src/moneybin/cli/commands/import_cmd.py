@@ -386,14 +386,14 @@ def import_files_command(
         }
         envelope = build_envelope(data=data, sensitivity="low")
         if output == OutputFormat.JSON:
-            render_or_json(envelope, output)
+            render_or_json(envelope, output, cli_actor="import_files_command")
         else:
             logger.error(f"❌ {e}")
         raise typer.Exit(1) from e
 
     envelope = build_envelope(data=data, sensitivity="low")
     if output == OutputFormat.JSON:
-        render_or_json(envelope, output)
+        render_or_json(envelope, output, cli_actor="import_files_command")
     elif not quiet:
         for f in files_list:
             icon = "✅" if f["status"] == "imported" else "❌"

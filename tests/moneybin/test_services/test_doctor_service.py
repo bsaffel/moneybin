@@ -116,6 +116,52 @@ def doctor_db(tmp_path: Path) -> Generator[Database, None, None]:
     database.close()
 
 
+def _seed_prep_unioned(db: Database, row_count: int) -> None:
+    """Create prep.int_transactions__unioned and insert ``row_count`` rows.
+
+    Only the row count matters for dedup_reconciliation (raw_total), so the
+    columns are minimal. prep.* is SQLMesh-managed in production and absent
+    from the unit-test DB, so tests exercising the active check create it.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS prep.int_transactions__unioned (
+            source_type VARCHAR,
+            source_transaction_id VARCHAR,
+            account_id VARCHAR
+        )
+        """
+    )
+    for i in range(row_count):
+        db.execute(
+            "INSERT INTO prep.int_transactions__unioned VALUES (?, ?, ?)",  # noqa: S608 — test input, not user data
+            ["ofx", f"u{i}", "ACC1"],
+        )
+
+
+def _insert_match_decision(
+    db: Database,
+    *,
+    match_id: str,
+    match_type: str = "dedup",
+    match_status: str = "accepted",
+    reversed_at: str | None = None,
+) -> None:
+    """Insert one app.match_decisions row with the NOT NULL columns populated."""
+    db.execute(
+        """
+        INSERT INTO app.match_decisions (
+            match_id, source_transaction_id_a, source_type_a, source_origin_a,
+            source_transaction_id_b, source_type_b, source_origin_b,
+            account_id, match_type, match_status, decided_by, decided_at, reversed_at
+        ) VALUES (?, 'a', 'ofx', 'bank', 'b', 'csv', 'bank', 'ACC1',
+                  ?, ?, 'auto', CURRENT_TIMESTAMP, ?)
+        """,  # noqa: S608 — test input, not user data
+        [match_id, match_type, match_status, reversed_at],
+    )
+
+
 def _make_mock_ctx(audits: dict[str, tuple[str, str]]) -> Any:
     """Build a mock SQLMesh Context where each audit renders to given SQL."""
     mock_ctx = MagicMock()
@@ -293,10 +339,12 @@ def test_verbose_false_returns_empty_affected_ids(
     assert fk.affected_ids == []  # verbose=False → no IDs
 
 
-@pytest.mark.unit
-def test_staging_coverage_is_always_skipped(
-    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def _dedup_result(db: Database, monkeypatch: pytest.MonkeyPatch) -> InvariantResult:
+    """Run the full doctor report (SQLMesh mocked) and return the dedup invariant.
+
+    Goes through the public ``run_all()`` like every other test in this file, so
+    the dedup_reconciliation wiring is exercised end-to-end.
+    """
     mock_ctx = _make_mock_ctx(_CLEAN_AUDITS)
 
     @contextmanager
@@ -304,11 +352,89 @@ def test_staging_coverage_is_always_skipped(
         yield mock_ctx
 
     monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
-    svc = DoctorService(doctor_db)
-    report = svc.run_all()
-    staging = next(r for r in report.invariants if r.name == "staging_coverage")
-    assert staging.status == "skipped"
-    assert staging.detail is not None
+    report = DoctorService(db).run_all()
+    return next(r for r in report.invariants if r.name == "dedup_reconciliation")
+
+
+@pytest.mark.unit
+def test_dedup_reconciliation_passes_when_collapse_matches_decisions(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 3 imported rows, 2 core rows (T1, T2 from fixture), 1 accepted dedup
+    # decision → exactly 1 row absorbed → 3 - 2 == 1. PASS.
+    _seed_prep_unioned(doctor_db, row_count=3)
+    _insert_match_decision(doctor_db, match_id="m1")
+    result = _dedup_result(doctor_db, monkeypatch)
+    assert result.status == "pass"
+    assert result.detail is None
+
+
+@pytest.mark.unit
+def test_dedup_reconciliation_fails_when_rows_collapse_without_decision(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 3 imported rows collapse to 2 core rows, but no dedup decision explains
+    # it → a leak (rows vanished without a recorded reason). FAIL.
+    _seed_prep_unioned(doctor_db, row_count=3)
+    result = _dedup_result(doctor_db, monkeypatch)
+    assert result.status == "fail"
+    assert result.detail is not None
+
+
+@pytest.mark.unit
+def test_dedup_reconciliation_fails_when_decision_did_not_collapse(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 2 imported rows, 2 core rows (nothing collapsed), but a dedup decision
+    # says one pair should have merged → an un-applied match. FAIL.
+    _seed_prep_unioned(doctor_db, row_count=2)
+    _insert_match_decision(doctor_db, match_id="m1")
+    result = _dedup_result(doctor_db, monkeypatch)
+    assert result.status == "fail"
+
+
+@pytest.mark.unit
+def test_dedup_reconciliation_skipped_when_prep_layer_absent(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # No prep.int_transactions__unioned (transform not yet run) → skipped.
+    result = _dedup_result(doctor_db, monkeypatch)
+    assert result.status == "skipped"
+    assert result.detail is not None
+
+
+@pytest.mark.unit
+def test_dedup_reconciliation_excludes_inactive_and_transfer_decisions(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 2 imported rows, 2 core rows (no collapse). A rejected dedup, a reversed
+    # dedup, and an accepted transfer must all be excluded from the expected
+    # absorbed count → expected 0 → 2 - 2 == 0. PASS.
+    _seed_prep_unioned(doctor_db, row_count=2)
+    _insert_match_decision(doctor_db, match_id="rej", match_status="rejected")
+    _insert_match_decision(
+        doctor_db,
+        match_id="rev",
+        match_status="accepted",
+        reversed_at="2026-01-01 00:00:00",
+    )
+    _insert_match_decision(doctor_db, match_id="xfr", match_type="transfer")
+    result = _dedup_result(doctor_db, monkeypatch)
+    assert result.status == "pass"
+
+
+@pytest.mark.unit
+def test_dedup_reconciliation_fails_clearly_when_core_exceeds_staging(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # core has 2 rows (T1, T2) but staging has 0 → a row reached core without
+    # passing through staging. observed_absorbed would be negative; the detail
+    # must name that impossible direction, never report a nonsensical "-2".
+    _seed_prep_unioned(doctor_db, row_count=0)
+    result = _dedup_result(doctor_db, monkeypatch)
+    assert result.status == "fail"
+    assert "more rows than staging" in (result.detail or "")
+    assert "-2" not in (result.detail or "")
 
 
 @pytest.mark.unit
@@ -366,7 +492,8 @@ def test_run_all_returns_expected_invariants(
     monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
     svc = DoctorService(doctor_db)
     report = svc.run_all()
-    # 3 sqlmesh audits + staging + categorization + 11 app.* integrity checks
+    # 3 sqlmesh audits + dedup_reconciliation + categorization + 11 app.* integrity
+    # checks
     # (audit coverage for user_categories / category_overrides / gsheet_connections
     # / user_merchants / categorization_rules / proposed_rules /
     # transaction_categories + user_categories uniqueness + user_merchants
@@ -376,7 +503,7 @@ def test_run_all_returns_expected_invariants(
     assert "fct_transactions_fk_integrity" in names
     assert "fct_transactions_sign_convention" in names
     assert "bridge_transfers_balanced" in names
-    assert "staging_coverage" in names
+    assert "dedup_reconciliation" in names
     assert "categorization_coverage" in names
     assert "app_audit_coverage_user_categories" in names
     assert "app_audit_coverage_category_overrides" in names

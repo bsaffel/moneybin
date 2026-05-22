@@ -17,10 +17,11 @@ status sees the recovery path without a second tool call.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING
 
 from fastmcp import FastMCP
 
+from moneybin.connectors.gsheet.adapters.base import GSheetConnection
 from moneybin.connectors.gsheet.service_factory import (
     build_connection_service as _build_connection_service,
 )
@@ -34,13 +35,71 @@ from moneybin.error_codes import INFRA_NOT_FOUND
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.privacy.payloads.gsheet import (
+    GsheetAuthPayload,
+    GsheetConnectionRow,
+    GsheetConnectionsPayload,
+    GsheetConnectPayload,
+    GsheetDetection,
+    GsheetDisconnectPayload,
+    GsheetInitialPull,
+    GsheetPullPayload,
+    GsheetPullRow,
+)
 from moneybin.protocol.envelope import (
     ResponseEnvelope,
     build_envelope,
     build_error_envelope,
 )
 
+if TYPE_CHECKING:
+    from moneybin.connectors.gsheet.connection_service import ConnectResult
+
 logger = logging.getLogger(__name__)
+
+
+def _initial_pull(result: ConnectResult) -> GsheetInitialPull | None:
+    """Build the typed initial-pull sub-object from a connect/reconnect result.
+
+    Populated rows on success; status+error on a failed pull; None when no
+    pull ran (``no_initial_pull``).
+    """
+    if result.initial_pull is not None:
+        return GsheetInitialPull(
+            status=result.initial_pull_status,
+            rows_inserted=result.initial_pull.rows_inserted,
+            rows_upserted=result.initial_pull.rows_upserted,
+            rows_soft_deleted=result.initial_pull.rows_soft_deleted,
+        )
+    # Pull ran but produced no rows (e.g. drift_detected, auth_expired) —
+    # surface the failure status + reason so agents distinguish this from
+    # --no-initial-pull (which leaves initial_pull None entirely).
+    if result.initial_pull_status is not None:
+        return GsheetInitialPull(
+            status=result.initial_pull_status,
+            error=result.initial_pull_error,
+        )
+    return None
+
+
+def _connection_row(conn: GSheetConnection) -> GsheetConnectionRow:
+    """Build the typed connection row from a GSheetConnection (mirrors to_dict())."""
+    return GsheetConnectionRow(
+        connection_id=conn.connection_id,
+        spreadsheet_id=conn.spreadsheet_id,
+        sheet_gid=conn.sheet_gid,
+        sheet_name=conn.sheet_name,
+        workbook_name=conn.workbook_name,
+        adapter=conn.adapter,
+        alias=conn.alias,
+        account_id=conn.account_id,
+        account_name=conn.account_name,
+        status=conn.status,
+        last_pull_at=conn.last_pull_at,
+        last_success_at=conn.last_success_at,
+        last_status_reason=conn.last_status_reason,
+        consecutive_failure_count=conn.consecutive_failure_count,
+    )
 
 
 def _reconnect_hint(connection_id: str) -> str:
@@ -51,17 +110,16 @@ def _reconnect_hint(connection_id: str) -> str:
     )
 
 
-def _drift_hints(connections: list[dict[str, Any]]) -> list[str]:
+def _drift_hints(connections: list[GsheetConnectionRow]) -> list[str]:
     """Append a reconnect hint per drifted connection."""
     return [
-        _reconnect_hint(c["connection_id"])
+        _reconnect_hint(c.connection_id)
         for c in connections
-        if c.get("status") == "drift_detected"
+        if c.status == "drift_detected"
     ]
 
 
 @mcp_tool(
-    sensitivity="medium",
     read_only=False,
     idempotent=False,
     open_world=True,
@@ -70,7 +128,7 @@ def _drift_hints(connections: list[dict[str, Any]]) -> list[str]:
     # fire before a human completes the consent screen.
     timeout_seconds=180.0,
 )
-def gsheet_auth(force_reauth: bool = False) -> ResponseEnvelope:
+def gsheet_auth(force_reauth: bool = False) -> ResponseEnvelope[GsheetAuthPayload]:
     """Authenticate with Google Sheets via OAuth 2.0 PKCE (installed-app flow).
 
     Opens the Google consent screen in the user's browser and listens on a
@@ -90,8 +148,7 @@ def gsheet_auth(force_reauth: bool = False) -> ResponseEnvelope:
     oauth = _build_oauth_client()
     if oauth.is_authorized() and not force_reauth:
         return build_envelope(
-            data={"status": "already_authorized"},
-            sensitivity="medium",
+            data=GsheetAuthPayload(status="already_authorized"),
             actions=[
                 "Run gsheet_connect(url='https://docs.google.com/spreadsheets/...') "
                 "to bind a sheet."
@@ -99,8 +156,7 @@ def gsheet_auth(force_reauth: bool = False) -> ResponseEnvelope:
         )
     oauth.authorize()
     return build_envelope(
-        data={"status": "authorized"},
-        sensitivity="medium",
+        data=GsheetAuthPayload(status="authorized"),
         actions=[
             "Run gsheet_connect(url='https://docs.google.com/spreadsheets/...') "
             "to bind a sheet."
@@ -109,7 +165,6 @@ def gsheet_auth(force_reauth: bool = False) -> ResponseEnvelope:
 
 
 @mcp_tool(
-    sensitivity="medium",
     read_only=False,
     idempotent=False,
     open_world=True,
@@ -128,7 +183,7 @@ def gsheet_connect(
     yes: bool = False,
     accept_seed_fallback: bool = False,
     no_initial_pull: bool = False,
-) -> ResponseEnvelope:
+) -> ResponseEnvelope[GsheetConnectPayload]:
     """Bind a Google Sheet to MoneyBin via direct OAuth (user-controlled storage).
 
     Detects sheet structure, persists the column mapping + header
@@ -163,34 +218,15 @@ def gsheet_connect(
     with _build_connection_service() as service:
         result = service.connect(req, actor="mcp")
 
-    data: dict[str, Any] = {
-        "connection": result.connection.to_dict(),
-        "detection": {
-            "confidence": result.detection.confidence,
-            "column_mapping": result.detection.column_mapping,
-            "notes": result.detection.notes,
-        },
-        "initial_pull": (
-            {
-                "status": result.initial_pull_status,
-                "rows_inserted": result.initial_pull.rows_inserted,
-                "rows_upserted": result.initial_pull.rows_upserted,
-                "rows_soft_deleted": result.initial_pull.rows_soft_deleted,
-            }
-            if result.initial_pull is not None
-            # Pull ran but produced no rows (e.g. drift_detected,
-            # auth_expired) — surface the failure status + reason so
-            # agents distinguish this from --no-initial-pull.
-            else (
-                {
-                    "status": result.initial_pull_status,
-                    "error": result.initial_pull_error,
-                }
-                if result.initial_pull_status is not None
-                else None
-            )
+    data = GsheetConnectPayload(
+        connection=_connection_row(result.connection),
+        detection=GsheetDetection(
+            confidence=result.detection.confidence,
+            column_mapping=result.detection.column_mapping,
+            detection_notes=result.detection.notes,
         ),
-    }
+        initial_pull=_initial_pull(result),
+    )
     actions = [
         f"Run gsheet_pull(connection_id='{result.connection.connection_id}') to refresh.",
         "Use gsheet_status to check connection health going forward.",
@@ -201,11 +237,13 @@ def gsheet_connect(
             f"Initial pull returned status={result.initial_pull_status!r}; "
             "run gsheet_status for detail before assuming data is loaded.",
         )
-    return build_envelope(data=data, sensitivity="medium", actions=actions)
+    return build_envelope(data=data, actions=actions)
 
 
-@mcp_tool(sensitivity="medium", read_only=False, idempotent=False, open_world=True)
-def gsheet_pull(connection_id: str | None = None) -> ResponseEnvelope:
+@mcp_tool(read_only=False, idempotent=False, open_world=True)
+def gsheet_pull(
+    connection_id: str | None = None,
+) -> ResponseEnvelope[GsheetPullPayload]:
     """Pull one Google Sheets connection by ID, or every healthy connection.
 
     Amounts in loaded transactions data follow MoneyBin's accounting convention:
@@ -223,17 +261,15 @@ def gsheet_pull(connection_id: str | None = None) -> ResponseEnvelope:
             results = [service.pull_connection(connection_id)]
 
     pulls = [
-        {
-            "connection_id": r.connection_id,
-            "status": r.status,
-            "rows_inserted": r.load_result.rows_inserted if r.load_result else 0,
-            "rows_upserted": r.load_result.rows_upserted if r.load_result else 0,
-            "rows_soft_deleted": (
-                r.load_result.rows_soft_deleted if r.load_result else 0
-            ),
-            "drift_reason": r.drift_reason,
-            "error_message": r.error_message,
-        }
+        GsheetPullRow(
+            connection_id=r.connection_id,
+            status=r.status,
+            rows_inserted=r.load_result.rows_inserted if r.load_result else 0,
+            rows_upserted=r.load_result.rows_upserted if r.load_result else 0,
+            rows_soft_deleted=r.load_result.rows_soft_deleted if r.load_result else 0,
+            drift_reason=r.drift_reason,
+            error_message=r.error_message,
+        )
         for r in results
     ]
     actions: list[str] = []
@@ -247,14 +283,13 @@ def gsheet_pull(connection_id: str | None = None) -> ResponseEnvelope:
                 "in-process OAuth flow."
             )
     return build_envelope(
-        data={"pulls": pulls},
-        sensitivity="medium",
+        data=GsheetPullPayload(pulls=pulls),
         actions=actions,
     )
 
 
-@mcp_tool(sensitivity="low")
-def gsheet() -> ResponseEnvelope:
+@mcp_tool()
+def gsheet() -> ResponseEnvelope[GsheetConnectionsPayload]:
     """List every Google Sheets connection.
 
     Shape 5 collection read. Each connection that surfaces in drift_detected
@@ -262,16 +297,17 @@ def gsheet() -> ResponseEnvelope:
     """
     with _build_connection_service() as service:
         connections = service.list_connections()
-    data = [c.to_dict() for c in connections]
+    rows = [_connection_row(c) for c in connections]
     return build_envelope(
-        data=data,
-        sensitivity="low",
-        actions=_drift_hints(data),
+        data=GsheetConnectionsPayload(connections=rows),
+        actions=_drift_hints(rows),
     )
 
 
-@mcp_tool(sensitivity="low")
-def gsheet_status(connection_id: str | None = None) -> ResponseEnvelope:
+@mcp_tool()
+def gsheet_status(
+    connection_id: str | None = None,
+) -> ResponseEnvelope[GsheetConnectionsPayload]:
     """Show status for one connection, or a summary of all of them.
 
     Returns the connection row(s) with status, last_pull_at, last_success_at,
@@ -292,16 +328,17 @@ def gsheet_status(connection_id: str | None = None) -> ResponseEnvelope:
                     ),
                 )
             connections = [single]
-    data = [c.to_dict() for c in connections]
+    rows = [_connection_row(c) for c in connections]
     return build_envelope(
-        data=data,
-        sensitivity="low",
-        actions=_drift_hints(data),
+        data=GsheetConnectionsPayload(connections=rows),
+        actions=_drift_hints(rows),
     )
 
 
-@mcp_tool(sensitivity="medium", read_only=False, idempotent=False, open_world=True)
-def gsheet_reconnect(connection_id: str, yes: bool = False) -> ResponseEnvelope:
+@mcp_tool(read_only=False, idempotent=False, open_world=True)
+def gsheet_reconnect(
+    connection_id: str, yes: bool = False
+) -> ResponseEnvelope[GsheetConnectPayload]:
     """Re-detect the sheet structure, re-pin the mapping, and run a pull.
 
     Use after the source sheet changes shape (column added, header reworded)
@@ -320,45 +357,30 @@ def gsheet_reconnect(connection_id: str, yes: bool = False) -> ResponseEnvelope:
     with _build_connection_service() as service:
         result = service.reconnect(connection_id, yes=yes, actor="mcp")
 
-    data = {
-        "connection": result.connection.to_dict(),
-        "detection": {
-            "confidence": result.detection.confidence,
-            "column_mapping": result.detection.column_mapping,
-        },
-        "initial_pull": (
-            {
-                "status": result.initial_pull_status,
-                "rows_inserted": result.initial_pull.rows_inserted,
-                "rows_upserted": result.initial_pull.rows_upserted,
-                "rows_soft_deleted": result.initial_pull.rows_soft_deleted,
-            }
-            if result.initial_pull is not None
-            else (
-                {
-                    "status": result.initial_pull_status,
-                    "error": result.initial_pull_error,
-                }
-                if result.initial_pull_status is not None
-                else None
-            )
+    data = GsheetConnectPayload(
+        connection=_connection_row(result.connection),
+        # Re-detection re-pins silently — no first-time detection notes.
+        detection=GsheetDetection(
+            confidence=result.detection.confidence,
+            column_mapping=result.detection.column_mapping,
         ),
-    }
+        initial_pull=_initial_pull(result),
+    )
     return build_envelope(
         data=data,
-        sensitivity="medium",
         actions=["Run gsheet_status to verify the connection is healthy."],
     )
 
 
 @mcp_tool(
-    sensitivity="medium",
     read_only=False,
     idempotent=False,
     destructive=True,
     open_world=True,
 )
-def gsheet_disconnect(connection_id: str, purge: bool = False) -> ResponseEnvelope:
+def gsheet_disconnect(
+    connection_id: str, purge: bool = False
+) -> ResponseEnvelope[GsheetDisconnectPayload]:
     """Soft-disconnect (default) or purge a Google Sheets connection.
 
     Without purge: sets status='disconnected', retains raw rows for analytics.
@@ -372,12 +394,11 @@ def gsheet_disconnect(connection_id: str, purge: bool = False) -> ResponseEnvelo
     with _build_connection_service() as service:
         service.disconnect(connection_id, purge=purge, actor="mcp")
     return build_envelope(
-        data={
-            "connection_id": connection_id,
-            "status": "purged" if purge else "disconnected",
-            "purged": purge,
-        },
-        sensitivity="medium",
+        data=GsheetDisconnectPayload(
+            connection_id=connection_id,
+            status="purged" if purge else "disconnected",
+            purged=purge,
+        ),
     )
 
 

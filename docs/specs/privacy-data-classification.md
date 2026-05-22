@@ -1,7 +1,7 @@
 # Feature: Privacy Data Classification
 
 ## Status
-implemented (PR 1 shipped via #169; FK columns from #174 added to registry)
+implemented (PR 2 — middleware)
 
 ## Goal
 Establish a typed, source-of-truth registry that maps every column in
@@ -233,6 +233,56 @@ durable design decisions that flow out of this work and into later PRs:
 ## Dependencies
 None new. Uses existing `Database`, `duckdb_columns()`, sqlglot, pytest.
 
+## Implemented middleware (PR 2)
+
+The runtime mechanism that turns the registry into enforcement:
+
+- **Introspection** (`src/moneybin/privacy/introspection.py`): walks the
+  `ResponseEnvelope[T]` return type of every `@mcp_tool` (and the typed
+  payload of every CLI `--output json`), collects every
+  `Annotated[..., DataClass.X]` field-level marker, and derives the
+  effective sensitivity as `max(c.tier for c in classes)`. LRU-cached by
+  payload type, so per-call cost is a dict lookup once the cache warms.
+- **Redaction** (`src/moneybin/privacy/redaction.py`): per-class
+  transforms applied to the typed payload before serialization. PR 2
+  masks `CRITICAL`-tier values (account number → `****<last4>`, routing
+  number → `*****`); HIGH/MEDIUM/LOW tiers pass through unchanged. The
+  signature accepts a `consent: ConsentSet | None` argument; in PR 2
+  `consent` is always `None`, in PR 3 it carries the active grants.
+- **Privacy log** (`src/moneybin/privacy/log.py`):
+  `<profile>/privacy.log.jsonl` records one event per MCP tool call and
+  per CLI `--output json` invocation. Daily file rotation, `0o600` perms
+  on the file itself, fail-soft on disk errors (logged at WARN, never
+  raised). Event schema: `{ts, actor, action, sensitivity,
+  classes_returned, row_count}`.
+- **Decorator integration**: `@mcp_tool` no longer accepts a
+  `sensitivity=` kwarg. Sensitivity is derived at registration time from
+  the return-type annotation; a missing or unparameterized
+  `ResponseEnvelope` raises `PrivacyContractError` at import. The
+  wrapper applies `redact_typed` and writes the privacy event before
+  returning the envelope. `unclassified=True` is the documented opt-out
+  for tools whose payload shape is decided by the caller's input
+  (currently `sql_query`, `sql_schema`; PR 4 replaces with sqlglot
+  lineage).
+- **Envelope generic refactor**: `ResponseEnvelope` is now
+  `Generic[T]`. Tools declare `-> ResponseEnvelope[PayloadType]` where
+  `PayloadType` is a typed dataclass / Pydantic model / TypedDict whose
+  fields carry `Annotated[..., DataClass.X]` markers. Bare-dict tools
+  fail registration (privacy contract is import-time enforced).
+- **CLI `render_or_json` parity**: the same redactor + log writer run on
+  the CLI `--output json` path. `cli_actor="<command>"` parameter
+  records the originating command as `cli.<command>` in the event log.
+  Text output bypasses both (caller's render function owns formatting
+  and is expected to display only safe fields like `last_4`).
+- **Cross-layer drift test**
+  (`tests/moneybin/test_privacy/test_annotated_registry_sync.py`):
+  parametrized over every dataclass under
+  `moneybin.privacy.payloads.*`; asserts each field whose name matches a
+  registry column uses that column's `DataClass`. Catches Phase-5
+  classification mistakes before they ship.
+- **Profile dir hardening**: profile directories are now created with
+  `0o700` (was `0o755`), matching the privacy log file's `0o600` mode.
+
 ## Out of Scope
 - `Annotated[..., DataClass.X]` propagation on service return types (PR 2).
 - Redaction engine (`redact_typed`, `redact_polars_frame`) (PR 2).
@@ -245,3 +295,44 @@ None new. Uses existing `Database`, `duckdb_columns()`, sqlglot, pytest.
 - Per-tool consent granularity (schema supports, UX deferred).
 - Revisions to `privacy-and-ai-trust.md` (blocked on parallel MCP rename
   work; this PR does not touch the MCP layer).
+
+## Performance validation (PR 2)
+
+Privacy middleware introduces redaction + log-write overhead on every
+MCP/CLI egress. PR 2's acceptance gate caps the regression budget at
+≤50 ms p50, ≤200 ms p99, ≤20% total-flow wall-clock vs the
+pre-middleware baseline captured before introspection code landed.
+
+### Persona
+
+| Property | Value |
+|---|---|
+| Fixture | `family.yaml` |
+| Accounts | 4 |
+| Transactions (generated) | ~2700 over 3 years |
+| Total DB size after seeding | ~8.1 MB |
+
+Generated via `moneybin synthetic generate family --seed 8229 --years 3`.
+
+The plan's original target of 5000+ transactions was relaxed to ~2700
+after enumerating the available persona library — `family.yaml` is the
+largest existing fixture and growing it was out of scope for this PR.
+The baseline is still load-bearing for the regression-budget gate;
+absolute latency values may be smaller than they would be on a denser
+fixture, but the delta-vs-baseline measurement is unaffected.
+
+### Measured flows
+
+Each flow runs ≥30 iterations to produce stable percentiles. Baseline
+stored at `tests/scenarios/fixtures/perf_baseline_pre_privacy.json`,
+post-middleware assertion at `tests/scenarios/test_privacy_middleware_perf.py`.
+
+| Tool / command | Service method | Tier | Shape |
+|---|---|---|---|
+| `transactions_get` | `TransactionService.get(limit=100)` | medium | ~100-row list |
+| `reports_spending` | `SpendingService.by_category()` | low | aggregate |
+| `accounts` | `AccountService.list_accounts()` | medium | ~4-row list (CRITICAL fields) |
+| `reports_budget` | `BudgetService.status()` | low | aggregate + per-budget rows |
+| `reports_networth_history` | `NetworthService.history()` | medium | time-series |
+
+Concrete numbers are populated by Phase 9 after the post-middleware run.

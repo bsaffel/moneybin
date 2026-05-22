@@ -144,7 +144,7 @@ async def test_system_status_needs_attention_row_shape(mcp_db: object) -> None:
     env = await system_status()
     row: dict[str, Any] = env.to_dict()["data"]["gsheet"]["needs_attention"][0]
     assert row["connection_id"] == "c_d"
-    assert row["workbook"] == "Budget 2025"
-    assert row["sheet"] == "Transactions"
+    assert row["workbook_name"] == "Budget 2025"
+    assert row["sheet_name"] == "Transactions"
     assert row["status"] == "drift_detected"
     assert row["reason"] == "header_added: Notes"

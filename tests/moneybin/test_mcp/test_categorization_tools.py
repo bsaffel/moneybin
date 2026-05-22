@@ -77,7 +77,8 @@ class TestCategorizeToolRegistration:
         cat_result = (await categories()).to_dict()
         assert "summary" in cat_result
         assert "data" in cat_result
-        assert isinstance(cat_result["data"], list)
+        # data is now a typed CategoriesPayload dict with a "categories" list field
+        assert isinstance(cat_result["data"]["categories"], list)
 
     @pytest.mark.unit
     async def test_register_includes_auto_rule_tools(self) -> None:
@@ -205,7 +206,8 @@ class TestTransactionsCategorizeRun:
         )
 
         result = (await transactions_categorize_run()).to_dict()
-        assert result["summary"]["sensitivity"] == "medium"
+        # CategorizeRunPayload has only AGGREGATE fields → Tier.LOW derived sensitivity
+        assert result["summary"]["sensitivity"] == "low"
         assert "applied_by_method" in result["data"]
         assert "rules" in result["data"]["applied_by_method"]
         assert "merchants" in result["data"]["applied_by_method"]
@@ -324,8 +326,8 @@ class TestCategorizePendingSortParam:
         result = (
             await transactions_categorize_pending(sort="impact", limit=10)
         ).to_dict()
-        amounts = [r["amount"] for r in result["data"]]
-        ages = [r["age_days"] for r in result["data"]]
+        amounts = [r["amount"] for r in result["data"]["transactions"]]
+        ages = [r["age_days"] for r in result["data"]["transactions"]]
         impacts = [abs(float(a)) * d for a, d in zip(amounts, ages, strict=True)]
         assert impacts == sorted(impacts, reverse=True)
 
@@ -335,5 +337,5 @@ class TestCategorizePendingSortParam:
         result = (
             await transactions_categorize_pending(sort="date", limit=10)
         ).to_dict()
-        dates = [r["txn_date"] for r in result["data"]]
+        dates = [r["transaction_date"] for r in result["data"]["transactions"]]
         assert dates == sorted(dates, reverse=True)

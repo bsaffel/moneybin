@@ -11,6 +11,13 @@ import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.main import app
+from moneybin.privacy.payloads.balances import (
+    BalanceAssertionListPayload,
+    BalanceAssertionPayload,
+    BalanceAssertionRow,
+    BalanceObservationListPayload,
+    BalanceObservationRow,
+)
 from moneybin.services.balance_service import BalanceService
 
 
@@ -43,7 +50,7 @@ class TestAccountsBalanceShow:
 
     @pytest.mark.unit
     def test_show_lists_current_balances(self, runner: CliRunner) -> None:
-        mock_obs = MagicMock(
+        obs_row = BalanceObservationRow(
             account_id="acct_a",
             balance_date=date(2026, 1, 31),
             balance=Decimal("1234.56"),
@@ -51,28 +58,23 @@ class TestAccountsBalanceShow:
             observation_source="ofx",
             reconciliation_delta=None,
         )
-        mock_obs.to_dict.return_value = {
-            "account_id": "acct_a",
-            "balance_date": "2026-01-31",
-            "balance": Decimal("1234.56"),
-            "is_observed": True,
-            "observation_source": "ofx",
-            "reconciliation_delta": None,
-        }
+        mock_payload = BalanceObservationListPayload(observations=[obs_row])
         with (
             patch("moneybin.cli.commands.accounts.balance.get_database"),
             patch(
                 "moneybin.cli.commands.accounts.balance.BalanceService"
             ) as mock_service_class,
         ):
-            mock_service_class.return_value.current_balances.return_value = [mock_obs]
+            mock_service_class.return_value.current_balances.return_value = mock_payload
             result = runner.invoke(
                 app, ["accounts", "balance", "show", "--output", "json"]
             )
         assert result.exit_code == 0, result.stderr
         payload = json.loads(result.stdout)
         assert payload["status"] == "ok"
-        assert len(payload["data"]) == 1
+        # data is the payload dict with "observations" key
+        assert "observations" in payload["data"]
+        assert len(payload["data"]["observations"]) == 1
 
 
 class TestAccountsBalanceHistory:
@@ -85,22 +87,22 @@ class TestAccountsBalanceHistory:
 
     @pytest.mark.unit
     def test_history_returns_series(self, runner: CliRunner) -> None:
-        mock_obs = MagicMock()
-        mock_obs.to_dict.return_value = {
-            "account_id": "acct_a",
-            "balance_date": "2026-01-01",
-            "balance": Decimal("100.00"),
-            "is_observed": True,
-            "observation_source": "ofx",
-            "reconciliation_delta": None,
-        }
+        obs_row = BalanceObservationRow(
+            account_id="acct_a",
+            balance_date=date(2026, 1, 1),
+            balance=Decimal("100.00"),
+            is_observed=True,
+            observation_source="ofx",
+            reconciliation_delta=None,
+        )
+        mock_payload = BalanceObservationListPayload(observations=[obs_row])
         with (
             patch("moneybin.cli.commands.accounts.balance.get_database"),
             patch(
                 "moneybin.cli.commands.accounts.balance.BalanceService"
             ) as mock_service_class,
         ):
-            mock_service_class.return_value.history.return_value = [mock_obs]
+            mock_service_class.return_value.history.return_value = mock_payload
             result = runner.invoke(
                 app,
                 [
@@ -125,10 +127,15 @@ class TestAccountsBalanceAssert:
         # spec=BalanceService allows "assert_balance" — MagicMock rejects attribute
         # names starting with "assert" unless the mock is spec'd to a real class.
         mock_service = MagicMock(spec=BalanceService)
-        mock_service.assert_balance.return_value = MagicMock(
+        assertion_row = BalanceAssertionRow(
             account_id="acct_a",
             assertion_date=date(2026, 1, 31),
             balance=Decimal("1234.56"),
+            notes=None,
+            created_at="2026-01-31 00:00:00",
+        )
+        mock_service.assert_balance.return_value = BalanceAssertionPayload(
+            assertion=assertion_row
         )
         with (
             patch("moneybin.cli.commands.accounts.balance.get_database"),
@@ -160,7 +167,16 @@ class TestAccountsBalanceAssert:
     @pytest.mark.unit
     def test_assert_with_notes(self, runner: CliRunner) -> None:
         mock_service = MagicMock(spec=BalanceService)
-        mock_service.assert_balance.return_value = MagicMock()
+        assertion_row = BalanceAssertionRow(
+            account_id="acct_a",
+            assertion_date=date(2026, 1, 31),
+            balance=Decimal("1234.56"),
+            notes="from paper statement",
+            created_at="2026-01-31 00:00:00",
+        )
+        mock_service.assert_balance.return_value = BalanceAssertionPayload(
+            assertion=assertion_row
+        )
         with (
             patch("moneybin.cli.commands.accounts.balance.get_database"),
             patch(
@@ -190,29 +206,28 @@ class TestAccountsBalanceList:
 
     @pytest.mark.unit
     def test_list_returns_assertions(self, runner: CliRunner) -> None:
-        mock_assertion = MagicMock()
-        mock_assertion.to_dict.return_value = {
-            "account_id": "acct_a",
-            "assertion_date": "2026-01-31",
-            "balance": Decimal("1234.56"),
-            "notes": None,
-            "created_at": "2026-01-31 12:00:00",
-        }
+        assertion_row = BalanceAssertionRow(
+            account_id="acct_a",
+            assertion_date=date(2026, 1, 31),
+            balance=Decimal("1234.56"),
+            notes=None,
+            created_at="2026-01-31 12:00:00",
+        )
+        mock_payload = BalanceAssertionListPayload(assertions=[assertion_row])
         with (
             patch("moneybin.cli.commands.accounts.balance.get_database"),
             patch(
                 "moneybin.cli.commands.accounts.balance.BalanceService"
             ) as mock_service_class,
         ):
-            mock_service_class.return_value.list_assertions.return_value = [
-                mock_assertion
-            ]
+            mock_service_class.return_value.list_assertions.return_value = mock_payload
             result = runner.invoke(
                 app, ["accounts", "balance", "list", "--output", "json"]
             )
         assert result.exit_code == 0, result.stderr
         payload = json.loads(result.stdout)
         assert "data" in payload
+        assert "assertions" in payload["data"]
 
 
 class TestAccountsBalanceAssertionDelete:
@@ -246,22 +261,22 @@ class TestAccountsBalanceReconcile:
 
     @pytest.mark.unit
     def test_reconcile_returns_deltas(self, runner: CliRunner) -> None:
-        mock_obs = MagicMock()
-        mock_obs.to_dict.return_value = {
-            "account_id": "acct_a",
-            "balance_date": "2026-01-31",
-            "balance": Decimal("1234.56"),
-            "is_observed": True,
-            "observation_source": "ofx",
-            "reconciliation_delta": Decimal("5.00"),
-        }
+        obs_row = BalanceObservationRow(
+            account_id="acct_a",
+            balance_date=date(2026, 1, 31),
+            balance=Decimal("1234.56"),
+            is_observed=True,
+            observation_source="ofx",
+            reconciliation_delta=Decimal("5.00"),
+        )
+        mock_payload = BalanceObservationListPayload(observations=[obs_row])
         with (
             patch("moneybin.cli.commands.accounts.balance.get_database"),
             patch(
                 "moneybin.cli.commands.accounts.balance.BalanceService"
             ) as mock_service_class,
         ):
-            mock_service_class.return_value.reconcile.return_value = [mock_obs]
+            mock_service_class.return_value.reconcile.return_value = mock_payload
             result = runner.invoke(
                 app, ["accounts", "balance", "reconcile", "--output", "json"]
             )
@@ -270,13 +285,14 @@ class TestAccountsBalanceReconcile:
 
     @pytest.mark.unit
     def test_reconcile_threshold_passed_through(self, runner: CliRunner) -> None:
+        mock_payload = BalanceObservationListPayload(observations=[])
         with (
             patch("moneybin.cli.commands.accounts.balance.get_database"),
             patch(
                 "moneybin.cli.commands.accounts.balance.BalanceService"
             ) as mock_service_class,
         ):
-            mock_service_class.return_value.reconcile.return_value = []
+            mock_service_class.return_value.reconcile.return_value = mock_payload
             result = runner.invoke(
                 app,
                 ["accounts", "balance", "reconcile", "--threshold", "5.00"],

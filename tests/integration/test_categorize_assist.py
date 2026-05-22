@@ -103,16 +103,16 @@ class TestCategorizeAssistMCPTool:
         response = await transactions_categorize_assist(limit=10)
 
         assert response.summary.sensitivity == "medium"
-        assert isinstance(response.data, list)
-        items: list[dict[str, object]] = response.data  # type: ignore[assignment]  # ResponseEnvelope.data is loosely typed; tighten in ResponseEnvelope.data followup
+        # CatAssistPayload wraps AssistRow list under `transactions`.
+        items = response.data.transactions
         for item in items:
-            assert "transaction_id" in item
-            assert "description_redacted" in item
-            assert "source_type" in item
-            # Confirm no amount/date/account fields leaked
-            assert "amount" not in item
-            assert "date" not in item
-            assert "account_id" not in item
+            assert item.transaction_id
+            assert hasattr(item, "description_redacted")
+            assert hasattr(item, "source_type")
+            # Confirm no amount/date/account fields exist on AssistRow
+            assert not hasattr(item, "amount")
+            assert not hasattr(item, "transaction_date")
+            assert not hasattr(item, "account_id")
 
     async def test_action_hints_point_at_commit_tool(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -139,9 +139,7 @@ class TestCategorizeAssistMCPTool:
         )
 
         # All seeded rows belong to acct_test — full set should be returned
-        assert isinstance(response.data, list)
-        data: list[object] = response.data  # type: ignore[assignment]  # ResponseEnvelope.data is loosely typed
-        assert len(data) > 0
+        assert len(response.data.transactions) > 0
 
     async def test_empty_result_when_no_uncategorized(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -162,7 +160,7 @@ class TestCategorizeAssistMCPTool:
 
         response = await transactions_categorize_assist(limit=10)
 
-        assert response.data == []
+        assert response.data.transactions == []
         assert response.summary.total_count == 0
 
     async def test_audit_log_written_on_invocation(

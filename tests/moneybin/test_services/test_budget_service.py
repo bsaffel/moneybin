@@ -11,11 +11,14 @@ from unittest.mock import MagicMock
 import pytest
 
 from moneybin.database import Database
+from moneybin.privacy.payloads.budget import (
+    BudgetCategoryStatusRow,
+    BudgetSetPayload,
+    BudgetStatusPayload,
+)
 from moneybin.services.budget_service import (
-    BudgetCategoryStatus,
     BudgetService,
     BudgetSetResult,
-    BudgetStatusResult,
 )
 from moneybin.services.categorization import CategorizationService
 from tests.moneybin.db_helpers import create_core_tables_raw, seed_categories_view
@@ -96,16 +99,17 @@ class TestSetBudget:
         assert result.monthly_amount == Decimal("300.00")
 
     @pytest.mark.unit
-    def test_to_envelope_sensitivity_low(self, budget_db: Database) -> None:
+    def test_to_payload_shape(self, budget_db: Database) -> None:
         service = BudgetService(budget_db)
         result = service.set_budget(
             "Food & Drink", Decimal("200.00"), start_month="2026-04"
         )
-        envelope = result.to_envelope()
-        d = envelope.to_dict()
-        assert d["summary"]["sensitivity"] == "low"
-        assert d["data"]["category"] == "Food & Drink"
-        assert d["data"]["action"] == "created"
+        payload = result.to_payload()
+        assert isinstance(payload, BudgetSetPayload)
+        assert payload.category == "Food & Drink"
+        assert payload.monthly_amount == Decimal("200.00")
+        assert payload.action == "created"
+        assert payload.start_month == "2026-04"
 
 
 class TestBudgetStatus:
@@ -117,7 +121,7 @@ class TestBudgetStatus:
         # Set a budget first
         service.set_budget("Food & Drink", Decimal("200.00"), start_month="2026-04")
         result = service.status(month="2026-04")
-        assert isinstance(result, BudgetStatusResult)
+        assert isinstance(result, BudgetStatusPayload)
         assert result.month == "2026-04"
         assert len(result.categories) == 1
 
@@ -127,7 +131,7 @@ class TestBudgetStatus:
         service.set_budget("Food & Drink", Decimal("200.00"), start_month="2026-04")
         result = service.status(month="2026-04")
         cat = result.categories[0]
-        assert isinstance(cat, BudgetCategoryStatus)
+        assert isinstance(cat, BudgetCategoryStatusRow)
         assert cat.category == "Food & Drink"
         assert cat.budget == Decimal("200.00")
         # T1 (-50) + T2 (-30) = 80 spent
@@ -155,15 +159,23 @@ class TestBudgetStatus:
         assert cat.status == "WARNING"
 
     @pytest.mark.unit
-    def test_to_envelope_structure(self, budget_db: Database) -> None:
+    def test_status_envelope_via_build_envelope(self, budget_db: Database) -> None:
+        """build_envelope(data=BudgetStatusPayload) produces the expected envelope shape."""
+        from moneybin.protocol.envelope import build_envelope
+
         service = BudgetService(budget_db)
         service.set_budget("Food & Drink", Decimal("200.00"), start_month="2026-04")
         result = service.status(month="2026-04")
-        envelope = result.to_envelope()
+        envelope = build_envelope(
+            data=result,
+            sensitivity="low",
+            period=result.month,
+            actions=["Use reports_spending for detailed category breakdown"],
+        )
         d = envelope.to_dict()
         assert d["summary"]["sensitivity"] == "low"
         assert d["summary"]["period"] == "2026-04"
-        assert isinstance(d["data"], list)
+        assert isinstance(d["data"]["categories"], list)
         assert len(d["actions"]) > 0
 
 
@@ -174,7 +186,7 @@ class TestEmptyResults:
     def test_status_no_budgets(self, budget_db: Database) -> None:
         service = BudgetService(budget_db)
         result = service.status(month="2026-04")
-        assert isinstance(result, BudgetStatusResult)
+        assert isinstance(result, BudgetStatusPayload)
         assert result.categories == []
 
 

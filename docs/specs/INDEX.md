@@ -73,7 +73,7 @@ Single source of truth for spec status. Update this table when a spec's status c
 | Spec | Type | Status | Summary |
 |---|---|---|---|
 | [Privacy & AI Trust](privacy-and-ai-trust.md) | Framework | ready | AI data flow tiers, consent model, provider profiles, redaction engine, audit log |
-| [Data Classification](privacy-data-classification.md) | Feature | implemented | `DataClass` registry, DuckDB comment sigil, completeness CI. PR 1 shipped via #169; FK columns from #174 added to registry. PR 2 (redaction engine + `privacy.log`), PR 3 (consent grants), PR 4 (sqlglot lineage) remain. |
+| [Data Classification](privacy-data-classification.md) | Feature | implemented | `DataClass` registry + PR 2 middleware (introspection, redaction, privacy.log, generic `ResponseEnvelope[T]`, decorator derive-from-return-type, CLI parity). PR 3 (consent grants) and PR 4 (SQL lineage) tracked separately. |
 | [Data Protection](privacy-data-protection.md) | Feature | implemented | DuckDB encryption at rest (AES-256-GCM), `Database` connection factory, key management, file permissions, PII log sanitization |
 | [Privacy & Security Roadmap](privacy-security-roadmap.md) | Roadmap | — | Three-tier data custody model overview |
 

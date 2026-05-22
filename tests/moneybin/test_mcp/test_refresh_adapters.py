@@ -7,13 +7,14 @@ from typing import Any
 import pytest
 
 from moneybin.mcp.adapters.refresh_adapters import refresh_envelope
+from moneybin.privacy.payloads.system import RefreshRunPayload
 from moneybin.protocol.envelope import ResponseEnvelope
 from moneybin.services.refresh import RefreshResult, SelfHealRecord, expand_steps
 
 
-def _data(env: ResponseEnvelope) -> dict[str, Any]:
-    """Narrow the envelope payload to the dict refresh always returns."""
-    assert isinstance(env.data, dict)
+def _payload(env: ResponseEnvelope[Any]) -> RefreshRunPayload:
+    """Narrow the envelope payload to the typed RefreshRunPayload refresh returns."""
+    assert isinstance(env.data, RefreshRunPayload)
     return env.data
 
 
@@ -22,7 +23,7 @@ def test_envelope_includes_self_heal_actions_empty_by_default() -> None:
     env = refresh_envelope(
         RefreshResult(applied=True, duration_seconds=1.0), requested=expand_steps(None)
     )
-    assert _data(env)["self_heal_actions"] == []
+    assert _payload(env).self_heal_actions == []
     assert env.recovery_actions is None
 
 
@@ -38,10 +39,10 @@ def test_envelope_serializes_self_heal_records() -> None:
         RefreshResult(applied=True, duration_seconds=1.0, self_heal_actions=(rec,)),
         requested=expand_steps(None),
     )
-    assert _data(env)["self_heal_actions"][0]["recipe_id"] == (
+    assert _payload(env).self_heal_actions[0].recipe_id == (
         "orphan_categorizations_cleanup"
     )
-    assert _data(env)["self_heal_actions"][0]["rows_affected"] == 2
+    assert _payload(env).self_heal_actions[0].rows_affected == 2
 
 
 @pytest.mark.unit
@@ -50,7 +51,7 @@ def test_matching_error_yields_match_retry_and_doctor() -> None:
         RefreshResult(applied=True, duration_seconds=1.0, matching_error="boom"),
         requested=expand_steps(None),
     )
-    assert _data(env)["matching_error"] == "boom"
+    assert _payload(env).matching_error == "boom"
     tools = [(ra.tool, ra.arguments) for ra in env.recovery_actions or []]
     assert ("refresh_run", {"steps": ["match"]}) in tools
     # system_doctor takes no MCP parameters — args must be empty to stay executable.
@@ -63,7 +64,7 @@ def test_categorization_error_yields_categorize_retry_and_doctor() -> None:
         RefreshResult(applied=True, duration_seconds=1.0, categorization_error="bang"),
         requested=expand_steps(None),
     )
-    assert _data(env)["categorization_error"] == "bang"
+    assert _payload(env).categorization_error == "bang"
     tools = [(ra.tool, ra.arguments) for ra in env.recovery_actions or []]
     assert ("refresh_run", {"steps": ["categorize"]}) in tools
     assert ("system_doctor", {}) in tools
@@ -134,7 +135,7 @@ def test_apply_failure_suppresses_step_recovery_actions() -> None:
         requested=expand_steps(None),
     )
     assert env.recovery_actions is None
-    assert _data(env)["matching_error"] == "matcher boom"  # still surfaced in data
+    assert _payload(env).matching_error == "matcher boom"  # still surfaced in data
 
 
 @pytest.mark.unit
