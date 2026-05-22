@@ -132,6 +132,20 @@ class BaseRepo:
         return dict(zip(columns, row, strict=True))
 
     @staticmethod
+    def _require(
+        row: dict[str, Any] | None, pk_col: str, pk_value: object
+    ) -> dict[str, Any]:
+        """Return ``row``, or raise ``ValueError`` when the keyed row is absent.
+
+        The shared "read the before-image, fail if it's already gone" guard every
+        UPDATE/DELETE uses before mutating — so a mutation on a missing key raises
+        instead of emitting a phantom ``before=None``/``after=None`` audit row.
+        """
+        if row is None:
+            raise ValueError(f"{pk_col}={pk_value!r} not found")
+        return row
+
+    @staticmethod
     def _serialize_for_audit(
         row: Mapping[str, Any] | None,
     ) -> dict[str, Any] | None:

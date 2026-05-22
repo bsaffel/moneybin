@@ -206,9 +206,9 @@ class GSheetConnectionsRepo(BaseRepo):
     ) -> None:
         """Update connection status + status reason; emit audit row."""
         with self._transaction(in_outer_txn=in_outer_txn):
-            before = self._fetch_full_row(connection_id)
-            if before is None:
-                raise ValueError(f"connection_id={connection_id!r} not found")
+            before = self._require(
+                self._fetch_full_row(connection_id), "connection_id", connection_id
+            )
             self._db.execute(
                 f"""
                 UPDATE {GSHEET_CONNECTIONS.full_name}
@@ -250,9 +250,9 @@ class GSheetConnectionsRepo(BaseRepo):
         pull should clear any stale reason from the previous attempt).
         """
         with self._transaction(in_outer_txn=in_outer_txn):
-            before = self._fetch_full_row(connection_id)
-            if before is None:
-                raise ValueError(f"connection_id={connection_id!r} not found")
+            before = self._require(
+                self._fetch_full_row(connection_id), "connection_id", connection_id
+            )
             self._db.execute(
                 f"""
                 UPDATE {GSHEET_CONNECTIONS.full_name}
@@ -305,9 +305,9 @@ class GSheetConnectionsRepo(BaseRepo):
         Resets ``status`` to ``healthy`` and clears ``last_status_reason``.
         """
         with self._transaction(in_outer_txn=in_outer_txn):
-            before = self._fetch_full_row(connection_id)
-            if before is None:
-                raise ValueError(f"connection_id={connection_id!r} not found")
+            before = self._require(
+                self._fetch_full_row(connection_id), "connection_id", connection_id
+            )
             self._db.execute(
                 f"""
                 UPDATE {GSHEET_CONNECTIONS.full_name}
@@ -378,9 +378,9 @@ class GSheetConnectionsRepo(BaseRepo):
         then responsible for the transaction lifecycle.
         """
         with self._transaction(in_outer_txn=in_outer_txn):
-            before = self._fetch_full_row(connection_id)
-            if before is None:
-                raise ValueError(f"connection_id={connection_id!r} not found")
+            before = self._require(
+                self._fetch_full_row(connection_id), "connection_id", connection_id
+            )
             self._db.execute(
                 f"DELETE FROM {GSHEET_CONNECTIONS.full_name} WHERE connection_id = ?",  # noqa: S608  # TableRef + parameterized value
                 [connection_id],
