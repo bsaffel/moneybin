@@ -17,6 +17,7 @@ VALID_PREFIXES = (
     "recovery_",
     "infra_",
     "sync_",
+    "gsheet_",
 )
 
 
@@ -97,6 +98,7 @@ class TestSpecificCodes:
             "infra_not_found",
             "infra_file_not_found",
             "sync_error",
+            "gsheet_error",
         ],
     )
     def test_code_exists(self, code: str) -> None:

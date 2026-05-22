@@ -27,3 +27,20 @@ class TestGSheetErrorHierarchy:
     def test_gsheet_error_subclasses_user_error(self) -> None:
         """GSheetError is a subclass of UserError."""
         assert issubclass(GSheetError, UserError)
+
+    def test_all_subclasses_emit_taxonomy_code(self) -> None:
+        """Every gsheet error carries the taxonomy code, not a bare string.
+
+        Locks the contract that the error class wires to error_codes.GSHEET_ERROR
+        (in VALID_PREFIXES); the taxonomy test only checks the constant exists.
+        """
+        from moneybin.error_codes import GSHEET_ERROR
+
+        for cls in (
+            GSheetError,
+            GSheetAuthError,
+            GSheetUnreachableError,
+            GSheetRateLimitError,
+            GSheetAPIError,
+        ):
+            assert cls("boom").code == GSHEET_ERROR
