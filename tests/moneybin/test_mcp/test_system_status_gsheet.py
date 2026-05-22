@@ -32,7 +32,7 @@ def _insert_connection(
                 connection_id, spreadsheet_id, sheet_gid, sheet_name,
                 workbook_name, adapter, account_id, account_name,
                 column_mapping, header_signature, skip_rows, alias,
-                status, last_drift_reason
+                status, last_status_reason
             ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, 0, ?, ?, ?)
             """,
             [

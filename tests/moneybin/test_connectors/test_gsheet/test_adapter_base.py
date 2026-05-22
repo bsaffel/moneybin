@@ -105,7 +105,7 @@ def test_gsheet_connection_frozen():
         last_pull_at=None,
         last_pull_import_id=None,
         last_success_at=None,
-        last_drift_reason=None,
+        last_status_reason=None,
         consecutive_failure_count=0,
     )
     try:

@@ -49,7 +49,7 @@ _FULL_ROW_COLUMNS = (
     "last_pull_at",
     "last_pull_import_id",
     "last_success_at",
-    "last_drift_reason",
+    "last_status_reason",
     "consecutive_failure_count",
     "alias",
     "created_at",
@@ -219,7 +219,7 @@ class GSheetConnectionsRepo:
         actor: str = "cli",
         parent_audit_id: str | None = None,
     ) -> None:
-        """Update connection status + drift reason; emit audit row."""
+        """Update connection status + status reason; emit audit row."""
         self._db.begin()
         try:
             before = self._fetch_full_row(connection_id)
@@ -228,7 +228,7 @@ class GSheetConnectionsRepo:
             self._db.execute(
                 f"""
                 UPDATE {GSHEET_CONNECTIONS.full_name}
-                   SET status = ?, last_drift_reason = ?, updated_at = NOW()
+                   SET status = ?, last_status_reason = ?, updated_at = NOW()
                  WHERE connection_id = ?
                 """,  # noqa: S608  # TableRef + parameterized values
                 [status, reason, connection_id],
@@ -256,13 +256,13 @@ class GSheetConnectionsRepo:
         last_success_at: datetime | None,
         status: Status,
         consecutive_failure_count: int,
-        last_drift_reason: str | None = None,
+        last_status_reason: str | None = None,
         actor: str = "system",
         parent_audit_id: str | None = None,
     ) -> None:
         """Persist pull-attempt results; emit audit row.
 
-        ``last_drift_reason`` is passed through inside the same UPDATE so
+        ``last_status_reason`` is passed through inside the same UPDATE so
         callers don't need a paired ``update_status`` write for the
         reason column — that pattern previously emitted two audit rows
         per failed pull. None clears the column (intentional: a clean
@@ -281,7 +281,7 @@ class GSheetConnectionsRepo:
                        last_success_at = COALESCE(?, last_success_at),
                        status = ?,
                        consecutive_failure_count = ?,
-                       last_drift_reason = ?,
+                       last_status_reason = ?,
                        updated_at = NOW()
                  WHERE connection_id = ?
                 """,  # noqa: S608  # TableRef + parameterized values
@@ -291,7 +291,7 @@ class GSheetConnectionsRepo:
                     last_success_at,
                     status,
                     consecutive_failure_count,
-                    last_drift_reason,
+                    last_status_reason,
                     connection_id,
                 ],
             )
@@ -325,7 +325,7 @@ class GSheetConnectionsRepo:
     ) -> None:
         """Re-pin mapping/signature after user reconnects to fix drift.
 
-        Resets ``status`` to ``healthy`` and clears ``last_drift_reason``.
+        Resets ``status`` to ``healthy`` and clears ``last_status_reason``.
         """
         self._db.begin()
         try:
@@ -343,7 +343,7 @@ class GSheetConnectionsRepo:
                        skip_rows = ?,
                        skip_trailing_patterns = ?,
                        status = 'healthy',
-                       last_drift_reason = NULL,
+                       last_status_reason = NULL,
                        updated_at = NOW()
                  WHERE connection_id = ?
                 """,  # noqa: S608  # TableRef + parameterized values

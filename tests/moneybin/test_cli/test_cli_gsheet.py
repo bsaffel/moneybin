@@ -25,7 +25,7 @@ def _make_connection(
     connection_id: str = "conn_abc123",
     adapter: str = "transactions",
     status: str = "healthy",
-    last_drift_reason: str | None = None,
+    last_status_reason: str | None = None,
 ) -> GSheetConnection:
     return GSheetConnection(
         connection_id=connection_id,
@@ -48,7 +48,7 @@ def _make_connection(
         last_pull_at=None,
         last_pull_import_id=None,
         last_success_at=None,
-        last_drift_reason=last_drift_reason,
+        last_status_reason=last_status_reason,
         consecutive_failure_count=0,
     )
 
@@ -421,7 +421,7 @@ def test_gsheet_status_unknown_connection_exits_nonzero(
 @patch("moneybin.cli.commands.gsheet._build_connection_service")
 def test_gsheet_status_single_connection(mock_build: MagicMock) -> None:
     service = MagicMock()
-    service.get.return_value = _make_connection(last_drift_reason="header mismatch")
+    service.get.return_value = _make_connection(last_status_reason="header mismatch")
     mock_build.return_value.__enter__.return_value = service
     result = runner.invoke(app, ["gsheet", "status", "conn_abc123"])
     assert result.exit_code == 0, result.output

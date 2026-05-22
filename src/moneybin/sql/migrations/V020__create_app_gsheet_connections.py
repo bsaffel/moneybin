@@ -45,7 +45,7 @@ CREATE TABLE IF NOT EXISTS app.gsheet_connections (
     last_pull_at TIMESTAMP,
     last_pull_import_id VARCHAR,
     last_success_at TIMESTAMP,
-    last_drift_reason TEXT,
+    last_status_reason TEXT,
     consecutive_failure_count INTEGER NOT NULL DEFAULT 0,
     alias VARCHAR,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -147,7 +147,7 @@ _COLUMN_COMMENTS: list[tuple[str, str]] = [
         "first successful pull",
     ),
     (
-        "last_drift_reason",
+        "last_status_reason",
         "Human-readable explanation populated when status='drift_detected'",
     ),
     (

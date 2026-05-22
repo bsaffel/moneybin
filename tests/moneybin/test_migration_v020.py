@@ -46,7 +46,7 @@ _ALL_COLUMNS: tuple[str, ...] = (
     "last_pull_at",
     "last_pull_import_id",
     "last_success_at",
-    "last_drift_reason",
+    "last_status_reason",
     "consecutive_failure_count",
     "alias",
     "created_at",

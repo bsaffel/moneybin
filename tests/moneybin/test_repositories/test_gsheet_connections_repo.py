@@ -129,7 +129,7 @@ def test_update_status_writes_audit_row(db: Database) -> None:
     row = repo.get(cid)
     assert row is not None
     assert row["status"] == "drift_detected"
-    assert row["last_drift_reason"] == "Column missing"
+    assert row["last_status_reason"] == "Column missing"
 
 
 # ---------------------------------------------------------------------------
@@ -272,7 +272,7 @@ def test_update_mapping_resets_status_to_healthy(db: Database) -> None:
     row = repo.get(cid)
     assert row is not None
     assert row["status"] == "healthy"
-    assert row["last_drift_reason"] is None
+    assert row["last_status_reason"] is None
     assert row["column_mapping"] == {"Date": "transaction_date", "Amount": "amount"}
 
     actions = [r[0] for r in _audit_rows_for(db, cid)]

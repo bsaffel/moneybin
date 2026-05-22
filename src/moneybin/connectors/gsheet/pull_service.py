@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 _RETRY_MAX = 3
 _RETRY_BACKOFF_BASE = 1.5
 
-# Sanitized messages surfaced via PullResult.error_message + last_drift_reason.
+# Sanitized messages surfaced via PullResult.error_message + last_status_reason.
 # Raw upstream exceptions (Google HttpError, etc.) include URLs, IDs, and
 # quota text that must not flow to the MCP wire (see security.md "Minimize
 # data in errors"). Full detail is logged internally via logger.exception.
@@ -102,6 +102,17 @@ class GSheetPullService:
         if conn_row is None:
             raise GSheetError(f"Unknown connection: {connection_id}")
         conn = row_to_connection(conn_row)
+        # A disconnected connection was soft-removed by an explicit
+        # gsheet_disconnect. Pulling it would silently flip it back to
+        # 'healthy', bypassing the user's intent — refuse and point at
+        # reconnect. Transient non-healthy states (auth_expired, unreachable,
+        # rate_limited, drift_detected) are still pullable: a retry can clear
+        # them. pull_all_healthy never reaches here for disconnected rows.
+        if conn.status == "disconnected":
+            raise GSheetError(
+                f"Connection {connection_id} is disconnected; reconnect it "
+                "with gsheet_reconnect before pulling."
+            )
         adapter = ADAPTERS[conn.adapter]
         import_id = uuid.uuid4().hex[:12]
 
@@ -114,7 +125,7 @@ class GSheetPullService:
             # message to callers. str(exc) on Google HttpError leaks the
             # spreadsheet URL, response body, and quota details into the
             # MCP wire via PullResult.error_message and the
-            # last_drift_reason column.
+            # last_status_reason column.
             logger.exception(f"gsheet auth failed for connection={conn.connection_id}")
             return self._record_failure(conn, import_id, status="auth_expired")
         except GSheetUnreachableError:
@@ -139,7 +150,7 @@ class GSheetPullService:
             # enum is source-agnostic and has no "drift_detected" value, and we
             # don't want a gsheet-specific status on a shared audit table. The
             # real distinction lives on the connection row (status =
-            # "drift_detected" + last_drift_reason); audit queries that need to
+            # "drift_detected" + last_status_reason); audit queries that need to
             # exclude drift should join app.gsheet_connections, not read
             # import_log.status alone.
             self._close_import_log(import_id, status="failed", rows_imported=0)
@@ -151,7 +162,7 @@ class GSheetPullService:
                 last_success_at=None,
                 status="drift_detected",
                 consecutive_failure_count=conn.consecutive_failure_count + 1,
-                last_drift_reason=drift.reason,
+                last_status_reason=drift.reason,
             )
             return PullResult(
                 connection_id=connection_id,
@@ -266,7 +277,10 @@ class GSheetPullService:
                 f"gsheet://{conn.spreadsheet_id}/{conn.sheet_gid}",
                 "gsheet",
                 conn.connection_id,
-                f"gsheet:{conn.workbook_name}/{conn.sheet_name}",
+                # gid (not sheet_name) as the tab id: workbook and tab names
+                # can both contain "/", which would make a "workbook/tab"
+                # format_name ambiguous to split. gid is unique and slash-free.
+                f"gsheet:{conn.workbook_name} (gid={conn.sheet_gid})",
                 "gsheet",
                 json.dumps(account_names),
                 "importing",
@@ -302,13 +316,13 @@ class GSheetPullService:
         """Close the import-log + update connection state for a pull failure.
 
         Surfaces a sanitized, actionable message in PullResult.error_message
-        and on the connection row's last_drift_reason — never the raw
+        and on the connection row's last_status_reason — never the raw
         upstream exception text, which can include URLs, IDs, and quota.
         """
         message = _SANITIZED_FAILURE_MESSAGES[status]
         self._close_import_log(import_id, status="failed", rows_imported=0)
         now = _utcnow()
-        # Single repo write — last_drift_reason flows through
+        # Single repo write — last_status_reason flows through
         # update_after_pull, avoiding the double-audit pattern (one row
         # for counter update, another for reason update).
         self._repo.update_after_pull(
@@ -318,7 +332,7 @@ class GSheetPullService:
             last_success_at=None,
             status=status,
             consecutive_failure_count=conn.consecutive_failure_count + 1,
-            last_drift_reason=message,
+            last_status_reason=message,
         )
         return PullResult(
             connection_id=conn.connection_id,
@@ -352,7 +366,7 @@ class GSheetPullService:
             last_success_at=None,
             status="failed",
             consecutive_failure_count=conn.consecutive_failure_count + 1,
-            last_drift_reason=message,
+            last_status_reason=message,
         )
         return PullResult(
             connection_id=conn.connection_id,

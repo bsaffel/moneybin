@@ -397,8 +397,8 @@ def gsheet_status(
             f"adapter={c.adapter}  last_success={last}  "
             f"failures={c.consecutive_failure_count}"
         )
-        if c.last_drift_reason:
-            typer.echo(f"   ⚠️  {c.last_drift_reason}")
+        if c.last_status_reason:
+            typer.echo(f"   ⚠️  {c.last_status_reason}")
 
 
 @app.command("reconnect")

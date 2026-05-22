@@ -514,7 +514,7 @@ def row_to_connection(row: dict[str, Any]) -> GSheetConnection:
         last_pull_at=_to_iso(row.get("last_pull_at")),
         last_pull_import_id=row.get("last_pull_import_id"),
         last_success_at=_to_iso(row.get("last_success_at")),
-        last_drift_reason=row.get("last_drift_reason"),
+        last_status_reason=row.get("last_status_reason"),
         consecutive_failure_count=row.get("consecutive_failure_count") or 0,
     )
 

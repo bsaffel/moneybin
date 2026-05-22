@@ -30,7 +30,7 @@ def _make_connection(
     connection_id: str = "conn_abc",
     status: str = "healthy",
     adapter: str = "transactions",
-    last_drift_reason: str | None = None,
+    last_status_reason: str | None = None,
 ) -> GSheetConnection:
     return GSheetConnection(
         connection_id=connection_id,
@@ -55,7 +55,7 @@ def _make_connection(
         last_success_at=(
             None if status == "drift_detected" else "2026-05-20T00:00:00+00:00"
         ),
-        last_drift_reason=last_drift_reason,
+        last_status_reason=last_status_reason,
         consecutive_failure_count=0 if status == "healthy" else 1,
     )
 
@@ -285,7 +285,7 @@ async def test_gsheet_collection_returns_actions_on_drift(
     drifted = _make_connection(
         connection_id="conn_drift",
         status="drift_detected",
-        last_drift_reason="Header reworded",
+        last_status_reason="Header reworded",
     )
     service = MagicMock()
     service.list_connections.return_value = [healthy, drifted]
@@ -351,7 +351,7 @@ async def test_gsheet_status_surfaces_drift_hint(mock_build: MagicMock) -> None:
     drifted = _make_connection(
         connection_id="conn_drift",
         status="drift_detected",
-        last_drift_reason="Header reworded",
+        last_status_reason="Header reworded",
     )
     service = MagicMock()
     service.get.return_value = drifted

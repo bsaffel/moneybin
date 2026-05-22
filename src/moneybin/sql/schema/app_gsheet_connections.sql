@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS app.gsheet_connections (
     last_pull_at TIMESTAMP, -- Timestamp of most recent pull attempt (success or failure)
     last_pull_import_id VARCHAR, -- FK to raw.import_log.import_id for the most recent attempt; NULL before first pull
     last_success_at TIMESTAMP, -- Timestamp of most recent pull that ingested cleanly; NULL before first successful pull
-    last_drift_reason TEXT, -- Human-readable explanation populated when status='drift_detected'
+    last_status_reason TEXT, -- Human-readable explanation of the current non-healthy status (drift detail or sanitized failure message); NULL when healthy
     consecutive_failure_count INTEGER NOT NULL DEFAULT 0, -- Number of consecutive failed pulls since the last success; resets to 0 on success
     alias VARCHAR, -- User-supplied slug; required for adapter='seed' (becomes view name raw.gsheet_<alias>); NULL for adapter='transactions'. Globally unique across all connections.
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- Connection-row creation timestamp

@@ -65,7 +65,7 @@ class GSheetConnection:
     last_pull_at: str | None
     last_pull_import_id: str | None
     last_success_at: str | None
-    last_drift_reason: str | None
+    last_status_reason: str | None
     consecutive_failure_count: int
 
     def to_dict(self) -> dict[str, object]:
@@ -83,7 +83,7 @@ class GSheetConnection:
             "status": self.status,
             "last_pull_at": self.last_pull_at,
             "last_success_at": self.last_success_at,
-            "last_drift_reason": self.last_drift_reason,
+            "last_status_reason": self.last_status_reason,
             "consecutive_failure_count": self.consecutive_failure_count,
         }
 

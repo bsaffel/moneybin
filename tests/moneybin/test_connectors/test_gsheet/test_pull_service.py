@@ -80,6 +80,20 @@ def test_pull_inserts_rows(in_memory_db: Database) -> None:
     assert result.load_result.rows_inserted == 1
 
 
+def test_pull_connection_refuses_disconnected(in_memory_db: Database) -> None:
+    """Pulling an explicitly disconnected connection errors, never revives it.
+
+    gsheet_disconnect soft-removes a connection; a later pull must not flip it
+    back to healthy behind the user's back. Reconnect is the intended revive path.
+    """
+    pull_svc, _, cid = _setup(in_memory_db)
+    GSheetConnectionsRepo(in_memory_db).update_status(
+        cid, status="disconnected", reason="user disconnected", actor="test"
+    )
+    with pytest.raises(GSheetError, match="disconnected"):
+        pull_svc.pull_connection(cid)
+
+
 def test_pull_isolates_per_connection_failure(in_memory_db: Database) -> None:
     """One unhealthy connection in the batch doesn't crash the others.
 
@@ -120,9 +134,9 @@ def test_pull_marks_auth_expired(in_memory_db: Database) -> None:
     conn_row = repo.get(cid)
     assert conn_row is not None
     assert conn_row["status"] == "auth_expired"
-    assert conn_row["last_drift_reason"] is not None
-    assert "abc123" not in conn_row["last_drift_reason"]
-    assert "googleapis.com" not in conn_row["last_drift_reason"]
+    assert conn_row["last_status_reason"] is not None
+    assert "abc123" not in conn_row["last_status_reason"]
+    assert "googleapis.com" not in conn_row["last_status_reason"]
 
 
 def test_pull_handles_rate_limit_with_retry(in_memory_db: Database) -> None:

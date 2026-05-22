@@ -275,7 +275,7 @@ def gsheet_status(connection_id: str | None = None) -> ResponseEnvelope:
     """Show status for one connection, or a summary of all of them.
 
     Returns the connection row(s) with status, last_pull_at, last_success_at,
-    last_drift_reason, and consecutive_failure_count. Drift-detected connections
+    last_status_reason, and consecutive_failure_count. Drift-detected connections
     carry a paired gsheet_reconnect hint in actions[].
     """
     with _build_connection_service() as service:
@@ -397,7 +397,11 @@ def register_gsheet_tools(mcp: FastMCP) -> None:
             "Bind a Google Sheet to MoneyBin via direct OAuth (user-controlled "
             "storage). Detects column mapping, persists app.gsheet_connections, "
             "and runs the initial pull by default. Amounts use MoneyBin convention "
-            "(negative = expense). Run gsheet_auth first if not yet authorized.",
+            "(negative = expense). Run gsheet_auth first if not yet authorized — "
+            "this matters for timeout: the OAuth browser consent and the initial "
+            "pull share one call window, so for a first-time/large-sheet connect, "
+            "authorizing separately leaves the full window for the pull (or set "
+            "no_initial_pull=True and pull afterward with gsheet_pull).",
         ),
         (
             gsheet_pull,

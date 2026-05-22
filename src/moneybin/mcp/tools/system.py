@@ -23,7 +23,7 @@ def _gsheet_block(db: Any) -> dict[str, Any]:
     try:
         rows = db.execute(
             """
-            SELECT connection_id, workbook_name, sheet_name, status, last_drift_reason
+            SELECT connection_id, workbook_name, sheet_name, status, last_status_reason
             FROM app.gsheet_connections
             ORDER BY created_at ASC, connection_id ASC
             """

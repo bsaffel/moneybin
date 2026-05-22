@@ -172,7 +172,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "created_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "date_format": DataClass.TXN_TYPE,
         "header_signature": DataClass.DESCRIPTION,
-        "last_drift_reason": DataClass.DESCRIPTION,
+        "last_status_reason": DataClass.DESCRIPTION,
         "last_pull_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "last_pull_import_id": DataClass.RECORD_ID,
         "last_success_at": DataClass.TIMESTAMP_OBSERVABILITY,
