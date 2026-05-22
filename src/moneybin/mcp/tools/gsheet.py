@@ -320,7 +320,7 @@ def gsheet_status(
         else:
             single = service.get(connection_id)
             if single is None:
-                return build_error_envelope(  # type: ignore[return-value]
+                return build_error_envelope(
                     error=UserError(
                         f"Unknown gsheet connection: {connection_id}",
                         code=INFRA_NOT_FOUND,

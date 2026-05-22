@@ -213,3 +213,16 @@ class SplitAddPayload:
     split: SplitRow
     # TXN_AMOUNT — the un-split remainder of the parent transaction amount.
     residual: Annotated[str, DataClass.TXN_AMOUNT]
+
+
+@dataclass(frozen=True, slots=True)
+class SplitRemovePayload:
+    """Payload for transactions_splits_remove — the removed split + remainder.
+
+    ``residual`` is TXN_AMOUNT (HIGH), so the typed container drives the tier
+    instead of a bare dict falling back to a manual sensitivity.
+    """
+
+    split_id: Annotated[str, DataClass.RECORD_ID]
+    transaction_id: Annotated[str, DataClass.RECORD_ID]
+    residual: Annotated[str, DataClass.TXN_AMOUNT]

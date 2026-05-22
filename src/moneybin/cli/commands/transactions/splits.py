@@ -23,6 +23,7 @@ from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
 from moneybin.privacy.payloads.transactions import (
     SplitAddPayload,
+    SplitRemovePayload,
     SplitRow,
     SplitsPayload,
 )
@@ -119,7 +120,6 @@ def transactions_splits_list(
         render_or_json(
             build_envelope(
                 data=SplitsPayload(splits=[_split_row(s) for s in splits]),
-                sensitivity="low",
             ),
             output,
             cli_actor="transactions_splits_list",
@@ -170,12 +170,11 @@ def transactions_splits_remove(
     if output == OutputFormat.JSON:
         render_or_json(
             build_envelope(
-                data={
-                    "split_id": split_id,
-                    "transaction_id": transaction_id,
-                    "residual": str(residual),
-                },
-                sensitivity="low",
+                data=SplitRemovePayload(
+                    split_id=split_id,
+                    transaction_id=transaction_id,
+                    residual=str(residual),
+                ),
             ),
             output,
             cli_actor="transactions_splits_remove",

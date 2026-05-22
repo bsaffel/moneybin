@@ -545,17 +545,9 @@ def mcp_tool(
                 raise
             # Stamp summary.sensitivity with the decorator-derived tier so the
             # envelope reflects the statically-derived classification regardless
-            # of what build_envelope() defaulted to in the tool body.
-            if sensitivity.value != envelope.summary.sensitivity:
-                updated_summary = dataclasses.replace(
-                    envelope.summary,
-                    # Sensitivity is typed Literal["low","medium","high","critical"];
-                    # `sensitivity.value` is the matching str but pyright doesn't narrow.
-                    sensitivity=sensitivity.value,  # pyright: ignore[reportArgumentType]
-                )
-                # ResponseEnvelope is generic over the payload type; dataclasses.replace
-                # erases the type param so pyright reports the rebuilt envelope as unknown.
-                envelope = dataclasses.replace(envelope, summary=updated_summary)  # pyright: ignore[reportUnknownArgumentType]
+            # of what build_envelope() defaulted to in the tool body. Same helper
+            # the error-return paths use.
+            envelope = _stamp_sensitivity(envelope)
             # Redact CRITICAL fields before returning. Skip the walk entirely
             # for tools whose return type has no CRITICAL field — the result
             # would be value-identical and the dataclass-tree rebuild is the

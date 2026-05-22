@@ -160,7 +160,7 @@ def sync_link(
         ]
         if len(matches) > 1:
             ids = ", ".join(m.provider_item_id for m in matches)
-            return build_error_envelope(  # type: ignore[return-value]
+            return build_error_envelope(
                 error=UserError(
                     f"multiple connected institutions match '{institution}' ({ids})",
                     code="ambiguous",

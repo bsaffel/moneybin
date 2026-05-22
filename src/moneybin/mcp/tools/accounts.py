@@ -1,23 +1,16 @@
 # src/moneybin/mcp/tools/accounts.py
 """Accounts namespace tools — v2 per docs/specs/account-management.md + net-worth.md.
 
-Read tools (entity):
-  - accounts (medium / low with redacted=True)
-  - accounts_get (medium)
-  - accounts_summary (low)
+Sensitivity is derived per tool from its payload's classified fields, not
+declared here — tools returning ``account_id`` (ACCOUNT_IDENTIFIER) or
+``routing_number`` (ROUTING_NUMBER) are CRITICAL; ``accounts_summary``
+(counts only) is LOW.
 
-Write tools (entity, all medium):
-  - accounts_set
-
-Read tools (balance, contributed by net-worth.md):
-  - accounts_balances (medium)
-  - accounts_balance_history (medium)
-  - accounts_balance_reconcile (medium)
-  - accounts_balance_assertions (medium)
-
-Write tools (balance, all medium):
-  - accounts_balance_assert
-  - accounts_balance_assertion_delete
+Read tools (entity):       accounts, accounts_get, accounts_summary
+Write tools (entity):      accounts_set
+Read tools (balance):      accounts_balances, accounts_balance_history,
+                           accounts_balance_reconcile, accounts_balance_assertions
+Write tools (balance):     accounts_balance_assert, accounts_balance_assertion_delete
 
 All tools delegate to AccountService / BalanceService — no business logic here.
 """
@@ -87,9 +80,10 @@ def accounts(
 def accounts_get(account_id: str) -> ResponseEnvelope[AccountDetail]:
     """Single account record with full settings + dim record.
 
-    Returns full fields including CRITICAL-tier values (last_four,
-    credit_limit, routing_number). CRITICAL fields are masked by the
-    middleware; sensitivity is always medium at the tool level.
+    Returns full fields including CRITICAL-tier values (account_id, last_four,
+    routing_number). The tool's sensitivity is derived from AccountDetail's
+    classified fields (CRITICAL), and CRITICAL fields are masked by the
+    middleware.
 
     Args:
         account_id: The account ID to look up

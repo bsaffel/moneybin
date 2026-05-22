@@ -86,7 +86,7 @@ def handle_cli_errors(*, cli_actor: str | None = None) -> Generator[None, None, 
 def emit_json(key: str, payload: object) -> None:
     """Emit a single-key JSON envelope to stdout.
 
-    Uses ``_PayloadEncoder`` so typed dataclass / Pydantic payloads serialize
+    Uses ``PayloadEncoder`` so typed dataclass / Pydantic payloads serialize
     to dicts, not ``str(...)`` reprs. ``default=str`` would silently override
     the encoder's dataclass handling — keep them mutually exclusive.
     """

@@ -239,7 +239,7 @@ def import_revert(import_id: str) -> ResponseEnvelope[ImportRevertPayload]:
                 "Use import_status to confirm the batch shows status='reverted'",
             ],
         )
-    return build_error_envelope(  # type: ignore[return-value]
+    return build_error_envelope(
         error=UserError(
             str(result.get("reason") or f"Cannot revert (status={status})"),
             code=f"revert_{status}",

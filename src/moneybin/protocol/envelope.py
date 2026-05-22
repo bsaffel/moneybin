@@ -392,8 +392,12 @@ def build_error_envelope(
     sensitivity: Literal["low", "medium", "high", "critical"] = "low",
     actions: list[str] | None = None,
     recovery_actions: list[RecoveryAction] | None = None,
-) -> ResponseEnvelope[list[dict[str, Any]]]:
+) -> ResponseEnvelope[Any]:
     """Build a ResponseEnvelope carrying a classified user error.
+
+    Typed as ``ResponseEnvelope[Any]`` (``data`` is always an empty list) so an
+    error early-return unifies with any ``-> ResponseEnvelope[T]`` tool
+    signature without a per-call-site ``# type: ignore[return-value]``.
 
     ``data`` is an empty list — the ``error`` field is the canonical signal
     that the tool failed. Sensitivity defaults to ``low`` because error
