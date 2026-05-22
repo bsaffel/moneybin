@@ -106,6 +106,38 @@ class TestBuildErrorEnvelope:
         )
         assert env.recovery_actions == []
 
+    def test_direct_construction_with_error_actions_serializes_top_level(self):
+        """Directly-built envelope still serializes the error's actions top-level.
+
+        ResponseEnvelope(error=err) built directly (not via build_error_envelope)
+        must still emit the error's recovery_actions at the top level. Regression
+        guard: to_dict() strips recovery_actions from the nested error dict, so
+        if the top-level field weren't backfilled from the error, the actions
+        would vanish entirely from the wire for this already-used construction
+        pattern.
+        """
+        err = UserError(
+            "boom",
+            code=error_codes.MUTATION_NOT_FOUND,
+            recovery_actions=[_sample_action()],
+        )
+        env = ResponseEnvelope(
+            summary=SummaryMeta(
+                total_count=0,
+                returned_count=0,
+                has_more=False,
+                sensitivity="low",
+                display_currency="USD",
+                degraded=False,
+            ),
+            data=[],
+            error=err,
+            # NOTE: recovery_actions NOT passed — left at default None
+        )
+        d = env.to_dict()
+        assert d["recovery_actions"][0]["tool"] == "system_audit_undo"
+        assert "recovery_actions" not in d["error"]
+
     def test_explicit_override_does_not_leak_via_nested_error_dict(self):
         """Suppression must take effect at the wire boundary, not just at env top-level.
 

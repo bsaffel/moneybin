@@ -126,22 +126,37 @@ class ResponseEnvelope:
             "data": self.data,
             "actions": self.actions,
         }
+        # Effective recovery_actions: the envelope-level field is the canonical
+        # wire location, but fall back to the error's own list when the
+        # envelope field wasn't populated — e.g. a caller building
+        # ResponseEnvelope(error=UserError(..., recovery_actions=[...]))
+        # directly, bypassing build_error_envelope. Without this fallback the
+        # actions would vanish (nested error copy is stripped below, top-level
+        # not emitted). An explicit suppression via recovery_actions=[] is a
+        # non-None empty list, so it is honored — not overridden by the error.
+        effective_recovery = self.recovery_actions
+        if (
+            effective_recovery is None
+            and self.error is not None
+            and self.error.recovery_actions is not None
+        ):
+            effective_recovery = self.error.recovery_actions
+
         if self.error is not None:
             # Strip recovery_actions from the nested error dict: the envelope
-            # top-level field is the canonical wire location. Without this
-            # strip, an explicit override via build_error_envelope(
-            # recovery_actions=[]) would suppress the top-level field but leak
-            # the original actions through error.to_dict() — defeating the
-            # redaction use case the override is designed to support.
-            # Direct UserError.to_dict() callers (logging, debugging) still
-            # see recovery_actions; only the envelope-serialized nested form
-            # drops the field.
+            # top-level field (emitted below from effective_recovery) is the
+            # single canonical wire location. Without this strip, an explicit
+            # suppression via recovery_actions=[] would still leak the
+            # original actions through error.to_dict() — defeating the
+            # redaction use case. Direct UserError.to_dict() callers (logging,
+            # debugging) still see recovery_actions; only the envelope-nested
+            # form drops the field.
             err_dict = self.error.to_dict()
             err_dict.pop("recovery_actions", None)
             d["error"] = err_dict
         if self.next_cursor is not None:
             d["next_cursor"] = self.next_cursor
-        if self.recovery_actions is not None:
+        if effective_recovery is not None:
             # Coerce plain dicts defensively: callers SHOULD pass
             # RecoveryAction instances (the type annotation says so), but a
             # dict slipping in (e.g., from deserialized JSON) would otherwise
@@ -149,7 +164,7 @@ class ResponseEnvelope:
             # internal failure at the wire boundary.
             d["recovery_actions"] = [
                 ra if isinstance(ra, dict) else ra.model_dump()
-                for ra in self.recovery_actions
+                for ra in effective_recovery
             ]
         return d
 
