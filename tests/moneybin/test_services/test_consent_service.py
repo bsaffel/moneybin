@@ -63,7 +63,7 @@ def test_service_status_lists_active(db: Database) -> None:
         actor="cli",
     )
     status = svc.status()
-    assert status.consent_mode == "standard"
+    assert status.consent_policy == "standard"
     assert len(status.active_grants) == 1
     assert status.active_grants[0].feature_category == "mcp-data-sharing"
 

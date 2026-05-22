@@ -25,7 +25,7 @@ class ConsentStatus:
     """Snapshot of the consent ledger for ``privacy status``."""
 
     default_backend: str | None
-    consent_mode: str
+    consent_policy: str
     active_grants: list[GrantInfo]
 
 
@@ -157,7 +157,7 @@ class ConsentService:
         ai = get_settings().ai
         return ConsentStatus(
             default_backend=ai.default_backend,
-            consent_mode=ai.consent_mode,
+            consent_policy=ai.consent_policy,
             active_grants=self._repo.list_active(),
         )
 

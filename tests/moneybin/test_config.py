@@ -70,14 +70,14 @@ def test_ai_config_defaults() -> None:
 
     settings = MoneyBinSettings()
     assert settings.ai.default_backend is None
-    assert settings.ai.consent_mode == "standard"
+    assert settings.ai.consent_policy == "standard"
 
 
 def test_ai_config_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
     from moneybin.config import MoneyBinSettings
 
     monkeypatch.setenv("MONEYBIN_AI__DEFAULT_BACKEND", "anthropic")
-    monkeypatch.setenv("MONEYBIN_AI__CONSENT_MODE", "strict")
+    monkeypatch.setenv("MONEYBIN_AI__CONSENT_POLICY", "strict")
     settings = MoneyBinSettings()
     assert settings.ai.default_backend == "anthropic"
-    assert settings.ai.consent_mode == "strict"
+    assert settings.ai.consent_policy == "strict"

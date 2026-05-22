@@ -13,13 +13,13 @@ from moneybin.services.consent_service import ConsentService
 
 
 def privacy_status(output: OutputFormat = output_option) -> None:
-    """Show active AI consent grants, the configured backend, and consent mode."""
+    """Show active AI consent grants, the configured backend, and consent policy."""
     with handle_cli_errors():
         with get_database(read_only=True) as db:
             status = ConsentService(db).status()
     payload = PrivacyStatusPayload(
         default_backend=status.default_backend or "(none)",
-        consent_mode=status.consent_mode,
+        consent_policy=status.consent_policy,
         active_grants=[
             ConsentGrantRow(
                 feature_category=g.feature_category,
@@ -43,7 +43,9 @@ def privacy_status(output: OutputFormat = output_option) -> None:
             cli_actor="privacy_status",
         )
         return
-    typer.echo(f"Backend: {payload.default_backend}    Mode: {payload.consent_mode}")
+    typer.echo(
+        f"Backend: {payload.default_backend}    Policy: {payload.consent_policy}"
+    )
     if not payload.active_grants:
         typer.echo("No active consent grants.")
         return

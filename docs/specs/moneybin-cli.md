@@ -276,10 +276,10 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- revoke-all                 -- Revoke all active consent grants (nuclear option)
 |   |     [--output json]
 |   |     [--yes]
-|   +-- status                     -- Show active consent grants, configured backend, and consent_mode
+|   +-- status                     -- Show active consent grants, configured backend, and consent_policy
 |   |     [--output json]
 |   +-- log                        -- Query recent privacy-log events (consent grants/revokes + tool calls)
-|         [--last N]                 Number of recent events to show (default: 20)
+|         [--last N]                 Number of recent events to show (default: 50)
 |         [--actor NAME]             Filter to a specific originating command or tool
 |         [--output json]
 |

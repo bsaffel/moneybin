@@ -1042,7 +1042,7 @@ Current consent state, configured AI backend, and privacy mode.
 
 - **Sensitivity:** `low` — metadata about privacy configuration, not financial data.
 - **Unique parameters:** None.
-- **Behavior:** Returns active grants, configured backend, and `consent_mode`. Useful when the AI needs to check consent state before attempting a sensitive operation.
+- **Behavior:** Returns active grants, configured backend, and `consent_policy` (the AIConfig standard/strict policy; distinct from each grant's per-grant `consent_mode`). Useful when the AI needs to check consent state before attempting a sensitive operation.
 - **Service:** `ConsentService.status()`
 - **CLI:** `moneybin privacy status`
 

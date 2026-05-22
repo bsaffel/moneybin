@@ -25,10 +25,15 @@ class ConsentGrantRow:
 
 @dataclass(frozen=True, slots=True)
 class PrivacyStatusPayload:
-    """Result of privacy_status / `privacy status`."""
+    """Result of privacy_status / `privacy status`.
+
+    ``consent_policy`` is the backend re-prompt policy (standard/strict) from
+    ``AIConfig`` — distinct from each grant's per-grant ``consent_mode``
+    (persistent/one-time) under ``active_grants``.
+    """
 
     default_backend: Annotated[str, DataClass.INSTITUTION]
-    consent_mode: Annotated[str, DataClass.TXN_TYPE]
+    consent_policy: Annotated[str, DataClass.TXN_TYPE]
     active_grants: list[ConsentGrantRow] = field(default_factory=list)
 
 

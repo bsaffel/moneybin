@@ -99,13 +99,13 @@ def privacy_revoke_consent(
 
 @mcp_tool(domain="privacy", read_only=True)
 def privacy_status() -> ResponseEnvelope[PrivacyStatusPayload]:
-    """Show active AI consent grants, the configured backend, and consent mode."""
+    """Show active AI consent grants, the configured backend, and consent policy."""
     with get_database(read_only=True) as db:
         status = ConsentService(db).status()
     return build_envelope(
         data=PrivacyStatusPayload(
             default_backend=status.default_backend or "(none)",
-            consent_mode=status.consent_mode,
+            consent_policy=status.consent_policy,
             active_grants=[
                 ConsentGrantRow(
                     feature_category=g.feature_category,

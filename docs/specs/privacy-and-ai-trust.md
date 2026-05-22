@@ -288,7 +288,7 @@ MCP tools prefer returning the minimum data needed to answer the query:
 
 ### CLI commands
 
-- `moneybin privacy status` — shows active consent grants, configured backend, and consent_mode
+- `moneybin privacy status` — shows active consent grants, configured backend, and consent_policy
 - `moneybin privacy grant <category>` — grant consent (`--backend`, `--mode persistent|one-time`, `--yes`)
 - `moneybin privacy revoke <category>` — revoke a specific consent; takes effect immediately (`--backend`, `--yes`)
 - `moneybin privacy revoke-all` — revoke all consents; nuclear option (`--yes`)
@@ -306,7 +306,7 @@ MCP tools prefer returning the minimum data needed to answer the query:
 For maximum-paranoia users:
 
 ```
-MONEYBIN_AI__CONSENT_MODE=strict
+MONEYBIN_AI__CONSENT_POLICY=strict
 ```
 
 In `strict` mode, ALL AI calls (tier 2 and 3) require per-invocation consent. No persistence. Every call prompts. This is the "I trust nothing" escape hatch.
@@ -325,7 +325,7 @@ class AIConfig(BaseModel):
         default=None,
         description="Default AI backend (anthropic, openai, ollama). None = AI features disabled.",
     )
-    consent_mode: Literal["standard", "strict"] = Field(
+    consent_policy: Literal["standard", "strict"] = Field(
         default="standard",
         description="standard: tier-2 consent persists. strict: all AI calls prompt every time.",
     )
@@ -367,7 +367,7 @@ Environment variables follow the existing `MONEYBIN_` prefix with `__` nesting:
 ```bash
 MONEYBIN_AI__DEFAULT_BACKEND=anthropic
 MONEYBIN_AI__ANTHROPIC__API_KEY=sk-ant-...
-MONEYBIN_AI__CONSENT_MODE=standard
+MONEYBIN_AI__CONSENT_POLICY=standard
 MONEYBIN_AI__OLLAMA__MODEL=llama3
 ```
 
