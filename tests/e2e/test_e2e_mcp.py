@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
-from tests.e2e.conftest import FAST_ARGON2_ENV, TEST_ENCRYPTION_KEY, make_workflow_env
+from tests.e2e.conftest import (
+    FAST_ARGON2_ENV,
+    make_workflow_env,
+    seed_pending_match,
+)
 
 pytestmark = [pytest.mark.e2e, pytest.mark.asyncio]
 
@@ -316,46 +318,6 @@ class TestNamespaceResources:
                 assert "moneybin://tools" not in resource_uris
 
 
-def _seed_pending_match(env: dict[str, str], match_id: str) -> None:
-    """Insert one pending match decision into the test database.
-
-    Opens the DB directly (same path + encryption key the MCP server will use)
-    and inserts via create_match_decision — bypassing the MCP server entirely so
-    the seeded row is visible before the server boots.
-    """
-    from moneybin.database import Database, invalidate_encryption_key_cache
-    from moneybin.matching.persistence import create_match_decision
-
-    db_path = (
-        Path(env["MONEYBIN_HOME"])
-        / "profiles"
-        / env["MONEYBIN_PROFILE"]
-        / "moneybin.duckdb"
-    )
-    mock_store = MagicMock()
-    mock_store.get_key.return_value = TEST_ENCRYPTION_KEY
-    # Clear any cached key from a previous test's Database so this key is used.
-    invalidate_encryption_key_cache()
-    with Database(db_path, secret_store=mock_store, no_auto_upgrade=True) as db:
-        create_match_decision(
-            db,
-            match_id=match_id,
-            source_transaction_id_a="txn_aaa",
-            source_type_a="csv",
-            source_origin_a="test",
-            source_transaction_id_b="txn_bbb",
-            source_type_b="csv",
-            source_origin_b="test",
-            account_id="acct_test",
-            confidence_score=0.95,
-            match_signals={"exact_amount": True},
-            match_tier="2b",
-            match_status="pending",
-            decided_by="engine",
-        )
-    invalidate_encryption_key_cache()
-
-
 class TestMatchesTools:
     """transactions_matches_pending and transactions_matches_set smoke tests."""
 
@@ -393,7 +355,7 @@ class TestMatchesTools:
         from mcp.types import TextContent
 
         seeded_match_id = "e2e_pending_match_001"
-        _seed_pending_match(matches_env, seeded_match_id)
+        seed_pending_match(matches_env, seeded_match_id)
 
         server_params = StdioServerParameters(
             command="uv",  # noqa: S607
@@ -426,7 +388,7 @@ class TestMatchesTools:
         from mcp.types import TextContent
 
         seeded_match_id = "e2e_set_match_001"
-        _seed_pending_match(matches_env, seeded_match_id)
+        seed_pending_match(matches_env, seeded_match_id)
 
         server_params = StdioServerParameters(
             command="uv",  # noqa: S607
@@ -454,11 +416,12 @@ class TestMatchesTools:
     async def test_transactions_matches_history_returns_envelope(
         self, matches_env: dict[str, str]
     ) -> None:
-        """transactions_matches_history returns a matches list envelope."""
+        """transactions_matches_history returns decisions with decided_at timestamps."""
         from mcp import ClientSession
         from mcp.client.stdio import StdioServerParameters, stdio_client
         from mcp.types import TextContent
 
+        seed_pending_match(matches_env, "e2e_hist_001")
         server_params = StdioServerParameters(
             command="uv",  # noqa: S607
             args=["run", "moneybin", "mcp", "serve"],
@@ -474,7 +437,10 @@ class TestMatchesTools:
                 content = result.content[0]
                 assert isinstance(content, TextContent)
                 envelope = json.loads(content.text)
-                assert "matches" in envelope["data"]
+                matches = envelope["data"]["matches"]
+                assert matches, "history should include the seeded decision"
+                # A time-series view must carry the decision timestamp.
+                assert matches[0]["decided_at"]
 
     async def test_transactions_matches_run_registered(
         self, matches_env: dict[str, str]

@@ -190,7 +190,7 @@ def transactions_matches_pending(
         limit: Maximum rows (default 50).
     """
     with get_database(read_only=True) as db:
-        rows = MatchingService(db).get_pending(match_type=match_type)[:limit]
+        rows = MatchingService(db).get_pending(match_type=match_type, limit=limit)
     return build_envelope(
         data=MatchesPendingPayload(
             matches=[
@@ -237,6 +237,7 @@ def transactions_matches_history(
                     match_status=r["match_status"],
                     confidence_score=float(r.get("confidence_score") or 0.0),
                     decided_by=r["decided_by"],
+                    decided_at=r.get("decided_at"),
                 )
                 for r in rows
             ]

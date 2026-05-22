@@ -178,12 +178,15 @@ class MatchingService:
             decided_by=decided_by,
         )
 
-    def get_pending(self, *, match_type: str | None = None) -> list[dict[str, Any]]:
+    def get_pending(
+        self, *, match_type: str | None = None, limit: int | None = None
+    ) -> list[dict[str, Any]]:
         """Return pending match decisions awaiting review.
 
         Wraps :func:`moneybin.matching.persistence.get_pending_matches`.
+        ``limit`` is pushed to SQL; None returns all pending.
         """
-        return get_pending_matches(self._db, match_type=match_type)
+        return get_pending_matches(self._db, match_type=match_type, limit=limit)
 
     def accept_all_pending(self, *, match_type: str | None = None) -> int:
         """Accept every pending match decision in scope. Returns the count.

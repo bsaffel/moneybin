@@ -59,11 +59,12 @@ def transactions_review(
         return
 
     if confirm_id or reject_id or confirm_all:
-        if type_ == "categorize":
-            _not_implemented(
-                "moneybin-cli.md (categorize non-interactive flags pending)"
+        if type_ != "matches":
+            logger.error(
+                "❌ --confirm/--reject/--confirm-all require --type matches "
+                "(categorize non-interactive review is not yet supported)"
             )
-            return
+            raise typer.Exit(2)
         _review_matches_noninteractive(
             confirm_id=confirm_id, reject_id=reject_id, confirm_all=confirm_all
         )

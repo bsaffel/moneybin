@@ -283,6 +283,7 @@ class MatchHistoryRow:
     match_status: Annotated[str, DataClass.TXN_TYPE]
     confidence_score: Annotated[float, DataClass.AGGREGATE]
     decided_by: Annotated[str, DataClass.TXN_TYPE]
+    decided_at: Annotated[str | None, DataClass.TIMESTAMP_OBSERVABILITY]
 
 
 @dataclass(frozen=True, slots=True)

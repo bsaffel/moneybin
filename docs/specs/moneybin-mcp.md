@@ -627,8 +627,8 @@ Match review is a distinct workflow within the transactions domain. These tools 
 List match proposals awaiting a decision.
 
 - **Sensitivity:** `low` — returns pair IDs and confidence scores; no transaction amounts, descriptions, or PII.
-- **Unique parameters:** `match_type: str?` (`dedup` or `transfer`; omit for all pending), `limit: int?` (default server cap).
-- **Behavior:** Returns array of `{match_id, match_type, confidence, proposed_at}` for proposals whose status is `pending`. Use `transactions_matches_set` to accept or reject individual proposals.
+- **Unique parameters:** `match_type: str?` (`dedup` or `transfer`; omit for all pending), `limit: int?` (default 50, applied as SQL `LIMIT`).
+- **Behavior:** Returns array of `{match_id, match_type, match_tier, confidence_score, source_type_a, source_transaction_id_a, source_type_b, source_transaction_id_b, match_status}` for proposals whose status is `pending`. No amounts/descriptions — call `transactions_get` on a source id for those. Use `transactions_matches_set` to accept or reject individual proposals.
 - **Service:** `MatchingService.get_pending()`
 - **CLI:** `moneybin transactions review --type matches` (orientation + interactive queue); `moneybin transactions review --type matches --status` (counts only)
 - **read_only:** true
@@ -651,9 +651,9 @@ Run the matching engine on-demand and propose new pending decisions.
 
 - **Sensitivity:** `low` — triggers a pipeline step; returns counts, not financial data.
 - **Unique parameters:** None in the current implementation (the engine scans all unmatched transactions).
-- **Behavior:** Runs the matcher, writes new `pending` rows to `app.match_decisions` for newly-discovered pairs, and returns `{proposed: int, already_pending: int, duration_seconds: float}`. **Operator-territory granular alternative to `refresh_run(steps=["match"])`** — not promoted in the `instructions` field or user-facing `actions[]` hints; reach it via `refresh_run` for the standard path.
+- **Behavior:** Runs the matcher, writes new `pending` rows to `app.match_decisions` for newly-discovered pairs, and returns `{auto_merged: int, pending_review: int, pending_transfers: int}`. **Operator-territory granular alternative to `refresh_run(steps=["match"])`** — not promoted in the `instructions` field or user-facing `actions[]` hints; reach it via `refresh_run` for the standard path.
 - **Annotations:** `read_only=False`, `destructive=False`, `idempotent=False`.
-- **Service:** `MatchingService.run_matching()`
+- **Service:** `MatchingService.run()`
 - **CLI:** `moneybin transactions matches run`
 
 #### `transactions_matches_history`
@@ -662,8 +662,8 @@ Recent match decisions (accepted and rejected).
 
 - **Sensitivity:** `low` — decision metadata only (match IDs, type, status, timestamps); no financial data.
 - **Unique parameters:** `limit: int?` (default 50), `match_type: str?` (`dedup` or `transfer`; omit for all).
-- **Behavior:** Returns array of `{match_id, match_type, status, decided_at, decided_by}` ordered newest-first.
-- **Service:** `MatchingService.get_history()`
+- **Behavior:** Returns array of `{match_id, match_type, match_status, confidence_score, decided_by, decided_at}` ordered newest-first.
+- **Service:** `MatchingService.get_log()`
 - **CLI:** `moneybin transactions matches history [--type dedup|transfer] [--limit N]`
 - **read_only:** true
 

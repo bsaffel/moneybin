@@ -20,7 +20,9 @@ from tests.e2e.conftest import (
     base_env,
     make_workflow_env,
     make_workflow_env_fast,
+    match_status,
     run_cli,
+    seed_pending_match,
 )
 
 pytestmark = pytest.mark.e2e
@@ -420,70 +422,6 @@ class TestCategorizeMutating:
         assert "Active auto-rules" in result.output
 
 
-def _seed_pending_match_cli(env: dict[str, str], match_id: str) -> None:
-    """Seed one pending match decision into the test database (CLI test variant).
-
-    Mirrors _seed_pending_match from test_e2e_mcp.py but lives here to avoid
-    cross-file imports. Opens the encrypted DB directly so the row is visible
-    before the CLI subprocess runs.
-    """
-    from unittest.mock import MagicMock
-
-    from moneybin.database import Database, invalidate_encryption_key_cache
-    from moneybin.matching.persistence import create_match_decision
-
-    db_path = (
-        Path(env["MONEYBIN_HOME"])
-        / "profiles"
-        / env["MONEYBIN_PROFILE"]
-        / "moneybin.duckdb"
-    )
-    mock_store = MagicMock()
-    mock_store.get_key.return_value = TEST_ENCRYPTION_KEY
-    invalidate_encryption_key_cache()
-    with Database(db_path, secret_store=mock_store, no_auto_upgrade=True) as db:
-        create_match_decision(
-            db,
-            match_id=match_id,
-            source_transaction_id_a="txn_aaa",
-            source_type_a="csv",
-            source_origin_a="test",
-            source_transaction_id_b="txn_bbb",
-            source_type_b="csv",
-            source_origin_b="test",
-            account_id="acct_test",
-            confidence_score=0.95,
-            match_signals={"exact_amount": True},
-            match_tier="2b",
-            match_status="pending",
-            decided_by="engine",
-        )
-    invalidate_encryption_key_cache()
-
-
-def _get_match_status_cli(env: dict[str, str], match_id: str) -> str:
-    """Read back a match decision's status from the encrypted test database."""
-    from unittest.mock import MagicMock
-
-    from moneybin.database import Database, invalidate_encryption_key_cache
-    from moneybin.matching.persistence import get_match_decision
-
-    db_path = (
-        Path(env["MONEYBIN_HOME"])
-        / "profiles"
-        / env["MONEYBIN_PROFILE"]
-        / "moneybin.duckdb"
-    )
-    mock_store = MagicMock()
-    mock_store.get_key.return_value = TEST_ENCRYPTION_KEY
-    invalidate_encryption_key_cache()
-    with Database(db_path, secret_store=mock_store, no_auto_upgrade=True) as db:
-        row = get_match_decision(db, match_id)
-    invalidate_encryption_key_cache()
-    assert row is not None, f"match {match_id!r} not found in DB"
-    return str(row["match_status"])
-
-
 class TestMatchesMutating:
     """Matching commands that modify match state."""
 
@@ -503,7 +441,7 @@ class TestMatchesMutating:
             tmp_path, "matchset-acc", _mutating_profile_template
         )
         match_id = "e2e_cli_set_acc001"
-        _seed_pending_match_cli(env, match_id)
+        seed_pending_match(env, match_id)
 
         result = run_cli(
             "transactions",
@@ -515,7 +453,7 @@ class TestMatchesMutating:
             env=env,
         )
         result.assert_success()
-        assert _get_match_status_cli(env, match_id) == "accepted"
+        assert match_status(env, match_id) == "accepted"
 
     def test_matches_set_rejects_pending_match(
         self, _mutating_profile_template: Path, tmp_path: Path
@@ -525,7 +463,7 @@ class TestMatchesMutating:
             tmp_path, "matchset-rej", _mutating_profile_template
         )
         match_id = "e2e_cli_set_rej001"
-        _seed_pending_match_cli(env, match_id)
+        seed_pending_match(env, match_id)
 
         result = run_cli(
             "transactions",
@@ -537,7 +475,7 @@ class TestMatchesMutating:
             env=env,
         )
         result.assert_success()
-        assert _get_match_status_cli(env, match_id) == "rejected"
+        assert match_status(env, match_id) == "rejected"
 
     def test_matches_set_invalid_status_is_usage_error(
         self, _mutating_profile_template: Path, tmp_path: Path
@@ -563,7 +501,7 @@ class TestMatchesMutating:
         """`review --type matches --reject <id>` rejects a seeded pending match."""
         env = make_workflow_env_fast(tmp_path, "review-rej", _mutating_profile_template)
         match_id = "e2e_cli_rev_rej001"
-        _seed_pending_match_cli(env, match_id)
+        seed_pending_match(env, match_id)
 
         result = run_cli(
             "transactions",
@@ -575,7 +513,7 @@ class TestMatchesMutating:
             env=env,
         )
         result.assert_success()
-        assert _get_match_status_cli(env, match_id) == "rejected"
+        assert match_status(env, match_id) == "rejected"
 
     def test_review_type_matches_confirm_all(
         self, _mutating_profile_template: Path, tmp_path: Path
@@ -586,8 +524,8 @@ class TestMatchesMutating:
         )
         match_id_a = "e2e_cli_all_acc001"
         match_id_b = "e2e_cli_all_acc002"
-        _seed_pending_match_cli(env, match_id_a)
-        _seed_pending_match_cli(env, match_id_b)
+        seed_pending_match(env, match_id_a)
+        seed_pending_match(env, match_id_b)
 
         result = run_cli(
             "transactions",
@@ -598,8 +536,25 @@ class TestMatchesMutating:
             env=env,
         )
         result.assert_success()
-        assert _get_match_status_cli(env, match_id_a) == "accepted"
-        assert _get_match_status_cli(env, match_id_b) == "accepted"
+        assert match_status(env, match_id_a) == "accepted"
+        assert match_status(env, match_id_b) == "accepted"
+
+    def test_review_type_all_with_flag_is_usage_error(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """Non-interactive flags require --type matches; --type all errors (no silent partial run)."""
+        env = make_workflow_env_fast(
+            tmp_path, "review-all-guard", _mutating_profile_template
+        )
+        match_id = "e2e_cli_all_guard001"
+        seed_pending_match(env, match_id)
+
+        result = run_cli(
+            "transactions", "review", "--type", "all", "--confirm-all", env=env
+        )
+        assert result.exit_code == 2
+        # The pending match must be untouched — no partial execution.
+        assert match_status(env, match_id) == "pending"
 
     def test_matches_backfill(
         self, _mutating_profile_template: Path, tmp_path: Path
