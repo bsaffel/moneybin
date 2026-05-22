@@ -11,6 +11,11 @@ class GSheetError(UserError):
 
     def __init__(self, message: str) -> None:
         """Initialize with a user-safe message."""
+        # NOTE: "gsheet_error" is not yet in moneybin.error_codes' prefix
+        # taxonomy (added by #193). Reconciling connector error codes with
+        # the taxonomy is deferred to the recovery-contract retrofit
+        # (data-recovery-contract.md Req 3 / PRs 9a-N), which migrates all
+        # connector codes uniformly. Tracked in private/followups.md.
         super().__init__(message, code="gsheet_error")
 
 

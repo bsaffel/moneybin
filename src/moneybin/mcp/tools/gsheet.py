@@ -30,6 +30,7 @@ from moneybin.connectors.gsheet.service_factory import (
 from moneybin.connectors.gsheet.service_factory import (
     build_pull_service as _build_pull_service,
 )
+from moneybin.error_codes import INFRA_NOT_FOUND
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
@@ -286,7 +287,7 @@ def gsheet_status(connection_id: str | None = None) -> ResponseEnvelope:
                 return build_error_envelope(
                     error=UserError(
                         f"Unknown gsheet connection: {connection_id}",
-                        code="not_found",
+                        code=INFRA_NOT_FOUND,
                         hint="Run gsheet (collection read) to list known connection_ids.",
                     ),
                 )

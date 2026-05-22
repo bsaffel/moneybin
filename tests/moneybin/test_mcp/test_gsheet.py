@@ -340,7 +340,7 @@ async def test_gsheet_status_unknown_connection_returns_error(
     envelope = await gsheet_status(connection_id="bogus")
     parsed = envelope.to_dict()
     assert parsed["status"] == "error"
-    assert parsed["error"]["code"] == "not_found"
+    assert parsed["error"]["code"] == "infra_not_found"
     assert parsed["data"] == []
 
 
@@ -462,6 +462,6 @@ async def test_gsheet_disconnect_unknown_connection_returns_error(
 
     envelope = await gsheet_disconnect(connection_id="bogus", purge=True)
     parsed = envelope.to_dict()
-    # ValueError → UserError(code='invalid_input') via classify_user_error.
+    # ValueError → UserError(code='infra_invalid_input') via classify_user_error.
     assert parsed["status"] == "error"
-    assert parsed["error"]["code"] == "invalid_input"
+    assert parsed["error"]["code"] == "infra_invalid_input"
