@@ -208,12 +208,14 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
         # an "apply did not run" result so the envelope's applied=False
         # signal is honest. Categorize, if also requested, still runs
         # against whatever SQLMesh-built views are already on disk.
+        categorization_error: str | None = None
         if "categorize" in requested:
-            _run_categorize_step(db)
+            categorization_error = _run_categorize_step(db)
         return RefreshResult(
             applied=False,
             duration_seconds=None,
             matching_error=matching_error,
+            categorization_error=categorization_error,
         )
 
     apply_result = TransformService(db).apply()
@@ -225,13 +227,15 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
             matching_error=matching_error,
         )
 
+    categorization_error = None
     if "categorize" in requested:
-        _run_categorize_step(db)
+        categorization_error = _run_categorize_step(db)
 
     return RefreshResult(
         applied=True,
         duration_seconds=apply_result.duration_seconds,
         matching_error=matching_error,
+        categorization_error=categorization_error,
     )
 
 
@@ -288,8 +292,15 @@ def _run_gsheet_step(db: Database) -> list[Any]:
         )
 
 
-def _run_categorize_step(db: Database) -> None:
-    """Best-effort categorization step. Failures log-only — never propagated."""
+def _run_categorize_step(db: Database) -> str | None:
+    """Best-effort categorization step.
+
+    Returns the error string on a real crash, else ``None``. A missing-view
+    precondition (first load before SQLMesh apply built the views) returns
+    ``None`` and logs DEBUG — it is expected, not a failure. A genuine crash
+    logs ERROR and returns its message so ``refresh`` can surface it in
+    ``RefreshResult.categorization_error``.
+    """
     from moneybin.services.auto_rule_service import AutoRuleService  # noqa: PLC0415
     from moneybin.services.categorization import CategorizationService  # noqa: PLC0415
 
@@ -309,6 +320,16 @@ def _run_categorize_step(db: Database) -> None:
                 "  💡 Run 'moneybin transactions categorize auto review' "
                 "to review proposed rules"
             )
-    except Exception:  # noqa: BLE001 — best-effort; surfaces in logs only
+        return None
+    except (duckdb.CatalogException, duckdb.BinderException):
+        # Tables/views not built yet (first load precedes SQLMesh apply) —
+        # an expected precondition, not a crash. No error surfaced.
         logger.debug("Categorization skipped (tables may not exist yet)", exc_info=True)
-    logger.debug(f"Categorization step finished in {time.monotonic() - cat_start:.2f}s")
+        return None
+    except Exception as exc:  # noqa: BLE001 — surface a real crash; never abort the pipeline
+        logger.error(f"Categorization failed during refresh: {exc}", exc_info=True)
+        return str(exc)
+    finally:
+        logger.debug(
+            f"Categorization step finished in {time.monotonic() - cat_start:.2f}s"
+        )

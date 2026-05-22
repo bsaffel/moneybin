@@ -124,6 +124,27 @@ def test_refresh_matcher_missing_views_is_not_an_error(
 
 
 @pytest.mark.unit
+def test_refresh_categorizer_crash_populates_categorization_error(
+    patched_services: dict[str, MagicMock],
+) -> None:
+    """A real categorizer crash sets categorization_error; pipeline continues."""
+    patched_services["categorize_pending"].side_effect = RuntimeError("cat boom")
+    result = refresh(MagicMock())
+    assert result.categorization_error == "cat boom"
+    assert result.applied is True
+
+
+@pytest.mark.unit
+def test_refresh_categorizer_missing_tables_is_not_an_error(
+    patched_services: dict[str, MagicMock],
+) -> None:
+    """CatalogException (tables not built on first load) is expected, not surfaced."""
+    patched_services["categorize_pending"].side_effect = duckdb.CatalogException("nope")
+    result = refresh(MagicMock())
+    assert result.categorization_error is None
+
+
+@pytest.mark.unit
 def test_refresh_steps_none_runs_full_cascade(
     patched_services: dict[str, MagicMock],
 ) -> None:
