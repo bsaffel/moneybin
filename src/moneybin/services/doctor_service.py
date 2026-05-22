@@ -13,10 +13,16 @@ from moneybin.database import Database, sqlmesh_context
 from moneybin.errors import RecoveryAction
 from moneybin.tables import (
     AUDIT_LOG,
+    CATEGORIZATION_RULES,
     CATEGORY_OVERRIDES,
     FCT_TRANSACTIONS,
     GSHEET_CONNECTIONS,
+    INT_TRANSACTIONS_UNIONED,
+    MATCH_DECISIONS,
+    PROPOSED_RULES,
+    TRANSACTION_CATEGORIES,
     USER_CATEGORIES,
+    USER_MERCHANTS,
     TableRef,
 )
 
@@ -83,19 +89,31 @@ class DoctorService:
         """
         transaction_count = self._get_transaction_count()
         sqlmesh_results = self._run_sqlmesh_audits(verbose)
-        staging = self._run_staging_coverage()
+        dedup_reconciliation = self._run_dedup_reconciliation()
         categorization = self._run_categorization_coverage()
         app_integrity = self._run_app_integrity(full=full)
-        invariants = [*sqlmesh_results, staging, categorization, *app_integrity]
+        invariants = [
+            *sqlmesh_results,
+            dedup_reconciliation,
+            categorization,
+            *app_integrity,
+        ]
         return DoctorReport(invariants=invariants, transaction_count=transaction_count)
 
     def _run_app_integrity(self, *, full: bool) -> list[InvariantResult]:
         """Per-table integrity checks for protected ``app.*`` tables (Invariant 10).
 
-        Covers every table this PR wraps in a repo (``user_categories``,
-        ``category_overrides``, ``gsheet_connections``); later repository PRs
-        append one coverage call per newly-wrapped table plus that table's
-        FK/orphan specifics.
+        Covers every table wrapped in a repo so far (``user_categories``,
+        ``category_overrides``, ``gsheet_connections``, ``user_merchants``,
+        ``categorization_rules``, ``proposed_rules``, ``transaction_categories``);
+        later repository PRs append one coverage call per newly-wrapped table
+        plus that table's FK/orphan specifics.
+
+        Tables without an ``updated_at`` column pass their natural watermark:
+        ``proposed_rules`` → ``proposed_at``, ``transaction_categories`` →
+        ``categorized_at``. Those watermarks catch bypass INSERTs; bypass
+        UPDATEs are the lint rule's job — the heuristic limitation the helper
+        documents.
         """
         return [
             self._run_app_audit_coverage(USER_CATEGORIES, "category_id", full=full),
@@ -103,43 +121,71 @@ class DoctorService:
             self._run_app_audit_coverage(
                 GSHEET_CONNECTIONS, "connection_id", full=full
             ),
+            self._run_app_audit_coverage(USER_MERCHANTS, "merchant_id", full=full),
+            self._run_app_audit_coverage(CATEGORIZATION_RULES, "rule_id", full=full),
+            self._run_app_audit_coverage(
+                PROPOSED_RULES,
+                "proposed_rule_id",
+                updated_col="proposed_at",
+                full=full,
+            ),
+            self._run_app_audit_coverage(
+                TRANSACTION_CATEGORIES,
+                "transaction_id",
+                updated_col="categorized_at",
+                full=full,
+            ),
             self._run_user_categories_uniqueness(),
+            self._run_user_merchants_orphans(),
+            self._run_proposed_rules_rule_fk(),
+            self._run_transaction_categories_fk(),
         ]
 
     def _run_app_audit_coverage(
-        self, table_ref: TableRef, pk_col: str, *, full: bool = False
+        self,
+        table_ref: TableRef,
+        pk_col: str,
+        *,
+        updated_col: str = "updated_at",
+        full: bool = False,
     ) -> InvariantResult:
         """Flag rows mutated without a paired ``app.audit_log`` row (Req 9).
 
-        Sampled by default: only rows whose ``updated_at`` falls within
+        Sampled by default: only rows whose mutation watermark falls within
         ``doctor.audit_coverage_lookback_days`` are checked, capped at
         ``doctor.audit_coverage_sample_cap``. ``full=True`` scans every row.
-        Requires the table to carry an ``updated_at`` column (every protected
-        table does).
+        ``updated_col`` names the watermark column — ``updated_at`` for most
+        protected tables, but tables without one pass their natural mutation
+        timestamp (e.g. ``proposed_rules`` → ``proposed_at``,
+        ``transaction_categories`` → ``categorized_at``).
 
         Limitations (by design — this is a sampled runtime *heuristic*, not a
-        proof): it scans rows that currently exist and keys on ``updated_at`` as
-        the mutation watermark, so a raw bypass that (a) deletes a row, or (b)
-        mutates without bumping ``updated_at``, leaves nothing for the scan to
-        flag. The *structural* guard against raw bypass writes is the lint rule
-        (rejects raw ``INSERT``/``UPDATE``/``DELETE`` against protected tables
-        outside ``*_repo.py``); content-based coverage is a hosted-tier follow-up
-        (see ``private/followups.md``). ``pk_col`` is a code-supplied constant,
-        quoted defensively per ``.claude/rules/security.md``.
+        proof): it scans rows that currently exist and keys on the watermark, so
+        a raw bypass that (a) deletes a row, or (b) mutates without bumping the
+        watermark, leaves nothing for the scan to flag. The *structural* guard
+        against raw bypass writes is the lint rule (rejects raw
+        ``INSERT``/``UPDATE``/``DELETE`` against protected tables outside
+        ``*_repo.py``); content-based coverage is a hosted-tier follow-up (see
+        ``private/followups.md``). ``pk_col`` and ``updated_col`` are
+        code-supplied constants, quoted defensively per
+        ``.claude/rules/security.md``.
         """
         name = f"app_audit_coverage_{table_ref.name}"
         settings = get_settings().doctor
         safe_pk = exp.to_identifier(pk_col, quoted=True).sql("duckdb")
+        safe_updated = exp.to_identifier(updated_col, quoted=True).sql("duckdb")
         if full:
             sampled_sql = (
-                f"SELECT {safe_pk} AS pk, updated_at FROM {table_ref.full_name}"  # noqa: S608  # TableRef + sqlglot-quoted identifier
+                f"SELECT {safe_pk} AS pk, {safe_updated} AS updated_at "  # noqa: S608  # TableRef + sqlglot-quoted identifiers
+                f"FROM {table_ref.full_name}"
             )
             sample_params: list[object] = []
         else:
             sampled_sql = (
-                f"SELECT {safe_pk} AS pk, updated_at FROM {table_ref.full_name} "  # noqa: S608  # TableRef + sqlglot-quoted identifier
-                "WHERE updated_at >= (now()::TIMESTAMP - (? * INTERVAL 1 DAY)) "
-                "ORDER BY updated_at DESC LIMIT ?"
+                f"SELECT {safe_pk} AS pk, {safe_updated} AS updated_at "  # noqa: S608  # TableRef + sqlglot-quoted identifiers
+                f"FROM {table_ref.full_name} "
+                f"WHERE {safe_updated} >= (now()::TIMESTAMP - (? * INTERVAL 1 DAY)) "
+                f"ORDER BY {safe_updated} DESC LIMIT ?"
             )
             sample_params = [
                 settings.audit_coverage_lookback_days,
@@ -232,6 +278,131 @@ class DoctorService:
             )
         return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
 
+    def _run_user_merchants_orphans(self) -> InvariantResult:
+        """Warn on merchants with no categorization references (warn-only by design).
+
+        Deleting a categorization does not delete the merchant it referenced
+        (categorization-matching-mechanics.md), so orphaned merchants accumulate
+        as normal wear, not corruption — hence ``warn``, never ``fail``. Gated on
+        the audit lookback window so freshly-created merchants not yet fanned out
+        to transactions are not flagged.
+        """
+        name = "app_user_merchants_orphans"
+        settings = get_settings().doctor
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT m.merchant_id
+                FROM {USER_MERCHANTS.full_name} m
+                WHERE m.updated_at < (now()::TIMESTAMP - (? * INTERVAL 1 DAY))
+                  AND NOT EXISTS (
+                    SELECT 1 FROM {TRANSACTION_CATEGORIES.full_name} c
+                    WHERE c.merchant_id = m.merchant_id
+                  )
+                ORDER BY m.merchant_id
+                """,  # noqa: S608  # TableRef constants, parameterized value
+                [settings.audit_coverage_lookback_days],
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — table may not exist before first write
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"orphan check unavailable: {e}",
+                affected_ids=[],
+            )
+        if rows:
+            affected = [str(r[0]) for r in rows]
+            return InvariantResult(
+                name=name,
+                status="warn",
+                detail=f"{len(affected)} merchant(s) referenced by no categorization",
+                affected_ids=affected,
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _run_proposed_rules_rule_fk(self) -> InvariantResult:
+        """Flag ``proposed_rules.rule_id`` that doesn't resolve in ``categorization_rules``.
+
+        ``rule_id`` is NULL until a proposal is approved and links to its
+        promoted rule; a non-NULL value that names no existing rule is a
+        dangling FK (V016 replaced the text-keyed linkage with this id). NULL is
+        not a violation — only set-but-unresolved ids are flagged.
+        """
+        name = "app_proposed_rules_rule_fk"
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT p.proposed_rule_id
+                FROM {PROPOSED_RULES.full_name} p
+                WHERE p.rule_id IS NOT NULL
+                  AND NOT EXISTS (
+                    SELECT 1 FROM {CATEGORIZATION_RULES.full_name} r
+                    WHERE r.rule_id = p.rule_id
+                  )
+                ORDER BY p.proposed_rule_id
+                """  # noqa: S608  # TableRef constants, no user input
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — table may not exist before first write
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"FK check unavailable: {e}",
+                affected_ids=[],
+            )
+        if rows:
+            affected = [str(r[0]) for r in rows]
+            return InvariantResult(
+                name=name,
+                status="fail",
+                detail=(
+                    f"{len(affected)} proposed_rules row(s) reference a "
+                    "categorization_rules.rule_id that does not exist"
+                ),
+                affected_ids=affected,
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _run_transaction_categories_fk(self) -> InvariantResult:
+        """Flag ``transaction_categories`` rows with no ``core.fct_transactions`` row.
+
+        ``transaction_id`` is a 1:1 FK to the canonical transaction; a
+        categorization referencing a transaction that no longer exists (e.g. a
+        re-import dropped it) is an orphan. Skipped before the first transform
+        builds ``core.fct_transactions``.
+        """
+        name = "app_transaction_categories_fk"
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT c.transaction_id
+                FROM {TRANSACTION_CATEGORIES.full_name} c
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM {FCT_TRANSACTIONS.full_name} t
+                    WHERE t.transaction_id = c.transaction_id
+                )
+                ORDER BY c.transaction_id
+                """  # noqa: S608  # TableRef constants, no user input
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — core.fct_transactions may not exist yet
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"FK check unavailable: {e}",
+                affected_ids=[],
+            )
+        if rows:
+            affected = [str(r[0]) for r in rows]
+            return InvariantResult(
+                name=name,
+                status="fail",
+                detail=(
+                    f"{len(affected)} transaction_categories row(s) reference a "
+                    "transaction_id absent from core.fct_transactions"
+                ),
+                affected_ids=affected,
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
     def _get_transaction_count(self) -> int:
         try:
             row = self._db.execute(
@@ -295,16 +466,92 @@ class DoctorService:
             )
         return results
 
-    def _run_staging_coverage(self) -> InvariantResult:
-        # app.match_decisions has no is_primary column — cannot compute
-        # dedup secondary count. Mark skipped rather than silently wrong.
-        # Revisit when match_decisions gains a primary/secondary designation.
+    def _run_dedup_reconciliation(self) -> InvariantResult:
+        """Reconcile raw→core row counts against recorded dedup decisions.
+
+        Every imported row that disappears between the unioned staging layer
+        and the core fact table must be explained by an accepted dedup match
+        decision. The invariant:
+
+            raw_total - core_count == dedup_absorbed
+
+        where ``dedup_absorbed`` is the count of accepted, non-reversed dedup
+        decisions. Each such decision collapses exactly one secondary row into
+        its group — so the decision count equals the expected number of
+        absorbed rows. A mismatch means rows collapsed without a decision (a
+        leak) or a decision failed to collapse its rows (an un-applied match).
+
+        The ``dedup_absorbed == COUNT(decisions)`` identity holds only while
+        matching stays 1:1 (each transaction in at most one match — the
+        invariant the matcher enforces and ``int_transactions__matched.sql``
+        relies on). If multi-hop (3+ way) merges are ever introduced, this
+        formula must change to ``SUM(group_size - 1)`` over the connected
+        components, in lockstep with that model.
+        """
+        try:
+            raw_total = self._scalar_int(
+                f"SELECT COUNT(*) FROM {INT_TRANSACTIONS_UNIONED.full_name}"  # noqa: S608 — TableRef constant
+            )
+            core_count = self._scalar_int(
+                f"SELECT COUNT(DISTINCT transaction_id) FROM {FCT_TRANSACTIONS.full_name}"  # noqa: S608 — TableRef constant
+            )
+            dedup_absorbed = self._scalar_int(
+                f"""
+                SELECT COUNT(*) FROM {MATCH_DECISIONS.full_name}
+                WHERE match_status = 'accepted'
+                  AND reversed_at IS NULL
+                  AND match_type = 'dedup'
+                """  # noqa: S608 — TableRef constant
+            )
+        except Exception as e:  # noqa: BLE001 — degrade gracefully; surface cause at DEBUG
+            # Expected case: prep/core views absent before the first transform.
+            # Bind + exc_info so a real fault (renamed column, permissions) is
+            # diagnosable rather than masked by the static skip detail.
+            logger.debug(f"dedup_reconciliation skipped: {e}", exc_info=True)
+            return InvariantResult(
+                name="dedup_reconciliation",
+                status="skipped",
+                detail="prep/core layer not available; run transform first",
+                affected_ids=[],
+            )
+        observed_absorbed = raw_total - core_count
+        if observed_absorbed < 0:
+            # core can't legitimately hold more rows than staging — report the
+            # impossible direction plainly instead of a nonsensical negative
+            # "absorbed" count an agent can't act on.
+            return InvariantResult(
+                name="dedup_reconciliation",
+                status="fail",
+                detail=(
+                    f"core has more rows than staging "
+                    f"(core_count={core_count} > raw_total={raw_total}); "
+                    "a transaction reached core without passing through the "
+                    "staging layer"
+                ),
+                affected_ids=[],
+            )
+        if observed_absorbed == dedup_absorbed:
+            return InvariantResult(
+                name="dedup_reconciliation",
+                status="pass",
+                detail=None,
+                affected_ids=[],
+            )
         return InvariantResult(
-            name="staging_coverage",
-            status="skipped",
-            detail="requires is_primary column in app.match_decisions — schema not yet available",
+            name="dedup_reconciliation",
+            status="fail",
+            detail=(
+                f"expected {dedup_absorbed} absorbed row(s) from accepted dedup "
+                f"decisions but observed {observed_absorbed} "
+                f"(raw_total={raw_total}, core_count={core_count})"
+            ),
             affected_ids=[],
         )
+
+    def _scalar_int(self, sql: str) -> int:
+        """Execute a single-row query and return column 0 as an int (0 if no row)."""
+        row = self._db.execute(sql).fetchone()
+        return int(row[0]) if row else 0
 
     def _run_categorization_coverage(self) -> InvariantResult:
         """Warn (not fail) when <50% of non-transfer transactions are categorized."""

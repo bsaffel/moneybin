@@ -6,6 +6,14 @@ ready
 
 > **Drift note (2026-05-17).** Bypass-map line numbers below reference the single-file `services/categorization_service.py` at HEAD `f13f3c7`. PR #155 (post-spec) split that module into a facade + collaborators under `src/moneybin/services/categorization/` (`__init__.py`, `_shared.py`, `applier.py`, `assist.py`, `matcher.py`, `orchestrator.py`, `queries.py`). The protected-tables list (Req 6), repository contract (Req 2–5), lint rule (Req 8), doctor invariants (Req 9), and PR ordering (Req 10) are unaffected — only the source file the implementation PRs will edit changes. Each PR-by-PR mutation-site call-out below should be re-located against the post-split files at implementation time; the mutations themselves (and their target tables) are unchanged. PR #166 (`categories_delete` cascade) and PR #174 (`category_id` FK migration) also landed post-spec; both touch the same `categorization_service` paths but do not change the bypass-map shape.
 
+> **Batch B reconciliation (2026-05-22).** Implementing PRs 3–5 (`UserMerchantsRepo`, `CategorizationRulesRepo`, `ProposedRulesRepo`, `TransactionCategoriesRepo`) surfaced four spec↔code drifts, resolved as follows:
+> - **`app.rule_deactivations` was dropped in migration V018** (post-spec). `RuleDeactivationsRepo` and its FK check are obsolete and removed from scope; the override-driven deactivation already emits an audit row via the `categorization_rules` repo (see below). Req 6's row and PR 4's bullet are struck through.
+> - **The PR 4 FK doctor check direction was backwards.** `categorization_rules` has no `proposed_rule_id` column; the real link is `proposed_rules.rule_id → categorization_rules.rule_id` (added by V016). The shipped check (`app_proposed_rules_rule_fk`) follows the real direction.
+> - **The "`categorization_rules.priority` uniqueness" check (Req 9 / PR 4) does not correspond to a real invariant.** Priority is intentionally non-unique — user rules default to 100, auto-rules to 200, with deterministic tie-breaking by `created_at` (`categorization-auto-rules.md` §16). A strict uniqueness check would fail on every real database, so it is not implemented.
+> - **The doctor audit-coverage helper was generalized with an `updated_col` parameter.** Req 9 assumed every protected table carries `updated_at`; `proposed_rules` (keys on `proposed_at`) and `transaction_categories` (keys on `categorized_at`) do not. Bypass UPDATEs that don't advance the watermark remain the lint rule's job (the heuristic's documented limitation).
+> - **Rule deactivation unified on the `categorization_rule.deactivate` audit action** (taxonomy-conformant `<entity>.<verb>`), replacing the legacy non-conformant `rule_deactivated`. Override forensics (`reason`, `override_count`, `sample_ids`) moved to the audit `context`. The set/clear categorization paths kept their established `category.set` / `category.clear` actions but now capture the **full** row (Req 4), superseding their prior column-subset payload.
+> - **`delete_category`'s 6-table cascade stays raw** until `budgets` + `transaction_splits` get repos (AI-PR12), so it can thread `parent_audit_id` through all six in one coherent pass rather than a half-threaded mix. The lint rule (PR 13) lands after that.
+
 ## Goal
 
 `app.*` holds the only non-reconstructible state in MoneyBin — user categories, merchant patterns, categorization rules, account settings, balance assertions, budgets, curation notes/tags/splits, match decisions, tabular-format profiles. A bad service mutation today can silently corrupt any of those tables: audit routing is enforced by convention, not structure, and `audit_service.record_audit_event()` is called at only a fraction of the mutation sites. The doctor has no `app.*` invariants — only pipeline ones. The hosted tier (M3D/M3E) cannot ship without per-user `app.*` integrity, and the agent-first thesis means bulk LLM-driven mutations need recoverability to be trustworthy. This spec adds **Invariant 10** to the architecture, introduces a `*Repo` layer that owns every protected `app.*` write, bakes in the data captured for a future undo surface, and enforces the contract via a lint rule and doctor checks. The undo *consumer* (CLI/MCP/UndoService) is deliberately deferred to Phase 2.
@@ -87,7 +95,7 @@ Source: 2026-05-16 CTO architecture review §2.2 + §3 leverage point #3, re-ver
    | `UserMerchantsRepo` | `app.user_merchants` | `categorization_service` |
    | `CategorizationRulesRepo` | `app.categorization_rules` | `categorization_service`, `auto_rule_service` |
    | `ProposedRulesRepo` | `app.proposed_rules` | `auto_rule_service` |
-   | `RuleDeactivationsRepo` | `app.rule_deactivations` | `auto_rule_service` |
+   | ~~`RuleDeactivationsRepo`~~ | ~~`app.rule_deactivations`~~ | — table dropped in V018; obsolete (see Batch B reconciliation) |
    | `TransactionCategoriesRepo` | `app.transaction_categories` | `categorization_service` |
    | `AccountSettingsRepo` | `app.account_settings` | `account_service` |
    | `TabularFormatsRepo` | `app.tabular_formats` | `extractors/tabular/formats.py` |
@@ -192,13 +200,14 @@ Phase 1 lands as a sequence of small reviewable PRs. Each PR after PR 1 adds one
 - `categorization_service.py:898, 983` → `UserMerchantsRepo`.
 - Doctor invariant: audit coverage + orphan warning (warn-only; deletion of a categorization referencing a merchant doesn't currently delete the merchant — that's by design).
 
-### PR 4 — `CategorizationRulesRepo` + `ProposedRulesRepo` + `RuleDeactivationsRepo`
+### PR 4 — `CategorizationRulesRepo` + `ProposedRulesRepo`
 
-- `categorization_service.py:1070, 1128` and `auto_rule_service.py:391` (rule promotion INSERT) + `auto_rule_service.py:570` (rule deactivation UPDATE) → `CategorizationRulesRepo`.
-- `auto_rule_service.py:278, 287, 295, 408, 445, 575, 583` → `ProposedRulesRepo`.
-- `auto_rule_service.py:601` → `RuleDeactivationsRepo`.
-- `auto_rule_service.py:391` (rule promotion INSERT) shares a `parent_audit_id` with the `ProposedRulesRepo` status update at L408 — this exercises the cascade-threading contract from Req 5.
-- Doctor invariants: `app.categorization_rules.priority` uniqueness; audit coverage for all three tables; FK from `categorization_rules.proposed_rule_id` to `proposed_rules.proposed_rule_id` where present.
+> Shipped without `RuleDeactivationsRepo` (its table was dropped in V018). FK direction and the priority-uniqueness check were corrected per the Batch B reconciliation note above. Mutation-site line numbers below drifted; they were re-located against the post-#155 split at implementation time.
+
+- Applier rule INSERT/UPDATE + `auto_rule_service` rule promotion INSERT + override deactivation UPDATE → `CategorizationRulesRepo` (`insert` / `deactivate`).
+- `auto_rule_service` proposal insert / reinforce / supersede / approve / reject → `ProposedRulesRepo`.
+- Rule promotion (`CategorizationRulesRepo.insert`) shares its `audit_id` as the `parent_audit_id` on the paired `ProposedRulesRepo.mark_approved` UPDATE — exercises the cascade-threading contract from Req 5 (proven by a `chain_for` test).
+- Doctor invariants: audit coverage for both tables; FK `proposed_rules.rule_id → categorization_rules.rule_id` (the real direction; `categorization_rules` has no `proposed_rule_id`). Priority uniqueness is **not** checked — priority is intentionally non-unique with deterministic tie-breaking (see reconciliation note).
 
 ### PR 5 — `TransactionCategoriesRepo`
 

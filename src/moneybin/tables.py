@@ -83,6 +83,7 @@ SEED_SOURCE_PRIORITY = TableRef("app", "seed_source_priority")
 SEED_CATEGORIES = TableRef("seeds", "categories")
 
 # -- Prep / staging views (built by SQLMesh transforms) --
+INT_TRANSACTIONS_UNIONED = TableRef("prep", "int_transactions__unioned")
 INT_TRANSACTIONS_MATCHED = TableRef("prep", "int_transactions__matched")
 
 # -- Meta schema (cross-source provenance + lineage) --

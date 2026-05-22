@@ -105,7 +105,9 @@ def categorize_auto_accept(
             accept_set = set(accept or [])
             reject_set = set(reject or [])
             accept_set -= reject_set
-            result = svc.accept(accept=sorted(accept_set), reject=sorted(reject_set))
+            result = svc.accept(
+                accept=sorted(accept_set), reject=sorted(reject_set), actor="cli"
+            )
 
     logger.info(
         f"✅ Accepted {result.approved} "
