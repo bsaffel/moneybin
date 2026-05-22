@@ -115,6 +115,32 @@ def test_extract_create_targets_normalizes_case(tmp_path: Path) -> None:
     assert ("app", "assets_state") in targets
 
 
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "CREATE TABLE app.foo LIKE core.fct_transactions;",
+        "CREATE TABLE app.foo (id TEXT REFERENCES core.fct_transactions(id));",
+        "CREATE TABLE app.foo AS SELECT * FROM core.fct_transactions;",
+    ],
+)
+def test_extract_create_targets_scopes_to_the_create_target(
+    tmp_path: Path, sql: str
+) -> None:
+    """A referenced table (LIKE / FK / AS SELECT) is never mistaken for the target.
+
+    extract_create_targets resolves the target from statement.this rather than
+    the first Table in DFS order, so a referenced table cannot slip in and get
+    capability/prefix-validated as if the package wrote it.
+    """
+    sql_file = tmp_path / "ref.sql"
+    sql_file.write_text(sql)
+
+    targets = extract_create_targets(sql_file)
+
+    assert targets == [("app", "foo")]
+    assert ("core", "fct_transactions") not in targets
+
+
 def test_iter_table_refs_normalizes_case(tmp_path: Path) -> None:
     """Unquoted table references are normalized to lowercase (DuckDB semantics)."""
     sql = "SELECT * FROM Core.FCT_Transactions JOIN App.Test_State ON 1=1;"

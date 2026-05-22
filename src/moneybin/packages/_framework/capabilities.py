@@ -22,11 +22,13 @@ def is_write_allowed(capability: CapabilityDeclarations, target: str) -> bool:
     """True if 'target' (schema.name) matches any declared write glob.
 
     Matching is case-insensitive: DuckDB treats unquoted identifiers
-    case-insensitively, and _sql_walk normalizes extracted targets to
-    lowercase, so patterns are lowered here to match either-case globs.
+    case-insensitively. Internal callers pass targets already lowercased by
+    _sql_walk, but this is part of the public API — lower both sides so an
+    external caller passing a mixed-case target still matches.
     """
     return any(
-        fnmatch.fnmatchcase(target, pattern.lower()) for pattern in capability.writes
+        fnmatch.fnmatchcase(target.lower(), pattern.lower())
+        for pattern in capability.writes
     )
 
 

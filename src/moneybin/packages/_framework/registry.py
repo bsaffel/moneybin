@@ -217,7 +217,7 @@ def _resolve_entry_point_callable(spec: str) -> Callable[[Any], None]:
     via setuptools — they're paths inside the already-installed package.
     """
     module_path, _, attr = spec.partition(":")
-    if not attr:
+    if not module_path or not attr:
         raise ValueError(f"Entry point '{spec}' must be 'module.path:callable'")
     module = importlib.import_module(module_path)
     try:

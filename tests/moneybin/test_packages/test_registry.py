@@ -208,6 +208,9 @@ def test_init_schemas_executes_additional_files(tmp_path: Path) -> None:
         "CREATE TABLE IF NOT EXISTS app.test_synthetic_state (id TEXT PRIMARY KEY);"
     )
 
+    # Raw connection rather than Database: init_schemas() operates on a bare
+    # duckdb connection, and this test exercises that pass-through directly
+    # without the Database wrapper's schema bootstrapping.
     conn = duckdb.connect()
     conn.execute("CREATE SCHEMA app;")  # init_schemas creates schemas via core files
     init_schemas(conn, additional_files=[pkg_sql])

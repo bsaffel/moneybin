@@ -47,6 +47,22 @@ def _parse(sql_file: Path) -> Sequence[exp.Expr | None]:
     return statements
 
 
+def _create_target(statement: exp.Create) -> exp.Table | None:
+    """Resolve the Table a CREATE statement writes to.
+
+    Derive from ``statement.this`` (the direct Schema/Table child) rather than
+    the first Table in DFS order: a LIKE clause or FK constraint can place a
+    *referenced* Table node earlier in the traversal, so ``statement.find(exp.Table)``
+    would wrongly return that referenced table instead of the CREATE target —
+    silently validating capability/prefix against the wrong name.
+
+    exp.Create.this is a Schema (CREATE TABLE name (cols)) or a Table
+    (CREATE VIEW name AS ...); resolve whichever down to the Table node.
+    """
+    this = statement.this
+    return this.find(exp.Table) if this is not None else None
+
+
 def extract_create_targets(sql_file: Path) -> list[tuple[str, str]]:
     """Return [(schema, name), ...] for every schema-qualified CREATE in sql_file.
 
@@ -65,7 +81,7 @@ def extract_create_targets(sql_file: Path) -> list[tuple[str, str]]:
             continue
         if statement.kind not in ("TABLE", "VIEW"):
             continue
-        table = statement.find(exp.Table)
+        table = _create_target(statement)
         if table is None or not table.args.get("db"):
             continue
         # Lowercase: DuckDB treats unquoted identifiers case-insensitively;
@@ -89,15 +105,9 @@ def iter_table_refs(sql_file: Path) -> Iterator[tuple[str, str]]:
         if statement is None:
             continue
         # Exclude the CREATE target itself — it's a write, not a read dependency.
-        # Use statement.this (the direct Schema/Table child) rather than the
-        # first Table in DFS — a LIKE clause or FK could place another Table
-        # node earlier in the traversal order.
-        create_target = None
-        if isinstance(statement, exp.Create):
-            this = statement.this
-            # exp.Create.this is a Schema (CREATE TABLE name (cols)) or Table
-            # (CREATE VIEW name AS ...) — resolve whichever to the Table node.
-            create_target = this.find(exp.Table) if this is not None else None
+        create_target = (
+            _create_target(statement) if isinstance(statement, exp.Create) else None
+        )
         for table in statement.find_all(exp.Table):
             if table is create_target:
                 continue
