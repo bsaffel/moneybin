@@ -36,13 +36,28 @@ def test_extract_create_targets_picks_up_tables_and_views(tmp_path: Path) -> Non
 
 
 def test_extract_create_targets_ignores_temp_tables(tmp_path: Path) -> None:
-    """Temporary CREATE statements without schema qualifiers are skipped."""
+    """Temporary CREATE statements are skipped (ephemeral, never persist)."""
     sql = "CREATE TEMP TABLE scratch AS SELECT 1 AS x;"
     sql_file = tmp_path / "temp.sql"
     sql_file.write_text(sql)
 
     targets = extract_create_targets(sql_file)
     assert targets == []
+
+
+def test_extract_create_targets_resolves_unqualified_to_main(tmp_path: Path) -> None:
+    """An unqualified persistent CREATE resolves to main.<name>, not skipped.
+
+    Returning ('main', name) lets the capability/prefix validators flag it — an
+    unqualified write would land in DuckDB's default schema, escaping the
+    package's declared globs.
+    """
+    sql = "CREATE TABLE scratch (x INT);"
+    sql_file = tmp_path / "unqualified.sql"
+    sql_file.write_text(sql)
+
+    targets = extract_create_targets(sql_file)
+    assert targets == [("main", "scratch")]
 
 
 def test_iter_table_refs_returns_referenced_schemas(tmp_path: Path) -> None:

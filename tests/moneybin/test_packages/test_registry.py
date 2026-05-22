@@ -252,6 +252,29 @@ def test_register_package_uninstalled_entry_point_raises_value_error(
             register_package(info=info, mcp=MagicMock(), cli=MagicMock())
 
 
+def test_register_package_preserves_transitive_import_error(tmp_path: Path) -> None:
+    """Transitive import failures propagate instead of being masked.
+
+    A package module that exists but has a failing internal import must not be
+    rewritten as 'not installed' — the real ModuleNotFoundError propagates.
+    """
+    info = _make_minimal_pkg(tmp_path)  # entry point module is "x"
+    fresh = PackageRegistry()
+
+    # Simulate "x" existing but importing a missing transitive dependency.
+    transitive = ModuleNotFoundError(
+        "No module named 'missing_lib'", name="missing_lib"
+    )
+
+    with patch("moneybin.packages._framework.registry._global_registry", fresh):
+        with patch(
+            "moneybin.packages._framework.registry.importlib.import_module",
+            side_effect=transitive,
+        ):
+            with pytest.raises(ModuleNotFoundError, match="missing_lib"):
+                register_package(info=info, mcp=MagicMock(), cli=MagicMock())
+
+
 def test_init_schemas_executes_additional_files(tmp_path: Path) -> None:
     """init_schemas() accepts and executes package-contributed DDL files."""
     import duckdb

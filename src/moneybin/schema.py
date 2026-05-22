@@ -229,6 +229,12 @@ def init_schemas(
         ValueError: an additional_files path escapes package_root (when given).
     """
     extras = additional_files or []
+    if extras and package_root is None:
+        logger.warning(
+            "init_schemas: additional_files provided without package_root — "
+            "path-containment check is disabled; the Plan 4 caller should pass "
+            "package_root=info.root"
+        )
     if package_root is not None:
         root = package_root.resolve()
         for sql_path in extras:

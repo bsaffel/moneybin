@@ -240,6 +240,18 @@ def _resolve_entry_point_callable(spec: str) -> Callable[[Any], None]:
     try:
         module = importlib.import_module(module_path)
     except ModuleNotFoundError as exc:
+        # Only rewrite when the entry-point module itself (or a parent package)
+        # is missing. If the module exists but one of ITS imports is missing,
+        # exc.name differs — re-raise so the real dependency failure isn't
+        # masked as "not installed".
+        missing = exc.name or ""
+        entry_module_missing = (
+            not missing
+            or missing == module_path
+            or module_path.startswith(f"{missing}.")
+        )
+        if not entry_module_missing:
+            raise
         raise ValueError(
             f"Entry point '{spec}' module '{module_path}' is not installed"
         ) from exc

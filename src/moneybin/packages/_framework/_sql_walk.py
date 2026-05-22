@@ -32,7 +32,7 @@ def _parse(sql_file: Path) -> Sequence[exp.Expr | None]:
     extract_create_targets() relies on isinstance(None, exp.Create) == False;
     iter_table_refs() has an explicit ``if statement is None: continue`` guard.
     """
-    sql = sql_file.read_text()
+    sql = sql_file.read_text(encoding="utf-8")
     try:
         statements = sqlglot.parse(sql, dialect="duckdb")
     except ParseError as exc:
@@ -64,12 +64,14 @@ def _create_target(statement: exp.Create) -> exp.Table | None:
 
 
 def extract_create_targets(sql_file: Path) -> list[tuple[str, str]]:
-    """Return [(schema, name), ...] for every schema-qualified CREATE in sql_file.
+    """Return [(schema, name), ...] for every persistent CREATE in sql_file.
 
-    Picks up both CREATE TABLE and CREATE VIEW. Unqualified CREATE statements
-    (CREATE TEMP TABLE, CREATE TABLE scratch) are skipped — packages must
-    write to schema-qualified tables; a bare CREATE is either an in-memory
-    helper or a bug, neither of which counts toward capability validation.
+    Picks up both CREATE TABLE and CREATE VIEW. TEMP/TEMPORARY tables are
+    skipped — they're ephemeral (dropped at session end) and never persist to a
+    schema. An *unqualified* persistent CREATE (e.g. CREATE TABLE scratch)
+    resolves to DuckDB's default 'main' schema and is returned as ('main', name)
+    — NOT skipped — so the capability/prefix validators flag it: an unqualified
+    write still escapes the package's declared globs.
 
     Raises:
         ValueError: if sqlglot cannot parse the file.
@@ -83,12 +85,16 @@ def extract_create_targets(sql_file: Path) -> list[tuple[str, str]]:
             continue
         if statement.kind not in ("TABLE", "VIEW"):
             continue
+        if statement.find(exp.TemporaryProperty) is not None:
+            continue
         table = _create_target(statement)
-        if table is None or not table.args.get("db"):
+        if table is None:
             continue
         # Lowercase: DuckDB treats unquoted identifiers case-insensitively;
-        # canonical form is lowercase so downstream glob/prefix matching is predictable.
-        schema = table.args["db"].name.lower()
+        # canonical form is lowercase so downstream glob/prefix matching is
+        # predictable. Unqualified CREATE → DuckDB's default 'main' schema.
+        db = table.args.get("db")
+        schema = db.name.lower() if db else "main"
         name = table.name.lower()
         targets.append((schema, name))
     return targets

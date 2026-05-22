@@ -151,6 +151,30 @@ def test_manifest_recorded_but_absent_on_disk_skips(
     assert any("not present on disk" in rec.message.lower() for rec in caplog.records)
 
 
+def test_unreadable_manifest_skips_with_warning(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An OSError reading the manifest is caught — one bad package can't abort all.
+
+    A manifest path that exists but is a directory raises IsADirectoryError
+    (an OSError) from open(); discovery must skip it, not propagate.
+    """
+    pkg_dir = tmp_path / "oserror_pkg"
+    pkg_dir.mkdir()
+    # The "manifest" is a directory, so open("r") raises IsADirectoryError.
+    (pkg_dir / "moneybin_package.yaml").mkdir()
+
+    fake_ep = _fake_ep(pkg_dir, name="oserror_pkg")
+
+    with patch("moneybin.packages._framework.discovery.entry_points") as mock_eps:
+        mock_eps.return_value = [fake_ep]
+        with caplog.at_level("ERROR"):
+            result = discover_packages()
+
+    assert result == []
+    assert any("invalid manifest" in rec.message.lower() for rec in caplog.records)
+
+
 def test_invalid_manifest_skips_with_warning(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:

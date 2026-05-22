@@ -118,7 +118,10 @@ def discover_packages() -> list[PackageInfo]:
 
         try:
             manifest = PackageManifest.from_yaml(manifest_path)
-        except (PydanticValidationError, ValueError, yaml.YAMLError) as exc:
+        except (PydanticValidationError, ValueError, yaml.YAMLError, OSError) as exc:
+            # OSError too: the manifest can pass the exists() check yet be
+            # unreadable (permissions, dangling symlink, removed between calls).
+            # A single bad package must not abort discovery for the rest.
             logger.error(
                 f"Entry point '{ep.name}' has invalid manifest at "
                 f"{manifest_path}: {type(exc).__name__}: {exc}"
