@@ -48,6 +48,19 @@ class BaseRepo:
     #: Stable repository label for the ``app_mutation_audit_emitted_total`` metric.
     repository: ClassVar[str]
 
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        """Fail at class-definition time if a repo forgets its ``repository`` label.
+
+        Without this, a missing label only surfaces as an ``AttributeError`` the
+        first time ``_emit_audit`` runs at runtime — fail fast at import instead.
+        """
+        super().__init_subclass__(**kwargs)
+        if not hasattr(cls, "repository"):
+            raise TypeError(
+                f"{cls.__name__} must set a class-level `repository` label "
+                "(used for the app_mutation_audit_emitted_total metric)."
+            )
+
     def __init__(self, db: Database, *, audit: AuditService | None = None) -> None:
         """Bind to an open Database; lazily build an ``AuditService`` if absent."""
         self._db = db

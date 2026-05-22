@@ -24,11 +24,6 @@ from moneybin.tables import GSHEET_CONNECTIONS
 
 logger = logging.getLogger(__name__)
 
-# Audit target tuple shared across every mutation: (target_schema, target_table).
-# Caller appends the row's connection_id to form the 3-tuple expected by
-# AuditService.record_audit_event(target=...).
-_AUDIT_TARGET = (GSHEET_CONNECTIONS.schema, GSHEET_CONNECTIONS.name)
-
 # Columns selected for before_value / after_value capture. Per
 # app-integrity-invariant.md Req 4, we capture the FULL pre-mutation row so
 # Phase 2 undo can be additive without re-instrumentation.
@@ -107,6 +102,11 @@ class GSheetConnectionsRepo(BaseRepo):
 
     repository = "gsheet_connections"
 
+    # Audit target tuple shared across every mutation: (target_schema,
+    # target_table). Each method appends the row's connection_id to form the
+    # 3-tuple expected by AuditService.record_audit_event(target=...).
+    _AUDIT_TARGET = (GSHEET_CONNECTIONS.schema, GSHEET_CONNECTIONS.name)
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -183,7 +183,7 @@ class GSheetConnectionsRepo(BaseRepo):
             after = self._fetch_full_row(connection_id)
             self._emit_audit(
                 action="gsheet_connection.insert",
-                target=(*_AUDIT_TARGET, connection_id),
+                target=(*self._AUDIT_TARGET, connection_id),
                 before=None,
                 after=self._serialize_for_audit(after),
                 actor=actor,
@@ -220,7 +220,7 @@ class GSheetConnectionsRepo(BaseRepo):
             after = self._fetch_full_row(connection_id)
             self._emit_audit(
                 action="gsheet_connection.update_status",
-                target=(*_AUDIT_TARGET, connection_id),
+                target=(*self._AUDIT_TARGET, connection_id),
                 before=self._serialize_for_audit(before),
                 after=self._serialize_for_audit(after),
                 actor=actor,
@@ -278,7 +278,7 @@ class GSheetConnectionsRepo(BaseRepo):
             after = self._fetch_full_row(connection_id)
             self._emit_audit(
                 action="gsheet_connection.update_after_pull",
-                target=(*_AUDIT_TARGET, connection_id),
+                target=(*self._AUDIT_TARGET, connection_id),
                 before=self._serialize_for_audit(before),
                 after=self._serialize_for_audit(after),
                 actor=actor,
@@ -339,7 +339,7 @@ class GSheetConnectionsRepo(BaseRepo):
             after = self._fetch_full_row(connection_id)
             self._emit_audit(
                 action="gsheet_connection.reconnect",
-                target=(*_AUDIT_TARGET, connection_id),
+                target=(*self._AUDIT_TARGET, connection_id),
                 before=self._serialize_for_audit(before),
                 after=self._serialize_for_audit(after),
                 actor=actor,
@@ -387,7 +387,7 @@ class GSheetConnectionsRepo(BaseRepo):
             )
             self._emit_audit(
                 action="gsheet_connection.delete",
-                target=(*_AUDIT_TARGET, connection_id),
+                target=(*self._AUDIT_TARGET, connection_id),
                 before=self._serialize_for_audit(before),
                 after=None,
                 actor=actor,
