@@ -92,6 +92,8 @@ class UserCategoriesRepo(BaseRepo):
         """Set ``is_active`` on a user category; capture full before/after."""
         with self._transaction(in_outer_txn=in_outer_txn):
             before = self._fetch_row(category_id)
+            if before is None:
+                raise ValueError(f"category_id={category_id!r} not found")
             self._db.execute(
                 f"UPDATE {USER_CATEGORIES.full_name} "  # noqa: S608  # TableRef constant
                 f"SET is_active = ?, updated_at = CURRENT_TIMESTAMP "
@@ -119,6 +121,8 @@ class UserCategoriesRepo(BaseRepo):
         """Hard-delete a user category; capture the full prior row in ``before``."""
         with self._transaction(in_outer_txn=in_outer_txn):
             before = self._fetch_row(category_id)
+            if before is None:
+                raise ValueError(f"category_id={category_id!r} not found")
             self._db.execute(
                 f"DELETE FROM {USER_CATEGORIES.full_name} WHERE category_id = ?",  # noqa: S608  # TableRef + parameterized value
                 [category_id],

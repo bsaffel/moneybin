@@ -106,11 +106,13 @@ class DoctorService:
         name = f"app_audit_coverage_{table_ref.name}"
         settings = get_settings().doctor
         if full:
-            sampled_sql = f"SELECT {pk_col} AS pk FROM {table_ref.full_name}"  # noqa: S608  # TableRef + code-constant pk_col
+            sampled_sql = (
+                f"SELECT {pk_col} AS pk, updated_at FROM {table_ref.full_name}"  # noqa: S608  # TableRef + code-constant pk_col
+            )
             sample_params: list[object] = []
         else:
             sampled_sql = (
-                f"SELECT {pk_col} AS pk FROM {table_ref.full_name} "  # noqa: S608  # TableRef + code-constant pk_col
+                f"SELECT {pk_col} AS pk, updated_at FROM {table_ref.full_name} "  # noqa: S608  # TableRef + code-constant pk_col
                 "WHERE updated_at >= (now()::TIMESTAMP - (? * INTERVAL 1 DAY)) "
                 "ORDER BY updated_at DESC LIMIT ?"
             )
@@ -118,18 +120,29 @@ class DoctorService:
                 settings.audit_coverage_lookback_days,
                 settings.audit_coverage_sample_cap,
             ]
+        # Match (schema, table, id) — target_table alone collides across schemas —
+        # AND require an audit at-or-after the row's latest mutation. A row audited
+        # once then mutated again by a raw bypass advances updated_at past every
+        # existing audit row, so "any audit exists" would false-pass; comparing
+        # against updated_at catches it. Repo writes set the row's updated_at and
+        # the audit's occurred_at from CURRENT_TIMESTAMP in one transaction (equal
+        # in DuckDB), so legitimate mutations satisfy occurred_at >= updated_at.
         try:
             rows = self._db.execute(
                 f"""
                 WITH sampled AS ({sampled_sql})
                 SELECT s.pk
                 FROM sampled s
-                LEFT JOIN {AUDIT_LOG.full_name} a
-                  ON a.target_table = ? AND a.target_id = s.pk
-                WHERE a.audit_id IS NULL
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM {AUDIT_LOG.full_name} a
+                    WHERE a.target_schema = ?
+                      AND a.target_table = ?
+                      AND a.target_id = s.pk
+                      AND a.occurred_at >= s.updated_at
+                )
                 ORDER BY s.pk
                 """,  # noqa: S608  # TableRef constants, parameterized values
-                [*sample_params, table_ref.name],
+                [*sample_params, table_ref.schema, table_ref.name],
             ).fetchall()
         except Exception as e:  # noqa: BLE001 — table may not exist before first write
             return InvariantResult(

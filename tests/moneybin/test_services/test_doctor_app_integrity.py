@@ -66,6 +66,22 @@ def test_audit_coverage_full_scans_all(db: Database) -> None:
     assert "old2" in result.affected_ids
 
 
+def test_audit_coverage_flags_audited_then_bypassed(db: Database) -> None:
+    # A row audited at insert, then mutated by a raw bypass that advances
+    # updated_at past the audit, must still be flagged — "some audit exists"
+    # is not enough; the audit must cover the latest mutation.
+    cid = UserCategoriesRepo(db).insert(category="WasAudited", actor="user").target_id
+    assert cid is not None
+    db.execute(
+        "UPDATE app.user_categories "  # noqa: S608  # test input, not executing user SQL
+        "SET updated_at = now()::TIMESTAMP + INTERVAL 1 DAY WHERE category_id = ?",
+        [cid],
+    )
+    result = DoctorService(db)._run_app_audit_coverage(USER_CATEGORIES, "category_id")
+    assert result.status == "fail"
+    assert cid in result.affected_ids
+
+
 def test_user_categories_uniqueness_flags_duplicate(db: Database) -> None:
     _bypass_insert(db, category_id="dup1", category="Dining", subcategory="Coffee")
     _bypass_insert(db, category_id="dup2", category="Dining", subcategory="Coffee")

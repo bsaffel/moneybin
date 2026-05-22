@@ -156,6 +156,21 @@ def test_delete_captures_full_before_value(db: Database) -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_update_active_raises_on_missing_row(db: Database) -> None:
+    repo = UserCategoriesRepo(db)
+    with pytest.raises(ValueError, match="not found"):
+        repo.update_active("nope", is_active=False, actor="user")
+    # No phantom audit row for the nonexistent id.
+    assert _audit_rows_for(db, "nope") == []
+
+
+def test_delete_raises_on_missing_row(db: Database) -> None:
+    repo = UserCategoriesRepo(db)
+    with pytest.raises(ValueError, match="not found"):
+        repo.delete("nope", actor="user")
+    assert _audit_rows_for(db, "nope") == []
+
+
 def test_insert_rolls_back_when_audit_raises(db: Database) -> None:
     audit = MagicMock()
     audit.record_audit_event.side_effect = RuntimeError("simulated audit failure")

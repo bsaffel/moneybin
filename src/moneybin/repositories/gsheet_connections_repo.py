@@ -144,10 +144,11 @@ class GSheetConnectionsRepo(BaseRepo):
         skip_trailing_patterns: list[str] | None,
         actor: str = "cli",
         parent_audit_id: str | None = None,
+        in_outer_txn: bool = False,
     ) -> str:
         """Insert a new connection row + audit. Returns the generated id."""
         connection_id = uuid.uuid4().hex[:12]
-        with self._transaction():
+        with self._transaction(in_outer_txn=in_outer_txn):
             self._db.execute(
                 f"""
                 INSERT INTO {GSHEET_CONNECTIONS.full_name} (
@@ -201,9 +202,10 @@ class GSheetConnectionsRepo(BaseRepo):
         reason: str | None = None,
         actor: str = "cli",
         parent_audit_id: str | None = None,
+        in_outer_txn: bool = False,
     ) -> None:
         """Update connection status + status reason; emit audit row."""
-        with self._transaction():
+        with self._transaction(in_outer_txn=in_outer_txn):
             before = self._fetch_full_row(connection_id)
             if before is None:
                 raise ValueError(f"connection_id={connection_id!r} not found")
@@ -237,6 +239,7 @@ class GSheetConnectionsRepo(BaseRepo):
         last_status_reason: str | None = None,
         actor: str = "system",
         parent_audit_id: str | None = None,
+        in_outer_txn: bool = False,
     ) -> None:
         """Persist pull-attempt results; emit audit row.
 
@@ -246,7 +249,7 @@ class GSheetConnectionsRepo(BaseRepo):
         per failed pull. None clears the column (intentional: a clean
         pull should clear any stale reason from the previous attempt).
         """
-        with self._transaction():
+        with self._transaction(in_outer_txn=in_outer_txn):
             before = self._fetch_full_row(connection_id)
             if before is None:
                 raise ValueError(f"connection_id={connection_id!r} not found")
@@ -295,12 +298,13 @@ class GSheetConnectionsRepo(BaseRepo):
         skip_trailing_patterns: list[str] | None = None,
         actor: str = "cli",
         parent_audit_id: str | None = None,
+        in_outer_txn: bool = False,
     ) -> None:
         """Re-pin mapping/signature after user reconnects to fix drift.
 
         Resets ``status`` to ``healthy`` and clears ``last_status_reason``.
         """
-        with self._transaction():
+        with self._transaction(in_outer_txn=in_outer_txn):
             before = self._fetch_full_row(connection_id)
             if before is None:
                 raise ValueError(f"connection_id={connection_id!r} not found")
