@@ -4,6 +4,8 @@ Each subclass adds structured fields that must appear in str(e) so callers
 (validator CLI, MCP tool, framework startup) can surface precise diagnostics.
 """
 
+import copy
+
 from moneybin.packages._framework.errors import (
     CapabilityViolation,
     PrefixViolation,
@@ -63,3 +65,23 @@ def test_quality_scale_violation_str_includes_claimed_tier_and_missing_evidence(
     assert "tier claim not satisfied" in result
     assert "gold" in result
     assert "no integration test suite found" in result
+
+
+def test_validation_error_args_populated_for_reduce_round_trip() -> None:
+    """Args mirrors the fields so reduce-based reconstruction (copy/pickle) works.
+
+    A frozen-dataclass __init__ never calls Exception.__init__, so without the
+    __post_init__ fix args would be () and reconstruction via cls(*args) would
+    raise. copy.deepcopy uses the same __reduce__ path as pickle.
+    """
+    err = CapabilityViolation(
+        package_name="assets",
+        message="leak",
+        sql_file="s.sql",
+        target="core.x",
+    )
+    assert err.args == ("assets", "leak", "s.sql", "core.x")
+
+    clone = copy.deepcopy(err)
+    assert clone == err
+    assert str(clone) == str(err)

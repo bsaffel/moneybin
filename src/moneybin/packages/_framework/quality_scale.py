@@ -54,6 +54,16 @@ def _silver_checks(info: PackageInfo) -> list[QualityScaleViolation]:
                 missing_evidence="tests/ directory not found",
             )
         )
+    # Spec §Quality Scale: "named code owner — someone's responsible."
+    if not info.manifest.code_owner:
+        violations.append(
+            QualityScaleViolation(
+                package_name=info.manifest.name,
+                message="Silver requires a code_owner declared in the manifest",
+                claimed_tier="silver",
+                missing_evidence="manifest.code_owner not set",
+            )
+        )
     return violations
 
 

@@ -136,6 +136,49 @@ def test_version_must_be_semver(tmp_path: Path) -> None:
         PackageManifest.from_yaml(manifest_path)
 
 
+def test_version_rejects_leading_zero_prerelease(tmp_path: Path) -> None:
+    """SemVer forbids leading zeros in numeric prerelease identifiers (rule 9)."""
+    manifest_path = _write_manifest(
+        tmp_path,
+        """
+        name: test_synthetic
+        display_name: Test
+        version: 1.0.0-01
+        quality_scale: bronze
+        owns_prefix: test_synthetic
+        publisher: {name: x, verified: false}
+        description: ok
+        capabilities: {writes: [], reads: [], network: [], secrets: []}
+        requires: {moneybin: ">=1.0.0"}
+        entry_points: {tools: x:y, cli: x:y, models: x, schema: x}
+        """,
+    )
+
+    with pytest.raises(PydanticValidationError, match="semver"):
+        PackageManifest.from_yaml(manifest_path)
+
+
+def test_version_accepts_valid_prerelease(tmp_path: Path) -> None:
+    """Valid prerelease/build metadata (1.2.3-rc.1+build.5) parses."""
+    manifest_path = _write_manifest(
+        tmp_path,
+        """
+        name: test_synthetic
+        display_name: Test
+        version: 1.2.3-rc.1+build.5
+        quality_scale: bronze
+        owns_prefix: test_synthetic
+        publisher: {name: x, verified: false}
+        description: ok
+        capabilities: {writes: [], reads: [], network: [], secrets: []}
+        requires: {moneybin: ">=1.0.0"}
+        entry_points: {tools: x:y, cli: x:y, models: x, schema: x}
+        """,
+    )
+
+    assert PackageManifest.from_yaml(manifest_path).version == "1.2.3-rc.1+build.5"
+
+
 def test_owns_prefix_must_be_lowercase(tmp_path: Path) -> None:
     """A non-lowercase owns_prefix is rejected at parse time."""
     manifest_path = _write_manifest(

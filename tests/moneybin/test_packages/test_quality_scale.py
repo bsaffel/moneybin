@@ -12,7 +12,10 @@ from moneybin.packages._framework.quality_scale import (
 )
 
 
-def _make_package(tmp_path: Path, *, tier: str) -> PackageInfo:
+def _make_package(
+    tmp_path: Path, *, tier: str, code_owner: str | None = "Test Owner"
+) -> PackageInfo:
+    code_owner_line = f"code_owner: {code_owner}\n" if code_owner is not None else ""
     manifest_yaml = f"""
 name: test_synthetic
 display_name: Test Synthetic
@@ -20,7 +23,7 @@ version: 1.0.0
 quality_scale: {tier}
 owns_prefix: test_synthetic
 publisher: {{name: Test, verified: false}}
-description: Test
+{code_owner_line}description: Test
 capabilities: {{writes: [], reads: [], network: [], secrets: []}}
 requires: {{moneybin: ">=1.0.0"}}
 entry_points:
@@ -54,6 +57,15 @@ def test_silver_with_readme_and_tests_passes(tmp_path: Path) -> None:
     (tmp_path / "tests").mkdir()
     violations = validate_quality_scale(info, claimed_tier="silver")
     assert violations == []
+
+
+def test_silver_requires_code_owner(tmp_path: Path) -> None:
+    """Silver fails when the manifest omits code_owner, even with README + tests."""
+    info = _make_package(tmp_path, tier="silver", code_owner=None)
+    (tmp_path / "README.md").write_text("docs")
+    (tmp_path / "tests").mkdir()
+    violations = validate_quality_scale(info, claimed_tier="silver")
+    assert any("code_owner" in v.missing_evidence for v in violations)
 
 
 def test_gold_requires_metrics_module(tmp_path: Path) -> None:

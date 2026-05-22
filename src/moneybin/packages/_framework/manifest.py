@@ -25,13 +25,19 @@ QualityTier = Literal["bronze", "silver", "gold", "platinum"]
 # producing spurious violations. Reject at parse time.
 _PREFIX_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
-# Loose semver matcher — accepts 1.0.0, 1.2.3-beta, 1.0.0+build.1 etc.
-# Strict per https://semver.org grammar; rejects single-digit ("v1") strings.
+# Strict semver matcher — the canonical https://semver.org grammar.
+# Accepts 1.0.0, 1.2.3-beta, 1.0.0-rc.1, 1.0.0+build.1; rejects single-digit
+# ("v1") and numeric prerelease identifiers with leading zeros ("1.0.0-01",
+# forbidden by SemVer rule 9). Build-metadata identifiers may have leading
+# zeros (rule 10), so only the prerelease alternatives constrain them.
 _SEMVER_RE = re.compile(
     r"^(?P<major>0|[1-9]\d*)\."
     r"(?P<minor>0|[1-9]\d*)\."
     r"(?P<patch>0|[1-9]\d*)"
-    r"(?:-(?P<prerelease>[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
+    r"(?:-(?P<prerelease>"
+    r"(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)"
+    r"(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*"
+    r"))?"
     r"(?:\+(?P<build>[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$"
 )
 
@@ -66,16 +72,23 @@ class Requires(BaseModel):
 
 
 class EntryPoints(BaseModel):
-    """Module paths for the framework to import at registration time."""
+    """Module paths for the framework to import at registration time.
+
+    All four are required. `tools` and `cli` are consumed today by
+    register_package; `models` and `schema` are required for forward-compat —
+    Plan 4 wires model-path and schema registration and will read them. A
+    SQL-less Bronze package still declares them (pointing at its package module)
+    so the manifest contract stays uniform across tiers.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid", populate_by_name=True)
 
     tools: str  # "module.path:callable" — invoked as tools.register(mcp)
     cli: str  # "module.path:callable" — invoked as cli.register(typer_app)
-    models: str  # dotted module path to the models/ directory
+    models: str  # dotted module path to the models/ directory (Plan 4)
     schema_module: str = Field(
         alias="schema"
-    )  # dotted module path to the schema/ directory
+    )  # dotted module path to the schema/ directory (Plan 4)
 
 
 class PackageManifest(BaseModel):
@@ -94,6 +107,10 @@ class PackageManifest(BaseModel):
     quality_scale: QualityTier
     owns_prefix: str
     publisher: Publisher
+    # Named maintainer responsible for the package — distinct from publisher
+    # (who distributes). Optional at Bronze; the Silver tier check requires it
+    # (spec §Quality Scale: "code-owner declared in manifest").
+    code_owner: str | None = None
     description: str
     capabilities: CapabilityDeclarations
     requires: Requires

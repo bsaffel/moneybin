@@ -154,7 +154,13 @@ def validate_package(info: PackageInfo) -> list[ValidationError]:
 def validate_quality_scale(
     info: PackageInfo, claimed_tier: str
 ) -> list[QualityScaleViolation]:
-    """Public re-export for callers that want only the QS check."""
+    """Public re-export for callers that want only the QS check.
+
+    Raises:
+        ValueError: if claimed_tier is unknown, or exceeds the manifest's
+            declared quality_scale. Callers passing user-supplied tier strings
+            (e.g. a validator CLI) should handle this.
+    """
     return _validate_quality_scale(info, claimed_tier=claimed_tier)
 
 
@@ -177,7 +183,11 @@ def register_package(
     resolve them from manifest.entry_points via importlib.
 
     Raises:
-        ValidationError subclass: first violation encountered.
+        ValidationError subclass: first validation violation encountered.
+        ValueError: a malformed entry-point spec or an uninstalled entry-point
+            module (raised by _resolve_entry_point_callable after validation
+            passes — not a ValidationError subclass).
+        TypeError: an entry-point target that resolves to a non-callable.
     """
     errors = validate_package(info)
     if errors:

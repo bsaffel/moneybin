@@ -7,7 +7,7 @@ strings.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import astuple, dataclass
 from typing import Literal
 
 from moneybin.packages._framework.manifest import QualityTier
@@ -21,6 +21,21 @@ class ValidationError(Exception):
 
     package_name: str
     message: str
+
+    def __post_init__(self) -> None:
+        # A frozen-dataclass __init__ never calls Exception.__init__, leaving
+        # args == (). Mirror every field into args (declaration == __init__
+        # order) so repr(exc) and exc.args read faithfully. object.__setattr__
+        # bypasses the freeze guard; this runs after subclass fields are set,
+        # so astuple captures them too.
+        object.__setattr__(self, "args", astuple(self))
+
+    def __reduce__(self) -> tuple[type, tuple[object, ...]]:
+        # Reconstruct purely from args (which mirror every field). The default
+        # BaseException.__reduce__ also restores self.__dict__ via setattr,
+        # which a frozen dataclass forbids — so copy/serialization would raise
+        # FrozenInstanceError. args alone fully rebuilds the instance.
+        return (self.__class__, self.args)
 
     def __str__(self) -> str:
         return f"[{self.package_name}] {self.message}"
