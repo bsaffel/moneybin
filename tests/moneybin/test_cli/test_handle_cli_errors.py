@@ -107,7 +107,9 @@ def test_handle_cli_errors_text_mode_unchanged(
 
 def test_error_audit_classification_defaults_high_without_payload_type() -> None:
     """No payload type → conservative HIGH default (never under-report a failure)."""
-    from moneybin.cli.utils import _error_audit_classification
+    from moneybin.cli.utils import (
+        _error_audit_classification,  # pyright: ignore[reportPrivateUsage]
+    )
 
     sensitivity, classes = _error_audit_classification(None)
     assert sensitivity == "high"
@@ -116,7 +118,9 @@ def test_error_audit_classification_defaults_high_without_payload_type() -> None
 
 def test_error_audit_classification_derives_critical_from_payload() -> None:
     """A CRITICAL payload type derives 'critical' + its data classes."""
-    from moneybin.cli.utils import _error_audit_classification
+    from moneybin.cli.utils import (
+        _error_audit_classification,  # pyright: ignore[reportPrivateUsage]
+    )
     from moneybin.privacy.payloads.accounts import AccountDetail
 
     sensitivity, classes = _error_audit_classification(AccountDetail)

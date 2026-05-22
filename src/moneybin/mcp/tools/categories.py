@@ -41,7 +41,10 @@ def categories_create(
     """Create a custom category or subcategory (non-default, active by default)."""
     with get_database() as db:
         category_id = CategorizationService(db).create_category(
-            category, subcategory=subcategory, description=description
+            category,
+            subcategory=subcategory,
+            description=description,
+            actor="mcp",
         )
     sub = f" / {subcategory}" if subcategory else ""
     return build_envelope(
@@ -74,7 +77,11 @@ def categories_set(
             categorizations.
     """
     with get_database() as db:
-        CategorizationService(db).toggle_category(category_id, is_active=is_active)
+        CategorizationService(db).toggle_category(
+            category_id,
+            is_active=is_active,
+            actor="mcp",
+        )
     action = "enabled" if is_active else "disabled"
     return build_envelope(
         data=CategorySetPayload(category_id=category_id, action=action)
@@ -94,7 +101,7 @@ def categories_delete(
             exist.
     """
     with get_database() as db:
-        CategorizationService(db).delete_category(category_id, force=force)
+        CategorizationService(db).delete_category(category_id, force=force, actor="mcp")
     return build_envelope(
         data=CategoryDeletePayload(
             category_id=category_id, action="deleted", force=force

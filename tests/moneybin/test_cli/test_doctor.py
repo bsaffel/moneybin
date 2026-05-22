@@ -98,7 +98,18 @@ def test_doctor_verbose_passes_flag_to_service(
     mock_get_db.return_value = MagicMock()
     mock_svc_cls.return_value.run_all.return_value = _PASSING_REPORT
     runner.invoke(app, ["system", "doctor", "--verbose"])
-    mock_svc_cls.return_value.run_all.assert_called_once_with(verbose=True)
+    mock_svc_cls.return_value.run_all.assert_called_once_with(verbose=True, full=False)
+
+
+@patch("moneybin.cli.commands.system.doctor.get_database")
+@patch("moneybin.cli.commands.system.doctor.DoctorService")
+def test_doctor_full_passes_flag_to_service(
+    mock_svc_cls: MagicMock, mock_get_db: MagicMock
+) -> None:
+    mock_get_db.return_value = MagicMock()
+    mock_svc_cls.return_value.run_all.return_value = _PASSING_REPORT
+    runner.invoke(app, ["system", "doctor", "--full"])
+    mock_svc_cls.return_value.run_all.assert_called_once_with(verbose=False, full=True)
 
 
 @patch("moneybin.cli.commands.system.doctor.get_database")

@@ -216,7 +216,7 @@ def gsheet_connect(
         accept_seed_fallback=accept_seed_fallback,
     )
     with _build_connection_service() as service:
-        result = service.connect(req)
+        result = service.connect(req, actor="mcp")
 
     data = GsheetConnectPayload(
         connection=_connection_row(result.connection),
@@ -355,7 +355,7 @@ def gsheet_reconnect(
     sheet currently looks like. Run gsheet_status afterwards to verify.
     """
     with _build_connection_service() as service:
-        result = service.reconnect(connection_id, yes=yes)
+        result = service.reconnect(connection_id, yes=yes, actor="mcp")
 
     data = GsheetConnectPayload(
         connection=_connection_row(result.connection),
@@ -392,7 +392,7 @@ def gsheet_disconnect(
     raw.tabular_transactions rows (transactions adapter) for this connection.
     """
     with _build_connection_service() as service:
-        service.disconnect(connection_id, purge=purge)
+        service.disconnect(connection_id, purge=purge, actor="mcp")
     return build_envelope(
         data=GsheetDisconnectPayload(
             connection_id=connection_id,

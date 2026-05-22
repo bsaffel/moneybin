@@ -259,7 +259,7 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |
 +-- system                         -- System / data status meta-view
 |   +-- status                     -- What data exists, freshness, pending review queues
-|   +-- doctor                     -- Run pipeline integrity checks across all invariants
+|   +-- doctor                     -- Run pipeline integrity checks (--full: whole-table app.* audit-coverage scan)
 |   +-- audit                      -- Privacy / access audit utilities
 |
 +-- privacy                        -- Privacy utilities (redaction testing)

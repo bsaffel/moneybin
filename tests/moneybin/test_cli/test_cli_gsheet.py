@@ -472,7 +472,7 @@ def test_gsheet_reconnect_command_invokes_service(mock_build: MagicMock) -> None
     mock_build.return_value.__enter__.return_value = service
     result = runner.invoke(app, ["gsheet", "reconnect", "conn_abc123", "--yes"])
     assert result.exit_code == 0, result.output
-    service.reconnect.assert_called_once_with("conn_abc123", yes=True)
+    service.reconnect.assert_called_once_with("conn_abc123", yes=True, actor="cli")
     assert "Reconnected" in result.stdout
 
 
@@ -486,7 +486,7 @@ def test_gsheet_disconnect_soft(mock_build: MagicMock) -> None:
     mock_build.return_value.__enter__.return_value = service
     result = runner.invoke(app, ["gsheet", "disconnect", "conn_abc123"])
     assert result.exit_code == 0, result.output
-    service.disconnect.assert_called_once_with("conn_abc123", purge=False)
+    service.disconnect.assert_called_once_with("conn_abc123", purge=False, actor="cli")
     assert "Disconnected" in result.stdout
 
 
@@ -517,7 +517,7 @@ def test_gsheet_disconnect_purge_with_yes_proceeds(mock_build: MagicMock) -> Non
         app, ["gsheet", "disconnect", "conn_abc123", "--purge", "--yes"]
     )
     assert result.exit_code == 0, result.output
-    service.disconnect.assert_called_once_with("conn_abc123", purge=True)
+    service.disconnect.assert_called_once_with("conn_abc123", purge=True, actor="cli")
     assert "Purged" in result.stdout
 
 

@@ -74,7 +74,9 @@ def categories_delete(
     # committed deletion would strand the user with no confirmation/envelope.
     with handle_cli_errors():
         with get_database() as db:
-            CategorizationService(db).delete_category(category_id, force=force)
+            CategorizationService(db).delete_category(
+                category_id, force=force, actor="cli"
+            )
 
     envelope = build_envelope(
         data=CategoryDeletePayload(

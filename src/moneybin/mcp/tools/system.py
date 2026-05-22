@@ -192,18 +192,23 @@ def system_status() -> ResponseEnvelope[SystemStatusPayload]:
 
 
 @mcp_tool(read_only=False)
-def system_doctor() -> ResponseEnvelope[SystemDoctorPayload]:
+def system_doctor(full: bool = False) -> ResponseEnvelope[SystemDoctorPayload]:
     """Run pipeline integrity checks across all SQLMesh named audits.
 
     Returns pass/fail/warn per invariant plus a transaction count.
     May write SQLMesh state tables on first Context init. Call before
     relying on analytical results to confirm the pipeline is self-consistent.
+
+    Args:
+        full: Scan every protected app.* row for audit coverage instead of the
+            default sampled, recent-rows-only window. Slower; use for a deep
+            integrity sweep.
     """
     from moneybin.database import get_database
     from moneybin.services.doctor_service import DoctorService
 
     with get_database() as db:
-        report = DoctorService(db).run_all(verbose=False)
+        report = DoctorService(db).run_all(verbose=False, full=full)
 
     actions: list[str] = []
     if report.failing > 0:

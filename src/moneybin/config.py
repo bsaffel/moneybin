@@ -354,6 +354,34 @@ class ImportSettings(BaseModel):
     )
 
 
+class DoctorSettings(BaseModel):
+    """`moneybin doctor` integrity-check configuration.
+
+    Tunes the per-table `app.*` audit-coverage invariants added by the
+    repository layer (see `docs/specs/app-integrity-invariant.md` Req 9).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    audit_coverage_lookback_days: int = Field(
+        default=7,
+        ge=1,
+        description=(
+            "Audit-coverage checks only inspect protected app.* rows mutated "
+            "within this many days. Bounds the cost on large profiles and lets "
+            "users suppress pre-migration noise by lowering it after rollout."
+        ),
+    )
+    audit_coverage_sample_cap: int = Field(
+        default=1000,
+        ge=1,
+        description=(
+            "Maximum rows sampled per table for the audit-coverage check. "
+            "`moneybin doctor --full` bypasses the cap and scans every row."
+        ),
+    )
+
+
 class MatchingSettings(BaseModel):
     """Transaction matching and dedup configuration."""
 
@@ -552,6 +580,7 @@ class MoneyBinSettings(BaseSettings):
     mcp: MCPConfig = Field(default_factory=MCPConfig)
     sync: SyncConfig = Field(default_factory=SyncConfig)
     matching: MatchingSettings = Field(default_factory=MatchingSettings)
+    doctor: DoctorSettings = Field(default_factory=DoctorSettings)
     categorization: CategorizationSettings = Field(
         default_factory=CategorizationSettings
     )

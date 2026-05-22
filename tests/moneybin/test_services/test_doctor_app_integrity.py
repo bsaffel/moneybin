@@ -1,0 +1,105 @@
+"""Doctor invariants for app.* integrity (Invariant 10).
+
+Covers the reusable audit-coverage check and the user_categories text-uniqueness
+check added with the repository layer. Uses the function-scoped ``db`` fixture
+(real encrypted DuckDB with the app schema initialized).
+"""
+
+# This module drives the doctor's per-table integrity helpers
+# (_run_app_audit_coverage, _run_user_categories_uniqueness) directly —
+# protected-member access is intentional.
+# pyright: reportPrivateUsage=false
+from __future__ import annotations
+
+from moneybin.database import Database
+from moneybin.repositories.user_categories_repo import UserCategoriesRepo
+from moneybin.services.doctor_service import DoctorService
+from moneybin.tables import USER_CATEGORIES
+
+
+def _bypass_insert(
+    db: Database,
+    *,
+    category_id: str,
+    category: str,
+    subcategory: str | None = None,
+    days_ago: int = 0,
+) -> None:
+    """Insert a user_categories row WITHOUT an audit row (simulated bypass)."""
+    db.execute(
+        "INSERT INTO app.user_categories "  # noqa: S608  # test input, not executing user SQL
+        "(category_id, category, subcategory, is_active, created_at, updated_at) "
+        "VALUES (?, ?, ?, true, now()::TIMESTAMP - (? * INTERVAL 1 DAY), "
+        "now()::TIMESTAMP - (? * INTERVAL 1 DAY))",
+        [category_id, category, subcategory, days_ago, days_ago],
+    )
+
+
+def test_audit_coverage_flags_bypass_row(db: Database) -> None:
+    _bypass_insert(db, category_id="bypass1", category="Sneaky")
+    result = DoctorService(db)._run_app_audit_coverage(USER_CATEGORIES, "category_id")
+    assert result.status == "fail"
+    assert "bypass1" in result.affected_ids
+
+
+def test_audit_coverage_passes_for_repo_mutated_row(db: Database) -> None:
+    UserCategoriesRepo(db).insert(category="Proper", actor="user")
+    result = DoctorService(db)._run_app_audit_coverage(USER_CATEGORIES, "category_id")
+    assert result.status == "pass"
+    assert result.affected_ids == []
+
+
+def test_audit_coverage_ignores_rows_outside_lookback(db: Database) -> None:
+    # A bypass row last touched 30 days ago is outside the default 7-day window.
+    _bypass_insert(db, category_id="old1", category="Ancient", days_ago=30)
+    result = DoctorService(db)._run_app_audit_coverage(USER_CATEGORIES, "category_id")
+    assert result.status == "pass"
+
+
+def test_audit_coverage_full_scans_all(db: Database) -> None:
+    # full=True bypasses the lookback window so even old bypass rows are caught.
+    _bypass_insert(db, category_id="old2", category="Ancient", days_ago=30)
+    result = DoctorService(db)._run_app_audit_coverage(
+        USER_CATEGORIES, "category_id", full=True
+    )
+    assert result.status == "fail"
+    assert "old2" in result.affected_ids
+
+
+def test_audit_coverage_flags_audited_then_bypassed(db: Database) -> None:
+    # A row audited at insert, then mutated by a raw bypass that advances
+    # updated_at past the audit, must still be flagged — "some audit exists"
+    # is not enough; the audit must cover the latest mutation.
+    cid = UserCategoriesRepo(db).insert(category="WasAudited", actor="user").target_id
+    assert cid is not None
+    db.execute(
+        "UPDATE app.user_categories "  # noqa: S608  # test input, not executing user SQL
+        "SET updated_at = now()::TIMESTAMP + INTERVAL 1 DAY WHERE category_id = ?",
+        [cid],
+    )
+    result = DoctorService(db)._run_app_audit_coverage(USER_CATEGORIES, "category_id")
+    assert result.status == "fail"
+    assert cid in result.affected_ids
+
+
+def test_user_categories_uniqueness_flags_duplicate(db: Database) -> None:
+    _bypass_insert(db, category_id="dup1", category="Dining", subcategory="Coffee")
+    _bypass_insert(db, category_id="dup2", category="Dining", subcategory="Coffee")
+    result = DoctorService(db)._run_user_categories_uniqueness()
+    assert result.status == "fail"
+    assert "Dining" in (result.detail or "")
+
+
+def test_user_categories_uniqueness_passes_when_distinct(db: Database) -> None:
+    repo = UserCategoriesRepo(db)
+    repo.insert(category="Dining", subcategory="Coffee", actor="user")
+    repo.insert(category="Dining", subcategory="Lunch", actor="user")
+    result = DoctorService(db)._run_user_categories_uniqueness()
+    assert result.status == "pass"
+
+
+def test_run_all_includes_app_integrity_invariants(db: Database) -> None:
+    report = DoctorService(db).run_all()
+    names = {r.name for r in report.invariants}
+    assert "app_audit_coverage_user_categories" in names
+    assert "app_user_categories_uniqueness" in names
