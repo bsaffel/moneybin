@@ -166,6 +166,11 @@ class TransactionCategoriesRepo(BaseRepo):
                     confidence,
                 ],
             ).fetchone()
+            # DuckDB returns no rows from RETURNING when the ON CONFLICT … WHERE
+            # guard blocks the update, so `wrote is None` means precedence
+            # skipped the write. (PostgreSQL 15 changed this to return the
+            # existing row; DuckDB tracks PG semantics, so pin the assumption
+            # here in case it ever diverges.)
             if wrote is None:
                 return None  # precedence-skipped: no mutation, no audit
             after = self._fetch_row(transaction_id)

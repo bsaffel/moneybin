@@ -200,7 +200,10 @@ class AutoRuleService:
     @property
     def _categorization(self) -> CategorizationService:
         if self._cat_service is None:
-            self._cat_service = CategorizationService(self._db)
+            # Forward the shared AuditService so backfill categorizations in
+            # approve() route through the injected audit, not a fresh instance
+            # (keeps the AutoRuleService(db, audit=...) injection contract whole).
+            self._cat_service = CategorizationService(self._db, audit=self._audit)
         return self._cat_service
 
     # -- Observation --

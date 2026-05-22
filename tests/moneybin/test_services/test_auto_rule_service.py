@@ -210,7 +210,7 @@ def test_approve_promotes_to_active_rule(real_db: Database) -> None:
     pid = svc.record_categorization("t1", "Food & Drink", subcategory="Coffee")
     assert pid is not None
 
-    result = svc.accept(accept=[pid])
+    result = svc.accept(accept=[pid], actor="cli")
     assert result.approved == 1
 
     rule = real_db.execute(
@@ -357,7 +357,7 @@ def test_reject_marks_proposal_rejected_without_creating_rule(
     svc = AutoRuleService(real_db)
     pid = svc.record_categorization("t1", "Food & Drink")
     assert pid is not None
-    svc.accept(reject=[pid])
+    svc.accept(reject=[pid], actor="cli")
 
     status = real_db.execute(
         f"SELECT status, decided_by FROM {PROPOSED_RULES.full_name} WHERE proposed_rule_id = ?",  # noqa: S608  # building test input string, not executing SQL

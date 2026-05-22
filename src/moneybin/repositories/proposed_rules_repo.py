@@ -40,6 +40,23 @@ _PROPOSED_RULES_COLUMNS = (
     "decided_by",
 )
 
+#: Lifecycle states a proposal can't transition out of — once approved or
+#: rejected, the row is settled (and ``approved`` carries a linked ``rule_id``).
+_TERMINAL_STATUSES = ("approved", "rejected")
+
+#: Surfaces whose decisions are user-driven; everything else is automated.
+_USER_ACTORS = ("user", "cli", "mcp")
+
+
+def _decided_by(actor: str) -> str:
+    """Map an audit ``actor`` to the proposal's ``decided_by`` value.
+
+    Keeps ``decided_by`` honest: CLI/MCP decisions record ``'user'``, any
+    automated path records ``'system'``, so the column never contradicts the
+    paired audit row's ``actor``.
+    """
+    return "user" if actor in _USER_ACTORS else "system"
+
 
 class ProposedRulesRepo(BaseRepo):
     """Audited CRUD over ``app.proposed_rules``."""
@@ -184,19 +201,22 @@ class ProposedRulesRepo(BaseRepo):
         cascade (rule create → proposal approve) is one chain (Req 5).
         """
         with self._transaction(in_outer_txn=in_outer_txn):
-            before = self._require(
-                self._fetch_row(proposed_rule_id),
-                "proposed_rule_id",
+            before = self._reject_terminal(
+                self._require(
+                    self._fetch_row(proposed_rule_id),
+                    "proposed_rule_id",
+                    proposed_rule_id,
+                ),
                 proposed_rule_id,
             )
             self._db.execute(
                 f"""
                 UPDATE {PROPOSED_RULES.full_name}
                 SET status = 'approved', rule_id = ?,
-                    decided_at = CURRENT_TIMESTAMP, decided_by = 'user'
+                    decided_at = CURRENT_TIMESTAMP, decided_by = ?
                 WHERE proposed_rule_id = ?
                 """,  # noqa: S608  # TableRef + parameterized values
-                [rule_id, proposed_rule_id],
+                [rule_id, _decided_by(actor), proposed_rule_id],
             )
             after = self._fetch_row(proposed_rule_id)
             return self._emit_audit(
@@ -240,23 +260,32 @@ class ProposedRulesRepo(BaseRepo):
     ) -> AuditEvent:
         """Shared status-only transition (supersede/reject); full before/after.
 
-        ``decided`` stamps ``decided_at``/``decided_by`` for terminal user
-        decisions (reject); supersede is an automatic transition and leaves
-        them untouched. ``status`` is a code-supplied literal, never user input.
+        ``decided`` stamps ``decided_at``/``decided_by`` (derived from ``actor``)
+        for terminal user decisions (reject); supersede is an automatic
+        transition and leaves them untouched. ``status`` is a code-supplied
+        literal, never user input.
         """
-        decided_sql = (
-            ", decided_at = CURRENT_TIMESTAMP, decided_by = 'user'" if decided else ""
-        )
+        # Build the SET clause from literals + placeholders (no user input
+        # interpolated); decided_by is parameterized so it tracks the actor.
+        set_clause = "status = ?"
+        params: list[object] = [status]
+        if decided:
+            set_clause += ", decided_at = CURRENT_TIMESTAMP, decided_by = ?"
+            params.append(_decided_by(actor))
+        params.append(proposed_rule_id)
         with self._transaction(in_outer_txn=in_outer_txn):
-            before = self._require(
-                self._fetch_row(proposed_rule_id),
-                "proposed_rule_id",
+            before = self._reject_terminal(
+                self._require(
+                    self._fetch_row(proposed_rule_id),
+                    "proposed_rule_id",
+                    proposed_rule_id,
+                ),
                 proposed_rule_id,
             )
             self._db.execute(
-                f"UPDATE {PROPOSED_RULES.full_name} "  # noqa: S608  # TableRef + literal status + parameterized id
-                f"SET status = ?{decided_sql} WHERE proposed_rule_id = ?",
-                [status, proposed_rule_id],
+                f"UPDATE {PROPOSED_RULES.full_name} "  # noqa: S608  # TableRef + literal SET clause + parameterized values
+                f"SET {set_clause} WHERE proposed_rule_id = ?",
+                params,
             )
             after = self._fetch_row(proposed_rule_id)
             return self._emit_audit(
@@ -267,3 +296,21 @@ class ProposedRulesRepo(BaseRepo):
                 actor=actor,
                 parent_audit_id=parent_audit_id,
             )
+
+    @staticmethod
+    def _reject_terminal(
+        before: dict[str, Any], proposed_rule_id: str
+    ) -> dict[str, Any]:
+        """Refuse to mutate an already-terminal proposal; return ``before`` if OK.
+
+        ``_require`` checks existence; this checks lifecycle position so a stale
+        caller can't, e.g., supersede an ``approved`` proposal — which would
+        leave ``status='superseded'`` with a non-null ``rule_id``, an invalid
+        state neither the schema nor the doctor's FK check detects.
+        """
+        if before["status"] in _TERMINAL_STATUSES:
+            raise ValueError(
+                f"proposed_rule_id={proposed_rule_id!r} is already "
+                f"{before['status']!r}; refusing to overwrite a terminal state"
+            )
+        return before
