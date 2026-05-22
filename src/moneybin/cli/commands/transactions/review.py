@@ -82,7 +82,7 @@ def _review_matches_noninteractive(
         with get_database() as db:
             svc = MatchingService(db)
             if confirm_all:
-                n = svc.accept_all_pending(match_type="dedup")
+                n = svc.accept_all_pending()
                 logger.info(f"✅ Accepted {n} pending match(es)")
                 return
             if confirm_id:

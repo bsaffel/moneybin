@@ -188,12 +188,10 @@ class MatchingService:
     def accept_all_pending(self, *, match_type: str | None = None) -> int:
         """Accept every pending match decision in scope. Returns the count.
 
-        Loops the single-row primitive rather than a bulk UPDATE so this adds
-        no new raw write to ``app.match_decisions``.
+        Routes each row through :meth:`set_status` so the transition guard is a
+        single enforcement point; no new raw write to ``app.match_decisions``.
         """
         pending = get_pending_matches(self._db, match_type=match_type)
         for row in pending:
-            update_match_status(
-                self._db, row["match_id"], status="accepted", decided_by="user"
-            )
+            self.set_status(row["match_id"], status="accepted")
         return len(pending)

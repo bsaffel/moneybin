@@ -133,6 +133,9 @@ def matches_set(
     status: str = typer.Option(..., "--status", help="accepted or rejected"),
 ) -> None:
     """Accept or reject one pending match by id."""
+    if status not in {"accepted", "rejected"}:
+        logger.error("❌ --status must be 'accepted' or 'rejected'")
+        raise typer.Exit(2)
     with handle_cli_errors():
         with get_database() as db:
             MatchingService(db).set_status(match_id, status=status)

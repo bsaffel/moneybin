@@ -318,5 +318,6 @@ def register_transactions_tools(mcp: FastMCP) -> None:
         transactions_matches_history,
         "transactions_matches_history",
         "Recent transaction match decisions (accepted/rejected/reversed), newest "
-        "first. Read-only. Use transactions_matches_pending for the active queue.",
+        "first. Filter by match_type (dedup/transfer) and limit. Read-only. Use "
+        "transactions_matches_pending for the active queue.",
     )

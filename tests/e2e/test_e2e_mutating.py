@@ -539,6 +539,24 @@ class TestMatchesMutating:
         result.assert_success()
         assert _get_match_status_cli(env, match_id) == "rejected"
 
+    def test_matches_set_invalid_status_is_usage_error(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """An invalid --status value is a usage error (exit 2), not a runtime error."""
+        env = make_workflow_env_fast(
+            tmp_path, "matchset-bad", _mutating_profile_template
+        )
+        result = run_cli(
+            "transactions",
+            "matches",
+            "set",
+            "any_id",
+            "--status",
+            "bogus",
+            env=env,
+        )
+        assert result.exit_code == 2
+
     def test_review_type_matches_reject_id(
         self, _mutating_profile_template: Path, tmp_path: Path
     ) -> None:
