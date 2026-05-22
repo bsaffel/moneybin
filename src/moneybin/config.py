@@ -175,6 +175,24 @@ class ProvidersSettings(BaseModel):
     tabular: TabularProviderConfig = Field(default_factory=TabularProviderConfig)
 
 
+class PackagesSettings(BaseModel):
+    """Per-package configuration nested under MoneyBinSettings.packages.<name>.
+
+    Reference packages (assets, us_tax — Plan 4) declare fields here matching
+    their Pydantic settings models. Empty by default — packages may be
+    installed without any per-package overrides.
+
+    Env vars use the standard nested-delimiter convention:
+        MONEYBIN_PACKAGES__ASSETS__VALUATION_PROVIDER=zillow
+
+    Mirrors the ProvidersSettings pattern established by Plan 1. extra="allow"
+    lets a runtime-installed package populate this without a Core schema
+    change; reference packages add explicit typed fields when they land.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+
 class LoggingConfig(BaseModel):
     """Logging configuration settings."""
 
@@ -514,6 +532,10 @@ class MoneyBinSettings(BaseSettings):
     providers: ProvidersSettings = Field(
         default_factory=ProvidersSettings,
         description="Per-provider configuration (OFX, Plaid, tabular).",
+    )
+    packages: PackagesSettings = Field(
+        default_factory=PackagesSettings,
+        description="Per-package configuration for installed analysis packages.",
     )
 
     # Application settings
