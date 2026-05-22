@@ -59,12 +59,38 @@ def transactions_review(
         return
 
     if confirm_id or reject_id or confirm_all:
-        _not_implemented(
-            "moneybin-cli.md (review collapse — non-interactive flags pending)"
+        if type_ == "categorize":
+            _not_implemented(
+                "moneybin-cli.md (categorize non-interactive flags pending)"
+            )
+            return
+        _review_matches_noninteractive(
+            confirm_id=confirm_id, reject_id=reject_id, confirm_all=confirm_all
         )
         return
 
     _not_implemented("moneybin-cli.md (review collapse — interactive loop pending)")
+
+
+def _review_matches_noninteractive(
+    *, confirm_id: str | None, reject_id: str | None, confirm_all: bool
+) -> None:
+    from moneybin.cli.utils import handle_cli_errors
+    from moneybin.services.matching_service import MatchingService
+
+    with handle_cli_errors():
+        with get_database() as db:
+            svc = MatchingService(db)
+            if confirm_all:
+                n = svc.accept_all_pending(match_type="dedup")
+                logger.info(f"✅ Accepted {n} pending match(es)")
+                return
+            if confirm_id:
+                svc.set_status(confirm_id, status="accepted")
+                logger.info(f"✅ Accepted match {confirm_id[:8]}...")
+            if reject_id:
+                svc.set_status(reject_id, status="rejected")
+                logger.info(f"✅ Rejected match {reject_id[:8]}...")
 
 
 def _print_status(type_: str, output: OutputFormat) -> None:
