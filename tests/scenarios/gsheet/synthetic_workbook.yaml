@@ -1,0 +1,81 @@
+# Gsheet × OFX cross-source matching scenario.
+#
+# Three transactions live in the synthetic Google Sheet workbook below;
+# one OFX row mirrors the middle gsheet row on the same date, amount, and
+# account. After transform + match runs, the matching engine should
+# collapse the two overlapping rows into a single gold record.
+#
+# Every expected number is hand-derived from the rows in this file —
+# never observe-and-paste from the pipeline. See
+# `.claude/rules/testing.md` "Scenario Expectations Must Be Independently
+# Derived" for the rule.
+
+description: >
+  One Google Sheet (3 transactions) plus one OFX statement (1 transaction
+  that mirrors the middle gsheet row). Drives the full transform + match
+  pipeline and asserts cross-source collapse.
+
+# Shared account binding — both sources attribute to the same account_id
+# so they can be considered for cross-source dedup at all.
+account:
+  id: acct_checking
+  name: "Family Checking"
+
+# Source 1: synthetic gsheet workbook rendered into TestSheetsClient.
+gsheet:
+  spreadsheet_id: ss_scenario
+  workbook_title: "Family Budget"
+  tab_name: "Transactions"
+  gid: 0
+  headers: ["Date", "Description", "Amount", "Account"]
+  # Stable transaction IDs would be hashed by the adapter at load time;
+  # we list the rows here so a hand-count of 3 is verifiable.
+  rows:
+    # First row matches the OFX payee verbatim so jaro-winkler similarity is
+    # 1.0 and the cross-source dedup auto-accepts (>= 0.95 high-confidence
+    # threshold). Same trick the dedup-cross-source scenario uses for its
+    # AMAZON.COM rows.
+    - date: "2026-01-15"
+      description: "WHOLE FOODS MARKET #123"
+      amount: "-42.50"
+      account: "Family Checking"
+    - date: "2026-01-16"
+      description: "Paycheck"
+      amount: "1500.00"
+      account: "Family Checking"
+    - date: "2026-01-17"
+      description: "Coffee"
+      amount: "-5.25"
+      account: "Family Checking"
+
+# Source 2: a one-row OFX statement seeded directly into raw.ofx_transactions.
+# Date + amount + account match the FIRST gsheet row → cross-source dedup
+# should collapse to one gold record for Whole Foods.
+ofx:
+  rows:
+    - source_transaction_id: "OFX_2026_01_15_WF_42_50"
+      transaction_date: "2026-01-15"
+      amount: "-42.50"
+      payee: "WHOLE FOODS MARKET #123"
+      transaction_type: "DEBIT"
+
+# Hand-derived expectations.
+expectations:
+  # raw.tabular_transactions = 3 rows (gsheet only; OFX lands in raw.ofx_transactions).
+  rows_in_raw_tabular: 3
+  rows_in_raw_ofx: 1
+
+  # Gold records: 3 gsheet rows + 1 OFX row - 1 cross-source overlap = 3.
+  # (Whole Foods 2026-01-15 is shared between gsheet and OFX.)
+  gold_record_count: 3
+
+  # Positive overlap — the one row both sources agree on.
+  cross_source_matches:
+    - gsheet_row_index: 0   # Whole Foods, the first gsheet row
+      ofx_source_id: "OFX_2026_01_15_WF_42_50"
+
+  # Negative expectations — rows that must NOT match (otherwise we'd be
+  # codifying over-matching as correct).
+  unmatched_gsheet_rows:
+    - row_index: 1  # Paycheck (no OFX peer)
+    - row_index: 2  # Coffee   (no OFX peer)

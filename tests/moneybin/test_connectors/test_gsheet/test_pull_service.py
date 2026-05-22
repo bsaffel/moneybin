@@ -1,0 +1,275 @@
+"""Tests for GSheetPullService."""
+
+from __future__ import annotations
+
+import pytest
+
+from moneybin.connectors.gsheet.connection_service import (
+    ConnectionRequest,
+    GSheetConnectionService,
+)
+from moneybin.connectors.gsheet.errors import (
+    GSheetAuthError,
+    GSheetError,
+    GSheetRateLimitError,
+    GSheetUnreachableError,
+)
+from moneybin.connectors.gsheet.pull_service import GSheetPullService
+from moneybin.connectors.gsheet.testing.fake_oauth_client import TestOAuthClient
+from moneybin.connectors.gsheet.testing.fake_sheets_client import (
+    FakeSheetTab,
+    FakeWorkbook,
+    TestSheetsClient,
+)
+from moneybin.database import Database
+from moneybin.repositories.gsheet_connections_repo import GSheetConnectionsRepo
+
+
+def _tiller_workbook(spreadsheet_id: str = "ss1") -> FakeWorkbook:
+    _ = spreadsheet_id  # name is bound at register_workbook time
+    return FakeWorkbook(
+        title="Tiller",
+        tabs=[
+            FakeSheetTab(
+                name="Transactions",
+                gid=0,
+                headers=["Date", "Description", "Amount", "Account"],
+                rows=[["2026-01-15", "WF", "-87.42", "Checking"]],
+            )
+        ],
+    )
+
+
+def _setup(
+    db: Database,
+    *,
+    spreadsheet_id: str = "ss1",
+    account_id: str = "acct_a",
+    sheets: TestSheetsClient | None = None,
+) -> tuple[GSheetPullService, TestSheetsClient, str]:
+    """Connect one transactions sheet without pulling; return service + cid.
+
+    Pass ``sheets`` to reuse one client across multiple connections — required
+    when a test drives several connections through a single ``pull_all_healthy``
+    (which uses one client for the whole batch).
+    """
+    oauth = TestOAuthClient(authorized=True)
+    if sheets is None:
+        sheets = TestSheetsClient()
+    sheets.register_workbook(spreadsheet_id, _tiller_workbook(spreadsheet_id))
+    conn_svc = GSheetConnectionService(db=db, sheets_client=sheets, oauth_client=oauth)
+    result = conn_svc.connect(
+        ConnectionRequest(
+            url=(f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit#gid=0"),
+            adapter="transactions",
+            account_name="Checking",
+            account_id=account_id,
+            yes=True,
+            no_initial_pull=True,
+        )
+    )
+    pull_svc = GSheetPullService(db=db, sheets_client=sheets, oauth_client=oauth)
+    return pull_svc, sheets, result.connection.connection_id
+
+
+def test_pull_inserts_rows(in_memory_db: Database) -> None:
+    pull_svc, _, cid = _setup(in_memory_db)
+    result = pull_svc.pull_connection(cid)
+    assert result.status == "complete"
+    assert result.load_result is not None
+    assert result.load_result.rows_inserted == 1
+
+
+def test_pull_connection_refuses_disconnected(in_memory_db: Database) -> None:
+    """Pulling an explicitly disconnected connection errors, never revives it.
+
+    gsheet_disconnect soft-removes a connection; a later pull must not flip it
+    back to healthy behind the user's back. Reconnect is the intended revive path.
+    """
+    pull_svc, _, cid = _setup(in_memory_db)
+    GSheetConnectionsRepo(in_memory_db).update_status(
+        cid, status="disconnected", reason="user disconnected", actor="test"
+    )
+    with pytest.raises(GSheetError, match="disconnected"):
+        pull_svc.pull_connection(cid)
+
+
+def test_pull_unexpected_api_error_marks_failed(in_memory_db: Database) -> None:
+    """Unclassified fetch errors (HTTP 500 etc.) close import_log + mark failed.
+
+    Verifies the GSheetAPIError catch: the connection is marked failed and the
+    import_log row is terminal, never left stuck in 'importing'.
+    """
+    from moneybin.connectors.gsheet.errors import GSheetAPIError
+
+    pull_svc, sheets, cid = _setup(in_memory_db)
+    sheets.inject_error(GSheetAPIError("Google Sheets HTTP 500"))
+    result = pull_svc.pull_connection(cid)
+    assert result.status == "failed"
+    # import_log row must be terminal, not stuck in 'importing'.
+    row = in_memory_db.execute(
+        "SELECT status FROM raw.import_log WHERE source_origin = ? "
+        "ORDER BY started_at DESC LIMIT 1",
+        [cid],
+    ).fetchone()
+    assert row is not None
+    assert row[0] == "failed"
+
+
+def test_pull_isolates_per_connection_failure(in_memory_db: Database) -> None:
+    """One unhealthy connection in the batch doesn't crash the others.
+
+    Both connections are healthy at scheduling time and share the SAME sheets
+    client — the one ``pull_all_healthy`` drives. The fake's one-shot
+    ``inject_error`` fires on whichever connection the repo schedules first;
+    the other must still complete.
+    """
+    pull_svc, sheets, _cid_a = _setup(in_memory_db)
+    # Second connection on a different spreadsheet, reusing the same sheets
+    # client so the batch pull and the error injection target one object.
+    _setup(in_memory_db, spreadsheet_id="ss2", account_id="acct_b", sheets=sheets)
+    # Inject a one-shot unreachable on the first call; the second should succeed.
+    sheets.inject_error(GSheetUnreachableError("403 boom"))
+    results = pull_svc.pull_all_healthy()
+    statuses = sorted(r.status for r in results)
+    # Exactly one unreachable and one complete — order may vary by repo's
+    # created_at ordering.
+    assert "complete" in statuses
+    assert "unreachable" in statuses
+
+
+def test_pull_marks_auth_expired(in_memory_db: Database) -> None:
+    pull_svc, sheets, cid = _setup(in_memory_db)
+    # Inject an exception whose str() would leak internal detail (URL, token
+    # fragment); the sanitized message must NOT contain that text.
+    leaky = "https://sheets.googleapis.com/v4/spreadsheets/ss1: token=abc123 revoked"
+    sheets.inject_error(GSheetAuthError(leaky))
+    result = pull_svc.pull_connection(cid)
+    assert result.status == "auth_expired"
+    # Surfaced error_message is sanitized + actionable, not the raw exception.
+    assert result.error_message is not None
+    assert "abc123" not in result.error_message
+    assert "googleapis.com" not in result.error_message
+    assert "moneybin gsheet auth" in result.error_message
+    # Connection row reflects the new state with the sanitized reason.
+    repo = GSheetConnectionsRepo(in_memory_db)
+    conn_row = repo.get(cid)
+    assert conn_row is not None
+    assert conn_row["status"] == "auth_expired"
+    assert conn_row["last_status_reason"] is not None
+    assert "abc123" not in conn_row["last_status_reason"]
+    assert "googleapis.com" not in conn_row["last_status_reason"]
+
+
+def test_pull_handles_rate_limit_with_retry(in_memory_db: Database) -> None:
+    pull_svc, sheets, cid = _setup(in_memory_db)
+    # One rate-limit error → retry succeeds on the second attempt.
+    sheets.inject_error(GSheetRateLimitError("429"))
+    result = pull_svc.pull_connection(cid)
+    assert result.status == "complete"
+
+
+def test_pull_detects_drift_and_skips(in_memory_db: Database) -> None:
+    pull_svc, sheets, cid = _setup(in_memory_db)
+    # Remove the pinned "Amount" column — drift detector should refuse the load.
+    sheets.mutate_tab("ss1", 0, headers=["Date", "Description"])
+    result = pull_svc.pull_connection(cid)
+    assert result.status == "drift_detected"
+    assert result.drift_reason is not None
+    assert "Amount" in result.drift_reason
+
+
+def test_pull_increments_consecutive_failure_on_error(
+    in_memory_db: Database,
+) -> None:
+    pull_svc, sheets, cid = _setup(in_memory_db)
+    sheets.inject_error(GSheetAuthError("token revoked"))
+    pull_svc.pull_connection(cid)
+    repo = GSheetConnectionsRepo(in_memory_db)
+    conn_row = repo.get(cid)
+    assert conn_row is not None
+    assert conn_row["consecutive_failure_count"] == 1
+
+
+def test_pull_resets_failure_count_on_success(in_memory_db: Database) -> None:
+    pull_svc, sheets, cid = _setup(in_memory_db)
+    repo = GSheetConnectionsRepo(in_memory_db)
+    # First pull fails with auth.
+    sheets.inject_error(GSheetAuthError("token revoked"))
+    pull_svc.pull_connection(cid)
+    conn_row = repo.get(cid)
+    assert conn_row is not None
+    assert conn_row["consecutive_failure_count"] == 1
+
+    # Status is now auth_expired — promote back to healthy so pull_connection
+    # treats it as a regular pull (no need to be in pull_all_healthy here).
+    repo.update_status(cid, status="healthy", reason=None)
+    result = pull_svc.pull_connection(cid)
+    assert result.status == "complete"
+    conn_row = repo.get(cid)
+    assert conn_row is not None
+    assert conn_row["consecutive_failure_count"] == 0
+
+
+def test_pull_connection_unknown_raises(in_memory_db: Database) -> None:
+    oauth = TestOAuthClient(authorized=True)
+    sheets = TestSheetsClient()
+    pull_svc = GSheetPullService(
+        db=in_memory_db, sheets_client=sheets, oauth_client=oauth
+    )
+    with pytest.raises(GSheetError, match="Unknown connection"):
+        pull_svc.pull_connection("bogus")
+
+
+def test_pull_all_healthy_skips_disconnected(in_memory_db: Database) -> None:
+    pull_svc, _sheets, cid = _setup(in_memory_db)
+    # Mark the only connection as disconnected.
+    GSheetConnectionsRepo(in_memory_db).soft_disconnect(cid)
+    results = pull_svc.pull_all_healthy()
+    assert results == []
+
+
+def test_pull_closes_import_log_and_updates_status_on_transform_failure(
+    in_memory_db: Database,
+) -> None:
+    """Transform/load failure closes import_log AND moves the connection out of 'healthy'.
+
+    Without the connection-status update, list_healthy() keeps scheduling
+    the broken connection on every refresh_run with no failure signal.
+    """
+    from unittest.mock import patch
+
+    pull_svc, _sheets, cid = _setup(in_memory_db)
+    boom = RuntimeError("simulated transform failure")
+    with patch(
+        "moneybin.connectors.gsheet.adapters.transactions.TransactionsAdapter.transform",
+        side_effect=boom,
+    ):
+        result = pull_svc.pull_connection(cid)
+
+    # The exception is caught and translated to a PullResult(status="failed"),
+    # mirroring the fetch-failure branches' _record_failure pattern.
+    assert result.status == "failed"
+    assert result.error_message is not None
+    # error_message is the generic sanitized form — no internal stack text.
+    assert "simulated transform failure" not in result.error_message
+
+    # import_log row was closed.
+    leaked = in_memory_db.execute(
+        "SELECT COUNT(*) FROM raw.import_log WHERE status = 'importing'"
+    ).fetchone()
+    assert leaked is not None
+    assert leaked[0] == 0, "import_log row should be marked failed, not left importing"
+
+    failed = in_memory_db.execute(
+        "SELECT COUNT(*) FROM raw.import_log WHERE status = 'failed'"
+    ).fetchone()
+    assert failed is not None
+    assert failed[0] >= 1
+
+    # Connection row reflects the failure — status, count, last_pull_at.
+    conn_row = GSheetConnectionsRepo(in_memory_db).get(cid)
+    assert conn_row is not None
+    assert conn_row["status"] == "failed"
+    assert conn_row["consecutive_failure_count"] == 1
+    assert conn_row["last_pull_at"] is not None

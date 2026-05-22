@@ -82,7 +82,7 @@ def _surface_connect_link(
 
     Always prints to stderr so headless users can copy the URL even when
     `webbrowser.open()` falsely reports success (common on Linux without a
-    display server). Called by SyncService.connect via the on_initiate hook
+    display server). Called by SyncService.link via the on_initiate hook
     before it begins polling.
     """
     typer.echo("⚙️  To complete authentication, open this URL:", err=True)
@@ -94,8 +94,8 @@ def _surface_connect_link(
             pass  # URL already printed; user can copy manually
 
 
-@app.command("connect")
-def sync_connect(
+@app.command("link")
+def sync_link(
     institution: str | None = typer.Option(
         None,
         "--institution",
@@ -119,12 +119,14 @@ def sync_connect(
     ),
     output: OutputFormat = output_option,
 ) -> None:
-    """Connect a bank account (new) or re-authenticate one in error state.
+    """Link a bank account via Plaid (formerly: sync connect).
 
-    JSON output mode is event-driven: returns the initiate response immediately
-    so an agent can present the link to the user and verify completion with
-    `sync connect-status` later. Text mode blocks until the user finishes the
-    Plaid flow in their browser and returns the auto-pull summary.
+    Establishes a new Plaid-mediated link to an institution, or
+    re-authenticates one in error state. JSON output mode is event-driven:
+    returns the initiate response immediately so an agent can present the
+    link to the user and verify completion with `sync link-status` later.
+    Text mode blocks until the user finishes the Plaid flow in their
+    browser and returns the auto-pull summary.
     """
     with handle_cli_errors():
         with _build_sync_service() as service:
@@ -166,7 +168,7 @@ def sync_connect(
 
             if output == OutputFormat.JSON:
                 # Event-driven: emit initiate response and exit. Agent verifies
-                # completion via `sync connect-status` after the user finishes
+                # completion via `sync link-status` after the user finishes
                 # the Plaid Hosted Link flow out-of-band.
                 initiate = service.initiate_connect(institution=institution)
                 typer.echo(initiate.model_dump_json(indent=2))
@@ -175,7 +177,7 @@ def sync_connect(
             def _on_initiate(init: ConnectInitiateResponse) -> None:
                 _surface_connect_link(init, open_browser=not no_browser)
 
-            result = service.connect(
+            result = service.link(
                 institution=institution,
                 auto_pull=not no_pull,
                 on_initiate=_on_initiate,
@@ -195,18 +197,16 @@ def sync_connect(
             raise typer.Exit(1)
 
 
-@app.command("connect-status")
-def sync_connect_status(
-    session_id: str = typer.Option(
-        ..., "--session-id", help="Session ID from connect."
-    ),
+@app.command("link-status")
+def sync_link_status(
+    session_id: str = typer.Option(..., "--session-id", help="Session ID from link."),
     output: OutputFormat = output_option,
 ) -> None:
-    """Verify a pending connect session completed (CLI mirror of MCP sync_connect_status).
+    """Poll a sync link session for completion (formerly: sync connect-status).
 
-    Single-shot — returns whatever state the server holds for `session_id`
-    (pending, connected, or failed). Does not poll; the caller decides when
-    to check again.
+    CLI mirror of MCP sync_link_status. Single-shot — returns whatever state
+    the server holds for `session_id` (pending, connected, or failed). Does
+    not poll; the caller decides when to check again.
     """
     with handle_cli_errors():
         client = _build_sync_client()
@@ -216,6 +216,58 @@ def sync_connect_status(
         typer.echo(result.model_dump_json(indent=2))
         return
     typer.echo(f"✅ {result.status}: {result.institution_name or '(no name)'}")
+
+
+@app.command("connect", hidden=True)
+def sync_connect_alias(  # noqa: D401 — Typer-registered alias; referenced by decorator
+    institution: str | None = typer.Option(
+        None,
+        "--institution",
+        help="Re-authenticate this connected institution, or a label for a new one.",
+    ),
+    no_pull: bool = typer.Option(
+        False,
+        "--no-pull",
+        help="Skip the auto-pull after connecting.",
+    ),
+    no_browser: bool = typer.Option(
+        False,
+        "--no-browser",
+        help="Print URL only; don't try to open a browser.",
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Skip re-auth confirmation prompt.",
+    ),
+    output: OutputFormat = output_option,
+) -> None:
+    """Deprecated alias for `sync link`. Will be removed in the next minor release."""
+    logger.warning(
+        "`moneybin sync connect` is deprecated; use `moneybin sync link`. "
+        "The alias will be removed in the next minor release."
+    )
+    sync_link(
+        institution=institution,
+        no_pull=no_pull,
+        no_browser=no_browser,
+        yes=yes,
+        output=output,
+    )
+
+
+@app.command("connect-status", hidden=True)
+def sync_connect_status_alias(  # noqa: D401 — Typer-registered alias; referenced by decorator
+    session_id: str = typer.Option(..., "--session-id", help="Session ID from link."),
+    output: OutputFormat = output_option,
+) -> None:
+    """Deprecated alias for `sync link-status`. Will be removed in the next minor release."""
+    logger.warning(
+        "`moneybin sync connect-status` is deprecated; use `moneybin sync link-status`. "
+        "The alias will be removed in the next minor release."
+    )
+    sync_link_status(session_id=session_id, output=output)
 
 
 @app.command("disconnect")
@@ -343,7 +395,7 @@ def sync_status(
         return
 
     if not connections:
-        typer.echo("No connected institutions. Run `moneybin sync connect` to add one.")
+        typer.echo("No connected institutions. Run `moneybin sync link` to add one.")
         return
     for c in connections:
         last = c.last_sync.strftime("%Y-%m-%d %H:%M UTC") if c.last_sync else "never"

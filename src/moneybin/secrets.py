@@ -20,6 +20,11 @@ logger = logging.getLogger(__name__)
 _SERVICE_PREFIX = "moneybin"
 _ENV_PREFIX = "MONEYBIN_"
 
+# Google Sheets connector OAuth secret keys.
+GSHEET_REFRESH_TOKEN_KEY = "gsheet:refresh_token"  # noqa: S105  # keyring lookup name, not a secret value
+GSHEET_ACCESS_TOKEN_KEY = "gsheet:access_token"  # noqa: S105  # keyring lookup name, not a secret value
+GSHEET_ACCESS_TOKEN_EXPIRES_KEY = "gsheet:access_token_expires_at"  # noqa: S105  # keyring lookup name, not a secret value
+
 
 def _resolve_service_name(profile: str | None) -> str:
     """Resolve the keychain service name for a profile.

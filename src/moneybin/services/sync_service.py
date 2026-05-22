@@ -39,8 +39,8 @@ _PROVIDER = "plaid"  # Phase 1: single provider; widen when SimpleFIN/MX land
 
 
 _ERROR_GUIDANCE: dict[str, str] = {
-    "ITEM_LOGIN_REQUIRED": "{institution} needs re-authentication — run `moneybin sync connect --institution {institution}`",
-    "ITEM_NOT_FOUND": "{institution} connection was revoked. Run `moneybin sync connect` to reconnect.",
+    "ITEM_LOGIN_REQUIRED": "{institution} needs re-authentication — run `moneybin sync link --institution {institution}`",
+    "ITEM_NOT_FOUND": "{institution} connection was revoked. Run `moneybin sync link` to reconnect.",
     "INSTITUTION_NOT_RESPONDING": "{institution} is temporarily unavailable. Try again later.",
     "INSTITUTION_DOWN": "{institution} is down for maintenance. Try again later.",
     "RATE_LIMIT_EXCEEDED": "Rate limit reached. Sync will resume on the next scheduled run.",
@@ -164,9 +164,9 @@ class SyncService:
     ) -> ConnectInitiateResponse:
         """Resolve institution and start a Plaid Link session — does not poll.
 
-        Used by JSON-mode CLI and MCP sync_connect, where the caller surfaces
+        Used by JSON-mode CLI and MCP sync_link, where the caller surfaces
         link_url to the user and verifies completion via a separate
-        sync_connect_status call. The full connect() path (resolve → initiate →
+        sync_link_status call. The full link() path (resolve → initiate →
         poll → auto-pull) remains for text-mode CLI.
 
         Falls through to a new-connection request when institution is provided
@@ -188,7 +188,12 @@ class SyncService:
             )
         return initiate
 
-    def connect(
+    # `ConnectInitiateResponse` / `ConnectResult` keep their names for historical
+    # reasons — they predate the _link/_connect verb split formalized in
+    # `connect-gsheet.md`. The method is the user-visible surface; the internal
+    # response types remain stable to avoid rippling renames into the connectors
+    # layer.
+    def link(
         self,
         *,
         institution: str | None = None,
@@ -196,7 +201,7 @@ class SyncService:
         return_to: str | None = None,
         on_initiate: Callable[[ConnectInitiateResponse], None] | None = None,
     ) -> ConnectResult:
-        """Connect new institution OR re-authenticate existing one.
+        """Link new institution OR re-authenticate existing one.
 
         When `institution` matches an existing connection, runs Plaid update mode
         against that item. When it matches none, falls through to a new-connection
@@ -277,7 +282,7 @@ class SyncService:
                 return _ERROR_GUIDANCE[error_code].format(institution=institution)
             return (
                 f"{institution} needs attention. "
-                f"Run `moneybin sync connect --institution {institution}` "
+                f"Run `moneybin sync link --institution {institution}` "
                 f"to inspect and re-authenticate if needed."
             )
         if status == "revoked":

@@ -103,3 +103,13 @@ INFRA_WRONG_KEY = "infra_wrong_key"
 # ---------------------------------------------------------------------------
 
 SYNC_ERROR = "sync_error"
+
+
+# ---------------------------------------------------------------------------
+# Google Sheets connector — user-controlled storage (direct OAuth)
+# ---------------------------------------------------------------------------
+# Distinct from sync_* (mediated providers): the gsheet connector is a
+# separate domain per the _connect/_link verb split in surface-design.md.
+# Like sync_, this is a taxonomy-completeness prefix, not a recovery code.
+
+GSHEET_ERROR = "gsheet_error"

@@ -156,7 +156,7 @@ def test_connect_new_institution_auto_pulls(
         expiration=datetime(2026, 5, 13, 13, 30, tzinfo=UTC),
     )
     service = SyncService(client=mock_client, db=db, loader=loader)
-    result = service.connect(auto_pull=True)
+    result = service.link(auto_pull=True)
     assert result.provider_item_id == "item_chase_abc"
     assert result.institution_name == "Chase"
     assert result.pull_result is not None
@@ -184,7 +184,7 @@ def test_connect_no_pull_returns_without_pull_result(
         expiration=datetime(2026, 5, 13, 13, 30, tzinfo=UTC),
     )
     service = SyncService(client=mock_client, db=db, loader=loader)
-    result = service.connect(auto_pull=False)
+    result = service.link(auto_pull=False)
     assert result.pull_result is None
     mock_client.trigger_sync.assert_not_called()
 
@@ -216,7 +216,7 @@ def test_connect_re_auth_resolves_institution_name(
         expiration=datetime(2026, 5, 13, 13, 30, tzinfo=UTC),
     )
     service = SyncService(client=mock_client, db=db, loader=loader)
-    service.connect(institution="Chase", auto_pull=False)
+    service.link(institution="Chase", auto_pull=False)
     mock_client.initiate_connect.assert_called_once_with(
         provider_item_id="item_existing",
         return_to=None,
@@ -246,7 +246,7 @@ def test_connect_falls_through_to_new_when_institution_not_matched(
         expiration=datetime(2026, 5, 13, 13, 30, tzinfo=UTC),
     )
     service = SyncService(client=mock_client, db=db, loader=loader)
-    service.connect(institution="Wells Fargo", auto_pull=False)
+    service.link(institution="Wells Fargo", auto_pull=False)
     # provider_item_id is None — new-connection flow, not update mode
     mock_client.initiate_connect.assert_called_once_with(
         provider_item_id=None,
@@ -278,7 +278,7 @@ def test_connect_invokes_on_initiate_callback_before_polling(
     )
     captured: list[ConnectInitiateResponse] = []
     service = SyncService(client=mock_client, db=db, loader=loader)
-    service.connect(auto_pull=False, on_initiate=captured.append)
+    service.link(auto_pull=False, on_initiate=captured.append)
     assert captured == [initiate_resp]
 
 
@@ -339,7 +339,7 @@ def test_list_connections_returns_views_with_guidance(
     assert chase.error_code is None
     assert schwab.guidance is not None
     assert "Schwab" in schwab.guidance
-    assert "sync connect" in schwab.guidance
+    assert "sync link" in schwab.guidance
 
 
 def test_list_connections_threads_error_code(
@@ -379,7 +379,7 @@ def test_list_connections_threads_error_code(
     assert bank_b.error_code is None
     # Unknown/absent error code falls back to generic guidance
     assert bank_b.guidance is not None
-    assert "sync connect" in bank_b.guidance
+    assert "sync link" in bank_b.guidance
 
 
 def test_list_connections_unrecognized_error_code_falls_back_to_generic_guidance(
@@ -403,7 +403,7 @@ def test_list_connections_unrecognized_error_code_falls_back_to_generic_guidance
 
     assert bank_a.error_code == "WEIRD_NEW_CODE"
     assert bank_a.guidance is not None
-    assert "sync connect" in bank_a.guidance
+    assert "sync link" in bank_a.guidance
 
 
 def test_disconnect_resolves_institution_and_calls_client(

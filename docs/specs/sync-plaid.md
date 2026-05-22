@@ -42,7 +42,7 @@ sequenceDiagram
     participant Plaid as Plaid API
     participant Browser as User's Browser
 
-    User->>CLI: moneybin sync connect
+    User->>CLI: moneybin sync link
     CLI->>Server: POST /sync/link-token
     Server->>Plaid: Create Link token
     Plaid-->>Server: link_token
@@ -68,7 +68,7 @@ sequenceDiagram
 
 - **Server-hosted callback (Option C from design discussion).** Plaid redirects to a server endpoint after the user completes Link. The client polls the server for confirmation. No local HTTP listener needed on the client side. Works for both CLI and future web clients.
 - **`--no-browser` flag.** For headless/SSH environments, prints the link URL instead of opening a browser. The user visits the URL on any device. The client still polls for completion.
-- **Re-authentication.** When `ITEM_LOGIN_REQUIRED` is reported, the same `moneybin sync connect` command initiates a re-auth Link session for the affected institution. The server creates a Link token in update mode using the existing `item_id`.
+- **Re-authentication.** When `ITEM_LOGIN_REQUIRED` is reported, the same `moneybin sync link` command initiates a re-auth Link session for the affected institution. The server creates a Link token in update mode using the existing `item_id`.
 
 ---
 
@@ -408,8 +408,8 @@ The server surfaces Plaid error codes in the per-institution results of the sync
 
 | Plaid error code | Meaning | Client message |
 |---|---|---|
-| `ITEM_LOGIN_REQUIRED` | Bank requires re-authentication (password changed, MFA expired) | "{institution} needs re-authentication — run `moneybin sync connect` to update your credentials." |
-| `ITEM_NOT_FOUND` | Access token revoked or item deleted | "{institution} connection was revoked. Run `moneybin sync connect` to reconnect." |
+| `ITEM_LOGIN_REQUIRED` | Bank requires re-authentication (password changed, MFA expired) | "{institution} needs re-authentication — run `moneybin sync link` to update your credentials." |
+| `ITEM_NOT_FOUND` | Access token revoked or item deleted | "{institution} connection was revoked. Run `moneybin sync link` to reconnect." |
 | `INSTITUTION_NOT_RESPONDING` | Bank's systems are temporarily unavailable | "{institution} is temporarily unavailable. Try again later." |
 | `INSTITUTION_DOWN` | Bank's systems are down for maintenance | "{institution} is down for maintenance. Try again later." |
 | `TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION` | Data changed during cursor pagination | "Data changed during sync for {institution}. Re-running automatically..." (client retries once) |

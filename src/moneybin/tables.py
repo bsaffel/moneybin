@@ -48,6 +48,7 @@ TABULAR_TRANSACTIONS = TableRef("raw", "tabular_transactions")
 TABULAR_ACCOUNTS = TableRef("raw", "tabular_accounts")
 IMPORT_LOG = TableRef("raw", "import_log")
 MANUAL_TRANSACTIONS = TableRef("raw", "manual_transactions")
+GSHEET_SEEDS = TableRef("raw", "gsheet_seeds")
 
 # -- App tables (application-managed data) --
 ACCOUNT_SETTINGS = TableRef("app", "account_settings", audience="interface")
@@ -68,6 +69,7 @@ CATEGORIZATION_RULES = TableRef("app", "categorization_rules", audience="interfa
 PROPOSED_RULES = TableRef("app", "proposed_rules")
 SCHEMA_MIGRATIONS = TableRef("app", "schema_migrations")
 VERSIONS = TableRef("app", "versions")
+GSHEET_CONNECTIONS = TableRef("app", "gsheet_connections")
 
 # -- App tabular tables --
 TABULAR_FORMATS = TableRef("app", "tabular_formats")

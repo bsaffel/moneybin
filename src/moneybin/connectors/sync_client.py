@@ -334,7 +334,7 @@ class SyncClient:
     def get_connect_status(self, session_id: str) -> ConnectStatusResponse:
         """Single-shot GET /sync/connect/status — returns whatever state the server holds.
 
-        Used by CLI `sync connect-status` and MCP `sync_connect_status`; both are
+        Used by CLI `sync link-status` and MCP `sync_link_status`; both are
         event-driven (caller decides when to check) rather than blocking. Use
         `poll_connect_status` instead when the caller needs to block until a
         terminal state.

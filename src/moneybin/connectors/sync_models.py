@@ -153,7 +153,11 @@ class PullResult(BaseModel):
 
 
 class ConnectResult(BaseModel):
-    """Return value from SyncService.connect()."""
+    """Return value from SyncService.link().
+
+    Named `ConnectResult` for historical reasons — predates the _link/_connect
+    verb split. Kept stable to avoid rippling renames into connector code.
+    """
 
     provider_item_id: str
     institution_name: str | None = None

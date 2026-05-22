@@ -1,4 +1,4 @@
-"""Tests for CLI `moneybin sync login`, `moneybin sync logout`, `moneybin sync pull`, and connect."""
+"""Tests for CLI `moneybin sync login`, `moneybin sync logout`, `moneybin sync pull`, and link."""
 
 from __future__ import annotations
 
@@ -175,29 +175,45 @@ def test_sync_pull_json_mode_exits_nonzero_on_transforms_error(
 
 
 @pytest.mark.unit
+def test_sync_link_command_exists() -> None:
+    """`moneybin sync link` is the new canonical command (renamed from sync connect)."""
+    result = runner.invoke(app, ["sync", "link", "--help"])
+    assert result.exit_code == 0
+    assert "link" in result.stdout.lower()
+
+
+@pytest.mark.unit
+def test_sync_link_status_command_exists() -> None:
+    """`moneybin sync link-status` is the new canonical status command."""
+    result = runner.invoke(app, ["sync", "link-status", "--help"])
+    assert result.exit_code == 0
+    assert "link" in result.stdout.lower()
+
+
+@pytest.mark.unit
 @patch("moneybin.cli.commands.sync._build_sync_service")
-def test_sync_connect_new_institution(mock_build: MagicMock) -> None:
+def test_sync_link_new_institution(mock_build: MagicMock) -> None:
     service = MagicMock()
     service.list_connections.return_value = []
-    service.connect.return_value = ConnectResult(
+    service.link.return_value = ConnectResult(
         provider_item_id="item_new",
         institution_name="Chase",
         pull_result=_fake_pull_result(),
     )
     mock_build.return_value.__enter__.return_value = service
-    result = runner.invoke(app, ["sync", "connect"])
+    result = runner.invoke(app, ["sync", "link"])
     assert result.exit_code == 0, result.output
-    service.connect.assert_called_once()
+    service.link.assert_called_once()
     # auto_pull defaults to True
-    assert service.connect.call_args.kwargs.get("auto_pull", True) is True
+    assert service.link.call_args.kwargs.get("auto_pull", True) is True
 
 
 @pytest.mark.unit
 @patch("moneybin.cli.commands.sync._build_sync_service")
-def test_sync_connect_surfaces_transforms_error_from_auto_pull(
+def test_sync_link_surfaces_transforms_error_from_auto_pull(
     mock_build: MagicMock,
 ) -> None:
-    """Connect's auto-pull transform failure must warn and exit non-zero.
+    """Link's auto-pull transform failure must warn and exit non-zero.
 
     Without this, the ✅ Connected line would hide stale core.* tables. See
     ``test_sync_pull_surfaces_transforms_error`` for why the warning text
@@ -205,7 +221,7 @@ def test_sync_connect_surfaces_transforms_error_from_auto_pull(
     """
     service = MagicMock()
     service.list_connections.return_value = []
-    service.connect.return_value = ConnectResult(
+    service.link.return_value = ConnectResult(
         provider_item_id="item_new",
         institution_name="Chase",
         pull_result=_fake_pull_result(
@@ -214,51 +230,51 @@ def test_sync_connect_surfaces_transforms_error_from_auto_pull(
         ),
     )
     mock_build.return_value.__enter__.return_value = service
-    result = runner.invoke(app, ["sync", "connect"])
+    result = runner.invoke(app, ["sync", "link"])
     assert result.exit_code == 1
-    service.connect.assert_called_once()
+    service.link.assert_called_once()
 
 
 @pytest.mark.unit
 @patch("moneybin.cli.commands.sync._build_sync_service")
-def test_sync_connect_no_pull(mock_build: MagicMock) -> None:
+def test_sync_link_no_pull(mock_build: MagicMock) -> None:
     service = MagicMock()
     service.list_connections.return_value = []
-    service.connect.return_value = ConnectResult(
+    service.link.return_value = ConnectResult(
         provider_item_id="item_new",
         institution_name="Chase",
     )
     mock_build.return_value.__enter__.return_value = service
-    result = runner.invoke(app, ["sync", "connect", "--no-pull"])
+    result = runner.invoke(app, ["sync", "link", "--no-pull"])
     assert result.exit_code == 0, result.output
-    service.connect.assert_called_once()
-    assert service.connect.call_args.kwargs["auto_pull"] is False
+    service.link.assert_called_once()
+    assert service.link.call_args.kwargs["auto_pull"] is False
 
 
 @pytest.mark.unit
 @patch("moneybin.cli.commands.sync._build_sync_service")
-def test_sync_connect_explicit_institution(mock_build: MagicMock) -> None:
+def test_sync_link_explicit_institution(mock_build: MagicMock) -> None:
     service = MagicMock()
-    service.connect.return_value = ConnectResult(
+    service.link.return_value = ConnectResult(
         provider_item_id="item_x",
         institution_name="Schwab",
     )
     mock_build.return_value.__enter__.return_value = service
     result = runner.invoke(
-        app, ["sync", "connect", "--institution", "Schwab", "--no-pull"]
+        app, ["sync", "link", "--institution", "Schwab", "--no-pull"]
     )
     assert result.exit_code == 0, result.output
-    service.connect.assert_called_once()
-    assert service.connect.call_args.kwargs["institution"] == "Schwab"
+    service.link.assert_called_once()
+    assert service.link.call_args.kwargs["institution"] == "Schwab"
 
 
 @pytest.mark.unit
 @patch("moneybin.cli.commands.sync._build_sync_service")
-def test_sync_connect_status_command(mock_build: MagicMock) -> None:
+def test_sync_link_status_command(mock_build: MagicMock) -> None:
     from moneybin.connectors.sync_client import SyncClient
 
     client = MagicMock(spec=SyncClient)
-    # CLI connect-status is single-shot via the public get_connect_status,
+    # CLI link-status is single-shot via the public get_connect_status,
     # not the blocking poll_connect_status loop.
     client.get_connect_status.return_value = MagicMock(
         session_id="sess_x",
@@ -267,7 +283,57 @@ def test_sync_connect_status_command(mock_build: MagicMock) -> None:
         institution_name="Chase",
         model_dump_json=lambda **k: '{"status": "connected"}',  # type: ignore[misc]
     )
-    # connect-status uses the client directly, not the service
+    # link-status uses the client directly, not the service
+    with patch("moneybin.cli.commands.sync._build_sync_client", return_value=client):
+        result = runner.invoke(
+            app,
+            ["sync", "link-status", "--session-id", "sess_x", "--output", "json"],
+        )
+    assert result.exit_code == 0, result.output
+    assert "connected" in result.stdout
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync.logger")
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_connect_alias_warns_and_forwards(
+    mock_build: MagicMock, mock_logger: MagicMock
+) -> None:
+    """The deprecated `sync connect` alias warns but still forwards to `sync link`."""
+    service = MagicMock()
+    service.list_connections.return_value = []
+    service.link.return_value = ConnectResult(
+        provider_item_id="item_new",
+        institution_name="Chase",
+    )
+    mock_build.return_value.__enter__.return_value = service
+    result = runner.invoke(app, ["sync", "connect", "--no-pull"])
+    assert result.exit_code == 0, result.output
+    service.link.assert_called_once()
+    # Deprecation warning fires via module logger; caplog can't observe it
+    # because setup_observability reconfigures logging mid-invocation. Assert
+    # against the patched logger instead.
+    assert mock_logger.warning.called
+    assert any(
+        "deprecated" in str(call.args[0]).lower()
+        for call in mock_logger.warning.call_args_list
+    )
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync.logger")
+def test_sync_connect_status_alias_warns_and_forwards(mock_logger: MagicMock) -> None:
+    """The deprecated `sync connect-status` alias warns but still forwards."""
+    from moneybin.connectors.sync_client import SyncClient
+
+    client = MagicMock(spec=SyncClient)
+    client.get_connect_status.return_value = MagicMock(
+        session_id="sess_x",
+        status="connected",
+        provider_item_id="item_new",
+        institution_name="Chase",
+        model_dump_json=lambda **k: '{"status": "connected"}',  # type: ignore[misc]
+    )
     with patch("moneybin.cli.commands.sync._build_sync_client", return_value=client):
         result = runner.invoke(
             app,
@@ -275,6 +341,11 @@ def test_sync_connect_status_command(mock_build: MagicMock) -> None:
         )
     assert result.exit_code == 0, result.output
     assert "connected" in result.stdout
+    assert mock_logger.warning.called
+    assert any(
+        "deprecated" in str(call.args[0]).lower()
+        for call in mock_logger.warning.call_args_list
+    )
 
 
 @pytest.mark.unit
@@ -310,7 +381,7 @@ def test_sync_status_text_output(mock_build: MagicMock) -> None:
             provider="plaid",
             status="error",
             last_sync=None,
-            guidance="Schwab needs re-authentication — run `moneybin sync connect --institution Schwab`",
+            guidance="Schwab needs re-authentication — run `moneybin sync link --institution Schwab`",
         ),
     ]
     mock_build.return_value.__enter__.return_value = service

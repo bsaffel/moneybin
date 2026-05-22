@@ -96,6 +96,16 @@ Single source of truth for spec status. Update this table when a spec's status c
 | `sync-simplefin.md` | Feature | planned | SimpleFIN aggregator provider (alternative to Plaid). **Deferred 2026-05-16** (internal roadmap review): no implementation work until M3A produces 30 days of real Plaid data from a real user — provider-ladder elaboration ahead of real user evidence is speculative. Spec may be drafted earlier; engineering work waits for the gate. |
 | `sync-plaid-investments.md` | Feature | planned | Plaid Investments product (gated on `investment-tracking.md`) |
 
+## Connect (Live External Sources)
+
+Client-direct OAuth to user-owned data sources. Distinct from `sync` (which mediates third-party financial providers via moneybin-server): `connect-*` providers are user-controlled storage that the MoneyBin client speaks to directly.
+
+| Spec | Type | Status | Summary |
+|---|---|---|---|
+| [Google Sheets](connect-gsheet.md) | Feature | implemented | Live tabular sync from Google Sheets: OAuth user-flow (PKCE), pre-refresh hook + explicit pull, live mirror with soft-delete, stable-key detection for edit-preserving identity, strict drift refusal per-connection. v1 ships two adapters: `transactions` (Tiller-style integrated path → matching/categorization/reports) and `seed` (catch-all escape hatch → JSON storage + auto-generated typed views queryable via SQL/MCP). New `app.gsheet_connections` + `raw.gsheet_seeds` tables; one new column (`deleted_from_source_at`) on `raw.tabular_transactions`. M3F entry. |
+| `connect-airtable.md` | Feature | planned | Future sibling — Airtable as a live tabular source. Shares the connection lifecycle pattern from `connect-gsheet.md`. |
+| `connect-smartsheet.md` | Feature | planned | Future sibling — Smartsheet as a live tabular source. |
+
 ## Testing & Validation
 
 | Spec | Type | Status | Summary |

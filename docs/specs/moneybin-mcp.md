@@ -1287,8 +1287,8 @@ Per the MCP exposure principle, sync is fully MCP-exposed except for credential-
 
 | Tool | Sensitivity | Behavior |
 |---|---|---|
-| `sync_connect [institution]` | medium | Initiates Plaid Hosted Link flow. Returns `{session_id, link_url, expiration}`. `link_url` is a one-time bearer credential — treat as medium sensitivity. Pass `institution` to re-authenticate (Plaid update mode). |
-| `sync_connect_status <session_id>` | low | Single-shot check of a connect session. Returns `{session_id, status, provider_item_id, institution_name, error, expiration}`. Does NOT poll internally — the agent invokes this when the user signals completion. |
+| `sync_link [institution]` | medium | Initiates Plaid Hosted Link flow. Returns `{session_id, link_url, expiration}`. `link_url` is a one-time bearer credential — treat as medium sensitivity. Pass `institution` to re-authenticate (Plaid update mode). |
+| `sync_link_status <session_id>` | low | Single-shot check of a link session. Returns `{session_id, status, provider_item_id, institution_name, error, expiration}`. Does NOT poll internally — the agent invokes this when the user signals completion. |
 | `sync_disconnect <institution>` | medium | Removes institution by name. No revert path. |
 | `sync_pull [institution] [force] [refresh=true]` | medium | Triggers sync for one or all institutions; loads `raw.plaid_*` and propagates through SQLMesh. Amounts follow MoneyBin convention (negative = expense). When `refresh` (default true) and the sync changes raw state, the post-load refresh pipeline (matching + SQLMesh apply + categorization) runs once at end-of-pull so `core.dim_accounts` reflects new data before returning. Result envelope adds `transforms_applied`, `transforms_duration_seconds`, `transforms_error` (SQLMesh-step outcome — matching and categorization are log-only on failure). |
 | `sync_status` | low | Read-only: connected institutions, last-sync times, guidance for error states. |
@@ -1300,6 +1300,46 @@ Per the MCP exposure principle, sync is fully MCP-exposed except for credential-
 | Prompt | Behavior |
 |---|---|
 | `sync_review` | Agent-driven health check. Walks the agent through `sync_status` + a quick `reports_spending` pulse to flag errored institutions, stale connections (last_sync > 7 days), and volume anomalies. Output is constrained to counts / dates / status codes / institution names — no PII. |
+
+**Verb rename (PR #197).** The mediated-provider verb was renamed from
+`sync_connect` / `sync_connect_status` to `sync_link` / `sync_link_status`
+to lock the `_link` (mediated provider) vs `_connect` (user-controlled
+storage) semantic split before launch. The old names remain registered as
+deprecated aliases with `logger.warning()` for one minor release; they
+forward to the canonical implementation via `.__wrapped__` to avoid
+double-firing the `@mcp_tool` decorator machinery (audit log, timeout
+guard). Full rationale: [`surface-design.md`](../../.claude/rules/surface-design.md)
+verb vocabulary, [`connect-gsheet.md`](connect-gsheet.md) §verb-rename.
+
+---
+
+## 16b. `gsheet_*` — Google Sheets (user-controlled storage)
+
+User-controlled-storage `connect-*` family per
+[`surface-design.md`](../../.claude/rules/surface-design.md) verb vocabulary:
+the client speaks Google's API directly via OAuth tokens stored in
+SecretStore (no server mediation). Distinct from `sync_*` which routes
+through a mediated provider (Plaid). Full design:
+[`connect-gsheet.md`](connect-gsheet.md).
+
+| Tool | Sensitivity | Behavior |
+|---|---|---|
+| `gsheet_auth` [`force_reauth=False`] | medium | OAuth 2.0 PKCE installed-app flow. Opens the user's browser, listens on a 127.0.0.1 loopback callback, persists tokens to SecretStore. Tokens never enter the MCP wire or LLM context. Short-circuits with `status='already_authorized'` when a refresh token is on file unless `force_reauth=True`. Per-tool timeout raised to 180s for the consent click-through. Mutation surface: SecretStore. Revert: visit https://myaccount.google.com/permissions and revoke. |
+| `gsheet_connect` [`url`, `adapter`, `alias`, `account_name`, `account_id`, `column_mapping`, `yes`, `accept_seed_fallback`, `no_initial_pull`] | medium | Bind a Google Sheet for live sync. Runs column detection, persists to `app.gsheet_connections` (audited), and (by default) executes the initial pull. Amounts use MoneyBin's accounting convention (negative = expense). Accepts `account_name` as free-text resolved via `AccountService.resolve_strict` (or `account_id` directly). Medium-confidence detection requires `yes=True`; low-confidence refuses unless `accept_seed_fallback=True` falls through to the seed adapter. Same 180s timeout as `gsheet_auth` for the first-run-before-auth path that triggers OAuth inline. Mutation surface: `app.gsheet_connections` + `raw.tabular_transactions` (transactions adapter) or `raw.gsheet_seeds` (seed adapter). Revert: `gsheet_disconnect(connection_id, purge=True)`. |
+| `gsheet_pull` [`connection_id`] | medium | Pull latest content for one connection by ID, or every healthy connection when omitted. Per-connection isolation — one failure doesn't block siblings. Returns `{status, load_result, drift_reason, error_message}` per connection. `auth_expired` and `drift_detected` connections surface `actions[]` hints pointing at `gsheet_auth` / `gsheet_reconnect` respectively. Mutation surface: raw rows for the connection's adapter. |
+| `gsheet` | low | List every Google Sheets connection (`connection_id`, adapter, status, last_pull_at, last_success_at, etc.). Drift-detected connections surface a `gsheet_reconnect` hint in `actions[]`. |
+| `gsheet_status` [`connection_id`] | low | Snapshot status for one connection by ID, or a roll-up across all connections when omitted. Drift-detected connections surface a `gsheet_reconnect` hint. |
+| `gsheet_reconnect` [`connection_id`, `yes`] | medium | Re-detect sheet structure, re-pin the column mapping, run a pull. Use after drift_detected. Medium-confidence remaps require `yes=True` (symmetric to `gsheet_connect`). Mutation surface: `app.gsheet_connections.column_mapping` + `header_signature` (audited). No revert — the connection re-binds to the sheet's current shape. |
+| `gsheet_disconnect` [`connection_id`, `purge=False`] | medium | Soft-disconnect (default) marks `status='disconnected'` and retains raw rows for analytics. `purge=True` hard-deletes the connection row, drops the per-connection seed view (if any), and deletes raw rows. Purge is permanent — no revert. |
+
+**No CLI-only carve-outs in this domain.** `gsheet_auth` was initially
+designed CLI-only on the assumption that OAuth's browser flow "has no
+MCP equivalent." That contradicted `mcp-server.md`'s explicit "Needs
+OAuth / browser" guidance ("tools can return redirect URLs; clients open
+them"). Since the MCP server runs locally, the loopback callback lands
+on the same host — `gsheet_auth` runs the full PKCE flow in-process and
+returns the result. The hosted-MCP variant (M3E+) will need a different
+shape; tracked separately and does not block local launch.
 
 ---
 
