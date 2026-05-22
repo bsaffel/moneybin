@@ -14,9 +14,16 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 QualityTier = Literal["bronze", "silver", "gold", "platinum"]
+
+# owns_prefix must be lowercase snake_case — ^[a-z][a-z0-9_]*$.
+# DuckDB normalizes identifiers to lowercase; every package surface (tables,
+# tool names, schema files) derives from this prefix. A non-lowercase prefix
+# would never match the lowercased SQL targets the prefix validators check,
+# producing spurious violations. Reject at parse time.
+_PREFIX_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 # Loose semver matcher — accepts 1.0.0, 1.2.3-beta, 1.0.0+build.1 etc.
 # Strict per https://semver.org grammar; rejects single-digit ("v1") strings.
@@ -91,6 +98,23 @@ class PackageManifest(BaseModel):
     capabilities: CapabilityDeclarations
     requires: Requires
     entry_points: EntryPoints
+
+    @field_validator("owns_prefix")
+    @classmethod
+    def _prefix_is_lowercase_snake(cls, value: str) -> str:
+        """owns_prefix must be lowercase snake_case.
+
+        DuckDB normalizes identifiers to lowercase, and every package surface
+        (tables, tool names, schema files) derives from this prefix. A
+        non-lowercase prefix would never match the lowercased SQL targets the
+        validators check, producing spurious violations. Reject it at parse time.
+        """
+        if not _PREFIX_RE.match(value):
+            raise ValueError(
+                f"owns_prefix '{value}' must be lowercase snake_case "
+                f"(matching ^[a-z][a-z0-9_]*$)"
+            )
+        return value
 
     @model_validator(mode="after")
     def _name_matches_prefix(self) -> PackageManifest:

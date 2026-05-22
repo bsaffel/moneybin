@@ -136,6 +136,48 @@ def test_version_must_be_semver(tmp_path: Path) -> None:
         PackageManifest.from_yaml(manifest_path)
 
 
+def test_owns_prefix_must_be_lowercase(tmp_path: Path) -> None:
+    """A non-lowercase owns_prefix is rejected at parse time."""
+    manifest_path = _write_manifest(
+        tmp_path,
+        """
+        name: Assets
+        display_name: Assets
+        version: 1.0.0
+        quality_scale: bronze
+        owns_prefix: Assets
+        publisher: {name: x, verified: false}
+        description: ok
+        capabilities: {writes: [], reads: [], network: [], secrets: []}
+        requires: {moneybin: ">=1.0.0"}
+        entry_points: {tools: x:y, cli: x:y, models: x, schema: x}
+        """,
+    )
+    with pytest.raises(PydanticValidationError, match="lowercase snake_case"):
+        PackageManifest.from_yaml(manifest_path)
+
+
+def test_owns_prefix_snake_case_with_underscores_ok(tmp_path: Path) -> None:
+    """A multi-word snake_case prefix like us_tax is accepted."""
+    manifest_path = _write_manifest(
+        tmp_path,
+        """
+        name: us_tax
+        display_name: US Tax
+        version: 1.0.0
+        quality_scale: bronze
+        owns_prefix: us_tax
+        publisher: {name: x, verified: false}
+        description: ok
+        capabilities: {writes: [], reads: [], network: [], secrets: []}
+        requires: {moneybin: ">=1.0.0"}
+        entry_points: {tools: x:y, cli: x:y, models: x, schema: x}
+        """,
+    )
+    manifest = PackageManifest.from_yaml(manifest_path)
+    assert manifest.owns_prefix == "us_tax"
+
+
 def test_missing_required_field_fails(tmp_path: Path) -> None:
     """Required fields are required."""
     manifest_path = _write_manifest(
