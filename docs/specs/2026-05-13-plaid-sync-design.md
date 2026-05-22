@@ -418,8 +418,8 @@ def list_connections(self) -> list[SyncConnectionView]:
 
 ```python
 ERROR_GUIDANCE = {
-    "ITEM_LOGIN_REQUIRED": "{institution} needs re-authentication — run `moneybin sync connect --institution {institution}`",
-    "ITEM_NOT_FOUND": "{institution} connection was revoked. Run `moneybin sync connect` to reconnect.",
+    "ITEM_LOGIN_REQUIRED": "{institution} needs re-authentication — run `moneybin sync link --institution {institution}`",
+    "ITEM_NOT_FOUND": "{institution} connection was revoked. Run `moneybin sync link` to reconnect.",
     "INSTITUTION_NOT_RESPONDING": "{institution} is temporarily unavailable. Try again later.",
     "INSTITUTION_DOWN": "{institution} is down for maintenance. Try again later.",
     "RATE_LIMIT_EXCEEDED": "Rate limit reached. Sync will resume on the next scheduled run.",
@@ -663,8 +663,8 @@ Cross-source dedup (a transaction appearing in both OFX and Plaid) is handled by
 |---|---|
 | `moneybin sync login [--no-browser] [-o text\|json] [-q]` | Device Auth Flow |
 | `moneybin sync logout` | Clear stored JWT |
-| `moneybin sync connect [--institution NAME] [--no-pull] [--no-browser] [-y/--yes] [-o text\|json]` | Connect new institution OR re-auth existing; auto-pulls by default |
-| `moneybin sync connect-status --session-id SESSION_ID [-o text\|json]` | Verify a pending connect session completed; CLI mirror of MCP `sync_connect_status` |
+| `moneybin sync link [--institution NAME] [--no-pull] [--no-browser] [-y/--yes] [-o text\|json]` | Link new institution OR re-auth existing; auto-pulls by default |
+| `moneybin sync link-status --session-id SESSION_ID [-o text\|json]` | Verify a pending link session completed; CLI mirror of MCP `sync_link_status` |
 | `moneybin sync disconnect --institution NAME [-y/--yes] [-o text\|json]` | Remove a connection |
 | `moneybin sync pull [--institution NAME] [--force] [-o text\|json] [-q] [--json-fields ...]` | Sync data |
 | `moneybin sync status [-o text\|json] [-q] [--json-fields ...]` | Show connections + health |
@@ -689,7 +689,7 @@ Per `.claude/rules/cli.md`, every mutating command also accepts `--output json` 
 }
 ```
 
-**`sync connect --output json --no-browser`:** returns the link URL and exits without polling, mirroring MCP `sync_connect`:
+**`sync link --output json --no-browser`:** returns the link URL and exits without polling, mirroring MCP `sync_link`:
 
 ```json
 {
@@ -699,11 +699,11 @@ Per `.claude/rules/cli.md`, every mutating command also accepts `--output json` 
 }
 ```
 
-The agent then calls `sync connect-status --session-id sess_abc123 --output json` to verify.
+The agent then calls `sync link-status --session-id sess_abc123 --output json` to verify.
 
-**`sync connect --output json`** (without `--no-browser`): blocks until connected, returns the full result including the auto-pull summary if applicable.
+**`sync link --output json`** (without `--no-browser`): blocks until connected, returns the full result including the auto-pull summary if applicable.
 
-### `sync connect` decision tree
+### `sync link` decision tree
 
 Without `--institution` flag:
 
@@ -719,7 +719,7 @@ With `--institution NAME`: resolve NAME → `provider_item_id` via `GET /institu
 
 ### Auto-pull behavior
 
-`sync connect` auto-pulls after a successful connection by default. `--no-pull` opts out (useful for: connecting multiple institutions before pulling once, scripting/testing, agents that want to manage the pull separately).
+`sync link` auto-pulls after a successful connection by default. `--no-pull` opts out (useful for: linking multiple institutions before pulling once, scripting/testing, agents that want to manage the pull separately).
 
 If the connection succeeds but the auto-pull fails, the connection is kept and the error is reported with a clear next step:
 
@@ -745,17 +745,17 @@ The existing `moneybin sync key rotate` subcommand stays as `_not_implemented` s
 |---|---|---|
 | `sync_pull` | `medium` | Trigger sync, fetch, load. Amounts in loaded data follow MoneyBin convention (negative = expense, positive = income). Returns summary envelope with per-institution results. |
 | `sync_status` | `low` | List connections with health, last sync, mapped error guidance |
-| `sync_connect` | `medium` | Initiate connect flow; returns `{session_id, link_url, expiration}` immediately (does NOT block). The `link_url` is a one-time bearer credential — treat as sensitive. |
-| `sync_connect_status` | `low` | Verify a connect session completed; includes `expiration` so agent can decide when to give up |
+| `sync_link` | `medium` | Initiate link flow; returns `{session_id, link_url, expiration}` immediately (does NOT block). The `link_url` is a one-time bearer credential — treat as sensitive. |
+| `sync_link_status` | `low` | Verify a link session completed; includes `expiration` so agent can decide when to give up |
 | `sync_disconnect` | `medium` | Remove a connection |
 
 `sync_login`/`sync_logout` remain CLI-only (browser interaction; credential handling). `sync_pull` and friends return a clear error if not authenticated, directing the user to run `moneybin sync login`.
 
-### `sync_connect` is event-driven, not loop-driven
+### `sync_link` is event-driven, not loop-driven
 
 Tool description (visible to agent at selection time):
 
-> Initiate a bank-connection flow. Returns a URL the user opens in their browser to complete the Plaid Hosted Link UI. Does not wait for completion. After the user confirms they've finished, call `sync_connect_status` with the returned `session_id` to verify. The `link_url` is a sensitive one-time credential — present it to the user but do not include it in logs or summaries.
+> Initiate a bank-link flow. Returns a URL the user opens in their browser to complete the Plaid Hosted Link UI. Does not wait for completion. After the user confirms they've finished, call `sync_link_status` with the returned `session_id` to verify. The `link_url` is a sensitive one-time credential — present it to the user but do not include it in logs or summaries.
 
 Response envelope on call:
 
@@ -769,14 +769,14 @@ Response envelope on call:
   },
   "actions": [
     "Present the link_url to the user and ask them to complete the connection in their browser.",
-    "After they confirm completion, call sync_connect_status with the session_id to verify.",
+    "After they confirm completion, call sync_link_status with the session_id to verify.",
     "Once verified, call sync_pull to fetch transactions.",
-    "Session expires at the expiration timestamp — beyond that, start a new connect flow."
+    "Session expires at the expiration timestamp — beyond that, start a new link flow."
   ]
 }
 ```
 
-`sync_connect_status` when status is `pending`:
+`sync_link_status` when status is `pending`:
 
 ```json
 {
@@ -784,7 +784,7 @@ Response envelope on call:
   "data": {"status": "pending", "session_id": "sess_abc", "expiration": "2026-05-13T13:30:00Z"},
   "actions": [
     "Connection has not completed yet. Ask the user to finish the flow in their browser, or wait and check again.",
-    "If the session expiration has passed, start a new connect flow with sync_connect."
+    "If the session expiration has passed, start a new link flow with sync_link."
   ]
 }
 ```
@@ -922,7 +922,7 @@ Client PR (this branch) and server PR ship paired. Until the server endpoints la
 |---|---|
 | Dedup PK: `(transaction_id, source_file)` or `(transaction_id, source_origin)`? | `(transaction_id, source_origin)`. Plaid's sync API is upsert-shaped; OFX-style append-only doesn't fit. |
 | Token refresh: extend `/auth/device/token` or separate `/auth/refresh`? | Separate `/auth/refresh` with rotating refresh tokens (single-use). |
-| MCP connect-flow polling: blocking, looped, or event-driven? | Event-driven via separate `sync_connect_status` tool, with `expiration` in responses so agents know when to give up. |
+| MCP link-flow polling: blocking, looped, or event-driven? | Event-driven via separate `sync_link_status` tool, with `expiration` in responses so agents know when to give up. |
 | `--no-browser`: explicit flag, auto-detect, or both? | Both. Auto-print URL alongside browser open; `--no-browser` skips the open attempt. |
 | New table: schema file + migration, or schema file only? | Neither — we don't introduce a new local table (see next row). Convention shift for future cases still applies. |
 | Local mirror of server connection state in `app.sync_connections`? | Dropped. Server is the system of record; `sync status` reads `GET /institutions` per invocation. Avoids drift when web UI lands. |
@@ -934,5 +934,5 @@ Client PR (this branch) and server PR ship paired. Until the server endpoints la
 | Auto-pull after connect? | Yes, by default. `--no-pull` to opt out. |
 | Per-endpoint timeout configuration? | Two constants in `sync_client.py` (15s default, 120s long-op). No config knobs without evidence of need. |
 | CLI `--output json` on mutating commands? | Yes for `pull`, `connect`, `connect-status`, `disconnect` per agent-surface rule. |
-| Missing `sync connect-status` CLI command? | Added (CLI symmetry with `sync_connect_status` MCP tool). |
-| `sync_connect` MCP sensitivity? | Bumped from `low` to `medium` — `link_url` is a one-time bearer credential. |
+| Missing `sync link-status` CLI command? | Added (CLI symmetry with `sync_link_status` MCP tool). |
+| `sync_link` MCP sensitivity? | Bumped from `low` to `medium` — `link_url` is a one-time bearer credential. |

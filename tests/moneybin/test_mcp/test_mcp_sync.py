@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
+from fastmcp import FastMCP
 
 from moneybin.connectors.sync_models import (
     ConnectInitiateResponse,
@@ -13,6 +14,7 @@ from moneybin.connectors.sync_models import (
     PullResult,
     SyncConnectionView,
 )
+from moneybin.mcp.tools.sync import register_sync_tools
 
 
 @pytest.mark.unit
@@ -70,9 +72,76 @@ async def test_sync_status_returns_low_sensitivity(mock_build: MagicMock) -> Non
 
 @pytest.mark.unit
 @patch("moneybin.mcp.tools.sync._build_sync_client")
-async def test_sync_connect_returns_link_url_with_medium_sensitivity(
+async def test_sync_link_returns_link_url_with_medium_sensitivity(
     mock_client_builder: MagicMock,
 ) -> None:
+    client = MagicMock()
+    client.initiate_connect.return_value = ConnectInitiateResponse(
+        session_id="sess_abc",
+        link_url="https://hosted.plaid.com/link/xyz",
+        connect_type="widget_flow",
+        expiration=datetime(2026, 5, 13, 13, 30, tzinfo=UTC),
+    )
+    mock_client_builder.return_value = client
+    from moneybin.mcp.tools.sync import sync_link
+
+    envelope = await sync_link()
+    # link_url is a one-time bearer credential → medium sensitivity per design
+    assert envelope.summary.sensitivity == "medium"
+    assert envelope.data.session_id == "sess_abc"
+    assert envelope.data.link_url.startswith("https://hosted.plaid.com")
+    # Agent should know about expiration to decide when to give up polling
+    assert envelope.data.expiration is not None
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.sync._build_sync_client")
+async def test_sync_link_status_pending(mock_client_builder: MagicMock) -> None:
+    from datetime import UTC, datetime
+
+    from moneybin.connectors.sync_models import ConnectStatusResponse
+
+    client = MagicMock()
+    # MCP sync_link_status uses the public get_connect_status single-shot
+    # method on the client (was reaching into _authed_request before).
+    client.get_connect_status.return_value = ConnectStatusResponse(
+        session_id="sess_abc",
+        status="pending",
+        expiration=datetime(2026, 5, 13, 13, 30, tzinfo=UTC),
+    )
+    mock_client_builder.return_value = client
+    from moneybin.mcp.tools.sync import sync_link_status
+
+    envelope = await sync_link_status(session_id="sess_abc")
+    assert envelope.data.status == "pending"
+    assert envelope.data.expiration is not None
+
+
+@pytest.mark.unit
+async def test_sync_link_mcp_tool_registered() -> None:
+    """The new sync_link tool is registered with MCP."""
+    srv = FastMCP("test")
+    register_sync_tools(srv)
+    names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    assert "sync_link" in names
+
+
+@pytest.mark.unit
+async def test_sync_link_status_mcp_tool_registered() -> None:
+    """The new sync_link_status tool is registered with MCP."""
+    srv = FastMCP("test")
+    register_sync_tools(srv)
+    names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    assert "sync_link_status" in names
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.sync.logger")
+@patch("moneybin.mcp.tools.sync._build_sync_client")
+async def test_sync_connect_alias_warns_and_forwards(
+    mock_client_builder: MagicMock, mock_logger: MagicMock
+) -> None:
+    """The deprecated `sync_connect` alias warns but still forwards to `sync_link`."""
     client = MagicMock()
     client.initiate_connect.return_value = ConnectInitiateResponse(
         session_id="sess_abc",
@@ -84,24 +153,32 @@ async def test_sync_connect_returns_link_url_with_medium_sensitivity(
     from moneybin.mcp.tools.sync import sync_connect
 
     envelope = await sync_connect()
-    # SyncConnectPayload has link_url: DESCRIPTION → Tier.MEDIUM derived sensitivity
+    # sync_connect is now the deprecated alias → forwards to sync_link and
+    # returns the same typed SyncConnectPayload (link_url: DESCRIPTION → MEDIUM).
     assert envelope.summary.sensitivity == "medium"
     assert envelope.data.session_id == "sess_abc"
     assert envelope.data.link_url.startswith("https://hosted.plaid.com")
-    # Agent should know about expiration to decide when to give up polling
+    # Agent should know about expiration to decide when to give up polling.
     assert envelope.data.expiration is not None
+    # Deprecation warning fires via module logger; assert against the patched
+    # logger directly (CLI test precedent — caplog doesn't always observe).
+    assert mock_logger.warning.called
+    assert any(
+        "deprecated" in str(call.args[0]).lower()
+        for call in mock_logger.warning.call_args_list
+    )
 
 
 @pytest.mark.unit
+@patch("moneybin.mcp.tools.sync.logger")
 @patch("moneybin.mcp.tools.sync._build_sync_client")
-async def test_sync_connect_status_pending(mock_client_builder: MagicMock) -> None:
-    from datetime import UTC, datetime
-
+async def test_sync_connect_status_alias_warns_and_forwards(
+    mock_client_builder: MagicMock, mock_logger: MagicMock
+) -> None:
+    """The deprecated `sync_connect_status` alias warns but still forwards."""
     from moneybin.connectors.sync_models import ConnectStatusResponse
 
     client = MagicMock()
-    # MCP sync_connect_status uses the public get_connect_status single-shot
-    # method on the client (was reaching into _authed_request before).
     client.get_connect_status.return_value = ConnectStatusResponse(
         session_id="sess_abc",
         status="pending",
@@ -113,6 +190,11 @@ async def test_sync_connect_status_pending(mock_client_builder: MagicMock) -> No
     envelope = await sync_connect_status(session_id="sess_abc")
     assert envelope.data.status == "pending"
     assert envelope.data.expiration is not None
+    assert mock_logger.warning.called
+    assert any(
+        "deprecated" in str(call.args[0]).lower()
+        for call in mock_logger.warning.call_args_list
+    )
 
 
 @pytest.mark.unit

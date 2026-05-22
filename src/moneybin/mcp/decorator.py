@@ -239,6 +239,7 @@ def mcp_tool(
     open_world: bool = False,
     max_items: int | None | _UnsetType = _UNSET,
     unclassified: bool = False,  # DEPRECATED: unclassified=True — PR 4 wires sqlglot lineage
+    timeout_seconds: float | _UnsetType = _UNSET,
 ) -> Callable[..., Any]:
     """Mark a function as an MCP tool. Sensitivity is derived from the return type.
 
@@ -265,6 +266,10 @@ def mcp_tool(
             HIGH, redact_typed is skipped, and the privacy log records
             classes_returned=["unclassified"]. DEPRECATED — PR 4 replaces
             this with sqlglot lineage derivation.
+        timeout_seconds: Per-tool override for ``MCPConfig.tool_timeout_seconds``.
+            Sentinel ``_UNSET`` inherits from settings. Use this for tools whose
+            natural runtime exceeds the default cap (e.g. interactive OAuth
+            flows that wait for a user browser click).
 
     Every tool is wrapped with:
     1. Wall-clock timeout guard (unchanged from prior behavior)
@@ -397,7 +402,14 @@ def mcp_tool(
                     cap_error = _stamp_sensitivity(cap_error)
                     await _emit_privacy_event(cap_error)
                     return cap_error
-            timeout_s = _get_timeout_seconds()
+            timeout_attr = cast(
+                "float | _UnsetType",
+                wrapper._mcp_timeout_seconds,  # type: ignore[attr-defined]
+            )
+            if isinstance(timeout_attr, _UnsetType):
+                timeout_s = _get_timeout_seconds()
+            else:
+                timeout_s = timeout_attr
             started = time.monotonic()
             # Per-call holder: the tool's thread stores the write connection
             # here via _write_conn_thread_local so the timeout handler can
@@ -537,6 +549,7 @@ def mcp_tool(
         wrapper._mcp_idempotent = idempotent  # type: ignore[attr-defined]
         wrapper._mcp_open_world = open_world  # type: ignore[attr-defined]
         wrapper._mcp_max_items = max_items  # type: ignore[attr-defined]
+        wrapper._mcp_timeout_seconds = timeout_seconds  # type: ignore[attr-defined]
         wrapper._mcp_list_params = list_params  # type: ignore[attr-defined]
         return wrapper
 

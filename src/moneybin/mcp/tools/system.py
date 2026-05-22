@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from typing import Any
+
+import duckdb
 from fastmcp import FastMCP
 
 from moneybin.mcp._registration import register
@@ -12,6 +15,8 @@ from moneybin.privacy.payloads.system import (
     SystemDoctorPayload,
     SystemStatusAccountsInfo,
     SystemStatusCategorizationInfo,
+    SystemStatusGsheetInfo,
+    SystemStatusGsheetRow,
     SystemStatusMatchesInfo,
     SystemStatusPayload,
     SystemStatusSchemaDrift,
@@ -20,19 +25,98 @@ from moneybin.privacy.payloads.system import (
 )
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 
+_HEALTHY_STATUSES = frozenset({"healthy"})
+_DISCONNECTED_STATUSES = frozenset({"disconnected"})
+
+
+def _gsheet_block(db: Any) -> dict[str, Any]:
+    """Build the gsheet block: counts by status + per-attention rows.
+
+    Returns the zero-connections shape when the table is empty or absent;
+    healthy and disconnected connections are excluded from ``needs_attention``.
+    """
+    try:
+        rows = db.execute(
+            """
+            SELECT connection_id, workbook_name, sheet_name, status, last_status_reason
+            FROM app.gsheet_connections
+            ORDER BY created_at ASC, connection_id ASC
+            """
+        ).fetchall()
+    except duckdb.CatalogException:
+        # Table absent on bare DBs before init_schemas — report empty rather
+        # than error. Narrowed from a blanket except so real DB/query problems
+        # (corruption, permission, a broken schema) surface instead of being
+        # masked as total_connections=0 and suppressing recovery hints.
+        return {"total_connections": 0, "by_status": {}, "needs_attention": []}
+
+    by_status: dict[str, int] = {}
+    needs_attention: list[dict[str, Any]] = []
+    for connection_id, workbook, sheet, status, drift_reason in rows:
+        by_status[status] = by_status.get(status, 0) + 1
+        if status in _HEALTHY_STATUSES or status in _DISCONNECTED_STATUSES:
+            continue
+        needs_attention.append({
+            "connection_id": connection_id,
+            "workbook_name": workbook,
+            "sheet_name": sheet,
+            "status": status,
+            "reason": drift_reason,
+        })
+
+    return {
+        "total_connections": len(rows),
+        "by_status": by_status,
+        "needs_attention": needs_attention,
+    }
+
+
+def _gsheet_action_hints(needs_attention: list[dict[str, Any]]) -> list[str]:
+    """Generate per-row action hints for connections that need attention.
+
+    drift_detected → gsheet_reconnect hint (MCP-invokable). auth_expired →
+    CLI re-auth message (the OAuth flow opens a browser, no MCP equivalent).
+    Other non-healthy statuses (unreachable, rate_limited) get a generic
+    gsheet_status hint pointing at the diagnostic tool.
+    """
+    hints: list[str] = []
+    for row in needs_attention:
+        status = row["status"]
+        cid = row["connection_id"]
+        if status == "drift_detected":
+            hints.append(
+                f"Run gsheet_reconnect(connection_id='{cid}') to re-detect "
+                "the sheet structure and re-pin the column mapping."
+            )
+        elif status == "auth_expired":
+            hints.append(
+                "Re-authenticate: call gsheet_auth() (MCP) or run "
+                "`moneybin gsheet auth` (CLI). Both drive the same "
+                "in-process OAuth flow."
+            )
+        else:
+            hints.append(
+                f"Run gsheet_status(connection_id='{cid}') to inspect the "
+                f"failure detail (status={status})."
+            )
+    return hints
+
 
 @mcp_tool()
 def system_status() -> ResponseEnvelope[SystemStatusPayload]:
     """Return data inventory, pending review queue counts, and transforms freshness.
 
     Use this tool to understand what data exists in MoneyBin and what
-    needs user attention before suggesting any analytical query.
+    needs user attention before suggesting any analytical query. The
+    ``gsheet`` block summarizes Google Sheets connection health: drift-detected
+    connections surface a paired ``gsheet_reconnect`` hint in ``actions[]``.
     """
     from moneybin.database import get_database
     from moneybin.services.system_service import SystemService
 
     with get_database(read_only=True) as db:
         status = SystemService(db).status()
+        gsheet = _gsheet_block(db)
 
     min_date, max_date = status.transactions_date_range
 
@@ -60,6 +144,8 @@ def system_status() -> ResponseEnvelope[SystemStatusPayload]:
             "(raw imports are newer than the last refresh)"
         )
 
+    actions.extend(_gsheet_action_hints(gsheet["needs_attention"]))
+
     return build_envelope(
         data=SystemStatusPayload(
             accounts=SystemStatusAccountsInfo(count=status.accounts_count),
@@ -86,6 +172,20 @@ def system_status() -> ResponseEnvelope[SystemStatusPayload]:
                 ),
             ),
             schema_drift=schema_drift_payload,
+            gsheet=SystemStatusGsheetInfo(
+                total_connections=gsheet["total_connections"],
+                by_status=gsheet["by_status"],
+                needs_attention=[
+                    SystemStatusGsheetRow(
+                        connection_id=r["connection_id"],
+                        workbook_name=r["workbook_name"],
+                        sheet_name=r["sheet_name"],
+                        status=r["status"],
+                        reason=r["reason"],
+                    )
+                    for r in gsheet["needs_attention"]
+                ],
+            ),
         ),
         actions=actions,
     )

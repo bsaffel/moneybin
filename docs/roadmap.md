@@ -32,6 +32,7 @@ Each milestone has a one-line gloss for what it means to a user. Details below.
 | **M3C** | Multi-currency + budgets — non-USD support and monthly budgets with rollovers. | 🗓️ planned |
 | **M3D** | Web UI — the dashboard you'll actually look at, plus remote MCP for ChatGPT web/mobile. | 🗓️ planned |
 | **M3E** | Hosted launch (v1) — opt-in cloud tier; reference packages (`assets`, `us_tax`) ship Platinum-quality. | 🗓️ planned |
+| **M3F** | Connect: live tabular sources — Google Sheets today; Airtable, Smartsheet, Notion planned. | ✅ shipped (gsheet) |
 | Post-launch | Anything after M3E. Listed without commitment. | 🗓️ planned |
 
 **A note on extensibility.** The contributor surface — adding reports, analysis packages, and providers — is a stated differentiator. The contract is specified in [`extension-contracts.md`](specs/extension-contracts.md) (📐 designed). Two reference packages ship at v1: `assets` (real estate, vehicles, valuables) and `us_tax` (locale-specific tax helpers built on top of M3B investments). Both at Platinum quality; both serve as worked examples for community packages post-launch.
@@ -209,6 +210,21 @@ The opt-in cloud tier. Local-first remains the default. M3E closing = v1 launch.
 | In-tree provider framework Platinum sweep | 📐 | Existing providers (OFX, Plaid, tabular) brought to Platinum at launch. |
 
 Pricing is not committed pre-launch. The local CLI + MCP stack will remain fully usable without a hosted account.
+
+---
+
+## M3F — Connect: live tabular sources ✅ shipped (gsheet)
+
+User-controlled live data sources connected via direct OAuth — distinct from `sync` (which mediates third-party financial providers through moneybin-server). The client speaks the provider's API directly; tokens live in the local `SecretStore`; no server mediation.
+
+| Area | Status | Notes |
+|---|---|---|
+| Google Sheets connector | ✅ | Two adapters: `transactions` (Tiller-style → matching/categorization pipeline) and `seed` (catch-all → JSON storage + auto-generated typed views). OAuth via Google's "Desktop app" PKCE flow; no shared client secret. Soft-delete preserves audit history; per-connection drift detection refuses pulls on structural change until `gsheet reconnect`. See [`connect-gsheet.md`](specs/connect-gsheet.md). |
+| Airtable connector | 🗓️ | Sibling under the same connection-lifecycle pattern. |
+| Smartsheet connector | 🗓️ | |
+| Notion connector | 🗓️ | |
+
+Independent of M3A — no moneybin-server dependency. Can ship before or after the other M3 sub-milestones.
 
 ---
 

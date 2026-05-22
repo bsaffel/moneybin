@@ -177,6 +177,30 @@ class SystemStatusSchemaDrift:
 
 
 @dataclass(frozen=True, slots=True)
+class SystemStatusGsheetRow:
+    """One Google Sheets connection needing attention inside the gsheet block."""
+
+    connection_id: Annotated[str, DataClass.RECORD_ID]
+    # workbook_name / sheet_name are user-chosen labels identifying the connected
+    # source — treated like an institution/source name (LOW), not financial PII,
+    # matching the app.gsheet_connections registry block. The sheet's *contents*
+    # never appear here, only the connection's metadata.
+    workbook_name: Annotated[str | None, DataClass.INSTITUTION]
+    sheet_name: Annotated[str | None, DataClass.INSTITUTION]
+    status: Annotated[str, DataClass.TXN_TYPE]
+    reason: Annotated[str | None, DataClass.TXN_TYPE]
+
+
+@dataclass(frozen=True, slots=True)
+class SystemStatusGsheetInfo:
+    """Google Sheets connection-health sub-object inside SystemStatusPayload."""
+
+    total_connections: Annotated[int, DataClass.AGGREGATE]
+    by_status: Annotated[dict[str, int], DataClass.AGGREGATE]
+    needs_attention: list[SystemStatusGsheetRow]
+
+
+@dataclass(frozen=True, slots=True)
 class SystemStatusPayload:
     """Payload for ``system_status`` — data inventory snapshot."""
 
@@ -186,6 +210,7 @@ class SystemStatusPayload:
     categorization: SystemStatusCategorizationInfo
     transforms: SystemStatusTransformsInfo
     schema_drift: SystemStatusSchemaDrift | None
+    gsheet: SystemStatusGsheetInfo
 
 
 # ---------------------------------------------------------------------------

@@ -112,12 +112,24 @@ Coherence requires that when a verb appears, it means the same thing everywhere.
 | `_run` | Execute a discrete batch/pipeline operation | `refresh_run`, `transactions_categorize_run` |
 | `_commit` | Finalize externally-decided proposals (terminal step of propose→review→commit workflows) | `transactions_categorize_commit` |
 | `_refresh` | Rebuild derived state from raw inputs (refresh domain) | `refresh_run` (umbrella) |
+| `_pull` | Fetch new data from an established external connection (already-authenticated) | `sync_pull`, `gsheet_pull` |
+| `_link` | Establish an authenticated session with a **mediated third-party provider** (Plaid-style OAuth → server-held tokens → server-mediated API access) | `sync_link` (Plaid, future SimpleFIN/MX) |
+| `_connect` | Establish a binding to **user-controlled storage** (direct OAuth or URL identification → client speaks the provider's API directly, no server mediation) | `gsheet_connect` (future `airtable_connect`, `smartsheet_connect`, `notion_connect`) |
 | `_get` | Fetch one entity by id | `transactions_get`, `accounts_get` |
 | `_status` | Status snapshot of a recent operation | `transform_status`, `transactions_categorize_status` |
 | `_history` | Time-series projection | `accounts_balance_history` |
 | `_summary` | Cross-entity aggregate snapshot | `accounts_summary` |
 
-Plus domain-specific discrete verbs (`_rename`, `_archive`, `_revert`, `_pull`, `_connect`) — use these when the verb carries domain meaning the generic verbs would erase.
+Plus domain-specific discrete verbs (`_rename`, `_archive`, `_revert`) — use these when the verb carries domain meaning the generic verbs would erase.
+
+**`_link` vs `_connect` — the semantic split.** Both verbs establish a persistent relationship with an external data source, but they describe *different trust and mediation models*:
+
+- **`_link`** is owed to Plaid's branded "Link" product. Use when (a) a third-party financial-data aggregator stands between MoneyBin and the user's actual financial institution, (b) credentials are held server-side and ephemeral, and (c) the client never speaks the underlying institution's API directly. This is the `sync-*` family.
+- **`_connect`** is for direct OAuth (or URL-based binding) to data the user themselves owns. The client speaks the provider's API directly; tokens live in the local `SecretStore`; no server mediation. This is the `connect-*` family.
+
+Never use them interchangeably. Never use `_connect` for a financial-aggregator integration (it loses the Plaid Link mental model users rely on). Never use `_link` for user-controlled storage (the "session" framing misrepresents what's happening — there's no real session, just a binding).
+
+The verb predicts the trust model. Agents and users should never need a qualifier to know which is which.
 
 **Verbs to avoid:**
 
@@ -126,6 +138,7 @@ Plus domain-specific discrete verbs (`_rename`, `_archive`, `_revert`, `_pull`, 
 - `_update` — synonym of `_set` in this codebase. The rename pass picked `_set` (`accounts_settings_update` → `accounts_set`); follow that precedent.
 - `_list` suffix on read tools — drop it (noun-only).
 - `manage_*` with action-polymorphism — rejected absolutely (see Polymorphism below).
+- `_connect` for mediated financial providers — retired. The Plaid-style flow is `_link` (see verb table). The previous `sync_connect` was renamed to `sync_link` co-shipping with `connect-gsheet.md` to lock the verb-split semantics before launch. Zero current `_connect` callers in `sync-*`; do not reintroduce.
 
 **Pluralization:** match the noun. Collection writes use plural even when operating on one element (`_rules_create`, `_rules_delete`). Singular `_rule_delete` is wrong even when deleting one rule.
 
