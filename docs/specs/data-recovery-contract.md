@@ -15,7 +15,7 @@ The work has eight pieces, all interlocking:
 3. An audit-log undo consumer — Phase 2 of Invariant 10 — exposed via `system_audit_undo` / `system_audit_history` / `system_audit_get`.
 4. A doctor recipe registry: each invariant audit ships with a Python recipe producing `recovery_actions` from the failure's affected IDs.
 5. A self-heal safelist run at refresh time — five active recipes, all reversible through the same audit-log undo, with five strict criteria that gate any future addition. A small "deferred" subsection captures known-shape future recipes that don't yet have a concrete trigger.
-6. The matches MCP surface (`transactions_matches_run` / `_review` / `_set` / `_history`) closing the CLI-only gap.
+6. The matches MCP surface (`transactions_matches_run` / `_pending` / `_set` / `_history`) closing the CLI-only gap.
 7. `RefreshResult` extensions surfacing matching and categorization crashes that today log at DEBUG and accumulate dupes silently.
 8. A new always-loaded project rule (`.claude/rules/data-recovery.md`) codifying the contract for future tools, audits, and refresh stages.
 
@@ -203,11 +203,11 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
     | MCP tool | Shape | CLI equivalent |
     |----------|-------|----------------|
     | `transactions_matches_run(scope?, force?)` | 3 (discrete-verb batch) | `moneybin transactions matches run` |
-    | `transactions_matches_review(scope?)` | 5 (collection projection) | `moneybin transactions review --type matches` |
-    | `transactions_matches_set(match_id, status)` | 1b (accept/reject one decision) | `moneybin transactions matches set` (new — REC-PR5) |
-    | `transactions_matches_history(since?, scope?)` | 5 (time-series) | `moneybin transactions matches history` |
+    | `transactions_matches_pending(match_type?, limit?)` | 5 (collection projection) | `moneybin transactions review --type matches` |
+    | `transactions_matches_set(match_id, status)` | 1b (accept/reject one decision) | `moneybin transactions matches set` |
+    | `transactions_matches_history(limit?, match_type?)` | 5 (time-series) | `moneybin transactions matches history` |
 
-    `_run` and `_history` mirror the existing CLI. `_set` is genuinely new non-interactive surface: today accept/reject lives only in the interactive `transactions review --type matches` queue, so agents can't reach it. `_set` accepts or rejects **one decision by `match_id`** (`status ∈ {accepted, rejected}`). There is no `match_group_id`/`primary` write surface — `match_group_id` is a derived prep-layer column (the connected-component group key in `int_transactions__matched`), and dedup collapses each group by field-level source-priority merge (`int_transactions__merged`), so no single physical row is "primary."
+    `_run` and `_history` mirror the existing CLI. `transactions_matches_pending` is named to match the existing `transactions_categorize_pending` convention; it lists pending match proposals (pair ids + confidence, no amounts or descriptions). `_set` is genuinely new non-interactive surface: today accept/reject lives only in the interactive `transactions review --type matches` queue, so agents can't reach it. `_set` accepts or rejects **one decision by `match_id`** (`status ∈ {accepted, rejected}`). Rejecting an already-accepted match errors with a recovery action pointing at the CLI `moneybin transactions matches undo` — the MCP `system_audit_undo` consumer is not yet shipped. There is no `match_group_id`/`primary` write surface — `match_group_id` is a derived prep-layer column (the connected-component group key in `int_transactions__matched`), and dedup collapses each group by field-level source-priority merge (`int_transactions__merged`), so no single physical row is "primary."
 
     No `transactions_matches_undo` MCP tool. `app.match_decisions` is protected by Invariant 10 → audit_log → `system_audit_undo`. The existing CLI `moneybin transactions matches undo` migrates to call `system_audit_undo` internally.
 
@@ -360,7 +360,7 @@ Phase 2 of Invariant 10 + sister contract work + matches MCP + refresh surfacing
 
 ### PR 5 — Matches MCP surface
 
-- Four new tools in `src/moneybin/mcp/tools/transactions_matches.py`, wrapping the existing matching service.
+- Four new tools in `src/moneybin/mcp/tools/transactions.py`, wrapping the existing matching service.
 - CLI: existing commands stay (already implemented); CLI's `transactions matches undo` migrates to call `system_audit_undo` internally (thin wrapper).
 - Tests: surface tests per `.claude/rules/testing.md`; cross-surface parity test asserts CLI and MCP yield equivalent JSON.
 

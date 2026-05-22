@@ -92,6 +92,10 @@ not-yet-built.
 | 29| Disconnect a Google Sheet (soft or purge)                        | `gsheet_disconnect` *(`purge=True` permanent)* | `gsheet disconnect` *(`--purge`, `--yes`)* | —          | live                  |
 | 30| Link a bank via mediated provider (Plaid)                        | `sync_link` *(`institution` for re-auth)* | `sync link` *(formerly `sync connect`)*  | —          | live                  |
 | 31| Poll an in-flight bank-link session                              | `sync_link_status` *(`session_id`)* | `sync link-status` *(formerly `sync connect-status`)* | —          | live                  |
+| 32| List pending transaction match proposals awaiting a decision     | `transactions_matches_pending` *(`match_type?`, `limit?`)* | `transactions review --type matches --status` *(counts)* / `transactions review --type matches` *(interactive queue)* | — | live |
+| 33| Accept or reject one pending match proposal                      | `transactions_matches_set` *(`match_id`, `status: accepted\|rejected`)* | `transactions matches set <match_id> --status accepted\|rejected` | — | live |
+| 34| Run the matching engine and propose new pending decisions         | `transactions_matches_run` *(operator alternative to `refresh_run(steps=["match"])`)* | `transactions matches run` | — | live |
+| 35| View recent match decisions (accepted and rejected)              | `transactions_matches_history` *(`limit?`, `match_type?`)* | `transactions matches history` *(`--type`, `--limit`)* | — | live |
 
 *(Bootstrap rows only; full table populates incrementally as
 follow-up work closes the parity backlog. A prior row covering
@@ -104,7 +108,11 @@ from MCP (PR #185) — operator territory per mcp-server.md category 2.
 `sync_schedule_set/show/remove` stubs removed from MCP (PR #185) — were
 not-implemented placeholders with no backing spec. Rows 23–29 added
 2026-05-21 with the connect-gsheet PR; rows 30–31 capture the
-`sync_connect` → `sync_link` rename co-shipped in the same PR.)*
+`sync_connect` → `sync_link` rename co-shipped in the same PR.
+Rows 32–35 added 2026-05-22 with the matches accept/reject PR: four
+`transactions_matches_*` MCP tools registered; `transactions matches set`
+CLI command and non-interactive `transactions review --type matches
+--confirm/--reject/--confirm-all` flags wired.)*
 
 ## Exemption categories
 
