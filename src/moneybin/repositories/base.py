@@ -23,10 +23,22 @@ from contextlib import contextmanager
 from decimal import Decimal
 from typing import Any, ClassVar
 
+from sqlglot import exp
+
 from moneybin.database import Database
 from moneybin.metrics.registry import app_mutation_audit_emitted_total
 from moneybin.services.audit_service import AuditEvent, AuditService
 from moneybin.tables import TableRef
+
+
+def _quote_ident(name: str) -> str:
+    """Double-quote a SQL identifier (security.md defense-in-depth for interpolation).
+
+    Repository column/PK names are code-supplied constants, but per
+    `.claude/rules/security.md` identifiers interpolated into SQL must be quoted
+    regardless — never bare f-string interpolation, even after validation.
+    """
+    return exp.to_identifier(name, quoted=True).sql("duckdb")
 
 
 class BaseRepo:
@@ -137,9 +149,10 @@ class BaseRepo:
         the raw tuple; the default zips ``columns`` to the row. ``pk_col`` is a
         code-supplied column name, never user input.
         """
-        cols = ", ".join(columns)
+        cols = ", ".join(_quote_ident(c) for c in columns)
+        safe_pk = _quote_ident(pk_col)
         row = self._db.execute(
-            f"SELECT {cols} FROM {table_ref.full_name} WHERE {pk_col} = ?",  # noqa: S608  # TableRef + code-constant columns/pk_col
+            f"SELECT {cols} FROM {table_ref.full_name} WHERE {safe_pk} = ?",  # noqa: S608  # TableRef + sqlglot-quoted identifiers
             [pk_value],
         ).fetchone()
         if row is None:

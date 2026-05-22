@@ -340,10 +340,17 @@ class CategorizationService:
         )
 
     def toggle_category(
-        self, category_id: str, *, is_active: bool, actor: str = "system"
+        self,
+        category_id: str,
+        *,
+        is_active: bool,
+        actor: str = "system",
+        in_outer_txn: bool = False,
     ) -> None:
         """Enable or disable a category. Existing categorizations are preserved."""
-        self._applier.toggle_category(category_id, is_active=is_active, actor=actor)
+        self._applier.toggle_category(
+            category_id, is_active=is_active, actor=actor, in_outer_txn=in_outer_txn
+        )
 
     def delete_category(
         self, category_id: str, *, force: bool = False, actor: str = "system"

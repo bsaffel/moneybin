@@ -161,7 +161,7 @@ def gsheet_connect(
         accept_seed_fallback=accept_seed_fallback,
     )
     with _build_connection_service() as service:
-        result = service.connect(req)
+        result = service.connect(req, actor="mcp")
 
     data: dict[str, Any] = {
         "connection": result.connection.to_dict(),
@@ -318,7 +318,7 @@ def gsheet_reconnect(connection_id: str, yes: bool = False) -> ResponseEnvelope:
     sheet currently looks like. Run gsheet_status afterwards to verify.
     """
     with _build_connection_service() as service:
-        result = service.reconnect(connection_id, yes=yes)
+        result = service.reconnect(connection_id, yes=yes, actor="mcp")
 
     data = {
         "connection": result.connection.to_dict(),
@@ -370,7 +370,7 @@ def gsheet_disconnect(connection_id: str, purge: bool = False) -> ResponseEnvelo
     raw.tabular_transactions rows (transactions adapter) for this connection.
     """
     with _build_connection_service() as service:
-        service.disconnect(connection_id, purge=purge)
+        service.disconnect(connection_id, purge=purge, actor="mcp")
     return build_envelope(
         data={
             "connection_id": connection_id,

@@ -6,6 +6,8 @@ import logging
 from dataclasses import dataclass
 from typing import Literal
 
+from sqlglot import exp
+
 from moneybin.config import get_settings
 from moneybin.database import Database, sqlmesh_context
 from moneybin.errors import RecoveryAction
@@ -101,18 +103,29 @@ class DoctorService:
         ``doctor.audit_coverage_lookback_days`` are checked, capped at
         ``doctor.audit_coverage_sample_cap``. ``full=True`` scans every row.
         Requires the table to carry an ``updated_at`` column (every protected
-        table does). ``pk_col`` is a code-supplied column name, never user input.
+        table does).
+
+        Limitations (by design — this is a sampled runtime *heuristic*, not a
+        proof): it scans rows that currently exist and keys on ``updated_at`` as
+        the mutation watermark, so a raw bypass that (a) deletes a row, or (b)
+        mutates without bumping ``updated_at``, leaves nothing for the scan to
+        flag. The *structural* guard against raw bypass writes is the lint rule
+        (rejects raw ``INSERT``/``UPDATE``/``DELETE`` against protected tables
+        outside ``*_repo.py``); content-based coverage is a hosted-tier follow-up
+        (see ``private/followups.md``). ``pk_col`` is a code-supplied constant,
+        quoted defensively per ``.claude/rules/security.md``.
         """
         name = f"app_audit_coverage_{table_ref.name}"
         settings = get_settings().doctor
+        safe_pk = exp.to_identifier(pk_col, quoted=True).sql("duckdb")
         if full:
             sampled_sql = (
-                f"SELECT {pk_col} AS pk, updated_at FROM {table_ref.full_name}"  # noqa: S608  # TableRef + code-constant pk_col
+                f"SELECT {safe_pk} AS pk, updated_at FROM {table_ref.full_name}"  # noqa: S608  # TableRef + sqlglot-quoted identifier
             )
             sample_params: list[object] = []
         else:
             sampled_sql = (
-                f"SELECT {pk_col} AS pk, updated_at FROM {table_ref.full_name} "  # noqa: S608  # TableRef + code-constant pk_col
+                f"SELECT {safe_pk} AS pk, updated_at FROM {table_ref.full_name} "  # noqa: S608  # TableRef + sqlglot-quoted identifier
                 "WHERE updated_at >= (now()::TIMESTAMP - (? * INTERVAL 1 DAY)) "
                 "ORDER BY updated_at DESC LIMIT ?"
             )
@@ -190,7 +203,11 @@ class DoctorService:
                 affected_ids=[],
             )
         if rows:
-            labels = [f"{cat}/{sub}" if sub else str(cat) for cat, sub, _ in rows]
+            # `is not None` (not truthiness): DuckDB groups NULL and "" as
+            # distinct collision sets, so render them distinctly in the detail.
+            labels = [
+                f"{cat}/{sub}" if sub is not None else str(cat) for cat, sub, _ in rows
+            ]
             affected: list[str] = []
             for *_unused, ids in rows:
                 affected.extend(ids.split(","))

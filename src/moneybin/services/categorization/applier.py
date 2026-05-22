@@ -146,14 +146,21 @@ class MatchApplier:
 
     @contextmanager
     def _transaction(self) -> Generator[None]:
-        """Run the wrapped block inside a DB transaction; rollback on exception."""
+        """Run the wrapped block inside a DB transaction; rollback on failure.
+
+        Rolls back on BaseException (incl. KeyboardInterrupt/SystemExit) so an
+        interrupt mid-write — e.g. between delete_category's cascade DELETEs and
+        the final repo delete — can't leave the transaction open. Same pattern as
+        BaseRepo._transaction; re-raised immediately, never swallowed.
+        """
         self._db.begin()
         try:
             yield
-            self._db.commit()
-        except Exception:
+        except BaseException:
             self._db.rollback()
             raise
+        else:
+            self._db.commit()
 
     # -- Per-transaction category writes (audit emission) --
 
@@ -604,6 +611,11 @@ class MatchApplier:
                 code="CATEGORY_ALREADY_EXISTS",
             )
 
+        # The duplicate check above and the insert below are separate statements
+        # (the repo opens its own transaction). MoneyBin's single-writer model
+        # (exclusive write lock per database-writer-coordination.md) is what makes
+        # this race-free; V015 dropped the UNIQUE(category, subcategory) DB guard,
+        # so the lock — not a constraint — is the load-bearing invariant here.
         event = self._user_categories.insert(
             category=category,
             subcategory=subcategory,
@@ -615,7 +627,12 @@ class MatchApplier:
         return event.target_id
 
     def toggle_category(
-        self, category_id: str, *, is_active: bool, actor: str = "system"
+        self,
+        category_id: str,
+        *,
+        is_active: bool,
+        actor: str = "system",
+        in_outer_txn: bool = False,
     ) -> None:
         """Enable or disable a category. Existing categorizations are preserved.
 
@@ -640,11 +657,11 @@ class MatchApplier:
 
         if cat[0]:  # default category — record/upsert the override
             self._category_overrides.set_active(
-                category_id, is_active=is_active, actor=actor
+                category_id, is_active=is_active, actor=actor, in_outer_txn=in_outer_txn
             )
         else:
             self._user_categories.update_active(
-                category_id, is_active=is_active, actor=actor
+                category_id, is_active=is_active, actor=actor, in_outer_txn=in_outer_txn
             )
 
     def delete_category(
@@ -753,6 +770,9 @@ class MatchApplier:
                         f"DELETE FROM {table_const.full_name} WHERE category_id = ?",  # noqa: S608  # TableRef constant
                         [category_id],
                     )
+            # TODO(Invariant 10 Batch B/C): capture this AuditEvent and thread its
+            # audit_id as parent_audit_id into the cascade deletes above, once
+            # those tables (transaction_categories, budgets, …) have repos.
             self._user_categories.delete(category_id, actor=actor, in_outer_txn=True)
 
     # -- Guarded categorization write --
