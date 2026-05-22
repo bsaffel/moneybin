@@ -12,6 +12,7 @@ from decimal import Decimal
 from typing import Any
 from unittest.mock import MagicMock
 
+import pytest
 from prometheus_client import REGISTRY
 
 from moneybin.database import Database
@@ -144,10 +145,8 @@ def test_set_rolls_back_when_audit_raises(db: Database) -> None:
     audit.record_audit_event.side_effect = RuntimeError("simulated audit failure")
     repo = AccountSettingsRepo(db, audit=audit)
 
-    try:
+    with pytest.raises(RuntimeError):
         _set(repo, account_id="ghost", display_name="Ghost")
-    except RuntimeError:
-        pass
 
     rows = db.conn.execute(
         "SELECT 1 FROM app.account_settings WHERE account_id = ?", ["ghost"]

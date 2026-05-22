@@ -120,10 +120,16 @@ class BalanceService:
         no assertion on that date. This forgiving-delete contract is locked by
         ``test_e2e_mutating.py::...test_balance_delete_nonexistent_is_noop``.
         """
-        self._assertions_repo.delete(account_id, assertion_date, actor=actor)
-        logger.info(
-            f"Deleted balance assertion for account {account_id} on {assertion_date}"
-        )
+        deleted = self._assertions_repo.delete(account_id, assertion_date, actor=actor)
+        if deleted is not None:
+            logger.info(
+                f"Deleted balance assertion for account {account_id} on {assertion_date}"
+            )
+        else:
+            logger.info(
+                f"No balance assertion to delete for account {account_id} "
+                f"on {assertion_date}"
+            )
 
     def list_assertions(
         self, account_id: str | None = None

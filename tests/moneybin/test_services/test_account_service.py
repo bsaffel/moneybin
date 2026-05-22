@@ -472,6 +472,17 @@ class TestSettingsUpdateExtended:
         ).fetchone()
         assert audit_count[0] == 0  # type: ignore[index]
 
+    @pytest.mark.unit
+    def test_empty_diff_still_rejects_unknown_account(self, test_db: Database) -> None:
+        """Account existence is checked before the empty-diff early-return.
+
+        A no-op (empty diff) against a nonexistent account must still raise, not
+        silently return defaults.
+        """
+        svc = AccountService(test_db)
+        with pytest.raises(UserError, match="Account not found"):
+            svc.settings_update("ACCTO1_typo", actor="cli")
+
 
 # ---------------------------------------------------------------------------
 # Helpers for new extended-read tests

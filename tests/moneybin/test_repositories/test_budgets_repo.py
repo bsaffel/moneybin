@@ -123,10 +123,8 @@ def test_insert_rolls_back_when_audit_raises(db: Database) -> None:
     audit.record_audit_event.side_effect = RuntimeError("simulated audit failure")
     repo = BudgetsRepo(db, audit=audit)
 
-    try:
+    with pytest.raises(RuntimeError):
         _insert(repo, category="GhostCat")
-    except RuntimeError:
-        pass
 
     rows = db.conn.execute(
         "SELECT 1 FROM app.budgets WHERE category = ?", ["GhostCat"]
