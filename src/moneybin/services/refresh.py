@@ -9,16 +9,19 @@ verb that wraps three source-agnostic steps:
    same transaction observed by multiple loaders collapses to one row.
 2. **SQLMesh apply** — :class:`TransformService` rebuilds derived
    ``core.*`` and ``reports.*`` models from current raw state. This is
-   the only step that surfaces a structured error in the result.
+   the only step that can hard-fail the call (``RefreshResult.error``);
+   the others surface crashes without aborting (see below).
 3. **Deterministic categorization** — :class:`CategorizationService`
    applies user rules + merchant exemplars to uncategorized rows, with
    source-precedence enforcement so user-manual categories are never
    overwritten.
 
-Matching and categorization are best-effort: failures are logged and
-swallowed so a partial pipeline still leaves raw rows durable and core
-tables rebuilt. Only SQLMesh failures propagate via
-``RefreshResult.error``.
+Matching and categorization are best-effort: a stage failure never aborts
+the pipeline, so a partial run still leaves raw rows durable and core
+tables rebuilt. A real crash in either is surfaced (logged at ERROR and
+returned in ``RefreshResult.matching_error`` / ``categorization_error``);
+a missing-view precondition on first load is logged at DEBUG and not
+surfaced. Only SQLMesh apply failures set ``RefreshResult.error``.
 
 Invoked by any service whose loaders wrote to ``raw.*``:
 ``ImportService`` (file imports), ``InboxService`` (inbox drain),
@@ -39,8 +42,10 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
+
+import duckdb
 
 from moneybin.database import Database
 from moneybin.services.transform_service import TransformService
@@ -49,17 +54,41 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
+class SelfHealRecord:
+    """One self-heal recipe execution during refresh.
+
+    Populated by the self-heal safelist (M2D PR 7, not yet implemented);
+    the carrier ships here so ``RefreshResult``'s shape is stable for
+    agents before the safelist lands.
+    """
+
+    recipe_id: str
+    rows_affected: int
+    operation_id: str
+    timestamp: str
+
+
+@dataclass(frozen=True)
 class RefreshResult:
     """Outcome of a :func:`refresh` call.
 
-    Fields describe the SQLMesh apply step specifically — the only step
-    that can hard-fail. Matching and categorization are best-effort and
-    log-only on failure; their outcomes are not surfaced here.
+    ``error`` describes the SQLMesh apply step — the only step that can
+    hard-fail. ``matching_error`` / ``categorization_error`` surface real
+    crashes in the best-effort matcher / categorizer steps; a missing-view
+    precondition on first load (before SQLMesh apply built the views) is
+    NOT a crash and leaves them ``None``. ``self_heal_actions`` lists
+    self-heal recipes that ran (empty until the M2D self-heal safelist
+    lands).
     """
 
     applied: bool
     duration_seconds: float | None
     error: str | None = None
+    matching_error: str | None = None
+    categorization_error: str | None = None
+    # tuple, not list: frozen=True blocks reassignment but not in-place
+    # mutation of a list field — a tuple keeps the result carrier truly immutable.
+    self_heal_actions: tuple[SelfHealRecord, ...] = field(default_factory=tuple)
 
 
 RefreshStep = Literal["gsheet", "match", "transform", "categorize"]
@@ -160,6 +189,8 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
                     f"({summary}); see gsheet_status for per-connection detail"
                 )
 
+    matching_error: str | None = None
+    categorization_error: str | None = None
     if "match" in requested:
         try:
             match_result = MatchingService(db).run()
@@ -169,8 +200,14 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
                     logger.info(
                         "Run 'moneybin transactions review --type matches' when ready"
                     )
-        except Exception:  # noqa: BLE001 — best-effort; first load may precede SQLMesh views
+        except (duckdb.CatalogException, duckdb.BinderException):
+            # Views not built yet (first load precedes SQLMesh apply) — an
+            # expected precondition, not a crash. Stay quiet; no error surfaced
+            # so a fresh DB's first refresh doesn't report a false failure.
             logger.debug("Matching skipped (views may not exist yet)", exc_info=True)
+        except Exception as exc:  # noqa: BLE001 — surface a real crash; never abort the pipeline
+            matching_error = str(exc)
+            logger.error(f"Matching failed during refresh: {exc}", exc_info=True)
 
     if "transform" not in requested:
         # Caller asked for a partial cascade that omits transform. Return
@@ -178,23 +215,34 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
         # signal is honest. Categorize, if also requested, still runs
         # against whatever SQLMesh-built views are already on disk.
         if "categorize" in requested:
-            _run_categorize_step(db)
-        return RefreshResult(applied=False, duration_seconds=None)
+            categorization_error = _run_categorize_step(db)
+        return RefreshResult(
+            applied=False,
+            duration_seconds=None,
+            matching_error=matching_error,
+            categorization_error=categorization_error,
+        )
 
     apply_result = TransformService(db).apply()
     if not apply_result.applied:
+        # categorize is not attempted when apply fails (it reads SQLMesh-built
+        # views), so categorization_error stays None here — "not attempted",
+        # not "succeeded". The caller distinguishes via applied=False + error.
         return RefreshResult(
             applied=False,
             duration_seconds=apply_result.duration_seconds,
             error=apply_result.error,
+            matching_error=matching_error,
         )
 
     if "categorize" in requested:
-        _run_categorize_step(db)
+        categorization_error = _run_categorize_step(db)
 
     return RefreshResult(
         applied=True,
         duration_seconds=apply_result.duration_seconds,
+        matching_error=matching_error,
+        categorization_error=categorization_error,
     )
 
 
@@ -251,20 +299,46 @@ def _run_gsheet_step(db: Database) -> list[Any]:
         )
 
 
-def _run_categorize_step(db: Database) -> None:
-    """Best-effort categorization step. Failures log-only — never propagated."""
+def _run_categorize_step(db: Database) -> str | None:
+    """Best-effort categorization step.
+
+    Returns the error string on a real crash, else ``None``. A missing-view
+    precondition (first load before SQLMesh apply built the views) returns
+    ``None`` and logs DEBUG — it is expected, not a failure. A genuine crash
+    logs ERROR and returns its message so ``refresh`` can surface it in
+    ``RefreshResult.categorization_error``.
+    """
     from moneybin.services.auto_rule_service import AutoRuleService  # noqa: PLC0415
     from moneybin.services.categorization import CategorizationService  # noqa: PLC0415
 
     cat_start = time.monotonic()
+    # Only the categorization write itself decides categorization_error. The
+    # post-step auto-rule proposal read below is informational — a crash there
+    # must NOT be reported as a categorization failure (categorize succeeded).
     try:
-        service = CategorizationService(db)
-        stats = service.categorize_pending()
-        if stats["total"] > 0:
-            logger.info(
-                f"Auto-categorized {stats['total']} transactions "
-                f"({stats['merchant']} merchant, {stats['rule']} rule)"
-            )
+        stats = CategorizationService(db).categorize_pending()
+    except (duckdb.CatalogException, duckdb.BinderException):
+        # Tables/views not built yet (first load precedes SQLMesh apply) —
+        # an expected precondition, not a crash. No error surfaced.
+        logger.debug("Categorization skipped (tables may not exist yet)", exc_info=True)
+        return None
+    except Exception as exc:  # noqa: BLE001 — surface a real crash; never abort the pipeline
+        logger.error(f"Categorization failed during refresh: {exc}", exc_info=True)
+        return str(exc)
+    finally:
+        # "attempted", not "finished": this fires on every exit path,
+        # including the missing-table skip, where the step didn't complete.
+        logger.debug(
+            f"Categorization step attempted in {time.monotonic() - cat_start:.2f}s"
+        )
+
+    if stats["total"] > 0:
+        logger.info(
+            f"Auto-categorized {stats['total']} transactions "
+            f"({stats['merchant']} merchant, {stats['rule']} rule)"
+        )
+    # Informational only — never surfaces as categorization_error.
+    try:
         pending = AutoRuleService(db).stats().pending_proposals
         if pending:
             logger.info(f"  {pending} new auto-rule proposals")
@@ -272,6 +346,6 @@ def _run_categorize_step(db: Database) -> None:
                 "  💡 Run 'moneybin transactions categorize auto review' "
                 "to review proposed rules"
             )
-    except Exception:  # noqa: BLE001 — best-effort; surfaces in logs only
-        logger.debug("Categorization skipped (tables may not exist yet)", exc_info=True)
-    logger.debug(f"Categorization step finished in {time.monotonic() - cat_start:.2f}s")
+    except Exception:  # noqa: BLE001 — informational post-step read; never fail refresh
+        logger.debug("Auto-rule proposal stats unavailable", exc_info=True)
+    return None
