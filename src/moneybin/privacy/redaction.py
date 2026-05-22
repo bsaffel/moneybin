@@ -30,6 +30,8 @@ import typing
 from dataclasses import dataclass, fields, is_dataclass, replace
 from typing import Annotated, Any, cast, get_args, get_origin, get_type_hints
 
+from pydantic import BaseModel
+
 from moneybin.privacy.taxonomy import DataClass
 
 logger = logging.getLogger(__name__)
@@ -180,6 +182,21 @@ def _redact(value: Any, consent: ConsentSet | None, declared_type: Any) -> Any:
             field_type = hints.get(f.name, Any)
             kwargs[f.name] = _redact(field_value, consent, field_type)
         return replace(dc_instance, **kwargs)
+    # Pydantic BaseModel — rebuild with redacted fields. build_envelope and
+    # _count_pydantic_payload accept BaseModel payloads, so redaction must
+    # traverse them too; otherwise a Pydantic payload with CRITICAL Annotated
+    # fields leaks raw values. isinstance(BaseModel) — not a duck-type check —
+    # to avoid the MagicMock-chain trap (see _PayloadEncoder).
+    if isinstance(value, BaseModel):
+        model_hints = _cached_type_hints(type(value))
+        updates: dict[str, Any] = {}
+        for name in type(value).model_fields:
+            field_value = getattr(value, name)
+            field_type = model_hints.get(name, Any)
+            updates[name] = _redact(field_value, consent, field_type)
+        # model_copy(update=...) substitutes same-typed redacted values without
+        # re-validating — the shape is unchanged, only leaf values are masked.
+        return value.model_copy(update=updates)
     # TypedDict instance (which is just a dict at runtime).
     if isinstance(value, dict) and isinstance(declared_type, type):
         try:

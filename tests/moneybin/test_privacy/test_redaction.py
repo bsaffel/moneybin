@@ -7,6 +7,7 @@ from decimal import Decimal
 from typing import Annotated
 
 import pytest
+from pydantic import BaseModel
 
 from moneybin.privacy.redaction import (
     ConsentSet,
@@ -97,6 +98,49 @@ def test_recurses_into_list_payload() -> None:
     out = redact_typed(payload, consent=None)
     assert all(r.account_id == "****7890" for r in out.rows)
     assert out.total_balance == Decimal("2469.12")
+
+
+class _PydAccount(BaseModel):
+    account_id: Annotated[str, DataClass.ACCOUNT_IDENTIFIER]
+    routing_number: Annotated[str | None, DataClass.ROUTING_NUMBER]
+    category: Annotated[str, DataClass.CATEGORY]
+
+
+class _PydAccountList(BaseModel):
+    rows: list[_PydAccount]
+    total_balance: Annotated[Decimal, DataClass.AGGREGATE]
+
+
+def test_redacts_pydantic_model_critical_fields() -> None:
+    """Pydantic BaseModel payloads must be traversed + rebuilt, not passed through.
+
+    Regression for the leak where build_envelope/_count_pydantic_payload
+    accepted BaseModel payloads but redact_typed returned them unmodified —
+    CRITICAL Annotated fields on a Pydantic payload leaked raw values.
+    """
+    model = _PydAccount(
+        account_id="acct_1234567890",
+        routing_number="011000015",
+        category="checking",
+    )
+    out = redact_typed(model, consent=None)
+    assert out.account_id == "****7890"
+    assert out.routing_number == "*****"
+    assert out.category == "checking"  # LOW — passes through
+
+
+def test_redacts_pydantic_nested_list() -> None:
+    payload = _PydAccountList(
+        rows=[
+            _PydAccount(
+                account_id="acct_1234567890", routing_number=None, category="checking"
+            )
+        ],
+        total_balance=Decimal("100.00"),
+    )
+    out = redact_typed(payload, consent=None)
+    assert out.rows[0].account_id == "****7890"
+    assert out.total_balance == Decimal("100.00")
 
 
 def test_idempotent_on_already_redacted() -> None:
