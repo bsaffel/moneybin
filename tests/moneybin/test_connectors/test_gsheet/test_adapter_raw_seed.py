@@ -82,6 +82,24 @@ def test_detect_infers_typed_columns() -> None:
     assert result.typed_columns["Next Charge"] == "DATE"
 
 
+def test_infer_type_rejects_non_castable_floats() -> None:
+    """inf/nan/scientific notation must NOT be typed numeric.
+
+    float() accepts all three but DuckDB can't CAST them to BIGINT/DECIMAL,
+    so a view emitting those casts fails at query time. They fall to VARCHAR.
+    """
+    from moneybin.connectors.gsheet.adapters.raw_seed import (
+        _infer_type,  # pyright: ignore[reportPrivateUsage]  # noqa: PLC0415
+    )
+
+    assert _infer_type(pl.Series(["inf", "1.0"])) == "VARCHAR"
+    assert _infer_type(pl.Series(["nan", "2"])) == "VARCHAR"
+    assert _infer_type(pl.Series(["1e5", "3"])) == "VARCHAR"
+    # Plain numerics still type correctly.
+    assert _infer_type(pl.Series(["1", "2", "3"])) == "BIGINT"
+    assert _infer_type(pl.Series(["1.50", "2.00"])) == "DECIMAL(18,2)"
+
+
 def test_load_writes_json_rows_to_gsheet_seeds(in_memory_db: Database) -> None:
     adapter = RawSeedAdapter()
     fix = load("seed_subscriptions.yaml")

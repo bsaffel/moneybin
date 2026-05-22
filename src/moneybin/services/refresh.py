@@ -208,6 +208,9 @@ def _run_gsheet_step(db: Database) -> list[Any]:
         GSheetPullService,  # noqa: PLC0415
     )
     from moneybin.connectors.gsheet.sheets_api import SheetsClient  # noqa: PLC0415
+    from moneybin.repositories.gsheet_connections_repo import (  # noqa: PLC0415
+        GSheetConnectionsRepo,
+    )
     from moneybin.secrets import SecretStore  # noqa: PLC0415
 
     gsheet_start = time.monotonic()
@@ -222,9 +225,25 @@ def _run_gsheet_step(db: Database) -> list[Any]:
         results = service.pull_all_healthy()
         return results
     except Exception:  # noqa: BLE001 — best-effort; surfaces in logs only
-        logger.debug(
-            "GSheet pull skipped (no connections or setup incomplete)", exc_info=True
-        )
+        # Distinguish "no connections → nothing to do" (debug) from
+        # "connections exist but setup broke" (warning). A configured-but-
+        # broken environment otherwise silently skips every scheduled pull
+        # with no signal to the user.
+        try:
+            has_connections = bool(GSheetConnectionsRepo(db).list_healthy())
+        except Exception:  # noqa: BLE001 — repo probe is itself best-effort
+            has_connections = False
+        if has_connections:
+            logger.warning(
+                "GSheet pull failed during setup despite healthy connections "
+                "— scheduled pulls did not run; see exception detail",
+                exc_info=True,
+            )
+        else:
+            logger.debug(
+                "GSheet pull skipped (no connections or setup incomplete)",
+                exc_info=True,
+            )
         return []
     finally:
         logger.debug(

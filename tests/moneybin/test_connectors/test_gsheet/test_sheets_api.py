@@ -269,11 +269,18 @@ def test_sheets_client_wires_api_timeout_into_httplib2() -> None:
     assert http.timeout == 7.5
 
 
-def test_quote_a1_sheet_name_passes_through_safe_names() -> None:
-    """Identifier-shaped names need no quoting (matches Google's own docs)."""
-    assert _quote_a1_sheet_name("Sheet1") == "Sheet1"
-    assert _quote_a1_sheet_name("transactions_2026") == "transactions_2026"
-    assert _quote_a1_sheet_name("Sheet_A1") == "Sheet_A1"
+def test_quote_a1_sheet_name_always_quotes() -> None:
+    """Every tab name is single-quoted — no bare-name optimization.
+
+    Cell-coordinate-shaped names (A1, B2, Z100) MUST be quoted or the
+    Sheets API parses them as cell ranges instead of tab names.
+    """
+    assert _quote_a1_sheet_name("Sheet1") == "'Sheet1'"
+    assert _quote_a1_sheet_name("transactions_2026") == "'transactions_2026'"
+    # Cell-coordinate-shaped tab names — the bug the always-quote fix closes.
+    assert _quote_a1_sheet_name("A1") == "'A1'"
+    assert _quote_a1_sheet_name("B2") == "'B2'"
+    assert _quote_a1_sheet_name("Z100") == "'Z100'"
 
 
 def test_quote_a1_sheet_name_quotes_names_with_spaces() -> None:

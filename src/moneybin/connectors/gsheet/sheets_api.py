@@ -9,7 +9,6 @@ to the project's typed exception hierarchy via `_map_error`.
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -87,6 +86,13 @@ class SheetsClient:
         """
         self._oauth = oauth
         self._timeout_seconds = timeout_seconds
+        # Cache the built service across calls, keyed by the access token.
+        # build() parses the API discovery spec each time — for
+        # pull_all_healthy with N connections that's 2N rebuilds per
+        # refresh. Rebuild only when the token rotates (the only input to
+        # _build_service that changes between calls).
+        self._cached_service: Any = None
+        self._cached_token: str | None = None
 
     def get_workbook_metadata(self, spreadsheet_id: str) -> WorkbookMetadata:
         """Fetch workbook title and per-tab metadata."""
@@ -135,13 +141,21 @@ class SheetsClient:
             raise _map_error(exc) from exc
 
     def _build_service(self) -> Any:
-        """Build the Google Sheets v4 service with the current access token."""
+        """Build (or reuse) the Google Sheets v4 service.
+
+        Reuses the cached service while the access token is unchanged;
+        a token rotation invalidates the cache and rebuilds.
+        """
         import google_auth_httplib2  # noqa: PLC0415
         import httplib2  # noqa: PLC0415
         from google.oauth2.credentials import Credentials  # noqa: PLC0415
         from googleapiclient.discovery import build  # noqa: PLC0415
 
-        creds = Credentials(token=self._oauth.get_access_token())
+        token = self._oauth.get_access_token()
+        if self._cached_service is not None and token == self._cached_token:
+            return self._cached_service
+
+        creds = Credentials(token=token)
         timeout = self._timeout_seconds
         if timeout is None:
             from moneybin.config import get_settings  # noqa: PLC0415
@@ -155,24 +169,22 @@ class SheetsClient:
             credentials=creds,
             http=httplib2.Http(timeout=timeout),
         )
-        return build("sheets", "v4", http=http_with_timeout, cache_discovery=False)
-
-
-_A1_BARE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+        service = build("sheets", "v4", http=http_with_timeout, cache_discovery=False)
+        self._cached_service = service
+        self._cached_token = token
+        return service
 
 
 def _quote_a1_sheet_name(sheet_name: str) -> str:
-    """Wrap a sheet/tab name for safe use as an A1 range.
+    """Always single-quote a sheet/tab name for A1 range use.
 
-    Google Sheets A1 notation requires single-quoting tab names that
-    contain anything other than letters / digits / underscore (and that
-    don't start with a digit). Embedded single quotes double up.
-
-    Names that are already safe pass through unchanged so the on-wire
-    range matches the bare form Google docs use in examples.
+    Earlier versions skipped quoting for identifier-shaped names as an
+    optimization. The optimization was unsafe: tab names matching the A1
+    cell pattern (``A1``, ``B2``, ``Z100``) bypass quoting and the
+    Sheets API then parses them as cell coordinates instead of tab
+    names — silently returning wrong data. Always-quote eliminates the
+    ambiguity; embedded single quotes still double up per A1 syntax.
     """
-    if _A1_BARE_RE.fullmatch(sheet_name):
-        return sheet_name
     escaped = sheet_name.replace("'", "''")
     return f"'{escaped}'"
 

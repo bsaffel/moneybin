@@ -39,6 +39,11 @@ logger = logging.getLogger(__name__)
 # failure to view-query time instead of surfacing it at detection.
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
+# Plain decimal numbers only — excludes inf/nan/scientific notation that
+# float() accepts but DuckDB can't CAST to BIGINT/DECIMAL. Optional sign,
+# digits, at most one decimal point with digits on at least one side.
+_PLAIN_NUMERIC_RE = re.compile(r"[+-]?(\d+\.?\d*|\.\d+)")
+
 
 class RawSeedAdapter:
     """Catch-all adapter: JSON rows + auto-generated typed view per connection."""
@@ -262,17 +267,17 @@ def _infer_type(col: pl.Series) -> str:
     if not sample:
         return "VARCHAR"
 
-    try:
-        for v in sample:
-            float(v)
-    except (ValueError, TypeError):
-        pass
-    else:
+    # `float()` accepts "inf", "nan", and scientific notation ("1e5") — all of
+    # which DuckDB cannot CAST to BIGINT/DECIMAL, so a view emitting those
+    # casts fails at query time long after connect succeeds. Restrict the
+    # numeric path to plain decimal strings: optional sign, digits, at most
+    # one decimal point. Anything else falls through to VARCHAR.
+    if all(_PLAIN_NUMERIC_RE.fullmatch(v) for v in sample):
         if any("." in v for v in sample):
             return "DECIMAL(18,2)"
         return "BIGINT"
 
-    if all(_DATE_RE.match(v) for v in sample):
+    if all(_DATE_RE.fullmatch(v) for v in sample):
         return "DATE"
 
     return "VARCHAR"

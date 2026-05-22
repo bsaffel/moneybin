@@ -192,14 +192,26 @@ def gsheet_connect(
                 "column_mapping": result.detection.column_mapping,
                 "notes": result.detection.notes,
             },
+            # Mirror the MCP shape: a failed/empty pull still reports its
+            # status + error so scripts distinguish "pull ran and failed"
+            # from "pull skipped by --no-initial-pull" (both else-None
+            # otherwise).
             "initial_pull": (
                 {
+                    "status": result.initial_pull_status,
                     "rows_inserted": result.initial_pull.rows_inserted,
                     "rows_upserted": result.initial_pull.rows_upserted,
                     "rows_soft_deleted": result.initial_pull.rows_soft_deleted,
                 }
                 if result.initial_pull
-                else None
+                else (
+                    {
+                        "status": result.initial_pull_status,
+                        "error": result.initial_pull_error,
+                    }
+                    if result.initial_pull_status is not None
+                    else None
+                )
             ),
         }
         typer.echo(json.dumps(payload, indent=2))
@@ -216,6 +228,12 @@ def gsheet_connect(
             f"   Pulled {p.rows_inserted + p.rows_upserted} rows "
             f"({p.rows_inserted} new, {p.rows_upserted} updated, "
             f"{p.rows_soft_deleted} soft-deleted)"
+        )
+    elif result.initial_pull_status not in (None, "complete"):
+        typer.echo(
+            f"⚠️  Initial pull returned status={result.initial_pull_status}"
+            + (f" — {result.initial_pull_error}" if result.initial_pull_error else "")
+            + ". Run 'moneybin gsheet status' for detail."
         )
 
 

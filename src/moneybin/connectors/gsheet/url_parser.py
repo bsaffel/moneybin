@@ -5,7 +5,11 @@ from __future__ import annotations
 import re
 from urllib.parse import parse_qs, urlparse
 
-_SPREADSHEET_RE = re.compile(r"/spreadsheets/d/([a-zA-Z0-9_-]+)(?:/|$)")
+# Matches both /spreadsheets/d/<id> and the multi-account variants Google
+# generates from a signed-in session: /u/<n>/spreadsheets/d/<id> (handled by
+# search anchoring on /spreadsheets/d/) and /spreadsheets/u/<n>/d/<id> (the
+# optional `u/<n>/` segment between /spreadsheets/ and /d/).
+_SPREADSHEET_RE = re.compile(r"/spreadsheets/(?:u/\d+/)?d/([a-zA-Z0-9_-]+)(?:/|$)")
 
 
 def parse_sheet_url(url: str) -> tuple[str, int]:

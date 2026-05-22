@@ -96,6 +96,13 @@ class TestParseSheetURLValid:
         assert spreadsheet_id == "multi_q"
         assert gid == 42
 
+    def test_user_path_segment_inside_spreadsheets(self):
+        """The /spreadsheets/u/<n>/d/<id> variant (u/ between spreadsheets and d)."""
+        url = "https://docs.google.com/spreadsheets/u/2/d/inner_user/edit#gid=3"
+        spreadsheet_id, gid = parse_sheet_url(url)
+        assert spreadsheet_id == "inner_user"
+        assert gid == 3
+
 
 class TestParseSheetURLInvalid:
     """Invalid or malformed Google Sheets URLs."""
