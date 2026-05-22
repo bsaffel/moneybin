@@ -27,19 +27,21 @@ def privacy_revoke(
         typer.confirm(f"Revoke consent for '{category}'?", abort=True)
     with handle_cli_errors():
         with get_database() as db:
-            count = ConsentService(db).revoke_consent(
+            result = ConsentService(db).revoke_consent(
                 feature_category=category, backend=backend, actor="cli.privacy_revoke"
             )
     payload = ConsentMutationPayload(
         feature_category=category,
-        backend=backend or "(default)",
+        backend=result.backend,
         consent_mode=None,
-        action="revoked" if count else "noop",
+        action="revoked" if result.count else "noop",
     )
     if output == OutputFormat.JSON:
         render_or_json(build_envelope(data=payload), output, cli_actor="privacy_revoke")
         return
-    if count:
-        logger.info(f"✅ Revoked consent for '{category}'.")
+    if result.count:
+        logger.info(
+            f"✅ Revoked consent for '{category}' (backend '{result.backend}')."
+        )
     else:
         logger.info(f"No active consent found for '{category}'.")

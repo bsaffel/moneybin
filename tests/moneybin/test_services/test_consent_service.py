@@ -76,10 +76,30 @@ def test_service_revoke_then_status_empty(db: Database) -> None:
         consent_mode=ConsentMode.PERSISTENT,
         actor="cli",
     )
-    assert (
-        svc.revoke_consent(
-            feature_category="mcp-data-sharing", backend="anthropic", actor="cli"
-        )
-        == 1
+    result = svc.revoke_consent(
+        feature_category="mcp-data-sharing", backend="anthropic", actor="cli"
     )
+    assert result.count == 1
+    assert result.backend == "anthropic"
     assert svc.status().active_grants == []
+
+
+def test_service_revoke_reports_resolved_default_backend(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """revoke_consent(backend=None) reports the resolved backend, not a sentinel."""
+    monkeypatch.setenv("MONEYBIN_AI__DEFAULT_BACKEND", "anthropic")
+    clear_settings_cache()
+    set_current_profile("test")
+    svc = ConsentService(db)
+    svc.grant_consent(
+        feature_category="mcp-data-sharing",
+        backend=None,
+        consent_mode=ConsentMode.PERSISTENT,
+        actor="cli",
+    )
+    result = svc.revoke_consent(
+        feature_category="mcp-data-sharing", backend=None, actor="cli"
+    )
+    assert result.count == 1
+    assert result.backend == "anthropic"

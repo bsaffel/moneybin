@@ -29,6 +29,19 @@ class ConsentStatus:
     active_grants: list[GrantInfo]
 
 
+@dataclass(frozen=True, slots=True)
+class RevokeResult:
+    """Outcome of a single-grant revoke.
+
+    Carries the *resolved* backend (after default-backend resolution) so the
+    caller's confirmation reflects what was actually revoked, not the raw
+    (possibly None) argument.
+    """
+
+    backend: str
+    count: int
+
+
 class ConsentService:
     """Grant, revoke, and report AI consent."""
 
@@ -101,8 +114,12 @@ class ConsentService:
 
     def revoke_consent(
         self, *, feature_category: str, backend: str | None, actor: str
-    ) -> int:
-        """Revoke the active grant for (feature_category, backend). Returns count."""
+    ) -> RevokeResult:
+        """Revoke the active grant for (feature_category, backend).
+
+        Returns the resolved backend and the number of grants revoked (0 or 1)
+        so the caller can confirm exactly which backend was affected.
+        """
         self._validate_category(feature_category)
         resolved_backend = self._resolve_backend(backend)
         count = self._repo.revoke(
@@ -118,7 +135,7 @@ class ConsentService:
                     consent_mode="",
                 )
             )
-        return count
+        return RevokeResult(backend=resolved_backend, count=count)
 
     def revoke_all(self, *, actor: str) -> int:
         """Revoke every active grant. Returns count revoked."""
