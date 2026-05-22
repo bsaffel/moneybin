@@ -226,3 +226,44 @@ class SplitRemovePayload:
     split_id: Annotated[str, DataClass.RECORD_ID]
     transaction_id: Annotated[str, DataClass.RECORD_ID]
     residual: Annotated[str, DataClass.TXN_AMOUNT]
+
+
+# ---------------------------------------------------------------------------
+# transactions_matches_pending / transactions_matches_set
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class MatchPendingRow:
+    """One pending pair decision (transactions_matches_pending result).
+
+    app.match_decisions carries no description/amount columns — only IDs,
+    source types, and a confidence score — so this row is low-sensitivity.
+    To inspect the underlying transactions, call transactions_get with the
+    source_transaction_id values.
+    """
+
+    match_id: Annotated[str, DataClass.RECORD_ID]
+    match_type: Annotated[str, DataClass.TXN_TYPE]
+    match_tier: Annotated[str | None, DataClass.TXN_TYPE]
+    confidence_score: Annotated[float, DataClass.AGGREGATE]
+    source_type_a: Annotated[str, DataClass.TXN_TYPE]
+    source_transaction_id_a: Annotated[str, DataClass.RECORD_ID]
+    source_type_b: Annotated[str, DataClass.TXN_TYPE]
+    source_transaction_id_b: Annotated[str, DataClass.RECORD_ID]
+    match_status: Annotated[str, DataClass.TXN_TYPE]
+
+
+@dataclass(frozen=True, slots=True)
+class MatchesPendingPayload:
+    """Payload for transactions_matches_pending."""
+
+    matches: list[MatchPendingRow]
+
+
+@dataclass(frozen=True, slots=True)
+class MatchSetPayload:
+    """Payload for transactions_matches_set — the decision's new state."""
+
+    match_id: Annotated[str, DataClass.RECORD_ID]
+    match_status: Annotated[str, DataClass.TXN_TYPE]
