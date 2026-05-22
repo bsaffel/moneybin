@@ -28,7 +28,7 @@ import uuid
 from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import duckdb
 
@@ -43,6 +43,7 @@ from moneybin.repositories.user_categories_repo import (
     CategoryOverridesRepo,
     UserCategoriesRepo,
 )
+from moneybin.repositories.user_merchants_repo import UserMerchantsRepo
 from moneybin.services.audit_service import AuditService
 from moneybin.services.categorization._shared import (
     SOURCE_PRIORITY,
@@ -143,6 +144,7 @@ class MatchApplier:
         # the same transaction when composed inside one.
         self._user_categories = UserCategoriesRepo(db, audit=audit)
         self._category_overrides = CategoryOverridesRepo(db, audit=audit)
+        self._user_merchants = UserMerchantsRepo(db, audit=audit)
 
     @contextmanager
     def _transaction(self) -> Generator[None]:
@@ -290,11 +292,14 @@ class MatchApplier:
         subcategory: str | None = None,
         created_by: str = "ai",
         exemplars: list[str] | None = None,
+        actor: str = "system",
     ) -> str:
         """Insert a merchant mapping and return its ``merchant_id``.
 
-        Audit-silent; pure write. The facade's ``create_merchant`` wraps
-        this with the optional ``reapply`` post-commit sweep.
+        Routes the INSERT through :class:`UserMerchantsRepo` so it emits a
+        paired ``app.audit_log`` row (Invariant 10). The facade's
+        ``create_merchant`` wraps this with the optional ``reapply``
+        post-commit sweep.
 
         Args:
             raw_pattern: Pattern to match in transaction descriptions; pass
@@ -310,36 +315,29 @@ class MatchApplier:
             created_by: Who created the mapping ('user', 'ai', 'rule').
             exemplars: Initial exemplar set (exact match_text values) for
                 oneOf merchants. Defaults to ``[]``.
+            actor: Audit actor recorded on the ``user_merchant.insert`` event
+                (e.g. ``"cli"``, ``"mcp"``); batch-path callers use the
+                ``"system"`` default.
         """
-        merchant_id = uuid.uuid4().hex[:12]
-        # DuckDB binds Python lists to VARCHAR[]. An empty list keeps the
-        # column default semantics intact for non-exemplar merchants.
-        exemplars_param: list[str] = list(exemplars) if exemplars else []
+        # Resolve the FK alongside the text snapshot (read; stays in the
+        # service per Req 2). The repo owns the INSERT + audit.
         category_id = resolve_category_id(self._db, category, subcategory)
-        self._db.execute(
-            f"""
-            INSERT INTO {USER_MERCHANTS.full_name}
-            (merchant_id, raw_pattern, match_type, canonical_name,
-             category, subcategory, category_id, created_by, exemplars,
-             updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            """,  # noqa: S608  # USER_MERCHANTS is a TableRef constant, not user input
-            [
-                merchant_id,
-                raw_pattern,
-                match_type,
-                canonical_name,
-                category,
-                subcategory,
-                category_id,
-                created_by,
-                exemplars_param,
-            ],
+        event = self._user_merchants.insert(
+            raw_pattern=raw_pattern,
+            match_type=match_type,
+            canonical_name=canonical_name,
+            category=category,
+            subcategory=subcategory,
+            category_id=category_id,
+            created_by=created_by,
+            exemplars=exemplars,
+            actor=actor,
         )
-        if exemplars_param:
-            MERCHANT_EXEMPLAR_COUNT.labels(merchant_id=merchant_id).set(
-                len(exemplars_param)
-            )
+        merchant_id = event.target_id
+        if merchant_id is None:  # pragma: no cover — insert always sets the id
+            raise RuntimeError("UserMerchantsRepo.insert returned no merchant_id")
+        if exemplars:
+            MERCHANT_EXEMPLAR_COUNT.labels(merchant_id=merchant_id).set(len(exemplars))
         logger.info(f"Created user merchant {merchant_id}")
         return merchant_id
 
@@ -383,32 +381,19 @@ class MatchApplier:
     def append_exemplar(self, merchant_id: str, match_text: str) -> int:
         """Append ``match_text`` to a merchant's exemplar set; return new size.
 
-        Idempotent via ``list_distinct``: re-appending an existing exemplar
-        leaves the set unchanged. Updates the per-merchant gauge to surface
-        any merchant whose set is approaching the soft-cap signal (200).
+        Routes the UPDATE through :class:`UserMerchantsRepo` so it emits a
+        paired audit row (Invariant 10). Idempotent via ``list_distinct``:
+        re-appending an existing exemplar leaves the set unchanged and does not
+        advance ``updated_at`` (docs/specs/core-updated-at-convention.md). The
+        new size comes from the audit event's full after-row, so no extra read
+        is needed. Updates the per-merchant gauge to surface any merchant whose
+        set is approaching the soft-cap signal (200).
         """
-        # Single round-trip: DuckDB supports RETURNING on UPDATE, so the
-        # post-update size flows back without a separate SELECT.
-        #
-        # The `updated_at` advance is gated on the exemplars set actually
-        # growing — when the exemplar already exists, the SET expression is
-        # a no-op and the row's per-row freshness must NOT advance, per the
-        # spec's "advances iff a real input changed" contract. See
-        # docs/specs/core-updated-at-convention.md.
-        row = self._db.execute(
-            f"""
-            UPDATE {USER_MERCHANTS.full_name}
-            SET exemplars = list_distinct(list_append(exemplars, ?)),
-                updated_at = CASE
-                    WHEN list_contains(exemplars, ?) THEN updated_at
-                    ELSE CURRENT_TIMESTAMP
-                END
-            WHERE merchant_id = ?
-            RETURNING len(exemplars)
-            """,  # noqa: S608  # USER_MERCHANTS is a TableRef constant
-            [match_text, match_text, merchant_id],
-        ).fetchone()
-        new_size = int(row[0]) if row and row[0] is not None else 0
+        event = self._user_merchants.append_exemplar(
+            merchant_id, match_text, actor="system"
+        )
+        exemplars = cast("list[str]", (event.after_value or {}).get("exemplars") or [])
+        new_size = len(exemplars)
         MERCHANT_EXEMPLAR_COUNT.labels(merchant_id=merchant_id).set(new_size)
         return new_size
 

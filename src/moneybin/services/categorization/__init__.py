@@ -261,14 +261,17 @@ class CategorizationService:
         created_by: str = "ai",
         exemplars: list[str] | None = None,
         reapply: bool = False,
+        actor: str = "system",
     ) -> str:
         """Create a merchant mapping; optionally fan out to uncategorized rows.
 
-        Pure write delegates to ``MatchApplier.create_merchant_core``; when
+        Delegates to ``MatchApplier.create_merchant_core``, which routes the
+        INSERT through ``UserMerchantsRepo`` (paired audit, Invariant 10). When
         ``reapply=True``, ``categorize_pending`` runs after the insert so the
         new merchant fans out to uncategorized rows immediately. Callers
         inside a batch flow (e.g., ``categorize_items``) skip this and let the
-        enclosing snowball pass do the work instead.
+        enclosing snowball pass do the work instead. ``actor`` is threaded to
+        the audit row (CLI/MCP pass their surface; default ``"system"``).
         """
         merchant_id = self._applier.create_merchant_core(
             raw_pattern,
@@ -278,6 +281,7 @@ class CategorizationService:
             subcategory=subcategory,
             created_by=created_by,
             exemplars=exemplars,
+            actor=actor,
         )
         if reapply:
             self.categorize_pending()

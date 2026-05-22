@@ -13,8 +13,25 @@ from __future__ import annotations
 
 from moneybin.database import Database
 from moneybin.repositories.user_categories_repo import UserCategoriesRepo
+from moneybin.repositories.user_merchants_repo import UserMerchantsRepo
 from moneybin.services.doctor_service import DoctorService
-from moneybin.tables import USER_CATEGORIES
+from moneybin.tables import USER_CATEGORIES, USER_MERCHANTS
+
+
+def _insert_merchant(repo: UserMerchantsRepo, *, name: str) -> str:
+    event = repo.insert(
+        raw_pattern=None,
+        match_type="oneOf",
+        canonical_name=name,
+        category=None,
+        subcategory=None,
+        category_id=None,
+        created_by="ai",
+        exemplars=[],
+        actor="system",
+    )
+    assert event.target_id is not None
+    return event.target_id
 
 
 def _bypass_insert(
@@ -98,8 +115,54 @@ def test_user_categories_uniqueness_passes_when_distinct(db: Database) -> None:
     assert result.status == "pass"
 
 
+# ---------------------------------------------------------------------------
+# user_merchants: audit coverage + orphan warning
+# ---------------------------------------------------------------------------
+
+
+def test_audit_coverage_passes_for_repo_mutated_merchant(db: Database) -> None:
+    _insert_merchant(UserMerchantsRepo(db), name="Amazon")
+    result = DoctorService(db)._run_app_audit_coverage(USER_MERCHANTS, "merchant_id")
+    assert result.status == "pass"
+
+
+def test_audit_coverage_flags_bypass_merchant(db: Database) -> None:
+    db.execute(
+        "INSERT INTO app.user_merchants "  # noqa: S608  # test input, not executing user SQL
+        "(merchant_id, match_type, canonical_name, created_by, updated_at) "
+        "VALUES ('bypassM', 'oneOf', 'Sneaky', 'ai', now()::TIMESTAMP)"
+    )
+    result = DoctorService(db)._run_app_audit_coverage(USER_MERCHANTS, "merchant_id")
+    assert result.status == "fail"
+    assert "bypassM" in result.affected_ids
+
+
+def test_user_merchants_orphan_warns_for_unreferenced_merchant(db: Database) -> None:
+    # A merchant no categorization references, last touched outside the lookback
+    # window, warns (never fails — deletion-by-design leaves merchants behind).
+    mid = _insert_merchant(UserMerchantsRepo(db), name="Stale Co")
+    db.execute(
+        "UPDATE app.user_merchants "  # noqa: S608  # test input, not executing user SQL
+        "SET updated_at = now()::TIMESTAMP - INTERVAL 30 DAY WHERE merchant_id = ?",
+        [mid],
+    )
+    result = DoctorService(db)._run_user_merchants_orphans()
+    assert result.status == "warn"
+    assert mid in result.affected_ids
+
+
+def test_user_merchants_orphan_passes_for_recent_merchant(db: Database) -> None:
+    # A freshly-created merchant (within the lookback window) is not flagged,
+    # even with no referencing categorization yet.
+    _insert_merchant(UserMerchantsRepo(db), name="Fresh Co")
+    result = DoctorService(db)._run_user_merchants_orphans()
+    assert result.status == "pass"
+
+
 def test_run_all_includes_app_integrity_invariants(db: Database) -> None:
     report = DoctorService(db).run_all()
     names = {r.name for r in report.invariants}
     assert "app_audit_coverage_user_categories" in names
     assert "app_user_categories_uniqueness" in names
+    assert "app_audit_coverage_user_merchants" in names
+    assert "app_user_merchants_orphans" in names

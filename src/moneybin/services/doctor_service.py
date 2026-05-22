@@ -16,7 +16,9 @@ from moneybin.tables import (
     CATEGORY_OVERRIDES,
     FCT_TRANSACTIONS,
     GSHEET_CONNECTIONS,
+    TRANSACTION_CATEGORIES,
     USER_CATEGORIES,
+    USER_MERCHANTS,
     TableRef,
 )
 
@@ -92,10 +94,10 @@ class DoctorService:
     def _run_app_integrity(self, *, full: bool) -> list[InvariantResult]:
         """Per-table integrity checks for protected ``app.*`` tables (Invariant 10).
 
-        Covers every table this PR wraps in a repo (``user_categories``,
-        ``category_overrides``, ``gsheet_connections``); later repository PRs
-        append one coverage call per newly-wrapped table plus that table's
-        FK/orphan specifics.
+        Covers every table wrapped in a repo so far (``user_categories``,
+        ``category_overrides``, ``gsheet_connections``, ``user_merchants``);
+        later repository PRs append one coverage call per newly-wrapped table
+        plus that table's FK/orphan specifics.
         """
         return [
             self._run_app_audit_coverage(USER_CATEGORIES, "category_id", full=full),
@@ -103,7 +105,9 @@ class DoctorService:
             self._run_app_audit_coverage(
                 GSHEET_CONNECTIONS, "connection_id", full=full
             ),
+            self._run_app_audit_coverage(USER_MERCHANTS, "merchant_id", full=full),
             self._run_user_categories_uniqueness(),
+            self._run_user_merchants_orphans(),
         ]
 
     def _run_app_audit_coverage(
@@ -228,6 +232,48 @@ class DoctorService:
                 name=name,
                 status="fail",
                 detail=f"duplicate (category, subcategory): {', '.join(labels)}",
+                affected_ids=affected,
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _run_user_merchants_orphans(self) -> InvariantResult:
+        """Warn on merchants no categorization references (warn-only by design).
+
+        Deleting a categorization does not delete the merchant it referenced
+        (categorization-matching-mechanics.md), so orphaned merchants accumulate
+        as normal wear, not corruption — hence ``warn``, never ``fail``. Gated on
+        the audit lookback window so freshly-created merchants not yet fanned out
+        to transactions are not flagged.
+        """
+        name = "app_user_merchants_orphans"
+        settings = get_settings().doctor
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT m.merchant_id
+                FROM {USER_MERCHANTS.full_name} m
+                WHERE m.updated_at < (now()::TIMESTAMP - (? * INTERVAL 1 DAY))
+                  AND NOT EXISTS (
+                    SELECT 1 FROM {TRANSACTION_CATEGORIES.full_name} c
+                    WHERE c.merchant_id = m.merchant_id
+                  )
+                ORDER BY m.merchant_id
+                """,  # noqa: S608  # TableRef constants, parameterized value
+                [settings.audit_coverage_lookback_days],
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — table may not exist before first write
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"orphan check unavailable: {e}",
+                affected_ids=[],
+            )
+        if rows:
+            affected = [str(r[0]) for r in rows]
+            return InvariantResult(
+                name=name,
+                status="warn",
+                detail=f"{len(affected)} merchant(s) referenced by no categorization",
                 affected_ids=affected,
             )
         return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])

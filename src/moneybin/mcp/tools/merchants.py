@@ -100,6 +100,7 @@ def merchants_create(
                     category=category,
                     subcategory=subcategory,
                     created_by="ai",
+                    actor="mcp",
                 )
                 created += 1
             except Exception:  # noqa: BLE001 — DuckDB raises untyped errors on constraint violations
