@@ -96,6 +96,16 @@ Single source of truth for spec status. Update this table when a spec's status c
 | `sync-simplefin.md` | Feature | planned | SimpleFIN aggregator provider (alternative to Plaid). **Deferred 2026-05-16** (internal roadmap review): no implementation work until M3A produces 30 days of real Plaid data from a real user — provider-ladder elaboration ahead of real user evidence is speculative. Spec may be drafted earlier; engineering work waits for the gate. |
 | `sync-plaid-investments.md` | Feature | planned | Plaid Investments product (gated on `investment-tracking.md`) |
 
+## Connect (Live External Sources)
+
+Client-direct OAuth to user-owned data sources. Distinct from `sync` (which mediates third-party financial providers via moneybin-server): `connect-*` providers are user-controlled storage that the MoneyBin client speaks to directly.
+
+| Spec | Type | Status | Summary |
+|---|---|---|---|
+| [Google Sheets](connect-gsheet.md) | Feature | implemented | Live tabular sync from Google Sheets: OAuth user-flow (PKCE), pre-refresh hook + explicit pull, live mirror with soft-delete, stable-key detection for edit-preserving identity, strict drift refusal per-connection. v1 ships two adapters: `transactions` (Tiller-style integrated path → matching/categorization/reports) and `seed` (catch-all escape hatch → JSON storage + auto-generated typed views queryable via SQL/MCP). New `app.gsheet_connections` + `raw.gsheet_seeds` tables; one new column (`deleted_from_source_at`) on `raw.tabular_transactions`. M3F entry. |
+| `connect-airtable.md` | Feature | planned | Future sibling — Airtable as a live tabular source. Shares the connection lifecycle pattern from `connect-gsheet.md`. |
+| `connect-smartsheet.md` | Feature | planned | Future sibling — Smartsheet as a live tabular source. |
+
 ## Testing & Validation
 
 | Spec | Type | Status | Summary |
@@ -122,7 +132,7 @@ Single source of truth for spec status. Update this table when a spec's status c
 | [Observability](observability.md) | Feature | implemented | Logging consolidation, `prometheus_client` metrics with DuckDB persistence, instrumentation API (`@tracked`, `track_duration`), log/stats CLI commands |
 | [Database Migration](database-migration.md) | Feature | implemented | Dual-path schema migration system: auto-upgrade on first invocation, SQL/Python migrations, rebaseline, SQLMesh version detection |
 | [Database Writer Coordination](database-writer-coordination.md) | Feature | implemented | Implement ADR-010: replace long-lived read-write singleton with short-lived purpose-declared connections; `read_only` flag on `Database`; `get_database()` retry; multi-process E2E tests |
-| [`app.*` Integrity Invariant](app-integrity-invariant.md) | Feature | ready | Invariant 9 (`app.*` mutation routing): every protected `app.*` mutation emits a paired `app.audit_log` row inside the same DuckDB transaction. Repository pattern (`*Repo` classes in `src/moneybin/repositories/`) makes audit structural rather than disciplinary; lint rule blocks raw `INSERT/UPDATE/DELETE` against protected tables outside `*_repo.py`/`audit_service.py`; doctor adds per-table audit-coverage + FK invariants. Reversibility contract (full `before_value`, threaded `parent_audit_id`) bakes in Phase 1 to keep Phase 2 undo strictly additive. Gates hosted (M3D/M3E). |
+| [`app.*` Integrity Invariant](app-integrity-invariant.md) | Feature | ready | Invariant 10 (`app.*` mutation routing): every protected `app.*` mutation emits a paired `app.audit_log` row inside the same DuckDB transaction. Repository pattern (`*Repo` classes in `src/moneybin/repositories/`) makes audit structural rather than disciplinary; lint rule blocks raw `INSERT/UPDATE/DELETE` against protected tables outside `*_repo.py`/`audit_service.py`; doctor adds per-table audit-coverage + FK invariants. Reversibility contract (full `before_value`, threaded `parent_audit_id`) bakes in Phase 1 to keep Phase 2 undo strictly additive. Gates hosted (M3D/M3E). |
 | [User-Facing Doc Polish](user-facing-doc-polish.md) | Feature | in-progress | README rewrite, CHANGELOG backfill, threat-model guide, License section with substance, expanded comparison table, milestone-aligned roadmap. Tagline preserved; honesty layer below. "Now" batch shipped; M2B (architecture distillation) and M2C (brew install + demo asset) remain. |
 | `export.md` | Feature | planned | Export analysis results to CSV, Excel, Google Sheets |
 | `cli-ux-standards.md` | Architecture | planned | CLI interaction patterns: progressive disclosure, review queues, status commands, output formatting |
@@ -134,7 +144,7 @@ Single source of truth for spec status. Update this table when a spec's status c
 |---|---|---|---|
 | [MoneyBin Doctor](moneybin-doctor.md) | Feature | implemented | Pipeline integrity command: `moneybin system doctor` runs SQLMesh named audits (FK integrity, sign convention, balanced transfers) + staging coverage + categorization coverage warning. Produces a "✅ N invariants passing" trust artifact. CLI lives under the `system` group; MCP exposes `system_doctor`. |
 | [Data Pipeline Reconciliation](data-reconciliation.md) | Feature | draft | Broader ETL integrity checks: raw→prep→core row accounting, import batch validation, temporal coverage gaps, orphan detection. `moneybin-doctor.md` is the user-facing subset; this spec covers the full warehouse-grade reconciliation surface. |
-| [Recoverable State Contract](data-recovery-contract.md) | Feature | draft | M2D milestone. Universal `recovery_actions` envelope on every error and audit failure; Invariant 9 Phase 2 audit-log undo (`system_audit_undo` / `_history` / `_get`) with `operation_id` grouping; doctor recipe registry; 5-recipe self-heal safelist gated on five trust criteria; matches MCP surface closing the CLI-only gap; `RefreshResult` surfacing matcher/categorizer crashes that currently log at DEBUG. Adds Invariant 10 (Recoverability of mutations) and new always-loaded rule `.claude/rules/data-recovery.md`. |
+| [Recoverable State Contract](data-recovery-contract.md) | Feature | draft | M2D milestone. Universal `recovery_actions` envelope on every error and audit failure; Invariant 10 Phase 2 audit-log undo (`system_audit_undo` / `_history` / `_get`) with `operation_id` grouping; doctor recipe registry; 5-recipe self-heal safelist gated on five trust criteria; matches MCP surface closing the CLI-only gap; `RefreshResult` surfacing matcher/categorizer crashes that currently log at DEBUG. Adds Invariant 11 (Recoverability of mutations) and new always-loaded rule `.claude/rules/data-recovery.md`. |
 
 ## Reports & Health
 

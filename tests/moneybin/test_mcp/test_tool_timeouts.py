@@ -11,6 +11,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from moneybin import error_codes
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.protocol.envelope import ResponseEnvelope, SummaryMeta
 
@@ -65,7 +66,7 @@ async def test_sync_tool_over_cap_returns_timeout_envelope(
     assert elapsed < 0.9, "timeout did not fire within reasonable bound"
     assert isinstance(result, ResponseEnvelope)
     assert result.error is not None
-    assert result.error.code == "timed_out"
+    assert result.error.code == error_codes.INFRA_TIMED_OUT
     assert result.error.details is not None
     assert result.error.details["tool"] == "slow_tool"
     assert result.error.details["timeout_s"] == 0.05
@@ -89,7 +90,7 @@ async def test_async_tool_over_cap_returns_timeout_envelope(
 
     result = await slow_tool()
     assert result.error is not None
-    assert result.error.code == "timed_out"
+    assert result.error.code == error_codes.INFRA_TIMED_OUT
 
 
 @pytest.mark.unit
@@ -125,11 +126,11 @@ async def test_classified_user_error_still_returned(
 
     @mcp_tool(sensitivity="low")
     def bad_tool() -> ResponseEnvelope:
-        raise UserError("nope", code="not_found")
+        raise UserError("nope", code=error_codes.MUTATION_NOT_FOUND)
 
     result = await bad_tool()
     assert result.error is not None
-    assert result.error.code == "not_found"
+    assert result.error.code == error_codes.MUTATION_NOT_FOUND
 
 
 @pytest.mark.unit
@@ -256,7 +257,7 @@ async def test_back_to_back_call_after_timeout_succeeds(
         )
 
     first = await hang_tool()
-    assert first.error is not None and first.error.code == "timed_out"
+    assert first.error is not None and first.error.code == error_codes.INFRA_TIMED_OUT
 
     monkeypatch.setattr("moneybin.mcp.decorator._get_timeout_seconds", lambda: 5.0)
     second = await quick_tool()

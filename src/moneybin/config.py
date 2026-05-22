@@ -11,7 +11,14 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Direct-path imports of provider configs. We import from the concrete
@@ -298,7 +305,7 @@ class SyncConfig(BaseModel):
         default=None,
         description="OAuth2 client ID (for Auth0 integration)",
     )
-    oauth_client_secret: str | None = Field(
+    oauth_client_secret: SecretStr | None = Field(
         default=None,
         description="OAuth2 client secret (for Auth0 integration)",
     )
@@ -309,6 +316,26 @@ class SyncConfig(BaseModel):
     oauth_audience: str | None = Field(
         default=None,
         description="OAuth2 API audience/identifier",
+    )
+
+
+class GSheetSettings(BaseModel):
+    """Configuration for the Google Sheets connector."""
+
+    model_config = ConfigDict(frozen=True)
+
+    oauth_client_id: str = Field(
+        default="",
+        description=(
+            "OAuth 2.0 client ID for the installed-app Google OAuth flow. "
+            "Empty disables the connector; set via "
+            "MONEYBIN_GSHEET__OAUTH_CLIENT_ID."
+        ),
+    )
+    api_timeout_seconds: float = Field(
+        default=30.0,
+        gt=0.0,
+        description="HTTP timeout for Google Sheets API + token endpoint calls.",
     )
 
 
@@ -532,6 +559,7 @@ class MoneyBinSettings(BaseSettings):
         default_factory=ImportSettings,
         alias="import",
     )
+    gsheet: GSheetSettings = Field(default_factory=GSheetSettings)
     providers: ProvidersSettings = Field(
         default_factory=ProvidersSettings,
         description="Per-provider configuration (OFX, Plaid, tabular).",

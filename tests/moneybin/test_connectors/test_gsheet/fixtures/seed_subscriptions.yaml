@@ -1,0 +1,11 @@
+sheet:
+  spreadsheet_id: "1xyz"
+  gid: 99
+  workbook_name: "Personal Finance"
+  sheet_name: "Subscriptions"
+  headers: ["Name", "Amount", "Next Charge", "Notes"]
+  rows:
+    - ["Netflix",   "15.49",  "2026-02-15", "Standard tier"]
+    - ["Spotify",   "9.99",   "2026-02-10", ""]
+    - ["NYTimes",   "17.00",  "2026-02-20", "annual"]
+alias: "subscriptions"

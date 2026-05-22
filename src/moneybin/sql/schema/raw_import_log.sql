@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS raw.import_log (
     format_name VARCHAR,                        -- Name of the matched or saved format (NULL if no format matched)
     format_source VARCHAR,                      -- How the format was resolved: "built-in", "saved", "detected", "override"
     account_names JSON NOT NULL,                -- List of account names affected by this import
-    status VARCHAR NOT NULL DEFAULT 'importing' CHECK (status IN ('importing', 'complete', 'partial', 'failed', 'reverted')), -- Lifecycle: importing → complete | partial | failed | reverted
+    status VARCHAR NOT NULL DEFAULT 'importing' CHECK (status IN ('importing', 'complete', 'partial', 'failed', 'reverted')), -- Lifecycle: importing → complete | partial | failed | reverted. gsheet drift events close as 'failed' here; the drift distinction lives on app.gsheet_connections.status
     rows_total INTEGER,                         -- Total rows in source file (before filtering)
     rows_imported INTEGER,                      -- Rows successfully written to raw tables
     rows_rejected INTEGER DEFAULT 0,            -- Rows that failed validation (with reasons in rejection_details)

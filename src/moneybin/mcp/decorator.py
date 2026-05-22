@@ -29,6 +29,7 @@ import time
 from collections.abc import Callable
 from typing import Any, Literal, cast
 
+from moneybin import error_codes
 from moneybin.database import (  # noqa: PLC2701 — private import for per-call tracking
     _write_conn_thread_local,  # pyright: ignore[reportPrivateUsage]
     interrupt_and_reset_database,
@@ -91,7 +92,7 @@ def _check_collection_caps(
         if length > cap:
             err = UserError(
                 f"{fn_name}: parameter '{param_name}' has {length} items; max is {cap}",
-                code="too_many_items",
+                code=error_codes.INFRA_TOO_MANY_ITEMS,
                 details={
                     "limit": cap,
                     "received": length,
@@ -191,7 +192,7 @@ def _build_timeout_envelope(
 ) -> ResponseEnvelope:
     err = UserError(
         f"Tool {fn_name} exceeded {timeout_s:.1f}s cap",
-        code="timed_out",
+        code=error_codes.INFRA_TIMED_OUT,
         details={
             "tool": fn_name,
             "elapsed_s": round(elapsed_s, 3),
@@ -210,6 +211,7 @@ def mcp_tool(
     idempotent: bool = True,
     open_world: bool = False,
     max_items: int | None | _UnsetType = _UNSET,
+    timeout_seconds: float | _UnsetType = _UNSET,
 ) -> Callable[..., Any]:
     """Mark a function as an MCP tool with a sensitivity tier and optional domain.
 
@@ -226,6 +228,10 @@ def mcp_tool(
         open_world: MCP openWorldHint — defaults to False (closed-world).
         max_items: Per-tool override for ``MCPConfig.max_items``. ``None``
             disables the cap. Sentinel ``_UNSET`` inherits from settings.
+        timeout_seconds: Per-tool override for ``MCPConfig.tool_timeout_seconds``.
+            Sentinel ``_UNSET`` inherits from settings. Use this for tools whose
+            natural runtime exceeds the default cap (e.g. interactive OAuth
+            flows that wait for a user browser click).
 
     Every tool is wrapped in a wall-clock timeout guard — see module docstring.
     """
@@ -268,7 +274,14 @@ def mcp_tool(
                 cap_error = _check_collection_caps(fn.__name__, list_params, bound, cap)
                 if cap_error is not None:
                     return cap_error
-            timeout_s = _get_timeout_seconds()
+            timeout_attr = cast(
+                "float | _UnsetType",
+                wrapper._mcp_timeout_seconds,  # type: ignore[attr-defined]
+            )
+            if isinstance(timeout_attr, _UnsetType):
+                timeout_s = _get_timeout_seconds()
+            else:
+                timeout_s = timeout_attr
             started = time.monotonic()
             # Per-call holder: the tool's thread stores the write connection
             # here via _write_conn_thread_local so the timeout handler can
@@ -332,6 +345,7 @@ def mcp_tool(
         wrapper._mcp_idempotent = idempotent  # type: ignore[attr-defined]
         wrapper._mcp_open_world = open_world  # type: ignore[attr-defined]
         wrapper._mcp_max_items = max_items  # type: ignore[attr-defined]
+        wrapper._mcp_timeout_seconds = timeout_seconds  # type: ignore[attr-defined]
         wrapper._mcp_list_params = list_params  # type: ignore[attr-defined]
         return wrapper
 

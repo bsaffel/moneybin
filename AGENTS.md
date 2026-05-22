@@ -37,6 +37,53 @@ one-way: treat it as one-way and invoke.
 Heuristics, trigger list, the public-contract / internal-abstraction split,
 and the coherence rule: `.claude/rules/design-principles.md`.
 
+## Bias Toward UX / DX / AX
+
+Better user experience, developer experience, and agent experience is
+almost always the right choice. When tradeoffs are visible, default to the
+path that's nicer to use, build on, or drive from an LLM — and state the
+cost explicitly so the choice is informed, not silent. "Simpler to build,"
+"smaller v1 surface," or "less code" are not winning arguments if the
+result is meaningfully worse to use, develop against, or operate as an
+agent.
+
+The three audiences:
+
+- **UX (end user):** the human running the CLI, reading reports, or
+  driving MCP through their AI tool. Magic, predictability, recoverability.
+- **DX (developer):** the contributor reading the code, writing the next
+  feature, debugging a regression. Clear boundaries, named primitives,
+  small focused files.
+- **AX (agent):** the LLM consuming the MCP / CLI surface (Claude Code,
+  Codex, Gemini CLI, hosted Claude). Tool names that telegraph intent,
+  error envelopes that prescribe recovery via `actions[]`, response
+  envelopes that expose what the agent needs without a follow-up call,
+  taxonomy that lets the agent pick a tool confidently without
+  disambiguation. MoneyBin's CLI and MCP are first-class agent surfaces
+  (see [`feedback_cli_agent_surface`] memory + `.claude/rules/mcp-server.md`)
+  — AX is a peer, not a poor cousin.
+
+This is not a contradiction of "Simplicity First" (which is about scope
+discipline — don't ship features that weren't asked for) or the Guiding
+Principle (which is about durable path selection). It's a tiebreaker:
+when two viable paths exist and one has noticeably better ergonomics for
+any of the three audiences, take the ergonomics. The durable choice is
+usually also the one that feels good five years later — for all three.
+
+**Agent protocol:** When presenting options, lead with the better-XX path
+as the recommendation. Name what the XX advantage actually buys, per
+audience where relevant — one-click vs. 15 min of console clicking (UX);
+one named primitive vs. two parallel patterns (DX); one tool the agent
+picks confidently vs. two it disambiguates between (AX). Name the cost
+honestly (verification process, more code, larger blast radius). Default
+to the better-XX path unless the cost is genuinely disqualifying — and
+"more work for me" is not disqualifying. Reinforces the
+`.claude/rules/agent-experience.md` report's "what would have made this
+easier" question — answer it the first time, don't wait for the AX
+report. When XX trades against XX (e.g., AX wants verbose response
+envelopes, UX wants terse CLI output), surface the conflict and let the
+user pick.
+
 ## Think Before Coding
 Don't assume. Don't hide confusion. Surface tradeoffs.
 
@@ -78,6 +125,7 @@ Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, sim
 | Configuration | `get_settings()` → `MoneyBinSettings` | `os.getenv()`, hardcoded values |
 | Secrets/keys | `SecretStore` | `os.getenv()`, plain `str` fields |
 | Table references | `from moneybin.tables import FCT_TRANSACTIONS`, etc. | Hardcoded table name strings |
+| Protected `app.*` mutation | compose a `*Repo` (`src/moneybin/repositories/`) | raw `INSERT`/`UPDATE`/`DELETE` in a service (Invariant 10) |
 | DataFrames | DuckDB > Polars > Pandas | Pandas (unless required for library compat — document why) |
 
 ## Code Standards

@@ -123,8 +123,8 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 +-- sync
 |   +-- login                      -- Authenticate with moneybin-server (device flow)
 |   +-- logout                     -- Clear stored JWT from keychain
-|   +-- connect                    -- Connect a bank account (opens provider UI)
-|   +-- connect-status             -- Poll the in-flight connect session
+|   +-- link                       -- Link a bank via mediated provider (Plaid: opens Link UI)
+|   +-- link-status                -- Poll the in-flight link session
 |   +-- disconnect --institution NAME -- Remove an institution
 |   +-- pull [--force] [--institution NAME] -- Pull data + full pipeline
 |   +-- status                     -- Connected institutions, health, errors
@@ -134,6 +134,29 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |   +-- remove                 -- Uninstall scheduled job
 |   +-- key
 |       +-- rotate                 -- Rotate E2E encryption key pair
+|
++-- gsheet                         -- Google Sheets live sync (user-controlled storage)
+|   +-- auth [--force]             -- Run OAuth installed-app + PKCE; persist tokens to keychain.
+|   |                                 Short-circuits when already authorized unless --force.
+|   +-- connect <url>              -- Bind a Google Sheet for live sync. Detects column mapping,
+|   |     [--adapter transactions|seed]   persists app.gsheet_connections, runs initial pull.
+|   |     [--alias SLUG]                  Seed adapter requires --alias for the typed view.
+|   |     [--account-name NAME]           account_name resolves via AccountService.resolve_strict.
+|   |     [--account-id ID]               account_id used directly (skips resolution).
+|   |     [--column-mapping JSON|KV...]   Override the inferred header→field mapping.
+|   |     [--yes]                          Accept medium-confidence detection.
+|   |     [--accept-seed-fallback]         Fall through to seed adapter on low-confidence.
+|   |     [--no-initial-pull]              Skip the post-connect pull.
+|   +-- pull                       -- Pull one connection (or all healthy ones if omitted).
+|   |     [--connection-id ID]            Without it: per-connection iteration with isolation.
+|   |     [--refresh / --no-refresh]      End-of-pull refresh pipeline. Default: --refresh.
+|   +-- list                       -- List every connection with status + pull metadata.
+|   +-- status [--connection-id ID]-- Status snapshot for one or all connections.
+|   +-- reconnect <connection_id>  -- Re-detect sheet structure, re-pin mapping, run a pull.
+|   |     [--yes]                          Accept medium-confidence remap.
+|   +-- disconnect <connection_id> -- Soft-disconnect (default) or hard delete with --purge.
+|         [--purge]                        Drops the seed view + deletes raw rows.
+|         [--yes / -y]                     Required for --purge in non-TTY contexts.
 |
 +-- refresh                        -- Run the post-load pipeline (match -> transform -> categorize)
 |         [--step STEP]              Subset of canonical steps; repeatable.
@@ -623,7 +646,7 @@ Specific existing-tool renames are enumerated in `moneybin-mcp.md` as part of v2
 | `config reset` | Too blunt. `profile delete` + `profile create` is more intentional |
 | `config path` | Developer convenience; `profile show` includes paths |
 | `config credentials validate` | Moves to relevant subsystems |
-| `config credentials list-services` | Provider discovery happens through `sync connect` |
+| `config credentials list-services` | Provider discovery happens through `sync link` |
 | `data extract ofx` | Superseded by `import file` |
 | `data extract csv` | Superseded by `import file` |
 

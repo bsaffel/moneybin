@@ -83,8 +83,8 @@ sequenceDiagram
     Server-->>CLI: JWT + refresh token
     CLI->>CLI: Store JWT in OS keychain
 
-    Note over User,DB: Phase 2: Connect
-    User->>CLI: moneybin sync connect
+    Note over User,DB: Phase 2: Link
+    User->>CLI: moneybin sync link
     CLI->>Server: POST /sync/link-token
     Server-->>CLI: link_token
     CLI->>User: Open provider UI in browser
@@ -246,7 +246,7 @@ All sync commands live under the `moneybin sync` subgroup. This namespace maps t
 |---|---|
 | `moneybin sync login` | Authenticate with moneybin-server via Device Authorization Flow |
 | `moneybin sync logout` | Clear stored JWT from keychain/file |
-| `moneybin sync connect` | Connect a bank account — opens provider UI in browser, polls for completion |
+| `moneybin sync link` | Link a bank account — opens provider UI in browser, polls for completion |
 | `moneybin sync disconnect --institution NAME` | Remove an institution (resolves name → id via `GET /institutions`) |
 | `moneybin sync pull [--force] [--institution NAME]` | Pull bank data: trigger sync, poll, download, load, transform |
 | `moneybin sync status` | Show connected institutions, last sync times, health, errors with actionable guidance |
@@ -268,7 +268,7 @@ Per `.claude/rules/cli.md`, every interactive behavior has a flag equivalent for
 | Interactive behavior | Flag equivalent |
 |---|---|
 | Browser opens for login | `--no-browser` (prints URL only — for headless/SSH) |
-| Browser opens for connect | `--no-browser` |
+| Browser opens for link | `--no-browser` |
 | Confirmation before disconnect | `--yes` / `-y` |
 | Institution selection when ambiguous | `--institution NAME` |
 
@@ -283,7 +283,7 @@ Enter code: ABCD-EFGH
 Waiting for authorization...
 ✅ Logged in as user@example.com
 
-$ moneybin sync connect
+$ moneybin sync link
 ⚙️  Opening bank connection...
 Visit: https://api.moneybin.app/link/abc123
 Waiting for connection...
@@ -307,7 +307,7 @@ Chase (connected 2026-03-15, via plaid)
 Schwab (connected 2026-03-20, via plaid)
   Last sync: 2026-04-07 14:30 UTC
   Status: ❌ error — ITEM_LOGIN_REQUIRED
-  💡 Run 'moneybin sync connect' to re-authenticate Schwab
+  💡 Run 'moneybin sync link' to re-authenticate Schwab
 
 $ moneybin sync schedule set --time 02:00
 ✅ Scheduled daily sync at 02:00 via launchd
@@ -334,8 +334,8 @@ MCP tools mirror the CLI under a `sync` namespace. Designed for AI agents (Claud
 |---|---|---|
 | `sync_pull` | Trigger a bank data sync, wait for completion, load results; runs post-load refresh by default | `institution: str \| None`, `force: bool`, `refresh: bool` |
 | `sync_status` | Show connected institutions and health | None |
-| `sync_connect` | Start bank connection flow | `institution: str \| None`; returns session URL |
-| `sync_connect_status` | Poll a connect session for completion | `session_id: str` |
+| `sync_link` | Start bank link flow | `institution: str \| None`; returns session URL |
+| `sync_link_status` | Poll a link session for completion | `session_id: str` |
 | `sync_disconnect` | Remove a bank connection | `institution: str` |
 | `sync_schedule_set` / `sync_schedule_show` / `sync_schedule_remove` | Manage automated sync schedule (split per shape-3 verb convention) | `time: str` on `_set` (HH:MM) |
 
@@ -496,7 +496,7 @@ Provider-specific error codes are surfaced through the server's per-institution 
 
 | Error code | Cause | Client behavior |
 |---|---|---|
-| `ITEM_LOGIN_REQUIRED` | Bank requires re-authentication | Update `app.sync_connections.status = 'error'`. Display: "Chase needs re-authentication — run `moneybin sync connect`." |
+| `ITEM_LOGIN_REQUIRED` | Bank requires re-authentication | Update `app.sync_connections.status = 'error'`. Display: "Chase needs re-authentication — run `moneybin sync link`." |
 | `ITEM_NOT_FOUND` | Connection revoked or expired | Update status to `disconnected`. Display guidance to reconnect. |
 | `NO_ACCOUNTS` | Institution returned no accounts | Warn user, suggest reconnecting with different credentials. |
 | `INSTITUTION_DOWN` | Bank's system unavailable | Log warning, skip institution, continue with others. Suggest retry later. |
@@ -527,7 +527,7 @@ $ moneybin sync pull
 ⚙️  Starting sync for all connected institutions...
 Chase: ✅ 142 transactions
 Schwab: ❌ ITEM_LOGIN_REQUIRED
-💡 Run 'moneybin sync connect' to re-authenticate Schwab
+💡 Run 'moneybin sync link' to re-authenticate Schwab
 ✅ Synced 142 transactions from 1 of 2 institutions
 ```
 
@@ -578,7 +578,7 @@ Add `{provider}_transactions` CTE in `fct_transactions.sql`, `{provider}_account
 **What providers do NOT need to touch:**
 
 - `SyncClient` — provider-agnostic, speaks server API only
-- CLI commands — `sync pull`, `sync connect`, etc. work for all providers
+- CLI commands — `sync pull`, `sync link`, etc. work for all providers
 - MCP tools — same tools, provider-unaware
 - `app.sync_connections` — `provider` column discriminates; schema is shared
 - `EncryptionBackend` — encryption is at the transport layer, not the provider layer

@@ -4,6 +4,7 @@ import pytest
 import typer
 from _pytest.logging import LogCaptureFixture
 
+from moneybin import error_codes
 from moneybin.database import DatabaseKeyError
 
 
@@ -67,7 +68,7 @@ def test_handle_cli_errors_json_mode_emits_envelope_on_error(
     assert exc_info.value.exit_code == 1
     out = json.loads(capsys.readouterr().out)
     assert out["status"] == "error"
-    assert out["error"]["code"] == "file_not_found"
+    assert out["error"]["code"] == error_codes.INFRA_FILE_NOT_FOUND
     assert "missing.csv" in out["error"]["message"]
 
 

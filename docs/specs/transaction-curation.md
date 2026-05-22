@@ -121,7 +121,7 @@ An MCP-vocabulary audit pass on the existing surface (Out-of-Scope §Follow-ups)
 26. Audit emission is synchronous, in the same DuckDB transaction as the mutation. Implementation: `AuditService.record_audit_event(action, target, before, after, *, actor, parent_audit_id=None, context=None)`.
 27. In-scope services emit events: `TransactionService` (manual entry, notes, tags, splits), `ImportService` (labels), `CategorizationService` (category set/clear), merchant service (create/set), rule service (create/update/delete), AI provider boundary (`ai.external_call`).
 28. Out-of-scope services do not emit; retroactive coverage is the post-launch `audit-log.md` spec's responsibility.
-29. `before_value` and `after_value` capture the relevant column subset of the affected row, not the entire table row. Bulk operations (`tag.rename`) emit one parent event capturing the operation intent and per-row child events with `parent_audit_id` chaining.
+29. `before_value` and `after_value` capture the **complete pre- and post-mutation row** (full row state, not a diff or changed-columns subset), per Invariant 10's reversibility contract ([`app-integrity-invariant.md`](app-integrity-invariant.md) Req 4). Bulk operations (`tag.rename`) emit one parent event capturing the operation intent and per-row child events with `parent_audit_id` chaining.
 30. AI-specific fields (flow_tier, backend, model, data_sent_hash, consent_reference, user_initiated) ride `context_json` — promoted to indexed columns only when a real query pattern demands it.
 31. The existing `get_ai_audit_log` MCP/CLI surface continues to work — internally rewritten to query `app.audit_log` with `action LIKE 'ai.%'`. No compatibility view; `privacy-and-ai-trust.md` is updated to reference the unified table directly.
 
@@ -229,8 +229,8 @@ CREATE TABLE IF NOT EXISTS app.audit_log (
     target_schema     VARCHAR, -- e.g. 'app', 'core'
     target_table      VARCHAR, -- e.g. 'transaction_categories', 'transaction_tags'
     target_id         VARCHAR, -- gold transaction_id, rule_id, merchant_id, import_id, etc.
-    before_value      JSON, -- Prior column subset; NULL on creation
-    after_value       JSON, -- New column subset; NULL on deletion
+    before_value      JSON, -- Full prior row state; NULL on creation (INSERT)
+    after_value       JSON, -- Full resulting row state; NULL on deletion (DELETE)
     parent_audit_id   VARCHAR, -- Self-FK; chains AI-call → user-confirm → category-write, or bulk-rename → per-row events
     context_json      JSON -- Discriminator-shaped extras: AI fields (flow_tier, backend, model, data_sent_hash), source surface, hashes, etc.
 );
@@ -594,7 +594,7 @@ In-scope services emit; out-of-scope services are silent until the post-launch `
 
 ### Before/after capture rules
 
-- For row-level mutations: `before_value` and `after_value` are JSON snapshots of the relevant *column subset* of the affected row, not full table rows. This keeps the audit table from becoming a row-history copy of every table.
+- For row-level mutations: `before_value` and `after_value` are JSON snapshots of the **full affected row** (complete pre- and post-mutation state), not a column subset. Per Invariant 10's reversibility contract this is the data foundation for Phase 2 undo ([`app-integrity-invariant.md`](app-integrity-invariant.md) Req 4); it deliberately supersedes the earlier column-subset optimization.
 - For bulk operations (`tag.rename`): the parent event captures the operation intent (`{old_tag, new_tag, row_count}`); per-row child events capture each row's before/after with `parent_audit_id` chaining.
 - For idempotent operations (re-applying an existing tag): the event is still recorded with `before == after`, marked via a `context_json.noop = true` flag. Useful for forensic "did this run?" questions.
 

@@ -302,7 +302,7 @@ with Database(db_path, secret_store=store, no_auto_upgrade=False) as db:
 - `curation.py`: note add/edit/delete, tag set/rename, split set, label set
 - `import_tools.py`: all
 - `import_inbox.py`: `import_inbox_sync`
-- `sync.py`: `sync_pull`, `sync_connect`, `sync_disconnect`, schedule writes
+- `sync.py`: `sync_pull`, `sync_link`, `sync_disconnect`, schedule writes
 - `refresh.py` / `transform.py`: `refresh_run`, `transform_audit`
 - `sql.py`: `sql_query` is always write mode (conservative; accepts arbitrary SQL)
 - `transactions.py`: writes route through `transactions_categorize_*` and `curation.py`; the bare `transactions_*` tools today are read-only
