@@ -207,15 +207,21 @@ def _snapshot_catalog_comments(
     return table_snapshot, column_snapshot
 
 
-def init_schemas(conn: duckdb.DuckDBPyConnection) -> None:
+def init_schemas(
+    conn: duckdb.DuckDBPyConnection,
+    additional_files: list[Path] | None = None,
+) -> None:
     """Create all database schemas and tables, then apply inline comments.
 
     Args:
         conn: An active read-write DuckDB connection.
+        additional_files: Optional extra SQL DDL paths (e.g. from registered
+            analysis packages). Executed AFTER the core schema files so
+            package tables can reference core/app primitives.
     """
     table_snapshot, column_snapshot = _snapshot_catalog_comments(conn)
     schema_files = _all_schema_files()
-    for sql_path in schema_files:
+    for sql_path in [*schema_files, *(additional_files or [])]:
         if not sql_path.exists():
             logger.warning(f"Schema file not found, skipping: {sql_path.name}")
             continue
@@ -224,7 +230,9 @@ def init_schemas(conn: duckdb.DuckDBPyConnection) -> None:
         _apply_comments(conn, sql, table_snapshot, column_snapshot)
         logger.debug(f"Executed {sql_path.name}")
 
-    logger.debug(f"Executed {len(schema_files)} schema files")
+    logger.debug(
+        f"Executed {len(schema_files) + len(additional_files or [])} schema files"
+    )
 
     # Mirror the DataClass registry into the catalog (suffix comments
     # with `[class: ...]`).
