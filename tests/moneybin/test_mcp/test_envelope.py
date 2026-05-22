@@ -8,6 +8,7 @@ from decimal import Decimal
 
 import pytest
 
+from moneybin import error_codes
 from moneybin.protocol.envelope import (
     DetailLevel,
     ResponseEnvelope,
@@ -111,7 +112,7 @@ class TestResponseEnvelope:
     def test_to_dict_status_error_when_error_set(self) -> None:
         from moneybin.errors import UserError
 
-        err = UserError("DB locked", code="database_locked")
+        err = UserError("DB locked", code=error_codes.INFRA_DATABASE_LOCKED)
         envelope = ResponseEnvelope(
             summary=SummaryMeta(total_count=0, returned_count=0),
             data=[],
@@ -215,12 +216,12 @@ def test_user_error_carries_structured_details() -> None:
 
     err = UserError(
         "Tool exceeded 30.0s cap",
-        code="timed_out",
+        code=error_codes.INFRA_TIMED_OUT,
         hint=None,
         details={"tool": "import_inbox_sync", "elapsed_s": 30.1, "timeout_s": 30.0},
     )
     d = err.to_dict()
-    assert d["code"] == "timed_out"
+    assert d["code"] == error_codes.INFRA_TIMED_OUT
     assert d["details"]["tool"] == "import_inbox_sync"
     assert d["details"]["timeout_s"] == 30.0
 

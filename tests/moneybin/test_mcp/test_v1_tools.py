@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from moneybin import error_codes
 from moneybin.database import Database, get_database
 from moneybin.mcp.tools.reports import (
     reports_balance_drift,
@@ -82,18 +83,19 @@ class TestReportsRecurringGet:
     @pytest.mark.unit
     async def test_unknown_status_returns_error_envelope(self, mcp_db: object) -> None:
         # ValueError raised inside the tool is classified by the @mcp_tool
-        # decorator as a UserError(invalid_input) and surfaced as an error
-        # envelope rather than re-raised.
+        # decorator as a UserError(infra_invalid_input) and surfaced as an error
+        # envelope rather than re-raised. Reports are read paths, so the
+        # prefix-neutral infra_ code is correct (not mutation_).
         result = await reports_recurring(status="bogus")
         parsed = result.to_dict()
-        assert parsed["error"]["code"] == "invalid_input"
+        assert parsed["error"]["code"] == error_codes.INFRA_INVALID_INPUT
         assert "Unknown status" in parsed["error"]["message"]
 
     @pytest.mark.unit
     async def test_unknown_cadence_returns_error_envelope(self, mcp_db: object) -> None:
         result = await reports_recurring(cadence="hourly")
         parsed = result.to_dict()
-        assert parsed["error"]["code"] == "invalid_input"
+        assert parsed["error"]["code"] == error_codes.INFRA_INVALID_INPUT
         assert "Unknown cadence" in parsed["error"]["message"]
 
 
@@ -334,7 +336,8 @@ class TestReportsBalanceDriftGet:
 
     @pytest.mark.unit
     async def test_unknown_status_returns_error_envelope(self, mcp_db: object) -> None:
+        # Read path → ValueError classified to INFRA_INVALID_INPUT, not MUTATION_*.
         result = await reports_balance_drift(status="bogus")
         parsed = result.to_dict()
-        assert parsed["error"]["code"] == "invalid_input"
+        assert parsed["error"]["code"] == error_codes.INFRA_INVALID_INPUT
         assert "Unknown status" in parsed["error"]["message"]

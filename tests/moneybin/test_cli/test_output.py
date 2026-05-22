@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+from moneybin import error_codes
 from moneybin.cli.output import OutputFormat, emit_json_error, render_or_json
 from moneybin.errors import UserError
 from moneybin.protocol.envelope import ResponseEnvelope, SummaryMeta
@@ -121,11 +122,11 @@ class TestEmitJsonError:
     def test_emits_error_envelope_to_stdout(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        err = UserError("DB locked", code="database_locked")
+        err = UserError("DB locked", code=error_codes.INFRA_DATABASE_LOCKED)
         emit_json_error(err)
         out = json.loads(capsys.readouterr().out)
         assert out["status"] == "error"
-        assert out["error"]["code"] == "database_locked"
+        assert out["error"]["code"] == error_codes.INFRA_DATABASE_LOCKED
         assert out["error"]["message"] == "DB locked"
 
     @pytest.mark.unit
