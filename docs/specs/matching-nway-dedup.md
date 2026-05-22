@@ -1,7 +1,7 @@
 # N-Way Dedup: Merge 3+ Copies of the Same Transaction
 
-> Last updated: 2026-05-22 — initial draft
-> Status: draft
+> Last updated: 2026-05-22 — design reviewed and approved
+> Status: ready
 > Parent: [`matching-overview.md`](matching-overview.md) (pillars A + C)
 > Enhances: [`matching-same-record-dedup.md`](matching-same-record-dedup.md) — supersedes its Requirement 3 (1:1 bipartite assignment)
 > Companions: `CLAUDE.md` "Architecture: Data Layers", `.claude/rules/database.md` (recursive CTE syntax, column naming), `.claude/rules/surface-design.md` (review-surface shapes), `docs/specs/moneybin-doctor.md` (staging_coverage)
