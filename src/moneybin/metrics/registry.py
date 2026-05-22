@@ -269,6 +269,16 @@ audit_events_emitted_total = Counter(
     ["action", "actor"],
 )
 
+app_mutation_audit_emitted_total = Counter(
+    "moneybin_app_mutation_audit_emitted_total",
+    "Protected app.* mutations that emitted a paired audit row, by repository "
+    "and action. Counts at the *Repo boundary; audit_events_emitted_total counts "
+    "at the AuditService boundary. A repo that mutates without going through "
+    "BaseRepo._emit_audit() shows up as a gap between the two — the "
+    "contract-violation signal Invariant 10 exists to catch.",
+    ["repository", "action"],
+)
+
 # ── Sync (moneybin-server pull/connect lifecycle) ────────────────────────────
 
 SYNC_PULL_DURATION_SECONDS = Histogram(

@@ -182,7 +182,7 @@ def gsheet_connect(
                 no_initial_pull=no_initial_pull,
                 accept_seed_fallback=accept_seed_fallback,
             )
-            result = service.connect(req)
+            result = service.connect(req, actor="cli")
 
     if output == OutputFormat.JSON:
         payload = {
@@ -428,7 +428,7 @@ def gsheet_reconnect(
     """
     with handle_cli_errors():
         with _build_connection_service() as service:
-            result = service.reconnect(connection_id, yes=yes)
+            result = service.reconnect(connection_id, yes=yes, actor="cli")
 
     if output == OutputFormat.JSON:
         typer.echo(
@@ -500,7 +500,7 @@ def gsheet_disconnect(
 
     with handle_cli_errors():
         with _build_connection_service() as service:
-            service.disconnect(connection_id, purge=purge)
+            service.disconnect(connection_id, purge=purge, actor="cli")
 
     if output == OutputFormat.JSON:
         typer.echo(
