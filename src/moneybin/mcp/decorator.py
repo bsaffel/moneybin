@@ -431,7 +431,16 @@ def mcp_tool(
                 # any per-tool resources (e.g. InboxService.acquire_lock's
                 # flock). Without this, an immediate retry hits inbox_busy
                 # while the previous thread is still in its finally block.
-                await asyncio.sleep(0.5)
+                try:
+                    await asyncio.sleep(0.5)
+                except BaseException:
+                    # CancelledError (a BaseException, not Exception) raised here
+                    # would escape both the TimeoutError and Exception handlers
+                    # with no audit row. Emit the crash event, then propagate.
+                    _emit_privacy_event(
+                        _build_unclassified_failure_envelope(fn.__name__)
+                    )
+                    raise
                 timeout_env = _build_timeout_envelope(fn.__name__, elapsed, timeout_s)
                 _emit_privacy_event(timeout_env)
                 return timeout_env

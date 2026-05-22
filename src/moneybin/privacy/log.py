@@ -110,7 +110,12 @@ def write_privacy_event(event: dict[str, Any]) -> None:
     try:
         with _LOCK:
             log_dir = _resolve_privacy_log_dir()
-            log_dir.mkdir(parents=True, exist_ok=True)
+            # mode=0o700: the privacy log dir may be created here on the
+            # bootstrap / no-profile path before any profile dir exists. Without
+            # an explicit mode it inherits the umask (typically 0o755,
+            # world-readable) while the file inside is gated to 0o600 — the dir
+            # must be just as restricted as its contents.
+            log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
             log_path = log_dir / _LOG_FILE
             _rotate_if_new_day(log_path)
             line = json.dumps(event, sort_keys=True, separators=(",", ":"))
@@ -125,7 +130,11 @@ def write_privacy_event(event: dict[str, Any]) -> None:
             )
             with os.fdopen(fd, "a", encoding="utf-8") as f:
                 f.write(line + "\n")
-    except (OSError, PermissionError) as exc:
+    except Exception as exc:  # noqa: BLE001 — fail-soft: a missing audit row must
+        # never break a tool call. json.dumps can raise TypeError/ValueError on a
+        # non-serializable event; file I/O raises OSError/PermissionError; the
+        # cross-process rotation race raises FileNotFoundError. All are logged
+        # at WARNING and swallowed per the module's never-raise contract.
         logger.warning(f"privacy log write failed: {type(exc).__name__}: {exc}")
 
 

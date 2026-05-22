@@ -27,6 +27,7 @@ import functools
 import logging
 import types
 import typing
+from collections.abc import Mapping
 from dataclasses import dataclass, fields, is_dataclass, replace
 from typing import Annotated, Any, cast, get_args, get_origin, get_type_hints
 
@@ -147,13 +148,18 @@ def _redact(value: Any, consent: ConsentSet | None, declared_type: Any) -> Any:
                 return fn(value, consent)
         # No DataClass metadata — recurse into the underlying type.
         return _redact(value, consent, args[0])
-    # list[T] / tuple[T, ...] — recurse per-element.
-    if origin in (list, tuple):
+    # list[T] / set[T] / frozenset[T] / tuple[T, ...] — recurse per-element.
+    # Must mirror introspection._walk, which classifies all four origins; if
+    # _redact handled fewer, a CRITICAL field inside a set/frozenset would be
+    # flagged has_critical by the walk but never actually masked here.
+    if origin in (list, set, frozenset, tuple):
         elem_type = get_args(declared_type)[0] if get_args(declared_type) else Any
         redacted = [_redact(v, consent, elem_type) for v in value]
-        return type(value)(redacted) if origin is tuple else redacted
-    # dict[K, V] — recurse per-value (keys are not redacted).
-    if origin is dict:
+        # Reconstruct the original container type (list→list, set→set, etc.).
+        return redacted if origin is list else type(value)(redacted)
+    # dict[K, V] / Mapping[K, V] — recurse per-value (keys are not redacted).
+    # Mapping included to mirror introspection._walk's (dict, Mapping) origins.
+    if origin in (dict, Mapping):
         args = get_args(declared_type)
         val_type = args[1] if len(args) >= 2 else Any
         return {k: _redact(v, consent, val_type) for k, v in value.items()}
@@ -161,10 +167,17 @@ def _redact(value: Any, consent: ConsentSet | None, declared_type: Any) -> Any:
     # PEP 604 unions (X | None) use types.UnionType; typing.Union uses typing.Union.
     if origin is typing.Union or isinstance(declared_type, types.UnionType):
         for arm in get_args(declared_type):
-            if arm is type(None) and value is None:
-                return None
+            if arm is type(None):
+                if value is None:
+                    return None
+                continue
+            # Parameterized generic aliases (list[X], dict[K, V]) raise on
+            # isinstance — match against the origin, then recurse with the full
+            # alias so element/value types are still redacted. Without this the
+            # arm is silently skipped and the value falls through unredacted.
+            arm_check = get_origin(arm) or arm
             try:
-                if isinstance(value, arm):
+                if isinstance(value, arm_check):
                     return _redact(value, consent, arm)
             except TypeError:
                 continue

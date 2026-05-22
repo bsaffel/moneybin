@@ -74,6 +74,7 @@ def categorize_pending(
       moneybin transactions categorize pending --min-amount 20 --output json
     """
     from moneybin.cli.output import render_or_json
+    from moneybin.privacy.payloads.categorize import CatPendingPayload, PendingTxnRow
     from moneybin.protocol.envelope import build_envelope
     from moneybin.services.account_service import AccountService
     from moneybin.services.categorization import CategorizationService
@@ -104,7 +105,26 @@ def categorize_pending(
         typer.echo("No data — import transactions first.", err=True)
         raise typer.Exit(0)
 
-    envelope = build_envelope(data=records, sensitivity="medium")
+    # Wrap raw rows in the typed CatPendingPayload so the JSON path derives the
+    # CRITICAL tier (account_id) and redact_typed masks it — a bare list[dict]
+    # short-circuits _has_critical(list) → False and would emit account_id raw.
+    payload = CatPendingPayload(
+        transactions=[
+            PendingTxnRow(
+                transaction_id=r["transaction_id"],
+                transaction_date=str(r["txn_date"])
+                if r.get("txn_date") is not None
+                else None,
+                amount=float(r["amount"]) if r.get("amount") is not None else None,
+                description=r.get("description"),
+                memo=r.get("memo"),
+                account_id=r.get("account_id"),
+                age_days=int(r["age_days"]) if r.get("age_days") is not None else None,
+            )
+            for r in records
+        ]
+    )
+    envelope = build_envelope(data=payload)
 
     def _render_table(_: object) -> None:
         if not records:

@@ -143,6 +143,47 @@ def test_redacts_pydantic_nested_list() -> None:
     assert out.total_balance == Decimal("100.00")
 
 
+@dataclass(frozen=True)
+class _SetContainer:
+    rows: frozenset[_AccountRow]
+
+
+@dataclass(frozen=True)
+class _MappingContainer:
+    by_id: dict[str, _AccountRow]
+
+
+@dataclass(frozen=True)
+class _OptionalListContainer:
+    rows: list[_AccountRow] | None
+
+
+def test_redacts_inside_frozenset() -> None:
+    """_redact must traverse set/frozenset, not just list/tuple — mirrors _walk."""
+    container = _SetContainer(rows=frozenset({_sample_row()}))
+    out = redact_typed(container, consent=None)
+    assert all(r.account_id == "****7890" for r in out.rows)
+
+
+def test_redacts_inside_mapping_values() -> None:
+    """_redact must traverse dict/Mapping values — mirrors _walk."""
+    container = _MappingContainer(by_id={"a": _sample_row()})
+    out = redact_typed(container, consent=None)
+    assert out.by_id["a"].account_id == "****7890"
+
+
+def test_redacts_optional_list_union_arm() -> None:
+    """A `list[X] | None` field must still be redacted.
+
+    The generic-alias union arm used to raise TypeError on isinstance and
+    fall through unredacted.
+    """
+    container = _OptionalListContainer(rows=[_sample_row()])
+    out = redact_typed(container, consent=None)
+    assert out.rows is not None
+    assert out.rows[0].account_id == "****7890"
+
+
 def test_idempotent_on_already_redacted() -> None:
     once = redact_typed(_sample_row(), consent=None)
     twice = redact_typed(once, consent=None)
