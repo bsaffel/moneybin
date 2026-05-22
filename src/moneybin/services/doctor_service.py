@@ -351,6 +351,21 @@ class DoctorService:
                 affected_ids=[],
             )
         observed_absorbed = raw_total - core_count
+        if observed_absorbed < 0:
+            # core can't legitimately hold more rows than staging — report the
+            # impossible direction plainly instead of a nonsensical negative
+            # "absorbed" count an agent can't act on.
+            return InvariantResult(
+                name="dedup_reconciliation",
+                status="fail",
+                detail=(
+                    f"core has more rows than staging "
+                    f"(core_count={core_count} > raw_total={raw_total}); "
+                    "a transaction reached core without passing through the "
+                    "staging layer"
+                ),
+                affected_ids=[],
+            )
         if observed_absorbed == dedup_absorbed:
             return InvariantResult(
                 name="dedup_reconciliation",

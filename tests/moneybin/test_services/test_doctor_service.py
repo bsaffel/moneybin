@@ -424,6 +424,20 @@ def test_dedup_reconciliation_excludes_inactive_and_transfer_decisions(
 
 
 @pytest.mark.unit
+def test_dedup_reconciliation_fails_clearly_when_core_exceeds_staging(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # core has 2 rows (T1, T2) but staging has 0 → a row reached core without
+    # passing through staging. observed_absorbed would be negative; the detail
+    # must name that impossible direction, never report a nonsensical "-2".
+    _seed_prep_unioned(doctor_db, row_count=0)
+    result = _dedup_result(doctor_db, monkeypatch)
+    assert result.status == "fail"
+    assert "more rows than staging" in (result.detail or "")
+    assert "-2" not in (result.detail or "")
+
+
+@pytest.mark.unit
 def test_categorization_coverage_passes_when_all_categorized(
     doctor_db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
