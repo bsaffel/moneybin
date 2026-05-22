@@ -77,6 +77,8 @@ def extract_create_targets(sql_file: Path) -> list[tuple[str, str]]:
     statements = _parse(sql_file)
     targets: list[tuple[str, str]] = []
     for statement in statements:
+        if statement is None:
+            continue
         if not isinstance(statement, exp.Create):
             continue
         if statement.kind not in ("TABLE", "VIEW"):

@@ -199,8 +199,11 @@ def register_package(
     except Exception:
         # Roll back the registry entry so a failed callable leaves no
         # half-registered package — the registration stays retryable.
-        # (MCP/CLI surfaces a partially-successful tools_callable can't
-        # un-register is a known limitation of those mutable registries.)
+        # Known limitation: if tools_callable(mcp) succeeded before
+        # cli_callable(cli) raised, FastMCP's tool surface is already mutated
+        # and can't be un-registered, so a retry re-runs tools_callable and
+        # double-registers the package's MCP tools. Full MCP-surface rollback
+        # is deferred to Plan 4 (ties to the registry-injection followup).
         _global_registry.remove(info.manifest.name)
         raise
     logger.info(
@@ -219,7 +222,12 @@ def _resolve_entry_point_callable(spec: str) -> Callable[[Any], None]:
     module_path, _, attr = spec.partition(":")
     if not module_path or not attr:
         raise ValueError(f"Entry point '{spec}' must be 'module.path:callable'")
-    module = importlib.import_module(module_path)
+    try:
+        module = importlib.import_module(module_path)
+    except ModuleNotFoundError as exc:
+        raise ValueError(
+            f"Entry point '{spec}' module '{module_path}' is not installed"
+        ) from exc
     try:
         fn = getattr(module, attr)
     except AttributeError as exc:

@@ -197,6 +197,23 @@ def test_register_package_rolls_back_registry_on_callable_failure(
             fresh.get("test_synthetic")
 
 
+def test_register_package_uninstalled_entry_point_raises_value_error(
+    tmp_path: Path,
+) -> None:
+    """An uninstalled entry-point module surfaces as ValueError, not ModuleNotFoundError.
+
+    register_package documents 'Raises: ValidationError subclass'; the minimal
+    fixture's entry points point at module 'x' (not installed), so resolving
+    them must raise ValueError rather than leaking a bare ModuleNotFoundError.
+    """
+    info = _make_minimal_pkg(tmp_path)
+    fresh = PackageRegistry()
+
+    with patch("moneybin.packages._framework.registry._global_registry", fresh):
+        with pytest.raises(ValueError, match="is not installed"):
+            register_package(info=info, mcp=MagicMock(), cli=MagicMock())
+
+
 def test_init_schemas_executes_additional_files(tmp_path: Path) -> None:
     """init_schemas() accepts and executes package-contributed DDL files."""
     import duckdb

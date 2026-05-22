@@ -77,6 +77,7 @@ def _gold_checks(info: PackageInfo) -> list[QualityScaleViolation]:
     # For Plan 2 we skip this; Plan 4 wires it when the user-guide convention
     # is in scope. Flagging as a known-deferred check below in the
     # registry.py comment block.
+    # TODO Plan 4: add check for docs/guides/packages/<name>/ at the repo level.
     return violations
 
 
