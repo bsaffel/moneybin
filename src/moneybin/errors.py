@@ -14,8 +14,11 @@ translated into user-facing messages.
 from __future__ import annotations
 
 from decimal import InvalidOperation
-from typing import Any
+from typing import Any, Literal
 
+from pydantic import BaseModel, ConfigDict, Field
+
+from moneybin import error_codes
 from moneybin.connectors.sync_errors import SyncError
 from moneybin.database import (
     DatabaseKeyError,
@@ -26,15 +29,48 @@ from moneybin.database import (
 )
 
 
+class RecoveryAction(BaseModel):
+    """One structured action an agent can execute to fix a failure.
+
+    Carried in the optional `recovery_actions` field on both UserError
+    and ResponseEnvelope. Agents read the field, pick the highest-confidence
+    action they're authorized to run, and invoke `tool(**arguments)`.
+
+    Semantics:
+    - tool: an MCP tool name (e.g. "system_audit_undo"). For CLI parity,
+      the same string maps to a CLI command via the surface registry.
+    - arguments: pre-filled arguments the agent can execute directly. No
+      placeholder strings; if a value isn't known at error-construction
+      time, the action belongs as `confidence="suggested"` with the
+      missing argument named in rationale.
+    - rationale: short prose explaining WHY this action fixes the failure.
+      One sentence. Agent surfaces this to the user when confirming.
+    - confidence: "certain" = this will fix it; "suggested" = the agent
+      should weigh other context and may need user input.
+    - idempotent: True if running the action twice is safe — agents can
+      retry on transient failures without confirming.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    tool: str = Field(..., min_length=1)
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    rationale: str = Field(..., min_length=1)
+    confidence: Literal["certain", "suggested"]
+    idempotent: bool
+
+
 class UserError(Exception):
     """A classified, user-facing error that can be raised and caught.
 
     Carries a sanitized message safe to show end users, a stable code for
-    programmatic handling, and an optional hint pointing at recovery steps.
+    programmatic handling, an optional hint pointing at recovery steps, and
+    optional structured recovery actions an agent can execute to fix the failure.
 
     Can be raised directly in tool code::
 
-        raise UserError("Category not found", code="NOT_FOUND")
+        from moneybin import error_codes
+        raise UserError("Category not found", code=error_codes.MUTATION_NOT_FOUND)
 
     The ``mcp_tool`` decorator catches this and converts it to an error
     ``ResponseEnvelope`` automatically.
@@ -47,6 +83,7 @@ class UserError(Exception):
         code: str,
         hint: str | None = None,
         details: dict[str, Any] | None = None,
+        recovery_actions: list[RecoveryAction] | None = None,
     ) -> None:
         """Initialize with a user-safe message and optional metadata."""
         super().__init__(message)
@@ -54,6 +91,7 @@ class UserError(Exception):
         self.code = code
         self.hint = hint
         self.details = details
+        self.recovery_actions = recovery_actions
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to a plain dict for envelope serialization."""
@@ -62,6 +100,14 @@ class UserError(Exception):
             d["hint"] = self.hint
         if self.details is not None:
             d["details"] = self.details
+        if self.recovery_actions is not None:
+            # Coerce plain dicts defensively (mirrors ResponseEnvelope.to_dict):
+            # callers SHOULD pass RecoveryAction instances, but a dict slipping
+            # in (e.g., from deserialized JSON) would otherwise AttributeError.
+            d["recovery_actions"] = [
+                ra if isinstance(ra, dict) else ra.model_dump()
+                for ra in self.recovery_actions
+            ]
         return d
 
 
@@ -77,40 +123,51 @@ def classify_user_error(exc: BaseException) -> UserError | None:
     if isinstance(exc, DatabaseNotInitializedError):
         return UserError(
             "Database not found. Run 'moneybin db init' to initialize it first.",
-            code="database_not_initialized",
+            code=error_codes.INFRA_DATABASE_NOT_INITIALIZED,
         )
     if isinstance(exc, DatabaseLockError):
         return UserError(
             str(exc),
-            code="database_locked",
+            code=error_codes.INFRA_DATABASE_LOCKED,
             hint="💡 Run 'moneybin db ps' for details or wait and retry",
         )
     if isinstance(exc, DatabaseKeyError):
         return UserError(
             str(exc),
-            code="wrong_key",
+            code=error_codes.INFRA_WRONG_KEY,
             hint=database_key_error_hint(),
         )
     if isinstance(exc, SchemaDriftError):
         return UserError(
             str(exc),
-            code="schema_drift",
+            code=error_codes.INFRA_SCHEMA_DRIFT,
             hint="💡 Run 'moneybin transform apply' to rebuild stale models",
         )
     if isinstance(exc, FileNotFoundError):
         # Drop the "[Errno 2]" prefix that str(FileNotFoundError) includes —
         # end users don't need the errno number.
         msg = f"{exc.strerror}: {exc.filename}" if exc.filename else str(exc)
-        return UserError(msg, code="file_not_found")
+        return UserError(msg, code=error_codes.INFRA_FILE_NOT_FOUND)
     if isinstance(exc, OSError) and not isinstance(exc, TimeoutError):
         msg = f"{exc.strerror}: {exc.filename}" if exc.filename else str(exc)
-        return UserError(msg, code="io_error")
+        return UserError(msg, code=error_codes.INFRA_IO_ERROR)
     if isinstance(exc, ValueError):
-        return UserError(str(exc), code="invalid_input")
+        # Generic ValueError fires on read paths too (date/enum/decimal parsing
+        # in reports, query filters, etc.) — INFRA_INVALID_INPUT is prefix-
+        # neutral about write-vs-read, parallel to INFRA_NOT_FOUND. Write
+        # callers that mean "the entity-shape you wrote is invalid" should
+        # raise UserError(code=MUTATION_INVALID_INPUT) directly at the site.
+        return UserError(str(exc), code=error_codes.INFRA_INVALID_INPUT)
     if isinstance(exc, InvalidOperation):
-        return UserError(f"invalid decimal value: {exc}", code="invalid_input")
+        return UserError(
+            f"invalid decimal value: {exc}", code=error_codes.INFRA_INVALID_INPUT
+        )
     if isinstance(exc, LookupError) and not isinstance(exc, (KeyError, IndexError)):
-        return UserError(str(exc), code="not_found")
+        # Generic LookupError fires on read paths (account/category/note lookups)
+        # — INFRA_NOT_FOUND is prefix-neutral about write-vs-read context, unlike
+        # MUTATION_NOT_FOUND which would mis-signal "this was a write attempt"
+        # to agents branching on the code's prefix.
+        return UserError(str(exc), code=error_codes.INFRA_NOT_FOUND)
     if isinstance(exc, SyncError):
-        return UserError(str(exc), code="sync_error")
+        return UserError(str(exc), code=error_codes.SYNC_ERROR)
     return None

@@ -29,6 +29,7 @@ import time
 from collections.abc import Callable
 from typing import Any, Literal, cast
 
+from moneybin import error_codes
 from moneybin.database import (  # noqa: PLC2701 — private import for per-call tracking
     _write_conn_thread_local,  # pyright: ignore[reportPrivateUsage]
     interrupt_and_reset_database,
@@ -91,7 +92,7 @@ def _check_collection_caps(
         if length > cap:
             err = UserError(
                 f"{fn_name}: parameter '{param_name}' has {length} items; max is {cap}",
-                code="too_many_items",
+                code=error_codes.INFRA_TOO_MANY_ITEMS,
                 details={
                     "limit": cap,
                     "received": length,
@@ -191,7 +192,7 @@ def _build_timeout_envelope(
 ) -> ResponseEnvelope:
     err = UserError(
         f"Tool {fn_name} exceeded {timeout_s:.1f}s cap",
-        code="timed_out",
+        code=error_codes.INFRA_TIMED_OUT,
         details={
             "tool": fn_name,
             "elapsed_s": round(elapsed_s, 3),

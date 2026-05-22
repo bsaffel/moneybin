@@ -16,7 +16,7 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Literal
 
-from moneybin.errors import UserError
+from moneybin.errors import RecoveryAction, UserError
 
 
 class DetailLevel(StrEnum):
@@ -107,6 +107,8 @@ class ResponseEnvelope:
     - ``error``: populated when the tool failed with a classified user error;
       ``data`` is empty in this case
     - ``next_cursor``: opaque pagination token when more results are available
+    - ``recovery_actions``: structured actions an agent can execute to fix
+      a failure; carried from the UserError when present
     """
 
     summary: SummaryMeta
@@ -114,6 +116,7 @@ class ResponseEnvelope:
     actions: list[str] = field(default_factory=list)
     error: UserError | None = None
     next_cursor: str | None = None
+    recovery_actions: list[RecoveryAction] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to a plain dict suitable for JSON serialization."""
@@ -123,10 +126,46 @@ class ResponseEnvelope:
             "data": self.data,
             "actions": self.actions,
         }
+        # Effective recovery_actions: the envelope-level field is the canonical
+        # wire location, but fall back to the error's own list when the
+        # envelope field wasn't populated — e.g. a caller building
+        # ResponseEnvelope(error=UserError(..., recovery_actions=[...]))
+        # directly, bypassing build_error_envelope. Without this fallback the
+        # actions would vanish (nested error copy is stripped below, top-level
+        # not emitted). An explicit suppression via recovery_actions=[] is a
+        # non-None empty list, so it is honored — not overridden by the error.
+        effective_recovery = self.recovery_actions
+        if (
+            effective_recovery is None
+            and self.error is not None
+            and self.error.recovery_actions is not None
+        ):
+            effective_recovery = self.error.recovery_actions
+
         if self.error is not None:
-            d["error"] = self.error.to_dict()
+            # Strip recovery_actions from the nested error dict: the envelope
+            # top-level field (emitted below from effective_recovery) is the
+            # single canonical wire location. Without this strip, an explicit
+            # suppression via recovery_actions=[] would still leak the
+            # original actions through error.to_dict() — defeating the
+            # redaction use case. Direct UserError.to_dict() callers (logging,
+            # debugging) still see recovery_actions; only the envelope-nested
+            # form drops the field.
+            err_dict = self.error.to_dict()
+            err_dict.pop("recovery_actions", None)
+            d["error"] = err_dict
         if self.next_cursor is not None:
             d["next_cursor"] = self.next_cursor
+        if effective_recovery is not None:
+            # Coerce plain dicts defensively: callers SHOULD pass
+            # RecoveryAction instances (the type annotation says so), but a
+            # dict slipping in (e.g., from deserialized JSON) would otherwise
+            # AttributeError here and convert a classified UserError into an
+            # internal failure at the wire boundary.
+            d["recovery_actions"] = [
+                ra if isinstance(ra, dict) else ra.model_dump()
+                for ra in effective_recovery
+            ]
         return d
 
     def to_json(self) -> str:
@@ -227,6 +266,7 @@ def build_error_envelope(
     error: UserError,
     sensitivity: Literal["low", "medium", "high"] = "low",
     actions: list[str] | None = None,
+    recovery_actions: list[RecoveryAction] | None = None,
 ) -> ResponseEnvelope:
     """Build a ResponseEnvelope carrying a classified user error.
 
@@ -234,7 +274,24 @@ def build_error_envelope(
     that the tool failed. Sensitivity defaults to ``low`` because error
     messages must not leak row-level data. ``actions`` preserves any
     caller-provided next-step hints (e.g. CLI fallbacks on stub tools).
+
+    ``recovery_actions`` precedence:
+
+    - An explicit list (including ``[]``) overrides ``error.recovery_actions``.
+    - An empty list ``[]`` is honored and reaches the envelope — meaning
+      "explicitly no recovery available; agent must escalate to the user".
+    - ``None`` (the default) means "no opinion; use the error's actions".
+      Callers who want to clear recovery_actions for a specific surface
+      (e.g., redacting before sending to a low-trust client) MUST pass
+      ``[]``, not ``None`` — None is reserved for "fall through to the
+      error's value".
     """
+    # Resolve recovery_actions: explicit list (including empty) overrides;
+    # None means "no opinion, fall back to error.recovery_actions" per the
+    # contract documented above.
+    if recovery_actions is None and error.recovery_actions is not None:
+        recovery_actions = error.recovery_actions
+
     summary = SummaryMeta(
         total_count=0,
         returned_count=0,
@@ -242,5 +299,9 @@ def build_error_envelope(
         sensitivity=sensitivity,
     )
     return ResponseEnvelope(
-        summary=summary, data=[], actions=actions or [], error=error
+        summary=summary,
+        data=[],
+        actions=actions or [],
+        error=error,
+        recovery_actions=recovery_actions,
     )
