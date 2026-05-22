@@ -8,6 +8,10 @@ from decimal import Decimal
 import pytest
 
 from moneybin.database import Database
+from moneybin.privacy.payloads.networth import (
+    NetWorthHistoryPayload,
+    NetWorthSnapshotPayload,
+)
 from moneybin.services.networth_service import NetworthService
 
 
@@ -135,6 +139,7 @@ class TestCurrent:
         _seed_fct_balances_daily(db, [])
         svc = NetworthService(db)
         result = svc.current()
+        assert isinstance(result, NetWorthSnapshotPayload)
         assert result.balance_date == date(2026, 1, 31)
         assert result.net_worth == Decimal("1200.00")
         assert result.account_count == 2
@@ -244,7 +249,7 @@ class TestCurrent:
         svc = NetworthService(db)
         result = svc.current()
         assert len(result.per_account) == 2  # excluded account omitted
-        ids = [pa["account_id"] for pa in result.per_account]
+        ids = [pa.account_id for pa in result.per_account]
         assert "acct_c" not in ids
 
 
@@ -274,13 +279,16 @@ class TestHistory:
         )
         svc = NetworthService(db)
         result = svc.history(date(2026, 1, 1), date(2026, 3, 1), interval="monthly")
-        assert len(result) == 2
+        assert isinstance(result, NetWorthHistoryPayload)
+        assert len(result.points) == 2
         # Period-over-period change
-        feb = next(r for r in result if r["period"].startswith("2026-02"))
-        assert feb["change_abs"] == Decimal("200.00")
+        feb = next(
+            p for p in result.points if p.period and p.period.startswith("2026-02")
+        )
+        assert feb.change_abs == Decimal("200.00")
         # change_pct = 200/1000 = 0.2
-        assert feb["change_pct"] is not None
-        assert abs(feb["change_pct"] - 0.2) < 0.001
+        assert feb.change_pct is not None
+        assert abs(float(feb.change_pct) - 0.2) < 0.001
 
     @pytest.mark.unit
     def test_history_invalid_interval_raises(self, db: Database) -> None:
@@ -304,6 +312,6 @@ class TestHistory:
         )
         svc = NetworthService(db)
         result = svc.history(date(2026, 1, 1), date(2026, 2, 1), interval="monthly")
-        assert len(result) == 1
-        assert result[0]["change_abs"] is None
-        assert result[0]["change_pct"] is None
+        assert len(result.points) == 1
+        assert result.points[0].change_abs is None
+        assert result.points[0].change_pct is None

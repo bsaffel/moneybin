@@ -326,3 +326,70 @@ def test_response_envelope_next_cursor_absent_when_none() -> None:
     envelope = build_envelope(data=[], sensitivity="low")
     d = envelope.to_dict()
     assert "next_cursor" not in d
+
+
+@pytest.mark.unit
+def test_payload_encoder_does_not_chain_mock_model_dump() -> None:
+    """``PayloadEncoder.default`` must not recurse into ``MagicMock.model_dump``.
+
+    Regression test for a memory leak introduced by Phase 5 batch 3a
+    (``391f80b``). Both ``PayloadEncoder.default`` and
+    ``ResponseEnvelope.to_dict`` used to duck-type-detect Pydantic models
+    via ``hasattr(o, "model_dump") and callable(o.model_dump)``. A
+    ``MagicMock`` auto-generates ``model_dump`` (non-dunder), so the check
+    passed for any mock; calling ``mock.model_dump()`` returned **another**
+    ``MagicMock``. ``json.dumps`` then called ``default`` on the new mock,
+    which returned yet another, etc. The chain bottoms out only when
+    CPython's recursion limit fires (~1000 frames) — but on the way it
+    allocates ~8 GiB of transient ``MagicMock`` instances and ~2 s of
+    runtime per ``to_json`` call. A pytest session that drives a CLI
+    command with a mocked service return blows out the host's RAM.
+
+    With the encoder gated on ``isinstance(BaseModel)`` instead of a duck
+    check, ``default`` of a ``MagicMock`` falls through to ``str(o)`` in a
+    single pass.
+    """
+    from unittest.mock import MagicMock
+
+    from moneybin.protocol.envelope import PayloadEncoder
+
+    encoder = PayloadEncoder()
+    result = encoder.default(MagicMock())
+
+    # Fixed: encoder returns str(mock) via the TypeError-fallback branch.
+    # Buggy: encoder returns mock.model_dump() — another MagicMock.
+    assert isinstance(result, str), (
+        f"PayloadEncoder.default returned {type(result).__name__} on a "
+        "MagicMock payload; the model_dump duck-type check has regressed "
+        "and will cause unbounded mock chaining inside json.dumps"
+    )
+
+
+@pytest.mark.unit
+def test_response_envelope_to_dict_does_not_chain_mock_model_dump() -> None:
+    """``ResponseEnvelope.to_dict`` must not call ``MagicMock.model_dump``.
+
+    Companion regression test to ``test_payload_encoder_does_not_chain_mock_model_dump``.
+    ``to_dict`` had the same duck-type Pydantic check as the encoder; both
+    must use ``isinstance(BaseModel)``.
+    """
+    from unittest.mock import MagicMock
+
+    from moneybin.protocol.envelope import build_envelope
+
+    envelope = build_envelope(data=MagicMock(), sensitivity="low")
+    d = envelope.to_dict()
+
+    # Fixed: data passes through unchanged (the bare MagicMock).
+    # Buggy: data is mock.model_dump() — a different MagicMock that
+    # represents the call chain.
+    data = d["data"]
+    assert isinstance(data, MagicMock), (
+        f"to_dict produced data of type {type(data).__name__}; expected the original "
+        "MagicMock to pass through unchanged"
+    )
+    # Verify we got the original mock back, not a chained `mock.model_dump()` result.
+    # The chained variant's repr includes 'model_dump' in its mock name.
+    assert "model_dump" not in repr(data), (
+        f"to_dict drilled into mock.model_dump(); repr={data!r}"
+    )

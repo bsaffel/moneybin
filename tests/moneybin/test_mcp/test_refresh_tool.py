@@ -29,9 +29,9 @@ async def test_refresh_run_returns_envelope_on_success() -> None:
     ):
         get_db.return_value.__enter__.return_value = MagicMock()
         envelope = await refresh_run()
-    assert envelope.data["applied"] is True
-    assert envelope.data["duration_seconds"] == 4.2
-    assert envelope.data.get("error") is None
+    assert envelope.data.applied is True
+    assert envelope.data.duration_seconds == 4.2
+    assert envelope.data.error is None
 
 
 @pytest.mark.unit
@@ -43,9 +43,11 @@ async def test_refresh_run_surfaces_apply_error() -> None:
     ):
         get_db.return_value.__enter__.return_value = MagicMock()
         envelope = await refresh_run()
-    assert envelope.data["applied"] is False
-    assert envelope.data["error"] == "model boom"
-    # The recovery hint must reference valid paths, not retired MCP tools.
+    assert envelope.data.applied is False
+    assert envelope.data.error == "model boom"
+    # The recovery hint must reference tools that are actually registered.
+    # moneybin_discover was retired in #161; any reference to it would point
+    # an agent at an unknown tool exactly when guidance matters most.
     assert envelope.actions, "apply failure must emit a recovery hint"
     assert all("moneybin_discover" not in a for a in envelope.actions)
     assert any("moneybin transform plan" in a for a in envelope.actions)
@@ -61,7 +63,7 @@ async def test_refresh_run_steps_pass_through() -> None:
     ):
         get_db.return_value.__enter__.return_value = MagicMock()
         envelope = await refresh_run(steps=["transform"])
-    assert envelope.data["applied"] is True
+    assert envelope.data.applied is True
     _db_arg, kwargs = svc.call_args[0], svc.call_args[1]
     assert kwargs == {"steps": ["transform"]}
 

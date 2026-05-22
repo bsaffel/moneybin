@@ -11,6 +11,7 @@ import re
 from enum import StrEnum
 
 from moneybin.config import get_settings
+from moneybin.privacy.taxonomy import Tier
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,20 @@ class Sensitivity(StrEnum):
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
+    CRITICAL = "critical"
+
+
+_TIER_TO_SENSITIVITY: dict[Tier, Sensitivity] = {
+    Tier.LOW: Sensitivity.LOW,
+    Tier.MEDIUM: Sensitivity.MEDIUM,
+    Tier.HIGH: Sensitivity.HIGH,
+    Tier.CRITICAL: Sensitivity.CRITICAL,
+}
+
+
+def tier_to_sensitivity(tier: Tier) -> Sensitivity:
+    """Map a privacy ``Tier`` (numeric) to the MCP ``Sensitivity`` enum."""
+    return _TIER_TO_SENSITIVITY[tier]
 
 
 def log_tool_call(tool_name: str, sensitivity: Sensitivity) -> None:

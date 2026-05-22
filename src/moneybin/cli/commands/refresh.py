@@ -91,7 +91,11 @@ def refresh_command(
     )
 
     if output == OutputFormat.JSON:
-        render_or_json(refresh_envelope(result, requested=requested), output)
+        render_or_json(
+            refresh_envelope(result, requested=requested),
+            output,
+            cli_actor="refresh_command",
+        )
         if result.error is not None:
             raise typer.Exit(1)
         return

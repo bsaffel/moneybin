@@ -40,8 +40,9 @@ async def test_sync_pull_returns_envelope_with_summary(mock_build: MagicMock) ->
     from moneybin.mcp.tools.sync import sync_pull
 
     envelope = await sync_pull()
+    # SyncPullPayload has DESCRIPTION fields → Tier.MEDIUM derived sensitivity
     assert envelope.summary.sensitivity == "medium"
-    assert envelope.data["transactions_loaded"] == 5
+    assert envelope.data.transactions_loaded == 5
     service.pull.assert_called_once()
 
 
@@ -64,8 +65,9 @@ async def test_sync_status_returns_low_sensitivity(mock_build: MagicMock) -> Non
     from moneybin.mcp.tools.sync import sync_status
 
     envelope = await sync_status()
-    assert envelope.summary.sensitivity == "low"
-    assert envelope.data[0]["institution_name"] == "Chase"
+    # SyncConnectionRow has guidance: DESCRIPTION → Tier.MEDIUM derived sensitivity
+    assert envelope.summary.sensitivity == "medium"
+    assert envelope.data.connections[0].institution_name == "Chase"
 
 
 @pytest.mark.unit
@@ -86,10 +88,10 @@ async def test_sync_link_returns_link_url_with_medium_sensitivity(
     envelope = await sync_link()
     # link_url is a one-time bearer credential → medium sensitivity per design
     assert envelope.summary.sensitivity == "medium"
-    assert envelope.data["session_id"] == "sess_abc"
-    assert envelope.data["link_url"].startswith("https://hosted.plaid.com")
+    assert envelope.data.session_id == "sess_abc"
+    assert envelope.data.link_url.startswith("https://hosted.plaid.com")
     # Agent should know about expiration to decide when to give up polling
-    assert "expiration" in envelope.data
+    assert envelope.data.expiration is not None
 
 
 @pytest.mark.unit
@@ -111,8 +113,8 @@ async def test_sync_link_status_pending(mock_client_builder: MagicMock) -> None:
     from moneybin.mcp.tools.sync import sync_link_status
 
     envelope = await sync_link_status(session_id="sess_abc")
-    assert envelope.data["status"] == "pending"
-    assert "expiration" in envelope.data
+    assert envelope.data.status == "pending"
+    assert envelope.data.expiration is not None
 
 
 @pytest.mark.unit
@@ -151,8 +153,13 @@ async def test_sync_connect_alias_warns_and_forwards(
     from moneybin.mcp.tools.sync import sync_connect
 
     envelope = await sync_connect()
-    # Alias forwards to sync_link — envelope shape is identical.
-    assert envelope.data["session_id"] == "sess_abc"
+    # sync_connect is now the deprecated alias → forwards to sync_link and
+    # returns the same typed SyncConnectPayload (link_url: DESCRIPTION → MEDIUM).
+    assert envelope.summary.sensitivity == "medium"
+    assert envelope.data.session_id == "sess_abc"
+    assert envelope.data.link_url.startswith("https://hosted.plaid.com")
+    # Agent should know about expiration to decide when to give up polling.
+    assert envelope.data.expiration is not None
     # Deprecation warning fires via module logger; assert against the patched
     # logger directly (CLI test precedent — caplog doesn't always observe).
     assert mock_logger.warning.called
@@ -181,7 +188,8 @@ async def test_sync_connect_status_alias_warns_and_forwards(
     from moneybin.mcp.tools.sync import sync_connect_status
 
     envelope = await sync_connect_status(session_id="sess_abc")
-    assert envelope.data["status"] == "pending"
+    assert envelope.data.status == "pending"
+    assert envelope.data.expiration is not None
     assert mock_logger.warning.called
     assert any(
         "deprecated" in str(call.args[0]).lower()
@@ -198,7 +206,8 @@ async def test_sync_disconnect_calls_service(mock_build: MagicMock) -> None:
 
     envelope = await sync_disconnect(institution="Chase")
     service.disconnect.assert_called_once_with(institution="Chase")
-    assert envelope.summary.sensitivity == "medium"
+    # SyncDisconnectPayload has only TXN_TYPE + INSTITUTION → Tier.LOW derived sensitivity
+    assert envelope.summary.sensitivity == "low"
 
 
 @pytest.mark.unit

@@ -71,9 +71,9 @@ def test_splits_list(runner: CliRunner, db: Database) -> None:
         app, ["transactions", "splits", "list", "T1", "--output", "json"]
     )
     assert result.exit_code == 0
-    splits = json.loads(result.stdout)["data"]
-    assert len(splits) == 1
-    assert splits[0]["category"] == "Food"
+    body = json.loads(result.stdout)["data"]
+    assert len(body["splits"]) == 1
+    assert body["splits"][0]["category"] == "Food"
 
 
 def test_splits_remove_with_yes(runner: CliRunner, db: Database) -> None:

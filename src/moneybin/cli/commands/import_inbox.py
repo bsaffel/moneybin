@@ -60,7 +60,9 @@ def inbox_default(
         from moneybin.protocol.envelope import build_envelope
 
         render_or_json(
-            build_envelope(data=dataclasses.asdict(result), sensitivity="low"), output
+            build_envelope(data=dataclasses.asdict(result), sensitivity="low"),
+            output,
+            cli_actor="inbox_default",
         )
         return
     if quiet:
@@ -84,7 +86,9 @@ def inbox_list(
         from moneybin.protocol.envelope import build_envelope
 
         render_or_json(
-            build_envelope(data=dataclasses.asdict(result), sensitivity="low"), output
+            build_envelope(data=dataclasses.asdict(result), sensitivity="low"),
+            output,
+            cli_actor="inbox_list",
         )
         return
     if quiet:
@@ -120,6 +124,7 @@ def inbox_path(
                 sensitivity="low",
             ),
             output,
+            cli_actor="inbox_path",
         )
         return
     if quiet:

@@ -65,9 +65,9 @@ class TestReportsRecurringGet:
         result = await reports_recurring()
         assert isinstance(result, ResponseEnvelope)
         parsed = result.to_dict()
-        # Aggregate per-merchant rollup — sensitivity is "low" per mcp-server.md.
-        assert parsed["summary"]["sensitivity"] == "low"
-        merchants = {row["merchant_normalized"] for row in parsed["data"]}
+        # RecurringSubscriptionRow has TXN_AMOUNT → Tier.HIGH per privacy taxonomy.
+        assert parsed["summary"]["sensitivity"] == "high"
+        merchants = {row["merchant_normalized"] for row in parsed["data"]["rows"]}
         # Default min_confidence=0.5, status='active' → drops OldGym (inactive)
         # and WeakSignal (confidence=0.3).
         assert merchants == {"Netflix"}
@@ -76,7 +76,7 @@ class TestReportsRecurringGet:
     async def test_status_all_keeps_inactive(self, mcp_db: Path) -> None:
         self._install_view()
         parsed = (await reports_recurring(status="all")).to_dict()
-        merchants = {row["merchant_normalized"] for row in parsed["data"]}
+        merchants = {row["merchant_normalized"] for row in parsed["data"]["rows"]}
         # min_confidence=0.5 still drops WeakSignal but keeps OldGym (inactive).
         assert merchants == {"Netflix", "OldGym"}
 
@@ -139,9 +139,10 @@ class TestCategorizePendingGet:
     async def test_returns_all_rows_default_sort_date(self, mcp_db: Path) -> None:
         self._install_view()
         parsed = (await transactions_categorize_pending()).to_dict()
-        assert parsed["summary"]["sensitivity"] == "medium"
+        # CatPendingPayload has account_id: ACCOUNT_IDENTIFIER → Tier.CRITICAL
+        assert parsed["summary"]["sensitivity"] == "critical"
         # Default sort=date → most recent first (T3 > T2 > T1).
-        ids = [row["transaction_id"] for row in parsed["data"]]
+        ids = [row["transaction_id"] for row in parsed["data"]["transactions"]]
         assert ids == ["T3", "T2", "T1"]
 
     @pytest.mark.unit
@@ -151,14 +152,14 @@ class TestCategorizePendingGet:
         self._install_view()
         parsed = (await transactions_categorize_pending(sort="impact")).to_dict()
         # Impact sort: T2(500*30=15000) > T1(25*39=975) > T3(5*25=125).
-        ids = [row["transaction_id"] for row in parsed["data"]]
+        ids = [row["transaction_id"] for row in parsed["data"]["transactions"]]
         assert ids == ["T2", "T1", "T3"]
 
     @pytest.mark.unit
     async def test_min_amount_filters_low_value(self, mcp_db: Path) -> None:
         self._install_view()
         parsed = (await transactions_categorize_pending(min_amount=20.0)).to_dict()
-        ids = {row["transaction_id"] for row in parsed["data"]}
+        ids = {row["transaction_id"] for row in parsed["data"]["transactions"]}
         assert ids == {"T1", "T2"}
 
     @pytest.mark.unit
@@ -167,7 +168,7 @@ class TestCategorizePendingGet:
         # reference against core.dim_accounts.
         self._install_view()
         parsed = (await transactions_categorize_pending(account="ACC002")).to_dict()
-        ids = [row["transaction_id"] for row in parsed["data"]]
+        ids = [row["transaction_id"] for row in parsed["data"]["transactions"]]
         assert ids == ["T3"]
 
     @staticmethod
@@ -206,7 +207,7 @@ class TestCategorizePendingGet:
                     CAST(NULL AS VARCHAR) AS source_id
             """)  # noqa: S608  # test input, not executing dynamic SQL
         parsed = (await transactions_categorize_pending(account="Alpha")).to_dict()
-        ids = [row["transaction_id"] for row in parsed["data"]]
+        ids = [row["transaction_id"] for row in parsed["data"]["transactions"]]
         assert ids == ["TA"]
 
     @pytest.mark.unit
@@ -248,7 +249,7 @@ class TestCategorizePendingGet:
             db.conn.execute("DROP TABLE core.fct_transactions")
         result = await transactions_categorize_pending()
         parsed = result.to_dict()
-        assert parsed["data"] == []
+        assert parsed["data"]["transactions"] == []
         assert any("import" in a.lower() for a in parsed["actions"])
 
     @pytest.mark.unit
@@ -257,9 +258,9 @@ class TestCategorizePendingGet:
         parsed = (
             await transactions_categorize_pending(sort="impact", limit=1)
         ).to_dict()
-        assert len(parsed["data"]) == 1
+        assert len(parsed["data"]["transactions"]) == 1
         # Highest impact wins.
-        assert parsed["data"][0]["transaction_id"] == "T2"
+        assert parsed["data"]["transactions"][0]["transaction_id"] == "T2"
 
 
 class TestReportsBalanceDriftGet:
@@ -298,16 +299,17 @@ class TestReportsBalanceDriftGet:
     async def test_default_returns_all_statuses(self, mcp_db: Path) -> None:
         self._install_view()
         parsed = (await reports_balance_drift()).to_dict()
-        assert parsed["summary"]["sensitivity"] == "medium"
+        # BalanceDriftPayload has account_id: ACCOUNT_IDENTIFIER → Tier.CRITICAL
+        assert parsed["summary"]["sensitivity"] == "critical"
         # Sorted by drift_abs DESC.
-        statuses = [row["status"] for row in parsed["data"]]
+        statuses = [row["status"] for row in parsed["data"]["rows"]]
         assert statuses == ["drift", "clean", "no-data"]
 
     @pytest.mark.unit
     async def test_status_filter_drift_only(self, mcp_db: Path) -> None:
         self._install_view()
         parsed = (await reports_balance_drift(status="drift")).to_dict()
-        statuses = [row["status"] for row in parsed["data"]]
+        statuses = [row["status"] for row in parsed["data"]["rows"]]
         assert statuses == ["drift"]
 
     @pytest.mark.unit
@@ -316,9 +318,10 @@ class TestReportsBalanceDriftGet:
         parsed = (await reports_balance_drift(since="2026-01-01")).to_dict()
         # The 2025-12-01 row should be excluded.
         assert all(
-            row["assertion_date"].isoformat() >= "2026-01-01" for row in parsed["data"]
+            row["assertion_date"].isoformat() >= "2026-01-01"
+            for row in parsed["data"]["rows"]
         )
-        assert len(parsed["data"]) == 2
+        assert len(parsed["data"]["rows"]) == 2
 
     @pytest.mark.unit
     async def test_account_filter(self, mcp_db: Path) -> None:
@@ -327,8 +330,9 @@ class TestReportsBalanceDriftGet:
         # free-text account_name).
         self._install_view()
         parsed = (await reports_balance_drift(account="ACC002")).to_dict()
-        account_ids = [row["account_id"] for row in parsed["data"]]
-        assert account_ids == ["ACC002"]
+        account_ids = [row["account_id"] for row in parsed["data"]["rows"]]
+        # account_id is ACCOUNT_IDENTIFIER → redacted to last-4 chars by middleware
+        assert account_ids == ["****C002"]
 
     @pytest.mark.unit
     async def test_unknown_status_returns_error_envelope(self, mcp_db: object) -> None:

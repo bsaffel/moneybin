@@ -104,9 +104,10 @@ class TestCategorizeAssistCLI:
         )
         assert result.exit_code == 0, result.stderr  # type: ignore[union-attr]
         envelope = json.loads(result.output)  # type: ignore[union-attr]
-        assert isinstance(envelope["data"], list)
-        assert len(envelope["data"]) == 2
-        first = envelope["data"][0]
+        # CatAssistPayload serializes to {"transactions": [...]}
+        rows = envelope["data"]["transactions"]
+        assert len(rows) == 2
+        first = rows[0]
         # Redaction contract: redacted fields present, raw fields absent.
         assert "description_redacted" in first
         assert "memo_redacted" in first
@@ -130,8 +131,9 @@ class TestCategorizeAssistCLI:
         )
         assert result.exit_code == 0, result.stderr  # type: ignore[union-attr]
         envelope = json.loads(result.output)  # type: ignore[union-attr]
-        assert len(envelope["data"]) == 1
-        assert envelope["data"][0]["transaction_id"] == "txn-assist-1"
+        rows = envelope["data"]["transactions"]
+        assert len(rows) == 1
+        assert rows[0]["transaction_id"] == "txn-assist-1"
 
     def test_invalid_date_range_exits_two(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

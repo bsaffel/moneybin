@@ -20,6 +20,15 @@ from fastmcp import FastMCP
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.privacy.payloads.sync import (
+    SyncConnectionRow,
+    SyncConnectPayload,
+    SyncConnectStatusPayload,
+    SyncDisconnectPayload,
+    SyncPullInstitutionRow,
+    SyncPullPayload,
+    SyncStatusPayload,
+)
 from moneybin.protocol.envelope import (
     ResponseEnvelope,
     build_envelope,
@@ -56,12 +65,10 @@ def _build_sync_service() -> Generator[Any, None, None]:
         yield SyncService(client=client, db=db, loader=loader)
 
 
-@mcp_tool(sensitivity="medium", read_only=False, idempotent=False, open_world=True)
+@mcp_tool(read_only=False, idempotent=False, open_world=True)
 def sync_pull(
-    institution: str | None = None,
-    force: bool = False,
-    refresh: bool = True,
-) -> ResponseEnvelope:
+    institution: str | None = None, force: bool = False, refresh: bool = True
+) -> ResponseEnvelope[SyncPullPayload]:
     """Pull transactions, accounts, balances from connected institutions via moneybin-server.
 
     Amounts in loaded data follow MoneyBin accounting convention: negative = expense,
@@ -78,32 +85,59 @@ def sync_pull(
     SQLMesh apply dominates pull latency (typically 5–30s).
     """
     with _build_sync_service() as service:
-        result = service.pull(
-            institution=institution,
-            force=force,
-            refresh=refresh,
+        result = service.pull(institution=institution, force=force, refresh=refresh)
+    institutions = [
+        SyncPullInstitutionRow(
+            provider_item_id=inst.provider_item_id,
+            institution_name=inst.institution_name,
+            status=inst.status,
+            transaction_count=inst.transaction_count,
+            error=inst.error,
+            error_code=inst.error_code,
         )
+        for inst in result.institutions
+    ]
     return build_envelope(
-        data=result.model_dump(mode="json"),
-        sensitivity="medium",
+        data=SyncPullPayload(
+            job_id=result.job_id,
+            transactions_loaded=result.transactions_loaded,
+            accounts_loaded=result.accounts_loaded,
+            balances_loaded=result.balances_loaded,
+            transactions_removed=result.transactions_removed,
+            institutions=institutions,
+            transforms_applied=result.transforms_applied,
+            transforms_duration_seconds=result.transforms_duration_seconds,
+            transforms_error=result.transforms_error,
+        ),
         actions=["Use sync_status to see connection health going forward."],
     )
 
 
-@mcp_tool(sensitivity="low")
-def sync_status() -> ResponseEnvelope:
+@mcp_tool()
+def sync_status() -> ResponseEnvelope[SyncStatusPayload]:
     """Connected institutions, last-sync times, and error-state guidance."""
     with _build_sync_service() as service:
         connections = service.list_connections()
-    return build_envelope(
-        data=[c.model_dump(mode="json") for c in connections],
-        sensitivity="low",
-        actions=[],
-    )
+    rows = [
+        SyncConnectionRow(
+            id=c.id,
+            provider_item_id=c.provider_item_id,
+            institution_name=c.institution_name,
+            provider=c.provider,
+            status=c.status,
+            last_sync=c.last_sync.isoformat() if c.last_sync else None,
+            error_code=c.error_code,
+            guidance=c.guidance,
+        )
+        for c in connections
+    ]
+    return build_envelope(data=SyncStatusPayload(connections=rows), actions=[])
 
 
-@mcp_tool(sensitivity="medium", read_only=False, idempotent=False, open_world=True)
-def sync_link(institution: str | None = None) -> ResponseEnvelope:
+@mcp_tool(read_only=False, idempotent=False, open_world=True)
+def sync_link(
+    institution: str | None = None,
+) -> ResponseEnvelope[SyncConnectPayload]:
     """Link a bank account via Plaid (formerly: sync_connect).
 
     Initiates a bank-connection flow via moneybin-server's Plaid Hosted Link.
@@ -141,12 +175,11 @@ def sync_link(institution: str | None = None) -> ResponseEnvelope:
         # per design Section 8; let the server's Link flow name the institution.
     initiate = client.initiate_connect(provider_item_id=provider_item_id)
     return build_envelope(
-        data={
-            "session_id": initiate.session_id,
-            "link_url": initiate.link_url,
-            "expiration": initiate.expiration.isoformat(),
-        },
-        sensitivity="medium",
+        data=SyncConnectPayload(
+            session_id=initiate.session_id,
+            link_url=initiate.link_url,
+            expiration=initiate.expiration.isoformat(),
+        ),
         actions=[
             "Present link_url to the user and ask them to complete the connection in their browser.",
             "After they confirm completion, call sync_link_status with session_id to verify.",
@@ -156,8 +189,10 @@ def sync_link(institution: str | None = None) -> ResponseEnvelope:
     )
 
 
-@mcp_tool(sensitivity="low")
-def sync_link_status(session_id: str) -> ResponseEnvelope:
+@mcp_tool()
+def sync_link_status(
+    session_id: str,
+) -> ResponseEnvelope[SyncConnectStatusPayload]:
     """Poll a sync_link session for completion (formerly: sync_connect_status).
 
     Check whether a bank-connection session has completed. Call after the user
@@ -178,15 +213,14 @@ def sync_link_status(session_id: str) -> ResponseEnvelope:
     elif status.status == "failed":
         actions = ["Run sync_link to retry the connection."]
     return build_envelope(
-        data={
-            "session_id": status.session_id,
-            "status": status.status,
-            "provider_item_id": status.provider_item_id,
-            "institution_name": status.institution_name,
-            "error": status.error,
-            "expiration": status.expiration.isoformat(),
-        },
-        sensitivity="low",
+        data=SyncConnectStatusPayload(
+            session_id=status.session_id,
+            status=status.status,
+            provider_item_id=status.provider_item_id,
+            institution_name=status.institution_name,
+            error=status.error,
+            expiration=status.expiration.isoformat(),
+        ),
         actions=actions,
     )
 
@@ -196,8 +230,10 @@ def sync_link_status(session_id: str) -> ResponseEnvelope:
 # carry the deprecation signal. Call sync_link.__wrapped__ (the raw undecorated
 # function) so the alias's own @mcp_tool wrapper handles audit/timeout once —
 # otherwise the canonical tool's decorator fires a second time per call.
-@mcp_tool(sensitivity="medium", read_only=False, idempotent=False, open_world=True)
-def sync_connect(institution: str | None = None) -> ResponseEnvelope:
+@mcp_tool(read_only=False, idempotent=False, open_world=True)
+def sync_connect(
+    institution: str | None = None,
+) -> ResponseEnvelope[SyncConnectPayload]:
     """Deprecated alias for `sync_link`. Will be removed in the next minor release."""
     logger.warning(
         "MCP tool `sync_connect` is deprecated; use `sync_link`. "
@@ -216,8 +252,10 @@ def sync_connect(institution: str | None = None) -> ResponseEnvelope:
     )
 
 
-@mcp_tool(sensitivity="low")
-def sync_connect_status(session_id: str) -> ResponseEnvelope:
+@mcp_tool()
+def sync_connect_status(
+    session_id: str,
+) -> ResponseEnvelope[SyncConnectStatusPayload]:
     """Deprecated alias for `sync_link_status`. Will be removed in the next minor release."""
     logger.warning(
         "MCP tool `sync_connect_status` is deprecated; use `sync_link_status`. "
@@ -235,13 +273,12 @@ def sync_connect_status(session_id: str) -> ResponseEnvelope:
 
 
 @mcp_tool(
-    sensitivity="medium",
     read_only=False,
     destructive=True,
     idempotent=False,
     open_world=True,
 )
-def sync_disconnect(institution: str) -> ResponseEnvelope:
+def sync_disconnect(institution: str) -> ResponseEnvelope[SyncDisconnectPayload]:
     """Remove a bank connection on moneybin-server. Permanent — no revert path.
 
     Local pulled transactions are preserved in raw.plaid_* and core.fct_transactions;
@@ -252,8 +289,7 @@ def sync_disconnect(institution: str) -> ResponseEnvelope:
     with _build_sync_service() as service:
         service.disconnect(institution=institution)
     return build_envelope(
-        data={"status": "disconnected", "institution": institution},
-        sensitivity="medium",
+        data=SyncDisconnectPayload(status="disconnected", institution=institution),
         actions=[],
     )
 

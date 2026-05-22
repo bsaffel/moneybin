@@ -18,6 +18,7 @@ async def test_system_status_returns_response_envelope(mcp_db: object) -> None:
     assert "summary" in parsed
     assert "data" in parsed
     assert "actions" in parsed
+    # SystemStatusPayload is all AGGREGATE / TXN_TYPE / TIMESTAMP_OBSERVABILITY → Tier.LOW
     assert parsed["summary"]["sensitivity"] == "low"
 
 
@@ -118,4 +119,5 @@ async def test_system_doctor_sensitivity_is_low(mcp_db: object) -> None:
     from moneybin.mcp.tools.system import system_doctor
 
     result = await system_doctor()
-    assert result.to_dict()["summary"]["sensitivity"] == "low"
+    # SystemDoctorPayload has DESCRIPTION fields → Tier.MEDIUM derived sensitivity
+    assert result.to_dict()["summary"]["sensitivity"] == "medium"

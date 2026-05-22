@@ -114,7 +114,11 @@ def transactions_create(
         "tags": applied_tags,
     }
     if output == OutputFormat.JSON:
-        render_or_json(build_envelope(data=payload, sensitivity="low"), output)
+        render_or_json(
+            build_envelope(data=payload, sensitivity="low"),
+            output,
+            cli_actor="transactions_create",
+        )
         return
 
     logger.info(

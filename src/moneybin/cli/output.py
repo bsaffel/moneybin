@@ -17,7 +17,12 @@ Usage::
         json_fields: str | None = json_fields_option,
     ) -> None:
         ...
-        render_or_json(envelope, output, json_fields=json_fields)
+        # Always pass cli_actor — it gates the privacy.log audit event
+        # (the logging branch is `if cli_actor is not None`). Omitting it
+        # silently drops the audit row for this command's JSON output.
+        render_or_json(
+            envelope, output, json_fields=json_fields, cli_actor="entity_list"
+        )
 """
 
 from __future__ import annotations
@@ -26,10 +31,14 @@ import dataclasses
 import logging
 from collections.abc import Callable
 from enum import StrEnum
+from typing import Any
 
 import typer
 
 from moneybin.errors import UserError
+from moneybin.privacy.introspection import derive_tier, extract_data_classes
+from moneybin.privacy.log import build_tool_call_event, write_privacy_event
+from moneybin.privacy.redaction import has_active_transform, redact_typed
 from moneybin.protocol.envelope import ResponseEnvelope, build_error_envelope
 
 logger = logging.getLogger(__name__)
@@ -78,17 +87,31 @@ json_fields_option: str | None = typer.Option(
 
 
 def render_or_json(
-    envelope: ResponseEnvelope,
+    envelope: ResponseEnvelope[Any],
     output: OutputFormat,
-    render_fn: Callable[[ResponseEnvelope], None] | None = None,
+    render_fn: Callable[[ResponseEnvelope[Any]], None] | None = None,
     json_fields: str | None = None,
+    cli_actor: str | None = None,
 ) -> None:
     """Render a response envelope as text or JSON.
+
+    TEXT path: delegates to ``render_fn`` (caller owns text formatting and
+    is expected to display only appropriate fields such as last_4). No
+    redaction and no privacy.log event.
+
+    JSON path:
+    - Applies ``redact_typed`` to mask CRITICAL fields (e.g. ACCOUNT_IDENTIFIER)
+      before serialising, mirroring the ``@mcp_tool`` decorator's behaviour.
+    - When ``cli_actor`` is provided, writes a ``privacy.log.jsonl`` event with
+      ``actor="cli.<cli_actor>"`` and ``action="tool_call"``.
+    - ``json_fields`` field-filter (``--fields`` flag) runs post-redaction on
+      ``list`` payloads; typed dataclass payloads skip this filter (no-op
+      because Phase 5 migrated CLI commands to typed payloads).
 
     When ``json_fields`` is supplied (and non-empty) and ``output`` is JSON,
     only those comma-separated keys are kept in each ``data`` list item.
     An empty string ``""`` is treated the same as ``None`` — no filtering.
-    Silently skipped when ``data`` is a dict (write-result shape).
+    Silently skipped when ``data`` is not a list.
     Leading/trailing whitespace around each field name is stripped; empty
     segments (e.g. from ``"id,,amount"``) are silently ignored.
     """
@@ -96,13 +119,114 @@ def render_or_json(
         if render_fn is not None:
             render_fn(envelope)
         return
-    if json_fields and isinstance(envelope.data, list):
+
+    # Capture the payload's declared classes BEFORE the json_fields filter
+    # mutates envelope.data into a bare list[dict] — otherwise the privacy
+    # log records classes_returned=[] for filtered responses, losing the
+    # audit signal.
+    original_data_type = (
+        type(envelope.data) if envelope.data is not None else type(None)
+    )  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
+
+    # Redact fields with an active transform before serialising. Skip the walk
+    # for payloads with none — the result would be value-identical and the cost
+    # is real. Derive from the payload TYPE (same source the MCP decorator uses)
+    # rather than envelope.summary.sensitivity, which CLI commands set manually
+    # and often understate (e.g. accounts_resolve passes "low" but its payload
+    # contains ACCOUNT_IDENTIFIER → an active transform).
+    if (
+        envelope.error is None
+        and envelope.data is not None  # pyright: ignore[reportUnknownMemberType]
+        and _has_active_transform(original_data_type)  # pyright: ignore[reportUnknownArgumentType]
+    ):
+        redacted_data = redact_typed(envelope.data, consent=None)  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
+        envelope = dataclasses.replace(envelope, data=redacted_data)  # pyright: ignore[reportUnknownArgumentType]
+
+    # Stamp summary.sensitivity from the derived tier so the emitted envelope's
+    # summary matches what was actually returned. Mirrors the MCP decorator's
+    # post-call correction. Agents using `summary.sensitivity` to decide trust
+    # level would otherwise underestimate the tier whenever a CLI command
+    # passes a too-low value to build_envelope().
+    derived_sensitivity = derive_log_sensitivity(
+        original_data_type,  # pyright: ignore[reportUnknownArgumentType]
+        envelope.summary.sensitivity,
+    )
+    if derived_sensitivity != envelope.summary.sensitivity:
+        updated_summary = dataclasses.replace(
+            envelope.summary,
+            sensitivity=derived_sensitivity,  # pyright: ignore[reportArgumentType]
+        )
+        envelope = dataclasses.replace(envelope, summary=updated_summary)  # pyright: ignore[reportUnknownArgumentType]
+
+    if json_fields and isinstance(envelope.data, list):  # pyright: ignore[reportUnknownMemberType]
         fields = {f.strip() for f in json_fields.split(",") if f.strip()}
         filtered = [
-            {k: v for k, v in row.items() if k in fields} for row in envelope.data
+            {k: v for k, v in row.items() if k in fields}  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
+            for row in envelope.data  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
         ]
-        envelope = dataclasses.replace(envelope, data=filtered)
+        envelope = dataclasses.replace(envelope, data=filtered)  # pyright: ignore[reportUnknownArgumentType]
+
+    if cli_actor is not None:
+        classes_returned = [
+            c.value
+            for c in sorted(extract_data_classes(original_data_type))  # pyright: ignore[reportUnknownArgumentType]
+        ]
+        # envelope.summary.sensitivity is the derived value (stamped above) for
+        # typed payloads, or the command's declared value for bare list/dict
+        # payloads — either way it's the authoritative tier for the audit log.
+        write_privacy_event(
+            build_tool_call_event(
+                actor=f"cli.{cli_actor}",
+                sensitivity=envelope.summary.sensitivity,
+                classes_returned=classes_returned,
+                row_count=envelope.summary.returned_count,
+            )
+        )
+
     typer.echo(envelope.to_json())
+
+
+def derive_log_sensitivity(payload_type: type, envelope_sensitivity: str) -> str:
+    """Return the audit-log sensitivity string derived from ``payload_type``.
+
+    For bare list/dict/None payloads (legacy CLI commands not yet migrated to
+    typed payloads), falls back to ``envelope_sensitivity`` — the command's
+    own declaration is the only signal we have when the type carries no
+    class metadata. ``db_key_show`` passes ``{"key": ...}`` with
+    ``sensitivity="high"``; the audit log must preserve that, not flatten
+    every dict payload to ``"low"``.
+    """
+    if payload_type in (list, dict, tuple, set, type(None)):
+        return envelope_sensitivity
+    return derive_tier(payload_type).name.lower()
+
+
+def _has_active_transform(payload_type: type) -> bool:
+    """Return True if ``payload_type`` carries any field with an active transform.
+
+    Used by the JSON output path to skip ``redact_typed`` for payloads that
+    would pass through unchanged. Delegates to the same
+    ``has_active_transform`` gate the ``@mcp_tool`` decorator's wrapper uses
+    (``decorator.py``), so the CLI and MCP redaction paths stay coherent:
+    when PR3 wires HIGH/MEDIUM transforms (hash-placeholder for MERCHANT_NAME,
+    date-shifting for TXN_DATE), both paths begin redacting those fields
+    together. A ``tier == CRITICAL`` check here would be the "CRITICAL-only
+    trap" — it would leave the CLI ``--output json`` path leaking MEDIUM/HIGH
+    fields the MCP path masks.
+
+    ``PrivacyContractError`` deliberately propagates: a typed payload
+    missing ``Annotated[T, DataClass]`` metadata is a contract bug, not
+    a "non-critical" case. The MCP path fails the same way at
+    registration time; the CLI has no equivalent gate so this is the
+    only place the violation can surface.
+    """
+    # Bare builtin containers (legacy CLI commands still passing dict/list
+    # payloads pre-typed-payload migration) have no field annotations.
+    # Short-circuit so we don't conflate "no annotation possible" with
+    # "annotation missing on a typed payload".
+    if payload_type in (list, dict, tuple, set):
+        return False
+    return has_active_transform(payload_type)
 
 
 def emit_json_error(user_error: UserError) -> None:

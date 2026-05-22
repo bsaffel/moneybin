@@ -37,7 +37,7 @@ def test_tags_add_and_list(runner: CliRunner, db: Database) -> None:
     )
     assert add.exit_code == 0, add.output
     payload = json.loads(add.stdout)["data"]
-    assert sorted(payload["added"]) == ["food", "personal"]
+    assert sorted(payload["tags"]) == ["food", "personal"]
 
     listed = runner.invoke(
         app, ["transactions", "tags", "list", "T1", "--output", "json"]
@@ -54,7 +54,7 @@ def test_tags_remove(runner: CliRunner, db: Database) -> None:
     )
     assert result.exit_code == 0, result.output
     body = json.loads(result.stdout)["data"]
-    assert body["removed"] == ["personal"]
+    assert body["tags"] == ["personal"]
     rows = db.conn.execute(
         "SELECT COUNT(*) FROM app.transaction_tags WHERE transaction_id = 'T1'"
     ).fetchone()

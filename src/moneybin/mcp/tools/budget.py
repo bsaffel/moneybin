@@ -15,16 +15,15 @@ from fastmcp import FastMCP
 from moneybin.database import get_database
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.protocol.envelope import ResponseEnvelope
+from moneybin.privacy.payloads.budget import BudgetSetPayload
+from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.budget_service import BudgetService
 
 
-@mcp_tool(sensitivity="low", domain="budget", read_only=False)
+@mcp_tool(domain="budget", read_only=False)
 def budget_set(
-    category: str,
-    monthly_amount: str,
-    start_month: str | None = None,
-) -> ResponseEnvelope:
+    category: str, monthly_amount: str, start_month: str | None = None
+) -> ResponseEnvelope[BudgetSetPayload]:
     """Create or update a monthly budget target for a category.
 
     If a budget already exists for this category with an overlapping
@@ -42,7 +41,13 @@ def budget_set(
             monthly_amount=Decimal(monthly_amount),
             start_month=start_month,
         )
-    return result.to_envelope()
+    return build_envelope(
+        data=result.to_payload(),
+        actions=[
+            "Use reports_budget to see spending vs budget",
+            "Use reports_spending for category breakdown",
+        ],
+    )
 
 
 def register_budget_tools(mcp: FastMCP) -> None:

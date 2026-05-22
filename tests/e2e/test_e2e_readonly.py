@@ -235,7 +235,8 @@ class TestDBReadOnlyCommands:
 
         envelope = json.loads(result.stdout)
         assert "data" in envelope
-        assert isinstance(envelope["data"], list)
+        # CatAssistPayload wraps rows under `transactions`.
+        assert isinstance(envelope["data"]["transactions"], list)
 
     def test_categorize_stats(self, e2e_profile: dict[str, str]) -> None:
         result = run_cli("transactions", "categorize", "stats", env=e2e_profile)

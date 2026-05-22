@@ -151,19 +151,19 @@ def test_archive_cascade_excludes_from_networth() -> None:
 
         # AccountService.list_accounts() default hides archived → 1 result.
         default_list = svc.list_accounts(include_archived=False)
-        assert len(default_list.accounts) == 1, (
-            f"list_accounts() default: expected 1 account, got {len(default_list.accounts)}"
+        assert len(default_list.rows) == 1, (
+            f"list_accounts() default: expected 1 account, got {len(default_list.rows)}"
         )
-        assert default_list.accounts[0]["account_id"] == "SAVINGS1", (
-            f"Expected SAVINGS1 in default list, got {default_list.accounts[0]['account_id']}"
+        assert default_list.rows[0].account_id == "SAVINGS1", (
+            f"Expected SAVINGS1 in default list, got {default_list.rows[0].account_id}"
         )
 
         # list_accounts(include_archived=True) returns both accounts.
         full_list = svc.list_accounts(include_archived=True)
-        assert len(full_list.accounts) == 2, (
-            f"list_accounts(include_archived=True): expected 2, got {len(full_list.accounts)}"
+        assert len(full_list.rows) == 2, (
+            f"list_accounts(include_archived=True): expected 2, got {len(full_list.rows)}"
         )
-        ids = {row["account_id"] for row in full_list.accounts}
+        ids = {row.account_id for row in full_list.rows}
         assert ids == {"CHECKING1", "SAVINGS1"}, (
             f"Expected both accounts in --include-archived list, got {ids}"
         )

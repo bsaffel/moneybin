@@ -13,7 +13,9 @@ from moneybin.errors import UserError
 from moneybin.protocol.envelope import ResponseEnvelope, SummaryMeta
 
 
-def _make_envelope(rows: list[dict[str, Any]] | None = None) -> ResponseEnvelope:
+def _make_envelope(
+    rows: list[dict[str, Any]] | None = None,
+) -> ResponseEnvelope[list[dict[str, Any]]]:
     data = rows if rows is not None else [{"id": "a1", "amount": "10.00"}]
     return ResponseEnvelope(
         summary=SummaryMeta(total_count=len(data), returned_count=len(data)),

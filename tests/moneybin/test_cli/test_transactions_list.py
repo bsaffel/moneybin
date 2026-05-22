@@ -89,7 +89,9 @@ def test_list_json_output_returns_envelope() -> None:
     parsed = json.loads(result.output)
     assert "summary" in parsed
     assert "data" in parsed
-    assert parsed["summary"]["sensitivity"] == "medium"
+    # Transaction rows carry account_id (ACCOUNT_IDENTIFIER → CRITICAL); CLI
+    # render_or_json stamps the derived tier over the command's declared value.
+    assert parsed["summary"]["sensitivity"] == "critical"
 
 
 @pytest.mark.unit

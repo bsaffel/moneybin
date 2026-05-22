@@ -10,6 +10,7 @@ from moneybin.cli.utils import emit_json, handle_cli_errors
 from moneybin.database import get_database
 from moneybin.matching.persistence import VALID_MATCH_TYPES
 from moneybin.services.matching_service import MatchingService
+from moneybin.tables import INT_TRANSACTIONS_UNIONED
 
 app = typer.Typer(
     help="Review and manage transaction matches (dedup, transfers)",
@@ -142,7 +143,7 @@ def matches_backfill(
         with handle_cli_errors():
             with get_database() as db:
                 count = db.execute(
-                    "SELECT COUNT(*) FROM prep.int_transactions__unioned"
+                    f"SELECT COUNT(*) FROM {INT_TRANSACTIONS_UNIONED.full_name}"  # noqa: S608 — TableRef constant
                 ).fetchone()
                 total = count[0] if count else 0
                 logger.info(
