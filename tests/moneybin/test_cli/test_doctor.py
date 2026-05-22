@@ -19,7 +19,7 @@ _PASSING_REPORT = DoctorReport(
         InvariantResult("fct_transactions_sign_convention", "pass", None, []),
         InvariantResult("bridge_transfers_balanced", "pass", None, []),
         InvariantResult("categorization_coverage", "pass", None, []),
-        InvariantResult("staging_coverage", "skipped", "no is_primary column", []),
+        InvariantResult("dedup_reconciliation", "pass", None, []),
     ],
     transaction_count=100,
 )
@@ -32,7 +32,7 @@ _FAILING_REPORT = DoctorReport(
         ),
         InvariantResult("bridge_transfers_balanced", "pass", None, []),
         InvariantResult("categorization_coverage", "warn", "80% uncategorized", []),
-        InvariantResult("staging_coverage", "skipped", "no is_primary column", []),
+        InvariantResult("dedup_reconciliation", "pass", None, []),
     ],
     transaction_count=50,
 )
@@ -117,6 +117,33 @@ def test_doctor_warn_only_exits_0(
     mock_svc_cls.return_value.run_all.return_value = warn_report
     result = runner.invoke(app, ["system", "doctor"])
     assert result.exit_code == 0
+
+
+@patch("moneybin.cli.commands.system.doctor.get_database")
+@patch("moneybin.cli.commands.system.doctor.DoctorService")
+def test_doctor_renders_skipped_invariant(
+    mock_svc_cls: MagicMock, mock_get_db: MagicMock
+) -> None:
+    """A skipped invariant renders the skip icon and is counted in the summary."""
+    skipped_report = DoctorReport(
+        invariants=[
+            InvariantResult("fct_transactions_fk_integrity", "pass", None, []),
+            InvariantResult(
+                "dedup_reconciliation",
+                "skipped",
+                "prep/core layer not available; run transform first",
+                [],
+            ),
+        ],
+        transaction_count=0,
+    )
+    mock_get_db.return_value = MagicMock()
+    mock_svc_cls.return_value.run_all.return_value = skipped_report
+    result = runner.invoke(app, ["system", "doctor"])
+    assert result.exit_code == 0  # skipped is not a failure
+    assert "⏭️" in result.output
+    assert "dedup_reconciliation" in result.output
+    assert "skipped" in result.output
 
 
 @patch("moneybin.cli.commands.system.doctor.get_database")
