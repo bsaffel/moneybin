@@ -226,6 +226,29 @@ def test_refresh_clean_success_keeps_check_banner(runner: CliRunner) -> None:
     assert "✅ Refresh complete" in result.output
 
 
+def test_refresh_apply_failure_with_matcher_crash_suppresses_retry_hint(
+    runner: CliRunner,
+) -> None:
+    """Apply failure + matcher crash: ⚠️ warning shows, 💡 step-retry hint suppressed."""
+    fake_result = RefreshResult(
+        applied=False,
+        duration_seconds=1.0,
+        error="apply boom",
+        matching_error="matcher boom",
+    )
+    with (
+        patch("moneybin.services.refresh.refresh", return_value=fake_result),
+        patch("moneybin.database.get_database") as get_db,
+    ):
+        get_db.return_value.__enter__.return_value = MagicMock()
+        result = runner.invoke(app, ["refresh"])
+
+    assert result.exit_code == 1
+    assert "Matching step failed" in result.output  # crash still surfaced
+    assert "Re-run the failed step" not in result.output  # retry hint suppressed
+    assert "Refresh failed: apply boom" in result.output
+
+
 def test_refresh_unknown_step_rejected_at_parse_time(runner: CliRunner) -> None:
     """Unknown step name is rejected by Typer before the service runs (exit 2)."""
     result = runner.invoke(app, ["refresh", "--step", "bogus"])

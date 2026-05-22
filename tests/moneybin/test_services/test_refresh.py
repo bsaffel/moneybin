@@ -115,6 +115,21 @@ def test_refresh_matcher_crash_populates_matching_error(
 
 
 @pytest.mark.unit
+def test_refresh_matcher_crash_preserved_when_apply_also_fails(
+    patched_services: dict[str, MagicMock],
+) -> None:
+    """A matcher crash is preserved in the result even when SQLMesh apply fails."""
+    patched_services["matcher_run"].side_effect = RuntimeError("matcher boom")
+    patched_services["transform_apply"].return_value = ApplyResult(
+        applied=False, duration_seconds=1.0, error="apply boom"
+    )
+    result = refresh(MagicMock())
+    assert result.applied is False
+    assert result.error == "apply boom"  # apply failure surfaced
+    assert result.matching_error == "matcher boom"  # matcher crash still preserved
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     "exc",
     [duckdb.CatalogException("no view"), duckdb.BinderException("no col")],

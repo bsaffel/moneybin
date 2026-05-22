@@ -126,6 +126,11 @@ def refresh_envelope(
         actions.append(REFRESH_CATEGORIZE_FOLLOWUP_HINT)
 
     recovery = _step_crash_recovery_actions(result)
+    # `or None` (omit the key when empty) is correct here: refresh always uses
+    # build_envelope, whose ResponseEnvelope.error is None, so there is no
+    # error.recovery_actions to fall through to — the [] suppress vs None
+    # fallthrough distinction (relevant only to build_error_envelope) doesn't
+    # apply. Both the clean and apply-failed cases simply omit the key.
     return build_envelope(
         data=data,
         sensitivity="low",

@@ -101,7 +101,10 @@ def refresh_command(
             raise typer.Exit(1)
         return
 
-    if has_step_error:
+    # Suppress the step-retry hint when apply also failed: the apply error is
+    # the blocker (reported by ❌ below), so "re-run the failed step" would
+    # misdirect the agent before it resolves the blocking failure.
+    if has_step_error and result.error is None:
         logger.info(
             "💡 Re-run the failed step (e.g. `moneybin refresh --step match`) "
             "or run `moneybin system doctor` to diagnose."
