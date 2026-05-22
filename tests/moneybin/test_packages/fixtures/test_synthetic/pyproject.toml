@@ -1,0 +1,11 @@
+[project]
+name = "moneybin-test-synthetic"
+version = "1.0.0"
+description = "Synthetic package for framework regression tests"
+requires-python = ">=3.11"
+
+[project.entry-points."moneybin.packages"]
+test_synthetic = "test_synthetic"
+
+[tool.setuptools.packages.find]
+where = ["."]

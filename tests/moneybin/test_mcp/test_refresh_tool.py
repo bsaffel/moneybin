@@ -9,6 +9,7 @@ from fastmcp import FastMCP
 
 from moneybin.mcp.adapters.refresh_adapters import REFRESH_CATEGORIZE_FOLLOWUP_HINT
 from moneybin.mcp.tools.refresh import refresh_run, register_refresh_tools
+from moneybin.services.refresh import RefreshResult
 
 
 @pytest.mark.unit
@@ -21,7 +22,7 @@ async def test_refresh_run_is_registered() -> None:
 
 @pytest.mark.unit
 async def test_refresh_run_returns_envelope_on_success() -> None:
-    fake_result = MagicMock(applied=True, duration_seconds=4.2, error=None)
+    fake_result = RefreshResult(applied=True, duration_seconds=4.2, error=None)
     with (
         patch("moneybin.mcp.tools.refresh.refresh", return_value=fake_result),
         patch("moneybin.mcp.tools.refresh.get_database") as get_db,
@@ -35,7 +36,7 @@ async def test_refresh_run_returns_envelope_on_success() -> None:
 
 @pytest.mark.unit
 async def test_refresh_run_surfaces_apply_error() -> None:
-    fake_result = MagicMock(applied=False, duration_seconds=1.1, error="model boom")
+    fake_result = RefreshResult(applied=False, duration_seconds=1.1, error="model boom")
     with (
         patch("moneybin.mcp.tools.refresh.refresh", return_value=fake_result),
         patch("moneybin.mcp.tools.refresh.get_database") as get_db,
@@ -55,7 +56,7 @@ async def test_refresh_run_surfaces_apply_error() -> None:
 @pytest.mark.unit
 async def test_refresh_run_steps_pass_through() -> None:
     """``refresh_run(steps=[...])`` forwards the list verbatim to refresh()."""
-    fake_result = MagicMock(applied=True, duration_seconds=1.5, error=None)
+    fake_result = RefreshResult(applied=True, duration_seconds=1.5, error=None)
     with (
         patch("moneybin.mcp.tools.refresh.refresh", return_value=fake_result) as svc,
         patch("moneybin.mcp.tools.refresh.get_database") as get_db,
@@ -70,7 +71,7 @@ async def test_refresh_run_steps_pass_through() -> None:
 @pytest.mark.unit
 async def test_refresh_run_steps_none_calls_service_with_none() -> None:
     """No ``steps`` argument means service receives ``steps=None`` (default cascade)."""
-    fake_result = MagicMock(applied=True, duration_seconds=4.2, error=None)
+    fake_result = RefreshResult(applied=True, duration_seconds=4.2, error=None)
     with (
         patch("moneybin.mcp.tools.refresh.refresh", return_value=fake_result) as svc,
         patch("moneybin.mcp.tools.refresh.get_database") as get_db,
@@ -83,7 +84,7 @@ async def test_refresh_run_steps_none_calls_service_with_none() -> None:
 @pytest.mark.unit
 async def test_refresh_run_emits_followup_hint_when_match_without_categorize() -> None:
     """When match is requested but categorize is omitted, actions[] hints at categorize."""
-    fake_result = MagicMock(applied=True, duration_seconds=1.0, error=None)
+    fake_result = RefreshResult(applied=True, duration_seconds=1.0, error=None)
     with (
         patch("moneybin.mcp.tools.refresh.refresh", return_value=fake_result),
         patch("moneybin.mcp.tools.refresh.get_database") as get_db,
@@ -100,7 +101,7 @@ async def test_refresh_run_suppresses_followup_hint_on_transform_failure() -> No
     When transform was requested and failed, categorize would run against
     stale outputs — the agent should resolve the apply failure first.
     """
-    fake_result = MagicMock(applied=False, duration_seconds=0.5, error="model boom")
+    fake_result = RefreshResult(applied=False, duration_seconds=0.5, error="model boom")
     with (
         patch("moneybin.mcp.tools.refresh.refresh", return_value=fake_result),
         patch("moneybin.mcp.tools.refresh.get_database") as get_db,
@@ -117,7 +118,7 @@ async def test_refresh_run_suppresses_followup_hint_on_transform_failure() -> No
 @pytest.mark.unit
 async def test_refresh_run_no_followup_hint_when_categorize_included() -> None:
     """Default-cascade or explicit categorize → no follow-up hint."""
-    fake_result = MagicMock(applied=True, duration_seconds=1.0, error=None)
+    fake_result = RefreshResult(applied=True, duration_seconds=1.0, error=None)
     with (
         patch("moneybin.mcp.tools.refresh.refresh", return_value=fake_result),
         patch("moneybin.mcp.tools.refresh.get_database") as get_db,

@@ -17,6 +17,7 @@ from collections.abc import Iterator
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import duckdb
 import pytest
 
 from moneybin.errors import UserError
@@ -70,7 +71,116 @@ def patched_services() -> Iterator[dict[str, MagicMock]]:
             "matcher_run": matcher_run,
             "transform_apply": transform_apply,
             "categorize_pending": categorize_pending,
+            "auto_stats": auto_stats,
         }
+
+
+@pytest.mark.unit
+def test_refresh_result_has_error_surfacing_fields() -> None:
+    """RefreshResult carries matcher/categorizer errors and self-heal records."""
+    from moneybin.services.refresh import SelfHealRecord
+
+    r = RefreshResult(applied=True, duration_seconds=1.0)
+    assert r.matching_error is None
+    assert r.categorization_error is None
+    assert r.self_heal_actions == ()
+
+    rec = SelfHealRecord(
+        recipe_id="orphan_categorizations_cleanup",
+        rows_affected=3,
+        operation_id="op_self_heal_orphan_categorizations_cleanup_abc",
+        timestamp="2026-05-22T00:00:00Z",
+    )
+    r2 = RefreshResult(
+        applied=True,
+        duration_seconds=1.0,
+        matching_error="boom",
+        categorization_error="bang",
+        self_heal_actions=(rec,),
+    )
+    assert r2.matching_error == "boom"
+    assert r2.categorization_error == "bang"
+    assert r2.self_heal_actions[0].recipe_id == "orphan_categorizations_cleanup"
+
+
+@pytest.mark.unit
+def test_refresh_matcher_crash_populates_matching_error(
+    patched_services: dict[str, MagicMock],
+) -> None:
+    """A real matcher crash sets matching_error; pipeline continues to transform."""
+    patched_services["matcher_run"].side_effect = RuntimeError("matcher boom")
+    result = refresh(MagicMock())
+    assert result.matching_error == "matcher boom"
+    assert result.applied is True  # transform still ran despite the matcher crash
+
+
+@pytest.mark.unit
+def test_refresh_matcher_crash_preserved_when_apply_also_fails(
+    patched_services: dict[str, MagicMock],
+) -> None:
+    """A matcher crash is preserved in the result even when SQLMesh apply fails."""
+    patched_services["matcher_run"].side_effect = RuntimeError("matcher boom")
+    patched_services["transform_apply"].return_value = ApplyResult(
+        applied=False, duration_seconds=1.0, error="apply boom"
+    )
+    result = refresh(MagicMock())
+    assert result.applied is False
+    assert result.error == "apply boom"  # apply failure surfaced
+    assert result.matching_error == "matcher boom"  # matcher crash still preserved
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "exc",
+    [duckdb.CatalogException("no view"), duckdb.BinderException("no col")],
+)
+def test_refresh_matcher_missing_views_is_not_an_error(
+    patched_services: dict[str, MagicMock], exc: Exception
+) -> None:
+    """Catalog/Binder exceptions (views not built on first load) are expected, not surfaced."""
+    patched_services["matcher_run"].side_effect = exc
+    result = refresh(MagicMock())
+    assert result.matching_error is None
+
+
+@pytest.mark.unit
+def test_refresh_categorizer_crash_populates_categorization_error(
+    patched_services: dict[str, MagicMock],
+) -> None:
+    """A real categorizer crash sets categorization_error; pipeline continues."""
+    patched_services["categorize_pending"].side_effect = RuntimeError("cat boom")
+    result = refresh(MagicMock())
+    assert result.categorization_error == "cat boom"
+    assert result.applied is True
+
+
+@pytest.mark.unit
+def test_refresh_auto_rule_stats_crash_is_not_a_categorization_error(
+    patched_services: dict[str, MagicMock],
+) -> None:
+    """A crash in the post-step auto-rule stats read must NOT set categorization_error.
+
+    categorize_pending() succeeded; the proposal-count read is informational.
+    Conflating the two would falsely tell the agent to retry categorization.
+    """
+    patched_services["auto_stats"].side_effect = RuntimeError("stats boom")
+    result = refresh(MagicMock())
+    assert result.categorization_error is None
+    assert result.applied is True
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "exc",
+    [duckdb.CatalogException("nope"), duckdb.BinderException("no col")],
+)
+def test_refresh_categorizer_missing_tables_is_not_an_error(
+    patched_services: dict[str, MagicMock], exc: Exception
+) -> None:
+    """Catalog/Binder exceptions (tables not built on first load) are expected, not surfaced."""
+    patched_services["categorize_pending"].side_effect = exc
+    result = refresh(MagicMock())
+    assert result.categorization_error is None
 
 
 @pytest.mark.unit

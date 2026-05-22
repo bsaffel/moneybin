@@ -246,17 +246,36 @@ class SystemDoctorPayload:
 
 
 @dataclass(frozen=True, slots=True)
+class SelfHealActionRow:
+    """One self-heal recipe execution inside RefreshRunPayload.
+
+    Carrier ships ahead of the self-heal safelist (M2D PR 7); the list is
+    empty until that lands. All fields are operational metadata (Tier.LOW).
+    """
+
+    recipe_id: Annotated[str, DataClass.RECORD_ID]
+    rows_affected: Annotated[int, DataClass.AGGREGATE]
+    operation_id: Annotated[str, DataClass.RECORD_ID]
+    timestamp: Annotated[str, DataClass.TIMESTAMP_OBSERVABILITY]
+
+
+@dataclass(frozen=True, slots=True)
 class RefreshRunPayload:
     """Payload for ``refresh_run`` — pipeline execution result.
 
-    ``error`` is DESCRIPTION (Tier.MEDIUM): SQLMesh error type names are
-    non-PII but we conservatively classify them as DESCRIPTION since
-    error strings in adjacent tooling sometimes embed model paths.
+    The ``*_error`` fields are DESCRIPTION (Tier.MEDIUM): SQLMesh / step error
+    type names are non-PII but we conservatively classify them as DESCRIPTION
+    since error strings in adjacent tooling sometimes embed model paths. They
+    are emitted as stable ``null`` keys (not omitted when absent) so agents see
+    a consistent shape — matching the ``self_heal_actions`` stable-key intent.
     """
 
     applied: Annotated[bool, DataClass.TXN_TYPE]
     duration_seconds: Annotated[float | None, DataClass.AGGREGATE]
     error: Annotated[str | None, DataClass.DESCRIPTION]
+    matching_error: Annotated[str | None, DataClass.DESCRIPTION]
+    categorization_error: Annotated[str | None, DataClass.DESCRIPTION]
+    self_heal_actions: list[SelfHealActionRow]
 
 
 # ---------------------------------------------------------------------------

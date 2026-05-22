@@ -235,6 +235,7 @@ def build_envelope(
     actions: list[str] | None = None,
     degraded: bool = False,
     degraded_reason: str | None = None,
+    recovery_actions: list[RecoveryAction] | None = None,
 ) -> ResponseEnvelope[Any]:
     """Build a ResponseEnvelope with computed metadata.
 
@@ -261,6 +262,10 @@ def build_envelope(
         actions: Contextual next-step hints.
         degraded: Whether this is a degraded (no-consent) response.
         degraded_reason: Why the response is degraded.
+        recovery_actions: Structured actions an agent can execute to fix a
+            partial-success failure (e.g. a best-effort step that crashed).
+            The navigational ``actions`` field stays distinct — it answers
+            "what next", not "how to fix what broke".
 
     Returns:
         A fully populated ResponseEnvelope.
@@ -299,6 +304,7 @@ def build_envelope(
         data=cast(Any, data_any),
         actions=actions or [],
         next_cursor=next_cursor,
+        recovery_actions=recovery_actions,
     )
 
 
