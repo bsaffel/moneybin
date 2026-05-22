@@ -11,7 +11,11 @@ import pytest
 from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
-from moneybin.matching.persistence import create_match_decision, get_match_decision
+from moneybin.matching.persistence import (
+    MatchStatus,
+    create_match_decision,
+    get_match_decision,
+)
 from moneybin.services.matching_service import MatchingService
 
 
@@ -27,7 +31,7 @@ def db(tmp_path: Path, mock_secret_store: MagicMock) -> Generator[Database, None
     database.close()
 
 
-def _seed(db: Database, match_id: str, status: str) -> None:
+def _seed(db: Database, match_id: str, status: MatchStatus) -> None:
     create_match_decision(
         db,
         match_id=match_id,
@@ -46,22 +50,28 @@ def _seed(db: Database, match_id: str, status: str) -> None:
     )
 
 
+def _status_of(db: Database, match_id: str) -> str:
+    row = get_match_decision(db, match_id)
+    assert row is not None
+    return row["match_status"]
+
+
 def test_set_status_accepts_pending(db: Database) -> None:
     _seed(db, "m1", "pending")
     MatchingService(db).set_status("m1", status="accepted")
-    assert get_match_decision(db, "m1")["match_status"] == "accepted"
+    assert _status_of(db, "m1") == "accepted"
 
 
 def test_set_status_rejects_pending(db: Database) -> None:
     _seed(db, "m2", "pending")
     MatchingService(db).set_status("m2", status="rejected")
-    assert get_match_decision(db, "m2")["match_status"] == "rejected"
+    assert _status_of(db, "m2") == "rejected"
 
 
 def test_set_status_same_status_is_idempotent(db: Database) -> None:
     _seed(db, "m3", "accepted")
     MatchingService(db).set_status("m3", status="accepted")  # no error
-    assert get_match_decision(db, "m3")["match_status"] == "accepted"
+    assert _status_of(db, "m3") == "accepted"
 
 
 def test_set_status_unknown_id_raises_not_found_with_recovery(db: Database) -> None:
@@ -106,5 +116,5 @@ def test_accept_all_pending_accepts_and_counts(db: Database) -> None:
     _seed(db, "q3", "accepted")
     count = MatchingService(db).accept_all_pending()
     assert count == 2
-    assert get_match_decision(db, "q1")["match_status"] == "accepted"
+    assert _status_of(db, "q1") == "accepted"
     assert MatchingService(db).get_pending() == []
