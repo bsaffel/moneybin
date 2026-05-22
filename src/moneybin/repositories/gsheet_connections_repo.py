@@ -1,10 +1,14 @@
 """Audited writes to ``app.gsheet_connections``.
 
-Per ``docs/specs/app-integrity-invariant.md`` (Invariant 9), every mutation
+Per ``docs/specs/app-integrity-invariant.md`` (Invariant 10), every mutation
 of ``app.gsheet_connections`` flows through this repository, which pairs
 the write with an ``app.audit_log`` row inside the same DuckDB transaction.
 External callers must NOT issue raw ``INSERT``/``UPDATE``/``DELETE`` against
 the table — the lint rule rejects that and the doctor verifies coverage.
+
+Mutation mechanics (transaction handling, audit emission + metric, full-row
+serialization) come from :class:`~moneybin.repositories.base.BaseRepo`. This
+module owns only the table-specific SQL and column handling.
 """
 
 from __future__ import annotations
@@ -15,8 +19,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Literal
 
-from moneybin.database import Database
-from moneybin.services.audit_service import AuditService
+from moneybin.repositories.base import BaseRepo
 from moneybin.tables import GSHEET_CONNECTIONS
 
 logger = logging.getLogger(__name__)
@@ -27,8 +30,8 @@ logger = logging.getLogger(__name__)
 _AUDIT_TARGET = (GSHEET_CONNECTIONS.schema, GSHEET_CONNECTIONS.name)
 
 # Columns selected for before_value / after_value capture. Per
-# app-integrity-invariant.md Req 4 (post-supersedes), we capture the FULL
-# pre-mutation row so Phase 2 undo can be additive without re-instrumentation.
+# app-integrity-invariant.md Req 4, we capture the FULL pre-mutation row so
+# Phase 2 undo can be additive without re-instrumentation.
 _FULL_ROW_COLUMNS = (
     "connection_id",
     "spreadsheet_id",
@@ -87,50 +90,35 @@ def _decode_row(row: tuple[Any, ...]) -> dict[str, Any]:
     return out
 
 
-class GSheetConnectionsRepo:
+class GSheetConnectionsRepo(BaseRepo):
     """Audited CRUD over ``app.gsheet_connections``.
 
     Every mutating method opens (or participates in) a transaction, captures
     the full pre-mutation row, performs the mutation, and emits a paired
-    ``app.audit_log`` entry. Reads decode the three JSON columns
-    (``column_mapping``, ``header_signature``, ``skip_trailing_patterns``)
-    into Python objects.
+    ``app.audit_log`` entry via :meth:`BaseRepo._emit_audit`. Reads decode the
+    three JSON columns (``column_mapping``, ``header_signature``,
+    ``skip_trailing_patterns``) into Python objects.
+
+    Mutation methods return ``None`` / the generated id rather than the
+    ``AuditEvent`` — these connections have no cascade callers, so the existing
+    return shape is preserved for its callers. New repositories return the
+    ``AuditEvent`` per the spec contract.
     """
 
-    def __init__(self, db: Database, *, audit: AuditService | None = None) -> None:
-        """Bind the repository to an open Database; lazily build AuditService."""
-        self._db = db
-        self._audit = audit if audit is not None else AuditService(db)
+    repository = "gsheet_connections"
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
     def _fetch_full_row(self, connection_id: str) -> dict[str, Any] | None:
-        cols = ", ".join(_FULL_ROW_COLUMNS)
-        row = self._db.execute(
-            f"SELECT {cols} FROM {GSHEET_CONNECTIONS.full_name} WHERE connection_id = ?",  # noqa: S608  # TableRef + allowlisted column list
-            [connection_id],
-        ).fetchone()
-        if row is None:
-            return None
-        return _decode_row(row)
-
-    @staticmethod
-    def _serialize_after(row: dict[str, Any]) -> dict[str, Any]:
-        """JSON-friendly view of a row for audit_log.after_value/before_value.
-
-        Timestamp columns come back from DuckDB as ``datetime`` objects;
-        ``json.dumps`` (inside ``AuditService``) doesn't handle those by
-        default, so we stringify them here.
-        """
-        result: dict[str, Any] = {}
-        for key, value in row.items():
-            if hasattr(value, "isoformat"):
-                result[key] = value.isoformat()
-            else:
-                result[key] = value
-        return result
+        return self._fetch_one(
+            GSHEET_CONNECTIONS,
+            _FULL_ROW_COLUMNS,
+            "connection_id",
+            connection_id,
+            decode=_decode_row,
+        )
 
     # ------------------------------------------------------------------
     # Mutations
@@ -159,8 +147,7 @@ class GSheetConnectionsRepo:
     ) -> str:
         """Insert a new connection row + audit. Returns the generated id."""
         connection_id = uuid.uuid4().hex[:12]
-        self._db.begin()
-        try:
+        with self._transaction():
             self._db.execute(
                 f"""
                 INSERT INTO {GSHEET_CONNECTIONS.full_name} (
@@ -193,18 +180,14 @@ class GSheetConnectionsRepo:
                 ],
             )
             after = self._fetch_full_row(connection_id)
-            self._audit.record_audit_event(
+            self._emit_audit(
                 action="gsheet_connection.insert",
                 target=(*_AUDIT_TARGET, connection_id),
                 before=None,
-                after=self._serialize_after(after) if after else None,
+                after=self._serialize_for_audit(after),
                 actor=actor,
                 parent_audit_id=parent_audit_id,
             )
-            self._db.commit()
-        except Exception:
-            self._db.rollback()
-            raise
         logger.info(
             f"gsheet_connection.insert connection_id={connection_id} actor={actor}"
         )
@@ -220,8 +203,7 @@ class GSheetConnectionsRepo:
         parent_audit_id: str | None = None,
     ) -> None:
         """Update connection status + status reason; emit audit row."""
-        self._db.begin()
-        try:
+        with self._transaction():
             before = self._fetch_full_row(connection_id)
             if before is None:
                 raise ValueError(f"connection_id={connection_id!r} not found")
@@ -234,18 +216,14 @@ class GSheetConnectionsRepo:
                 [status, reason, connection_id],
             )
             after = self._fetch_full_row(connection_id)
-            self._audit.record_audit_event(
+            self._emit_audit(
                 action="gsheet_connection.update_status",
                 target=(*_AUDIT_TARGET, connection_id),
-                before=self._serialize_after(before),
-                after=self._serialize_after(after) if after else None,
+                before=self._serialize_for_audit(before),
+                after=self._serialize_for_audit(after),
                 actor=actor,
                 parent_audit_id=parent_audit_id,
             )
-            self._db.commit()
-        except Exception:
-            self._db.rollback()
-            raise
 
     def update_after_pull(
         self,
@@ -268,8 +246,7 @@ class GSheetConnectionsRepo:
         per failed pull. None clears the column (intentional: a clean
         pull should clear any stale reason from the previous attempt).
         """
-        self._db.begin()
-        try:
+        with self._transaction():
             before = self._fetch_full_row(connection_id)
             if before is None:
                 raise ValueError(f"connection_id={connection_id!r} not found")
@@ -296,18 +273,14 @@ class GSheetConnectionsRepo:
                 ],
             )
             after = self._fetch_full_row(connection_id)
-            self._audit.record_audit_event(
+            self._emit_audit(
                 action="gsheet_connection.update_after_pull",
                 target=(*_AUDIT_TARGET, connection_id),
-                before=self._serialize_after(before),
-                after=self._serialize_after(after) if after else None,
+                before=self._serialize_for_audit(before),
+                after=self._serialize_for_audit(after),
                 actor=actor,
                 parent_audit_id=parent_audit_id,
             )
-            self._db.commit()
-        except Exception:
-            self._db.rollback()
-            raise
 
     def update_mapping(
         self,
@@ -327,8 +300,7 @@ class GSheetConnectionsRepo:
 
         Resets ``status`` to ``healthy`` and clears ``last_status_reason``.
         """
-        self._db.begin()
-        try:
+        with self._transaction():
             before = self._fetch_full_row(connection_id)
             if before is None:
                 raise ValueError(f"connection_id={connection_id!r} not found")
@@ -361,18 +333,14 @@ class GSheetConnectionsRepo:
                 ],
             )
             after = self._fetch_full_row(connection_id)
-            self._audit.record_audit_event(
+            self._emit_audit(
                 action="gsheet_connection.reconnect",
                 target=(*_AUDIT_TARGET, connection_id),
-                before=self._serialize_after(before),
-                after=self._serialize_after(after) if after else None,
+                before=self._serialize_for_audit(before),
+                after=self._serialize_for_audit(after),
                 actor=actor,
                 parent_audit_id=parent_audit_id,
             )
-            self._db.commit()
-        except Exception:
-            self._db.rollback()
-            raise
 
     def soft_disconnect(
         self,
@@ -405,9 +373,7 @@ class GSheetConnectionsRepo:
         (purge-with-raw-data is the canonical use case). The caller is
         then responsible for the transaction lifecycle.
         """
-        if not in_outer_txn:
-            self._db.begin()
-        try:
+        with self._transaction(in_outer_txn=in_outer_txn):
             before = self._fetch_full_row(connection_id)
             if before is None:
                 raise ValueError(f"connection_id={connection_id!r} not found")
@@ -415,20 +381,14 @@ class GSheetConnectionsRepo:
                 f"DELETE FROM {GSHEET_CONNECTIONS.full_name} WHERE connection_id = ?",  # noqa: S608  # TableRef + parameterized value
                 [connection_id],
             )
-            self._audit.record_audit_event(
+            self._emit_audit(
                 action="gsheet_connection.delete",
                 target=(*_AUDIT_TARGET, connection_id),
-                before=self._serialize_after(before),
+                before=self._serialize_for_audit(before),
                 after=None,
                 actor=actor,
                 parent_audit_id=parent_audit_id,
             )
-            if not in_outer_txn:
-                self._db.commit()
-        except Exception:
-            if not in_outer_txn:
-                self._db.rollback()
-            raise
 
     # ------------------------------------------------------------------
     # Reads

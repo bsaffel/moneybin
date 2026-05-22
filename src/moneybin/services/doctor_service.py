@@ -6,9 +6,10 @@ import logging
 from dataclasses import dataclass
 from typing import Literal
 
+from moneybin.config import get_settings
 from moneybin.database import Database, sqlmesh_context
 from moneybin.errors import RecoveryAction
-from moneybin.tables import FCT_TRANSACTIONS
+from moneybin.tables import AUDIT_LOG, FCT_TRANSACTIONS, USER_CATEGORIES, TableRef
 
 logger = logging.getLogger(__name__)
 
@@ -65,14 +66,128 @@ class DoctorService:
         """Store the open database connection for invariant queries."""
         self._db = db
 
-    def run_all(self, verbose: bool = False) -> DoctorReport:
-        """Run all invariants and return a DoctorReport."""
+    def run_all(self, verbose: bool = False, full: bool = False) -> DoctorReport:
+        """Run all invariants and return a DoctorReport.
+
+        ``full`` opts the protected-``app.*`` audit-coverage checks out of their
+        sampled, lookback-windowed mode and into a full-table scan.
+        """
         transaction_count = self._get_transaction_count()
         sqlmesh_results = self._run_sqlmesh_audits(verbose)
         staging = self._run_staging_coverage()
         categorization = self._run_categorization_coverage()
-        invariants = [*sqlmesh_results, staging, categorization]
+        app_integrity = self._run_app_integrity(full=full)
+        invariants = [*sqlmesh_results, staging, categorization, *app_integrity]
         return DoctorReport(invariants=invariants, transaction_count=transaction_count)
+
+    def _run_app_integrity(self, *, full: bool) -> list[InvariantResult]:
+        """Per-table integrity checks for protected ``app.*`` tables (Invariant 10).
+
+        Audit-coverage and uniqueness for ``app.user_categories`` land here; later
+        repository PRs append one coverage call per newly-wrapped table plus that
+        table's FK/orphan specifics.
+        """
+        return [
+            self._run_app_audit_coverage(USER_CATEGORIES, "category_id", full=full),
+            self._run_user_categories_uniqueness(),
+        ]
+
+    def _run_app_audit_coverage(
+        self, table_ref: TableRef, pk_col: str, *, full: bool = False
+    ) -> InvariantResult:
+        """Flag rows mutated without a paired ``app.audit_log`` row (Req 9).
+
+        Sampled by default: only rows whose ``updated_at`` falls within
+        ``doctor.audit_coverage_lookback_days`` are checked, capped at
+        ``doctor.audit_coverage_sample_cap``. ``full=True`` scans every row.
+        Requires the table to carry an ``updated_at`` column (every protected
+        table does). ``pk_col`` is a code-supplied column name, never user input.
+        """
+        name = f"app_audit_coverage_{table_ref.name}"
+        settings = get_settings().doctor
+        if full:
+            sampled_sql = f"SELECT {pk_col} AS pk FROM {table_ref.full_name}"  # noqa: S608  # TableRef + code-constant pk_col
+            sample_params: list[object] = []
+        else:
+            sampled_sql = (
+                f"SELECT {pk_col} AS pk FROM {table_ref.full_name} "  # noqa: S608  # TableRef + code-constant pk_col
+                "WHERE updated_at >= (now()::TIMESTAMP - (? * INTERVAL 1 DAY)) "
+                "ORDER BY updated_at DESC LIMIT ?"
+            )
+            sample_params = [
+                settings.audit_coverage_lookback_days,
+                settings.audit_coverage_sample_cap,
+            ]
+        try:
+            rows = self._db.execute(
+                f"""
+                WITH sampled AS ({sampled_sql})
+                SELECT s.pk
+                FROM sampled s
+                LEFT JOIN {AUDIT_LOG.full_name} a
+                  ON a.target_table = ? AND a.target_id = s.pk
+                WHERE a.audit_id IS NULL
+                ORDER BY s.pk
+                """,  # noqa: S608  # TableRef constants, parameterized values
+                [*sample_params, table_ref.name],
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — table may not exist before first write
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"coverage check unavailable: {e}",
+                affected_ids=[],
+            )
+        if rows:
+            affected = [str(r[0]) for r in rows]
+            return InvariantResult(
+                name=name,
+                status="fail",
+                detail=(
+                    f"{len(affected)} {table_ref.name} row(s) mutated without a "
+                    "paired app.audit_log row"
+                ),
+                affected_ids=affected,
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _run_user_categories_uniqueness(self) -> InvariantResult:
+        """Flag duplicate ``(category, subcategory)`` rows in ``app.user_categories``.
+
+        V015 relaxed the DB-level ``UNIQUE (category, subcategory)`` constraint
+        (``category_id`` is the sole PK now); this is the soft enforcement that
+        keeps ``resolve_category_id`` from arbitrating between colliding rows.
+        """
+        name = "app_user_categories_uniqueness"
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT category, subcategory, string_agg(category_id, ',') AS ids
+                FROM {USER_CATEGORIES.full_name}
+                GROUP BY category, subcategory
+                HAVING COUNT(*) > 1
+                ORDER BY category, subcategory
+                """  # noqa: S608  # TableRef constant, no user input
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — table may not exist before first write
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"uniqueness check unavailable: {e}",
+                affected_ids=[],
+            )
+        if rows:
+            labels = [f"{cat}/{sub}" if sub else str(cat) for cat, sub, _ in rows]
+            affected: list[str] = []
+            for *_unused, ids in rows:
+                affected.extend(ids.split(","))
+            return InvariantResult(
+                name=name,
+                status="fail",
+                detail=f"duplicate (category, subcategory): {', '.join(labels)}",
+                affected_ids=affected,
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
 
     def _get_transaction_count(self) -> int:
         try:

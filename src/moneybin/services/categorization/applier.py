@@ -39,6 +39,10 @@ from moneybin.metrics.registry import (
     MERCHANT_EXEMPLAR_COUNT,
 )
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.repositories.user_categories_repo import (
+    CategoryOverridesRepo,
+    UserCategoriesRepo,
+)
 from moneybin.services.audit_service import AuditService
 from moneybin.services.categorization._shared import (
     SOURCE_PRIORITY,
@@ -51,7 +55,6 @@ from moneybin.tables import (
     BUDGETS,
     CATEGORIES,
     CATEGORIZATION_RULES,
-    CATEGORY_OVERRIDES,
     PROPOSED_RULES,
     TRANSACTION_CATEGORIES,
     TRANSACTION_SPLITS,
@@ -125,12 +128,21 @@ class MatchApplier:
     methods pure-write and lets the facade own the cross-cluster choreography.
     """
 
-    _CATEGORY_AUDIT_TARGET = ("app", "transaction_categories")
+    _CATEGORY_AUDIT_TARGET = (
+        TRANSACTION_CATEGORIES.schema,
+        TRANSACTION_CATEGORIES.name,
+    )
 
     def __init__(self, db: Database, *, audit: AuditService) -> None:
         """Bind the applier to a database connection and audit service."""
         self._db = db
         self._audit = audit
+        # Protected app.* taxonomy writes route through repositories so each
+        # mutation emits a paired audit row (Invariant 10). Repos share this
+        # applier's AuditService + connection so their writes participate in
+        # the same transaction when composed inside one.
+        self._user_categories = UserCategoriesRepo(db, audit=audit)
+        self._category_overrides = CategoryOverridesRepo(db, audit=audit)
 
     @contextmanager
     def _transaction(self) -> Generator[None]:
@@ -556,6 +568,7 @@ class MatchApplier:
         *,
         subcategory: str | None = None,
         description: str | None = None,
+        actor: str = "system",
     ) -> str:
         """Create a custom user category (active by default).
 
@@ -591,23 +604,25 @@ class MatchApplier:
                 code="CATEGORY_ALREADY_EXISTS",
             )
 
-        category_id = uuid.uuid4().hex[:12]
-        self._db.execute(
-            f"""
-            INSERT INTO {USER_CATEGORIES.full_name}
-            (category_id, category, subcategory, description,
-             is_active, created_at, updated_at)
-            VALUES (?, ?, ?, ?, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            """,  # noqa: S608  # TableRef constant, no user input interpolated
-            [category_id, category, subcategory, description],
+        event = self._user_categories.insert(
+            category=category,
+            subcategory=subcategory,
+            description=description,
+            actor=actor,
         )
-        return category_id
+        if event.target_id is None:  # pragma: no cover — insert always sets the id
+            raise RuntimeError("UserCategoriesRepo.insert returned no category_id")
+        return event.target_id
 
-    def toggle_category(self, category_id: str, *, is_active: bool) -> None:
+    def toggle_category(
+        self, category_id: str, *, is_active: bool, actor: str = "system"
+    ) -> None:
         """Enable or disable a category. Existing categorizations are preserved.
 
         Default categories (is_default=true) write to ``app.category_overrides``;
         user-created categories update ``app.user_categories.is_active`` directly.
+        Both writes route through their repository so each emits a paired audit
+        row (Invariant 10).
 
         Raises:
             UserError(code="CATEGORY_NOT_FOUND"): no category with this ID
@@ -624,26 +639,17 @@ class MatchApplier:
             )
 
         if cat[0]:  # default category — record/upsert the override
-            self._db.execute(
-                f"""
-                INSERT INTO {CATEGORY_OVERRIDES.full_name}
-                    (category_id, is_active, updated_at)
-                VALUES (?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT (category_id) DO UPDATE
-                    SET is_active = excluded.is_active,
-                        updated_at = excluded.updated_at
-                """,  # noqa: S608  # TableRef constant
-                [category_id, is_active],
+            self._category_overrides.set_active(
+                category_id, is_active=is_active, actor=actor
             )
         else:
-            self._db.execute(
-                f"UPDATE {USER_CATEGORIES.full_name} "  # noqa: S608  # TableRef constant
-                f"SET is_active = ?, updated_at = CURRENT_TIMESTAMP "
-                f"WHERE category_id = ?",
-                [is_active, category_id],
+            self._user_categories.update_active(
+                category_id, is_active=is_active, actor=actor
             )
 
-    def delete_category(self, category_id: str, *, force: bool = False) -> None:
+    def delete_category(
+        self, category_id: str, *, force: bool = False, actor: str = "system"
+    ) -> None:
         """Hard-delete a user-created category.
 
         Reference check and cascade both use ``category_id`` FK matching across
@@ -663,6 +669,8 @@ class MatchApplier:
             category_id: ID of the user-created category to delete.
             force: If True, cascade-delete referencing rows across the six
                 tables above; if False, refuse when references exist.
+            actor: Audit actor recorded on the ``user_category.delete`` event
+                (e.g. ``"cli"``, ``"mcp"``).
 
         Raises:
             UserError(code="CATEGORY_NOT_FOUND"): no category with this ID.
@@ -728,6 +736,11 @@ class MatchApplier:
 
         with self._transaction():
             if force:
+                # NOTE(Invariant 10): these 6 cascade DELETEs target other
+                # protected app.* tables and are still raw — their repos land in
+                # Batches B/C, at which point they thread parent_audit_id from
+                # the user_categories delete below. The lint rule (AI-PR13) is
+                # not active until every protected table has repo coverage.
                 for table_const in (
                     TRANSACTION_CATEGORIES,
                     BUDGETS,
@@ -740,10 +753,7 @@ class MatchApplier:
                         f"DELETE FROM {table_const.full_name} WHERE category_id = ?",  # noqa: S608  # TableRef constant
                         [category_id],
                     )
-            self._db.execute(
-                f"DELETE FROM {USER_CATEGORIES.full_name} WHERE category_id = ?",  # noqa: S608  # TableRef constant
-                [category_id],
-            )
+            self._user_categories.delete(category_id, actor=actor, in_outer_txn=True)
 
     # -- Guarded categorization write --
 

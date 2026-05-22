@@ -332,19 +332,24 @@ class CategorizationService:
         *,
         subcategory: str | None = None,
         description: str | None = None,
+        actor: str = "system",
     ) -> str:
         """Create a custom user category (active by default)."""
         return self._applier.create_category(
-            category, subcategory=subcategory, description=description
+            category, subcategory=subcategory, description=description, actor=actor
         )
 
-    def toggle_category(self, category_id: str, *, is_active: bool) -> None:
+    def toggle_category(
+        self, category_id: str, *, is_active: bool, actor: str = "system"
+    ) -> None:
         """Enable or disable a category. Existing categorizations are preserved."""
-        self._applier.toggle_category(category_id, is_active=is_active)
+        self._applier.toggle_category(category_id, is_active=is_active, actor=actor)
 
-    def delete_category(self, category_id: str, *, force: bool = False) -> None:
+    def delete_category(
+        self, category_id: str, *, force: bool = False, actor: str = "system"
+    ) -> None:
         """Hard-delete a user-created category. See applier for full semantics."""
-        self._applier.delete_category(category_id, force=force)
+        self._applier.delete_category(category_id, force=force, actor=actor)
 
     # -- Categorization core --
 
