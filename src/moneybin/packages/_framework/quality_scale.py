@@ -30,7 +30,6 @@ _TIER_ORDER: dict[str, int] = {
 
 def _bronze_checks(info: PackageInfo) -> list[QualityScaleViolation]:  # noqa: ARG001  # signature parity with other tier checks
     # Bronze is implicit: manifest parsed + capabilities + prefix validated upstream.
-    # Returning [] keeps the symmetry — caller can iterate tiers uniformly.
     return []
 
 
@@ -83,12 +82,9 @@ def _gold_checks(info: PackageInfo) -> list[QualityScaleViolation]:
                 missing_evidence="metrics.py not found",
             )
         )
-    # User guide at docs/guides/packages/<name>/ — checked at the repo level,
-    # not against info.root, because the docs tree is shared.
-    # For Plan 2 we skip this; Plan 4 wires it when the user-guide convention
-    # is in scope. Flagging as a known-deferred check below in the
-    # registry.py comment block.
-    # TODO Plan 4: add check for docs/guides/packages/<name>/ at the repo level.
+    # TODO Plan 4: check for a user guide at docs/guides/packages/<name>/ — it
+    # lives at the repo level, not info.root, so it wires with the Plan 4
+    # reference packages (see registry.py "Known deferred" block).
     return violations
 
 

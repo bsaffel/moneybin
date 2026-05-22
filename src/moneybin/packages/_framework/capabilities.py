@@ -30,6 +30,24 @@ from moneybin.packages._framework.manifest import CapabilityDeclarations
 _SCHEMA_DDL_SCHEMAS = frozenset({"raw", "app"})
 
 
+def _unparseable_violation(
+    package_name: str, sql_file: Path, exc: ValueError
+) -> CapabilityViolation:
+    """Build the violation for a schema file sqlglot can't parse.
+
+    Every SQL-walking validator surfaces a parse failure as a violation rather
+    than raising (the return-violations-never-raise contract). Centralizing the
+    shape keeps that security-relevant invariant — unparseable SQL must never
+    silently pass the capability gate — correct in one place.
+    """
+    return CapabilityViolation(
+        package_name=package_name,
+        message=f"could not parse {sql_file.name}: {exc}",
+        sql_file=str(sql_file),
+        target="(unparseable)",
+    )
+
+
 def is_write_allowed(capability: CapabilityDeclarations, target: str) -> bool:
     """True if 'target' (schema.name) matches any declared write glob.
 
@@ -61,17 +79,7 @@ def validate_writes(
         try:
             targets = extract_create_targets(sql_file)
         except ValueError as exc:
-            # extract_create_targets raises on unparseable SQL; surface it as a
-            # violation rather than crashing the framework bootstrap (this
-            # function's contract is to return violations, never raise).
-            violations.append(
-                CapabilityViolation(
-                    package_name=package_name,
-                    message=f"could not parse {sql_file.name}: {exc}",
-                    sql_file=str(sql_file),
-                    target="(unparseable)",
-                )
-            )
+            violations.append(_unparseable_violation(package_name, sql_file, exc))
             continue
         for schema, name in targets:
             target = f"{schema}.{name}"
@@ -110,14 +118,7 @@ def validate_identifier_safety(
         try:
             quoted = find_quoted_create_identifiers(sql_file)
         except ValueError as exc:
-            violations.append(
-                CapabilityViolation(
-                    package_name=package_name,
-                    message=f"could not parse {sql_file.name}: {exc}",
-                    sql_file=str(sql_file),
-                    target="(unparseable)",
-                )
-            )
+            violations.append(_unparseable_violation(package_name, sql_file, exc))
             continue
         for ident in quoted:
             violations.append(
@@ -160,14 +161,7 @@ def validate_schema_layers(
         try:
             targets = extract_create_targets(sql_file)
         except ValueError as exc:
-            violations.append(
-                CapabilityViolation(
-                    package_name=package_name,
-                    message=f"could not parse {sql_file.name}: {exc}",
-                    sql_file=str(sql_file),
-                    target="(unparseable)",
-                )
-            )
+            violations.append(_unparseable_violation(package_name, sql_file, exc))
             continue
         for schema, name in targets:
             if schema not in _SCHEMA_DDL_SCHEMAS:
@@ -205,14 +199,7 @@ def validate_statement_types(
         try:
             disallowed = find_disallowed_statements(sql_file)
         except ValueError as exc:
-            violations.append(
-                CapabilityViolation(
-                    package_name=package_name,
-                    message=f"could not parse {sql_file.name}: {exc}",
-                    sql_file=str(sql_file),
-                    target="(unparseable)",
-                )
-            )
+            violations.append(_unparseable_violation(package_name, sql_file, exc))
             continue
         for descriptor in disallowed:
             violations.append(

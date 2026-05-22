@@ -28,9 +28,7 @@ def _parse(sql_file: Path) -> Sequence[exp.Expr | None]:
     """Parse sql_file with the duckdb dialect; raise ValueError on failure.
 
     The returned sequence may contain None entries (empty statements / trailing
-    semicolons). Callers must skip None entries before inspecting statement types.
-    extract_create_targets() relies on isinstance(None, exp.Create) == False;
-    iter_table_refs() has an explicit ``if statement is None: continue`` guard.
+    semicolons); callers must skip None before inspecting statement types.
     """
     try:
         sql = sql_file.read_text(encoding="utf-8")
