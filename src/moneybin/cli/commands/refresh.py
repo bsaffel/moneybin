@@ -76,6 +76,19 @@ def refresh_command(
         if result.error is not None:
             raise typer.Exit(1)
         return
+
+    # Best-effort step crashes (matcher/categorizer) don't fail the command,
+    # but surface them so a partially-refreshed pipeline isn't silent.
+    if result.matching_error is not None:
+        logger.warning(f"⚠️  Matching step failed: {result.matching_error}")
+    if result.categorization_error is not None:
+        logger.warning(f"⚠️  Categorization step failed: {result.categorization_error}")
+    if result.matching_error is not None or result.categorization_error is not None:
+        logger.info(
+            "💡 Re-run the failed step (e.g. `moneybin refresh --step match`) "
+            "or run `moneybin system doctor` to diagnose."
+        )
+
     if result.applied:
         duration = result.duration_seconds or 0.0
         logger.info(f"✅ Refresh complete in {duration:.2f}s")

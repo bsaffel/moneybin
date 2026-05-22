@@ -10,6 +10,7 @@ from typer.testing import CliRunner
 
 from moneybin.cli.main import app
 from moneybin.mcp.adapters.refresh_adapters import REFRESH_CATEGORIZE_FOLLOWUP_HINT
+from moneybin.services.refresh import RefreshResult
 
 
 @pytest.fixture
@@ -20,7 +21,7 @@ def runner() -> CliRunner:
 
 def test_refresh_json_success(runner: CliRunner) -> None:
     """JSON output on success emits envelope with applied=true and no actions."""
-    fake_result = MagicMock(applied=True, duration_seconds=4.2, error=None)
+    fake_result = RefreshResult(applied=True, duration_seconds=4.2, error=None)
     with (
         patch("moneybin.services.refresh.refresh", return_value=fake_result),
         patch("moneybin.database.get_database") as get_db,
@@ -38,7 +39,7 @@ def test_refresh_json_success(runner: CliRunner) -> None:
 
 def test_refresh_json_failure_includes_action_hint(runner: CliRunner) -> None:
     """JSON output on apply failure must mirror the MCP tool's recovery hint."""
-    fake_result = MagicMock(applied=False, duration_seconds=1.1, error="model boom")
+    fake_result = RefreshResult(applied=False, duration_seconds=1.1, error="model boom")
     with (
         patch("moneybin.services.refresh.refresh", return_value=fake_result),
         patch("moneybin.database.get_database") as get_db,
@@ -57,7 +58,7 @@ def test_refresh_json_failure_includes_action_hint(runner: CliRunner) -> None:
 
 def test_refresh_quiet_failure_exits_nonzero(runner: CliRunner) -> None:
     """Quiet mode must still exit non-zero on apply failure."""
-    fake_result = MagicMock(applied=False, duration_seconds=0.5, error="boom")
+    fake_result = RefreshResult(applied=False, duration_seconds=0.5, error="boom")
     with (
         patch("moneybin.services.refresh.refresh", return_value=fake_result),
         patch("moneybin.database.get_database") as get_db,
@@ -70,7 +71,7 @@ def test_refresh_quiet_failure_exits_nonzero(runner: CliRunner) -> None:
 
 def test_refresh_text_failure_exits_nonzero(runner: CliRunner) -> None:
     """Text mode logs the error and exits non-zero on apply failure."""
-    fake_result = MagicMock(applied=False, duration_seconds=0.5, error="model boom")
+    fake_result = RefreshResult(applied=False, duration_seconds=0.5, error="model boom")
     with (
         patch("moneybin.services.refresh.refresh", return_value=fake_result),
         patch("moneybin.database.get_database") as get_db,
@@ -83,7 +84,7 @@ def test_refresh_text_failure_exits_nonzero(runner: CliRunner) -> None:
 
 def test_refresh_step_transform_only(runner: CliRunner) -> None:
     """``--step transform`` runs only the transform step."""
-    fake_result = MagicMock(applied=True, duration_seconds=0.5, error=None)
+    fake_result = RefreshResult(applied=True, duration_seconds=0.5, error=None)
     with (
         patch("moneybin.services.refresh.refresh", return_value=fake_result) as svc,
         patch("moneybin.database.get_database") as get_db,
@@ -97,7 +98,7 @@ def test_refresh_step_transform_only(runner: CliRunner) -> None:
 
 def test_refresh_step_repeatable(runner: CliRunner) -> None:
     """``--step match --step categorize`` collects into a list."""
-    fake_result = MagicMock(applied=False, duration_seconds=None, error=None)
+    fake_result = RefreshResult(applied=False, duration_seconds=None, error=None)
     with (
         patch("moneybin.services.refresh.refresh", return_value=fake_result) as svc,
         patch("moneybin.database.get_database") as get_db,
@@ -115,7 +116,7 @@ def test_refresh_step_repeatable(runner: CliRunner) -> None:
 
 def test_refresh_step_json_partial_cascade(runner: CliRunner) -> None:
     """``--step transform --output json`` returns the same envelope MCP returns."""
-    fake_result = MagicMock(applied=True, duration_seconds=0.7, error=None)
+    fake_result = RefreshResult(applied=True, duration_seconds=0.7, error=None)
     with (
         patch("moneybin.services.refresh.refresh", return_value=fake_result),
         patch("moneybin.database.get_database") as get_db,
@@ -138,7 +139,7 @@ def test_refresh_step_match_without_categorize_emits_followup_hint(
     runner: CliRunner,
 ) -> None:
     """``--step match --output json`` emits the categorize follow-up hint."""
-    fake_result = MagicMock(applied=False, duration_seconds=None, error=None)
+    fake_result = RefreshResult(applied=False, duration_seconds=None, error=None)
     with (
         patch("moneybin.services.refresh.refresh", return_value=fake_result),
         patch("moneybin.database.get_database") as get_db,
@@ -150,6 +151,42 @@ def test_refresh_step_match_without_categorize_emits_followup_hint(
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
     assert REFRESH_CATEGORIZE_FOLLOWUP_HINT in payload["actions"]
+
+
+def test_refresh_matcher_crash_surfaced_in_json(runner: CliRunner) -> None:
+    """A matcher crash (best-effort) surfaces in JSON without failing the command."""
+    fake_result = RefreshResult(
+        applied=True, duration_seconds=2.0, matching_error="matcher boom"
+    )
+    with (
+        patch("moneybin.services.refresh.refresh", return_value=fake_result),
+        patch("moneybin.database.get_database") as get_db,
+    ):
+        get_db.return_value.__enter__.return_value = MagicMock()
+        result = runner.invoke(app, ["refresh", "--output", "json"])
+
+    assert result.exit_code == 0  # best-effort crash doesn't fail the command
+    payload = json.loads(result.stdout)
+    assert payload["data"]["matching_error"] == "matcher boom"
+    tools = [ra["tool"] for ra in payload["recovery_actions"]]
+    assert "refresh_run" in tools
+    assert "system_doctor" in tools
+
+
+def test_refresh_matcher_crash_warns_in_text(runner: CliRunner) -> None:
+    """A matcher crash emits a ⚠️ warning in human output, exit 0."""
+    fake_result = RefreshResult(
+        applied=True, duration_seconds=2.0, matching_error="matcher boom"
+    )
+    with (
+        patch("moneybin.services.refresh.refresh", return_value=fake_result),
+        patch("moneybin.database.get_database") as get_db,
+    ):
+        get_db.return_value.__enter__.return_value = MagicMock()
+        result = runner.invoke(app, ["refresh"])
+
+    assert result.exit_code == 0
+    assert "Matching step failed" in result.output
 
 
 def test_refresh_unknown_step_rejected_at_parse_time(runner: CliRunner) -> None:
