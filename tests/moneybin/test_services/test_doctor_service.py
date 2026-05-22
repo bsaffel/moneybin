@@ -492,10 +492,13 @@ def test_run_all_returns_expected_invariants(
     monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
     svc = DoctorService(doctor_db)
     report = svc.run_all()
-    # 3 sqlmesh audits + dedup_reconciliation + categorization + 4 app.* integrity checks
+    # 3 sqlmesh audits + dedup_reconciliation + categorization + 11 app.* integrity
+    # checks
     # (audit coverage for user_categories / category_overrides / gsheet_connections
-    # + user_categories uniqueness).
-    assert len(report.invariants) == 9
+    # / user_merchants / categorization_rules / proposed_rules /
+    # transaction_categories + user_categories uniqueness + user_merchants
+    # orphans + proposed_rules->rule FK + transaction_categories->fct FK).
+    assert len(report.invariants) == 16
     names = [r.name for r in report.invariants]
     assert "fct_transactions_fk_integrity" in names
     assert "fct_transactions_sign_convention" in names
