@@ -209,24 +209,57 @@ def _snapshot_catalog_comments(
     return table_snapshot, column_snapshot
 
 
-def init_schemas(conn: duckdb.DuckDBPyConnection) -> None:
+def init_schemas(
+    conn: duckdb.DuckDBPyConnection,
+    additional_files: list[Path] | None = None,
+    package_root: Path | None = None,
+) -> None:
     """Create all database schemas and tables, then apply inline comments.
 
     Args:
         conn: An active read-write DuckDB connection.
+        additional_files: Optional extra SQL DDL paths (e.g. from registered
+            analysis packages). Executed AFTER the core schema files so
+            package tables can reference core/app primitives.
+        package_root: when provided, every additional_files path must resolve
+            inside this directory or a ValueError is raised. The Plan 4 wiring
+            that passes package SQL supplies the owning package's root so a
+            manifest cannot point init_schemas at out-of-tree SQL
+            (boundary path-traversal guard per .claude/rules/security.md).
+
+    Raises:
+        ValueError: an additional_files path escapes package_root (when given).
     """
+    extras = additional_files or []
+    if extras and package_root is None:
+        # Refuse rather than silently skip the path-traversal guard. The only
+        # intended caller (Plan 4 package-schema wiring) always has info.root,
+        # so a missing package_root signals a wiring bug, not a valid call.
+        raise ValueError(
+            "init_schemas: additional_files requires package_root so each path "
+            "can be confined to the package directory (pass package_root=info.root)"
+        )
+    if package_root is not None:
+        root = package_root.resolve()
+        for sql_path in extras:
+            if not sql_path.resolve().is_relative_to(root):
+                raise ValueError(
+                    f"additional_files path {sql_path} is outside package root {root}"
+                )
     table_snapshot, column_snapshot = _snapshot_catalog_comments(conn)
     schema_files = _all_schema_files()
-    for sql_path in schema_files:
+    executed = 0
+    for sql_path in [*schema_files, *extras]:
         if not sql_path.exists():
             logger.warning(f"Schema file not found, skipping: {sql_path.name}")
             continue
         sql = sql_path.read_text()
         conn.execute(sql)
+        executed += 1
         _apply_comments(conn, sql, table_snapshot, column_snapshot)
         logger.debug(f"Executed {sql_path.name}")
 
-    logger.debug(f"Executed {len(schema_files)} schema files")
+    logger.debug(f"Executed {executed} schema files")
 
     # Mirror the DataClass registry into the catalog (suffix comments
     # with `[class: ...]`).
