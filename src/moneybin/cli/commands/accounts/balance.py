@@ -20,6 +20,10 @@ from moneybin.cli.output import (
 )
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
+from moneybin.privacy.payloads.balances import (
+    BalanceAssertionListPayload,
+    BalanceObservationListPayload,
+)
 from moneybin.protocol.envelope import build_envelope
 from moneybin.services.balance_service import BalanceService
 
@@ -44,7 +48,9 @@ def accounts_balance_show(
 ) -> None:
     """Show current or as-of balances per account."""
     account_ids = [account] if account else None
-    with handle_cli_errors():
+    with handle_cli_errors(
+        cli_actor="accounts_balance_show", payload_type=BalanceObservationListPayload
+    ):
         with get_database(read_only=True) as db:
             as_of_date = _date.fromisoformat(as_of) if as_of else None
             result = BalanceService(db).current_balances(
@@ -76,7 +82,10 @@ def accounts_balance_history(
     quiet: bool = quiet_option,  # noqa: ARG001 — history has no informational chatter
 ) -> None:
     """Per-account balance history (daily series)."""
-    with handle_cli_errors():
+    with handle_cli_errors(
+        cli_actor="accounts_balance_history",
+        payload_type=BalanceObservationListPayload,
+    ):
         with get_database(read_only=True) as db:
             from_d = _date.fromisoformat(from_date) if from_date else None
             to_d = _date.fromisoformat(to_date) if to_date else None
@@ -131,7 +140,9 @@ def accounts_balance_list(
     quiet: bool = quiet_option,  # noqa: ARG001 — list has no informational chatter
 ) -> None:
     """List balance assertions, optionally filtered by account."""
-    with handle_cli_errors():
+    with handle_cli_errors(
+        cli_actor="accounts_balance_list", payload_type=BalanceAssertionListPayload
+    ):
         with get_database(read_only=True) as db:
             result = BalanceService(db).list_assertions(account)
     if output == OutputFormat.JSON:
@@ -174,7 +185,10 @@ def accounts_balance_reconcile(
 ) -> None:
     """Show observed balance days with non-zero reconciliation delta."""
     account_ids = [account] if account else None
-    with handle_cli_errors():
+    with handle_cli_errors(
+        cli_actor="accounts_balance_reconcile",
+        payload_type=BalanceObservationListPayload,
+    ):
         with get_database(read_only=True) as db:
             parsed_threshold = Decimal(threshold)
             result = BalanceService(db).reconcile(

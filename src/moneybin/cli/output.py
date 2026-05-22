@@ -147,7 +147,7 @@ def render_or_json(
     # post-call correction. Agents using `summary.sensitivity` to decide trust
     # level would otherwise underestimate the tier whenever a CLI command
     # passes a too-low value to build_envelope().
-    derived_sensitivity = _derive_log_sensitivity(
+    derived_sensitivity = derive_log_sensitivity(
         original_data_type,  # pyright: ignore[reportUnknownArgumentType]
         envelope.summary.sensitivity,
     )
@@ -186,7 +186,7 @@ def render_or_json(
     typer.echo(envelope.to_json())
 
 
-def _derive_log_sensitivity(payload_type: type, envelope_sensitivity: str) -> str:
+def derive_log_sensitivity(payload_type: type, envelope_sensitivity: str) -> str:
     """Return the audit-log sensitivity string derived from ``payload_type``.
 
     For bare list/dict/None payloads (legacy CLI commands not yet migrated to

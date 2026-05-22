@@ -27,7 +27,9 @@ from moneybin.cli.utils import emit_json as emit_json
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
 from moneybin.privacy.payloads.accounts import (
-    AccountResolvePayload as AccountResolvePayload,
+    AccountDetail,
+    AccountListPayload,
+    AccountResolvePayload,
 )
 from moneybin.protocol.envelope import build_envelope
 from moneybin.services.account_service import (
@@ -66,7 +68,7 @@ def accounts_list(
     ),
 ) -> None:
     """List accounts. Hides archived accounts by default."""
-    with handle_cli_errors():
+    with handle_cli_errors(cli_actor="accounts_list", payload_type=AccountListPayload):
         with get_database(read_only=True) as db:
             result = AccountService(db).list_accounts(
                 include_archived=include_archived, type_filter=type_filter
@@ -95,7 +97,7 @@ def accounts_get(
     quiet: bool = quiet_option,  # noqa: ARG001
 ) -> None:
     """Show one account's full settings + dim record."""
-    with handle_cli_errors():
+    with handle_cli_errors(cli_actor="accounts_get", payload_type=AccountDetail):
         with get_database(read_only=True) as db:
             record = AccountService(db).get_account(account_id)
     if record is None:
@@ -298,14 +300,16 @@ def accounts_resolve(
     Use this before commands that need an account_id when you only have a
     natural-language reference.
     """
-    with handle_cli_errors():
+    with handle_cli_errors(
+        cli_actor="accounts_resolve", payload_type=AccountResolvePayload
+    ):
         with get_database(read_only=True) as db:
             payload = AccountService(db).resolve(query=query, limit=limit)
 
     if output == OutputFormat.JSON:
         # No explicit sensitivity: AccountResolvePayload carries
         # ACCOUNT_IDENTIFIER (CRITICAL), and render_or_json derives the real
-        # tier via _derive_log_sensitivity. A literal "low" here understates it
+        # tier via derive_log_sensitivity. A literal "low" here understates it
         # at the call site even though the emitted value is corrected.
         render_or_json(
             build_envelope(data=payload),

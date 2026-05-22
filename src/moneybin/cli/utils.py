@@ -24,8 +24,38 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _error_audit_classification(payload_type: type | None) -> tuple[str, list[str]]:
+    """Audit (sensitivity, classes) for a JSON-mode error row.
+
+    Conservative default: without the failed command's payload type we can't
+    derive its tier, so default ``"high"`` rather than under-report a
+    CRITICAL command's failure as ``"low"`` in ``privacy.log.jsonl`` — the
+    failure paths auditors care most about. When ``payload_type`` IS supplied
+    (wired by the command), derive the exact tier + classes the success path
+    would have logged. A misclassified payload (``PrivacyContractError``) also
+    falls back to the conservative ``"high"`` rather than breaking the error
+    path.
+    """
+    if payload_type is None:
+        return "high", []
+    from moneybin.cli.output import derive_log_sensitivity  # noqa: PLC0415
+    from moneybin.privacy.introspection import (  # noqa: PLC0415
+        PrivacyContractError,
+        extract_data_classes,
+    )
+
+    try:
+        sensitivity = derive_log_sensitivity(payload_type, "high")
+        classes = [c.value for c in sorted(extract_data_classes(payload_type))]
+    except PrivacyContractError:
+        return "high", []
+    return sensitivity, classes
+
+
 @contextmanager
-def handle_cli_errors(*, cli_actor: str | None = None) -> Generator[None, None, None]:
+def handle_cli_errors(
+    *, cli_actor: str | None = None, payload_type: type | None = None
+) -> Generator[None, None, None]:
     """Cross-cutting CLI error handler.
 
     Catches classified user-facing exceptions (DatabaseKeyError,
@@ -39,7 +69,11 @@ def handle_cli_errors(*, cli_actor: str | None = None) -> Generator[None, None, 
     invocations in the same audit trail. ``cli_actor`` names the command
     (e.g. ``"accounts_get"``) when known; defaults to ``"unknown"`` so call
     sites can adopt incrementally without changing observed behavior on
-    text-mode paths.
+    text-mode paths. ``payload_type`` is the command's success-path payload
+    type; when supplied the audit row's sensitivity + classes are derived
+    from it, otherwise the row defaults to the conservative ``"high"`` tier so
+    a CRITICAL command's failure is never under-reported (see
+    ``_error_audit_classification``).
 
     Does NOT open or yield a Database — commands acquire their own
     connections with ``get_database(read_only=...)``.
@@ -68,11 +102,12 @@ def handle_cli_errors(*, cli_actor: str | None = None) -> Generator[None, None, 
                 write_privacy_event,
             )
 
+            sensitivity, classes_returned = _error_audit_classification(payload_type)
             write_privacy_event(
                 build_tool_call_event(
                     actor=f"cli.{cli_actor or 'unknown'}",
-                    sensitivity="low",
-                    classes_returned=[],
+                    sensitivity=sensitivity,
+                    classes_returned=classes_returned,
                     row_count=0,
                 )
             )
