@@ -122,12 +122,32 @@ def validate_package(info: PackageInfo) -> list[ValidationError]:
         # No schema dir + no declared writes → nothing to validate; still run
         # the quality-scale checks below.
         sql_files: list[Path] = []
+    elif not schema_dir.resolve().is_relative_to(info.root.resolve()):
+        # A schema/ symlink escaping the package root would let validation bless
+        # out-of-tree SQL that init_schemas' own containment guard rejects at
+        # execution (.claude/rules/security.md path-traversal rule) — refuse it
+        # here too so validation ⊇ execution. Hard stop: nothing else is
+        # trustworthy once the schema dir points outside the package.
+        return [
+            CapabilityViolation(
+                package_name=info.manifest.name,
+                message="schema/ resolves outside the package root (symlink escape)",
+                sql_file=str(schema_dir),
+                target="(out-of-tree)",
+            )
+        ]
     else:
         # rglob, not glob: a *.sql nested in a subdirectory must not escape the
         # capability/prefix validators (otherwise a package could hide a
         # cross-prefix CREATE in schema/sub/). Plan 4's execution wiring must
-        # use the same recursive discovery so validation ⊇ execution.
-        sql_files = sorted(schema_dir.rglob("*.sql"))
+        # use the same recursive discovery so validation ⊇ execution. rglob
+        # follows symlinks on Python < 3.13, so drop any file whose real path
+        # escapes the package root — a nested symlink can't smuggle in
+        # out-of-tree SQL the validators would otherwise bless.
+        root = info.root.resolve()
+        sql_files = sorted(
+            p for p in schema_dir.rglob("*.sql") if p.resolve().is_relative_to(root)
+        )
 
     errors.extend(
         validate_statement_types(
@@ -261,12 +281,13 @@ def _resolve_entry_point_callable(spec: str) -> Callable[[Any], None]:
         # Only rewrite when the entry-point module itself (or a parent package)
         # is missing. If the module exists but one of ITS imports is missing,
         # exc.name differs — re-raise so the real dependency failure isn't
-        # masked as "not installed".
+        # masked as "not installed". exc.name is None for some C-extension /
+        # shared-library load failures (and bare `ModuleNotFoundError()`); that
+        # is NOT evidence the entry module is missing, so re-raise it unchanged
+        # rather than mislabeling a real load error as "not installed".
         missing = exc.name or ""
-        entry_module_missing = (
-            not missing
-            or missing == module_path
-            or module_path.startswith(f"{missing}.")
+        entry_module_missing = missing == module_path or module_path.startswith(
+            f"{missing}."
         )
         if not entry_module_missing:
             raise

@@ -69,8 +69,9 @@ def test_validate_package_with_capability_leak_fails(tmp_path: Path) -> None:
     )
     errors = validate_package(info)
     # SQL writes to core but capability only declares app.test_synthetic_* →
-    # capability violation. The CREATE name 'test_synthetic_leak' DOES start
-    # with the prefix so prefix validator passes; only the capability one fires.
+    # at least one CapabilityViolation fires. Several validators flag this file
+    # (write-glob, schema-layer, and the leak.sql filename); the assertion only
+    # needs one CapabilityViolation, so it stays robust to that overlap.
     assert any(isinstance(e, CapabilityViolation) for e in errors)
 
 
@@ -333,6 +334,57 @@ def test_register_package_preserves_transitive_import_error(tmp_path: Path) -> N
         ):
             with pytest.raises(ModuleNotFoundError, match="missing_lib"):
                 register_package(info=info, mcp=MagicMock(), cli=MagicMock())
+
+
+def test_register_package_preserves_nameless_import_error(tmp_path: Path) -> None:
+    """A ModuleNotFoundError with name=None is not masked as 'not installed'.
+
+    C-extension / shared-library load failures (and bare ModuleNotFoundError())
+    carry exc.name=None. That is not evidence the entry module is missing, so
+    the original error must propagate rather than be rewritten as 'not installed'.
+    """
+    info = _make_minimal_pkg(tmp_path)  # entry point module is "x"
+    fresh = PackageRegistry()
+
+    nameless = ModuleNotFoundError("dynamic module does not define init function")
+
+    with patch("moneybin.packages._framework.registry._global_registry", fresh):
+        with patch(
+            "moneybin.packages._framework.registry.importlib.import_module",
+            side_effect=nameless,
+        ):
+            with pytest.raises(
+                ModuleNotFoundError, match="does not define init function"
+            ):
+                register_package(info=info, mcp=MagicMock(), cli=MagicMock())
+
+
+def test_validate_package_rejects_schema_dir_symlink_escape(tmp_path: Path) -> None:
+    """A schema/ symlink pointing outside the package root is refused.
+
+    init_schemas applies a path-containment guard before executing additional
+    files; validate_package must match it so validation ⊇ execution. A schema/
+    symlink escaping the root would otherwise let validators bless out-of-tree
+    SQL the executor would reject.
+    """
+    info = _make_minimal_pkg(tmp_path)
+    # Replace the real schema/ dir with a symlink to an out-of-tree directory.
+    outside = tmp_path.parent / "outside_schema"
+    outside.mkdir()
+    (outside / "app_test_synthetic_state.sql").write_text(
+        "CREATE TABLE app.test_synthetic_state (id TEXT);"
+    )
+    schema_dir = info.root / "schema"
+    for child in schema_dir.iterdir():
+        child.unlink()
+    schema_dir.rmdir()
+    schema_dir.symlink_to(outside, target_is_directory=True)
+
+    errors = validate_package(info)
+
+    assert len(errors) == 1
+    assert isinstance(errors[0], CapabilityViolation)
+    assert "outside the package root" in errors[0].message
 
 
 def test_init_schemas_executes_additional_files(tmp_path: Path) -> None:

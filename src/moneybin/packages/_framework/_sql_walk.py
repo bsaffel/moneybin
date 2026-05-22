@@ -110,13 +110,17 @@ def extract_create_targets(sql_file: Path) -> list[tuple[str, str]]:
 def find_disallowed_statements(sql_file: Path) -> list[str]:
     """Return a descriptor for every statement that isn't CREATE TABLE/VIEW.
 
-    A package's schema/ SQL may only declare its own tables and views. Any other
-    statement type — DML (INSERT/UPDATE/DELETE), destructive DDL (DROP/ALTER/
-    TRUNCATE), or a non-table/view CREATE (INDEX/SCHEMA) — can read, mutate, or
-    drop tables the capability/prefix validators never inspect (those look only
-    at CREATE targets). Flagging the statement type closes that bypass.
+    A package's schema/ SQL may only declare its own *persistent* tables and
+    views. Any other statement type — DML (INSERT/UPDATE/DELETE), destructive
+    DDL (DROP/ALTER/TRUNCATE), or a non-table/view CREATE (INDEX/SCHEMA) — can
+    read, mutate, or drop tables the capability/prefix validators never inspect
+    (those look only at CREATE targets). A CREATE TEMPORARY TABLE/VIEW is also
+    flagged: its kind is still "TABLE"/"VIEW", but extract_create_targets skips
+    temp objects, so a temp CREATE would execute (Plan 4) without ever passing
+    the capability/prefix checks. Flagging the statement type closes that bypass.
 
-    Returns an empty list when every statement is an allowed CREATE TABLE/VIEW.
+    Returns an empty list when every statement is an allowed persistent
+    CREATE TABLE/VIEW.
 
     Raises:
         ValueError: if sqlglot cannot parse the file.
@@ -127,6 +131,11 @@ def find_disallowed_statements(sql_file: Path) -> list[str]:
         if statement is None:
             continue
         if isinstance(statement, exp.Create):
+            if statement.find(exp.TemporaryProperty) is not None:
+                # Mirrors extract_create_targets' temp skip: a temp CREATE never
+                # reaches the capability/prefix validators, so flag it here.
+                disallowed.append(f"CREATE TEMPORARY {statement.kind}")
+                continue
             if statement.kind in ("TABLE", "VIEW"):
                 continue
             disallowed.append(f"CREATE {statement.kind}")

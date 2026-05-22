@@ -88,6 +88,8 @@ def validate_schema_filenames(
                     package_name=package_name,
                     message=(
                         f"schema file {name} must match (raw|app)_{owns_prefix}_*.sql"
+                        " — reports/core views come from the package's models/"
+                        " directory (SQLMesh), not schema/ bootstrap DDL"
                     ),
                     surface="schema_file",
                     offender=name,

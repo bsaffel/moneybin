@@ -41,9 +41,15 @@ _RESERVED_PREFIXES = frozenset({
     "main",
 })
 
-# Schemas a package may write to via its capabilities.writes globs. Packages own
-# raw landing tables, app-layer state, and reports views; core/prep are
-# framework-managed (SQLMesh), and meta/seeds/synthetic are infrastructure.
+# Schemas a package may name in its capabilities.writes globs. raw/app are
+# written by schema/ bootstrap DDL; reports is written ONLY by the package's
+# models/ directory (SQLMesh views), never by schema/ — that split is enforced
+# by capabilities.validate_schema_layers, which confines schema/ CREATE targets
+# to {raw, app}. core/prep are framework-managed (SQLMesh), and
+# meta/seeds/synthetic are infrastructure, so none of those are writable.
+# (models/ write-glob validation lands in Plan 4 alongside reference packages;
+# until then a reports.* glob is a forward-compat declaration, satisfied by
+# models/ — declaring it must not let schema/ DDL reach the reports layer.)
 _WRITABLE_SCHEMAS = frozenset({"raw", "app", "reports"})
 
 # Strict semver matcher — the canonical https://semver.org grammar.

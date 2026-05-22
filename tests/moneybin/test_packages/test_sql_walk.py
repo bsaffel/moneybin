@@ -128,6 +128,29 @@ def test_find_disallowed_statements_detects_dml_and_ddl(tmp_path: Path) -> None:
     assert "CREATE TABLE" not in disallowed
 
 
+def test_find_disallowed_statements_flags_temporary_create(tmp_path: Path) -> None:
+    """CREATE TEMPORARY TABLE/VIEW is flagged — extract_create_targets skips it.
+
+    A temp CREATE has kind 'TABLE'/'VIEW' so the persistent-CREATE allow-path
+    would otherwise pass it, yet extract_create_targets never returns it, so it
+    would execute (Plan 4) without any capability/prefix check.
+    """
+    sql = (
+        "CREATE TABLE app.x (id TEXT);\n"
+        "CREATE TEMP TABLE scratch AS SELECT 1 AS y;\n"
+        "CREATE TEMPORARY VIEW vtmp AS SELECT 1 AS z;"
+    )
+    sql_file = tmp_path / "temp.sql"
+    sql_file.write_text(sql)
+
+    disallowed = find_disallowed_statements(sql_file)
+
+    assert "CREATE TEMPORARY TABLE" in disallowed
+    assert "CREATE TEMPORARY VIEW" in disallowed
+    # The persistent CREATE TABLE is still allowed.
+    assert "CREATE TABLE" not in disallowed
+
+
 def test_find_disallowed_statements_empty_for_create_only(tmp_path: Path) -> None:
     """A CREATE TABLE/VIEW-only file yields no disallowed statements."""
     sql = (
