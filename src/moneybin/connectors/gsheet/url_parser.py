@@ -9,7 +9,11 @@ from urllib.parse import parse_qs, urlparse
 # generates from a signed-in session: /u/<n>/spreadsheets/d/<id> (handled by
 # search anchoring on /spreadsheets/d/) and /spreadsheets/u/<n>/d/<id> (the
 # optional `u/<n>/` segment between /spreadsheets/ and /d/).
-_SPREADSHEET_RE = re.compile(r"/spreadsheets/(?:u/\d+/)?d/([a-zA-Z0-9_-]+)(?:/|$)")
+# {1,100}: real spreadsheet IDs are 44 chars; the bound stops a crafted URL
+# with a multi-KB segment from matching and propagating into the database.
+_SPREADSHEET_RE = re.compile(
+    r"/spreadsheets/(?:u/\d+/)?d/([a-zA-Z0-9_-]{1,100})(?:/|$)"
+)
 
 
 def parse_sheet_url(url: str) -> tuple[str, int]:

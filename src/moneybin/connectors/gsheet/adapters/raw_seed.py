@@ -40,9 +40,10 @@ logger = logging.getLogger(__name__)
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 # Plain decimal numbers only — excludes inf/nan/scientific notation that
-# float() accepts but DuckDB can't CAST to BIGINT/DECIMAL. Optional sign,
-# digits, at most one decimal point with digits on at least one side.
-_PLAIN_NUMERIC_RE = re.compile(r"[+-]?(\d+\.?\d*|\.\d+)")
+# float() accepts but DuckDB can't CAST to BIGINT/DECIMAL. Requires digits
+# on BOTH sides of any decimal point, so "100." and ".5" (which some
+# exports emit and which the view's hard CAST chokes on) fall to VARCHAR.
+_PLAIN_NUMERIC_RE = re.compile(r"[+-]?(\d+\.\d+|\d+)")
 
 
 class RawSeedAdapter:
@@ -210,15 +211,21 @@ class RawSeedAdapter:
             )
             db.ingest_dataframe(GSHEET_SEEDS.full_name, df, on_conflict="upsert")
 
-            # Belt-and-suspenders undelete: ensure any returning row is active
-            # even if a future upsert path forgets to project the column.
-            hashes = sorted(current_hashes)
-            placeholders = ",".join(["?"] * len(hashes))
-            sql = (
-                f"UPDATE {GSHEET_SEEDS.full_name} SET deleted_from_source_at = NULL "  # noqa: S608  # TableRef + placeholders, no user input
-                f"WHERE connection_id = ? AND row_hash IN ({placeholders})"
-            )
-            db.execute(sql, [connection.connection_id, *hashes])
+            # Belt-and-suspenders undelete: clear the soft-delete flag on
+            # returning rows in case a future upsert path forgets to project
+            # the column. Scoped to diff.to_insert — the only rows whose flag
+            # could be stale — so a large unchanged sheet doesn't issue a
+            # full-table UPDATE every pull. compute_diff puts returning rows
+            # (present now, previously soft-deleted, so absent from
+            # active_hashes) in to_insert; already-active rows need no clear.
+            if diff.to_insert:
+                hashes = sorted(diff.to_insert)
+                placeholders = ",".join(["?"] * len(hashes))
+                sql = (
+                    f"UPDATE {GSHEET_SEEDS.full_name} SET deleted_from_source_at = NULL "  # noqa: S608  # TableRef + placeholders, no user input
+                    f"WHERE connection_id = ? AND row_hash IN ({placeholders})"
+                )
+                db.execute(sql, [connection.connection_id, *hashes])
 
         # Regenerate the per-connection typed view. Typed columns live in
         # connection.column_mapping for the seed adapter (the field is reused

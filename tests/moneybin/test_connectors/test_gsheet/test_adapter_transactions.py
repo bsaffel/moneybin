@@ -158,6 +158,37 @@ def test_check_drift_passes_pinned_signature_through(
     assert "Amount" in report.missing_headers
 
 
+def test_check_drift_ignores_blank_optional_column(
+    sample_connection: GSheetConnection,
+) -> None:
+    """A mostly-blank OPTIONAL column (Description) must NOT trigger drift.
+
+    Real financial exports routinely leave descriptions/notes blank; flagging
+    that as drift would pin the connection in drift_detected forever.
+    """
+    adapter = TransactionsAdapter()
+    sig = sample_connection.header_signature
+    sample = pl.DataFrame({h: ["x", "y", "z"] for h in sig})
+    # Blank out the optional Description column entirely.
+    sample = sample.with_columns(pl.lit("").alias("Description"))
+    report = adapter.check_drift(sample_connection, sample)
+    assert report.is_drift is False
+    assert report.empty_mapped_columns == []
+
+
+def test_check_drift_flags_blank_required_column(
+    sample_connection: GSheetConnection,
+) -> None:
+    """A mostly-blank REQUIRED column (Amount) still triggers drift."""
+    adapter = TransactionsAdapter()
+    sig = sample_connection.header_signature
+    sample = pl.DataFrame({h: ["x", "y", "z"] for h in sig})
+    sample = sample.with_columns(pl.lit("").alias("Amount"))
+    report = adapter.check_drift(sample_connection, sample)
+    assert report.is_drift is True
+    assert "Amount" in report.empty_mapped_columns
+
+
 def test_transform_applies_sign_convention(
     sample_connection: GSheetConnection,
 ) -> None:

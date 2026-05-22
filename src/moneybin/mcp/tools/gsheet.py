@@ -403,13 +403,19 @@ def register_gsheet_tools(mcp: FastMCP) -> None:
             "Pull one Google Sheets connection by ID, or every healthy "
             "connection. Returns per-connection status (complete / drift_detected / "
             "auth_expired / unreachable / rate_limited / failed). Drift-detected "
-            "connections surface a gsheet_reconnect hint in actions[].",
+            "connections surface a gsheet_reconnect hint in actions[]. "
+            "Mutation surface: writes raw.tabular_transactions (transactions "
+            "adapter) or raw.gsheet_seeds (seed adapter) and soft-deletes rows "
+            "no longer in the sheet; no revert — the next pull re-derives state "
+            "from the live sheet.",
         ),
         (
             gsheet,
             "List every Google Sheets connection — id, adapter, status, "
             "last-pull/last-success timestamps. Drift-detected connections "
-            "surface a gsheet_reconnect hint in actions[].",
+            "surface a gsheet_reconnect hint in actions[]. (The bare name, not "
+            "gsheet_list, is intentional: it reads as the gsheet domain's "
+            "default collection view per the noun-only read convention.)",
         ),
         (
             gsheet_status,

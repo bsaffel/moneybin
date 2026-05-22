@@ -89,7 +89,11 @@ class GoogleOAuthClient:
                 "client_secret": "",
                 "auth_uri": "https://accounts.google.com/o/oauth2/auth",
                 "token_uri": "https://oauth2.googleapis.com/token",
-                "redirect_uris": ["http://localhost"],
+                # 127.0.0.1, not "localhost": on hosts where localhost
+                # resolves to ::1 (IPv6) the callback can miss the IPv4
+                # loopback server bound below, or be intercepted by a
+                # local IPv6 listener on the same port.
+                "redirect_uris": ["http://127.0.0.1"],
             }
         }
         flow = InstalledAppFlow.from_client_config(  # type: ignore[reportUnknownMemberType]
@@ -98,9 +102,6 @@ class GoogleOAuthClient:
         try:
             creds = flow.run_local_server(  # type: ignore[reportUnknownMemberType]
                 # port=0 → google-auth-oauthlib picks any free ephemeral port.
-                # The redirect_port_min/max settings on GSheetSettings are
-                # reserved for a future wired-up implementation and currently
-                # do not constrain port selection.
                 port=0,
                 bind_addr="127.0.0.1",
             )
@@ -109,7 +110,10 @@ class GoogleOAuthClient:
             # state params, redirect URIs, or CSRF token fragments — keep
             # the typed exception message generic so downstream
             # logger.warning(str(e)) or envelope construction doesn't leak.
-            logger.exception("OAuth authorization flow failed")
+            # Log the chain only at debug (exc_info) so the token/state
+            # fragments don't land in error-level logs that ship by default.
+            logger.error("OAuth authorization flow failed")
+            logger.debug("OAuth authorization flow failure detail", exc_info=exc)
             raise GSheetAuthError(
                 "OAuth authorization failed. See application logs for detail."
             ) from exc
@@ -197,8 +201,10 @@ class GoogleOAuthClient:
             creds.refresh(Request())  # type: ignore[reportUnknownMemberType]
         except Exception as exc:  # noqa: BLE001  # google-auth raises untyped errors
             # Same sanitization discipline as authorize() — google-auth
-            # error text can carry token fragments / endpoint URLs.
-            logger.exception("OAuth token refresh failed")
+            # error text can carry token fragments / endpoint URLs, so the
+            # chain goes to debug-only, not error-level logs.
+            logger.error("OAuth token refresh failed")
+            logger.debug("OAuth token refresh failure detail", exc_info=exc)
             raise GSheetAuthError(
                 "OAuth token refresh failed. See application logs for detail."
             ) from exc

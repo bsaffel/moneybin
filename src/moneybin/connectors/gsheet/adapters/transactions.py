@@ -39,6 +39,20 @@ logger = logging.getLogger(__name__)
 
 _SOURCE_TYPE = "gsheet"
 
+# transform_dataframe requires an import_id, but the real one is only known
+# at load() time. transform() stamps this placeholder; load() overwrites it
+# per-call. Named so a standalone transform() caller (e.g. a test inspecting
+# transformed output) sees an obvious sentinel, not a magic string.
+_IMPORT_ID_PLACEHOLDER = "__pending__"
+
+# Dest fields the transform requires to produce a non-empty row. Two uses:
+# (1) connect-time mapping validation (a mapping omitting these makes every
+# pull load zero rows); (2) drift detection — these are the ONLY columns whose
+# emptiness counts as drift. Optional columns (description, notes) are routinely
+# blank in real exports and must not pin a connection in drift_detected forever.
+# Defined here (the adapter owns the requirement); imported by connection_service.
+REQUIRED_DEST_FIELDS = ("transaction_date", "amount")
+
 
 class TransactionsAdapter:
     """Strict Tiller-style adapter targeting `raw.tabular_transactions`."""
@@ -76,12 +90,22 @@ class TransactionsAdapter:
         connection: GSheetConnection,
         current_df: pl.DataFrame,
     ) -> DriftReport:
-        """Compare the current pull against the pinned header signature."""
+        """Compare the current pull against the pinned header signature.
+
+        Only the source columns mapped to REQUIRED_DEST_FIELDS gate drift on
+        emptiness — a mostly-blank optional column (Description, Notes) is
+        normal and must not trigger drift_detected.
+        """
+        required_sources = {
+            src
+            for src, dest in connection.column_mapping.items()
+            if dest in REQUIRED_DEST_FIELDS
+        }
         return detect_drift(
             pinned_signature=connection.header_signature,
             current_headers=list(current_df.columns),
             sample_df=current_df,
-            mapped_columns=set(connection.column_mapping.keys()),
+            mapped_columns=required_sources,
         )
 
     def transform(
@@ -128,7 +152,7 @@ class TransactionsAdapter:
             source_file=f"gsheet://{connection.spreadsheet_id}/{connection.sheet_gid}",
             source_type=_SOURCE_TYPE,
             source_origin=connection.connection_id,
-            import_id="__pending__",  # set in load() per-call
+            import_id=_IMPORT_ID_PLACEHOLDER,  # overwritten in load() per-call
         )
         return result.transactions
 

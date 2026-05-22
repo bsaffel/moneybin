@@ -41,11 +41,21 @@ def _tiller_workbook(spreadsheet_id: str = "ss1") -> FakeWorkbook:
 
 
 def _setup(
-    db: Database, *, spreadsheet_id: str = "ss1", account_id: str = "acct_a"
+    db: Database,
+    *,
+    spreadsheet_id: str = "ss1",
+    account_id: str = "acct_a",
+    sheets: TestSheetsClient | None = None,
 ) -> tuple[GSheetPullService, TestSheetsClient, str]:
-    """Connect one transactions sheet without pulling; return service + cid."""
+    """Connect one transactions sheet without pulling; return service + cid.
+
+    Pass ``sheets`` to reuse one client across multiple connections — required
+    when a test drives several connections through a single ``pull_all_healthy``
+    (which uses one client for the whole batch).
+    """
     oauth = TestOAuthClient(authorized=True)
-    sheets = TestSheetsClient()
+    if sheets is None:
+        sheets = TestSheetsClient()
     sheets.register_workbook(spreadsheet_id, _tiller_workbook(spreadsheet_id))
     conn_svc = GSheetConnectionService(db=db, sheets_client=sheets, oauth_client=oauth)
     result = conn_svc.connect(
@@ -73,14 +83,15 @@ def test_pull_inserts_rows(in_memory_db: Database) -> None:
 def test_pull_isolates_per_connection_failure(in_memory_db: Database) -> None:
     """One unhealthy connection in the batch doesn't crash the others.
 
-    Both connections are healthy at scheduling time, but the fake's
-    one-shot ``inject_error`` fires on the FIRST pull. The second
-    connection should still succeed.
+    Both connections are healthy at scheduling time and share the SAME sheets
+    client — the one ``pull_all_healthy`` drives. The fake's one-shot
+    ``inject_error`` fires on whichever connection the repo schedules first;
+    the other must still complete.
     """
     pull_svc, sheets, _cid_a = _setup(in_memory_db)
-    # Add a second connection using a different spreadsheet.
-    _pull_b, _, _cid_b = _setup(in_memory_db, spreadsheet_id="ss2", account_id="acct_b")
-    sheets.register_workbook("ss2", _tiller_workbook("ss2"))
+    # Second connection on a different spreadsheet, reusing the same sheets
+    # client so the batch pull and the error injection target one object.
+    _setup(in_memory_db, spreadsheet_id="ss2", account_id="acct_b", sheets=sheets)
     # Inject a one-shot unreachable on the first call; the second should succeed.
     sheets.inject_error(GSheetUnreachableError("403 boom"))
     results = pull_svc.pull_all_healthy()

@@ -135,8 +135,15 @@ class GSheetPullService:
             return self._record_unexpected_failure(conn, import_id)
         drift = adapter.check_drift(conn, df)
         if drift.is_drift:
+            # Drift closes the import_log row as "failed" — import_log's status
+            # enum is source-agnostic and has no "drift_detected" value, and we
+            # don't want a gsheet-specific status on a shared audit table. The
+            # real distinction lives on the connection row (status =
+            # "drift_detected" + last_drift_reason); audit queries that need to
+            # exclude drift should join app.gsheet_connections, not read
+            # import_log.status alone.
             self._close_import_log(import_id, status="failed", rows_imported=0)
-            now = _utcnow_iso()
+            now = _utcnow()
             self._repo.update_after_pull(
                 connection_id,
                 last_pull_at=now,
@@ -170,7 +177,7 @@ class GSheetPullService:
             status="complete",
             rows_imported=load_result.rows_inserted + load_result.rows_upserted,
         )
-        now = _utcnow_iso()
+        now = _utcnow()
         self._repo.update_after_pull(
             connection_id,
             last_pull_at=now,
@@ -300,7 +307,7 @@ class GSheetPullService:
         """
         message = _SANITIZED_FAILURE_MESSAGES[status]
         self._close_import_log(import_id, status="failed", rows_imported=0)
-        now = _utcnow_iso()
+        now = _utcnow()
         # Single repo write — last_drift_reason flows through
         # update_after_pull, avoiding the double-audit pattern (one row
         # for counter update, another for reason update).
@@ -337,7 +344,7 @@ class GSheetPullService:
         """
         message = "Unexpected pull failure; see application logs."
         self._close_import_log(import_id, status="failed", rows_imported=0)
-        now = _utcnow_iso()
+        now = _utcnow()
         self._repo.update_after_pull(
             conn.connection_id,
             last_pull_at=now,
@@ -354,6 +361,11 @@ class GSheetPullService:
         )
 
 
-def _utcnow_iso() -> str:
-    """Return the current UTC timestamp as ISO 8601."""
-    return datetime.now(UTC).isoformat()
+def _utcnow() -> datetime:
+    """Return the current UTC timestamp.
+
+    A datetime (not an ISO string) so the repo write path matches the
+    datetime objects DuckDB returns on read — one type for the column
+    end to end.
+    """
+    return datetime.now(UTC)

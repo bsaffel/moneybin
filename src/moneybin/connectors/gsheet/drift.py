@@ -32,7 +32,11 @@ def detect_drift(
 
     Drift triggers:
       1. Any pinned header is missing from current headers.
-      2. A mapped column is >50% null in the sample.
+      2. A column in ``mapped_columns`` is >50% null in the sample.
+
+    ``mapped_columns`` is the set of columns whose emptiness counts as drift —
+    callers pass only the REQUIRED columns, not every mapped one, so optional
+    columns that are routinely blank don't pin the connection in drift.
 
     Non-drift:
       - Reordered headers (set match).

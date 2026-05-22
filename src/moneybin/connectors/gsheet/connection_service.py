@@ -27,6 +27,7 @@ from moneybin.connectors.gsheet.adapters.base import (
     GSheetConnection,
     LoadResult,
 )
+from moneybin.connectors.gsheet.adapters.transactions import REQUIRED_DEST_FIELDS
 from moneybin.connectors.gsheet.errors import GSheetError, GSheetUnreachableError
 from moneybin.connectors.gsheet.sheets_api import SheetsAPI
 from moneybin.connectors.gsheet.url_parser import parse_sheet_url
@@ -111,8 +112,11 @@ class GSheetConnectionService:
         meta = self._sheets.get_workbook_metadata(spreadsheet_id)
         sheet = next((s for s in meta.sheets if s.gid == gid), None)
         if sheet is None:
+            # Use the workbook title, not spreadsheet_id: the raw id uniquely
+            # identifies a private document and aids phishing if it leaks to
+            # the user-facing error / MCP envelope.
             raise GSheetUnreachableError(
-                f"gid={gid} not found in workbook {spreadsheet_id}"
+                f"gid={gid} not found in workbook {meta.title!r}"
             )
 
         rows = self._sheets.read_sheet_values(spreadsheet_id, sheet.name)
@@ -347,9 +351,11 @@ class GSheetConnectionService:
         meta = self._sheets.get_workbook_metadata(spreadsheet_id)
         sheet = next((s for s in meta.sheets if s.gid == existing["sheet_gid"]), None)
         if sheet is None:
+            # Workbook title, not spreadsheet_id — see connect() for why the
+            # raw id must not surface in user-facing errors.
             raise GSheetUnreachableError(
                 f"gid={existing['sheet_gid']} no longer present in workbook "
-                f"{spreadsheet_id}; the tab was deleted"
+                f"{meta.title!r}; the tab was deleted"
             )
         rows = self._sheets.read_sheet_values(spreadsheet_id, sheet.name)
         if not rows:
@@ -414,12 +420,6 @@ class GSheetConnectionService:
         )
 
 
-# Dest fields the transactions transform requires to produce a non-empty
-# row. Caller-supplied --column-mapping omitting these creates a healthy
-# connection whose pulls all fail with zero rows loaded.
-_REQUIRED_TRANSACTIONS_DEST_FIELDS = ("transaction_date", "amount")
-
-
 def _validate_transactions_column_mapping(
     *,
     user_mapping: dict[str, str],
@@ -438,11 +438,11 @@ def _validate_transactions_column_mapping(
     trace dig.
     """
     dest_fields = set(user_mapping.values())
-    missing = [f for f in _REQUIRED_TRANSACTIONS_DEST_FIELDS if f not in dest_fields]
+    missing = [f for f in REQUIRED_DEST_FIELDS if f not in dest_fields]
     if missing:
         raise GSheetError(
             f"--column-mapping is missing required dest field(s): {missing}. "
-            f"The transactions adapter needs {list(_REQUIRED_TRANSACTIONS_DEST_FIELDS)} "
+            f"The transactions adapter needs {list(REQUIRED_DEST_FIELDS)} "
             "to produce rows."
         )
     sheet_header_set = set(sheet_headers)

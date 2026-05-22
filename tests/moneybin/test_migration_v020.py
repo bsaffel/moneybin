@@ -153,8 +153,18 @@ class TestV020CreateAppGsheetConnections:
 
     def test_unique_spreadsheet_id_sheet_gid(self, v018_db: Database) -> None:
         _insert_connection(v018_db, connection_id="conn-a", spreadsheet_id="ssid-1")
+        # Same (spreadsheet_id, sheet_gid) pair → rejected.
         with pytest.raises(duckdb.ConstraintException):
             _insert_connection(v018_db, connection_id="conn-b", spreadsheet_id="ssid-1")
+        # Same workbook, DIFFERENT tab → allowed. The constraint is on the
+        # pair, not spreadsheet_id alone; without this the test would also
+        # pass against a (wrong) spreadsheet_id-only constraint.
+        _insert_connection(
+            v018_db,
+            connection_id="conn-tab2",
+            spreadsheet_id="ssid-1",
+            sheet_gid=1,
+        )
 
     def test_unique_alias(self, v018_db: Database) -> None:
         _insert_connection(

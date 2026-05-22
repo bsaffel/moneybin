@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from datetime import datetime
 from typing import Any, Literal
 
 from moneybin.database import Database
@@ -250,9 +251,9 @@ class GSheetConnectionsRepo:
         self,
         connection_id: str,
         *,
-        last_pull_at: str,
+        last_pull_at: datetime,
         last_pull_import_id: str,
-        last_success_at: str | None,
+        last_success_at: datetime | None,
         status: Status,
         consecutive_failure_count: int,
         last_drift_reason: str | None = None,

@@ -215,7 +215,13 @@ def sync_connect_status(session_id: str) -> ResponseEnvelope:
     return sync_link_status.__wrapped__(session_id=session_id)  # type: ignore[attr-defined]
 
 
-@mcp_tool(sensitivity="medium", read_only=False, open_world=True)
+@mcp_tool(
+    sensitivity="medium",
+    read_only=False,
+    destructive=True,
+    idempotent=False,
+    open_world=True,
+)
 def sync_disconnect(institution: str) -> ResponseEnvelope:
     """Remove a bank connection on moneybin-server. Permanent — no revert path.
 

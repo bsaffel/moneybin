@@ -311,18 +311,6 @@ class GSheetSettings(BaseModel):
             "MONEYBIN_GSHEET__OAUTH_CLIENT_ID."
         ),
     )
-    oauth_redirect_port_min: int = Field(
-        default=8765,
-        ge=1024,
-        le=65535,
-        description="Lower bound of the loopback port range used for the OAuth redirect.",
-    )
-    oauth_redirect_port_max: int = Field(
-        default=8785,
-        ge=1024,
-        le=65535,
-        description="Upper bound of the loopback port range used for the OAuth redirect.",
-    )
     api_timeout_seconds: float = Field(
         default=30.0,
         gt=0.0,

@@ -95,6 +95,10 @@ def test_infer_type_rejects_non_castable_floats() -> None:
     assert _infer_type(pl.Series(["inf", "1.0"])) == "VARCHAR"
     assert _infer_type(pl.Series(["nan", "2"])) == "VARCHAR"
     assert _infer_type(pl.Series(["1e5", "3"])) == "VARCHAR"
+    # Trailing-/leading-dot forms float() accepts but the view's hard CAST
+    # rejects — must NOT be typed numeric.
+    assert _infer_type(pl.Series(["100.", "1.0"])) == "VARCHAR"
+    assert _infer_type(pl.Series([".5", "2"])) == "VARCHAR"
     # Plain numerics still type correctly.
     assert _infer_type(pl.Series(["1", "2", "3"])) == "BIGINT"
     assert _infer_type(pl.Series(["1.50", "2.00"])) == "DECIMAL(18,2)"
