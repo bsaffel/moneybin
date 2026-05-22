@@ -5,6 +5,10 @@ check added with the repository layer. Uses the function-scoped ``db`` fixture
 (real encrypted DuckDB with the app schema initialized).
 """
 
+# This module drives the doctor's per-table integrity helpers
+# (_run_app_audit_coverage, _run_user_categories_uniqueness) directly —
+# protected-member access is intentional.
+# pyright: reportPrivateUsage=false
 from __future__ import annotations
 
 from moneybin.database import Database

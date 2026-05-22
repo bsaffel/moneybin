@@ -6,6 +6,9 @@ Verifies the three pieces of shared mechanics every ``*Repo`` inherits:
 and ``_serialize_for_audit`` (JSON-friendly before/after row capture).
 """
 
+# This module exercises BaseRepo's internal contract (_emit_audit, _transaction,
+# _serialize_for_audit) directly — protected-member access is the point here.
+# pyright: reportPrivateUsage=false
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
