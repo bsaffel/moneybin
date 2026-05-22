@@ -3,7 +3,7 @@
 ## Status
 
 - **Type:** Architecture
-- **Status:** draft
+- **Status:** in-progress
 - **Authority:** Defines the contributor-facing surface for the three extension types — **Reports**, **Analysis Packages**, and **Providers**. The contract every future MoneyBin extension lands as. Pre-launch deliverable; locks at M3E alongside the public MCP and CLI surfaces.
 
 ## Goal
