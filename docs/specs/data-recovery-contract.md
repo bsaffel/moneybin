@@ -2,7 +2,7 @@
 
 ## Status
 
-draft
+ready
 
 ## Goal
 
