@@ -2,6 +2,7 @@
 
 from unittest.mock import patch
 
+from moneybin import error_codes
 from moneybin.database import DatabaseKeyError
 from moneybin.errors import UserError, classify_user_error
 
@@ -14,7 +15,7 @@ def test_classify_database_key_error_returns_user_error() -> None:
     ):
         result = classify_user_error(DatabaseKeyError("locked"))
     assert result is not None
-    assert result.code == "wrong_key"
+    assert result.code == error_codes.INFRA_WRONG_KEY
     assert "locked" in result.message
     assert result.hint == "Run: moneybin db unlock"
 
@@ -23,16 +24,22 @@ def test_classify_file_not_found_returns_user_error() -> None:
     """FileNotFoundError maps to a UserError with no hint."""
     result = classify_user_error(FileNotFoundError("missing.csv"))
     assert result is not None
-    assert result.code == "file_not_found"
+    assert result.code == error_codes.INFRA_FILE_NOT_FOUND
     assert "missing.csv" in result.message
     assert result.hint is None
 
 
 def test_classify_lookup_error_returns_not_found() -> None:
-    """Plain LookupError maps to a UserError with code not_found."""
+    """Plain LookupError maps to a UserError with code infra_not_found.
+
+    Use INFRA_NOT_FOUND (prefix-neutral) rather than MUTATION_NOT_FOUND
+    because the classifier fires on read paths too (account/category/note
+    lookups). MUTATION_NOT_FOUND would mis-signal "write attempt" to
+    agents branching on the prefix.
+    """
     result = classify_user_error(LookupError("note abc not found"))
     assert result is not None
-    assert result.code == "not_found"
+    assert result.code == error_codes.INFRA_NOT_FOUND
     assert "not found" in result.message
 
 
@@ -52,10 +59,16 @@ def test_classify_unknown_exception_returns_none() -> None:
 
 
 def test_classify_value_error_returns_user_error() -> None:
-    """ValueError maps to a UserError so CLI date/decimal parse errors surface cleanly."""
+    """ValueError maps to a UserError with code infra_invalid_input.
+
+    Use INFRA_INVALID_INPUT (prefix-neutral) rather than MUTATION_INVALID_INPUT
+    because ValueError fires on read paths too (date/decimal parsing in
+    reports, query filters). MUTATION_INVALID_INPUT would mis-signal
+    "write attempt" to agents branching on the prefix.
+    """
     result = classify_user_error(ValueError("bad input"))
     assert result is not None
-    assert result.code == "invalid_input"
+    assert result.code == error_codes.INFRA_INVALID_INPUT
     assert "bad input" in result.message
 
 
@@ -63,6 +76,39 @@ def test_user_error_to_dict_omits_none_hint() -> None:
     """UserError.to_dict drops the hint field when not set."""
     err = UserError("m", code="c")
     assert err.to_dict() == {"message": "m", "code": "c"}
+
+
+def test_user_error_to_dict_serializes_recovery_actions() -> None:
+    """UserError.to_dict includes recovery_actions when populated."""
+    from moneybin.errors import RecoveryAction
+
+    err = UserError(
+        "m",
+        code=error_codes.MUTATION_NOT_FOUND,
+        recovery_actions=[
+            RecoveryAction(
+                tool="system_audit_undo",
+                arguments={"operation_id": "op_test"},
+                rationale="Restore pre-mutation state",
+                confidence="certain",
+                idempotent=True,
+            )
+        ],
+    )
+    d = err.to_dict()
+    assert "recovery_actions" in d
+    assert d["recovery_actions"][0]["tool"] == "system_audit_undo"
+    assert d["recovery_actions"][0]["confidence"] == "certain"
+
+
+def test_user_error_to_dict_omits_recovery_actions_when_none() -> None:
+    """UserError.to_dict omits recovery_actions when not set.
+
+    Preserves backward compat — to_dict shape unchanged for callers that
+    aren't aware of recovery_actions.
+    """
+    err = UserError("m", code=error_codes.MUTATION_NOT_FOUND)
+    assert "recovery_actions" not in err.to_dict()
 
 
 def test_user_error_to_dict_includes_hint() -> None:
@@ -79,7 +125,7 @@ def test_classify_database_not_initialized_error() -> None:
     result = classify_user_error(err)
     assert result is not None
     assert "db init" in (result.message + (result.hint or "")).lower()
-    assert result.code == "database_not_initialized"
+    assert result.code == error_codes.INFRA_DATABASE_NOT_INITIALIZED
 
 
 def test_classify_database_lock_error() -> None:
@@ -89,4 +135,4 @@ def test_classify_database_lock_error() -> None:
     err = DatabaseLockError("Could not acquire write lock after 5s")
     result = classify_user_error(err)
     assert result is not None
-    assert result.code == "database_locked"
+    assert result.code == error_codes.INFRA_DATABASE_LOCKED
