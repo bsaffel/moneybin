@@ -1,8 +1,8 @@
 """Privacy namespace tools — AI consent ledger.
 
 Tools:
-    - privacy_grant_consent  — record consent to share an AI feature category
-    - privacy_revoke_consent — revoke consent
+    - privacy_consent_grant  — record consent to share an AI feature category
+    - privacy_consent_revoke — revoke consent
     - privacy_status         — active grants + configured backend
     - privacy_log            — recent privacy log events
 
@@ -33,7 +33,7 @@ from moneybin.services.consent_service import ConsentService
 
 
 @mcp_tool(domain="privacy", read_only=False)
-def privacy_grant_consent(
+def privacy_consent_grant(
     category: str,
     backend: str | None = None,
     mode: Literal["persistent", "one-time"] = "persistent",
@@ -57,7 +57,7 @@ def privacy_grant_consent(
             feature_category=category,
             backend=backend,
             consent_mode=ConsentMode(mode),
-            actor="mcp.privacy_grant_consent",
+            actor="mcp.privacy_consent_grant",
         )
     grant = result.grant
     return build_envelope(
@@ -72,7 +72,7 @@ def privacy_grant_consent(
 
 
 @mcp_tool(domain="privacy", read_only=False)
-def privacy_revoke_consent(
+def privacy_consent_revoke(
     category: str, backend: str | None = None
 ) -> ResponseEnvelope[ConsentMutationPayload]:
     """Revoke consent for a category; takes effect immediately.
@@ -85,7 +85,7 @@ def privacy_revoke_consent(
         result = ConsentService(db).revoke_consent(
             feature_category=category,
             backend=backend,
-            actor="mcp.privacy_revoke_consent",
+            actor="mcp.privacy_consent_revoke",
         )
     return build_envelope(
         data=ConsentMutationPayload(
@@ -105,7 +105,7 @@ def privacy_status() -> ResponseEnvelope[PrivacyStatusPayload]:
         status = ConsentService(db).status()
     return build_envelope(
         data=PrivacyStatusPayload(
-            default_backend=status.default_backend or "(none)",
+            default_backend=status.default_backend,
             consent_policy=status.consent_policy,
             active_grants=[
                 ConsentGrantRow(
@@ -117,7 +117,7 @@ def privacy_status() -> ResponseEnvelope[PrivacyStatusPayload]:
                 for g in status.active_grants
             ],
         ),
-        actions=["Use privacy_grant_consent to add consent"],
+        actions=["Use privacy_consent_grant to add consent"],
     )
 
 
@@ -155,21 +155,21 @@ def register_privacy_tools(mcp: FastMCP) -> None:
     """Register privacy namespace tools with the FastMCP server."""
     register(
         mcp,
-        privacy_grant_consent,
-        "privacy_grant_consent",
+        privacy_consent_grant,
+        "privacy_consent_grant",
         "Record consent to share a data category (mcp-data-sharing, "
         "smart-import-parsing, ml-categorization, matching-overview) with your "
         "AI backend. CRITICAL fields (account/routing numbers) always stay "
         "masked. Writes app.ai_consent_grants (one active grant per "
-        "category+backend; idempotent); revert with privacy_revoke_consent.",
+        "category+backend; idempotent); revert with privacy_consent_revoke.",
     )
     register(
         mcp,
-        privacy_revoke_consent,
-        "privacy_revoke_consent",
+        privacy_consent_revoke,
+        "privacy_consent_revoke",
         "Revoke consent for a data category; effective immediately. Writes "
         "app.ai_consent_grants (sets revoked_at; row retained for audit); "
-        "revert by calling privacy_grant_consent again.",
+        "revert by calling privacy_consent_grant again.",
     )
     register(
         mcp,

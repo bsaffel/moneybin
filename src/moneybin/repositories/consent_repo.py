@@ -52,6 +52,21 @@ class ConsentRepo(BaseRepo):
     def _fetch_row(self, grant_id: str) -> dict[str, Any] | None:
         return self._fetch_one(AI_CONSENT_GRANTS, _COLUMNS, "grant_id", grant_id)
 
+    def _table_exists(self) -> bool:
+        """True if app.ai_consent_grants is present in the catalog.
+
+        Read tools open the DB read-only, which skips init_schemas/migrations
+        (database.py). On a profile upgraded to this version, a read before any
+        write-mode open would otherwise hit a catalog error; the list methods
+        short-circuit to empty instead. Mutations always run write-mode (the
+        table is created there), so they need no guard.
+        """
+        row = self._db.execute(
+            "SELECT 1 FROM duckdb_tables() WHERE schema_name = ? AND table_name = ?",
+            [AI_CONSENT_GRANTS.schema, AI_CONSENT_GRANTS.name],
+        ).fetchone()
+        return row is not None
+
     def _active_for(self, feature_category: str, backend: str) -> dict[str, Any] | None:
         cols = ", ".join(quote_ident(c) for c in _COLUMNS)
         row = self._db.execute(
@@ -167,6 +182,8 @@ class ConsentRepo(BaseRepo):
 
     def list_active(self) -> list[GrantInfo]:
         """Return all active (non-revoked) grants, newest first."""
+        if not self._table_exists():
+            return []
         cols = ", ".join(quote_ident(c) for c in _COLUMNS)
         rows = self._db.execute(
             f"SELECT {cols} FROM {AI_CONSENT_GRANTS.full_name} "  # noqa: S608  # TableRef + sqlglot-quoted cols
@@ -176,6 +193,8 @@ class ConsentRepo(BaseRepo):
 
     def list_all(self) -> list[GrantInfo]:
         """Return all grants including revoked, newest first (audit history)."""
+        if not self._table_exists():
+            return []
         cols = ", ".join(quote_ident(c) for c in _COLUMNS)
         rows = self._db.execute(
             f"SELECT {cols} FROM {AI_CONSENT_GRANTS.full_name} "  # noqa: S608  # TableRef + sqlglot-quoted cols

@@ -24,8 +24,8 @@ async def test_register_privacy_tools_registers_expected() -> None:
     register_privacy_tools(srv)
     names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
     assert {
-        "privacy_grant_consent",
-        "privacy_revoke_consent",
+        "privacy_consent_grant",
+        "privacy_consent_revoke",
         "privacy_status",
         "privacy_log",
     } <= names
@@ -35,9 +35,9 @@ async def test_grant_consent_tool(
     mcp_db: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _set_backend(monkeypatch)
-    from moneybin.mcp.tools.privacy import privacy_grant_consent
+    from moneybin.mcp.tools.privacy import privacy_consent_grant
 
-    env = await privacy_grant_consent(category="mcp-data-sharing")
+    env = await privacy_consent_grant(category="mcp-data-sharing")
     assert env.error is None
     assert env.data.action in ("granted", "noop")
     assert env.data.backend == "anthropic"
@@ -47,9 +47,9 @@ async def test_status_tool_reflects_grant(
     mcp_db: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _set_backend(monkeypatch)
-    from moneybin.mcp.tools.privacy import privacy_grant_consent, privacy_status
+    from moneybin.mcp.tools.privacy import privacy_consent_grant, privacy_status
 
-    await privacy_grant_consent(category="mcp-data-sharing")
+    await privacy_consent_grant(category="mcp-data-sharing")
     env = await privacy_status()
     assert env.error is None
     cats = {g.feature_category for g in env.data.active_grants}
@@ -61,13 +61,13 @@ async def test_revoke_consent_tool(
 ) -> None:
     _set_backend(monkeypatch)
     from moneybin.mcp.tools.privacy import (
-        privacy_grant_consent,
-        privacy_revoke_consent,
+        privacy_consent_grant,
+        privacy_consent_revoke,
         privacy_status,
     )
 
-    await privacy_grant_consent(category="mcp-data-sharing")
-    env = await privacy_revoke_consent(category="mcp-data-sharing")
+    await privacy_consent_grant(category="mcp-data-sharing")
+    env = await privacy_consent_revoke(category="mcp-data-sharing")
     assert env.error is None
     assert env.data.action == "revoked"
     status = await privacy_status()
@@ -78,9 +78,9 @@ async def test_log_tool_returns_events(
     mcp_db: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _set_backend(monkeypatch)
-    from moneybin.mcp.tools.privacy import privacy_grant_consent, privacy_log
+    from moneybin.mcp.tools.privacy import privacy_consent_grant, privacy_log
 
-    await privacy_grant_consent(category="mcp-data-sharing")
+    await privacy_consent_grant(category="mcp-data-sharing")
     env = await privacy_log(last_n=20)
     assert env.error is None
     actions = {e.action for e in env.data.events}

@@ -1046,23 +1046,23 @@ Current consent state, configured AI backend, and privacy mode.
 - **Service:** `ConsentService.status()`
 - **CLI:** `moneybin privacy status`
 
-### `privacy_grant_consent`
+### `privacy_consent_grant`
 
 Grant consent for a privacy feature category.
 
 - **Sensitivity:** `low` — modifying consent state, not accessing financial data.
 - **Unique parameters:** `category: str` (required — e.g., `mcp-data-sharing`), `backend: str?` (override configured backend for this grant), `mode: "persistent" | "one-time"` (default `"persistent"`).
-- **Behavior:** Writes to `app.ai_consent_grants` with a paired `app.audit_log` row (Invariant 10). Idempotent per `(category, backend)` — re-granting an active grant returns the existing grant. `read_only=False`. Revert via `privacy_revoke_consent`.
+- **Behavior:** Writes to `app.ai_consent_grants` with a paired `app.audit_log` row (Invariant 10). Idempotent per `(category, backend)` — re-granting an active grant returns the existing grant. `read_only=False`. Revert via `privacy_consent_revoke`.
 - **Service:** `ConsentService.grant_consent()`
 - **CLI:** `moneybin privacy grant`
 
-### `privacy_revoke_consent`
+### `privacy_consent_revoke`
 
 Revoke a previously granted consent.
 
 - **Sensitivity:** `low`
 - **Unique parameters:** `category: str` (required), `backend: str?`.
-- **Behavior:** Sets `revoked_at` on the active grant row; the row is retained for audit. Returns confirmation with revocation timestamp. `read_only=False`. Revert via `privacy_grant_consent`.
+- **Behavior:** Sets `revoked_at` on the active grant row; the row is retained for audit. Returns confirmation with revocation timestamp. `read_only=False`. Revert via `privacy_consent_grant`.
 - **Service:** `ConsentService.revoke_consent()`
 - **CLI:** `moneybin privacy revoke`
 

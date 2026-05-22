@@ -64,7 +64,11 @@ def test_cli_revoke(
 def test_cli_status_json_empty(runner: CliRunner, db: Database) -> None:
     result = runner.invoke(app, ["privacy", "status", "--output", "json"])
     assert result.exit_code == 0, result.output
-    assert json.loads(result.stdout)["data"]["active_grants"] == []
+    data = json.loads(result.stdout)["data"]
+    assert data["active_grants"] == []
+    # No configured backend → null, not a "(none)" sentinel that could be fed
+    # back into grant/revoke as a real backend.
+    assert data["default_backend"] is None
 
 
 def test_cli_revoke_all(

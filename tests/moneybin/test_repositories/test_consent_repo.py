@@ -29,6 +29,18 @@ def test_consent_grants_table_exists(db: Database) -> None:
     }
 
 
+def test_list_tolerates_missing_table(db: Database) -> None:
+    """Read path returns empty when the table is absent.
+
+    A read-only DB open skips init_schemas/migrations; on a freshly-upgraded
+    profile, a read before any write-mode open must not raise a catalog error.
+    """
+    db.execute(f"DROP TABLE {AI_CONSENT_GRANTS.full_name}")
+    repo = ConsentRepo(db)
+    assert repo.list_active() == []
+    assert repo.list_all() == []
+
+
 def test_grant_inserts_and_pairs_audit(db: Database) -> None:
     repo = ConsentRepo(db)
     grant, created = repo.grant(

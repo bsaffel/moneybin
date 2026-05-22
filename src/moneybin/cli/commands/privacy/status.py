@@ -18,7 +18,7 @@ def privacy_status(output: OutputFormat = output_option) -> None:
         with get_database(read_only=True) as db:
             status = ConsentService(db).status()
     payload = PrivacyStatusPayload(
-        default_backend=status.default_backend or "(none)",
+        default_backend=status.default_backend,
         consent_policy=status.consent_policy,
         active_grants=[
             ConsentGrantRow(
@@ -44,7 +44,8 @@ def privacy_status(output: OutputFormat = output_option) -> None:
         )
         return
     typer.echo(
-        f"Backend: {payload.default_backend}    Policy: {payload.consent_policy}"
+        f"Backend: {payload.default_backend or '(none)'}    "
+        f"Policy: {payload.consent_policy}"
     )
     if not payload.active_grants:
         typer.echo("No active consent grants.")

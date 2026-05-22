@@ -32,14 +32,14 @@ class PrivacyStatusPayload:
     (persistent/one-time) under ``active_grants``.
     """
 
-    default_backend: Annotated[str, DataClass.INSTITUTION]
+    default_backend: Annotated[str | None, DataClass.INSTITUTION]
     consent_policy: Annotated[str, DataClass.TXN_TYPE]
     active_grants: list[ConsentGrantRow] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
 class ConsentMutationPayload:
-    """Result of privacy_grant_consent / privacy_revoke_consent.
+    """Result of privacy_consent_grant / privacy_consent_revoke.
 
     ``consent_mode`` is None on revoke (the mode lived on the grant that was
     just removed) — null is honest where an empty string would mislead.

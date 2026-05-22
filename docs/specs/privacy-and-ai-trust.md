@@ -251,7 +251,7 @@ def search_transactions(query: str, limit: int) -> list[dict]: ...
 > **Ledger shipped; enforcement gate deferred.** The `app.ai_consent_grants`
 > table, `ConsentService` (grant/revoke/status/log), and the
 > `moneybin privacy grant/revoke/revoke-all/status/log` CLI commands and
-> `privacy_grant_consent`, `privacy_revoke_consent`, `privacy_status`,
+> `privacy_consent_grant`, `privacy_consent_revoke`, `privacy_status`,
 > `privacy_log` MCP tools shipped in PR 3. The degrade-to-aggregate
 > enforcement gate described below lands when a consumer actively needs it
 > (hosted multi-user deployment or a direct cloud-AI feature). Always-on
@@ -297,8 +297,8 @@ MCP tools prefer returning the minimum data needed to answer the query:
 ### MCP tools
 
 - `privacy_status` — returns active consents and backend info (per `moneybin-mcp.md` §11)
-- `privacy_grant_consent` — grant consent for a feature category; writes `app.ai_consent_grants` (per `moneybin-mcp.md` §11)
-- `privacy_revoke_consent` — revoke a consent by category; sets `revoked_at`, retains row (per `moneybin-mcp.md` §11)
+- `privacy_consent_grant` — grant consent for a feature category; writes `app.ai_consent_grants` (per `moneybin-mcp.md` §11)
+- `privacy_consent_revoke` — revoke a consent by category; sets `revoked_at`, retains row (per `moneybin-mcp.md` §11)
 - `privacy_log` — query recent privacy-log events: consent grants/revokes and tool calls (per `moneybin-mcp.md` §11)
 
 ### Config override

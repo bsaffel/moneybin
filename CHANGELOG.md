@@ -12,7 +12,7 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
 
 ### Added
 - AI consent ledger: `moneybin privacy grant/revoke/revoke-all/status/log` CLI
-  commands and `privacy_grant_consent`, `privacy_revoke_consent`,
+  commands and `privacy_consent_grant`, `privacy_consent_revoke`,
   `privacy_status`, `privacy_log` MCP tools, backed by the new
   `app.ai_consent_grants` table. Records which AI feature categories you've
   authorized for which backend, with paired audit-log entries. (#NNN)
