@@ -328,7 +328,7 @@ class CategorizationService:
         """
         deactivated = self._applier.deactivate_rule_core(rule_id, actor=actor)
         if reapply and deactivated:
-            self._applier.delete_rule_categorizations(rule_id)
+            self._applier.delete_rule_categorizations(rule_id, actor=actor)
             self.categorize_pending()
         return deactivated
 

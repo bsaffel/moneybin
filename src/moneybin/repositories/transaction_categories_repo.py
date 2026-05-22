@@ -37,8 +37,6 @@ _TRANSACTION_CATEGORIES_COLUMNS = (
     "rule_id",
 )
 
-_RULE_SOURCES = ("rule", "auto_rule")
-
 
 class TransactionCategoriesRepo(BaseRepo):
     """Audited CRUD over ``app.transaction_categories``."""

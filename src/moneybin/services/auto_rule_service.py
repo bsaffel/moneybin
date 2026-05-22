@@ -480,8 +480,9 @@ class AutoRuleService:
         An override = a transaction whose canonical match_text (description +
         memo, normalized) matches the auto-rule's pattern but is currently
         categorized by 'user' with a different category. When the threshold is
-        reached, deactivate the rule and emit a ``rule_deactivated`` event to
-        ``app.audit_log``.
+        reached, deactivate the rule via ``CategorizationRulesRepo`` (which
+        emits a ``categorization_rule.deactivate`` audit row with the override
+        forensics in ``context``).
         """
         settings = get_settings().categorization
         threshold = settings.auto_rule_override_threshold

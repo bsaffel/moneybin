@@ -471,7 +471,9 @@ class MatchApplier:
         """
         return self._rules.deactivate(rule_id, actor=actor) is not None
 
-    def delete_rule_categorizations(self, rule_id: str) -> None:
+    def delete_rule_categorizations(
+        self, rule_id: str, *, actor: str = "system"
+    ) -> None:
         """Strip categorizations a now-inactive rule had written.
 
         Targets only ``categorized_by IN ('rule', 'auto_rule')`` rows with
@@ -481,9 +483,10 @@ class MatchApplier:
         immediately before ``categorize_pending`` re-evaluates the affected
         transactions against the remaining active matchers. Routes through the
         repo so each stripped row emits a paired ``category.clear`` audit
-        capturing its full prior state (Invariant 10, Req 4).
+        capturing its full prior state (Invariant 10, Req 4). ``actor`` is the
+        surface that triggered the deactivation (threaded from ``deactivate_rule``).
         """
-        self._tx_categories.delete_by_rule(rule_id, actor="system")
+        self._tx_categories.delete_by_rule(rule_id, actor=actor)
 
     # -- Category (taxonomy) management --
 
