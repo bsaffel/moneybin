@@ -273,14 +273,17 @@ class CategorizationService:
         created_by: str = "ai",
         exemplars: list[str] | None = None,
         reapply: bool = False,
+        actor: str = "system",
     ) -> str:
         """Create a merchant mapping; optionally fan out to uncategorized rows.
 
-        Pure write delegates to ``MatchApplier.create_merchant_core``; when
+        Delegates to ``MatchApplier.create_merchant_core``, which routes the
+        INSERT through ``UserMerchantsRepo`` (paired audit, Invariant 10). When
         ``reapply=True``, ``categorize_pending`` runs after the insert so the
         new merchant fans out to uncategorized rows immediately. Callers
         inside a batch flow (e.g., ``categorize_items``) skip this and let the
-        enclosing snowball pass do the work instead.
+        enclosing snowball pass do the work instead. ``actor`` is threaded to
+        the audit row (CLI/MCP pass their surface; default ``"system"``).
         """
         merchant_id = self._applier.create_merchant_core(
             raw_pattern,
@@ -290,6 +293,7 @@ class CategorizationService:
             subcategory=subcategory,
             created_by=created_by,
             exemplars=exemplars,
+            actor=actor,
         )
         if reapply:
             self.categorize_pending()
@@ -302,21 +306,25 @@ class CategorizationService:
         items: Sequence[CategorizationRuleInput],
         *,
         reapply: bool = False,
+        actor: str = "system",
     ) -> RuleCreationResult:
         """Create multiple categorization rules in one call (idempotent).
 
-        Pure writes delegate to ``MatchApplier.create_rules_core``. When
-        ``reapply=True`` and at least one rule was newly created,
+        Delegates to ``MatchApplier.create_rules_core``, which routes each
+        INSERT through ``CategorizationRulesRepo`` (paired audit, Invariant 10).
+        When ``reapply=True`` and at least one rule was newly created,
         ``categorize_pending`` runs so the new rules fan out to uncategorized
-        rows immediately. Source-priority enforcement keeps user manual edits
-        safe regardless.
+        rows immediately. ``actor`` is threaded to the audit rows (CLI/MCP pass
+        their surface; default ``"system"``).
         """
-        result = self._applier.create_rules_core(items)
+        result = self._applier.create_rules_core(items, actor=actor)
         if reapply and result.created > 0:
             self.categorize_pending()
         return result
 
-    def deactivate_rule(self, rule_id: str, *, reapply: bool = False) -> bool:
+    def deactivate_rule(
+        self, rule_id: str, *, reapply: bool = False, actor: str = "system"
+    ) -> bool:
         """Soft-delete a rule by setting ``is_active=false``.
 
         Returns ``True`` if the rule existed (and is now inactive),
@@ -330,9 +338,9 @@ class CategorizationService:
         higher-priority sources (user/migration/ml/plaid) that happen to
         share this rule_id reference are left intact.
         """
-        deactivated = self._applier.deactivate_rule_core(rule_id)
+        deactivated = self._applier.deactivate_rule_core(rule_id, actor=actor)
         if reapply and deactivated:
-            self._applier.delete_rule_categorizations(rule_id)
+            self._applier.delete_rule_categorizations(rule_id, actor=actor)
             self.categorize_pending()
         return deactivated
 
@@ -382,8 +390,14 @@ class CategorizationService:
         merchant_id: str | None = None,
         rule_id: str | None = None,
         confidence: float | None = None,
+        in_outer_txn: bool = False,
     ) -> WriteOutcome:
-        """Insert or replace a categorization, respecting source precedence."""
+        """Insert or replace a categorization, respecting source precedence.
+
+        Pass ``in_outer_txn=True`` when the caller already owns a transaction
+        (e.g. the auto-rule approve cascade); the repo then joins it instead of
+        opening a nested one (DuckDB has no nested transactions).
+        """
         return self._applier.write_categorization(
             transaction_id=transaction_id,
             category=category,
@@ -392,6 +406,7 @@ class CategorizationService:
             merchant_id=merchant_id,
             rule_id=rule_id,
             confidence=confidence,
+            in_outer_txn=in_outer_txn,
         )
 
     # -- Batch orchestration --
