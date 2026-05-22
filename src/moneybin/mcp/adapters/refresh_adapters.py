@@ -96,7 +96,9 @@ def refresh_envelope(
         "applied": result.applied,
         "duration_seconds": result.duration_seconds,
         # Always emit (empty until the self-heal safelist lands) so agents
-        # see a stable key rather than a sometimes-present field.
+        # see a stable key rather than a sometimes-present field. asdict (not
+        # model_dump) because SelfHealRecord is a @dataclass like RefreshResult,
+        # not a Pydantic model; if it ever migrates to BaseModel, switch here.
         "self_heal_actions": [asdict(r) for r in result.self_heal_actions],
     }
     if result.error is not None:

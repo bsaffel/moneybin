@@ -190,6 +190,7 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
                 )
 
     matching_error: str | None = None
+    categorization_error: str | None = None
     if "match" in requested:
         try:
             match_result = MatchingService(db).run()
@@ -213,7 +214,6 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
         # an "apply did not run" result so the envelope's applied=False
         # signal is honest. Categorize, if also requested, still runs
         # against whatever SQLMesh-built views are already on disk.
-        categorization_error: str | None = None
         if "categorize" in requested:
             categorization_error = _run_categorize_step(db)
         return RefreshResult(
@@ -235,7 +235,6 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
             matching_error=matching_error,
         )
 
-    categorization_error = None
     if "categorize" in requested:
         categorization_error = _run_categorize_step(db)
 
@@ -313,22 +312,11 @@ def _run_categorize_step(db: Database) -> str | None:
     from moneybin.services.categorization import CategorizationService  # noqa: PLC0415
 
     cat_start = time.monotonic()
+    # Only the categorization write itself decides categorization_error. The
+    # post-step auto-rule proposal read below is informational — a crash there
+    # must NOT be reported as a categorization failure (categorize succeeded).
     try:
-        service = CategorizationService(db)
-        stats = service.categorize_pending()
-        if stats["total"] > 0:
-            logger.info(
-                f"Auto-categorized {stats['total']} transactions "
-                f"({stats['merchant']} merchant, {stats['rule']} rule)"
-            )
-        pending = AutoRuleService(db).stats().pending_proposals
-        if pending:
-            logger.info(f"  {pending} new auto-rule proposals")
-            logger.info(
-                "  💡 Run 'moneybin transactions categorize auto review' "
-                "to review proposed rules"
-            )
-        return None
+        stats = CategorizationService(db).categorize_pending()
     except (duckdb.CatalogException, duckdb.BinderException):
         # Tables/views not built yet (first load precedes SQLMesh apply) —
         # an expected precondition, not a crash. No error surfaced.
@@ -343,3 +331,21 @@ def _run_categorize_step(db: Database) -> str | None:
         logger.debug(
             f"Categorization step attempted in {time.monotonic() - cat_start:.2f}s"
         )
+
+    if stats["total"] > 0:
+        logger.info(
+            f"Auto-categorized {stats['total']} transactions "
+            f"({stats['merchant']} merchant, {stats['rule']} rule)"
+        )
+    # Informational only — never surfaces as categorization_error.
+    try:
+        pending = AutoRuleService(db).stats().pending_proposals
+        if pending:
+            logger.info(f"  {pending} new auto-rule proposals")
+            logger.info(
+                "  💡 Run 'moneybin transactions categorize auto review' "
+                "to review proposed rules"
+            )
+    except Exception:  # noqa: BLE001 — informational post-step read; never fail refresh
+        logger.debug("Auto-rule proposal stats unavailable", exc_info=True)
+    return None

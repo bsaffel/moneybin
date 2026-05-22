@@ -71,6 +71,7 @@ def patched_services() -> Iterator[dict[str, MagicMock]]:
             "matcher_run": matcher_run,
             "transform_apply": transform_apply,
             "categorize_pending": categorize_pending,
+            "auto_stats": auto_stats,
         }
 
 
@@ -135,6 +136,21 @@ def test_refresh_categorizer_crash_populates_categorization_error(
     patched_services["categorize_pending"].side_effect = RuntimeError("cat boom")
     result = refresh(MagicMock())
     assert result.categorization_error == "cat boom"
+    assert result.applied is True
+
+
+@pytest.mark.unit
+def test_refresh_auto_rule_stats_crash_is_not_a_categorization_error(
+    patched_services: dict[str, MagicMock],
+) -> None:
+    """A crash in the post-step auto-rule stats read must NOT set categorization_error.
+
+    categorize_pending() succeeded; the proposal-count read is informational.
+    Conflating the two would falsely tell the agent to retry categorization.
+    """
+    patched_services["auto_stats"].side_effect = RuntimeError("stats boom")
+    result = refresh(MagicMock())
+    assert result.categorization_error is None
     assert result.applied is True
 
 

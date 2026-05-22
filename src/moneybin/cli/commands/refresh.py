@@ -75,16 +75,13 @@ def refresh_command(
         result = refresh(db, steps=steps)
     requested = expand_steps(steps)
 
-    if output == OutputFormat.JSON:
-        render_or_json(refresh_envelope(result, requested=requested), output)
-        if result.error is not None:
-            raise typer.Exit(1)
-        return
-
     # Best-effort step crashes (matcher/categorizer) don't fail the command,
-    # but they are warnings, not informational output — surface them even under
-    # --quiet (per cli.md, -q suppresses status/✅, not warnings) so a
-    # partial-pipeline failure is never silent.
+    # but they are warnings (diagnostics → stderr), not informational output.
+    # Emit them regardless of output format and regardless of --quiet (per
+    # cli.md, -q suppresses status/✅, not warnings; JSON data still goes
+    # cleanly to stdout) so a partial-pipeline failure is never silent. In
+    # JSON mode the crash is also in the payload (matching_error +
+    # recovery_actions); the stderr warning is the human/operator signal.
     if result.matching_error is not None:
         logger.warning(f"⚠️  Matching step failed: {result.matching_error}")
     if result.categorization_error is not None:
@@ -92,6 +89,12 @@ def refresh_command(
     has_step_error = (
         result.matching_error is not None or result.categorization_error is not None
     )
+
+    if output == OutputFormat.JSON:
+        render_or_json(refresh_envelope(result, requested=requested), output)
+        if result.error is not None:
+            raise typer.Exit(1)
+        return
 
     if quiet:
         if result.error is not None:
