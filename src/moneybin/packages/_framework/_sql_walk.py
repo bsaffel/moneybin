@@ -61,8 +61,10 @@ def extract_create_targets(sql_file: Path) -> list[tuple[str, str]]:
         table = statement.find(exp.Table)
         if table is None or not table.args.get("db"):
             continue
-        schema = table.args["db"].name
-        name = table.name
+        # Lowercase: DuckDB treats unquoted identifiers case-insensitively;
+        # canonical form is lowercase so downstream glob/prefix matching is predictable.
+        schema = table.args["db"].name.lower()
+        name = table.name.lower()
         targets.append((schema, name))
     return targets
 
@@ -82,4 +84,5 @@ def iter_table_refs(sql_file: Path) -> Iterator[tuple[str, str]]:
         for table in statement.find_all(exp.Table):
             if not table.args.get("db"):
                 continue
-            yield (table.args["db"].name, table.name)
+            # Lowercase: same DuckDB case-insensitivity rationale as extract_create_targets.
+            yield (table.args["db"].name.lower(), table.name.lower())

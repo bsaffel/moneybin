@@ -13,7 +13,7 @@ import fnmatch
 from collections.abc import Iterable
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from moneybin.packages._framework._sql_walk import extract_create_targets
 from moneybin.packages._framework.errors import CapabilityViolation
@@ -30,21 +30,29 @@ class Capability(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    writes: list[str]
-    """Glob patterns of tables this package writes (e.g. ['app.assets_*'])."""
-
-    reads: list[str]
-    """Glob patterns of tables this package reads (documentation at launch)."""
-
-    network: list[str]
-    """Hostnames this package may HTTP to (documentation at launch)."""
-
-    secrets: list[str]
-    """SecretStore keys this package needs (enforced at first access)."""
+    writes: list[str] = Field(
+        description="Glob patterns of tables this package writes (e.g. ['app.assets_*'])."
+    )
+    reads: list[str] = Field(
+        description="Glob patterns of tables this package reads (documentation at launch)."
+    )
+    network: list[str] = Field(
+        description="Hostnames this package may HTTP to (documentation at launch)."
+    )
+    secrets: list[str] = Field(
+        description="SecretStore keys this package needs (enforced at first access)."
+    )
 
     def is_write_allowed(self, target: str) -> bool:
-        """True if 'target' (schema.name) matches any declared write glob."""
-        return any(fnmatch.fnmatchcase(target, pattern) for pattern in self.writes)
+        """True if 'target' (schema.name) matches any declared write glob.
+
+        Matching is case-insensitive: DuckDB treats unquoted identifiers
+        case-insensitively, and _sql_walk normalizes extracted targets to
+        lowercase, so patterns are lowered here to match either-case globs.
+        """
+        return any(
+            fnmatch.fnmatchcase(target, pattern.lower()) for pattern in self.writes
+        )
 
 
 def validate_writes(

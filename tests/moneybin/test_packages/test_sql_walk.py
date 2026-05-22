@@ -102,3 +102,26 @@ def test_extract_create_targets_raises_on_unparseable(tmp_path: Path) -> None:
     # _parse must detect the Command and raise ValueError itself.
     with pytest.raises(ValueError, match="failed to parse"):
         extract_create_targets(sql_file)
+
+
+def test_extract_create_targets_normalizes_case(tmp_path: Path) -> None:
+    """Unquoted identifiers are normalized to lowercase (DuckDB semantics)."""
+    sql = "CREATE TABLE App.Assets_State (id TEXT);"
+    sql_file = tmp_path / "case.sql"
+    sql_file.write_text(sql)
+
+    targets = extract_create_targets(sql_file)
+
+    assert ("app", "assets_state") in targets
+
+
+def test_iter_table_refs_normalizes_case(tmp_path: Path) -> None:
+    """Unquoted table references are normalized to lowercase (DuckDB semantics)."""
+    sql = "SELECT * FROM Core.FCT_Transactions JOIN App.Test_State ON 1=1;"
+    sql_file = tmp_path / "case_refs.sql"
+    sql_file.write_text(sql)
+
+    refs = list(iter_table_refs(sql_file))
+
+    assert ("core", "fct_transactions") in refs
+    assert ("app", "test_state") in refs

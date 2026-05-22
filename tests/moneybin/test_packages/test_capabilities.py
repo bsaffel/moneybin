@@ -141,3 +141,37 @@ def test_empty_writes_with_no_sql_passes(tmp_path: Path) -> None:
         capability=capability,
     )
     assert violations == []
+
+
+def test_writes_case_insensitive_match(tmp_path: Path) -> None:
+    """Mixed-case SQL identifiers match lowercase declared globs."""
+    sql_dir = _make_sql_dir(
+        tmp_path,
+        {"mixed.sql": "CREATE TABLE App.Assets_State (id TEXT);"},
+    )
+    capability = Capability(writes=["app.assets_*"], reads=[], network=[], secrets=[])
+
+    violations = validate_writes(
+        package_name="assets",
+        sql_files=list(sql_dir.glob("*.sql")),
+        capability=capability,
+    )
+
+    assert violations == []
+
+
+def test_writes_case_insensitive_glob(tmp_path: Path) -> None:
+    """Uppercase globs match lowercase-normalized targets."""
+    sql_dir = _make_sql_dir(
+        tmp_path,
+        {"lower.sql": "CREATE TABLE app.assets_state (id TEXT);"},
+    )
+    capability = Capability(writes=["App.assets_*"], reads=[], network=[], secrets=[])
+
+    violations = validate_writes(
+        package_name="assets",
+        sql_files=list(sql_dir.glob("*.sql")),
+        capability=capability,
+    )
+
+    assert violations == []
