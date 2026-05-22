@@ -43,4 +43,12 @@ jobs:
         run: uv sync
 
       - name: Audit dependencies for CVEs
-        run: uv run pip-audit --skip-editable
+        # PYSEC-2026-161 (starlette < 1.0.1, Host-header validation bypass):
+        # accepted, time-boxed. The only fix is starlette 1.0.1, but sqlmesh's
+        # [lsp] extra hard-pins fastapi==0.120.1, which requires starlette<0.50
+        # — so 1.0.1 is unreachable while we keep the SQLMesh editor LSP. The
+        # vuln is HTTP-only (crafted Host header against a running Starlette HTTP
+        # server); MoneyBin runs stdio MCP with no live HTTP listener, so current
+        # exposure is nil. REMOVE this ignore and bump starlette>=1.0.1 before the
+        # M3D Streamable-HTTP transport ships (tracked as a gated follow-up).
+        run: uv run pip-audit --skip-editable --ignore-vuln PYSEC-2026-161
