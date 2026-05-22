@@ -78,6 +78,7 @@ Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, sim
 | Configuration | `get_settings()` → `MoneyBinSettings` | `os.getenv()`, hardcoded values |
 | Secrets/keys | `SecretStore` | `os.getenv()`, plain `str` fields |
 | Table references | `from moneybin.tables import FCT_TRANSACTIONS`, etc. | Hardcoded table name strings |
+| Protected `app.*` mutation | compose a `*Repo` (`src/moneybin/repositories/`) | raw `INSERT`/`UPDATE`/`DELETE` in a service (Invariant 10) |
 | DataFrames | DuckDB > Polars > Pandas | Pandas (unless required for library compat — document why) |
 
 ## Code Standards

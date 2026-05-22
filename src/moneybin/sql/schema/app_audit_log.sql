@@ -12,8 +12,8 @@ CREATE TABLE IF NOT EXISTS app.audit_log (
     target_schema   VARCHAR,                                      -- e.g. 'app', 'core'
     target_table    VARCHAR,                                      -- e.g. 'transaction_categories', 'transaction_tags'
     target_id       VARCHAR,                                      -- gold transaction_id, rule_id, merchant_id, import_id, etc.
-    before_value    JSON,                                         -- Prior column subset; NULL on creation
-    after_value     JSON,                                         -- New column subset; NULL on deletion
+    before_value    JSON,                                         -- Full prior row state; NULL on creation (INSERT). Invariant 10: complete pre-mutation row, not a diff.
+    after_value     JSON,                                         -- Full resulting row state; NULL on deletion (DELETE). Invariant 10: complete post-mutation row, not a diff.
     parent_audit_id VARCHAR,                                      -- Self-FK; chains AI-call → user-confirm → category-write, or bulk-rename → per-row events
     context_json    JSON                                          -- Discriminator-shaped extras: AI fields (flow_tier, backend, model, data_sent_hash), source surface, hashes, etc.
 );

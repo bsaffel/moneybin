@@ -12,7 +12,7 @@ The work has eight pieces, all interlocking:
 
 1. A uniform `RecoveryAction` shape on every error and audit failure (push discovery).
 2. `operation_id` grouping on `app.audit_log` so a tool call's mutations are one undoable unit.
-3. An audit-log undo consumer — Phase 2 of Invariant 9 — exposed via `system_audit_undo` / `system_audit_history` / `system_audit_get`.
+3. An audit-log undo consumer — Phase 2 of Invariant 10 — exposed via `system_audit_undo` / `system_audit_history` / `system_audit_get`.
 4. A doctor recipe registry: each invariant audit ships with a Python recipe producing `recovery_actions` from the failure's affected IDs.
 5. A self-heal safelist run at refresh time — five active recipes, all reversible through the same audit-log undo, with five strict criteria that gate any future addition. A small "deferred" subsection captures known-shape future recipes that don't yet have a concrete trigger.
 6. The matches MCP surface (`transactions_matches_run` / `_review` / `_set` / `_history`) closing the CLI-only gap.
@@ -28,7 +28,7 @@ The umbrella property is the **trust contract**: the system *recomputes* but nev
 Recoverability today is partial and inconsistent across domains:
 
 - **Imports** — `import_revert(import_id)` is a clean reverse, with cascade detection (`status="superseded"` if a newer import shadowed the batch). Per-file error isolation on multi-file imports works.
-- **App-state mutations** — Invariant 9 Phase 1 (spec `app-integrity-invariant.md`, status `ready`) routes every mutation to `app.*` through a `*Repo` with full pre-image capture in `app.audit_log.before_value` and cascade threading via `parent_audit_id`. The undo *consumer* is deferred to Phase 2.
+- **App-state mutations** — Invariant 10 Phase 1 (spec `app-integrity-invariant.md`, status `ready`) routes every mutation to `app.*` through a `*Repo` with full pre-image capture in `app.audit_log.before_value` and cascade threading via `parent_audit_id`. The undo *consumer* is deferred to Phase 2.
 - **Pipeline audits** — `system_doctor` runs three SQLMesh named audits (FK integrity, sign convention, transfer balance) plus a categorization-coverage check, returns pass/fail/warn per audit, optionally with affected IDs.
 - **Error envelopes** — `UserError(message, code, hint, details)` carries machine-readable codes today, but the code taxonomy is undocumented and varies by domain. Success responses have an `actions: list[str]` array of navigational hints; error responses have nothing equivalent.
 - **Matches domain** — CRUD operations exist as CLI commands (`moneybin transactions matches run/review/undo/history`) with no MCP surface.
@@ -38,7 +38,7 @@ Recoverability today is partial and inconsistent across domains:
 Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
 
 1. **Errors don't carry recovery actions.** A parse failure says "OFX parse failed at line 47" but doesn't tell the agent which tool fixes it. The agent has to know the recovery path from prior context.
-2. **No general undo for `app.*` mutations.** Invariant 9 Phase 1 captures the data; Phase 2 builds the consumer. Without it, "I miscategorized 30 transactions, undo that" requires manual re-edits or reaching for `sql_query` — exactly the SQL surgery this spec rules out.
+2. **No general undo for `app.*` mutations.** Invariant 10 Phase 1 captures the data; Phase 2 builds the consumer. Without it, "I miscategorized 30 transactions, undo that" requires manual re-edits or reaching for `sql_query` — exactly the SQL surgery this spec rules out.
 3. **Doctor failures don't point at recoveries.** "FK integrity failed on these 5 transaction IDs" leaves the agent guessing whether to revert an import, edit the account_id, or treat the orphan as intentional.
 4. **Self-healing is absent.** When `import_revert` cascades and leaves orphan `app.transaction_categories` rows, those accumulate forever. No refresh-time cleanup.
 5. **Refresh crashes silently.** Matcher and categorizer failures log at DEBUG (`followups.md:71`); the import looks healthy while dupes silently accumulate. No surface to detect partial-pipeline failure.
@@ -50,7 +50,7 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
 
 **Push + pull discovery.** Every failure carries structured `recovery_actions` (push), and a dedicated `system_audit_history` tool enumerates recent operations regardless of error (pull). Push covers the "something broke" case; pull covers the "I changed my mind" case. Together they make `sql_query` unnecessary for any recovery path.
 
-**Audit-log-driven undo over per-domain inverse tools.** Invariant 9 Phase 1 already captures the data; Phase 2 is one consumer, not a dozen `un*` tools. The verb vocabulary in `.claude/rules/surface-design.md` doesn't have a `_undo` verb on purpose — reversibility lives in the audit log, not in paired tools. Explicit named tools exist only where the inverse is structurally a different operation (matches, splits — where the inverse is a state change, not a row restore).
+**Audit-log-driven undo over per-domain inverse tools.** Invariant 10 Phase 1 already captures the data; Phase 2 is one consumer, not a dozen `un*` tools. The verb vocabulary in `.claude/rules/surface-design.md` doesn't have a `_undo` verb on purpose — reversibility lives in the audit log, not in paired tools. Explicit named tools exist only where the inverse is structurally a different operation (matches, splits — where the inverse is a state change, not a row restore).
 
 **Safelist + report over aggressive auto-heal.** Refresh-time self-healing is gated on five strict criteria (derivable, idempotent, no information loss, auditable, reversible). Five active recipes pass all five; everything else surfaces as an audit failure with a recovery recipe. The system never destroys user-authored content automatically. The trust contract is concrete: **recompute, don't decide.**
 
@@ -62,7 +62,7 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
 
 - [`app-integrity-invariant.md`](app-integrity-invariant.md) — Phase 1 (audit_log pre-image capture, repository routing, lint rule, doctor invariants). **Prerequisite.** This spec implements Phase 2 (the undo consumer) and supersedes the Phase 2 description in that spec's [Out of Scope](app-integrity-invariant.md#out-of-scope) section.
 - [`moneybin-doctor.md`](moneybin-doctor.md) — invariant audits surfaced by `system_doctor`. This spec adds the recipe registry that yields `recovery_actions` for each audit.
-- [`architecture-shared-primitives.md`](architecture-shared-primitives.md) — Invariant 9 ("`app.*` mutation routing"), to which this spec adds a sister Invariant 10 ("Recoverability of mutations").
+- [`architecture-shared-primitives.md`](architecture-shared-primitives.md) — Invariant 10 ("`app.*` mutation routing"), to which this spec adds a sister Invariant 11 ("Recoverability of mutations").
 - [`moneybin-mcp.md`](moneybin-mcp.md) / [`moneybin-cli.md`](moneybin-cli.md) — surface specs the new tools and CLI commands extend.
 - [`matching-same-record-dedup.md`](matching-same-record-dedup.md) — owns `app.match_decisions`; the matches MCP surface in this spec wraps the existing matching service.
 - [`smart-import-financial.md`](smart-import-financial.md) / [`smart-import-tabular.md`](smart-import-tabular.md) — import error sites this spec retrofits with `recovery_actions`.
@@ -207,7 +207,7 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
     | `transactions_matches_set(transaction_id, match_group_id, primary)` | 1b (entity upsert) | `moneybin transactions matches set` |
     | `transactions_matches_history(since?, scope?)` | 5 (time-series) | `moneybin transactions matches history` |
 
-    No `transactions_matches_undo` MCP tool. `app.match_decisions` is protected by Invariant 9 → audit_log → `system_audit_undo`. The existing CLI `moneybin transactions matches undo` migrates to call `system_audit_undo` internally.
+    No `transactions_matches_undo` MCP tool. `app.match_decisions` is protected by Invariant 10 → audit_log → `system_audit_undo`. The existing CLI `moneybin transactions matches undo` migrates to call `system_audit_undo` internally.
 
 11. **Project rule.** A new always-loaded workflow rule lands at `.claude/rules/data-recovery.md`. It codifies:
 
@@ -224,9 +224,9 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
 
 13. **`transactions_notes_delete` accepts a list.** Existing tool extends to accept `note_ids: list[str]` in addition to the single-id form. Backward compat: a single string id is still accepted during the deprecation window. The `orphan_app_state` recipe cites the list form. No new `_many` tool — per the "many native" convention.
 
-14. **Invariant 10 — Recoverability of mutations.** Appended to `architecture-shared-primitives.md` §Architecture Invariants:
+14. **Invariant 11 — Recoverability of mutations.** Appended to `architecture-shared-primitives.md` §Architecture Invariants:
 
-    > **Invariant 10 — Recoverability of mutations.** Every mutation that reaches a user-observable surface (MCP, CLI, REST) MUST be recoverable through one of six paths: (a) an existing inverse tool, (b) `system_audit_undo` against the operation's `operation_id`, (c) `import_revert` plus re-import, (d) a self-heal recipe at refresh time, (e) a doctor recipe with structured `recovery_actions`, or (f) a domain-specific MCP tool for state changes whose inverse is structurally distinct (matches, splits). No recovery path may name `sql_query` or any DDL/write tool; reaching for SQL is an indication that a recovery tool is missing and must be added.
+    > **Invariant 11 — Recoverability of mutations.** Every mutation that reaches a user-observable surface (MCP, CLI, REST) MUST be recoverable through one of six paths: (a) an existing inverse tool, (b) `system_audit_undo` against the operation's `operation_id`, (c) `import_revert` plus re-import, (d) a self-heal recipe at refresh time, (e) a doctor recipe with structured `recovery_actions`, or (f) a domain-specific MCP tool for state changes whose inverse is structurally distinct (matches, splits). No recovery path may name `sql_query` or any DDL/write tool; reaching for SQL is an indication that a recovery tool is missing and must be added.
 
 ## Data Model
 
@@ -291,7 +291,7 @@ flowchart TB
 
     subgraph DataPrim[Data Primitive]
         OpId["app.audit_log.operation_id<br/>(grouping)"]
-        Pre["before_value (full pre-image)<br/>from Invariant 9 Phase 1"]
+        Pre["before_value (full pre-image)<br/>from Invariant 10 Phase 1"]
     end
 
     Err --> RA
@@ -317,11 +317,11 @@ flowchart TB
     class ExTool,Undo,Revert,Heal,DomTool rec;
 ```
 
-Every failure on the left funnels into the universal envelope; the agent reads `recovery_actions` and dispatches into one of the six recovery paths in Invariant 10. The right side of the diagram shows the five *executing* mechanisms; the sixth path — doctor recipes (Invariant 10 path (e)) — produces `recovery_actions` whose `tool` fields name one of those same five mechanisms, so it routes through the Push discovery layer rather than executing recovery itself. All mechanisms that touch `app.*` land in the audit log via Invariant 9 Phase 1's pre-image capture, so every recovery is itself recoverable.
+Every failure on the left funnels into the universal envelope; the agent reads `recovery_actions` and dispatches into one of the six recovery paths in Invariant 11. The right side of the diagram shows the five *executing* mechanisms; the sixth path — doctor recipes (Invariant 11 path (e)) — produces `recovery_actions` whose `tool` fields name one of those same five mechanisms, so it routes through the Push discovery layer rather than executing recovery itself. All mechanisms that touch `app.*` land in the audit log via Invariant 10 Phase 1's pre-image capture, so every recovery is itself recoverable.
 
 ## Implementation Plan
 
-Phase 2 of Invariant 9 + sister contract work + matches MCP + refresh surfacing + project rule. Lands as a sequence of small reviewable PRs. PR 1 assumes Phase 1 (`app-integrity-invariant.md`) has shipped — Phase 1 is the hard prerequisite.
+Phase 2 of Invariant 10 + sister contract work + matches MCP + refresh surfacing + project rule. Lands as a sequence of small reviewable PRs. PR 1 assumes Phase 1 (`app-integrity-invariant.md`) has shipped — Phase 1 is the hard prerequisite.
 
 ### PR 1 — `operation_id` schema + service-layer context manager
 
@@ -347,7 +347,7 @@ Phase 2 of Invariant 9 + sister contract work + matches MCP + refresh surfacing 
 - CLI parity: `moneybin system audit undo`, `moneybin system audit history`, `moneybin system audit get`.
 - Cascade detection: query for any later audit row in `(target_table, target_id, operation_id != self)`. If found, return `undo_cascade_blocked` with the blockers in `recovery_actions` (newest first, since blockers must undo in reverse order).
 - Undo emission: each undo writes a new audit row per affected entity with `is_undo=TRUE`, `undoes_operation_id=<original>`, and a fresh `operation_id` of its own. The returned summary includes that new operation_id so the undo itself is queryable and undoable.
-- Tests: round-trip per Invariant 9 protected table; cascade-blocked scenario; double-undo (`undo_already_undone`); `undo_operation_not_found`.
+- Tests: round-trip per Invariant 10 protected table; cascade-blocked scenario; double-undo (`undo_already_undone`); `undo_operation_not_found`.
 
 ### PR 4 — Doctor recipe registry + recipes for existing audits
 
@@ -394,10 +394,10 @@ One small PR per domain. Each retrofits the tool's `UserError` raises with `reco
 
 Each PR includes a property test asserting that every error path in the domain either populates `recovery_actions` or explicitly raises with `error_code="recovery_no_path"`.
 
-### PR 10 — Project rule + Invariant 10 + roadmap + CHANGELOG
+### PR 10 — Project rule + Invariant 11 + roadmap + CHANGELOG
 
 - `.claude/rules/data-recovery.md` per Req 11.
-- Append Invariant 10 (Req 14) to `architecture-shared-primitives.md`.
+- Append Invariant 11 (Req 14) to `architecture-shared-primitives.md`.
 - Update `docs/roadmap.md` — close M2D row with ✅ shipped.
 - CHANGELOG entry under M2D dated section: added recoverable-state contract, audit-log undo, doctor recipes, matches MCP, refresh error surfacing.
 - New guide: `docs/guides/agent-recovery.md` — how agents discover and execute recovery (audience: agent integrators / power users).
@@ -429,7 +429,7 @@ Per `.claude/rules/testing.md` test layers.
 - **Encryption-key recovery.** Out of layer; covered by `privacy-data-protection.md` and external backups.
 - **Schema migration rollback.** Covered by `database-migration.md`. The Phase 2 schema additions in this spec are forward-only.
 - **External-state side-effect undo (M3A Plaid sync).** No external mutations in the current sync model; sync server is opaque per AGENTS.md. M3A spec decides if needed.
-- **Undoing `import_revert` via `system_audit_undo`.** `import_revert` mutates `raw.*`, which is outside Invariant 9 / audit_log scope by design (the schema boundary is load-bearing — `raw.*` is bytes-from-source). The cascade self-heal that `import_revert` triggers (orphan cleanup in `app.transaction_categories`, `app.transaction_splits`) IS audit-logged and individually undoable, but undoing those rows without re-importing would only restore orphans pointing at deleted raw rows. The correct recovery for an unwanted revert is to re-import the source file; `import_revert`'s error envelope on a "no, I want it back" agent prompt MUST escalate to the user with `error_code="recovery_no_path"` rather than silently chain audit undos.
+- **Undoing `import_revert` via `system_audit_undo`.** `import_revert` mutates `raw.*`, which is outside Invariant 10 / audit_log scope by design (the schema boundary is load-bearing — `raw.*` is bytes-from-source). The cascade self-heal that `import_revert` triggers (orphan cleanup in `app.transaction_categories`, `app.transaction_splits`) IS audit-logged and individually undoable, but undoing those rows without re-importing would only restore orphans pointing at deleted raw rows. The correct recovery for an unwanted revert is to re-import the source file; `import_revert`'s error envelope on a "no, I want it back" agent prompt MUST escalate to the user with `error_code="recovery_no_path"` rather than silently chain audit undos.
 - **`staging_coverage` invariant unblock.** Blocked on `app.match_decisions.is_primary` column. Adjacent but not in this milestone; tracked in `followups.md:131`.
 - **`system_audit_undo_cascade` tool.** Block-don't-cascade is the Phase 1 default. Add later only if walk-and-retry pattern is verbose enough in real agent UX.
 - **Aggressive auto-heal beyond the safelist.** The five criteria are the gate. Adding a recipe requires explicit justification.
@@ -458,7 +458,7 @@ Resolved during the 2026-05-19/2026-05-20 brainstorm. Captured so future readers
 
 9. **New milestone slot (M2D), not bundled into M2C.** The envelope is a one-way door — lock once, every future spec inherits — so it deserves its own scope. Bundling into M2C dilutes both. Cross-cutting into M3A-D fragments the contract.
 
-10. **Invariant 10 (Recoverability of mutations), not just a documentation update.** Codified at the same level as Invariant 9 in `architecture-shared-primitives.md`. Forces future specs to declare their recovery path during design, not after.
+10. **Invariant 11 (Recoverability of mutations), not just a documentation update.** Codified at the same level as Invariant 10 in `architecture-shared-primitives.md`. Forces future specs to declare their recovery path during design, not after.
 
 11. **UUID4 over ULID for `operation_id`.** Drafted with "ULID" for chronological-sort properties; the spec was updated during review (2026-05-20, PR #188 review feedback) to use `op_<uuid4_hex>` — 32-char UUID4 hex prefixed with `op_`. Reasons: the project already uses UUID4 throughout (`identifiers.md` decision tree; `audit_id` itself is full UUID4 hex), adding a ULID dependency crosses the "fewer dependencies on the critical path" line in `.claude/rules/design-principles.md`, and chronological sort is available without ULID via the existing `app.audit_log.occurred_at` column (the `idx_audit_log_occurred_at_op` index serves the same use case). The `op_` prefix provides the visual discriminability ULID would have given.
 
