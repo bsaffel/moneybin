@@ -9,12 +9,20 @@ Exposes ``run``, ``seed_priority``, ``undo``, ``get_log``, and
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
+from moneybin import error_codes
 from moneybin.config import MatchingSettings, get_settings
 from moneybin.database import Database
+from moneybin.errors import RecoveryAction, UserError
 from moneybin.matching.engine import TransactionMatcher
-from moneybin.matching.persistence import get_match_log, undo_match
+from moneybin.matching.persistence import (
+    MatchStatus,
+    get_match_decision,
+    get_match_log,
+    undo_match,
+    update_match_status,
+)
 from moneybin.matching.priority import seed_source_priority
 from moneybin.tables import MATCH_DECISIONS
 
@@ -22,6 +30,8 @@ if TYPE_CHECKING:
     from moneybin.matching.engine import MatchResult
 
 logger = logging.getLogger(__name__)
+
+_SETTABLE_STATUSES: frozenset[str] = frozenset({"accepted", "rejected"})
 
 
 class MatchingService:
@@ -84,3 +94,85 @@ class MatchingService:
         Wraps :func:`moneybin.matching.persistence.get_match_log`.
         """
         return get_match_log(self._db, limit=limit, match_type=match_type)
+
+    def set_status(
+        self, match_id: str, *, status: str, decided_by: str = "user"
+    ) -> None:
+        """Accept or reject one pending match decision by id.
+
+        Validates the transition the raw persistence primitive does not:
+        only a ``pending`` decision may move to ``accepted``/``rejected``.
+        Re-asserting the current status is an idempotent no-op (shape 1b).
+        Any other transition raises ``UserError`` carrying ``recovery_actions``.
+        """
+        if status not in _SETTABLE_STATUSES:
+            raise UserError(
+                f"status must be one of {sorted(_SETTABLE_STATUSES)}, got {status!r}",
+                code=error_codes.MUTATION_INVALID_INPUT,
+                recovery_actions=[
+                    RecoveryAction(
+                        tool="transactions_matches_pending",
+                        arguments={},
+                        rationale="List pending matches to pick a valid match and status.",
+                        confidence="suggested",
+                        idempotent=True,
+                    )
+                ],
+            )
+
+        current = get_match_decision(self._db, match_id)
+        if current is None:
+            raise UserError(
+                f"No match decision found for id {match_id!r}.",
+                code=error_codes.MUTATION_NOT_FOUND,
+                recovery_actions=[
+                    RecoveryAction(
+                        tool="transactions_matches_pending",
+                        arguments={},
+                        rationale="List current pending matches to find a valid match_id.",
+                        confidence="suggested",
+                        idempotent=True,
+                    )
+                ],
+            )
+
+        current_status = current["match_status"]
+        if current_status == status:
+            return  # idempotent re-assertion
+
+        if current_status != "pending":
+            if current_status == "accepted":
+                action = RecoveryAction(
+                    tool="transactions_matches_undo",
+                    arguments={"match_id": match_id},
+                    rationale=(
+                        "This match is already accepted and merged into core. Reverse it "
+                        "with 'moneybin transactions matches undo' first, then re-run matching."
+                    ),
+                    confidence="suggested",
+                    idempotent=False,
+                )
+            else:
+                action = RecoveryAction(
+                    tool="transactions_matches_pending",
+                    arguments={},
+                    rationale=(
+                        f"This decision is {current_status}, not pending; list current "
+                        "pending matches instead."
+                    ),
+                    confidence="suggested",
+                    idempotent=True,
+                )
+            raise UserError(
+                f"Cannot set match {match_id!r} to {status!r}: it is {current_status!r}, "
+                "not pending.",
+                code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+                recovery_actions=[action],
+            )
+
+        update_match_status(
+            self._db,
+            match_id,
+            status=cast("MatchStatus", status),
+            decided_by=decided_by,
+        )
