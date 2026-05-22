@@ -8,7 +8,7 @@ ready
 
 ## Goal
 
-`app.*` holds the only non-reconstructible state in MoneyBin — user categories, merchant patterns, categorization rules, account settings, balance assertions, budgets, curation notes/tags/splits, match decisions, tabular-format profiles. A bad service mutation today can silently corrupt any of those tables: audit routing is enforced by convention, not structure, and `audit_service.record_audit_event()` is called at only a fraction of the mutation sites. The doctor has no `app.*` invariants — only pipeline ones. The hosted tier (M3D/M3E) cannot ship without per-user `app.*` integrity, and the agent-first thesis means bulk LLM-driven mutations need recoverability to be trustworthy. This spec adds **Invariant 9** to the architecture, introduces a `*Repo` layer that owns every protected `app.*` write, bakes in the data captured for a future undo surface, and enforces the contract via a lint rule and doctor checks. The undo *consumer* (CLI/MCP/UndoService) is deliberately deferred to Phase 2.
+`app.*` holds the only non-reconstructible state in MoneyBin — user categories, merchant patterns, categorization rules, account settings, balance assertions, budgets, curation notes/tags/splits, match decisions, tabular-format profiles. A bad service mutation today can silently corrupt any of those tables: audit routing is enforced by convention, not structure, and `audit_service.record_audit_event()` is called at only a fraction of the mutation sites. The doctor has no `app.*` invariants — only pipeline ones. The hosted tier (M3D/M3E) cannot ship without per-user `app.*` integrity, and the agent-first thesis means bulk LLM-driven mutations need recoverability to be trustworthy. This spec adds **Invariant 10** to the architecture, introduces a `*Repo` layer that owns every protected `app.*` write, bakes in the data captured for a future undo surface, and enforces the contract via a lint rule and doctor checks. The undo *consumer* (CLI/MCP/UndoService) is deliberately deferred to Phase 2.
 
 ## Background
 
@@ -43,7 +43,7 @@ Source: 2026-05-16 CTO architecture review §2.2 + §3 leverage point #3, re-ver
 
 ### Related specs
 
-- [`architecture-shared-primitives.md`](architecture-shared-primitives.md) — Invariant 8 ("derivations live in SQLMesh, not in services") sits next to the new Invariant 9. This spec appends Invariant 9 to that document.
+- [`architecture-shared-primitives.md`](architecture-shared-primitives.md) — Invariant 8 ("derivations live in SQLMesh, not in services") is a sibling architecture invariant. This spec appends Invariant 10 (`app.*` mutation routing) to that document.
 - [`transaction-curation.md`](transaction-curation.md) §Audit log Req 25–31 — the spec that introduced `AuditService` and the `app.audit_log` schema. This spec extends that infrastructure to cover every protected `app.*` table.
 - [`categorization-overview.md`](categorization-overview.md) / [`categorization-auto-rules.md`](categorization-auto-rules.md) — the categorization writers that this spec migrates onto repositories.
 - [`account-management.md`](account-management.md) / [`net-worth.md`](net-worth.md) — owners of `app.account_settings` and `app.balance_assertions` respectively.
@@ -52,9 +52,9 @@ Source: 2026-05-16 CTO architecture review §2.2 + §3 leverage point #3, re-ver
 
 ## Requirements
 
-1. **Invariant 9** is appended to `architecture-shared-primitives.md` verbatim as:
+1. **Invariant 10** is appended to `architecture-shared-primitives.md` verbatim as:
 
-   > **Invariant 9 — `app.*` mutation routing.** All mutations of `app.*` tables MUST emit a paired `app.audit_log` row via `audit_service.record_audit_event()` inside the same DuckDB transaction, except for: (a) `app.audit_log` itself, (b) `app.metrics` (observability data, not user state), (c) seed-loaded configuration tables written only at install/migration time (currently `app.seed_source_priority`), and (d) migration-system tables (`app.schema_migrations`, `app.versions`). Direct `INSERT`/`UPDATE`/`DELETE` against `app.*` from outside `audit_service.py` or `*_repo.py` modules is a contract violation. The doctor MUST verify routing via per-table invariants.
+   > **Invariant 10 — `app.*` mutation routing.** All mutations of `app.*` tables MUST emit a paired `app.audit_log` row via `audit_service.record_audit_event()` inside the same DuckDB transaction, except for: (a) `app.audit_log` itself, (b) `app.metrics` (observability data, not user state), (c) seed-loaded configuration tables written only at install/migration time (currently `app.seed_source_priority`), and (d) migration-system tables (`app.schema_migrations`, `app.versions`). Direct `INSERT`/`UPDATE`/`DELETE` against `app.*` from outside `audit_service.py` or `*_repo.py` modules is a contract violation. The doctor MUST verify routing via per-table invariants.
 
 2. **Repository contract.** Each protected `app.*` table has a dedicated `*Repo` class in `src/moneybin/repositories/`. Repositories own all mutation SQL for their table. Services compose repositories; services do not execute mutation SQL against protected tables. Reads remain free — services may continue to SELECT directly from `app.*`.
 
@@ -78,7 +78,7 @@ Source: 2026-05-16 CTO architecture review §2.2 + §3 leverage point #3, re-ver
 
 5. **Cascade threading.** When a single user action triggers multiple `app.*` mutations (e.g., deleting a category cascades to recategorizing every transaction that referenced it), the cascaded mutations MUST share a `parent_audit_id` pointing at the originating audit row. `TransactionService`'s `tag.rename` / `tag.rename_row` chain is the reference implementation: parent event at `transaction_service.py:977-983`, per-row child emissions at `transaction_service.py:993-1000` with `parent_audit_id=parent.audit_id`.
 
-6. **Protected table list (Phase 1).** The following tables are protected by Invariant 9 and have repository coverage:
+6. **Protected table list (Phase 1).** The following tables are protected by Invariant 10 and have repository coverage:
 
    | Repository | Table(s) | Current writer to migrate |
    |---|---|---|
@@ -96,10 +96,10 @@ Source: 2026-05-16 CTO architecture review §2.2 + §3 leverage point #3, re-ver
    | `BudgetsRepo` | `app.budgets` | `budget_service` |
    | `ImportLabelsRepo` | `app.imports` (labels payload) | `import_service` (the lifecycle write at L1484; lifecycle audit elsewhere stays) |
 
-   `app.transaction_notes`, `app.transaction_tags`, `app.transaction_splits` are written by `transaction_service.py` which already routes through `AuditService` correctly; per Invariant 9 they require a `*_repo.py` home for lint-rule symmetry — wrapping the existing audited writes is mechanical and is included in Phase 1 (see [Implementation Plan](#implementation-plan)).
+   `app.transaction_notes`, `app.transaction_tags`, `app.transaction_splits` are written by `transaction_service.py` which already routes through `AuditService` correctly; per Invariant 10 they require a `*_repo.py` home for lint-rule symmetry — wrapping the existing audited writes is mechanical and is included in Phase 1 (see [Implementation Plan](#implementation-plan)).
 
 7. **Exempt tables and callers.** Two parallel exemptions:
-   - **Tables:** `app.audit_log`, `app.metrics`, `app.seed_source_priority`, `app.schema_migrations`, `app.versions`. Named in Invariant 9 and allowlisted in the lint rule.
+   - **Tables:** `app.audit_log`, `app.metrics`, `app.seed_source_priority`, `app.schema_migrations`, `app.versions`. Named in Invariant 10 and allowlisted in the lint rule.
    - **Callers:** files under `src/moneybin/sql/migrations/V*.py`. Migration scripts are historical, immutable (their content hashes are recorded and re-runs would break if the SQL changed), and several existing migrations write to protected tables — e.g., `V006:34` (`app.user_merchants`), `V007:107` (`app.transaction_notes`), `V012:55` (`app.transaction_categories`). Forcing migrations through repositories would break migration discipline; the boundary the spec actually cares about is "runtime writer modules," and migrations sit on the other side of it. This exemption is parallel in spirit to the migration-tables exemption above — both treat migration-system state and code as system-managed rather than runtime user state.
 
 8. **Lint rule.** A static check rejects `execute(...)` calls whose effective first argument resolves to SQL matching `INSERT INTO app\.X|UPDATE app\.X|DELETE FROM app\.X` for any protected `X`, unless the enclosing module is `*_repo.py`, `audit_service.py`, or a migration script under `src/moneybin/sql/migrations/V*.py` per Req 7. The check MUST handle **both** SQL shapes used in the codebase today:
@@ -117,7 +117,7 @@ Source: 2026-05-16 CTO architecture review §2.2 + §3 leverage point #3, re-ver
 
 10. **Migration order.** Repositories land per-table in small reviewable PRs; each PR migrates one writer to the new repository and includes the doctor invariant for that table. The lint rule lands last, after every protected table has repository coverage, otherwise the rule would block the very migration PRs that implement it. Concretely (see [Implementation Plan](#implementation-plan) for the full ordering):
 
-    1. Spec + Invariant 9 append (no code).
+    1. Spec + Invariant 10 append (no code).
     2. `repositories/` skeleton + `BaseRepo` + first concrete repo (`UserCategoriesRepo` — most contained) + migrate one `categorization_service` call site.
     3. … one repo + one migration per PR …
     4. Final PR: lint rule + remaining doctor invariants + spec status → `implemented`.
@@ -171,10 +171,10 @@ Every mutation path on the left funnels through the repository in the middle. Th
 
 Phase 1 lands as a sequence of small reviewable PRs. Each PR after PR 1 adds one repository, migrates one writer, and adds that table's doctor invariant — keeping diffs reviewable and reverts surgical.
 
-### PR 1 — Spec + Invariant 9 append + Req 29 supersession (no service code)
+### PR 1 — Spec + Invariant 10 append + Req 29 supersession (no service code)
 
 - Spec status stays `ready` (already promoted on this spec-only PR). PR 1 is the first *implementation* PR in the sequence; no status change here.
-- Append Invariant 9 (Req 1 wording) to `architecture-shared-primitives.md` §Architecture Invariants. Update its [§Service-Layer Contract](architecture-shared-primitives.md#service-layer-contract) note: "Transactional services compose `*Repo` classes for protected `app.*` writes; raw mutation SQL inside services is a contract violation under Invariant 9."
+- Append Invariant 10 (Req 1 wording) to `architecture-shared-primitives.md` §Architecture Invariants. Update its [§Service-Layer Contract](architecture-shared-primitives.md#service-layer-contract) note: "Transactional services compose `*Repo` classes for protected `app.*` writes; raw mutation SQL inside services is a contract violation under Invariant 10."
 - Update `AGENTS.md` "Key Abstractions" table: add `Protected app.* mutation` → `*Repo` (compose; never raw SQL).
 - **Amend `transaction-curation.md` Req 29** to align with Req 4's full-row capture (replace "the relevant column subset of the affected row, not the entire table row" with full-row semantics; cascade-threading wording stays). **Update the `app.audit_log` schema column comments** in `src/moneybin/sql/schema/app_audit_log.sql` ("Prior column subset" → "Full prior row state"; "New column subset" → "Full resulting row state"). **Update `transaction-curation.md` §Data Model** prose on `before_value` / `after_value` snapshots (currently "snapshots of the relevant *column subset*"). No `TransactionService` code changes in PR 1 — the existing column-subset writes keep working under the new contract until PR 12 backfills them.
 
@@ -275,15 +275,15 @@ Per `.claude/rules/testing.md` test layers.
 - **Decorator-based audit.** Considered and rejected (see [Background](#background)).
 - **Event sourcing.** Considered and rejected (see [Background](#background)).
 - **Migration tables (`app.schema_migrations`, `app.versions`) routing.** Migration system state; exempt by design.
-- **Service-layer reshape for non-service writers.** `extractors/tabular/formats.py` mixes a read-during-extract loader with CRUD on saved format profiles; `matching/persistence.py` is hand-rolled CRUD on `app.match_decisions` that arguably belongs as a method on `matching_service.py`. Both are real follow-ups but are architecturally distinct from audit-routing — bundling them muddies review and inflates Phase 1 by ~5–8 days. Tracked as follow-ups: `tabular-format-service.md` (split loader from profile CRUD) and a `matching/persistence → matching_service` consolidation. Both run against a stable Invariant 9 baseline.
+- **Service-layer reshape for non-service writers.** `extractors/tabular/formats.py` mixes a read-during-extract loader with CRUD on saved format profiles; `matching/persistence.py` is hand-rolled CRUD on `app.match_decisions` that arguably belongs as a method on `matching_service.py`. Both are real follow-ups but are architecturally distinct from audit-routing — bundling them muddies review and inflates Phase 1 by ~5–8 days. Tracked as follow-ups: `tabular-format-service.md` (split loader from profile CRUD) and a `matching/persistence → matching_service` consolidation. Both run against a stable Invariant 10 baseline.
 
 ## Resolved Design Decisions
 
 Resolved 2026-05-16. The five items below were open at draft; user-confirmed before promotion to `ready`. Kept here so future readers can see the path taken and the alternatives weighed against it.
 
-1. **`app.match_decisions` — routed under Invariant 9.** Match decisions are user-affecting state (`moneybin matches confirm`/`undo` exist today), written outside SQLMesh by `matching/persistence.py`. Exempting them would leave a silent class of `app.*` mutations uncovered — the exact failure mode this spec exists to prevent. Invariant 8's carve-out describes *where the derivation lives* (SQLMesh vs service), not whether the resulting writes need audit routing. `MatchDecisionsRepo` is in the Phase 1 protected list (Req 6, PR 8).
+1. **`app.match_decisions` — routed under Invariant 10.** Match decisions are user-affecting state (`moneybin matches confirm`/`undo` exist today), written outside SQLMesh by `matching/persistence.py`. Exempting them would leave a silent class of `app.*` mutations uncovered — the exact failure mode this spec exists to prevent. Invariant 8's carve-out describes *where the derivation lives* (SQLMesh vs service), not whether the resulting writes need audit routing. `MatchDecisionsRepo` is in the Phase 1 protected list (Req 6, PR 8).
 
-2. **`app.imports` (labels) is protected; `raw.import_log` is out of scope.** `app.imports` holds user-applied labels per import — user state, written by `import_service.py:1484`, belongs under Invariant 9. The existing import lifecycle audit emissions (L1430/L1438/L1467) stay. `raw.import_log` is in `raw.*` and outside Invariant 9 by design (the schema boundary is load-bearing). `ImportLabelsRepo` lands as PR 11.
+2. **`app.imports` (labels) is protected; `raw.import_log` is out of scope.** `app.imports` holds user-applied labels per import — user state, written by `import_service.py:1484`, belongs under Invariant 10. The existing import lifecycle audit emissions (L1430/L1438/L1467) stay. `raw.import_log` is in `raw.*` and outside Invariant 10 by design (the schema boundary is load-bearing). `ImportLabelsRepo` lands as PR 11.
 
 3. **Scope expansion accepted: include `balance_assertions`, `budgets`, and `imports`-labels in Phase 1.** All three were bypass sites the original plan missed; partial coverage would block the lint rule from landing at end of Phase 1 (it would have three table-shaped holes) and require a Phase 1.5 follow-up that costs more to schedule than to bundle. Phase 1 estimate moves from ~3 weeks to ~3.5 weeks. PRs 9 (`BalanceAssertionsRepo`), 10 (`BudgetsRepo`), 11 (`ImportLabelsRepo`) are in Phase 1.
 
@@ -294,4 +294,4 @@ Resolved 2026-05-16. The five items below were open at draft; user-confirmed bef
 ## Related Work
 
 - `transaction-curation.md` §Audit log Req 25–31 — the spec that introduced the `AuditService` and `app.audit_log` schema this work extends.
-- ADR (forthcoming, lands with PR 1): `docs/decisions/0NN-app-integrity-invariant.md` — captures the repository-over-decorator and Phase 1/Phase 2 split decisions for posterity. Origin of this spec was a 2026-05-16 architecture review; substance of the bypass map is reflected in [Background](#background).
+- ADR ([ADR-012](../decisions/012-app-integrity-invariant.md), lands with PR 1): `docs/decisions/012-app-integrity-invariant.md` — captures the repository-over-decorator and Phase 1/Phase 2 split decisions for posterity. Origin of this spec was a 2026-05-16 architecture review; substance of the bypass map is reflected in [Background](#background).

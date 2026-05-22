@@ -20,7 +20,7 @@ Audited as of 2026-05-15:
 | `docs/` root | 7 | `README.md`, `roadmap.md`, `features.md`, `comparison.md`, `architecture.md`, `audience.md`, `licensing.md` |
 | `docs/guides/` | 14 | CLI reference, data import, MCP server, threat model, security, observability, etc. |
 | `docs/reference/` | 14 | Data model, data sources, system overview, server API contract, prompt library (including `prompts/` subdirectory — 3 top-level + 11 prompts) |
-| `docs/decisions/` | 11 | ADR-000 through ADR-010 |
+| `docs/decisions/` | 13 | ADR-000 through ADR-012 |
 | `docs/specs/` | 53 | Internal specs including archived — not surfaced in public site nav |
 | Other (`tech/`, `architecture/`) | 3 | Implementation-internal |
 

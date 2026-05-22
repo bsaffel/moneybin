@@ -163,6 +163,6 @@ Behind the consumer-facing surface, the codebase enforces a small set of pattern
 - **MCP design philosophy, full tool catalog, sensitivity-tier semantics.** → [`docs/specs/mcp-architecture.md`](specs/mcp-architecture.md), [`docs/specs/moneybin-mcp.md`](specs/moneybin-mcp.md), [`docs/guides/mcp-server.md`](guides/mcp-server.md).
 - **CLI command tree and the cross-protocol naming rule in full.** → [`docs/specs/moneybin-cli.md`](specs/moneybin-cli.md), [`docs/guides/cli-reference.md`](guides/cli-reference.md).
 - **The writer-coordination contract.** → [`docs/decisions/010-writer-coordination.md`](decisions/010-writer-coordination.md).
-- **Architecture decisions and their rationale.** → [`docs/decisions/`](decisions/). ADR-000 (DuckDB), ADR-001 (medallion layers), ADR-002 (privacy tiers), ADR-009 (encryption key management), ADR-010 (writer coordination).
+- **Architecture decisions and their rationale.** → [`docs/decisions/`](decisions/). ADR-000 (DuckDB), ADR-001 (medallion layers), ADR-002 (privacy tiers), ADR-009 (encryption key management), ADR-010 (writer coordination), ADR-012 (`app.*` integrity invariant).
 
 For a single architectural change, the heuristic is: read the relevant spec; if it's a load-bearing pattern choice, also read the ADR; if you need the contract every spec inherits from, read [`architecture-shared-primitives.md`](specs/architecture-shared-primitives.md).

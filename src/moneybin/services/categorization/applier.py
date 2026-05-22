@@ -8,7 +8,7 @@ Every write to ``app.transaction_categories``, ``app.user_merchants``,
 Audit emission is scoped to the user-manual-edit path
 (``set_category`` / ``clear_category``). Bulk and automated writes are
 deliberately audit-silent today; broader coverage is tracked in the
-app-integrity Invariant 9 work and intentionally out of scope here.
+app-integrity Invariant 10 work and intentionally out of scope here.
 
 Source-precedence enforcement is centralised in :meth:`write_categorization`:
 every write compares the incoming source's priority (from
