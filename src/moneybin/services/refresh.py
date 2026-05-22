@@ -9,16 +9,19 @@ verb that wraps three source-agnostic steps:
    same transaction observed by multiple loaders collapses to one row.
 2. **SQLMesh apply** — :class:`TransformService` rebuilds derived
    ``core.*`` and ``reports.*`` models from current raw state. This is
-   the only step that surfaces a structured error in the result.
+   the only step that can hard-fail the call (``RefreshResult.error``);
+   the others surface crashes without aborting (see below).
 3. **Deterministic categorization** — :class:`CategorizationService`
    applies user rules + merchant exemplars to uncategorized rows, with
    source-precedence enforcement so user-manual categories are never
    overwritten.
 
-Matching and categorization are best-effort: failures are logged and
-swallowed so a partial pipeline still leaves raw rows durable and core
-tables rebuilt. Only SQLMesh failures propagate via
-``RefreshResult.error``.
+Matching and categorization are best-effort: a stage failure never aborts
+the pipeline, so a partial run still leaves raw rows durable and core
+tables rebuilt. A real crash in either is surfaced (logged at ERROR and
+returned in ``RefreshResult.matching_error`` / ``categorization_error``);
+a missing-view precondition on first load is logged at DEBUG and not
+surfaced. Only SQLMesh apply failures set ``RefreshResult.error``.
 
 Invoked by any service whose loaders wrote to ``raw.*``:
 ``ImportService`` (file imports), ``InboxService`` (inbox drain),
@@ -220,6 +223,9 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
 
     apply_result = TransformService(db).apply()
     if not apply_result.applied:
+        # categorize is not attempted when apply fails (it reads SQLMesh-built
+        # views), so categorization_error stays None here — "not attempted",
+        # not "succeeded". The caller distinguishes via applied=False + error.
         return RefreshResult(
             applied=False,
             duration_seconds=apply_result.duration_seconds,

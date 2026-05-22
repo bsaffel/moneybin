@@ -18,12 +18,19 @@ logger = logging.getLogger(__name__)
 
 
 class RefreshStepChoice(StrEnum):
-    """Mirrors ``services.refresh.RefreshStep`` for Typer choice validation.
+    """User-selectable subset of ``services.refresh.RefreshStep`` for Typer.
 
     Rejecting invalid step names at parse time surfaces a usage error
     (exit code 2) rather than a runtime UserError (exit code 1). The
     service-layer ``UNKNOWN_REFRESH_STEP`` check remains as
     defense-in-depth for programmatic callers.
+
+    ``gsheet`` is intentionally omitted: the full ``refresh`` cascade
+    auto-pulls connected sheets, and the user-facing CLI path to pull one
+    on demand is the dedicated ``moneybin gsheet pull`` command — so a
+    ``--step gsheet`` flag would be redundant. The capability stays
+    reachable on the CLI (functional parity); only the spelling differs
+    from MCP's ``refresh_run(steps=["gsheet"])``.
     """
 
     MATCH = "match"
@@ -48,8 +55,10 @@ def refresh_command(
     """Run the post-load refresh pipeline: matching, SQLMesh apply, categorization.
 
     Single user-facing entry point for refreshing derived state from raw
-    inputs. Idempotent. Matching and categorization steps are best-effort
-    and log-only on failure — only SQLMesh apply errors fail the command.
+    inputs. Idempotent. Matching and categorization are best-effort: a real
+    crash in either is surfaced (a ⚠️ warning here, `matching_error` /
+    `categorization_error` + `recovery_actions` under `--output json`) but
+    does not fail the command — only a SQLMesh apply error exits non-zero.
     """
     from moneybin.cli.output import render_or_json  # noqa: PLC0415
     from moneybin.database import get_database  # noqa: PLC0415

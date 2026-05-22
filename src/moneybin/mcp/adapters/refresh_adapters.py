@@ -104,8 +104,16 @@ def refresh_envelope(
         actions.append(REFRESH_APPLY_FAILED_HINT)
     # Gate the follow-up on success: when transform was requested but failed,
     # categorize would run against stale outputs — direct the agent to resolve
-    # the apply failure first rather than chain categorize after it.
-    if result.error is None and "match" in requested and "categorize" not in requested:
+    # the apply failure first rather than chain categorize after it. Also gate
+    # on matching_error being None: when the matcher crashed, recovery_actions
+    # already says "retry match", so a "run categorize next" hint would be a
+    # contradictory signal pointing the agent at the wrong next step.
+    if (
+        result.error is None
+        and result.matching_error is None
+        and "match" in requested
+        and "categorize" not in requested
+    ):
         actions.append(REFRESH_CATEGORIZE_FOLLOWUP_HINT)
 
     recovery = _step_crash_recovery_actions(result)

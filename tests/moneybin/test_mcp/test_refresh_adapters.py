@@ -93,6 +93,30 @@ def test_both_errors_emit_single_doctor_action() -> None:
 
 
 @pytest.mark.unit
+def test_categorize_followup_suppressed_when_matcher_crashed() -> None:
+    """A matcher crash suppresses the 'run categorize' hint (recovery says retry match)."""
+    from moneybin.mcp.adapters.refresh_adapters import REFRESH_CATEGORIZE_FOLLOWUP_HINT
+
+    env = refresh_envelope(
+        RefreshResult(applied=False, duration_seconds=None, matching_error="boom"),
+        requested=expand_steps(["match"]),
+    )
+    assert REFRESH_CATEGORIZE_FOLLOWUP_HINT not in env.actions
+
+
+@pytest.mark.unit
+def test_categorize_followup_still_fires_on_clean_match_only() -> None:
+    """A clean match-only run still emits the categorize follow-up hint."""
+    from moneybin.mcp.adapters.refresh_adapters import REFRESH_CATEGORIZE_FOLLOWUP_HINT
+
+    env = refresh_envelope(
+        RefreshResult(applied=False, duration_seconds=None),
+        requested=expand_steps(["match"]),
+    )
+    assert REFRESH_CATEGORIZE_FOLLOWUP_HINT in env.actions
+
+
+@pytest.mark.unit
 def test_recovery_actions_are_idempotent() -> None:
     env = refresh_envelope(
         RefreshResult(applied=True, duration_seconds=1.0, matching_error="boom"),
