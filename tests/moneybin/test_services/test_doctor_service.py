@@ -354,7 +354,7 @@ def test_categorization_coverage_warns_when_below_50pct(
 
 
 @pytest.mark.unit
-def test_run_all_returns_5_invariants(
+def test_run_all_returns_expected_invariants(
     doctor_db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     mock_ctx = _make_mock_ctx(_CLEAN_AUDITS)
@@ -366,13 +366,20 @@ def test_run_all_returns_5_invariants(
     monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
     svc = DoctorService(doctor_db)
     report = svc.run_all()
-    assert len(report.invariants) == 5
+    # 3 sqlmesh audits + staging + categorization + 4 app.* integrity checks
+    # (audit coverage for user_categories / category_overrides / gsheet_connections
+    # + user_categories uniqueness).
+    assert len(report.invariants) == 9
     names = [r.name for r in report.invariants]
     assert "fct_transactions_fk_integrity" in names
     assert "fct_transactions_sign_convention" in names
     assert "bridge_transfers_balanced" in names
     assert "staging_coverage" in names
     assert "categorization_coverage" in names
+    assert "app_audit_coverage_user_categories" in names
+    assert "app_audit_coverage_category_overrides" in names
+    assert "app_audit_coverage_gsheet_connections" in names
+    assert "app_user_categories_uniqueness" in names
 
 
 @pytest.mark.unit
