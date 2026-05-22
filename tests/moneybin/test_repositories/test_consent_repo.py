@@ -31,13 +31,14 @@ def test_consent_grants_table_exists(db: Database) -> None:
 
 def test_grant_inserts_and_pairs_audit(db: Database) -> None:
     repo = ConsentRepo(db)
-    grant = repo.grant(
+    grant, created = repo.grant(
         feature_category="mcp-data-sharing",
         backend="anthropic",
         consent_mode=ConsentMode.PERSISTENT,
         grant_prompt="Allow sharing transaction details with Anthropic?",
         actor="cli.privacy_grant",
     )
+    assert created is True
     assert grant.feature_category == "mcp-data-sharing"
     assert grant.backend == "anthropic"
     assert grant.revoked_at is None
@@ -57,20 +58,22 @@ def test_grant_inserts_and_pairs_audit(db: Database) -> None:
 
 def test_grant_is_idempotent_per_category_backend(db: Database) -> None:
     repo = ConsentRepo(db)
-    first = repo.grant(
+    first, first_created = repo.grant(
         feature_category="mcp-data-sharing",
         backend="anthropic",
         consent_mode=ConsentMode.PERSISTENT,
         grant_prompt="p",
         actor="cli.privacy_grant",
     )
-    second = repo.grant(
+    second, second_created = repo.grant(
         feature_category="mcp-data-sharing",
         backend="anthropic",
         consent_mode=ConsentMode.PERSISTENT,
         grant_prompt="p",
         actor="cli.privacy_grant",
     )
+    assert first_created is True
+    assert second_created is False
     assert second.grant_id == first.grant_id
     assert len(repo.list_active()) == 1
     # Idempotent grant emits no second audit row.

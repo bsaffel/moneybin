@@ -40,22 +40,29 @@ def privacy_grant(
         )
     with handle_cli_errors():
         with get_database() as db:
-            grant = ConsentService(db).grant_consent(
+            result = ConsentService(db).grant_consent(
                 feature_category=category,
                 backend=backend,
                 consent_mode=mode,
                 actor="cli.privacy_grant",
             )
+    grant = result.grant
     payload = ConsentMutationPayload(
         feature_category=grant.feature_category,
         backend=grant.backend,
         consent_mode=grant.consent_mode.value,
-        action="granted",
+        action="granted" if result.created else "noop",
     )
     if output == OutputFormat.JSON:
         render_or_json(build_envelope(data=payload), output, cli_actor="privacy_grant")
         return
-    logger.info(
-        f"✅ Granted '{grant.feature_category}' for backend '{grant.backend}' "
-        f"({grant.consent_mode.value})."
-    )
+    if result.created:
+        logger.info(
+            f"✅ Granted '{grant.feature_category}' for backend '{grant.backend}' "
+            f"({grant.consent_mode.value})."
+        )
+    else:
+        logger.info(
+            f"Already granted '{grant.feature_category}' for backend "
+            f"'{grant.backend}' ({grant.consent_mode.value})."
+        )

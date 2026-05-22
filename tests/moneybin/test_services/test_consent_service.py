@@ -18,13 +18,33 @@ def test_service_grant_resolves_default_backend(
     clear_settings_cache()
     set_current_profile("test")
     svc = ConsentService(db)
-    grant = svc.grant_consent(
+    result = svc.grant_consent(
         feature_category="mcp-data-sharing",
         backend=None,  # falls back to default_backend
         consent_mode=ConsentMode.PERSISTENT,
         actor="cli.privacy_grant",
     )
-    assert grant.backend == "anthropic"
+    assert result.created is True
+    assert result.grant.backend == "anthropic"
+
+
+def test_service_grant_idempotent_returns_not_created(db: Database) -> None:
+    svc = ConsentService(db)
+    first = svc.grant_consent(
+        feature_category="mcp-data-sharing",
+        backend="anthropic",
+        consent_mode=ConsentMode.PERSISTENT,
+        actor="cli",
+    )
+    second = svc.grant_consent(
+        feature_category="mcp-data-sharing",
+        backend="anthropic",
+        consent_mode=ConsentMode.PERSISTENT,
+        actor="cli",
+    )
+    assert first.created is True
+    assert second.created is False
+    assert second.grant.grant_id == first.grant.grant_id
 
 
 def test_service_grant_requires_backend_when_no_default(

@@ -30,6 +30,18 @@ class ConsentStatus:
 
 
 @dataclass(frozen=True, slots=True)
+class GrantResult:
+    """Outcome of a grant.
+
+    ``created`` is False when an active grant already existed (idempotent
+    no-op) so callers can report ``noop`` and skip a duplicate log event.
+    """
+
+    grant: GrantInfo
+    created: bool
+
+
+@dataclass(frozen=True, slots=True)
 class RevokeResult:
     """Outcome of a single-grant revoke.
 
@@ -89,28 +101,33 @@ class ConsentService:
         consent_mode: ConsentMode,
         actor: str,
         grant_prompt: str | None = None,
-    ) -> GrantInfo:
-        """Grant consent for (feature_category, backend); idempotent."""
+    ) -> GrantResult:
+        """Grant consent for (feature_category, backend); idempotent.
+
+        Emits a ``privacy.log`` event only when a new grant is actually
+        created — a no-op re-grant of an existing active grant adds no event.
+        """
         self._validate_category(feature_category)
         resolved_backend = self._resolve_backend(backend)
         prompt = grant_prompt or self._build_prompt(feature_category, resolved_backend)
-        grant = self._repo.grant(
+        grant, created = self._repo.grant(
             feature_category=feature_category,
             backend=resolved_backend,
             consent_mode=consent_mode,
             grant_prompt=prompt,
             actor=actor,
         )
-        write_privacy_event(
-            build_consent_event(
-                actor=actor,
-                action="consent.grant",
-                feature_category=feature_category,
-                backend=resolved_backend,
-                consent_mode=consent_mode.value,
+        if created:
+            write_privacy_event(
+                build_consent_event(
+                    actor=actor,
+                    action="consent.grant",
+                    feature_category=feature_category,
+                    backend=resolved_backend,
+                    consent_mode=consent_mode.value,
+                )
             )
-        )
-        return grant
+        return GrantResult(grant=grant, created=created)
 
     def revoke_consent(
         self, *, feature_category: str, backend: str | None, actor: str
@@ -132,7 +149,7 @@ class ConsentService:
                     action="consent.revoke",
                     feature_category=feature_category,
                     backend=resolved_backend,
-                    consent_mode="",
+                    consent_mode=None,
                 )
             )
         return RevokeResult(backend=resolved_backend, count=count)
@@ -147,7 +164,7 @@ class ConsentService:
                     action="consent.revoke",
                     feature_category="*",
                     backend="*",
-                    consent_mode="",
+                    consent_mode=None,
                 )
             )
         return count

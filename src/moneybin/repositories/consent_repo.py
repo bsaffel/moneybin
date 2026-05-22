@@ -17,7 +17,7 @@ import uuid
 from typing import Any
 
 from moneybin.privacy.consent import ConsentMode, GrantInfo
-from moneybin.repositories.base import BaseRepo
+from moneybin.repositories.base import BaseRepo, quote_ident
 from moneybin.tables import AI_CONSENT_GRANTS
 
 _COLUMNS = (
@@ -53,9 +53,9 @@ class ConsentRepo(BaseRepo):
         return self._fetch_one(AI_CONSENT_GRANTS, _COLUMNS, "grant_id", grant_id)
 
     def _active_for(self, feature_category: str, backend: str) -> dict[str, Any] | None:
-        cols = ", ".join(_COLUMNS)
+        cols = ", ".join(quote_ident(c) for c in _COLUMNS)
         row = self._db.execute(
-            f"SELECT {cols} FROM {AI_CONSENT_GRANTS.full_name} "  # noqa: S608  # TableRef + static cols
+            f"SELECT {cols} FROM {AI_CONSENT_GRANTS.full_name} "  # noqa: S608  # TableRef + sqlglot-quoted cols
             "WHERE feature_category = ? AND backend = ? AND revoked_at IS NULL",
             [feature_category, backend],
         ).fetchone()
@@ -71,17 +71,18 @@ class ConsentRepo(BaseRepo):
         actor: str,
         parent_audit_id: str | None = None,
         in_outer_txn: bool = False,
-    ) -> GrantInfo:
+    ) -> tuple[GrantInfo, bool]:
         """Grant consent; idempotent per (feature_category, backend).
 
-        If an active grant already exists for the tuple, it is returned
-        unchanged (no new row, no audit). Otherwise a new active grant is
-        inserted with a paired audit row.
+        Returns ``(grant, created)``. If an active grant already exists for
+        the tuple it is returned unchanged with ``created=False`` (no new
+        row, no audit). Otherwise a new active grant is inserted with a
+        paired audit row and ``created=True``.
         """
         with self._transaction(in_outer_txn=in_outer_txn):
             existing = self._active_for(feature_category, backend)
             if existing is not None:
-                return _row_to_grant(existing)
+                return _row_to_grant(existing), False
             grant_id = uuid.uuid4().hex[:12]
             self._db.execute(
                 f"""
@@ -103,7 +104,7 @@ class ConsentRepo(BaseRepo):
             )
             if after is None:  # pragma: no cover — just inserted, must exist
                 raise RuntimeError(f"grant_id={grant_id!r} not found after insert")
-            return _row_to_grant(after)
+            return _row_to_grant(after), True
 
     def revoke(
         self,
@@ -166,18 +167,18 @@ class ConsentRepo(BaseRepo):
 
     def list_active(self) -> list[GrantInfo]:
         """Return all active (non-revoked) grants, newest first."""
-        cols = ", ".join(_COLUMNS)
+        cols = ", ".join(quote_ident(c) for c in _COLUMNS)
         rows = self._db.execute(
-            f"SELECT {cols} FROM {AI_CONSENT_GRANTS.full_name} "  # noqa: S608  # TableRef + static cols
+            f"SELECT {cols} FROM {AI_CONSENT_GRANTS.full_name} "  # noqa: S608  # TableRef + sqlglot-quoted cols
             "WHERE revoked_at IS NULL ORDER BY granted_at DESC"
         ).fetchall()
         return [_row_to_grant(dict(zip(_COLUMNS, r, strict=True))) for r in rows]
 
     def list_all(self) -> list[GrantInfo]:
         """Return all grants including revoked, newest first (audit history)."""
-        cols = ", ".join(_COLUMNS)
+        cols = ", ".join(quote_ident(c) for c in _COLUMNS)
         rows = self._db.execute(
-            f"SELECT {cols} FROM {AI_CONSENT_GRANTS.full_name} "  # noqa: S608  # TableRef + static cols
+            f"SELECT {cols} FROM {AI_CONSENT_GRANTS.full_name} "  # noqa: S608  # TableRef + sqlglot-quoted cols
             "ORDER BY granted_at DESC"
         ).fetchall()
         return [_row_to_grant(dict(zip(_COLUMNS, r, strict=True))) for r in rows]

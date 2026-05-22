@@ -53,18 +53,19 @@ def privacy_grant_consent(
         mode: persistent (default) or one-time.
     """
     with get_database() as db:
-        grant = ConsentService(db).grant_consent(
+        result = ConsentService(db).grant_consent(
             feature_category=category,
             backend=backend,
             consent_mode=ConsentMode(mode),
             actor="mcp.privacy_grant_consent",
         )
+    grant = result.grant
     return build_envelope(
         data=ConsentMutationPayload(
             feature_category=grant.feature_category,
             backend=grant.backend,
             consent_mode=grant.consent_mode.value,
-            action="granted",
+            action="granted" if result.created else "noop",
         ),
         actions=["Use privacy_status to see all active grants"],
     )
@@ -175,7 +176,7 @@ def register_privacy_tools(mcp: FastMCP) -> None:
         privacy_status,
         "privacy_status",
         "Show active AI consent grants, the configured backend, and consent "
-        "mode. Read-only.",
+        "policy (standard/strict). Read-only.",
     )
     register(
         mcp,

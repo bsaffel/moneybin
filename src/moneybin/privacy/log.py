@@ -113,13 +113,14 @@ def build_consent_event(
     action: str,
     feature_category: str,
     backend: str,
-    consent_mode: str,
+    consent_mode: str | None = None,
 ) -> dict[str, Any]:
     """Construct a consent grant/revoke event for the privacy log.
 
     ``action`` is ``"consent.grant"`` or ``"consent.revoke"``. Carries
     only metadata (category, backend, mode) — never the grant prompt text
-    or any financial data.
+    or any financial data. ``consent_mode`` is None for revoke events (the
+    mode belonged to the grant being removed); it serializes to JSON null.
     """
     return {
         "ts": datetime.now(UTC).isoformat(),
