@@ -21,7 +21,11 @@ from moneybin.cli.output import (
 )
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
-from moneybin.privacy.payloads.transactions import SplitRow, SplitsPayload
+from moneybin.privacy.payloads.transactions import (
+    SplitAddPayload,
+    SplitRow,
+    SplitsPayload,
+)
 from moneybin.protocol.envelope import build_envelope
 from moneybin.services.transaction_service import Split
 
@@ -85,8 +89,7 @@ def transactions_splits_add(
     if output == OutputFormat.JSON:
         render_or_json(
             build_envelope(
-                data={"split": _split_row(split), "residual": str(residual)},
-                sensitivity="low",
+                data=SplitAddPayload(split=_split_row(split), residual=str(residual)),
             ),
             output,
             cli_actor="transactions_splits_add",

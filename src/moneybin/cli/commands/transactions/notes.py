@@ -17,7 +17,11 @@ from moneybin.cli.output import (
 )
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
-from moneybin.privacy.payloads.transactions import NoteDeletePayload, NotePayload
+from moneybin.privacy.payloads.transactions import (
+    NoteDeletePayload,
+    NotePayload,
+    NotesListPayload,
+)
 from moneybin.protocol.envelope import build_envelope
 from moneybin.services.transaction_service import Note
 
@@ -83,7 +87,9 @@ def transactions_notes_list(
 
     if output == OutputFormat.JSON:
         render_or_json(
-            build_envelope(data=[_note_payload(n) for n in notes], sensitivity="low"),
+            build_envelope(
+                data=NotesListPayload(notes=[_note_payload(n) for n in notes])
+            ),
             output,
             cli_actor="transactions_notes_list",
         )

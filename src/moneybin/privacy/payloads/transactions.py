@@ -115,6 +115,18 @@ class NotePayload:
     created_at: Annotated[str, DataClass.TIMESTAMP_OBSERVABILITY]
 
 
+@dataclass(frozen=True, slots=True)
+class NotesListPayload:
+    """Payload for transactions_notes_list — all notes on one transaction.
+
+    Wraps the rows in a typed container so the JSON/audit path derives the
+    NotePayload tier (USER_NOTE → MEDIUM) instead of seeing a bare list and
+    falling back to a manually supplied sensitivity.
+    """
+
+    notes: list[NotePayload]
+
+
 # ---------------------------------------------------------------------------
 # transactions_notes_delete
 # ---------------------------------------------------------------------------
@@ -187,3 +199,17 @@ class SplitsPayload:
     """Payload for transactions_splits_set — ordered list of split rows."""
 
     splits: list[SplitRow]
+
+
+@dataclass(frozen=True, slots=True)
+class SplitAddPayload:
+    """Payload for transactions_splits_add — the created split + the remainder.
+
+    Wraps the row in a typed container so the JSON/audit path derives the
+    SplitRow tier (amount = TXN_AMOUNT → HIGH) instead of seeing a bare dict
+    and falling back to a manually supplied sensitivity.
+    """
+
+    split: SplitRow
+    # TXN_AMOUNT — the un-split remainder of the parent transaction amount.
+    residual: Annotated[str, DataClass.TXN_AMOUNT]
