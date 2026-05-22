@@ -290,12 +290,12 @@ class ReportsService:
         """  # noqa: S608  # TableRef + MERCHANTS_SORTS allowlists
         cols, rows = self._execute(sql, [top])
         result: list[MerchantActivityRow] = []
+
+        def _dec(v: Any) -> Decimal | None:
+            return Decimal(str(v)) if v is not None else None
+
         for r in rows:
             d = dict(zip(cols, r, strict=False))
-
-            def _dec(v: Any) -> Decimal | None:
-                return Decimal(str(v)) if v is not None else None
-
             result.append(
                 MerchantActivityRow(
                     merchant_normalized=d.get("merchant_normalized"),
@@ -401,12 +401,12 @@ class ReportsService:
         sql += " ORDER BY drift_abs DESC"
         cols, rows = self._execute(sql, params)
         result: list[BalanceDriftRow] = []
+
+        def _dec(v: Any) -> Decimal | None:
+            return Decimal(str(v)) if v is not None else None
+
         for r in rows:
             d = dict(zip(cols, r, strict=False))
-
-            def _dec(v: Any) -> Decimal | None:
-                return Decimal(str(v)) if v is not None else None
-
             result.append(
                 BalanceDriftRow(
                     account_id=d["account_id"],

@@ -45,7 +45,11 @@ def transactions_audit(
             typer.echo(f"  [{e.audit_id}] {e.occurred_at} {e.actor} {e.action}")
 
     render_or_json(
-        build_envelope(data=[e.to_dict() for e in events], sensitivity="low"),
+        # AuditEvent.before_value / after_value carry TXN_AMOUNT (HIGH); the
+        # payload is a bare list[dict] so render_or_json can't derive the tier
+        # from a typed class. Declare HIGH explicitly to keep audit rows
+        # correctly classified — mirrors the system audit command.
+        build_envelope(data=[e.to_dict() for e in events], sensitivity="high"),
         output,
         render_fn=_render_text,
         cli_actor="transactions_audit",

@@ -289,8 +289,12 @@ def mcp_tool(
                     f"{fn.__name__} has no return annotation; "
                     "every @mcp_tool must declare -> ResponseEnvelope[T]"
                 )
-            # Unwrap ResponseEnvelope[T] → T. get_origin returns the generic base.
-            if typing.get_origin(return_hint) is None:
+            # Unwrap ResponseEnvelope[T] → T. Require the origin to be
+            # ResponseEnvelope specifically, not merely "some generic" — a
+            # `list[Payload]` or `dict[str, Payload]` annotation would otherwise
+            # pass and derive sensitivity from the wrong type argument, bypassing
+            # the envelope contract.
+            if typing.get_origin(return_hint) is not ResponseEnvelope:
                 raise PrivacyContractError(
                     f"{fn.__name__} return type must be ResponseEnvelope[T], "
                     f"got {return_hint!r}"

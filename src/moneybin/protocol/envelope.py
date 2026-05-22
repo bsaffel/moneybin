@@ -231,6 +231,8 @@ def build_envelope(
         returned = len(cast(list[Any], data_any))
     elif is_dataclass(data_any) and not isinstance(data_any, type):
         returned = _count_typed_payload(data_any)
+    elif isinstance(data_any, BaseModel):
+        returned = _count_pydantic_payload(data_any)
     else:
         returned = 1
 
@@ -287,11 +289,33 @@ def _count_typed_payload(data: Any) -> int:
       ``ignored``), not row collections, so no single list represents the
       "returned" count.
     """
+    return _count_primary_lists(data, [f.name for f in dataclasses.fields(data)])
+
+
+def _count_pydantic_payload(data: BaseModel) -> int:
+    """Pydantic equivalent of ``_count_typed_payload``.
+
+    A Pydantic wrapper with a single primary list field (e.g. a payload whose
+    one list is the result set) reports that list's length; an aggregate model
+    with zero or multiple non-auxiliary lists reports 1. Without this, every
+    ``BaseModel`` payload fell through to ``returned=1``, misreporting
+    ``summary.returned_count`` / ``has_more`` and the privacy log's row_count.
+    """
+    return _count_primary_lists(data, list(type(data).model_fields))
+
+
+def _count_primary_lists(data: Any, field_names: list[str]) -> int:
+    """Return the length of the sole non-auxiliary list field, else 1.
+
+    Shared by the dataclass and Pydantic counters. Auxiliary diagnostic lists
+    (see ``_AUXILIARY_LIST_FIELDS``) are skipped; more than one remaining list
+    means an aggregate result object with no single "returned" collection.
+    """
     primary_lists: list[list[Any]] = []
-    for f in dataclasses.fields(data):
-        if f.name in _AUXILIARY_LIST_FIELDS:
+    for name in field_names:
+        if name in _AUXILIARY_LIST_FIELDS:
             continue
-        v: Any = getattr(data, f.name)
+        v: Any = getattr(data, name)
         if isinstance(v, list):
             primary_lists.append(cast(list[Any], v))
     if len(primary_lists) == 1:
