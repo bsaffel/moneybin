@@ -29,7 +29,21 @@ def validate_sql_write_prefixes(
     """
     violations: list[PrefixViolation] = []
     for sql_file in sql_files:
-        for schema, name in extract_create_targets(sql_file):
+        try:
+            targets = extract_create_targets(sql_file)
+        except ValueError as exc:
+            # Unparseable SQL surfaces as a violation, not a crash — same
+            # return-violations-never-raise contract as validate_writes.
+            violations.append(
+                PrefixViolation(
+                    package_name=package_name,
+                    message=f"could not parse {sql_file.name}: {exc}",
+                    surface="sql_write",
+                    offender=sql_file.name,
+                )
+            )
+            continue
+        for schema, name in targets:
             if not name.startswith(f"{owns_prefix}_"):
                 violations.append(
                     PrefixViolation(

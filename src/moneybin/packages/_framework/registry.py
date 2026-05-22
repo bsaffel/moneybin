@@ -119,7 +119,11 @@ def validate_package(info: PackageInfo) -> list[ValidationError]:
         # the quality-scale checks below.
         sql_files: list[Path] = []
     else:
-        sql_files = sorted(schema_dir.glob("*.sql"))
+        # rglob, not glob: a *.sql nested in a subdirectory must not escape the
+        # capability/prefix validators (otherwise a package could hide a
+        # cross-prefix CREATE in schema/sub/). Plan 4's execution wiring must
+        # use the same recursive discovery so validation ⊇ execution.
+        sql_files = sorted(schema_dir.rglob("*.sql"))
 
     errors.extend(
         validate_writes(
@@ -185,8 +189,9 @@ def register_package(
     Raises:
         ValidationError subclass: first validation violation encountered.
         ValueError: a malformed entry-point spec or an uninstalled entry-point
-            module (raised by _resolve_entry_point_callable after validation
-            passes — not a ValidationError subclass).
+            module (from _resolve_entry_point_callable), or a duplicate package
+            name (from the registry add) — both raised after validation passes
+            and are NOT ValidationError subclasses.
         TypeError: an entry-point target that resolves to a non-callable.
     """
     errors = validate_package(info)

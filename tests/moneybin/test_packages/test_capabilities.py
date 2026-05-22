@@ -19,6 +19,27 @@ def _make_sql_dir(tmp_path: Path, files: dict[str, str]) -> Path:
     return sql_dir
 
 
+def test_unparseable_sql_returns_violation_not_raise(tmp_path: Path) -> None:
+    """Unparseable SQL surfaces a CapabilityViolation instead of crashing.
+
+    extract_create_targets raises ValueError on unparseable SQL; validate_writes
+    must catch it and return a violation (its contract is never to raise), so a
+    malformed package file can't crash framework bootstrap.
+    """
+    sql_dir = _make_sql_dir(tmp_path, {"bad.sql": "CREATE TABLE oops syntax ;;;"})
+    capability = CapabilityDeclarations(writes=["app.test_synthetic_*"])
+
+    violations = validate_writes(
+        package_name="test_synthetic",
+        sql_files=list(sql_dir.glob("*.sql")),
+        capability=capability,
+    )
+
+    assert len(violations) == 1
+    assert violations[0].target == "(unparseable)"
+    assert "could not parse" in violations[0].message
+
+
 def test_writes_inside_declared_glob_pass(tmp_path: Path) -> None:
     """A CREATE TABLE matching the declared glob is accepted."""
     sql_dir = _make_sql_dir(

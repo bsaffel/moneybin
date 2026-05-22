@@ -46,7 +46,22 @@ def validate_writes(
     """
     violations: list[CapabilityViolation] = []
     for sql_file in sql_files:
-        for schema, name in extract_create_targets(sql_file):
+        try:
+            targets = extract_create_targets(sql_file)
+        except ValueError as exc:
+            # extract_create_targets raises on unparseable SQL; surface it as a
+            # violation rather than crashing the framework bootstrap (this
+            # function's contract is to return violations, never raise).
+            violations.append(
+                CapabilityViolation(
+                    package_name=package_name,
+                    message=f"could not parse {sql_file.name}: {exc}",
+                    sql_file=str(sql_file),
+                    target="(unparseable)",
+                )
+            )
+            continue
+        for schema, name in targets:
             target = f"{schema}.{name}"
             if not is_write_allowed(capability, target):
                 violations.append(

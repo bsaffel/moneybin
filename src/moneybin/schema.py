@@ -210,6 +210,7 @@ def _snapshot_catalog_comments(
 def init_schemas(
     conn: duckdb.DuckDBPyConnection,
     additional_files: list[Path] | None = None,
+    package_root: Path | None = None,
 ) -> None:
     """Create all database schemas and tables, then apply inline comments.
 
@@ -218,15 +219,27 @@ def init_schemas(
         additional_files: Optional extra SQL DDL paths (e.g. from registered
             analysis packages). Executed AFTER the core schema files so
             package tables can reference core/app primitives.
+        package_root: when provided, every additional_files path must resolve
+            inside this directory or a ValueError is raised. The Plan 4 wiring
+            that passes package SQL supplies the owning package's root so a
+            manifest cannot point init_schemas at out-of-tree SQL
+            (boundary path-traversal guard per .claude/rules/security.md).
+
+    Raises:
+        ValueError: an additional_files path escapes package_root (when given).
     """
+    extras = additional_files or []
+    if package_root is not None:
+        root = package_root.resolve()
+        for sql_path in extras:
+            if not sql_path.resolve().is_relative_to(root):
+                raise ValueError(
+                    f"additional_files path {sql_path} is outside package root {root}"
+                )
     table_snapshot, column_snapshot = _snapshot_catalog_comments(conn)
     schema_files = _all_schema_files()
     executed = 0
-    # NOTE (Plan 4): additional_files are executed as raw SQL with no
-    # path-containment check here. The Plan 4 caller that wires package schema
-    # into the DB bootstrap MUST validate each path resolves inside the
-    # package's root (per .claude/rules/security.md) before passing it in.
-    for sql_path in [*schema_files, *(additional_files or [])]:
+    for sql_path in [*schema_files, *extras]:
         if not sql_path.exists():
             logger.warning(f"Schema file not found, skipping: {sql_path.name}")
             continue

@@ -17,6 +17,19 @@ def _write_sql(tmp_path: Path, name: str, body: str) -> Path:
     return path
 
 
+def test_sql_write_prefixes_unparseable_returns_violation(tmp_path: Path) -> None:
+    """Unparseable SQL surfaces a PrefixViolation instead of crashing bootstrap."""
+    sql = _write_sql(tmp_path, "bad.sql", "CREATE TABLE oops syntax ;;;")
+    violations = validate_sql_write_prefixes(
+        package_name="assets",
+        owns_prefix="assets",
+        sql_files=[sql],
+    )
+    assert len(violations) == 1
+    assert violations[0].surface == "sql_write"
+    assert "could not parse" in violations[0].message
+
+
 def test_sql_writes_under_prefix_pass(tmp_path: Path) -> None:
     sql = _write_sql(
         tmp_path,

@@ -197,6 +197,44 @@ def test_register_package_rolls_back_registry_on_callable_failure(
             fresh.get("test_synthetic")
 
 
+def test_validate_package_validates_nested_schema_sql(tmp_path: Path) -> None:
+    """SQL nested in a schema/ subdirectory is still validated (rglob, not glob).
+
+    Otherwise a package could hide a cross-prefix CREATE in schema/sub/ and
+    pass the capability gate.
+    """
+    info = _make_minimal_pkg(tmp_path)
+    nested = tmp_path / "schema" / "sub"
+    nested.mkdir()
+    (nested / "leak.sql").write_text("CREATE TABLE core.test_synthetic_leak (x INT);")
+
+    errors = validate_package(info)
+
+    assert any(isinstance(e, CapabilityViolation) for e in errors), (
+        f"Nested SQL escaped validation; got {[type(e).__name__ for e in errors]}"
+    )
+
+
+def test_init_schemas_rejects_additional_file_outside_package_root(
+    tmp_path: Path,
+) -> None:
+    """init_schemas raises when an additional_files path escapes package_root."""
+    import duckdb
+
+    from moneybin.schema import init_schemas
+
+    pkg_root = tmp_path / "pkg"
+    (pkg_root / "schema").mkdir(parents=True)
+    outside = tmp_path / "evil.sql"
+    outside.write_text("CREATE TABLE app.test_synthetic_evil (id TEXT);")
+
+    # Raw connection: this test exercises init_schemas' path guard directly,
+    # not the Database wrapper.
+    conn = duckdb.connect()
+    with pytest.raises(ValueError, match="outside package root"):
+        init_schemas(conn, additional_files=[outside], package_root=pkg_root)
+
+
 def test_register_package_uninstalled_entry_point_raises_value_error(
     tmp_path: Path,
 ) -> None:
