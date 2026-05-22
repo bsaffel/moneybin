@@ -672,6 +672,13 @@ class AccountService:
                 "suggestion": suggest_holder_category(holder) or "",
             })
 
+        # No fields to change → no write. Under Invariant 10 a repo call would
+        # bump updated_at and emit an `account_settings.set` audit row for a
+        # mutation that changed nothing — misleading forensic evidence. Return
+        # the current state untouched (warnings are empty when diff is empty).
+        if not diff:
+            return current, warnings
+
         updated = dataclasses.replace(current, **cast(dict[str, Any], diff))
         self._settings_repo.set(
             account_id=updated.account_id,

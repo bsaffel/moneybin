@@ -457,6 +457,21 @@ class TestSettingsUpdateExtended:
         assert result.display_name == "Multi Field"
         assert result.include_in_net_worth is False
 
+    @pytest.mark.unit
+    def test_empty_diff_is_noop_no_audit(self, test_db: Database) -> None:
+        """No field changes → no write and no phantom account_settings.set audit row."""
+        svc = AccountService(test_db)
+        _settings, warnings = svc.settings_update("acct_a", actor="cli")
+        assert warnings == []
+        # No write happened: no settings row created, no audit row emitted.
+        assert svc._load_settings("acct_a") is None
+        audit_count = test_db.execute(
+            "SELECT COUNT(*) FROM app.audit_log "
+            "WHERE target_id = ? AND action = 'account_settings.set'",
+            ["acct_a"],
+        ).fetchone()
+        assert audit_count[0] == 0  # type: ignore[index]
+
 
 # ---------------------------------------------------------------------------
 # Helpers for new extended-read tests
