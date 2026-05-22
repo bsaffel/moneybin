@@ -59,24 +59,21 @@ def _file_date_utc(path: Path) -> str:
     return datetime.fromtimestamp(path.stat().st_mtime, tz=UTC).strftime("%Y-%m-%d")
 
 
-def _rotate_if_new_day(path: Path) -> bool:
-    """Rotate yesterday's log if needed; return ``True`` if ``path`` is current.
+def _rotate_if_new_day(path: Path) -> None:
+    """Rotate yesterday's log to a dated file if ``path`` is from a prior day.
 
-    Folds the existence check the caller would otherwise re-issue: returns
-    ``False`` when the file doesn't exist (fresh write needed) or was
-    rotated away (current-day file will be created on append). Returns
-    ``True`` when the existing file is today's and the caller can skip
-    the post-write ``chmod`` re-init.
+    No-op when the file is absent (a fresh current-day file is created on
+    append) or already today's. The current-day file is created with
+    restrictive perms by the caller's ``os.open``, so there's nothing for
+    the caller to do with a return value.
     """
     if not path.exists():
-        return False
+        return
     file_day = _file_date_utc(path)
-    today = _today_utc()
-    if file_day == today:
-        return True
+    if file_day == _today_utc():
+        return
     rotated = path.parent / f"{_ROTATED_PREFIX}{file_day}{_ROTATED_SUFFIX}"
     path.rename(rotated)
-    return False
 
 
 def build_tool_call_event(
@@ -110,12 +107,18 @@ def write_privacy_event(event: dict[str, Any]) -> None:
     try:
         with _LOCK:
             log_dir = _resolve_privacy_log_dir()
-            # mode=0o700: the privacy log dir may be created here on the
-            # bootstrap / no-profile path before any profile dir exists. Without
-            # an explicit mode it inherits the umask (typically 0o755,
-            # world-readable) while the file inside is gated to 0o600 — the dir
-            # must be just as restricted as its contents.
-            log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            # The privacy log dir may be created here on the bootstrap /
+            # no-profile path before any profile dir exists. mkdir(mode=0o700)
+            # only applies the mode to the LEAF — intermediate parents created
+            # by parents=True inherit the umask (typically 0o755, world-
+            # readable). Force the umask to 0o077 around the call so every
+            # created dir (parents included) lands at 0o700, matching the
+            # 0o600 file inside.
+            prev_umask = os.umask(0o077)
+            try:
+                log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            finally:
+                os.umask(prev_umask)
             log_path = log_dir / _LOG_FILE
             _rotate_if_new_day(log_path)
             line = json.dumps(event, sort_keys=True, separators=(",", ":"))

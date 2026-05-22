@@ -172,6 +172,26 @@ def test_redacts_inside_mapping_values() -> None:
     assert out.by_id["a"].account_id == "****7890"
 
 
+@dataclass(frozen=True)
+class _HeteroTupleContainer:
+    pair: tuple[
+        Annotated[str, DataClass.ACCOUNT_IDENTIFIER],
+        Annotated[str, DataClass.CATEGORY],
+    ]
+
+
+def test_redacts_heterogeneous_tuple_per_position() -> None:
+    """Fixed-length tuple[A, B] redacts each position with its own type.
+
+    Regression: the sequence branch used to apply the first element's type
+    to every position, leaking a CRITICAL second element typed otherwise.
+    """
+    container = _HeteroTupleContainer(pair=("acct_1234567890", "checking"))
+    out = redact_typed(container, consent=None)
+    assert out.pair[0] == "****7890"  # ACCOUNT_IDENTIFIER masked
+    assert out.pair[1] == "checking"  # CATEGORY passthrough
+
+
 def test_redacts_optional_list_union_arm() -> None:
     """A `list[X] | None` field must still be redacted.
 

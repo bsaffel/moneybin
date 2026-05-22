@@ -20,10 +20,12 @@ from moneybin.mcp.decorator import mcp_tool
 from moneybin.privacy.payloads.categorize import (
     AutoAcceptPayload,
     AutoReviewPayload,
+    AutoStatsPayload,
     CategorizeCommitPayload,
     CategorizeRulesPayload,
     CategorizeRunPayload,
     CategorizeStatsPayload,
+    CategorizeStatsWithAutoPayload,
     CatPendingPayload,
     PendingTxnRow,
     RulesCreatePayload,
@@ -63,7 +65,7 @@ def transactions_categorize_rules() -> ResponseEnvelope[CategorizeRulesPayload]:
 @mcp_tool(domain="categorize")
 def transactions_categorize_stats(
     include_auto: bool = False,
-) -> ResponseEnvelope[CategorizeStatsPayload]:
+) -> ResponseEnvelope[CategorizeStatsPayload | CategorizeStatsWithAutoPayload]:
     """Get categorization coverage statistics.
 
     Returns total transactions, categorized count, uncategorized count,
@@ -73,9 +75,10 @@ def transactions_categorize_stats(
     Args:
         include_auto: When True, also return auto-rule health metrics
             (active auto-rules, pending proposals, transactions categorized
-            by auto-rules). The response ``data`` becomes
-            ``{overall: {...}, auto: {...}}`` instead of the flat overall
-            shape. Default False returns the flat overall shape.
+            by auto-rules). The response ``data`` becomes a
+            ``CategorizeStatsWithAutoPayload`` (``{overall: {...}, auto: {...}}``)
+            instead of the flat ``CategorizeStatsPayload`` shape. Default
+            False returns the flat overall shape.
     """
     with get_database(read_only=True) as db:
         overall = CategorizationService(db).stats()
@@ -87,24 +90,18 @@ def transactions_categorize_stats(
                 ],
             )
         auto_data = AutoRuleService(db).stats()
-    # include_auto=True: combine overall stats with auto-rule health metrics.
-    # Returns a composite dict rather than a typed payload since the shape differs.
+    # include_auto=True: composite of overall coverage + auto-rule health, as a
+    # typed payload so the annotation matches the runtime shape and the privacy
+    # middleware derives the tier from real fields.
     return build_envelope(
-        data={
-            "overall": {
-                "total_transactions": overall.total,
-                "categorized": overall.categorized,
-                "uncategorized": overall.uncategorized,
-                "percent_categorized": overall.percent_categorized,
-                "by_source": overall.by_source,
-            },
-            "auto": {
-                "active_auto_rules": auto_data.active_auto_rules,
-                "pending_proposals": auto_data.pending_proposals,
-                "transactions_categorized": auto_data.transactions_categorized,
-            },
-        },
-        sensitivity="low",
+        data=CategorizeStatsWithAutoPayload(
+            overall=overall.to_payload(),
+            auto=AutoStatsPayload(
+                active_auto_rules=auto_data.active_auto_rules,
+                pending_proposals=auto_data.pending_proposals,
+                transactions_categorized=auto_data.transactions_categorized,
+            ),
+        ),
         actions=[
             "Use transactions_categorize_pending to see uncategorized transactions",
             "Use transactions_categorize_auto_review to review pending proposals",

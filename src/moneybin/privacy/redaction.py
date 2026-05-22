@@ -108,6 +108,27 @@ _TRANSFORMS: dict[DataClass, Any] = {
 }
 
 
+def has_active_transform(payload_type: Any) -> bool:
+    """Return True if redact_typed would actually change a value in ``payload_type``.
+
+    True when any field's DataClass maps to a non-passthrough transform.
+    The decorator/CLI use this to skip the redaction walk for payloads that
+    would pass through unchanged. Deriving from ``_TRANSFORMS`` (not from
+    ``tier == CRITICAL``) keeps the gate correct automatically when PR3 wires
+    real HIGH/MEDIUM transforms: the moment a class stops being ``_passthrough``,
+    every payload carrying it starts being walked. Avoids the documented trap
+    where a CRITICAL-only gate silently skips newly-maskable HIGH/MEDIUM tools.
+    """
+    from moneybin.privacy.introspection import (  # noqa: PLC0415 — avoid import cycle
+        extract_data_classes,
+    )
+
+    return any(
+        _TRANSFORMS.get(dc, _passthrough) is not _passthrough
+        for dc in extract_data_classes(payload_type)
+    )
+
+
 def _scrub_embedded_pii(text: str) -> str:  # pyright: ignore[reportUnusedFunction]
     """No-op identity for v1.
 
@@ -148,6 +169,16 @@ def _redact(value: Any, consent: ConsentSet | None, declared_type: Any) -> Any:
                 return fn(value, consent)
         # No DataClass metadata — recurse into the underlying type.
         return _redact(value, consent, args[0])
+    # Fixed-length heterogeneous tuple[A, B, ...] — redact each position with its
+    # own declared type. tuple[T, ...] (homogeneous, Ellipsis) and the other
+    # sequence origins fall through to the single-element-type branch below.
+    if origin is tuple:
+        targs = get_args(declared_type)
+        is_variadic = len(targs) == 2 and targs[1] is Ellipsis
+        if targs and not is_variadic:
+            return tuple(
+                _redact(v, consent, t) for v, t in zip(value, targs, strict=False)
+            )
     # list[T] / set[T] / frozenset[T] / tuple[T, ...] — recurse per-element.
     # Must mirror introspection._walk, which classifies all four origins; if
     # _redact handled fewer, a CRITICAL field inside a set/frozenset would be

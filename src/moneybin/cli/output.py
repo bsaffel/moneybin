@@ -17,7 +17,12 @@ Usage::
         json_fields: str | None = json_fields_option,
     ) -> None:
         ...
-        render_or_json(envelope, output, json_fields=json_fields)
+        # Always pass cli_actor — it gates the privacy.log audit event
+        # (the logging branch is `if cli_actor is not None`). Omitting it
+        # silently drops the audit row for this command's JSON output.
+        render_or_json(
+            envelope, output, json_fields=json_fields, cli_actor="entity_list"
+        )
 """
 
 from __future__ import annotations

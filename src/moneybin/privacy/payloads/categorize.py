@@ -79,6 +79,20 @@ class CategorizeStatsPayload:
     by_source: Annotated[dict[str, int], DataClass.AGGREGATE]
 
 
+@dataclass(frozen=True, slots=True)
+class CategorizeStatsWithAutoPayload:
+    """Payload for transactions_categorize_stats(include_auto=True).
+
+    Composite of the overall coverage stats plus auto-rule health metrics.
+    A distinct type (not a bare dict) so the declared return annotation
+    matches the runtime shape and the privacy middleware derives the tier
+    from real fields.
+    """
+
+    overall: CategorizeStatsPayload
+    auto: AutoStatsPayload
+
+
 # ---------------------------------------------------------------------------
 # transactions_categorize_pending
 # ---------------------------------------------------------------------------
