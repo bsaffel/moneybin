@@ -100,7 +100,6 @@ class ConsentService:
         backend: str | None,
         consent_mode: ConsentMode,
         actor: str,
-        grant_prompt: str | None = None,
     ) -> GrantResult:
         """Grant consent for (feature_category, backend); idempotent.
 
@@ -109,7 +108,7 @@ class ConsentService:
         """
         self._validate_category(feature_category)
         resolved_backend = self._resolve_backend(backend)
-        prompt = grant_prompt or self._build_prompt(feature_category, resolved_backend)
+        prompt = self._build_prompt(feature_category, resolved_backend)
         grant, created = self._repo.grant(
             feature_category=feature_category,
             backend=resolved_backend,

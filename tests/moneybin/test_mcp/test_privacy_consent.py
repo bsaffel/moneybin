@@ -81,7 +81,7 @@ async def test_log_tool_returns_events(
     from moneybin.mcp.tools.privacy import privacy_consent_grant, privacy_log
 
     await privacy_consent_grant(category="mcp-data-sharing")
-    env = await privacy_log(last_n=20)
+    env = await privacy_log(last=20)
     assert env.error is None
     actions = {e.action for e in env.data.events}
     assert "consent.grant" in actions

@@ -41,4 +41,6 @@ def privacy_log(
         typer.echo("No privacy log events.")
         return
     for e in payload.events:
-        typer.echo(f"{e.ts} | {e.action} | {e.actor} | {e.feature_category}")
+        typer.echo(
+            f"{e.ts} | {e.action} | {e.actor} | {e.feature_category} | {e.backend}"
+        )

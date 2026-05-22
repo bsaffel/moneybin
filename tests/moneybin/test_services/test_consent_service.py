@@ -123,3 +123,23 @@ def test_service_revoke_reports_resolved_default_backend(
     )
     assert result.count == 1
     assert result.backend == "anthropic"
+
+
+def test_service_revoke_all(db: Database) -> None:
+    svc = ConsentService(db)
+    svc.grant_consent(
+        feature_category="mcp-data-sharing",
+        backend="anthropic",
+        consent_mode=ConsentMode.PERSISTENT,
+        actor="cli",
+    )
+    svc.grant_consent(
+        feature_category="ml-categorization",
+        backend="openai",
+        consent_mode=ConsentMode.PERSISTENT,
+        actor="cli",
+    )
+    assert svc.revoke_all(actor="cli") == 2
+    assert svc.status().active_grants == []
+    # Idempotent: a second revoke_all over an empty ledger is a no-op.
+    assert svc.revoke_all(actor="cli") == 0

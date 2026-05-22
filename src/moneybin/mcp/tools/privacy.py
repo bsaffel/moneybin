@@ -50,7 +50,8 @@ def privacy_consent_grant(
         category: One of mcp-data-sharing, smart-import-parsing,
             ml-categorization, matching-overview.
         backend: AI backend; defaults to the configured default backend.
-        mode: persistent (default) or one-time.
+        mode: persistent (default) or one-time. NOTE: one-time enforcement is
+            pending — a one-time grant currently persists until revoked.
     """
     with get_database() as db:
         result = ConsentService(db).grant_consent(
@@ -123,18 +124,18 @@ def privacy_status() -> ResponseEnvelope[PrivacyStatusPayload]:
 
 @mcp_tool(domain="privacy", read_only=True)
 def privacy_log(
-    last_n: int = 50, actor: str | None = None
+    last: int = 50, actor: str | None = None
 ) -> ResponseEnvelope[PrivacyLogPayload]:
     """Return recent privacy log events (consent grants/revokes + tool calls).
 
     Args:
-        last_n: Maximum number of events to return.
+        last: Maximum number of events to return (matches the CLI --last flag).
         actor: Optional exact-match actor filter.
     """
     filters: dict[str, object] = {}
     if actor:
         filters["actor"] = actor
-    events = read_privacy_events(filters, max_rows=last_n)
+    events = read_privacy_events(filters, max_rows=last)
     return build_envelope(
         data=PrivacyLogPayload(
             events=[
