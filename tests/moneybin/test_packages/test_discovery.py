@@ -119,6 +119,32 @@ def test_invalid_manifest_skips_with_warning(
     assert any("invalid manifest" in rec.message.lower() for rec in caplog.records)
 
 
+def test_yaml_syntax_error_skips_with_warning(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A manifest with malformed YAML syntax is skipped, not crashed."""
+    pkg_dir = tmp_path / "bad_yaml_pkg"
+    pkg_dir.mkdir()
+    # Malformed YAML: unclosed bracket causes yaml.safe_load to raise YAMLError.
+    (pkg_dir / "moneybin_package.yaml").write_text("name: [unclosed\n  bad: : :")
+
+    fake_module = MagicMock()
+    fake_module.__file__ = str(pkg_dir / "__init__.py")
+    fake_module.__name__ = "bad_yaml_pkg"
+
+    fake_ep = MagicMock()
+    fake_ep.name = "bad_yaml_pkg"
+    fake_ep.load.return_value = fake_module
+
+    with patch("moneybin.packages._framework.discovery.entry_points") as mock_eps:
+        mock_eps.return_value = [fake_ep]
+        with caplog.at_level("ERROR"):
+            result = discover_packages()
+
+    assert result == []
+    assert any("invalid manifest" in rec.message.lower() for rec in caplog.records)
+
+
 def test_entry_point_without_file_skips_with_warning(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

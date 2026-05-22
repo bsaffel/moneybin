@@ -140,8 +140,8 @@ def register_package(
     """Validate and register a package.
 
     On any validation failure, raises the first error and registers nothing.
-    On success, invokes the package's tools.register(mcp) and cli.register(app)
-    callables, then adds the package to the registry.
+    On success, adds the package to the registry, then invokes the package's
+    tools.register(mcp) and cli.register(cli) callables.
 
     The tools_callable / cli_callable arguments allow tests and the framework
     bootstrap to inject the resolved callable directly; production code paths
@@ -161,9 +161,11 @@ def register_package(
     if cli_callable is None:
         cli_callable = _resolve_entry_point_callable(info.manifest.entry_points.cli)
 
+    # Add to the registry first so a duplicate-name failure aborts before
+    # any external surface (MCP/CLI) is mutated.
+    _global_registry.add(info)
     tools_callable(mcp)
     cli_callable(cli)
-    _global_registry.add(info)
     logger.info(
         f"Registered package '{info.manifest.name}' "
         f"(tier={info.manifest.quality_scale})"
@@ -181,7 +183,13 @@ def _resolve_entry_point_callable(spec: str) -> Callable[[Any], None]:
     if not attr:
         raise ValueError(f"Entry point '{spec}' must be 'module.path:callable'")
     module = importlib.import_module(module_path)
-    fn = getattr(module, attr)
+    try:
+        fn = getattr(module, attr)
+    except AttributeError as exc:
+        raise ValueError(
+            f"Entry point '{spec}' has no attribute '{attr}' "
+            f"on module '{module.__name__}'"
+        ) from exc
     if not callable(fn):
         raise TypeError(f"Entry point '{spec}' resolves to non-callable {fn!r}")
     return cast(Callable[[Any], None], fn)

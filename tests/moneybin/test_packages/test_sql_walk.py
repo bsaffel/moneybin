@@ -125,3 +125,18 @@ def test_iter_table_refs_normalizes_case(tmp_path: Path) -> None:
 
     assert ("core", "fct_transactions") in refs
     assert ("app", "test_state") in refs
+
+
+def test_iter_table_refs_excludes_create_target(tmp_path: Path) -> None:
+    """The CREATE target itself is not yielded as a read dependency."""
+    sql = """
+    CREATE OR REPLACE VIEW reports.assets_summary AS
+    SELECT * FROM core.fct_transactions;
+    """
+    sql_file = tmp_path / "view.sql"
+    sql_file.write_text(sql)
+
+    refs = list(iter_table_refs(sql_file))
+
+    assert ("core", "fct_transactions") in refs
+    assert ("reports", "assets_summary") not in refs

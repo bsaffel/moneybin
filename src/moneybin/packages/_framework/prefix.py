@@ -109,6 +109,8 @@ def validate_cli_prefixes(
     cli_prefix = owns_prefix.replace("_", "-")
     violations: list[PrefixViolation] = []
     for command in cli_commands:
+        # command == cli_prefix accepts the bare subgroup name (e.g. "us-tax");
+        # Typer auto-generates it as a registered target even before subcommands run.
         if command == cli_prefix or command.startswith(f"{cli_prefix} "):
             continue
         violations.append(

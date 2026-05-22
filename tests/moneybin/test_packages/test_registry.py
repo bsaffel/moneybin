@@ -2,7 +2,7 @@
 
 from pathlib import Path
 from textwrap import dedent
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -93,13 +93,17 @@ def test_register_package_invokes_tools_and_cli(tmp_path: Path) -> None:
     tools_register = MagicMock()
     cli_register = MagicMock()
 
-    register_package(
-        info=info,
-        mcp=mcp,
-        cli=cli,
-        tools_callable=tools_register,
-        cli_callable=cli_register,
-    )
+    with patch(
+        "moneybin.packages._framework.registry._global_registry",
+        PackageRegistry(),
+    ):
+        register_package(
+            info=info,
+            mcp=mcp,
+            cli=cli,
+            tools_callable=tools_register,
+            cli_callable=cli_register,
+        )
 
     tools_register.assert_called_once_with(mcp)
     cli_register.assert_called_once_with(cli)

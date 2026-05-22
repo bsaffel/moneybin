@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from importlib.metadata import entry_points
 from pathlib import Path
 
+import yaml
 from pydantic import ValidationError as PydanticValidationError
 
 from moneybin.packages._framework.manifest import PackageManifest
@@ -75,7 +76,7 @@ def discover_packages() -> list[PackageInfo]:
 
         try:
             manifest = PackageManifest.from_yaml(manifest_path)
-        except (PydanticValidationError, ValueError) as exc:
+        except (PydanticValidationError, ValueError, yaml.YAMLError) as exc:
             logger.error(
                 f"Entry point '{ep.name}' has invalid manifest at "
                 f"{manifest_path}: {type(exc).__name__}: {exc}"

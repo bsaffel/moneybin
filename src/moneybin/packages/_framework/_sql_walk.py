@@ -1,8 +1,9 @@
 """sqlglot-based SQL inspection helpers shared across validators.
 
-Both the capability validator (writes) and the prefix validator (writes +
-reads) walk SQL ASTs to find CREATE targets and table references. Centralize
-the parsing here so each validator focuses on its semantic check.
+Both the capability validator (writes) and the prefix validator (writes today;
+reads when Plan 5 wires read-prefix validation) walk SQL ASTs to find CREATE
+targets and table references. Centralize the parsing here so each validator
+focuses on its semantic check.
 
 Parsing uses the duckdb dialect — same setting used by src/moneybin/schema.py
 for catalog comment extraction.
@@ -72,16 +73,22 @@ def extract_create_targets(sql_file: Path) -> list[tuple[str, str]]:
 def iter_table_refs(sql_file: Path) -> Iterator[tuple[str, str]]:
     """Yield (schema, name) for every schema-qualified table reference in sql_file.
 
-    Used by the prefix validator to confirm a package reads only from declared
-    sources. Unqualified table references (FROM scratch) are skipped — they're
-    either same-statement CTEs or temp objects, neither of which counts as a
-    cross-schema dependency.
+    Foundation for Plan 5's read-prefix validation. Unqualified table references
+    (FROM scratch) are skipped — they're either same-statement CTEs or temp
+    objects, neither of which counts as a cross-schema dependency. The CREATE
+    target of each statement is excluded so only read dependencies are yielded.
     """
     statements = _parse(sql_file)
     for statement in statements:
         if statement is None:
             continue
+        # Exclude the CREATE target itself — it's a write, not a read dependency.
+        create_target = None
+        if isinstance(statement, exp.Create):
+            create_target = statement.find(exp.Table)
         for table in statement.find_all(exp.Table):
+            if table is create_target:
+                continue
             if not table.args.get("db"):
                 continue
             # Lowercase: same DuckDB case-insensitivity rationale as extract_create_targets.
