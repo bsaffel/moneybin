@@ -55,7 +55,8 @@ def _silver_checks(info: PackageInfo) -> list[QualityScaleViolation]:
             )
         )
     # Spec §Quality Scale: "named code owner — someone's responsible."
-    if not info.manifest.code_owner:
+    # Reject whitespace-only owners (truthy but not a real name).
+    if not (info.manifest.code_owner and info.manifest.code_owner.strip()):
         violations.append(
             QualityScaleViolation(
                 package_name=info.manifest.name,

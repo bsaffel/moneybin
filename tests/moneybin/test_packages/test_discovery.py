@@ -172,7 +172,9 @@ def test_unreadable_manifest_skips_with_warning(
             result = discover_packages()
 
     assert result == []
-    assert any("invalid manifest" in rec.message.lower() for rec in caplog.records)
+    assert any(
+        "could not be discovered" in rec.message.lower() for rec in caplog.records
+    )
 
 
 def test_invalid_manifest_skips_with_warning(
@@ -191,7 +193,9 @@ def test_invalid_manifest_skips_with_warning(
             result = discover_packages()
 
     assert result == []
-    assert any("invalid manifest" in rec.message.lower() for rec in caplog.records)
+    assert any(
+        "could not be discovered" in rec.message.lower() for rec in caplog.records
+    )
 
 
 def test_yaml_syntax_error_skips_with_warning(
@@ -211,4 +215,6 @@ def test_yaml_syntax_error_skips_with_warning(
             result = discover_packages()
 
     assert result == []
-    assert any("invalid manifest" in rec.message.lower() for rec in caplog.records)
+    assert any(
+        "could not be discovered" in rec.message.lower() for rec in caplog.records
+    )

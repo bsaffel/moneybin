@@ -15,7 +15,8 @@ from moneybin.packages._framework.quality_scale import (
 def _make_package(
     tmp_path: Path, *, tier: str, code_owner: str | None = "Test Owner"
 ) -> PackageInfo:
-    code_owner_line = f"code_owner: {code_owner}\n" if code_owner is not None else ""
+    # Quoted so a whitespace-only value survives YAML parsing intact.
+    code_owner_line = f'code_owner: "{code_owner}"\n' if code_owner is not None else ""
     manifest_yaml = f"""
 name: test_synthetic
 display_name: Test Synthetic
@@ -57,6 +58,25 @@ def test_silver_with_readme_and_tests_passes(tmp_path: Path) -> None:
     (tmp_path / "tests").mkdir()
     violations = validate_quality_scale(info, claimed_tier="silver")
     assert violations == []
+
+
+def test_gold_claim_reports_lower_tier_violations_cumulatively(tmp_path: Path) -> None:
+    """Claiming gold with no silver AND no gold evidence reports both tiers' gaps."""
+    info = _make_package(tmp_path, tier="gold")
+    # No README/tests (silver), no metrics.py (gold).
+    violations = validate_quality_scale(info, claimed_tier="gold")
+    tiers = {v.claimed_tier for v in violations}
+    assert "silver" in tiers, "cumulative check must surface the silver-tier gap"
+    assert "gold" in tiers, "the claimed gold-tier gap must also surface"
+
+
+def test_silver_whitespace_code_owner_rejected(tmp_path: Path) -> None:
+    """A whitespace-only code_owner does not satisfy the Silver requirement."""
+    info = _make_package(tmp_path, tier="silver", code_owner="   ")
+    (tmp_path / "README.md").write_text("docs")
+    (tmp_path / "tests").mkdir()
+    violations = validate_quality_scale(info, claimed_tier="silver")
+    assert any("code_owner" in v.missing_evidence for v in violations)
 
 
 def test_silver_requires_code_owner(tmp_path: Path) -> None:

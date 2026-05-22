@@ -230,10 +230,12 @@ def init_schemas(
     """
     extras = additional_files or []
     if extras and package_root is None:
-        logger.warning(
-            "init_schemas: additional_files provided without package_root — "
-            "path-containment check is disabled; the Plan 4 caller should pass "
-            "package_root=info.root"
+        # Refuse rather than silently skip the path-traversal guard. The only
+        # intended caller (Plan 4 package-schema wiring) always has info.root,
+        # so a missing package_root signals a wiring bug, not a valid call.
+        raise ValueError(
+            "init_schemas: additional_files requires package_root so each path "
+            "can be confined to the package directory (pass package_root=info.root)"
         )
     if package_root is not None:
         root = package_root.resolve()

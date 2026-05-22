@@ -31,9 +31,6 @@ from dataclasses import dataclass
 from importlib.metadata import EntryPoint, entry_points
 from pathlib import Path
 
-import yaml
-from pydantic import ValidationError as PydanticValidationError
-
 from moneybin.packages._framework.manifest import PackageManifest
 
 logger = logging.getLogger(__name__)
@@ -102,29 +99,31 @@ def discover_packages() -> list[PackageInfo]:
     """
     discovered: list[PackageInfo] = []
     for ep in entry_points(group=_ENTRY_POINT_GROUP):
-        manifest_path = _locate_manifest(ep)
-        if manifest_path is None:
-            logger.error(
-                f"Entry point '{ep.name}': could not locate {_MANIFEST_NAME} from "
-                f"distribution metadata without importing the package; skipping"
-            )
-            continue
-        if not manifest_path.exists():
-            logger.error(
-                f"Entry point '{ep.name}': {_MANIFEST_NAME} recorded at "
-                f"{manifest_path} but not present on disk; skipping"
-            )
-            continue
-
+        # Broad catch: discovery faces arbitrary third-party-controlled
+        # entry-point strings. A malformed value makes EntryPoint.module raise
+        # AttributeError; an unreadable manifest raises OSError; a bad manifest
+        # raises PydanticValidationError/ValueError/yaml.YAMLError. One bad
+        # package must never abort discovery for every other installed package.
         try:
+            manifest_path = _locate_manifest(ep)
+            if manifest_path is None:
+                logger.error(
+                    f"Entry point '{ep.name}': could not locate {_MANIFEST_NAME} "
+                    f"from distribution metadata without importing the package; "
+                    f"skipping"
+                )
+                continue
+            if not manifest_path.exists():
+                logger.error(
+                    f"Entry point '{ep.name}': {_MANIFEST_NAME} recorded at "
+                    f"{manifest_path} but not present on disk; skipping"
+                )
+                continue
             manifest = PackageManifest.from_yaml(manifest_path)
-        except (PydanticValidationError, ValueError, yaml.YAMLError, OSError) as exc:
-            # OSError too: the manifest can pass the exists() check yet be
-            # unreadable (permissions, dangling symlink, removed between calls).
-            # A single bad package must not abort discovery for the rest.
+        except Exception as exc:  # noqa: BLE001 — defensive at discovery boundary
             logger.error(
-                f"Entry point '{ep.name}' has invalid manifest at "
-                f"{manifest_path}: {type(exc).__name__}: {exc}"
+                f"Entry point '{ep.name}' could not be discovered: "
+                f"{type(exc).__name__}: {exc}; skipping"
             )
             continue
 

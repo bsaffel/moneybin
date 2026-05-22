@@ -114,6 +114,69 @@ def test_quality_scale_must_be_known(tmp_path: Path) -> None:
         PackageManifest.from_yaml(manifest_path)
 
 
+def _manifest_body(*, owns_prefix: str = "foo", writes: str = "[]") -> str:
+    return f"""
+        name: {owns_prefix}
+        display_name: Foo
+        version: 1.0.0
+        quality_scale: bronze
+        owns_prefix: {owns_prefix}
+        publisher: {{name: x, verified: false}}
+        description: ok
+        capabilities: {{writes: {writes}, reads: [], network: [], secrets: []}}
+        requires: {{moneybin: ">=1.0.0"}}
+        entry_points: {{tools: x:y, cli: x:y, models: x, schema: x}}
+    """
+
+
+@pytest.mark.parametrize("reserved", ["app", "core", "raw", "reports", "main"])
+def test_owns_prefix_rejects_reserved_schema_names(
+    tmp_path: Path, reserved: str
+) -> None:
+    """A reserved schema name as owns_prefix is rejected (collision prevention)."""
+    manifest_path = _write_manifest(tmp_path, _manifest_body(owns_prefix=reserved))
+    with pytest.raises(PydanticValidationError, match="reserved schema name"):
+        PackageManifest.from_yaml(manifest_path)
+
+
+@pytest.mark.parametrize("bad_prefix", ["my_", "my__pkg", "_foo"])
+def test_owns_prefix_rejects_malformed_snake_case(
+    tmp_path: Path, bad_prefix: str
+) -> None:
+    """Trailing/doubled/leading underscores are rejected by the tightened regex."""
+    manifest_path = _write_manifest(tmp_path, _manifest_body(owns_prefix=bad_prefix))
+    with pytest.raises(PydanticValidationError, match="snake_case"):
+        PackageManifest.from_yaml(manifest_path)
+
+
+@pytest.mark.parametrize(
+    ("writes", "match"),
+    [
+        ("['*.foo_x']", "explicit schema"),
+        ("['app.*']", "must start with 'foo_'"),
+        ("['core.foo_x']", "not package-writable"),
+        ("['foo_x']", "explicit schema required"),
+        ("['app.other_x']", "must start with 'foo_'"),
+    ],
+)
+def test_writes_globs_must_be_prefix_scoped(
+    tmp_path: Path, writes: str, match: str
+) -> None:
+    """Write globs must be '<writable-schema>.<owns_prefix>_*' — the security primitive."""
+    manifest_path = _write_manifest(tmp_path, _manifest_body(writes=writes))
+    with pytest.raises(PydanticValidationError, match=match):
+        PackageManifest.from_yaml(manifest_path)
+
+
+def test_writes_globs_accept_prefix_scoped(tmp_path: Path) -> None:
+    """Valid prefix-scoped writes across writable schemas parse cleanly."""
+    manifest_path = _write_manifest(
+        tmp_path, _manifest_body(writes="['app.foo_state', 'reports.foo_summary']")
+    )
+    manifest = PackageManifest.from_yaml(manifest_path)
+    assert manifest.capabilities.writes == ["app.foo_state", "reports.foo_summary"]
+
+
 def test_version_must_be_semver(tmp_path: Path) -> None:
     """Version field rejects non-semver strings."""
     manifest_path = _write_manifest(

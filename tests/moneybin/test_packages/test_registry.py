@@ -249,6 +249,52 @@ def test_init_schemas_rejects_additional_file_outside_package_root(
         init_schemas(conn, additional_files=[outside], package_root=pkg_root)
 
 
+def test_init_schemas_requires_package_root_for_additional_files(
+    tmp_path: Path,
+) -> None:
+    """additional_files without package_root is refused (guard can't be skipped)."""
+    import duckdb
+
+    from moneybin.schema import init_schemas
+
+    pkg_sql = tmp_path / "app_test_synthetic_state.sql"
+    pkg_sql.write_text("CREATE TABLE app.test_synthetic_state (id TEXT);")
+
+    conn = duckdb.connect()
+    with pytest.raises(ValueError, match="requires package_root"):
+        init_schemas(conn, additional_files=[pkg_sql])
+
+
+def test_register_package_twice_raises_and_does_not_reinvoke(tmp_path: Path) -> None:
+    """A second register_package for the same name raises and re-runs nothing."""
+    info = _make_minimal_pkg(tmp_path)
+    fresh = PackageRegistry()
+    tools_register = MagicMock()
+    cli_register = MagicMock()
+
+    with patch("moneybin.packages._framework.registry._global_registry", fresh):
+        register_package(
+            info=info,
+            mcp=MagicMock(),
+            cli=MagicMock(),
+            tools_callable=tools_register,
+            cli_callable=cli_register,
+        )
+        with pytest.raises(ValueError, match="already registered"):
+            register_package(
+                info=info,
+                mcp=MagicMock(),
+                cli=MagicMock(),
+                tools_callable=tools_register,
+                cli_callable=cli_register,
+            )
+
+    # Callables invoked exactly once (the first, successful registration).
+    tools_register.assert_called_once()
+    cli_register.assert_called_once()
+    assert len(fresh.all()) == 1
+
+
 def test_register_package_uninstalled_entry_point_raises_value_error(
     tmp_path: Path,
 ) -> None:
@@ -305,7 +351,8 @@ def test_init_schemas_executes_additional_files(tmp_path: Path) -> None:
     # without the Database wrapper's schema bootstrapping.
     conn = duckdb.connect()
     conn.execute("CREATE SCHEMA app;")  # init_schemas creates schemas via core files
-    init_schemas(conn, additional_files=[pkg_sql])
+    # package_root is required when additional_files is non-empty (path guard).
+    init_schemas(conn, additional_files=[pkg_sql], package_root=tmp_path)
 
     result = conn.execute(
         "SELECT COUNT(*) FROM information_schema.tables "

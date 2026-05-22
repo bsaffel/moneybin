@@ -18,12 +18,33 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 QualityTier = Literal["bronze", "silver", "gold", "platinum"]
 
-# owns_prefix must be lowercase snake_case — ^[a-z][a-z0-9_]*$.
-# DuckDB normalizes identifiers to lowercase; every package surface (tables,
-# tool names, schema files) derives from this prefix. A non-lowercase prefix
-# would never match the lowercased SQL targets the prefix validators check,
-# producing spurious violations. Reject at parse time.
-_PREFIX_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+# owns_prefix must be lowercase snake_case — letters/digits, single internal
+# underscores, no leading/trailing/doubled underscore. DuckDB normalizes
+# identifiers to lowercase; every package surface (tables, tool names, schema
+# files) derives from this prefix. A non-conforming prefix would never match
+# the lowercased SQL targets the prefix validators check. Reject at parse time.
+_PREFIX_RE = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$")
+
+# Schema names a package may never claim as its owns_prefix — using one would
+# let a package's tables collide with framework-managed schemas. Per spec
+# §"Naming and prefix discipline": "declared prefix does not overlap with core
+# or another extension." 'main' is DuckDB's default schema.
+_RESERVED_PREFIXES = frozenset({
+    "raw",
+    "prep",
+    "core",
+    "app",
+    "reports",
+    "meta",
+    "seeds",
+    "synthetic",
+    "main",
+})
+
+# Schemas a package may write to via its capabilities.writes globs. Packages own
+# raw landing tables, app-layer state, and reports views; core/prep are
+# framework-managed (SQLMesh), and meta/seeds/synthetic are infrastructure.
+_WRITABLE_SCHEMAS = frozenset({"raw", "app", "reports"})
 
 # Strict semver matcher — the canonical https://semver.org grammar.
 # Accepts 1.0.0, 1.2.3-beta, 1.0.0-rc.1, 1.0.0+build.1; rejects single-digit
@@ -129,7 +150,12 @@ class PackageManifest(BaseModel):
         if not _PREFIX_RE.match(value):
             raise ValueError(
                 f"owns_prefix '{value}' must be lowercase snake_case "
-                f"(matching ^[a-z][a-z0-9_]*$)"
+                f"(matching {_PREFIX_RE.pattern})"
+            )
+        if value in _RESERVED_PREFIXES:
+            raise ValueError(
+                f"owns_prefix '{value}' is a reserved schema name; pick a prefix "
+                f"that does not collide with {sorted(_RESERVED_PREFIXES)}"
             )
         return value
 
@@ -154,6 +180,40 @@ class PackageManifest(BaseModel):
             raise ValueError(
                 f"version '{self.version}' is not valid semver (e.g. '1.0.0')"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _writes_are_prefix_scoped(self) -> PackageManifest:
+        """Every write glob must be '<writable-schema>.<owns_prefix>_*'.
+
+        capabilities.writes is the load-bearing security primitive. An
+        unscoped glob defeats it: a wildcard schema ('*.x') or a bare
+        schema claim ('app.*') would let a CREATE land anywhere. Require an
+        explicit, package-writable schema and a table portion that starts with
+        the package's own prefix, so the declared contract matches what the
+        prefix validator actually enforces on the SQL.
+        """
+        for glob in self.capabilities.writes:
+            schema, sep, table = glob.partition(".")
+            if not sep:
+                raise ValueError(
+                    f"write glob '{glob}' must be "
+                    f"'<schema>.{self.owns_prefix}_*' (explicit schema required)"
+                )
+            if set(schema) & set("*?[]"):
+                raise ValueError(
+                    f"write glob '{glob}' must name an explicit schema, not a wildcard"
+                )
+            if schema not in _WRITABLE_SCHEMAS:
+                raise ValueError(
+                    f"write glob '{glob}' targets schema '{schema}', which is "
+                    f"not package-writable (allowed: {sorted(_WRITABLE_SCHEMAS)})"
+                )
+            if not table.startswith(f"{self.owns_prefix}_"):
+                raise ValueError(
+                    f"write glob '{glob}' table must start with "
+                    f"'{self.owns_prefix}_' to stay inside the package's prefix"
+                )
         return self
 
     @classmethod
