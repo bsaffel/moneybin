@@ -13,53 +13,28 @@ import fnmatch
 from collections.abc import Iterable
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field
-
 from moneybin.packages._framework._sql_walk import extract_create_targets
 from moneybin.packages._framework.errors import CapabilityViolation
+from moneybin.packages._framework.manifest import CapabilityDeclarations
 
 
-class Capability(BaseModel):
-    """A package's declared capability surface.
+def is_write_allowed(capability: CapabilityDeclarations, target: str) -> bool:
+    """True if 'target' (schema.name) matches any declared write glob.
 
-    Mirrors CapabilityDeclarations in manifest.py — kept as a separate model
-    so validators consume a runtime-friendly Capability (with helper methods)
-    rather than the raw parsed manifest sub-block. PackageManifest.capabilities
-    converts via Capability(**manifest.capabilities.model_dump()).
+    Matching is case-insensitive: DuckDB treats unquoted identifiers
+    case-insensitively, and _sql_walk normalizes extracted targets to
+    lowercase, so patterns are lowered here to match either-case globs.
     """
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    writes: list[str] = Field(
-        description="Glob patterns of tables this package writes (e.g. ['app.assets_*'])."
+    return any(
+        fnmatch.fnmatchcase(target, pattern.lower()) for pattern in capability.writes
     )
-    reads: list[str] = Field(
-        description="Glob patterns of tables this package reads (documentation at launch)."
-    )
-    network: list[str] = Field(
-        description="Hostnames this package may HTTP to (documentation at launch)."
-    )
-    secrets: list[str] = Field(
-        description="SecretStore keys this package needs (enforced at first access)."
-    )
-
-    def is_write_allowed(self, target: str) -> bool:
-        """True if 'target' (schema.name) matches any declared write glob.
-
-        Matching is case-insensitive: DuckDB treats unquoted identifiers
-        case-insensitively, and _sql_walk normalizes extracted targets to
-        lowercase, so patterns are lowered here to match either-case globs.
-        """
-        return any(
-            fnmatch.fnmatchcase(target, pattern.lower()) for pattern in self.writes
-        )
 
 
 def validate_writes(
     *,
     package_name: str,
     sql_files: Iterable[Path],
-    capability: Capability,
+    capability: CapabilityDeclarations,
 ) -> list[CapabilityViolation]:
     """Confirm every CREATE TABLE / CREATE VIEW matches a declared write glob.
 
@@ -71,7 +46,7 @@ def validate_writes(
     for sql_file in sql_files:
         for schema, name in extract_create_targets(sql_file):
             target = f"{schema}.{name}"
-            if not capability.is_write_allowed(target):
+            if not is_write_allowed(capability, target):
                 violations.append(
                     CapabilityViolation(
                         package_name=package_name,

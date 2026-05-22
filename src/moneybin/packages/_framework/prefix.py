@@ -109,18 +109,16 @@ def validate_cli_prefixes(
     cli_prefix = owns_prefix.replace("_", "-")
     violations: list[PrefixViolation] = []
     for command in cli_commands:
-        if not command.startswith(f"{cli_prefix} "):
-            # A bare top-level subgroup ("us-tax" alone) is also acceptable.
-            if command == cli_prefix:
-                continue
-            violations.append(
-                PrefixViolation(
-                    package_name=package_name,
-                    message=(
-                        f"CLI command '{command}' must live under '{cli_prefix}' subgroup"
-                    ),
-                    surface="cli_command",
-                    offender=command,
-                )
+        if command == cli_prefix or command.startswith(f"{cli_prefix} "):
+            continue
+        violations.append(
+            PrefixViolation(
+                package_name=package_name,
+                message=(
+                    f"CLI command '{command}' must live under '{cli_prefix}' subgroup"
+                ),
+                surface="cli_command",
+                offender=command,
             )
+        )
     return violations

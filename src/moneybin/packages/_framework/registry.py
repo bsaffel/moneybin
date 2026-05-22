@@ -21,14 +21,12 @@ Known deferred (out of Plan 2 scope):
 
 from __future__ import annotations
 
+import importlib
 import logging
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
-from moneybin.packages._framework.capabilities import (
-    Capability,
-    validate_writes,
-)
+from moneybin.packages._framework.capabilities import validate_writes
 from moneybin.packages._framework.discovery import PackageInfo
 from moneybin.packages._framework.errors import (
     QualityScaleViolation,
@@ -94,17 +92,14 @@ def validate_package(info: PackageInfo) -> list[ValidationError]:
     errors: list[ValidationError] = []
     sql_files = sorted((info.root / "schema").glob("*.sql"))
 
-    # Capability check (writes axis).
-    cap = Capability(**info.manifest.capabilities.model_dump())
     errors.extend(
         validate_writes(
             package_name=info.manifest.name,
             sql_files=sql_files,
-            capability=cap,
+            capability=info.manifest.capabilities,
         )
     )
 
-    # Prefix-discipline checks.
     errors.extend(
         validate_sql_write_prefixes(
             package_name=info.manifest.name,
@@ -120,7 +115,6 @@ def validate_package(info: PackageInfo) -> list[ValidationError]:
         )
     )
 
-    # Quality Scale checks for the manifest's declared tier.
     errors.extend(
         _validate_quality_scale(info, claimed_tier=info.manifest.quality_scale)
     )
@@ -183,9 +177,6 @@ def _resolve_entry_point_callable(spec: str) -> Callable[[Any], None]:
     the lookup here because manifest entry-point strings are not registered
     via setuptools — they're paths inside the already-installed package.
     """
-    import importlib
-    from typing import cast
-
     module_path, _, attr = spec.partition(":")
     if not attr:
         raise ValueError(f"Entry point '{spec}' must be 'module.path:callable'")

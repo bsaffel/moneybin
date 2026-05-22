@@ -4,10 +4,11 @@ from pathlib import Path
 from textwrap import dedent
 
 from moneybin.packages._framework.capabilities import (
-    Capability,
     CapabilityViolation,
+    is_write_allowed,
     validate_writes,
 )
+from moneybin.packages._framework.manifest import CapabilityDeclarations
 
 
 def _make_sql_dir(tmp_path: Path, files: dict[str, str]) -> Path:
@@ -30,11 +31,8 @@ def test_writes_inside_declared_glob_pass(tmp_path: Path) -> None:
             """,
         },
     )
-    capability = Capability(
+    capability = CapabilityDeclarations(
         writes=["app.test_synthetic_*", "reports.test_synthetic_*"],
-        reads=[],
-        network=[],
-        secrets=[],
     )
 
     violations = validate_writes(
@@ -61,12 +59,7 @@ def test_writes_outside_declared_glob_fail(tmp_path: Path) -> None:
             """,
         },
     )
-    capability = Capability(
-        writes=["app.test_synthetic_*"],
-        reads=[],
-        network=[],
-        secrets=[],
-    )
+    capability = CapabilityDeclarations(writes=["app.test_synthetic_*"])
 
     violations = validate_writes(
         package_name="test_synthetic",
@@ -92,9 +85,7 @@ def test_glob_supports_wildcards(tmp_path: Path) -> None:
             """,
         },
     )
-    capability = Capability(
-        writes=["reports.assets_*"], reads=[], network=[], secrets=[]
-    )
+    capability = CapabilityDeclarations(writes=["reports.assets_*"])
 
     violations = validate_writes(
         package_name="assets",
@@ -114,11 +105,8 @@ def test_multiple_globs_combine(tmp_path: Path) -> None:
             "c.sql": "CREATE TABLE raw.assets_three (x INT);",
         },
     )
-    capability = Capability(
+    capability = CapabilityDeclarations(
         writes=["app.assets_*", "reports.assets_*", "raw.assets_*"],
-        reads=[],
-        network=[],
-        secrets=[],
     )
 
     violations = validate_writes(
@@ -133,7 +121,7 @@ def test_empty_writes_with_no_sql_passes(tmp_path: Path) -> None:
     """A package with no CREATE statements and no writes declaration is fine."""
     sql_dir = tmp_path / "schema"
     sql_dir.mkdir()
-    capability = Capability(writes=[], reads=[], network=[], secrets=[])
+    capability = CapabilityDeclarations(writes=[])
 
     violations = validate_writes(
         package_name="empty",
@@ -149,7 +137,7 @@ def test_writes_case_insensitive_match(tmp_path: Path) -> None:
         tmp_path,
         {"mixed.sql": "CREATE TABLE App.Assets_State (id TEXT);"},
     )
-    capability = Capability(writes=["app.assets_*"], reads=[], network=[], secrets=[])
+    capability = CapabilityDeclarations(writes=["app.assets_*"])
 
     violations = validate_writes(
         package_name="assets",
@@ -166,7 +154,7 @@ def test_writes_case_insensitive_glob(tmp_path: Path) -> None:
         tmp_path,
         {"lower.sql": "CREATE TABLE app.assets_state (id TEXT);"},
     )
-    capability = Capability(writes=["App.assets_*"], reads=[], network=[], secrets=[])
+    capability = CapabilityDeclarations(writes=["App.assets_*"])
 
     violations = validate_writes(
         package_name="assets",
@@ -175,3 +163,10 @@ def test_writes_case_insensitive_glob(tmp_path: Path) -> None:
     )
 
     assert violations == []
+
+
+def test_is_write_allowed_matches_glob(tmp_path: Path) -> None:
+    """is_write_allowed returns True for a target matching a declared glob."""
+    capability = CapabilityDeclarations(writes=["app.assets_*"])
+    assert is_write_allowed(capability, "app.assets_state") is True
+    assert is_write_allowed(capability, "core.fct_transactions") is False

@@ -143,8 +143,8 @@ def validate_quality_scale(
         )
 
     violations: list[QualityScaleViolation] = []
-    for tier in ("bronze", "silver", "gold", "platinum"):
+    for tier in sorted(_TIER_ORDER, key=_TIER_ORDER.__getitem__):
         if _TIER_ORDER[tier] > claimed_rank:
             break
-        violations.extend(_CHECKS[tier](info))
+        violations.extend(_CHECKS[tier](info))  # type: ignore[literal-required]  # tier is str from sorted(); _CHECKS is keyed by QualityTier Literal
     return violations

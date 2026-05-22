@@ -8,6 +8,11 @@ strings.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
+
+from moneybin.packages._framework.manifest import QualityTier
+
+SurfaceKind = Literal["sql_write", "schema_file", "mcp_tool", "cli_command"]
 
 
 @dataclass(frozen=True)
@@ -45,7 +50,7 @@ class PrefixViolation(ValidationError):  # noqa: N818  # "Violation" distinguish
     is a cross-prefix leak that must fail registration.
     """
 
-    surface: str  # "sql_write" | "mcp_tool" | "cli_command" | "schema_file"
+    surface: SurfaceKind
     offender: str  # the offending name (table, tool, command, filename)
 
     def __str__(self) -> str:
@@ -61,7 +66,7 @@ class QualityScaleViolation(ValidationError):  # noqa: N818  # "Violation" disti
     can demote the claim or supply the missing evidence.
     """
 
-    claimed_tier: str  # "bronze" | "silver" | "gold" | "platinum"
+    claimed_tier: QualityTier
     missing_evidence: str  # human-readable description of the failed check
 
     def __str__(self) -> str:
