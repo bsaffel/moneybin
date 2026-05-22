@@ -145,6 +145,20 @@ def get_pending_matches(
     return [dict(zip(_MATCH_DECISION_COLUMNS, row, strict=True)) for row in rows]
 
 
+def get_match_decision(db: Database, match_id: str) -> dict[str, Any] | None:
+    """Return one match decision by id, or None if absent."""
+    row = db.execute(
+        f"""
+        SELECT {_MATCH_DECISION_SELECT} FROM app.match_decisions
+        WHERE match_id = ?
+        """,  # noqa: S608 — column list is a module constant, not user input
+        [match_id],
+    ).fetchone()
+    if row is None:
+        return None
+    return dict(zip(_MATCH_DECISION_COLUMNS, row, strict=True))
+
+
 def update_match_status(
     db: Database, match_id: str, *, status: MatchStatus, decided_by: str
 ) -> None:
