@@ -106,10 +106,13 @@ inherit the contract:
 
 > **Invariant 10 — `app.*` mutation routing.** All mutations of `app.*` tables
 > MUST emit a paired `app.audit_log` row via `audit_service.record_audit_event()`
-> inside the same DuckDB transaction, except for `app.audit_log` itself,
-> `app.metrics`, seed-loaded configuration tables, and migration-system tables.
-> Direct `INSERT`/`UPDATE`/`DELETE` against `app.*` from outside
-> `audit_service.py` or `*_repo.py` modules is a contract violation.
+> inside the same DuckDB transaction, except for: (a) `app.audit_log` itself,
+> (b) `app.metrics` (observability data, not user state), (c) seed-loaded
+> configuration tables written only at install/migration time (currently
+> `app.seed_source_priority`), and (d) migration-system tables
+> (`app.schema_migrations`, `app.versions`). Direct `INSERT`/`UPDATE`/`DELETE`
+> against `app.*` from outside `audit_service.py` or `*_repo.py` modules is a
+> contract violation. The doctor MUST verify routing via per-table invariants.
 
 ## Consequences
 
