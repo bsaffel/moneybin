@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from moneybin.packages._framework.capabilities import (
+    validate_schema_layers,
     validate_statement_types,
     validate_writes,
 )
@@ -130,6 +131,13 @@ def validate_package(info: PackageInfo) -> list[ValidationError]:
 
     errors.extend(
         validate_statement_types(
+            package_name=info.manifest.name,
+            sql_files=sql_files,
+        )
+    )
+
+    errors.extend(
+        validate_schema_layers(
             package_name=info.manifest.name,
             sql_files=sql_files,
         )

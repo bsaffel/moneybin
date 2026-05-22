@@ -20,6 +20,14 @@ from moneybin.packages._framework._sql_walk import (
 from moneybin.packages._framework.errors import CapabilityViolation
 from moneybin.packages._framework.manifest import CapabilityDeclarations
 
+# Schemas a package's schema/ bootstrap DDL may create objects in. Narrower
+# than manifest._WRITABLE_SCHEMAS ({raw, app, reports}): a package may declare a
+# reports.<prefix>_* write capability, but that capability is satisfied by its
+# models/ directory (SQLMesh), never by schema/ bootstrap DDL. reports/core/prep
+# are framework-managed layers — confining schema/ CREATE targets to raw/app
+# stops a raw_/app_-named schema file from mutating them at bootstrap.
+_SCHEMA_DDL_SCHEMAS = frozenset({"raw", "app"})
+
 
 def is_write_allowed(capability: CapabilityDeclarations, target: str) -> bool:
     """True if 'target' (schema.name) matches any declared write glob.
@@ -76,6 +84,56 @@ def validate_writes(
                         ),
                         sql_file=str(sql_file),
                         target=target,
+                    )
+                )
+    return violations
+
+
+def validate_schema_layers(
+    *,
+    package_name: str,
+    sql_files: Iterable[Path],
+) -> list[CapabilityViolation]:
+    """Confirm every schema/ CREATE target lands in raw or app.
+
+    Sibling to validate_statement_types: both confine what package schema/
+    bootstrap DDL may do. validate_statement_types restricts the statement
+    kind (CREATE TABLE/VIEW only); this restricts the target layer (raw/app
+    only). The write-glob check (validate_writes) permits reports.<prefix>_*
+    because that capability is satisfied by the package's models/ directory —
+    but schema/ bootstrap DDL must never write the framework-managed reports
+    (or core/prep) layers. Without this, a package could declare a
+    reports.<prefix>_* write capability and slip a CREATE VIEW into reports via
+    a raw_/app_-named schema file, passing both the write-glob and filename
+    checks. Returns violations rather than raising.
+    """
+    violations: list[CapabilityViolation] = []
+    for sql_file in sql_files:
+        try:
+            targets = extract_create_targets(sql_file)
+        except ValueError as exc:
+            violations.append(
+                CapabilityViolation(
+                    package_name=package_name,
+                    message=f"could not parse {sql_file.name}: {exc}",
+                    sql_file=str(sql_file),
+                    target="(unparseable)",
+                )
+            )
+            continue
+        for schema, name in targets:
+            if schema not in _SCHEMA_DDL_SCHEMAS:
+                violations.append(
+                    CapabilityViolation(
+                        package_name=package_name,
+                        message=(
+                            f"schema file {sql_file.name} creates {schema}.{name} "
+                            f"but package schema/ DDL may only target "
+                            f"{sorted(_SCHEMA_DDL_SCHEMAS)} — reports/core views "
+                            f"come from models/, not schema/"
+                        ),
+                        sql_file=str(sql_file),
+                        target=f"{schema}.{name}",
                     )
                 )
     return violations

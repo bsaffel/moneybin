@@ -25,7 +25,11 @@ def validate_sql_write_prefixes(
     """Confirm every CREATE TABLE/VIEW target uses the package's prefix.
 
     Returns a violation per (table, schema) outside the prefix; empty list
-    when all writes are inside.
+    when all writes are inside. This checks only the target *name* prefix, so
+    it stays reusable for the package's models/ surface (where reports.* is a
+    valid target). The orthogonal constraint that schema/ bootstrap DDL may
+    only target the raw/app layers is enforced separately by
+    capabilities.validate_schema_layers.
     """
     violations: list[PrefixViolation] = []
     for sql_file in sql_files:

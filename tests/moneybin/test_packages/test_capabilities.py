@@ -6,6 +6,7 @@ from textwrap import dedent
 from moneybin.packages._framework.capabilities import (
     CapabilityViolation,
     is_write_allowed,
+    validate_schema_layers,
     validate_statement_types,
     validate_writes,
 )
@@ -232,6 +233,67 @@ def test_writes_case_insensitive_glob(tmp_path: Path) -> None:
     )
 
     assert violations == []
+
+
+def test_schema_layers_rejects_reports_and_core_targets(tmp_path: Path) -> None:
+    """schema/ bootstrap DDL may only target raw/app — never reports/core.
+
+    A package may legitimately declare reports.<prefix>_* as a write capability
+    (satisfied later by its models/ directory), so validate_writes accepts a
+    CREATE VIEW into reports. But schema/ files execute as bootstrap DDL: a
+    raw_/app_-named schema file that CREATEs into the framework-managed reports
+    (or core/prep) layer must be refused. This is the sibling check to
+    validate_statement_types.
+    """
+    sql_dir = _make_sql_dir(
+        tmp_path,
+        {
+            "app_assets_state.sql": (
+                "CREATE TABLE app.assets_state (id TEXT);\n"
+                "CREATE VIEW reports.assets_summary AS SELECT 1;\n"
+                "CREATE TABLE core.assets_leak (id TEXT);"
+            ),
+        },
+    )
+
+    violations = validate_schema_layers(
+        package_name="assets",
+        sql_files=list(sql_dir.glob("*.sql")),
+    )
+
+    offenders = {v.target for v in violations}
+    assert offenders == {"reports.assets_summary", "core.assets_leak"}
+    assert all(isinstance(v, CapabilityViolation) for v in violations)
+
+
+def test_schema_layers_passes_raw_and_app(tmp_path: Path) -> None:
+    """CREATE targets in raw/app produce no layer violation."""
+    sql_dir = _make_sql_dir(
+        tmp_path,
+        {
+            "ok.sql": (
+                "CREATE TABLE raw.assets_imports (id TEXT);\n"
+                "CREATE TABLE app.assets_state (id TEXT);"
+            ),
+        },
+    )
+    violations = validate_schema_layers(
+        package_name="assets",
+        sql_files=list(sql_dir.glob("*.sql")),
+    )
+    assert violations == []
+
+
+def test_schema_layers_unparseable_returns_violation(tmp_path: Path) -> None:
+    """Unparseable SQL surfaces a violation instead of crashing bootstrap."""
+    sql_dir = _make_sql_dir(tmp_path, {"bad.sql": "CREATE TABLE oops syntax ;;;"})
+    violations = validate_schema_layers(
+        package_name="assets",
+        sql_files=list(sql_dir.glob("*.sql")),
+    )
+    assert len(violations) == 1
+    assert violations[0].target == "(unparseable)"
+    assert "could not parse" in violations[0].message
 
 
 def test_is_write_allowed_matches_glob(tmp_path: Path) -> None:
