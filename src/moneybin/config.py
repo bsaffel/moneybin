@@ -268,6 +268,33 @@ class MCPConfig(BaseModel):
     )
 
 
+class AIConfig(BaseModel):
+    """AI backend and consent configuration.
+
+    Minimal surface for the consent ledger. ``default_backend`` is the
+    assumed consumer recorded on consent grants (the MCP/CLI surfaces
+    cannot reliably introspect which AI host consumes their output —
+    see privacy-and-ai-trust.md). ``consent_mode`` is recorded and
+    surfaced today; its enforcement (re-prompt on every call) lands with
+    the deferred consent-enforcement gate. The per-provider API-key tree
+    (Anthropic/OpenAI/Ollama configs) is deferred until an AI backend
+    client exists.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    default_backend: str | None = Field(
+        default=None,
+        description="Default AI backend (e.g. anthropic, openai, ollama). "
+        "None = no assumed backend; consent grants must name --backend explicitly.",
+    )
+    consent_mode: Literal["standard", "strict"] = Field(
+        default="standard",
+        description="standard: persistent consent grants persist. strict: "
+        "(future) all AI calls re-prompt; recorded now, enforced with the consent gate.",
+    )
+
+
 class SyncConfig(BaseModel):
     """Configuration for MoneyBin Sync service (optional paid tier).
 
@@ -578,6 +605,7 @@ class MoneyBinSettings(BaseSettings):
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     metrics: MetricsConfig = Field(default_factory=MetricsConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
+    ai: AIConfig = Field(default_factory=AIConfig)
     sync: SyncConfig = Field(default_factory=SyncConfig)
     matching: MatchingSettings = Field(default_factory=MatchingSettings)
     doctor: DoctorSettings = Field(default_factory=DoctorSettings)
