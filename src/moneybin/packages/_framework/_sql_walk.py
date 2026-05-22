@@ -107,6 +107,38 @@ def extract_create_targets(sql_file: Path) -> list[tuple[str, str]]:
     return targets
 
 
+def find_quoted_create_identifiers(sql_file: Path) -> list[str]:
+    """Return quoted schema/table identifiers used in CREATE targets.
+
+    DuckDB treats quoted identifiers as case-SENSITIVE, but the capability,
+    prefix, and layer validators canonicalize targets to lowercase (matching
+    DuckDB's UNQUOTED case-insensitivity). A quoted, mixed-case target like
+    ``CREATE TABLE "App".pkg_state`` would therefore pass an ``app.*`` check yet
+    execute against a distinct ``App`` schema — bypassing the validate-then-
+    execute guarantee. Package SQL must use unquoted lowercase identifiers; this
+    surfaces any quoted schema/table name in a CREATE target so the validator
+    can refuse it. (Unquoted mixed case is safe: DuckDB lowercases it at
+    execution, matching the canonicalization.)
+
+    Raises:
+        ValueError: if sqlglot cannot parse the file.
+    """
+    statements = _parse(sql_file)
+    offenders: list[str] = []
+    for statement in statements:
+        if statement is None or not isinstance(statement, exp.Create):
+            continue
+        if statement.kind not in ("TABLE", "VIEW"):
+            continue
+        table = _create_target(statement)
+        if table is None:
+            continue
+        for ident in (table.args.get("db"), table.this):
+            if isinstance(ident, exp.Identifier) and ident.quoted:
+                offenders.append(ident.name)
+    return offenders
+
+
 def find_disallowed_statements(sql_file: Path) -> list[str]:
     """Return a descriptor for every statement that isn't CREATE TABLE/VIEW.
 

@@ -7,6 +7,7 @@ internal helpers like _sql_walk stay private.
 
 from moneybin.packages._framework.capabilities import (
     is_write_allowed,
+    validate_identifier_safety,
     validate_schema_layers,
     validate_statement_types,
     validate_writes,
@@ -43,6 +44,7 @@ __all__ = [
     "get_registry",
     "is_write_allowed",
     "register_package",
+    "validate_identifier_safety",
     "validate_package",
     "validate_quality_scale",
     "validate_schema_layers",

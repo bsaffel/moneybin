@@ -6,6 +6,7 @@ from textwrap import dedent
 from moneybin.packages._framework.capabilities import (
     CapabilityViolation,
     is_write_allowed,
+    validate_identifier_safety,
     validate_schema_layers,
     validate_statement_types,
     validate_writes,
@@ -264,6 +265,47 @@ def test_schema_layers_rejects_reports_and_core_targets(tmp_path: Path) -> None:
     offenders = {v.target for v in violations}
     assert offenders == {"reports.assets_summary", "core.assets_leak"}
     assert all(isinstance(v, CapabilityViolation) for v in violations)
+
+
+def test_identifier_safety_flags_quoted_schema_and_table(tmp_path: Path) -> None:
+    """Quoted (case-sensitive) identifiers in CREATE targets are rejected.
+
+    A quoted '"App"' would pass an 'app.*' check (validators lowercase) yet
+    execute against a distinct 'App' schema — the validate-then-execute bypass.
+    Both a quoted schema and a quoted table name are flagged; unquoted
+    mixed-case is fine (DuckDB lowercases it at execution).
+    """
+    sql_dir = _make_sql_dir(
+        tmp_path,
+        {
+            "quoted_schema.sql": 'CREATE TABLE "App".assets_state (id TEXT);',
+            "quoted_table.sql": 'CREATE TABLE app."Assets_State" (id TEXT);',
+            "unquoted_mixed.sql": "CREATE TABLE App.Assets_State (id TEXT);",
+        },
+    )
+
+    violations = validate_identifier_safety(
+        package_name="assets",
+        sql_files=sorted(sql_dir.glob("*.sql")),
+    )
+
+    offenders = {v.target for v in violations}
+    assert offenders == {"App", "Assets_State"}
+    # The unquoted mixed-case file produces no identifier-safety violation.
+    assert all("unquoted_mixed.sql" not in v.sql_file for v in violations)
+
+
+def test_identifier_safety_passes_unquoted_lowercase(tmp_path: Path) -> None:
+    """Unquoted lowercase CREATE targets produce no identifier-safety violation."""
+    sql_dir = _make_sql_dir(
+        tmp_path,
+        {"ok.sql": "CREATE TABLE app.assets_state (id TEXT);"},
+    )
+    violations = validate_identifier_safety(
+        package_name="assets",
+        sql_files=list(sql_dir.glob("*.sql")),
+    )
+    assert violations == []
 
 
 def test_schema_layers_passes_raw_and_app(tmp_path: Path) -> None:

@@ -16,6 +16,7 @@ from pathlib import Path
 from moneybin.packages._framework._sql_walk import (
     extract_create_targets,
     find_disallowed_statements,
+    find_quoted_create_identifiers,
 )
 from moneybin.packages._framework.errors import CapabilityViolation
 from moneybin.packages._framework.manifest import CapabilityDeclarations
@@ -86,6 +87,53 @@ def validate_writes(
                         target=target,
                     )
                 )
+    return violations
+
+
+def validate_identifier_safety(
+    *,
+    package_name: str,
+    sql_files: Iterable[Path],
+) -> list[CapabilityViolation]:
+    """Flag quoted (case-sensitive) identifiers in CREATE targets.
+
+    The write/prefix/layer validators canonicalize CREATE targets to lowercase
+    to match DuckDB's UNQUOTED case-insensitivity. A quoted identifier is
+    case-SENSITIVE in DuckDB, so a quoted ``"App"`` would pass an ``app.*``
+    capability check yet execute against a distinct ``App`` schema — breaking
+    the validate-then-execute guarantee the whole capability gate rests on.
+    Reject quoted identifiers so package SQL stays lowercase-canonical. Returns
+    violations rather than raising.
+    """
+    violations: list[CapabilityViolation] = []
+    for sql_file in sql_files:
+        try:
+            quoted = find_quoted_create_identifiers(sql_file)
+        except ValueError as exc:
+            violations.append(
+                CapabilityViolation(
+                    package_name=package_name,
+                    message=f"could not parse {sql_file.name}: {exc}",
+                    sql_file=str(sql_file),
+                    target="(unparseable)",
+                )
+            )
+            continue
+        for ident in quoted:
+            violations.append(
+                CapabilityViolation(
+                    package_name=package_name,
+                    message=(
+                        f"schema file {sql_file.name} uses quoted identifier "
+                        f"'{ident}' in a CREATE target; package SQL must use "
+                        f"unquoted lowercase identifiers — quoted identifiers are "
+                        f"case-sensitive in DuckDB and bypass the lowercase "
+                        f"capability/prefix checks"
+                    ),
+                    sql_file=str(sql_file),
+                    target=ident,
+                )
+            )
     return violations
 
 

@@ -183,6 +183,25 @@ def test_writes_globs_accept_prefix_scoped(tmp_path: Path) -> None:
     assert manifest.capabilities.writes == ["app.foo_state", "reports.foo_summary"]
 
 
+def test_requires_moneybin_must_be_valid_specifier(tmp_path: Path) -> None:
+    """requires.moneybin must be a well-formed PEP-440 specifier, not any string."""
+    body = """
+        name: foo
+        display_name: Foo
+        version: 1.0.0
+        quality_scale: bronze
+        owns_prefix: foo
+        publisher: {name: x, verified: false}
+        description: ok
+        capabilities: {writes: [], reads: [], network: [], secrets: []}
+        requires: {moneybin: "garbage"}
+        entry_points: {tools: x:y, cli: x:y, models: x, schema: x}
+    """
+    manifest_path = _write_manifest(tmp_path, body)
+    with pytest.raises(PydanticValidationError, match="valid PEP-440"):
+        PackageManifest.from_yaml(manifest_path)
+
+
 @pytest.mark.parametrize(
     ("entry_points", "match"),
     [

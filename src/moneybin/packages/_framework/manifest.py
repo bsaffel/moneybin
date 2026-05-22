@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
+from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 QualityTier = Literal["bronze", "silver", "gold", "platinum"]
@@ -100,6 +101,25 @@ class Requires(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     moneybin: str  # PEP-440 version spec, e.g. ">=1.0.0,<2.0.0"
+
+    @field_validator("moneybin")
+    @classmethod
+    def _moneybin_is_valid_specifier(cls, value: str) -> str:
+        """Require a well-formed PEP-440 version specifier, not an arbitrary string.
+
+        This is the parse-time syntactic check. Enforcing that the *running*
+        moneybin version satisfies the specifier is a separate runtime concern,
+        deferred to the Plan 4 wiring (no package executes in Plan 2) — tracked
+        in followups.
+        """
+        try:
+            SpecifierSet(value)
+        except InvalidSpecifier as exc:
+            raise ValueError(
+                f"requires.moneybin '{value}' is not a valid PEP-440 version "
+                f"specifier (e.g. '>=1.0.0,<2.0.0')"
+            ) from exc
+        return value
 
 
 class EntryPoints(BaseModel):

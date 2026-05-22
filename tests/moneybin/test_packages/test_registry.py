@@ -75,6 +75,24 @@ def test_validate_package_with_capability_leak_fails(tmp_path: Path) -> None:
     assert any(isinstance(e, CapabilityViolation) for e in errors)
 
 
+def test_validate_package_rejects_quoted_identifier(tmp_path: Path) -> None:
+    """A quoted (case-sensitive) CREATE target is refused by validate_package.
+
+    'CREATE TABLE "App".test_synthetic_state' would pass the lowercase
+    capability check yet execute against a distinct 'App' schema — confirm the
+    identifier-safety validator is wired into validate_package to block it.
+    """
+    info = _make_minimal_pkg(tmp_path)
+    (info.root / "schema" / "quoted.sql").write_text(
+        'CREATE TABLE "App".test_synthetic_state (id TEXT);'
+    )
+    errors = validate_package(info)
+    assert any(
+        isinstance(e, CapabilityViolation) and "quoted identifier" in e.message
+        for e in errors
+    )
+
+
 def test_validate_package_with_prefix_leak_fails(tmp_path: Path) -> None:
     info = _make_minimal_pkg(tmp_path)
     (info.root / "schema" / "leak.sql").write_text(
