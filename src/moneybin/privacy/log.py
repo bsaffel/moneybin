@@ -107,6 +107,30 @@ def build_tool_call_event(
     }
 
 
+def build_consent_event(
+    *,
+    actor: str,
+    action: str,
+    feature_category: str,
+    backend: str,
+    consent_mode: str,
+) -> dict[str, Any]:
+    """Construct a consent grant/revoke event for the privacy log.
+
+    ``action`` is ``"consent.grant"`` or ``"consent.revoke"``. Carries
+    only metadata (category, backend, mode) — never the grant prompt text
+    or any financial data.
+    """
+    return {
+        "ts": datetime.now(UTC).isoformat(),
+        "actor": actor,
+        "action": action,
+        "feature_category": feature_category,
+        "backend": backend,
+        "consent_mode": consent_mode,
+    }
+
+
 def write_privacy_event(event: dict[str, Any]) -> None:
     """Append a single event to ``privacy.log.jsonl`` (creating + rotating as needed).
 

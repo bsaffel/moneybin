@@ -27,3 +27,21 @@ def test_grant_info_is_frozen():
 
     with pytest.raises(dataclasses.FrozenInstanceError):
         info.backend = "openai"  # type: ignore[misc]
+
+
+def test_build_consent_event_shape():
+    from moneybin.privacy.log import build_consent_event
+
+    event = build_consent_event(
+        actor="cli.privacy_grant",
+        action="consent.grant",
+        feature_category="mcp-data-sharing",
+        backend="anthropic",
+        consent_mode="persistent",
+    )
+    assert event["action"] == "consent.grant"
+    assert event["feature_category"] == "mcp-data-sharing"
+    assert event["backend"] == "anthropic"
+    assert event["consent_mode"] == "persistent"
+    assert "ts" in event
+    assert event["actor"] == "cli.privacy_grant"

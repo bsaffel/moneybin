@@ -1,0 +1,149 @@
+"""Consent ledger business logic.
+
+Thin wrapper over ``ConsentRepo`` that resolves the backend, validates
+the feature category, and emits a ``privacy.log`` event after each
+mutation (fail-soft, outside the DB transaction). The data-withholding
+enforcement gate is deferred — this service only records and reports
+consent.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from moneybin import error_codes
+from moneybin.config import get_settings
+from moneybin.database import Database
+from moneybin.errors import UserError
+from moneybin.privacy.consent import FEATURE_CATEGORIES, ConsentMode, GrantInfo
+from moneybin.privacy.log import build_consent_event, write_privacy_event
+from moneybin.repositories.consent_repo import ConsentRepo
+
+
+@dataclass(frozen=True, slots=True)
+class ConsentStatus:
+    """Snapshot of the consent ledger for ``privacy status``."""
+
+    default_backend: str | None
+    consent_mode: str
+    active_grants: list[GrantInfo]
+
+
+class ConsentService:
+    """Grant, revoke, and report AI consent."""
+
+    def __init__(self, db: Database) -> None:
+        """Bind to an open Database connection."""
+        self._db = db
+        self._repo = ConsentRepo(db)
+
+    def _resolve_backend(self, backend: str | None) -> str:
+        if backend:
+            return backend
+        default = get_settings().ai.default_backend
+        if default:
+            return default
+        raise UserError(
+            "No AI backend specified and no default configured.",
+            code=error_codes.MUTATION_INVALID_INPUT,
+            hint="Pass --backend, or set MONEYBIN_AI__DEFAULT_BACKEND.",
+        )
+
+    @staticmethod
+    def _validate_category(feature_category: str) -> None:
+        if feature_category not in FEATURE_CATEGORIES:
+            raise UserError(
+                f"Unknown feature category: {feature_category!r}.",
+                code=error_codes.MUTATION_INVALID_INPUT,
+                hint=f"Valid categories: {', '.join(sorted(FEATURE_CATEGORIES))}.",
+            )
+
+    @staticmethod
+    def _build_prompt(feature_category: str, backend: str) -> str:
+        """The consent text recorded as grant_prompt (source of truth)."""
+        return (
+            f"Allow MoneyBin to share {feature_category} data with backend "
+            f"'{backend}'. Account numbers and other CRITICAL fields remain "
+            f"masked. Revoke anytime with `moneybin privacy revoke "
+            f"{feature_category} --backend {backend}`."
+        )
+
+    def grant_consent(
+        self,
+        *,
+        feature_category: str,
+        backend: str | None,
+        consent_mode: ConsentMode,
+        actor: str,
+        grant_prompt: str | None = None,
+    ) -> GrantInfo:
+        """Grant consent for (feature_category, backend); idempotent."""
+        self._validate_category(feature_category)
+        resolved_backend = self._resolve_backend(backend)
+        prompt = grant_prompt or self._build_prompt(feature_category, resolved_backend)
+        grant = self._repo.grant(
+            feature_category=feature_category,
+            backend=resolved_backend,
+            consent_mode=consent_mode,
+            grant_prompt=prompt,
+            actor=actor,
+        )
+        write_privacy_event(
+            build_consent_event(
+                actor=actor,
+                action="consent.grant",
+                feature_category=feature_category,
+                backend=resolved_backend,
+                consent_mode=consent_mode.value,
+            )
+        )
+        return grant
+
+    def revoke_consent(
+        self, *, feature_category: str, backend: str | None, actor: str
+    ) -> int:
+        """Revoke the active grant for (feature_category, backend). Returns count."""
+        self._validate_category(feature_category)
+        resolved_backend = self._resolve_backend(backend)
+        count = self._repo.revoke(
+            feature_category=feature_category, backend=resolved_backend, actor=actor
+        )
+        if count:
+            write_privacy_event(
+                build_consent_event(
+                    actor=actor,
+                    action="consent.revoke",
+                    feature_category=feature_category,
+                    backend=resolved_backend,
+                    consent_mode="",
+                )
+            )
+        return count
+
+    def revoke_all(self, *, actor: str) -> int:
+        """Revoke every active grant. Returns count revoked."""
+        count = self._repo.revoke_all(actor=actor)
+        if count:
+            write_privacy_event(
+                build_consent_event(
+                    actor=actor,
+                    action="consent.revoke",
+                    feature_category="*",
+                    backend="*",
+                    consent_mode="",
+                )
+            )
+        return count
+
+    def status(self) -> ConsentStatus:
+        """Return the current ledger snapshot."""
+        ai = get_settings().ai
+        return ConsentStatus(
+            default_backend=ai.default_backend,
+            consent_mode=ai.consent_mode,
+            active_grants=self._repo.list_active(),
+        )
+
+    def list_grants(self, *, include_revoked: bool = False) -> list[GrantInfo]:
+        """Return active grants, or all grants (incl. revoked) for audit history."""
+        return self._repo.list_all() if include_revoked else self._repo.list_active()
