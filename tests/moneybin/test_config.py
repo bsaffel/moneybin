@@ -65,7 +65,7 @@ def test_categorization_settings_env_override(
     assert s.categorization.auto_rule_override_threshold == 5
 
 
-def test_ai_config_defaults():
+def test_ai_config_defaults() -> None:
     from moneybin.config import MoneyBinSettings
 
     settings = MoneyBinSettings()
@@ -73,7 +73,7 @@ def test_ai_config_defaults():
     assert settings.ai.consent_mode == "standard"
 
 
-def test_ai_config_env_override(monkeypatch):
+def test_ai_config_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
     from moneybin.config import MoneyBinSettings
 
     monkeypatch.setenv("MONEYBIN_AI__DEFAULT_BACKEND", "anthropic")

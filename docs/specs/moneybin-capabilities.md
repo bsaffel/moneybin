@@ -92,6 +92,11 @@ not-yet-built.
 | 29| Disconnect a Google Sheet (soft or purge)                        | `gsheet_disconnect` *(`purge=True` permanent)* | `gsheet disconnect` *(`--purge`, `--yes`)* | —          | live                  |
 | 30| Link a bank via mediated provider (Plaid)                        | `sync_link` *(`institution` for re-auth)* | `sync link` *(formerly `sync connect`)*  | —          | live                  |
 | 31| Poll an in-flight bank-link session                              | `sync_link_status` *(`session_id`)* | `sync link-status` *(formerly `sync connect-status`)* | —          | live                  |
+| 32| Grant consent for an AI feature category                         | `privacy_grant_consent` *(`category`, `backend?`, `mode`)* | `privacy grant` *(`--backend`, `--mode`, `--yes`)* | —     | live                  |
+| 33| Revoke a previously granted consent                              | `privacy_revoke_consent` *(`category`, `backend?`)* | `privacy revoke` *(`--backend`, `--yes`)* | —          | live                  |
+| 34| Revoke all active consent grants                                 | — *(bulk revoke; use `privacy_revoke_consent` per category)* | `privacy revoke-all` *(`--yes`)* | —             | live (CLI-only)       |
+| 35| View current consent state and configured backend                | `privacy_status`                    | `privacy status` *(`--output json`)*               | —          | live                  |
+| 36| Query recent privacy-log events (consent + tool calls)           | `privacy_log` *(`last?`, `actor?`)* | `privacy log` *(`--last`, `--actor`, `--output json`)* | —       | live                  |
 
 *(Bootstrap rows only; full table populates incrementally as
 follow-up work closes the parity backlog. A prior row covering
@@ -104,7 +109,10 @@ from MCP (PR #185) — operator territory per mcp-server.md category 2.
 `sync_schedule_set/show/remove` stubs removed from MCP (PR #185) — were
 not-implemented placeholders with no backing spec. Rows 23–29 added
 2026-05-21 with the connect-gsheet PR; rows 30–31 capture the
-`sync_connect` → `sync_link` rename co-shipped in the same PR.)*
+`sync_connect` → `sync_link` rename co-shipped in the same PR.
+Rows 32–36 added 2026-05-22 with the consent ledger PR; row 34 is
+CLI-only because `revoke-all` is a bulk convenience with no MCP
+equivalent — use `privacy_revoke_consent` per category from MCP.)*
 
 ## Exemption categories
 

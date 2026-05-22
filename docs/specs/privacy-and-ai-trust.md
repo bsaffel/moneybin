@@ -248,6 +248,15 @@ def search_transactions(query: str, limit: int) -> list[dict]: ...
 
 ### Response filtering
 
+> **Ledger shipped; enforcement gate deferred.** The `app.ai_consent_grants`
+> table, `ConsentService` (grant/revoke/status/log), and the
+> `moneybin privacy grant/revoke/revoke-all/status/log` CLI commands and
+> `privacy_grant_consent`, `privacy_revoke_consent`, `privacy_status`,
+> `privacy_log` MCP tools shipped in PR 3. The degrade-to-aggregate
+> enforcement gate described below lands when a consumer actively needs it
+> (hosted multi-user deployment or a direct cloud-AI feature). Always-on
+> CRITICAL masking shipped in PR 2 and is already enforced.
+
 When a medium-sensitivity tool is called without tier-2 consent:
 - The tool returns a **degraded response**: aggregate summary instead of row-level data, plus a notice: *"Detailed transaction data requires data-sharing consent. Run `moneybin privacy grant mcp-data-sharing` to enable."*
 - The tool does NOT fail — it returns what it can within the current consent level.
@@ -275,21 +284,22 @@ MCP tools prefer returning the minimum data needed to answer the query:
 | `granted_at` | `TIMESTAMP` | When consent was given |
 | `revoked_at` | `TIMESTAMP` | When revoked; NULL if active |
 | `grant_prompt` | `TEXT` | The exact prompt text the user saw and agreed to |
-| `consent_mode` | `VARCHAR` | `persistent` (tier 2) or `one-time` (tier 3) |
+| `consent_mode` | `VARCHAR` | `persistent` or `one-time` |
 
 ### CLI commands
 
-- `moneybin privacy status` — shows active consent grants, audit log summary, configured backend
-- `moneybin privacy grant <category>` — proactively grant consent (e.g., scripting/automation)
-- `moneybin privacy revoke <category>` — revoke a specific consent; takes effect immediately
-- `moneybin privacy revoke-all` — revoke all consents; nuclear option
-- `moneybin privacy audit [filters]` — query the audit log (see Audit Log section)
+- `moneybin privacy status` — shows active consent grants, configured backend, and consent_mode
+- `moneybin privacy grant <category>` — grant consent (`--backend`, `--mode persistent|one-time`, `--yes`)
+- `moneybin privacy revoke <category>` — revoke a specific consent; takes effect immediately (`--backend`, `--yes`)
+- `moneybin privacy revoke-all` — revoke all consents; nuclear option (`--yes`)
+- `moneybin privacy log [--last N] [--actor NAME]` — query recent privacy-log events (see Audit Log section)
 
 ### MCP tools
 
-- `privacy_status` — returns active consents and backend info (per `moneybin-mcp.md` §1059)
-- `privacy_revoke` — revoke a consent by category (per `moneybin-mcp.md` §1079)
-- `privacy_audit` — query the audit log (per `moneybin-mcp.md` §1089)
+- `privacy_status` — returns active consents and backend info (per `moneybin-mcp.md` §11)
+- `privacy_grant_consent` — grant consent for a feature category; writes `app.ai_consent_grants` (per `moneybin-mcp.md` §11)
+- `privacy_revoke_consent` — revoke a consent by category; sets `revoked_at`, retains row (per `moneybin-mcp.md` §11)
+- `privacy_log` — query recent privacy-log events: consent grants/revokes and tool calls (per `moneybin-mcp.md` §11)
 
 ### Config override
 
