@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
-from tests.e2e.conftest import FAST_ARGON2_ENV, make_workflow_env
+from tests.e2e.conftest import FAST_ARGON2_ENV, TEST_ENCRYPTION_KEY, make_workflow_env
 
 pytestmark = [pytest.mark.e2e, pytest.mark.asyncio]
 
@@ -312,3 +314,139 @@ class TestNamespaceResources:
                 assert "moneybin://accounts" not in resource_uris
                 assert "moneybin://privacy" not in resource_uris
                 assert "moneybin://tools" not in resource_uris
+
+
+def _seed_pending_match(env: dict[str, str], match_id: str) -> None:
+    """Insert one pending match decision into the test database.
+
+    Opens the DB directly (same path + encryption key the MCP server will use)
+    and inserts via create_match_decision — bypassing the MCP server entirely so
+    the seeded row is visible before the server boots.
+    """
+    from moneybin.database import Database, invalidate_encryption_key_cache
+    from moneybin.matching.persistence import create_match_decision
+
+    db_path = (
+        Path(env["MONEYBIN_HOME"])
+        / "profiles"
+        / env["MONEYBIN_PROFILE"]
+        / "moneybin.duckdb"
+    )
+    mock_store = MagicMock()
+    mock_store.get_key.return_value = TEST_ENCRYPTION_KEY
+    # Clear any cached key from a previous test's Database so this key is used.
+    invalidate_encryption_key_cache()
+    with Database(db_path, secret_store=mock_store, no_auto_upgrade=True) as db:
+        create_match_decision(
+            db,
+            match_id=match_id,
+            source_transaction_id_a="txn_aaa",
+            source_type_a="csv",
+            source_origin_a="test",
+            source_transaction_id_b="txn_bbb",
+            source_type_b="csv",
+            source_origin_b="test",
+            account_id="acct_test",
+            confidence_score=0.95,
+            match_signals={"exact_amount": True},
+            match_tier="2b",
+            match_status="pending",
+            decided_by="engine",
+        )
+    invalidate_encryption_key_cache()
+
+
+class TestMatchesTools:
+    """transactions_matches_pending and transactions_matches_set smoke tests."""
+
+    @pytest.fixture(scope="class")
+    def matches_env(self, tmp_path_factory: pytest.TempPathFactory) -> dict[str, str]:
+        """Isolated profile for matches tool tests."""
+        home = tmp_path_factory.mktemp("e2e_matches")
+        return make_workflow_env(home, "matches-test")
+
+    async def test_matches_tools_registered(self, matches_env: dict[str, str]) -> None:
+        """Both matches tools are registered on the server."""
+        from mcp import ClientSession
+        from mcp.client.stdio import StdioServerParameters, stdio_client
+
+        server_params = StdioServerParameters(
+            command="uv",  # noqa: S607
+            args=["run", "moneybin", "mcp", "serve"],
+            env=_server_env(matches_env),
+        )
+
+        async with stdio_client(server_params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                tools_result = await session.list_tools()
+                tool_names = {t.name for t in tools_result.tools}
+                assert "transactions_matches_pending" in tool_names
+                assert "transactions_matches_set" in tool_names
+
+    async def test_transactions_matches_pending_returns_seeded_match(
+        self, matches_env: dict[str, str]
+    ) -> None:
+        """transactions_matches_pending returns a seeded pending match."""
+        from mcp import ClientSession
+        from mcp.client.stdio import StdioServerParameters, stdio_client
+        from mcp.types import TextContent
+
+        seeded_match_id = "e2e_pending_match_001"
+        _seed_pending_match(matches_env, seeded_match_id)
+
+        server_params = StdioServerParameters(
+            command="uv",  # noqa: S607
+            args=["run", "moneybin", "mcp", "serve"],
+            env=_server_env(matches_env),
+        )
+
+        async with stdio_client(server_params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.call_tool("transactions_matches_pending", {})
+
+                assert not result.isError, f"Tool returned error: {result.content}"
+                content = result.content[0]
+                assert isinstance(content, TextContent)
+                envelope = json.loads(content.text)
+
+                assert "data" in envelope
+                matches = envelope["data"]["matches"]
+                assert isinstance(matches, list)
+                match_ids = [m["match_id"] for m in matches]
+                assert seeded_match_id in match_ids
+
+    async def test_transactions_matches_set_accepts_pending_match(
+        self, matches_env: dict[str, str]
+    ) -> None:
+        """transactions_matches_set accepts a pending match and returns accepted status."""
+        from mcp import ClientSession
+        from mcp.client.stdio import StdioServerParameters, stdio_client
+        from mcp.types import TextContent
+
+        seeded_match_id = "e2e_set_match_001"
+        _seed_pending_match(matches_env, seeded_match_id)
+
+        server_params = StdioServerParameters(
+            command="uv",  # noqa: S607
+            args=["run", "moneybin", "mcp", "serve"],
+            env=_server_env(matches_env),
+        )
+
+        async with stdio_client(server_params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.call_tool(
+                    "transactions_matches_set",
+                    {"match_id": seeded_match_id, "status": "accepted"},
+                )
+
+                assert not result.isError, f"Tool returned error: {result.content}"
+                content = result.content[0]
+                assert isinstance(content, TextContent)
+                envelope = json.loads(content.text)
+
+                assert "data" in envelope
+                assert envelope["data"]["match_id"] == seeded_match_id
+                assert envelope["data"]["match_status"] == "accepted"
