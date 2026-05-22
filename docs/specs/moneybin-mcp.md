@@ -1099,10 +1099,10 @@ Data status dashboard — what data exists, how fresh it is, what's pending acti
 Pipeline integrity check — confirms the data pipeline is self-consistent before analysis.
 
 - **Sensitivity:** `low` — counts and status labels only.
-- **Unique parameters:** None.
-- **Behavior:** Runs all SQLMesh named audits (FK integrity, sign convention, transfer balance) plus two hardcoded checks (staging coverage, categorization coverage). Returns pass/fail/warn per invariant and total transaction count. Always runs with `verbose=False` — agents can query `core.fct_transactions` or `core.bridge_transfers` directly for drill-down. Exit is informational only (no exception on fail).
-- **Service:** `DoctorService.run_all(verbose=False) -> DoctorReport`
-- **CLI:** `moneybin system doctor [--verbose] [--output json]`
+- **Unique parameters:** `full: bool = False` — when true, the protected-`app.*` audit-coverage checks scan every row instead of the default sampled, recent-rows-only window.
+- **Behavior:** Runs all SQLMesh named audits (FK integrity, sign convention, transfer balance) plus hardcoded checks (staging coverage, categorization coverage) and per-table `app.*` audit-coverage + uniqueness invariants. Returns pass/fail/warn per invariant and total transaction count. Always runs with `verbose=False` — agents can query `core.fct_transactions` or `core.bridge_transfers` directly for drill-down. Exit is informational only (no exception on fail).
+- **Service:** `DoctorService.run_all(verbose=False, full=False) -> DoctorReport`
+- **CLI:** `moneybin system doctor [--verbose] [--full] [--output json]`
 
 ### `extension_validate`
 

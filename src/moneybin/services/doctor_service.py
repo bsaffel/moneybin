@@ -200,7 +200,8 @@ class DoctorService:
         try:
             rows = self._db.execute(
                 f"""
-                SELECT category, subcategory, string_agg(category_id, ',') AS ids
+                SELECT category, subcategory,
+                       string_agg(category_id, ',' ORDER BY category_id) AS ids
                 FROM {USER_CATEGORIES.full_name}
                 GROUP BY category, subcategory
                 HAVING COUNT(*) > 1
