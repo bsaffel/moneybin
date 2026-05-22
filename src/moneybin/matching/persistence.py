@@ -179,6 +179,35 @@ def update_match_status(
     )
 
 
+def accept_pending_matches(
+    db: Database, *, match_type: str | None = None, decided_by: str
+) -> int:
+    """Accept every pending match in one atomic UPDATE. Returns the count accepted.
+
+    A single statement (not a per-row loop) so the operation is all-or-nothing
+    and the returned count reflects exactly what committed. ``WHERE
+    match_status = 'pending'`` is itself the guard — only pending decisions are
+    touched, so no per-row transition check is needed.
+    """
+    where = "WHERE match_status = 'pending' AND reversed_at IS NULL"
+    params: list[Any] = [decided_by, datetime.now(tz=UTC).isoformat()]
+    if match_type:
+        if match_type not in VALID_MATCH_TYPES:
+            raise ValueError(f"Invalid match_type: {match_type!r}")
+        where += " AND match_type = ?"
+        params.append(match_type)
+    rows = db.execute(
+        f"""
+        UPDATE app.match_decisions
+        SET match_status = 'accepted', decided_by = ?, decided_at = ?
+        {where}
+        RETURNING match_id
+        """,  # noqa: S608 — match_type validated above; values parameterized
+        params,
+    ).fetchall()
+    return len(rows)
+
+
 def undo_match(db: Database, match_id: str, *, reversed_by: str) -> None:
     """Reverse a match decision. Sets reversed_at, reversed_by, and match_status."""
     row = db.execute(

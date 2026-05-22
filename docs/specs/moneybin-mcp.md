@@ -639,7 +639,7 @@ Accept or reject one pending match proposal by `match_id`.
 
 - **Sensitivity:** `low` — the response carries only `{match_id, match_status}`; no amounts, descriptions, or PII. (The operation still mutates `app.match_decisions` — see Mutation surface.)
 - **Unique parameters:** `match_id: str` (required), `status: Literal["accepted", "rejected"]` (required).
-- **Behavior:** Shape-1b partial update — sets the decision status for one proposal. Only `pending` decisions are settable; rejecting an already-accepted proposal errors with a recovery action pointing at `moneybin transactions matches undo` (the MCP `system_audit_undo` consumer is not yet shipped). Accepted decisions collapse the matched pair on the next `refresh_run`; rejected decisions suppress the proposal from future review.
+- **Behavior:** Shape-1b partial update — sets the decision status for one proposal. The read-validate-write runs in a single transaction (no TOCTOU window). Only `pending` decisions are settable; rejecting an already-accepted proposal errors with a recovery action pointing at `system_audit_undo` (the audit-log undo, shipping in M2D); until it lands, the CLI `moneybin transactions matches undo` is the manual route. Accepted decisions collapse the matched pair on the next `refresh_run`; rejected decisions suppress the proposal from future review.
 - **Mutation surface:** writes `app.match_decisions`. Revert via `moneybin transactions matches undo <match_id>` (CLI) until `system_audit_undo` ships.
 - **Annotations:** `read_only=False`, `destructive=False`, `idempotent=True`.
 - **Service:** `MatchingService.set_status(match_id, status)`

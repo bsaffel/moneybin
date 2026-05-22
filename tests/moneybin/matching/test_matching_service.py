@@ -91,8 +91,10 @@ def test_reject_accepted_raises_constraint_with_undo_recovery(db: Database) -> N
     assert err.code == error_codes.MUTATION_CONSTRAINT_VIOLATION
     assert err.recovery_actions
     action = err.recovery_actions[0]
-    assert action.tool == "transactions_matches_undo"
-    assert action.arguments == {"match_id": "m4"}
+    # Recovery points at the audit-log undo (the coming M2D MCP tool), not a
+    # phantom transactions_matches_undo; the CLI interim is named in rationale.
+    assert action.tool == "system_audit_undo"
+    assert "matches undo" in action.rationale
 
 
 def test_invalid_status_value_raises(db: Database) -> None:
@@ -118,3 +120,23 @@ def test_accept_all_pending_accepts_and_counts(db: Database) -> None:
     assert count == 2
     assert _status_of(db, "q1") == "accepted"
     assert MatchingService(db).get_pending() == []
+
+
+def test_count_pending_filters_by_match_type(db: Database) -> None:
+    _seed(db, "c1", "pending")  # _seed defaults match_type="dedup"
+    _seed(db, "c2", "pending")
+    _seed(db, "c3", "accepted")
+    svc = MatchingService(db)
+    assert svc.count_pending() == 2
+    assert svc.count_pending(match_type="dedup") == 2
+    assert svc.count_pending(match_type="transfer") == 0
+
+
+def test_get_pending_limit_caps_rows_while_count_sees_all(db: Database) -> None:
+    # Backs transactions_matches_pending's has_more: limit caps returned rows,
+    # count_pending reports the true total so the envelope can flag has_more.
+    for i in range(3):
+        _seed(db, f"lim{i}", "pending")
+    svc = MatchingService(db)
+    assert len(svc.get_pending(limit=2)) == 2
+    assert svc.count_pending() == 3

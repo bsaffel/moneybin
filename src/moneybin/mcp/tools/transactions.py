@@ -181,16 +181,19 @@ def transactions_matches_pending(
     """List pending transaction matches awaiting accept/reject.
 
     Returns pair decisions (match_id, type, confidence, the two source ids).
-    app.match_decisions carries no descriptions/amounts — call transactions_get
-    on a source_transaction_id to inspect the underlying transaction. Use
-    transactions_matches_set to accept or reject one.
+    app.match_decisions carries no descriptions/amounts; the confidence score
+    and match type are the decision signal. Use transactions_matches_set to
+    accept or reject one. ``summary.has_more`` indicates whether more pending
+    matches exist beyond ``limit``.
 
     Args:
         match_type: Filter to 'dedup' or 'transfer'. Default None returns both.
         limit: Maximum rows (default 50).
     """
     with get_database(read_only=True) as db:
-        rows = MatchingService(db).get_pending(match_type=match_type, limit=limit)
+        svc = MatchingService(db)
+        rows = svc.get_pending(match_type=match_type, limit=limit)
+        total = svc.count_pending(match_type=match_type)
     return build_envelope(
         data=MatchesPendingPayload(
             matches=[
@@ -208,9 +211,11 @@ def transactions_matches_pending(
                 for r in rows
             ]
         ),
+        total_count=total,
         actions=[
-            "Use transactions_matches_set to accept or reject one match",
-            "Use transactions_get on a source_transaction_id to see the transaction",
+            "Use transactions_matches_set to accept or reject one match by match_id",
+            "For full pair context (both transactions side by side), use the CLI "
+            "`moneybin transactions review --type matches` queue",
         ],
     )
 
@@ -302,8 +307,8 @@ def register_transactions_tools(mcp: FastMCP) -> None:
         "transactions_matches_pending",
         "List pending transaction matches (dedup/transfer pairs) awaiting "
         "accept/reject. Returns pair ids and confidence — no amounts/descriptions; "
-        "use transactions_get on a source id for those. Pair with "
-        "transactions_matches_set to decide.",
+        "the confidence score is the decision signal. `summary.has_more` flags more "
+        "beyond `limit`. Pair with transactions_matches_set to decide.",
     )
     register(
         mcp,

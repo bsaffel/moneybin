@@ -79,6 +79,14 @@ def _review_matches_noninteractive(
     from moneybin.cli.utils import handle_cli_errors
     from moneybin.services.matching_service import MatchingService
 
+    # --confirm-all bulk-accepts the whole queue; pairing it with a targeted
+    # --confirm/--reject is ambiguous (the targeted id would be silently
+    # dropped), so reject the combination as a usage error rather than run a
+    # partial action.
+    if confirm_all and (confirm_id or reject_id):
+        logger.error("❌ --confirm-all cannot be combined with --confirm or --reject")
+        raise typer.Exit(2)
+
     with handle_cli_errors():
         with get_database() as db:
             svc = MatchingService(db)
@@ -86,6 +94,8 @@ def _review_matches_noninteractive(
                 n = svc.accept_all_pending()
                 logger.info(f"✅ Accepted {n} pending match(es)")
                 return
+            # Independent ifs (not elif): `--confirm X --reject Y` targets two
+            # different matches in one invocation.
             if confirm_id:
                 svc.set_status(confirm_id, status="accepted")
                 logger.info(f"✅ Accepted match {confirm_id[:8]}...")

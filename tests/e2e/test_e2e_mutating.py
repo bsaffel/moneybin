@@ -556,6 +556,29 @@ class TestMatchesMutating:
         # The pending match must be untouched — no partial execution.
         assert match_status(env, match_id) == "pending"
 
+    def test_review_confirm_all_with_reject_is_usage_error(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """--confirm-all combined with --reject is ambiguous → exit 2, queue untouched."""
+        env = make_workflow_env_fast(
+            tmp_path, "review-combo-guard", _mutating_profile_template
+        )
+        match_id = "e2e_cli_combo_guard001"
+        seed_pending_match(env, match_id)
+
+        result = run_cli(
+            "transactions",
+            "review",
+            "--type",
+            "matches",
+            "--confirm-all",
+            "--reject",
+            match_id,
+            env=env,
+        )
+        assert result.exit_code == 2
+        assert match_status(env, match_id) == "pending"
+
     def test_matches_backfill(
         self, _mutating_profile_template: Path, tmp_path: Path
     ) -> None:
