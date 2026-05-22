@@ -87,6 +87,9 @@ def validate_package(info: PackageInfo) -> list[ValidationError]:
     Does not raise — callers (including the validator CLI / MCP tool added in
     Plan 5) consume the list directly. register_package() turns the first
     violation into a raise.
+
+    Note: MCP-tool and CLI-command prefix checks are not run here — they
+    require live introspection of the registered surfaces (Plan 5).
     """
     errors: list[ValidationError] = []
     sql_files = sorted((info.root / "schema").glob("*.sql"))

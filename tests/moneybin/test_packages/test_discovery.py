@@ -117,3 +117,23 @@ def test_invalid_manifest_skips_with_warning(
 
     assert result == []
     assert any("invalid manifest" in rec.message.lower() for rec in caplog.records)
+
+
+def test_entry_point_without_file_skips_with_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An entry point whose module has no __file__ is skipped with an error."""
+    fake_module = MagicMock(spec=[])  # spec=[] → no __file__ attribute
+    fake_module.__name__ = "no_file_pkg"
+
+    fake_ep = MagicMock()
+    fake_ep.name = "no_file_pkg"
+    fake_ep.load.return_value = fake_module
+
+    with patch("moneybin.packages._framework.discovery.entry_points") as mock_eps:
+        mock_eps.return_value = [fake_ep]
+        with caplog.at_level("ERROR"):
+            result = discover_packages()
+
+    assert result == []
+    assert any("__file__" in rec.message for rec in caplog.records)
