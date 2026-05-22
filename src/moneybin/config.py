@@ -182,8 +182,11 @@ class PackagesSettings(BaseModel):
     their Pydantic settings models. Empty by default — packages may be
     installed without any per-package overrides.
 
-    Env vars use the standard nested-delimiter convention:
-        MONEYBIN_PACKAGES__ASSETS__VALUATION_PROVIDER=zillow
+    Env-var override: until reference packages declare typed sub-fields
+    (Plan 4), per-package values must use the JSON form, e.g.
+    MONEYBIN_PACKAGES='{"assets": {"valuation_provider": "zillow"}}'.
+    The nested-delimiter form (MONEYBIN_PACKAGES__ASSETS__...) works only
+    once a package declares the field as a typed model attribute.
 
     Mirrors the ProvidersSettings pattern established by Plan 1. extra="allow"
     lets a runtime-installed package populate this without a Core schema

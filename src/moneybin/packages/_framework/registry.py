@@ -17,6 +17,11 @@ Known deferred (out of Plan 2 scope):
   ship.
 - SQLMesh model-path registration — Plan 4 adds the integration once
   reference packages have models/ directories.
+- Executing package schema DDL in production — schema.init_schemas() accepts
+  additional_files, but threading discovered packages' schema files into the
+  database bootstrap (and validating path-containment of those files) is wired
+  in Plan 4 alongside reference packages. No packages ship in Plan 2, so there
+  is nothing to execute yet.
 """
 
 from __future__ import annotations
@@ -24,11 +29,13 @@ from __future__ import annotations
 import importlib
 import logging
 from collections.abc import Callable
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from moneybin.packages._framework.capabilities import validate_writes
 from moneybin.packages._framework.discovery import PackageInfo
 from moneybin.packages._framework.errors import (
+    CapabilityViolation,
     QualityScaleViolation,
     ValidationError,
 )
@@ -67,6 +74,10 @@ class PackageRegistry:
             raise KeyError(f"Package '{name}' not registered")
         return self._packages[name]
 
+    def remove(self, name: str) -> None:
+        """Remove a package from the registry (used to roll back a failed registration)."""
+        self._packages.pop(name, None)
+
     def all(self) -> list[PackageInfo]:
         return list(self._packages.values())
 
@@ -90,7 +101,25 @@ def validate_package(info: PackageInfo) -> list[ValidationError]:
     require live introspection of the registered surfaces (Plan 5).
     """
     errors: list[ValidationError] = []
-    sql_files = sorted((info.root / "schema").glob("*.sql"))
+    schema_dir = info.root / "schema"
+    if not schema_dir.is_dir():
+        if info.manifest.capabilities.writes:
+            errors.append(
+                CapabilityViolation(
+                    package_name=info.manifest.name,
+                    message=(
+                        "manifest declares capabilities.writes but the package "
+                        "has no schema/ directory to satisfy them"
+                    ),
+                    sql_file="(missing schema/ directory)",
+                    target="(none)",
+                )
+            )
+        # No schema dir + no declared writes → nothing to validate; still run
+        # the quality-scale checks below.
+        sql_files: list[Path] = []
+    else:
+        sql_files = sorted(schema_dir.glob("*.sql"))
 
     errors.extend(
         validate_writes(
@@ -164,8 +193,16 @@ def register_package(
     # Add to the registry first so a duplicate-name failure aborts before
     # any external surface (MCP/CLI) is mutated.
     _global_registry.add(info)
-    tools_callable(mcp)
-    cli_callable(cli)
+    try:
+        tools_callable(mcp)
+        cli_callable(cli)
+    except Exception:
+        # Roll back the registry entry so a failed callable leaves no
+        # half-registered package — the registration stays retryable.
+        # (MCP/CLI surfaces a partially-successful tools_callable can't
+        # un-register is a known limitation of those mutable registries.)
+        _global_registry.remove(info.manifest.name)
+        raise
     logger.info(
         f"Registered package '{info.manifest.name}' "
         f"(tier={info.manifest.quality_scale})"

@@ -25,7 +25,13 @@ from sqlglot import ParseError
 
 
 def _parse(sql_file: Path) -> Sequence[exp.Expr | None]:
-    """Parse sql_file with the duckdb dialect; raise ValueError on failure."""
+    """Parse sql_file with the duckdb dialect; raise ValueError on failure.
+
+    The returned sequence may contain None entries (empty statements / trailing
+    semicolons). Callers must skip None entries before inspecting statement types.
+    extract_create_targets() relies on isinstance(None, exp.Create) == False;
+    iter_table_refs() has an explicit ``if statement is None: continue`` guard.
+    """
     sql = sql_file.read_text()
     try:
         statements = sqlglot.parse(sql, dialect="duckdb")
@@ -83,9 +89,15 @@ def iter_table_refs(sql_file: Path) -> Iterator[tuple[str, str]]:
         if statement is None:
             continue
         # Exclude the CREATE target itself — it's a write, not a read dependency.
+        # Use statement.this (the direct Schema/Table child) rather than the
+        # first Table in DFS — a LIKE clause or FK could place another Table
+        # node earlier in the traversal order.
         create_target = None
         if isinstance(statement, exp.Create):
-            create_target = statement.find(exp.Table)
+            this = statement.this
+            # exp.Create.this is a Schema (CREATE TABLE name (cols)) or Table
+            # (CREATE VIEW name AS ...) — resolve whichever to the Table node.
+            create_target = this.find(exp.Table) if this is not None else None
         for table in statement.find_all(exp.Table):
             if table is create_target:
                 continue

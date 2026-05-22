@@ -22,6 +22,7 @@ from moneybin.packages._framework import (
     register_package,
     validate_package,
 )
+from moneybin.packages._framework.errors import CapabilityViolation, PrefixViolation
 
 
 @pytest.fixture
@@ -70,9 +71,7 @@ def test_synthetic_package_capabilities_match_sql(
 ) -> None:
     """The manifest's declared writes cover every CREATE in schema/."""
     errors = validate_package(synthetic_info)
-    capability_violations = [
-        e for e in errors if type(e).__name__ == "CapabilityViolation"
-    ]
+    capability_violations = [e for e in errors if isinstance(e, CapabilityViolation)]
     assert capability_violations == []
 
 
@@ -92,7 +91,7 @@ def test_breaking_synthetic_capability_surfaces_violation(
     mutated = PackageInfo(manifest=synthetic_info.manifest, root=target)
     errors = validate_package(mutated)
 
-    assert any(type(e).__name__ == "CapabilityViolation" for e in errors), (
+    assert any(isinstance(e, CapabilityViolation) for e in errors), (
         f"Expected CapabilityViolation; got: {[type(e).__name__ for e in errors]}"
     )
 
@@ -110,7 +109,7 @@ def test_breaking_synthetic_prefix_surfaces_violation(
     mutated = PackageInfo(manifest=synthetic_info.manifest, root=target)
     errors = validate_package(mutated)
 
-    assert any(type(e).__name__ == "PrefixViolation" for e in errors), (
+    assert any(isinstance(e, PrefixViolation) for e in errors), (
         f"Expected PrefixViolation; got: {[type(e).__name__ for e in errors]}"
     )
 

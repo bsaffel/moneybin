@@ -221,18 +221,18 @@ def init_schemas(
     """
     table_snapshot, column_snapshot = _snapshot_catalog_comments(conn)
     schema_files = _all_schema_files()
+    executed = 0
     for sql_path in [*schema_files, *(additional_files or [])]:
         if not sql_path.exists():
             logger.warning(f"Schema file not found, skipping: {sql_path.name}")
             continue
         sql = sql_path.read_text()
         conn.execute(sql)
+        executed += 1
         _apply_comments(conn, sql, table_snapshot, column_snapshot)
         logger.debug(f"Executed {sql_path.name}")
 
-    logger.debug(
-        f"Executed {len(schema_files) + len(additional_files or [])} schema files"
-    )
+    logger.debug(f"Executed {executed} schema files")
 
     # Mirror the DataClass registry into the catalog (suffix comments
     # with `[class: ...]`).

@@ -142,6 +142,61 @@ def test_registry_singleton_holds_registered_packages(tmp_path: Path) -> None:
         registry.get("does_not_exist")
 
 
+def test_validate_package_missing_schema_dir_with_declared_writes_fails(
+    tmp_path: Path,
+) -> None:
+    """A package declaring writes but shipping no schema/ dir is rejected."""
+    (tmp_path / "moneybin_package.yaml").write_text(
+        dedent(
+            """
+            name: test_synthetic
+            display_name: Test
+            version: 1.0.0
+            quality_scale: bronze
+            owns_prefix: test_synthetic
+            publisher: {name: Test, verified: false}
+            description: Test
+            capabilities:
+              writes: [app.test_synthetic_*]
+              reads: []
+              network: []
+              secrets: []
+            requires: {moneybin: ">=1.0.0"}
+            entry_points: {tools: x:y, cli: x:y, models: x, schema: x}
+            """
+        ).strip()
+    )
+    # Deliberately NO schema/ directory.
+    manifest = PackageManifest.from_yaml(tmp_path / "moneybin_package.yaml")
+    info = PackageInfo(manifest=manifest, root=tmp_path)
+    errors = validate_package(info)
+    assert any(isinstance(e, CapabilityViolation) for e in errors)
+
+
+def test_register_package_rolls_back_registry_on_callable_failure(
+    tmp_path: Path,
+) -> None:
+    """If a callable raises, the package is not left in the registry (retryable)."""
+    info = _make_minimal_pkg(tmp_path)
+    fresh = PackageRegistry()
+
+    def boom(_: object) -> None:
+        raise RuntimeError("tool registration failed")
+
+    with patch("moneybin.packages._framework.registry._global_registry", fresh):
+        with pytest.raises(RuntimeError, match="tool registration failed"):
+            register_package(
+                info=info,
+                mcp=MagicMock(),
+                cli=MagicMock(),
+                tools_callable=boom,
+                cli_callable=MagicMock(),
+            )
+        # Registry must not retain the half-registered package.
+        with pytest.raises(KeyError):
+            fresh.get("test_synthetic")
+
+
 def test_init_schemas_executes_additional_files(tmp_path: Path) -> None:
     """init_schemas() accepts and executes package-contributed DDL files."""
     import duckdb
