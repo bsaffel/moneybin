@@ -267,3 +267,35 @@ class MatchSetPayload:
 
     match_id: Annotated[str, DataClass.RECORD_ID]
     match_status: Annotated[str, DataClass.TXN_TYPE]
+
+
+# ---------------------------------------------------------------------------
+# transactions_matches_history / transactions_matches_run
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class MatchHistoryRow:
+    """One past match decision (transactions_matches_history result)."""
+
+    match_id: Annotated[str, DataClass.RECORD_ID]
+    match_type: Annotated[str, DataClass.TXN_TYPE]
+    match_status: Annotated[str, DataClass.TXN_TYPE]
+    confidence_score: Annotated[float, DataClass.AGGREGATE]
+    decided_by: Annotated[str, DataClass.TXN_TYPE]
+
+
+@dataclass(frozen=True, slots=True)
+class MatchesHistoryPayload:
+    """Payload for transactions_matches_history."""
+
+    matches: list[MatchHistoryRow]
+
+
+@dataclass(frozen=True, slots=True)
+class MatchRunPayload:
+    """Payload for transactions_matches_run — counts from the matcher run."""
+
+    auto_merged: Annotated[int, DataClass.AGGREGATE]
+    pending_review: Annotated[int, DataClass.AGGREGATE]
+    pending_transfers: Annotated[int, DataClass.AGGREGATE]

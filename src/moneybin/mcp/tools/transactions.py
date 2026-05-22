@@ -6,6 +6,8 @@ Tools:
     - transactions_review — Pending counts across queues (low)
     - transactions_matches_pending — List pending match decisions (low)
     - transactions_matches_set — Accept or reject one pending match (low)
+    - transactions_matches_history — Recent match decisions, newest first (low)
+    - transactions_matches_run — Run the matcher over existing transactions (low)
 """
 
 from __future__ import annotations
@@ -19,8 +21,11 @@ from moneybin.database import get_database
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.privacy.payloads.transactions import (
+    MatchesHistoryPayload,
     MatchesPendingPayload,
+    MatchHistoryRow,
     MatchPendingRow,
+    MatchRunPayload,
     MatchSetPayload,
     ReviewStatusPayload,
     TransactionGetPayload,
@@ -210,6 +215,55 @@ def transactions_matches_pending(
     )
 
 
+@mcp_tool(domain="matches", read_only=True)
+def transactions_matches_history(
+    limit: int = 20,
+    match_type: Literal["dedup", "transfer"] | None = None,
+) -> ResponseEnvelope[MatchesHistoryPayload]:
+    """Recent match decisions (accepted/rejected/reversed), newest first.
+
+    Args:
+        limit: Maximum rows (default 20).
+        match_type: Filter to 'dedup' or 'transfer'. Default None returns both.
+    """
+    with get_database(read_only=True) as db:
+        rows = MatchingService(db).get_log(limit=limit, match_type=match_type)
+    return build_envelope(
+        data=MatchesHistoryPayload(
+            matches=[
+                MatchHistoryRow(
+                    match_id=r["match_id"],
+                    match_type=r.get("match_type", "dedup"),
+                    match_status=r["match_status"],
+                    confidence_score=float(r.get("confidence_score") or 0.0),
+                    decided_by=r["decided_by"],
+                )
+                for r in rows
+            ]
+        ),
+        actions=["Use transactions_matches_pending for the active queue"],
+    )
+
+
+@mcp_tool(domain="matches", read_only=False)
+def transactions_matches_run() -> ResponseEnvelope[MatchRunPayload]:
+    """Run the matcher (dedup + transfer detection) over existing transactions.
+
+    Operator-territory: a granular alternative to refresh_run. Proposes pending
+    matches for review via transactions_matches_pending. Does not auto-accept.
+    """
+    with get_database() as db:
+        result = MatchingService(db).run()
+    return build_envelope(
+        data=MatchRunPayload(
+            auto_merged=result.auto_merged,
+            pending_review=result.pending_review,
+            pending_transfers=result.pending_transfers,
+        ),
+        actions=["Use transactions_matches_pending to review proposed matches"],
+    )
+
+
 def register_transactions_tools(mcp: FastMCP) -> None:
     """Register all transactions namespace tools with the FastMCP server."""
     register(
@@ -249,4 +303,20 @@ def register_transactions_tools(mcp: FastMCP) -> None:
         "accept/reject. Returns pair ids and confidence — no amounts/descriptions; "
         "use transactions_get on a source id for those. Pair with "
         "transactions_matches_set to decide.",
+    )
+    register(
+        mcp,
+        transactions_matches_run,
+        "transactions_matches_run",
+        "Run the matcher (dedup + transfer detection) over existing transactions, "
+        "proposing pending matches for review. Operator-level granular alternative "
+        "to refresh_run; does not auto-accept. Review results with "
+        "transactions_matches_pending.",
+    )
+    register(
+        mcp,
+        transactions_matches_history,
+        "transactions_matches_history",
+        "Recent transaction match decisions (accepted/rejected/reversed), newest "
+        "first. Read-only. Use transactions_matches_pending for the active queue.",
     )

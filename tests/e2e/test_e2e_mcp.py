@@ -450,3 +450,47 @@ class TestMatchesTools:
                 assert "data" in envelope
                 assert envelope["data"]["match_id"] == seeded_match_id
                 assert envelope["data"]["match_status"] == "accepted"
+
+    async def test_transactions_matches_history_returns_envelope(
+        self, matches_env: dict[str, str]
+    ) -> None:
+        """transactions_matches_history returns a matches list envelope."""
+        from mcp import ClientSession
+        from mcp.client.stdio import StdioServerParameters, stdio_client
+        from mcp.types import TextContent
+
+        server_params = StdioServerParameters(
+            command="uv",  # noqa: S607
+            args=["run", "moneybin", "mcp", "serve"],
+            env=_server_env(matches_env),
+        )
+        async with stdio_client(server_params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.call_tool(
+                    "transactions_matches_history", {"limit": 5}
+                )
+                assert not result.isError, f"Tool returned error: {result.content}"
+                content = result.content[0]
+                assert isinstance(content, TextContent)
+                envelope = json.loads(content.text)
+                assert "matches" in envelope["data"]
+
+    async def test_transactions_matches_run_registered(
+        self, matches_env: dict[str, str]
+    ) -> None:
+        """transactions_matches_run is registered and returns an envelope."""
+        from mcp import ClientSession
+        from mcp.client.stdio import StdioServerParameters, stdio_client
+
+        server_params = StdioServerParameters(
+            command="uv",  # noqa: S607
+            args=["run", "moneybin", "mcp", "serve"],
+            env=_server_env(matches_env),
+        )
+        async with stdio_client(server_params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                tools = {t.name for t in (await session.list_tools()).tools}
+                assert "transactions_matches_run" in tools
+                assert "transactions_matches_history" in tools
