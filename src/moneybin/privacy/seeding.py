@@ -22,10 +22,13 @@ schema migration.
 
 from __future__ import annotations
 
+import logging
 import secrets
 import threading
 
 from moneybin.secrets import SecretNotFoundError, SecretStore
+
+logger = logging.getLogger(__name__)
 
 REDACTION_KEY_NAME = "PRIVACY__REDACTION_KEY"
 _KEY_BYTES = 32
@@ -79,6 +82,17 @@ def get_redaction_key() -> bytes:
                 )
         except (SecretNotFoundError, ValueError):
             key = secrets.token_bytes(_KEY_BYTES)
-            store.set_key(REDACTION_KEY_NAME, key.hex())
+            # Cache the freshly generated key in-memory even if persistence
+            # fails (keychain locked, keyring unavailable). Otherwise the key
+            # is discarded and every subsequent call regenerates a different
+            # one — which would make PR3's hash-placeholder identifiers
+            # unstable across calls whenever the keychain is unreachable.
+            try:
+                store.set_key(REDACTION_KEY_NAME, key.hex())
+            except Exception:  # noqa: BLE001 — fail-soft: in-memory key stays stable for this process
+                logger.warning(
+                    "privacy: could not persist redaction key; "
+                    "key is ephemeral for this process"
+                )
         _CACHE[profile] = key
         return key

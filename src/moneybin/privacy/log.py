@@ -172,6 +172,10 @@ def read_privacy_events(
     order. ``filters`` is a flat dict of ``field -> exact-match value``.
     Returns up to ``max_rows`` events.
     """
+    # The per-row cap is checked AFTER append below, so max_rows=0 would
+    # otherwise return the first matching row (1 >= 0). Short-circuit here.
+    if max_rows <= 0:
+        return []
     log_dir = _resolve_privacy_log_dir()
     if not log_dir.exists():
         return []

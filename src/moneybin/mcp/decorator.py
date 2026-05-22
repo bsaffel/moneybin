@@ -288,7 +288,19 @@ def mcp_tool(
             payload_type_arg: Any = None
             has_critical = False
         else:
-            return_hint = typing.get_type_hints(fn).get("return")
+            # get_type_hints resolves string annotations (from __future__ import
+            # annotations). A payload class defined below the @mcp_tool fn in the
+            # same module, or imported lazily/conditionally, raises NameError at
+            # decoration time. Re-raise as PrivacyContractError so the failure
+            # names the contract instead of surfacing a bare NameError — the same
+            # guarding _find_list_params applies to this call.
+            try:
+                return_hint = typing.get_type_hints(fn).get("return")
+            except (NameError, TypeError) as exc:
+                raise PrivacyContractError(
+                    f"{fn.__name__}: could not resolve return annotation ({exc}); "
+                    "ensure the payload type is imported at decoration time"
+                ) from exc
             if return_hint is None:
                 raise PrivacyContractError(
                     f"{fn.__name__} has no return annotation; "
