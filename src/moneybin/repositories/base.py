@@ -80,10 +80,14 @@ class BaseRepo:
         self._db.begin()
         try:
             yield
-            self._db.commit()
-        except Exception:
+        except BaseException:
+            # Roll back on BaseException, not just Exception, so a
+            # KeyboardInterrupt/SystemExit mid-write doesn't leave the
+            # transaction open. Re-raised immediately — never swallowed.
             self._db.rollback()
             raise
+        else:
+            self._db.commit()
 
     def _emit_audit(
         self,

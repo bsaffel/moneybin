@@ -93,3 +93,16 @@ def test_delete_category_emits_audit_with_full_before(db: Database) -> None:
     delete_audit = next(r for r in _audit(db, cat_id) if r[0] == "user_category.delete")
     assert json.loads(delete_audit[4])["category"] == "TestCat"  # before
     assert delete_audit[5] is None  # after
+
+
+@pytest.mark.unit
+def test_delete_category_force_emits_audit(db: Database) -> None:
+    # The force=True cascade path (raw deletes across referencing tables, then
+    # the repo delete) must still emit the user_category.delete audit row.
+    svc = CategorizationService(db)
+    cat_id = svc.create_category("ForceCat", actor="cli")
+    svc.delete_category(cat_id, force=True, actor="cli")
+    delete_audit = next(r for r in _audit(db, cat_id) if r[0] == "user_category.delete")
+    assert json.loads(delete_audit[4])["category"] == "ForceCat"
+    assert delete_audit[5] is None
+    assert delete_audit[6] == "cli"  # actor

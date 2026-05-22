@@ -352,6 +352,7 @@ class GSheetConnectionsRepo(BaseRepo):
         *,
         actor: str = "cli",
         parent_audit_id: str | None = None,
+        in_outer_txn: bool = False,
     ) -> None:
         """Mark the connection as disconnected (raw rows retained)."""
         self.update_status(
@@ -360,6 +361,7 @@ class GSheetConnectionsRepo(BaseRepo):
             reason=None,
             actor=actor,
             parent_audit_id=parent_audit_id,
+            in_outer_txn=in_outer_txn,
         )
 
     def delete(
