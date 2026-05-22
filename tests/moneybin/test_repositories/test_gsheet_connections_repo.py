@@ -7,6 +7,7 @@ Every mutating test asserts both the row mutation and the paired
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -225,11 +226,12 @@ def test_get_returns_none_for_unknown_id(db: Database) -> None:
 def test_update_after_pull_writes_audit_row(db: Database) -> None:
     repo = GSheetConnectionsRepo(db)
     cid = _insert_default(repo)
+    pulled_at = datetime(2026, 5, 20, 12, 0, 0, tzinfo=UTC)
     repo.update_after_pull(
         cid,
-        last_pull_at="2026-05-20T12:00:00",
+        last_pull_at=pulled_at,
         last_pull_import_id="imp_123",
-        last_success_at="2026-05-20T12:00:00",
+        last_success_at=pulled_at,
         status="healthy",
         consecutive_failure_count=0,
         actor="system",
