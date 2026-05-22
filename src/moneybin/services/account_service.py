@@ -328,9 +328,13 @@ class AccountService:
         writes (Invariant 10); the repo shares this service's ``AuditService`` so
         its writes participate in any caller-opened transaction.
         """
-        # Deferred import: `services/__init__` eagerly imports this module, and
-        # the repo's `base` imports `services.audit_service` — a module-level repo
-        # import would close that loop and fail when the repo is imported first.
+        # Deferred to break a circular import. `services/__init__` eagerly imports
+        # this module; the repo's `base` imports `services.audit_service`, which
+        # triggers `services/__init__`. When the repo is imported *first* (e.g. a
+        # repo test module: repo → base → audit_service → services/__init__ →
+        # account_service → repo, still mid-init), a module-level import here fails
+        # with "partially initialized module". budget_service can import its repo
+        # at module level only because it is NOT re-exported by services/__init__.
         from moneybin.repositories.account_settings_repo import (  # noqa: PLC0415
             AccountSettingsRepo,
         )
@@ -669,7 +673,7 @@ class AccountService:
             })
 
         updated = dataclasses.replace(current, **cast(dict[str, Any], diff))
-        self._settings_repo.upsert(
+        self._settings_repo.set(
             account_id=updated.account_id,
             display_name=updated.display_name,
             official_name=updated.official_name,

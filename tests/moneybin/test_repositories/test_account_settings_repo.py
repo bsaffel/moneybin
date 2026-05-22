@@ -41,7 +41,7 @@ def _metric(action: str) -> float:
     )
 
 
-def _upsert(repo: AccountSettingsRepo, **overrides: Any) -> Any:
+def _set(repo: AccountSettingsRepo, **overrides: Any) -> Any:
     kwargs: dict[str, Any] = {
         "account_id": "acct_a",
         "display_name": "Checking",
@@ -56,14 +56,14 @@ def _upsert(repo: AccountSettingsRepo, **overrides: Any) -> Any:
         "actor": "cli",
     }
     kwargs.update(overrides)
-    return repo.upsert(**kwargs)
+    return repo.set(**kwargs)
 
 
-def test_upsert_inserts_row_and_audit(db: Database) -> None:
+def test_set_inserts_row_and_audit(db: Database) -> None:
     repo = AccountSettingsRepo(db)
     before_metric = _metric("account_settings.set")
 
-    event = _upsert(repo)
+    event = _set(repo)
     assert event.target_id == "acct_a"
 
     row = db.conn.execute(
@@ -85,10 +85,10 @@ def test_upsert_inserts_row_and_audit(db: Database) -> None:
     assert _metric("account_settings.set") - before_metric == 1.0
 
 
-def test_upsert_update_captures_full_prior_row(db: Database) -> None:
+def test_set_update_captures_full_prior_row(db: Database) -> None:
     repo = AccountSettingsRepo(db)
-    _upsert(repo, display_name="Old", credit_limit=Decimal("500.00"))
-    _upsert(repo, display_name="New", credit_limit=Decimal("750.00"))
+    _set(repo, display_name="Old", credit_limit=Decimal("500.00"))
+    _set(repo, display_name="New", credit_limit=Decimal("750.00"))
 
     row = db.conn.execute(
         "SELECT display_name FROM app.account_settings WHERE account_id = ?",
@@ -96,7 +96,7 @@ def test_upsert_update_captures_full_prior_row(db: Database) -> None:
     ).fetchone()
     assert row == ("New",)
 
-    # The second upsert's audit row captures the FULL prior row in before.
+    # The second set's audit row captures the FULL prior row in before.
     update_audit = _audit_rows_for(db, "acct_a")[1]
     before = json.loads(update_audit[4])
     after = json.loads(update_audit[5])
@@ -106,15 +106,15 @@ def test_upsert_update_captures_full_prior_row(db: Database) -> None:
     assert after["credit_limit"] == "750.00"
 
 
-def test_upsert_records_parent_audit_id(db: Database) -> None:
+def test_set_records_parent_audit_id(db: Database) -> None:
     repo = AccountSettingsRepo(db)
-    event = _upsert(repo, parent_audit_id="p1")
+    event = _set(repo, parent_audit_id="p1")
     assert _audit_rows_for(db, event.target_id or "")[0][7] == "p1"
 
 
 def test_delete_captures_before_and_returns_event(db: Database) -> None:
     repo = AccountSettingsRepo(db)
-    _upsert(repo, display_name="ToDelete")
+    _set(repo, display_name="ToDelete")
 
     event = repo.delete("acct_a", actor="cli")
     assert event is not None
@@ -139,13 +139,13 @@ def test_delete_returns_none_for_missing_row(db: Database) -> None:
     assert _audit_rows_for(db, "nope") == []
 
 
-def test_upsert_rolls_back_when_audit_raises(db: Database) -> None:
+def test_set_rolls_back_when_audit_raises(db: Database) -> None:
     audit = MagicMock()
     audit.record_audit_event.side_effect = RuntimeError("simulated audit failure")
     repo = AccountSettingsRepo(db, audit=audit)
 
     try:
-        _upsert(repo, account_id="ghost", display_name="Ghost")
+        _set(repo, account_id="ghost", display_name="Ghost")
     except RuntimeError:
         pass
 

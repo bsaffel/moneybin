@@ -101,6 +101,28 @@ class TestSetBudget:
         assert result.monthly_amount == Decimal("300.00")
 
     @pytest.mark.unit
+    def test_update_cross_month_overlap_reports_stored_start_month(
+        self, budget_db: Database
+    ) -> None:
+        # A later request whose start_month differs from the stored window must
+        # still match the overlap and report the STORED start_month, since
+        # update() does not rewrite start_month.
+        service = BudgetService(budget_db)
+        service.set_budget(
+            "Food & Drink", Decimal("200.00"), start_month="2026-01", actor="cli"
+        )
+        result = service.set_budget(
+            "Food & Drink", Decimal("300.00"), start_month="2026-06", actor="cli"
+        )
+        assert result.action == "updated"
+        assert result.start_month == "2026-01"  # stored window, not the request
+        # And the DB row's start_month is unchanged.
+        row = budget_db.execute(
+            "SELECT start_month FROM app.budgets WHERE category = 'Food & Drink'"
+        ).fetchone()
+        assert row == ("2026-01",)
+
+    @pytest.mark.unit
     def test_to_payload_shape(self, budget_db: Database) -> None:
         service = BudgetService(budget_db)
         result = service.set_budget(

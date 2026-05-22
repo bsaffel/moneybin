@@ -95,6 +95,10 @@ class BudgetsRepo(BaseRepo):
         """
         with self._transaction(in_outer_txn=in_outer_txn):
             before = self._require(self._fetch_row(budget_id), "budget_id", budget_id)
+            # `CURRENT_TIMESTAMP` is correct in this plain UPDATE. The sibling
+            # repos use `NOW()` only because DuckDB parses `CURRENT_TIMESTAMP` as
+            # an identifier inside `ON CONFLICT DO UPDATE SET` — that quirk does
+            # not apply here, so do NOT cargo-cult `NOW()` onto this statement.
             self._db.execute(
                 f"""
                 UPDATE {BUDGETS.full_name}

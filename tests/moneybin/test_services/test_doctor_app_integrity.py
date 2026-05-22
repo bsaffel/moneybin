@@ -363,7 +363,7 @@ def test_run_all_includes_app_integrity_invariants(db: Database) -> None:
 
 
 def _upsert_settings(repo: AccountSettingsRepo, account_id: str) -> None:
-    repo.upsert(
+    repo.set(
         account_id=account_id,
         display_name="Checking",
         official_name=None,

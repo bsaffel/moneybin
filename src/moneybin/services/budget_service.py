@@ -87,9 +87,13 @@ class BudgetService:
         if start_month is None:
             start_month = date.today().strftime("%Y-%m")
 
-        # Check for existing budget with overlapping date range
+        # Check for existing budget with overlapping date range. Select its
+        # start_month too: an overlap can match a budget whose window opened in a
+        # different month than the request, and update() does not rewrite
+        # start_month — so the result must report the row's stored value, not the
+        # request argument.
         check_sql = f"""
-            SELECT budget_id
+            SELECT budget_id, start_month
             FROM {BUDGETS.full_name}
             WHERE category = ?
               AND start_month <= ?
@@ -113,6 +117,7 @@ class BudgetService:
                 actor=actor,
             )
             action = "updated"
+            result_start_month = str(existing[1])  # the affected row's window
         else:
             self._budgets_repo.insert(
                 category=category,
@@ -122,13 +127,14 @@ class BudgetService:
                 actor=actor,
             )
             action = "created"
+            result_start_month = start_month
 
         logger.info(f"Budget {action} for category")
         return BudgetSetResult(
             category=category,
             monthly_amount=monthly_amount,
             action=action,
-            start_month=start_month,
+            start_month=result_start_month,
         )
 
     def status(self, month: str | None = None) -> BudgetStatusPayload:

@@ -65,9 +65,10 @@ class BalanceService:
         ``app.balance_assertions`` writes (Invariant 10), sharing this service's
         ``AuditService``.
         """
-        # Deferred import: `services/__init__` eagerly imports this module, and
-        # the repo's `base` imports `services.audit_service` — a module-level repo
-        # import would close that loop and fail when the repo is imported first.
+        # Deferred to break a circular import — see the matching note in
+        # account_service.__init__. `services/__init__` eagerly re-exports this
+        # module, so a repo-first import order (e.g. a repo test) would hit a
+        # partially-initialized module on a module-level repo import here.
         from moneybin.repositories.balance_assertions_repo import (  # noqa: PLC0415
             BalanceAssertionsRepo,
         )
@@ -111,7 +112,14 @@ class BalanceService:
     def delete_assertion(
         self, account_id: str, assertion_date: date, *, actor: str
     ) -> None:
-        """Delete the assertion for (account_id, assertion_date). Silent no-op if absent."""
+        """Delete the assertion for (account_id, assertion_date).
+
+        Deliberately does NOT validate ``account_id`` against ``dim_accounts``
+        (unlike ``assert_balance``): delete is idempotent best-effort, so an
+        unknown ``account_id`` is a silent no-op, just like a known account with
+        no assertion on that date. This forgiving-delete contract is locked by
+        ``test_e2e_mutating.py::...test_balance_delete_nonexistent_is_noop``.
+        """
         self._assertions_repo.delete(account_id, assertion_date, actor=actor)
         logger.info(
             f"Deleted balance assertion for account {account_id} on {assertion_date}"

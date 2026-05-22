@@ -448,3 +448,15 @@ class TestAccountValidation:
         )
         assert isinstance(result, BalanceAssertionPayload)
         assert result.assertion.balance == Decimal("500.00")
+
+    @pytest.mark.unit
+    def test_delete_assertion_unknown_account_is_noop(self, db: Database) -> None:
+        """delete_assertion is forgiving: an unknown account_id no-ops, not raises.
+
+        Asymmetric with assert_balance by design — you can't create an anchor for
+        an account that doesn't exist, but removing one is idempotent best-effort.
+        """
+        create_core_tables(db)
+        svc = BalanceService(db)
+        # Must not raise (contract also locked by the e2e delete-noop test).
+        svc.delete_assertion("ACCTO1_typo", date(2026, 1, 31), actor="cli")

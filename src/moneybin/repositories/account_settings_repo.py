@@ -42,7 +42,7 @@ class AccountSettingsRepo(BaseRepo):
             ACCOUNT_SETTINGS, _ACCOUNT_SETTINGS_COLUMNS, "account_id", account_id
         )
 
-    def upsert(
+    def set(
         self,
         *,
         account_id: str,
