@@ -74,6 +74,34 @@ def patched_services() -> Iterator[dict[str, MagicMock]]:
 
 
 @pytest.mark.unit
+def test_refresh_result_has_error_surfacing_fields() -> None:
+    """RefreshResult carries matcher/categorizer errors and self-heal records."""
+    from moneybin.services.refresh import SelfHealRecord
+
+    r = RefreshResult(applied=True, duration_seconds=1.0)
+    assert r.matching_error is None
+    assert r.categorization_error is None
+    assert r.self_heal_actions == []
+
+    rec = SelfHealRecord(
+        recipe_id="orphan_categorizations_cleanup",
+        rows_affected=3,
+        operation_id="op_self_heal_orphan_categorizations_cleanup_abc",
+        timestamp="2026-05-22T00:00:00Z",
+    )
+    r2 = RefreshResult(
+        applied=True,
+        duration_seconds=1.0,
+        matching_error="boom",
+        categorization_error="bang",
+        self_heal_actions=[rec],
+    )
+    assert r2.matching_error == "boom"
+    assert r2.categorization_error == "bang"
+    assert r2.self_heal_actions[0].recipe_id == "orphan_categorizations_cleanup"
+
+
+@pytest.mark.unit
 def test_refresh_steps_none_runs_full_cascade(
     patched_services: dict[str, MagicMock],
 ) -> None:

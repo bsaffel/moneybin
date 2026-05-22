@@ -39,7 +39,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from moneybin.database import Database
@@ -49,17 +49,39 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
+class SelfHealRecord:
+    """One self-heal recipe execution during refresh.
+
+    Populated by the self-heal safelist (M2D PR 7, not yet implemented);
+    the carrier ships here so ``RefreshResult``'s shape is stable for
+    agents before the safelist lands.
+    """
+
+    recipe_id: str
+    rows_affected: int
+    operation_id: str
+    timestamp: str
+
+
+@dataclass(frozen=True)
 class RefreshResult:
     """Outcome of a :func:`refresh` call.
 
-    Fields describe the SQLMesh apply step specifically — the only step
-    that can hard-fail. Matching and categorization are best-effort and
-    log-only on failure; their outcomes are not surfaced here.
+    ``error`` describes the SQLMesh apply step — the only step that can
+    hard-fail. ``matching_error`` / ``categorization_error`` surface real
+    crashes in the best-effort matcher / categorizer steps; a missing-view
+    precondition on first load (before SQLMesh apply built the views) is
+    NOT a crash and leaves them ``None``. ``self_heal_actions`` lists
+    self-heal recipes that ran (empty until the M2D self-heal safelist
+    lands).
     """
 
     applied: bool
     duration_seconds: float | None
     error: str | None = None
+    matching_error: str | None = None
+    categorization_error: str | None = None
+    self_heal_actions: list[SelfHealRecord] = field(default_factory=list)
 
 
 RefreshStep = Literal["gsheet", "match", "transform", "categorize"]
