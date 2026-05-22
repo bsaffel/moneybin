@@ -189,15 +189,24 @@ def read_privacy_events(
         key=lambda p: p.name,
         reverse=True,
     )
-    # Move the current-day file to the front explicitly — its name sorts
-    # AFTER "privacy.log.YYYY-MM-DD.jsonl" lexically.
+    # Ensure the current-day file is read first regardless of sort key. With
+    # reverse=True it already sorts first ("privacy.log.jsonl" — 'j' > any date
+    # digit), so this is defensive: it pins the invariant without relying on the
+    # ASCII ordering of the rotated-file naming scheme.
     current = log_dir / _LOG_FILE
     if current in files:
         files = [current] + [f for f in files if f != current]
 
     out: list[dict[str, Any]] = []
     for path in files:
-        for line in reversed(path.read_text(encoding="utf-8").splitlines()):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            # iterdir() ran outside _LOCK; a concurrent midnight rotation can
+            # rename privacy.log.jsonl between listing and this read. Skip the
+            # vanished file rather than propagate an unclassified error.
+            continue
+        for line in reversed(text.splitlines()):
             if not line.strip():
                 continue
             try:

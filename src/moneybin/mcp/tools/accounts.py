@@ -400,7 +400,8 @@ def register_accounts_tools(mcp: FastMCP) -> None:
         mcp,
         accounts_get,
         "accounts_get",
-        "Get one account's full settings + dim record. Returns {found: false} if not found. "
+        "Get one account's full settings + dim record. Raises a not_found error "
+        "(code infra_not_found) if the account doesn't exist. "
         "Amounts are in the currency named by `summary.display_currency`.",
     )
     register(

@@ -146,9 +146,10 @@ class BalanceService:
             [account_id, assertion_date],
         ).fetchone()
         if row is None:
-            raise RuntimeError(
-                f"assertion not found after upsert: {account_id} {assertion_date}"
-            )
+            # No interpolated account_id: it is ACCOUNT_IDENTIFIER (CRITICAL)
+            # and must not reach application logs (no-PII-in-logs rule). This is
+            # a should-never-happen invariant guard right after an upsert.
+            raise RuntimeError("assertion not found immediately after upsert")
         return _assertion_row_from_db(row)
 
     # --- Reads ---

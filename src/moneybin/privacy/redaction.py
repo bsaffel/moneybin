@@ -246,6 +246,15 @@ def _redact(value: Any, consent: ConsentSet | None, declared_type: Any) -> Any:
         try:
             hints: dict[str, Any] = _cached_type_hints(declared_type)
         except (NameError, TypeError):
+            # Unresolved hints → we can't tell which fields are CRITICAL. Falling
+            # through silently would return the dict unredacted with no signal
+            # (the plain-class branch below only warns for non-dataclasses with
+            # resolvable hints). Warn here so a misconfigured TypedDict payload
+            # surfaces instead of leaking.
+            logger.warning(
+                f"redact_typed: could not resolve type hints for TypedDict "
+                f"{declared_type.__name__}; passing through unredacted"
+            )
             hints = {}
         if hints:
             return {
