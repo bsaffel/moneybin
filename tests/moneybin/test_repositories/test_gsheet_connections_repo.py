@@ -13,6 +13,7 @@ from unittest.mock import MagicMock
 
 import duckdb
 import pytest
+from prometheus_client import REGISTRY
 
 from moneybin.database import Database
 from moneybin.repositories.gsheet_connections_repo import GSheetConnectionsRepo
@@ -68,6 +69,13 @@ def _audit_rows_for(db: Database, connection_id: str) -> list[tuple[Any, ...]]:
 
 def test_insert_writes_connection_and_audit_row(db: Database) -> None:
     repo = GSheetConnectionsRepo(db)
+    before_metric = (
+        REGISTRY.get_sample_value(
+            "moneybin_app_mutation_audit_emitted_total",
+            {"repository": "gsheet_connections", "action": "gsheet_connection.insert"},
+        )
+        or 0.0
+    )
     cid = repo.insert(
         spreadsheet_id="ss1",
         sheet_gid=0,
@@ -107,6 +115,13 @@ def test_insert_writes_connection_and_audit_row(db: Database) -> None:
     assert after_decoded["spreadsheet_id"] == "ss1"
     assert after_decoded["column_mapping"] == {"Date": "transaction_date"}
     assert actor == "cli"
+
+    # BaseRepo._emit_audit increments the repo-boundary mutation metric.
+    after_metric = REGISTRY.get_sample_value(
+        "moneybin_app_mutation_audit_emitted_total",
+        {"repository": "gsheet_connections", "action": "gsheet_connection.insert"},
+    )
+    assert (after_metric or 0.0) - before_metric == 1.0
 
 
 # ---------------------------------------------------------------------------

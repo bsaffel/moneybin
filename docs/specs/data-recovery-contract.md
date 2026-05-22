@@ -2,7 +2,7 @@
 
 ## Status
 
-draft
+in-progress
 
 ## Goal
 
@@ -193,10 +193,10 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
         timestamp: str
     ```
 
-    Behavior change: catches in matcher/categorizer move from `logger.debug(...)` to `logger.error(...)` and populate the `*_error` field. Refresh continues — one stage's failure doesn't abort the pipeline (same partial-failure-isolation pattern import already uses). If any `*_error` is set, the response envelope's `recovery_actions` includes:
+    Behavior change: a *real* crash in the matcher/categorizer moves from `logger.debug(...)` to `logger.error(...)` and populates the `*_error` field. A missing-view precondition (`duckdb.CatalogException` / `BinderException` — e.g. first load before SQLMesh apply built the views) is NOT a crash: it stays a quiet `logger.debug(...)` and leaves `*_error` `None`, so a fresh database's first refresh never reports a false failure. (This precondition discrimination is what genuinely closes `followups.md:71`; a blind DEBUG→ERROR would trade silent failure for false-positive noise.) Refresh continues — one stage's failure doesn't abort the pipeline (same partial-failure-isolation pattern import already uses). If any `*_error` is set, the response envelope's `recovery_actions` includes:
 
     - `refresh_run(steps=["match"])` or `refresh_run(steps=["categorize"])` for retry, `confidence=suggested`.
-    - `system_doctor(verbose=True)` for diagnosis, `confidence=suggested`.
+    - `system_doctor` for diagnosis, `confidence=suggested`. (Empty `arguments` — the `system_doctor` MCP tool takes no parameters; `--verbose` is a CLI-only flag, so a `verbose` argument would make the action non-executable.)
 
 10. **Matches MCP surface.** Four MCP tools over the pair-decision model (`app.match_decisions`, one row per proposed pair keyed by `match_id`):
 

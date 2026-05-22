@@ -3,7 +3,7 @@
 ## Status
 
 - **Type:** Architecture
-- **Status:** draft
+- **Status:** in-progress
 - **Authority:** Defines the contributor-facing surface for the three extension types — **Reports**, **Analysis Packages**, and **Providers**. The contract every future MoneyBin extension lands as. Pre-launch deliverable; locks at M3E alongside the public MCP and CLI surfaces.
 
 ## Goal
@@ -226,13 +226,15 @@ canadian_tax = "moneybin_canadian_tax"
 At framework startup, MoneyBin:
 
 1. Enumerates all `moneybin.packages` entry points (in-tree + pip-installed).
-2. Loads each package's `moneybin_package.yaml` manifest.
+2. Reads each package's `moneybin_package.yaml` manifest **from distribution metadata, without importing the package**.
 3. Validates capabilities against framework rules (see [§Capability declarations](#capability-declarations)).
 4. Validates the declared `quality_scale` tier against actual evidence in the package.
-5. Calls the package's `tools.register(mcp)` and `cli.register(app)` to wire up tools.
+5. Calls the package's `tools.register(mcp)` and `cli.register(app)` to wire up tools — the **first point any package Python is imported**.
 6. Adds the package's `models/` and `schema/` paths to SQLMesh and the schema initializer.
 
 Discovery is uniform: a third-party package looks identical to in-tree from the framework's perspective.
+
+**Validate before import.** Discovery resolves the manifest from `importlib.metadata` file records rather than `EntryPoint.load()`, so an installed-but-malformed package cannot run import-time side effects before the capability/prefix/quality gate vets it. Package code executes only at step 5, after validation passes. (Some PEP 660 editable installs omit data files from the dist record and are skipped by metadata-only discovery; in-tree reference packages ship inside the MoneyBin wheel and are unaffected.)
 
 ### Naming and prefix discipline
 

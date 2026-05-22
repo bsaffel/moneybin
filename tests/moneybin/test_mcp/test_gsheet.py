@@ -387,7 +387,7 @@ async def test_gsheet_reconnect_returns_envelope(mock_build: MagicMock) -> None:
     assert envelope.summary.sensitivity == "medium"
     data = _as_dict(envelope.data)
     assert data["connection"]["status"] == "healthy"
-    service.reconnect.assert_called_once_with("conn_abc", yes=True)
+    service.reconnect.assert_called_once_with("conn_abc", yes=True, actor="mcp")
 
 
 @pytest.mark.unit
@@ -407,7 +407,7 @@ async def test_gsheet_reconnect_passes_yes_flag_through(
     from moneybin.mcp.tools.gsheet import gsheet_reconnect
 
     await gsheet_reconnect(connection_id="conn_abc")  # default yes=False
-    service.reconnect.assert_called_once_with("conn_abc", yes=False)
+    service.reconnect.assert_called_once_with("conn_abc", yes=False, actor="mcp")
 
 
 # ---------------------------------------------------------------------------
@@ -425,7 +425,7 @@ async def test_gsheet_disconnect_with_purge_param(mock_build: MagicMock) -> None
     from moneybin.mcp.tools.gsheet import gsheet_disconnect
 
     envelope = await gsheet_disconnect(connection_id="conn_abc", purge=True)
-    service.disconnect.assert_called_once_with("conn_abc", purge=True)
+    service.disconnect.assert_called_once_with("conn_abc", purge=True, actor="mcp")
     assert envelope.summary.sensitivity == "medium"
     data = _as_dict(envelope.data)
     assert data["purged"] is True
@@ -442,7 +442,7 @@ async def test_gsheet_disconnect_soft_default(mock_build: MagicMock) -> None:
     from moneybin.mcp.tools.gsheet import gsheet_disconnect
 
     envelope = await gsheet_disconnect(connection_id="conn_abc")
-    service.disconnect.assert_called_once_with("conn_abc", purge=False)
+    service.disconnect.assert_called_once_with("conn_abc", purge=False, actor="mcp")
     data = _as_dict(envelope.data)
     assert data["purged"] is False
     assert data["status"] == "disconnected"

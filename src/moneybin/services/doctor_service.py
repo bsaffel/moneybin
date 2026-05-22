@@ -6,12 +6,20 @@ import logging
 from dataclasses import dataclass
 from typing import Literal
 
+from sqlglot import exp
+
+from moneybin.config import get_settings
 from moneybin.database import Database, sqlmesh_context
 from moneybin.errors import RecoveryAction
 from moneybin.tables import (
+    AUDIT_LOG,
+    CATEGORY_OVERRIDES,
     FCT_TRANSACTIONS,
+    GSHEET_CONNECTIONS,
     INT_TRANSACTIONS_UNIONED,
     MATCH_DECISIONS,
+    USER_CATEGORIES,
+    TableRef,
 )
 
 logger = logging.getLogger(__name__)
@@ -69,14 +77,167 @@ class DoctorService:
         """Store the open database connection for invariant queries."""
         self._db = db
 
-    def run_all(self, verbose: bool = False) -> DoctorReport:
-        """Run all invariants and return a DoctorReport."""
+    def run_all(self, verbose: bool = False, full: bool = False) -> DoctorReport:
+        """Run all invariants and return a DoctorReport.
+
+        ``full`` opts the protected-``app.*`` audit-coverage checks out of their
+        sampled, lookback-windowed mode and into a full-table scan.
+        """
         transaction_count = self._get_transaction_count()
         sqlmesh_results = self._run_sqlmesh_audits(verbose)
         dedup_reconciliation = self._run_dedup_reconciliation()
         categorization = self._run_categorization_coverage()
-        invariants = [*sqlmesh_results, dedup_reconciliation, categorization]
+        app_integrity = self._run_app_integrity(full=full)
+        invariants = [
+            *sqlmesh_results,
+            dedup_reconciliation,
+            categorization,
+            *app_integrity,
+        ]
         return DoctorReport(invariants=invariants, transaction_count=transaction_count)
+
+    def _run_app_integrity(self, *, full: bool) -> list[InvariantResult]:
+        """Per-table integrity checks for protected ``app.*`` tables (Invariant 10).
+
+        Covers every table this PR wraps in a repo (``user_categories``,
+        ``category_overrides``, ``gsheet_connections``); later repository PRs
+        append one coverage call per newly-wrapped table plus that table's
+        FK/orphan specifics.
+        """
+        return [
+            self._run_app_audit_coverage(USER_CATEGORIES, "category_id", full=full),
+            self._run_app_audit_coverage(CATEGORY_OVERRIDES, "category_id", full=full),
+            self._run_app_audit_coverage(
+                GSHEET_CONNECTIONS, "connection_id", full=full
+            ),
+            self._run_user_categories_uniqueness(),
+        ]
+
+    def _run_app_audit_coverage(
+        self, table_ref: TableRef, pk_col: str, *, full: bool = False
+    ) -> InvariantResult:
+        """Flag rows mutated without a paired ``app.audit_log`` row (Req 9).
+
+        Sampled by default: only rows whose ``updated_at`` falls within
+        ``doctor.audit_coverage_lookback_days`` are checked, capped at
+        ``doctor.audit_coverage_sample_cap``. ``full=True`` scans every row.
+        Requires the table to carry an ``updated_at`` column (every protected
+        table does).
+
+        Limitations (by design — this is a sampled runtime *heuristic*, not a
+        proof): it scans rows that currently exist and keys on ``updated_at`` as
+        the mutation watermark, so a raw bypass that (a) deletes a row, or (b)
+        mutates without bumping ``updated_at``, leaves nothing for the scan to
+        flag. The *structural* guard against raw bypass writes is the lint rule
+        (rejects raw ``INSERT``/``UPDATE``/``DELETE`` against protected tables
+        outside ``*_repo.py``); content-based coverage is a hosted-tier follow-up
+        (see ``private/followups.md``). ``pk_col`` is a code-supplied constant,
+        quoted defensively per ``.claude/rules/security.md``.
+        """
+        name = f"app_audit_coverage_{table_ref.name}"
+        settings = get_settings().doctor
+        safe_pk = exp.to_identifier(pk_col, quoted=True).sql("duckdb")
+        if full:
+            sampled_sql = (
+                f"SELECT {safe_pk} AS pk, updated_at FROM {table_ref.full_name}"  # noqa: S608  # TableRef + sqlglot-quoted identifier
+            )
+            sample_params: list[object] = []
+        else:
+            sampled_sql = (
+                f"SELECT {safe_pk} AS pk, updated_at FROM {table_ref.full_name} "  # noqa: S608  # TableRef + sqlglot-quoted identifier
+                "WHERE updated_at >= (now()::TIMESTAMP - (? * INTERVAL 1 DAY)) "
+                "ORDER BY updated_at DESC LIMIT ?"
+            )
+            sample_params = [
+                settings.audit_coverage_lookback_days,
+                settings.audit_coverage_sample_cap,
+            ]
+        # Match (schema, table, id) — target_table alone collides across schemas —
+        # AND require an audit at-or-after the row's latest mutation. A row audited
+        # once then mutated again by a raw bypass advances updated_at past every
+        # existing audit row, so "any audit exists" would false-pass; comparing
+        # against updated_at catches it. Repo writes set the row's updated_at and
+        # the audit's occurred_at from CURRENT_TIMESTAMP in one transaction (equal
+        # in DuckDB), so legitimate mutations satisfy occurred_at >= updated_at.
+        try:
+            rows = self._db.execute(
+                f"""
+                WITH sampled AS ({sampled_sql})
+                SELECT s.pk
+                FROM sampled s
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM {AUDIT_LOG.full_name} a
+                    WHERE a.target_schema = ?
+                      AND a.target_table = ?
+                      AND a.target_id = s.pk
+                      AND a.occurred_at >= s.updated_at
+                )
+                ORDER BY s.pk
+                """,  # noqa: S608  # TableRef constants, parameterized values
+                [*sample_params, table_ref.schema, table_ref.name],
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — table may not exist before first write
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"coverage check unavailable: {e}",
+                affected_ids=[],
+            )
+        if rows:
+            affected = [str(r[0]) for r in rows]
+            return InvariantResult(
+                name=name,
+                status="fail",
+                detail=(
+                    f"{len(affected)} {table_ref.name} row(s) mutated without a "
+                    "paired app.audit_log row"
+                ),
+                affected_ids=affected,
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _run_user_categories_uniqueness(self) -> InvariantResult:
+        """Flag duplicate ``(category, subcategory)`` rows in ``app.user_categories``.
+
+        V015 relaxed the DB-level ``UNIQUE (category, subcategory)`` constraint
+        (``category_id`` is the sole PK now); this is the soft enforcement that
+        keeps ``resolve_category_id`` from arbitrating between colliding rows.
+        """
+        name = "app_user_categories_uniqueness"
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT category, subcategory,
+                       string_agg(category_id, ',' ORDER BY category_id) AS ids
+                FROM {USER_CATEGORIES.full_name}
+                GROUP BY category, subcategory
+                HAVING COUNT(*) > 1
+                ORDER BY category, subcategory
+                """  # noqa: S608  # TableRef constant, no user input
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — table may not exist before first write
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"uniqueness check unavailable: {e}",
+                affected_ids=[],
+            )
+        if rows:
+            # `is not None` (not truthiness): DuckDB groups NULL and "" as
+            # distinct collision sets, so render them distinctly in the detail.
+            labels = [
+                f"{cat}/{sub}" if sub is not None else str(cat) for cat, sub, _ in rows
+            ]
+            affected: list[str] = []
+            for *_unused, ids in rows:
+                affected.extend(ids.split(","))
+            return InvariantResult(
+                name=name,
+                status="fail",
+                detail=f"duplicate (category, subcategory): {', '.join(labels)}",
+                affected_ids=affected,
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
 
     def _get_transaction_count(self) -> int:
         try:

@@ -1099,10 +1099,10 @@ Data status dashboard — what data exists, how fresh it is, what's pending acti
 Pipeline integrity check — confirms the data pipeline is self-consistent before analysis.
 
 - **Sensitivity:** `low` — counts and status labels only.
-- **Unique parameters:** None.
-- **Behavior:** Runs all SQLMesh named audits (FK integrity, sign convention, transfer balance) plus two hardcoded checks (staging coverage, categorization coverage). Returns pass/fail/warn per invariant and total transaction count. Always runs with `verbose=False` — agents can query `core.fct_transactions` or `core.bridge_transfers` directly for drill-down. Exit is informational only (no exception on fail).
-- **Service:** `DoctorService.run_all(verbose=False) -> DoctorReport`
-- **CLI:** `moneybin system doctor [--verbose] [--output json]`
+- **Unique parameters:** `full: bool = False` — when true, the protected-`app.*` audit-coverage checks scan every row instead of the default sampled, recent-rows-only window.
+- **Behavior:** Runs all SQLMesh named audits (FK integrity, sign convention, transfer balance) plus hardcoded checks (staging coverage, categorization coverage) and per-table `app.*` audit-coverage + uniqueness invariants. Returns pass/fail/warn per invariant and total transaction count. Always runs with `verbose=False` — agents can query `core.fct_transactions` or `core.bridge_transfers` directly for drill-down. Exit is informational only (no exception on fail).
+- **Service:** `DoctorService.run_all(verbose=False, full=False) -> DoctorReport`
+- **CLI:** `moneybin system doctor [--verbose] [--full] [--output json]`
 
 ### `extension_validate`
 
@@ -1167,7 +1167,7 @@ Run the post-load refresh pipeline: cross-source matching, SQLMesh apply, determ
 - **Unique parameters:**
   - `steps: list[Literal["match", "transform", "categorize"]] | None = None` — subset of canonical steps to run; defaults to None (full cascade). Steps execute in canonical order (match → transform → categorize) regardless of input order; dependencies enforce it (categorize reads SQLMesh-built views). Pass `steps=["transform"]` to run SQLMesh apply alone.
 - **Mutation surface:** rebuilds `core.*` and `reports.*` via SQLMesh; writes `app.transaction_categories` for newly-matched rules. No revert path — re-run after fixing inputs.
-- **Behavior:** Single user-facing entry point for the refresh domain. Idempotent; safe to retry after a failure. Matching and categorization steps are best-effort and log-only on failure — only SQLMesh apply errors surface in the response envelope. Returns `{applied, duration_seconds, error?}`. On apply failure, `actions[]` hints at `moneybin transform plan` (CLI operator tool) to inspect, or `refresh_run` to retry. When `steps` includes `match` but excludes `categorize`, `actions[]` includes a follow-up hint pointing at `refresh_run(steps=["categorize"])`. Unknown step names raise `UserError(code="UNKNOWN_REFRESH_STEP")`. Symmetric with `transactions_categorize_run(methods=...)`.
+- **Behavior:** Single user-facing entry point for the refresh domain. Idempotent; safe to retry after a failure. Matching and categorization are best-effort: a SQLMesh apply error fails the call (`error`), but a matcher/categorizer crash does not abort the pipeline — it is surfaced instead of swallowed. Returns `{applied, duration_seconds, error?, matching_error?, categorization_error?, self_heal_actions}`. `matching_error` / `categorization_error` carry a real crash's message (a first-load missing-view precondition is not a crash and leaves them absent); `self_heal_actions` lists self-heal recipes that ran (empty until the M2D self-heal safelist lands). When a step crashes, the envelope's `recovery_actions` carries the targeted retry (`refresh_run(steps=["match"])` and/or `refresh_run(steps=["categorize"])`) followed by a single `system_doctor` diagnostic. On apply failure, `actions[]` hints at `moneybin transform plan` (CLI operator tool) to inspect, or `refresh_run` to retry. When `steps` includes `match` but excludes `categorize`, `actions[]` includes a follow-up hint pointing at `refresh_run(steps=["categorize"])`. Unknown step names raise `UserError(code="UNKNOWN_REFRESH_STEP")`. Symmetric with `transactions_categorize_run(methods=...)`.
 - **Service:** `moneybin.services.refresh.refresh(db, *, steps=None) -> RefreshResult`
 - **CLI:** `moneybin refresh [--step STEP]... [--output json] [-q]`
 

@@ -100,7 +100,7 @@ class GSheetConnectionService:
         self._oauth = oauth_client
         self._repo = GSheetConnectionsRepo(db)
 
-    def connect(self, req: ConnectionRequest) -> ConnectResult:
+    def connect(self, req: ConnectionRequest, *, actor: str = "cli") -> ConnectResult:
         """Detect, persist, and optionally pull the initial snapshot."""
         if not self._oauth.is_authorized():
             self._oauth.authorize()
@@ -237,6 +237,7 @@ class GSheetConnectionService:
             number_format=detection.number_format,
             skip_rows=detection.skip_rows,
             skip_trailing_patterns=detection.skip_trailing_patterns or None,
+            actor=actor,
         )
         stored = self._repo.get(connection_id)
         if stored is None:
@@ -288,10 +289,12 @@ class GSheetConnectionService:
         row = self._repo.get(connection_id)
         return row_to_connection(row) if row else None
 
-    def disconnect(self, connection_id: str, *, purge: bool = False) -> None:
+    def disconnect(
+        self, connection_id: str, *, purge: bool = False, actor: str = "cli"
+    ) -> None:
         """Soft-disconnect (default) or purge raw rows + delete row (purge=True)."""
         if not purge:
-            self._repo.soft_disconnect(connection_id)
+            self._repo.soft_disconnect(connection_id, actor=actor)
             return
 
         conn = self._repo.get(connection_id)
@@ -333,13 +336,18 @@ class GSheetConnectionService:
                     [connection_id],
                 )
 
-            self._repo.delete(connection_id, in_outer_txn=True)
+            self._repo.delete(connection_id, actor=actor, in_outer_txn=True)
             self._db.commit()
-        except Exception:
+        except BaseException:
+            # BaseException, not Exception: a KeyboardInterrupt/SystemExit between
+            # the raw DELETEs and the repo delete must still roll back the open
+            # transaction. Matches BaseRepo._transaction / MatchApplier._transaction.
             self._db.rollback()
             raise
 
-    def reconnect(self, connection_id: str, *, yes: bool = False) -> ConnectResult:
+    def reconnect(
+        self, connection_id: str, *, yes: bool = False, actor: str = "cli"
+    ) -> ConnectResult:
         """Re-detect against the current sheet, re-pin mapping, run a pull."""
         existing = self._repo.get(connection_id)
         if existing is None:
@@ -398,6 +406,7 @@ class GSheetConnectionService:
             number_format=detection.number_format,
             skip_rows=detection.skip_rows,
             skip_trailing_patterns=detection.skip_trailing_patterns or None,
+            actor=actor,
         )
 
         from moneybin.connectors.gsheet.pull_service import GSheetPullService

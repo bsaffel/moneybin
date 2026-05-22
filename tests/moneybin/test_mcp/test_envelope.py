@@ -209,6 +209,24 @@ class TestBuildEnvelope:
         assert envelope.summary.total_count == 50
         assert envelope.data == result
 
+    @pytest.mark.unit
+    def test_build_threads_recovery_actions(self) -> None:
+        """Success-path envelopes can carry structured recovery actions."""
+        from moneybin.errors import RecoveryAction
+
+        ra = RecoveryAction(
+            tool="refresh_run",
+            arguments={"steps": ["match"]},
+            rationale="retry the match step",
+            confidence="suggested",
+            idempotent=True,
+        )
+        envelope = build_envelope(
+            data={"ok": True}, sensitivity="low", recovery_actions=[ra]
+        )
+        assert envelope.recovery_actions == [ra]
+        assert envelope.to_dict()["recovery_actions"][0]["tool"] == "refresh_run"
+
 
 @pytest.mark.unit
 def test_user_error_carries_structured_details() -> None:

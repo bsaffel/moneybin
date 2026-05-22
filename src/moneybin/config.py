@@ -182,6 +182,27 @@ class ProvidersSettings(BaseModel):
     tabular: TabularProviderConfig = Field(default_factory=TabularProviderConfig)
 
 
+class PackagesSettings(BaseModel):
+    """Per-package configuration nested under MoneyBinSettings.packages.<name>.
+
+    Reference packages (assets, us_tax — Plan 4) declare fields here matching
+    their Pydantic settings models. Empty by default — packages may be
+    installed without any per-package overrides.
+
+    Env-var override: until reference packages declare typed sub-fields
+    (Plan 4), per-package values must use the JSON form, e.g.
+    MONEYBIN_PACKAGES='{"assets": {"valuation_provider": "zillow"}}'.
+    The nested-delimiter form (MONEYBIN_PACKAGES__ASSETS__...) works only
+    once a package declares the field as a typed model attribute.
+
+    Mirrors the ProvidersSettings pattern established by Plan 1. extra="allow"
+    lets a runtime-installed package populate this without a Core schema
+    change; reference packages add explicit typed fields when they land.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+
 class LoggingConfig(BaseModel):
     """Logging configuration settings."""
 
@@ -329,6 +350,34 @@ class ImportSettings(BaseModel):
             "Parent directory for the user-facing import workspace. "
             "Per-profile subdirs (<inbox_root>/<profile>/{inbox,processed,failed}/) "
             "are created on first use. Defaults to ~/Documents/MoneyBin."
+        ),
+    )
+
+
+class DoctorSettings(BaseModel):
+    """`moneybin doctor` integrity-check configuration.
+
+    Tunes the per-table `app.*` audit-coverage invariants added by the
+    repository layer (see `docs/specs/app-integrity-invariant.md` Req 9).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    audit_coverage_lookback_days: int = Field(
+        default=7,
+        ge=1,
+        description=(
+            "Audit-coverage checks only inspect protected app.* rows mutated "
+            "within this many days. Bounds the cost on large profiles and lets "
+            "users suppress pre-migration noise by lowering it after rollout."
+        ),
+    )
+    audit_coverage_sample_cap: int = Field(
+        default=1000,
+        ge=1,
+        description=(
+            "Maximum rows sampled per table for the audit-coverage check. "
+            "`moneybin doctor --full` bypasses the cap and scans every row."
         ),
     )
 
@@ -531,6 +580,7 @@ class MoneyBinSettings(BaseSettings):
     mcp: MCPConfig = Field(default_factory=MCPConfig)
     sync: SyncConfig = Field(default_factory=SyncConfig)
     matching: MatchingSettings = Field(default_factory=MatchingSettings)
+    doctor: DoctorSettings = Field(default_factory=DoctorSettings)
     categorization: CategorizationSettings = Field(
         default_factory=CategorizationSettings
     )
@@ -542,6 +592,10 @@ class MoneyBinSettings(BaseSettings):
     providers: ProvidersSettings = Field(
         default_factory=ProvidersSettings,
         description="Per-provider configuration (OFX, Plaid, tabular).",
+    )
+    packages: PackagesSettings = Field(
+        default_factory=PackagesSettings,
+        description="Per-package configuration for installed analysis packages.",
     )
 
     # Application settings
