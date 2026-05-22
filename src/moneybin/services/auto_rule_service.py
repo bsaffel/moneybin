@@ -946,6 +946,9 @@ class AutoRuleService:
                 categorized_by="auto_rule",
                 rule_id=rule_id,
                 confidence=1.0,
+                # Runs inside approve()'s open transaction (DuckDB has no nested
+                # txns), so the repo joins it rather than opening its own.
+                in_outer_txn=True,
             )
             if outcome.written:
                 applied += 1

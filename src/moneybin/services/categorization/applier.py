@@ -27,7 +27,7 @@ import logging
 from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Literal, cast
+from typing import Literal, cast
 
 import duckdb
 
@@ -39,6 +39,9 @@ from moneybin.metrics.registry import (
 )
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.repositories.categorization_rules_repo import CategorizationRulesRepo
+from moneybin.repositories.transaction_categories_repo import (
+    TransactionCategoriesRepo,
+)
 from moneybin.repositories.user_categories_repo import (
     CategoryOverridesRepo,
     UserCategoriesRepo,
@@ -49,7 +52,6 @@ from moneybin.services.categorization._shared import (
     SOURCE_PRIORITY,
     CategorizationRuleInput,
     InternalMatchType,
-    priority_case_sql,
     resolve_category_id,
 )
 from moneybin.tables import (
@@ -129,11 +131,6 @@ class MatchApplier:
     methods pure-write and lets the facade own the cross-cluster choreography.
     """
 
-    _CATEGORY_AUDIT_TARGET = (
-        TRANSACTION_CATEGORIES.schema,
-        TRANSACTION_CATEGORIES.name,
-    )
-
     def __init__(self, db: Database, *, audit: AuditService) -> None:
         """Bind the applier to a database connection and audit service."""
         self._db = db
@@ -146,6 +143,7 @@ class MatchApplier:
         self._category_overrides = CategoryOverridesRepo(db, audit=audit)
         self._user_merchants = UserMerchantsRepo(db, audit=audit)
         self._rules = CategorizationRulesRepo(db, audit=audit)
+        self._tx_categories = TransactionCategoriesRepo(db, audit=audit)
 
     @contextmanager
     def _transaction(self) -> Generator[None]:
@@ -212,74 +210,26 @@ class MatchApplier:
         a higher-priority existing categorization. New callers needing a
         non-user write must route through :meth:`write_categorization`.
         """
-        prior = self._fetch_category_row(transaction_id)
         category_id = resolve_category_id(self._db, category, subcategory)
-        self._db.conn.execute(
-            f"""
-            INSERT INTO {TRANSACTION_CATEGORIES.full_name}
-              (transaction_id, category, subcategory, category_id,
-               categorized_at, categorized_by)
-            VALUES (?, ?, ?, ?, NOW(), ?)
-            ON CONFLICT (transaction_id) DO UPDATE SET
-                category = EXCLUDED.category,
-                subcategory = EXCLUDED.subcategory,
-                category_id = EXCLUDED.category_id,
-                categorized_at = NOW(),
-                categorized_by = EXCLUDED.categorized_by
-            """,  # noqa: S608  # TRANSACTION_CATEGORIES is a TableRef constant
-            [transaction_id, category, subcategory, category_id, categorized_by],
-        )
-        after = {
-            "category": category,
-            "subcategory": subcategory,
-            "categorized_by": categorized_by,
-        }
-        self._audit.record_audit_event(
-            action="category.set",
-            target=(*self._CATEGORY_AUDIT_TARGET, transaction_id),
-            before=prior,
-            after=after,
+        # Routes through the repo (paired audit, full before/after — Req 4).
+        # in_outer_txn=True: the caller already owns the transaction.
+        self._tx_categories.set(
+            transaction_id,
+            category=category,
+            subcategory=subcategory,
+            category_id=category_id,
+            categorized_by=categorized_by,
             actor=actor,
+            in_outer_txn=True,
         )
 
     def clear_category(self, transaction_id: str, *, actor: str) -> None:
         """Delete a transaction's category row and emit ``category.clear`` audit.
 
-        No-op (and no audit event) when no row exists.
+        Routes through the repo (full before-row capture, Req 4). No-op (and no
+        audit event) when no row exists.
         """
-        with self._transaction():
-            prior = self._fetch_category_row(transaction_id)
-            if prior is None:
-                return
-            self._db.conn.execute(
-                f"DELETE FROM {TRANSACTION_CATEGORIES.full_name} WHERE transaction_id = ?",  # noqa: S608  # TableRef constant
-                [transaction_id],
-            )
-            self._audit.record_audit_event(
-                action="category.clear",
-                target=(*self._CATEGORY_AUDIT_TARGET, transaction_id),
-                before=prior,
-                after=None,
-                actor=actor,
-            )
-
-    def _fetch_category_row(self, transaction_id: str) -> dict[str, Any] | None:
-        """Return the current category row for ``transaction_id`` as a JSON-safe dict."""
-        row = self._db.conn.execute(
-            f"""
-            SELECT category, subcategory, categorized_by
-              FROM {TRANSACTION_CATEGORIES.full_name}
-             WHERE transaction_id = ?
-            """,  # noqa: S608  # TableRef constant
-            [transaction_id],
-        ).fetchone()
-        if row is None:
-            return None
-        return {
-            "category": row[0],
-            "subcategory": row[1],
-            "categorized_by": row[2],
-        }
+        self._tx_categories.clear(transaction_id, actor=actor)
 
     # -- Merchant management --
 
@@ -529,16 +479,11 @@ class MatchApplier:
         migration / ml / plaid) that happen to reference this rule_id are
         left intact. Run by the facade's ``deactivate_rule`` reapply tail
         immediately before ``categorize_pending`` re-evaluates the affected
-        transactions against the remaining active matchers.
+        transactions against the remaining active matchers. Routes through the
+        repo so each stripped row emits a paired ``category.clear`` audit
+        capturing its full prior state (Invariant 10, Req 4).
         """
-        self._db.execute(
-            f"""
-            DELETE FROM {TRANSACTION_CATEGORIES.full_name}
-            WHERE rule_id = ?
-              AND categorized_by IN ('rule', 'auto_rule')
-            """,  # noqa: S608  # TableRef constant, no user input interpolated
-            [rule_id],
-        )
+        self._tx_categories.delete_by_rule(rule_id, actor="system")
 
     # -- Category (taxonomy) management --
 
@@ -727,10 +672,14 @@ class MatchApplier:
         with self._transaction():
             if force:
                 # NOTE(Invariant 10): these 6 cascade DELETEs target other
-                # protected app.* tables and are still raw — their repos land in
-                # Batches B/C, at which point they thread parent_audit_id from
-                # the user_categories delete below. The lint rule (AI-PR13) is
-                # not active until every protected table has repo coverage.
+                # protected app.* tables and are still raw. As of Batch B,
+                # transaction_categories / user_merchants / categorization_rules
+                # / proposed_rules have repos, but budgets and transaction_splits
+                # do not (Batch C / AI-PR12). Threading the whole cascade through
+                # repos in one pass — when all six have a delete-by-category_id
+                # path — keeps it a single coherent change rather than a
+                # half-threaded mix; the lint rule (AI-PR13) lands after that, so
+                # nothing forces it earlier.
                 for table_const in (
                     TRANSACTION_CATEGORIES,
                     BUDGETS,
@@ -743,9 +692,10 @@ class MatchApplier:
                         f"DELETE FROM {table_const.full_name} WHERE category_id = ?",  # noqa: S608  # TableRef constant
                         [category_id],
                     )
-            # TODO(Invariant 10 Batch B/C): capture this AuditEvent and thread its
-            # audit_id as parent_audit_id into the cascade deletes above, once
-            # those tables (transaction_categories, budgets, …) have repos.
+            # TODO(Invariant 10 AI-PR12): once budgets + transaction_splits have
+            # repos, capture this AuditEvent and thread its audit_id as
+            # parent_audit_id into all six cascade deletes above (routed through
+            # their repos).
             self._user_categories.delete(category_id, actor=actor, in_outer_txn=True)
 
     # -- Guarded categorization write --
@@ -760,6 +710,7 @@ class MatchApplier:
         merchant_id: str | None = None,
         rule_id: str | None = None,
         confidence: float | None = None,
+        in_outer_txn: bool = False,
     ) -> WriteOutcome:
         """Insert or replace a categorization, respecting source precedence.
 
@@ -787,44 +738,24 @@ class MatchApplier:
                 f"Unknown categorized_by={categorized_by!r}; "
                 f"must be one of {sorted(SOURCE_PRIORITY)}"
             )
-        # The SQL CASE expression is generated from SOURCE_PRIORITY so the
-        # ladder lives in exactly one place. See priority_case_sql.
-        existing_table = TRANSACTION_CATEGORIES.full_name
-        excluded_priority = priority_case_sql("EXCLUDED.categorized_by")
-        existing_priority = priority_case_sql(f"{existing_table}.categorized_by")
-        # FK is paired with text on identical precedence terms: same WHERE guard
-        # admits both, same ON CONFLICT overwrites both.
+        # FK is paired with text on identical precedence terms. The repo owns
+        # the precedence-guarded upsert + paired audit; a precedence-skipped
+        # write returns None (no mutation, no audit). Engine writes record their
+        # source via categorized_by, so the audit actor is the batch ("system").
         category_id = resolve_category_id(self._db, category, subcategory)
-        cursor = self._db.execute(
-            f"""
-            INSERT INTO {existing_table}
-                (transaction_id, category, subcategory, category_id,
-                 categorized_at, categorized_by, merchant_id, rule_id, confidence)
-            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?)
-            ON CONFLICT (transaction_id) DO UPDATE SET
-                category = EXCLUDED.category,
-                subcategory = EXCLUDED.subcategory,
-                category_id = EXCLUDED.category_id,
-                categorized_at = EXCLUDED.categorized_at,
-                categorized_by = EXCLUDED.categorized_by,
-                merchant_id = EXCLUDED.merchant_id,
-                rule_id = EXCLUDED.rule_id,
-                confidence = EXCLUDED.confidence
-            WHERE {excluded_priority} <= {existing_priority}
-            RETURNING transaction_id
-            """,  # noqa: S608  # TRANSACTION_CATEGORIES is a TableRef constant; CASE built from SOURCE_PRIORITY
-            [
-                transaction_id,
-                category,
-                subcategory,
-                category_id,
-                categorized_by,
-                merchant_id,
-                rule_id,
-                confidence,
-            ],
+        event = self._tx_categories.upsert_guarded(
+            transaction_id,
+            category=category,
+            subcategory=subcategory,
+            category_id=category_id,
+            categorized_by=categorized_by,
+            merchant_id=merchant_id,
+            rule_id=rule_id,
+            confidence=confidence,
+            actor="system",
+            in_outer_txn=in_outer_txn,
         )
-        if cursor.fetchone() is not None:
+        if event is not None:
             return WriteOutcome(written=True)
 
         # Row exists with a higher-priority source; record the skip with labels

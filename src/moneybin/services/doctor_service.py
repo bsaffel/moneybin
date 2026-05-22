@@ -98,13 +98,15 @@ class DoctorService:
 
         Covers every table wrapped in a repo so far (``user_categories``,
         ``category_overrides``, ``gsheet_connections``, ``user_merchants``,
-        ``categorization_rules``, ``proposed_rules``); later repository PRs
-        append one coverage call per newly-wrapped table plus that table's
-        FK/orphan specifics.
+        ``categorization_rules``, ``proposed_rules``, ``transaction_categories``);
+        later repository PRs append one coverage call per newly-wrapped table
+        plus that table's FK/orphan specifics.
 
-        ``proposed_rules`` has no ``updated_at`` column, so its coverage keys on
-        ``proposed_at`` (catches bypass INSERTs; bypass UPDATEs are the lint
-        rule's job — same heuristic limitation the helper documents).
+        Tables without an ``updated_at`` column pass their natural watermark:
+        ``proposed_rules`` → ``proposed_at``, ``transaction_categories`` →
+        ``categorized_at``. Those watermarks catch bypass INSERTs; bypass
+        UPDATEs are the lint rule's job — the heuristic limitation the helper
+        documents.
         """
         return [
             self._run_app_audit_coverage(USER_CATEGORIES, "category_id", full=full),
@@ -120,9 +122,16 @@ class DoctorService:
                 updated_col="proposed_at",
                 full=full,
             ),
+            self._run_app_audit_coverage(
+                TRANSACTION_CATEGORIES,
+                "transaction_id",
+                updated_col="categorized_at",
+                full=full,
+            ),
             self._run_user_categories_uniqueness(),
             self._run_user_merchants_orphans(),
             self._run_proposed_rules_rule_fk(),
+            self._run_transaction_categories_fk(),
         ]
 
     def _run_app_audit_coverage(
@@ -341,6 +350,47 @@ class DoctorService:
                 detail=(
                     f"{len(affected)} proposed_rules row(s) reference a "
                     "categorization_rules.rule_id that does not exist"
+                ),
+                affected_ids=affected,
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _run_transaction_categories_fk(self) -> InvariantResult:
+        """Flag ``transaction_categories`` rows with no ``core.fct_transactions`` row.
+
+        ``transaction_id`` is a 1:1 FK to the canonical transaction; a
+        categorization referencing a transaction that no longer exists (e.g. a
+        re-import dropped it) is an orphan. Skipped before the first transform
+        builds ``core.fct_transactions``.
+        """
+        name = "app_transaction_categories_fk"
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT c.transaction_id
+                FROM {TRANSACTION_CATEGORIES.full_name} c
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM {FCT_TRANSACTIONS.full_name} t
+                    WHERE t.transaction_id = c.transaction_id
+                )
+                ORDER BY c.transaction_id
+                """  # noqa: S608  # TableRef constants, no user input
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — core.fct_transactions may not exist yet
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"FK check unavailable: {e}",
+                affected_ids=[],
+            )
+        if rows:
+            affected = [str(r[0]) for r in rows]
+            return InvariantResult(
+                name=name,
+                status="fail",
+                detail=(
+                    f"{len(affected)} transaction_categories row(s) reference a "
+                    "transaction_id absent from core.fct_transactions"
                 ),
                 affected_ids=affected,
             )

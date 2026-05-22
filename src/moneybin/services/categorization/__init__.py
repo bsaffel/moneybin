@@ -378,8 +378,14 @@ class CategorizationService:
         merchant_id: str | None = None,
         rule_id: str | None = None,
         confidence: float | None = None,
+        in_outer_txn: bool = False,
     ) -> WriteOutcome:
-        """Insert or replace a categorization, respecting source precedence."""
+        """Insert or replace a categorization, respecting source precedence.
+
+        Pass ``in_outer_txn=True`` when the caller already owns a transaction
+        (e.g. the auto-rule approve cascade); the repo then joins it instead of
+        opening a nested one (DuckDB has no nested transactions).
+        """
         return self._applier.write_categorization(
             transaction_id=transaction_id,
             category=category,
@@ -388,6 +394,7 @@ class CategorizationService:
             merchant_id=merchant_id,
             rule_id=rule_id,
             confidence=confidence,
+            in_outer_txn=in_outer_txn,
         )
 
     # -- Batch orchestration --

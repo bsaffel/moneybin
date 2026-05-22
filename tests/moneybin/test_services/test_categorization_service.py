@@ -1184,11 +1184,13 @@ class TestSetCategoryAudit:
         assert before is None
         import json as _json
 
-        assert _json.loads(after) == {
-            "category": "Food",
-            "subcategory": "Coffee",
-            "categorized_by": "user",
-        }
+        # Full-row capture (Req 4) — the audit records the complete resulting
+        # row, not just the changed column subset.
+        after_decoded = _json.loads(after)
+        assert after_decoded["category"] == "Food"
+        assert after_decoded["subcategory"] == "Coffee"
+        assert after_decoded["categorized_by"] == "user"
+        assert "transaction_id" in after_decoded  # full row, not a subset
         cat_rows = db.conn.execute(
             "SELECT category, subcategory, categorized_by "
             "FROM app.transaction_categories WHERE transaction_id = ?",

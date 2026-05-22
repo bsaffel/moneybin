@@ -14,15 +14,20 @@ from __future__ import annotations
 from moneybin.database import Database
 from moneybin.repositories.categorization_rules_repo import CategorizationRulesRepo
 from moneybin.repositories.proposed_rules_repo import ProposedRulesRepo
+from moneybin.repositories.transaction_categories_repo import (
+    TransactionCategoriesRepo,
+)
 from moneybin.repositories.user_categories_repo import UserCategoriesRepo
 from moneybin.repositories.user_merchants_repo import UserMerchantsRepo
 from moneybin.services.doctor_service import DoctorService
 from moneybin.tables import (
     CATEGORIZATION_RULES,
     PROPOSED_RULES,
+    TRANSACTION_CATEGORIES,
     USER_CATEGORIES,
     USER_MERCHANTS,
 )
+from tests.moneybin.db_helpers import create_core_tables
 
 
 def _insert_rule(repo: CategorizationRulesRepo) -> str:
@@ -252,6 +257,74 @@ def test_proposed_rules_rule_fk_passes_for_resolved_and_null(db: Database) -> No
     assert result.status == "pass"
 
 
+# ---------------------------------------------------------------------------
+# transaction_categories: coverage (keys on categorized_at) + transaction FK
+# ---------------------------------------------------------------------------
+
+
+def test_audit_coverage_passes_for_repo_mutated_categorization(db: Database) -> None:
+    TransactionCategoriesRepo(db).set(
+        "tcov",
+        category="Dining",
+        subcategory=None,
+        category_id=None,
+        categorized_by="user",
+        actor="cli",
+    )
+    result = DoctorService(db)._run_app_audit_coverage(
+        TRANSACTION_CATEGORIES, "transaction_id", updated_col="categorized_at"
+    )
+    assert result.status == "pass"
+
+
+def test_transaction_categories_fk_flags_orphan(db: Database) -> None:
+    create_core_tables(db)
+    db.execute(
+        "INSERT INTO core.fct_transactions "  # noqa: S608  # test input, not executing user SQL
+        "(transaction_id, account_id, transaction_date, amount, source_type) "
+        "VALUES ('t_ok', 'a1', DATE '2026-01-01', -5.00, 'csv')"
+    )
+    repo = TransactionCategoriesRepo(db)
+    repo.set(
+        "t_ok",
+        category="Dining",
+        subcategory=None,
+        category_id=None,
+        categorized_by="user",
+        actor="cli",
+    )
+    repo.set(
+        "t_orphan",  # no fct_transactions row
+        category="Dining",
+        subcategory=None,
+        category_id=None,
+        categorized_by="user",
+        actor="cli",
+    )
+    result = DoctorService(db)._run_transaction_categories_fk()
+    assert result.status == "fail"
+    assert result.affected_ids == ["t_orphan"]
+
+
+def test_transaction_categories_fk_passes_when_all_resolve(db: Database) -> None:
+    create_core_tables(db)
+    db.execute(
+        "INSERT INTO core.fct_transactions "  # noqa: S608  # test input, not executing user SQL
+        "(transaction_id, account_id, transaction_date, amount, source_type) "
+        "VALUES ('t_ok', 'a1', DATE '2026-01-01', -5.00, 'csv')"
+    )
+    TransactionCategoriesRepo(db).set(
+        "t_ok",
+        category="Dining",
+        subcategory=None,
+        category_id=None,
+        categorized_by="user",
+        actor="cli",
+    )
+    result = DoctorService(db)._run_transaction_categories_fk()
+    assert result.status == "pass"
+
+
 def test_run_all_includes_app_integrity_invariants(db: Database) -> None:
     report = DoctorService(db).run_all()
     names = {r.name for r in report.invariants}
@@ -262,3 +335,5 @@ def test_run_all_includes_app_integrity_invariants(db: Database) -> None:
     assert "app_audit_coverage_categorization_rules" in names
     assert "app_audit_coverage_proposed_rules" in names
     assert "app_proposed_rules_rule_fk" in names
+    assert "app_audit_coverage_transaction_categories" in names
+    assert "app_transaction_categories_fk" in names
