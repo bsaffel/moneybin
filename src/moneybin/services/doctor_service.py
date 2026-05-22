@@ -178,8 +178,11 @@ class DoctorService:
                   AND match_type = 'dedup'
                 """  # noqa: S608 — TableRef constant
             )
-        except Exception:  # noqa: BLE001 — prep/core views absent before first transform
-            logger.debug("prep/core layer not available; dedup_reconciliation skipped")
+        except Exception as e:  # noqa: BLE001 — degrade gracefully; surface cause at DEBUG
+            # Expected case: prep/core views absent before the first transform.
+            # Bind + exc_info so a real fault (renamed column, permissions) is
+            # diagnosable rather than masked by the static skip detail.
+            logger.debug(f"dedup_reconciliation skipped: {e}", exc_info=True)
             return InvariantResult(
                 name="dedup_reconciliation",
                 status="skipped",
