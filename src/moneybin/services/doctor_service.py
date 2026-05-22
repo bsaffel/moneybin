@@ -198,15 +198,15 @@ class DoctorService:
             name="dedup_reconciliation",
             status="fail",
             detail=(
-                f"{observed_absorbed} row(s) collapsed between staging and core "
-                f"but {dedup_absorbed} dedup decision(s) account for it "
-                f"(raw={raw_total}, core={core_count})"
+                f"expected {dedup_absorbed} absorbed row(s) from accepted dedup "
+                f"decisions but observed {observed_absorbed} "
+                f"(raw_total={raw_total}, core_count={core_count})"
             ),
             affected_ids=[],
         )
 
     def _scalar_int(self, sql: str) -> int:
-        """Execute a single-value COUNT query and return it as an int."""
+        """Execute a single-row query and return column 0 as an int (0 if no row)."""
         row = self._db.execute(sql).fetchone()
         return int(row[0]) if row else 0
 
