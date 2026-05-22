@@ -924,8 +924,8 @@ class TestCategorizeRulesCreateCLI:
         )
         result.assert_success()
         payload = json.loads(result.stdout)
-        assert "rules_create" in payload
-        data = payload["rules_create"]
+        assert "data" in payload
+        data = payload["data"]
         assert data["created"] >= 1
         assert isinstance(data.get("rule_ids"), list)
 
@@ -1079,7 +1079,7 @@ class TestCategorizeRulesDeleteCLI:
             env=env,
         )
         create_result.assert_success()
-        rule_ids = json.loads(create_result.stdout)["rules_create"]["rule_ids"]
+        rule_ids = json.loads(create_result.stdout)["data"]["rule_ids"]
         assert rule_ids, "create did not return any rule_ids"
         rule_id = rule_ids[0]
 
@@ -1110,7 +1110,7 @@ class TestCategorizeRulesDeleteCLI:
             env=env,
         )
         create_result.assert_success()
-        rule_id = json.loads(create_result.stdout)["rules_create"]["rule_ids"][0]
+        rule_id = json.loads(create_result.stdout)["data"]["rule_ids"][0]
 
         delete_result = run_cli(
             "transactions",
@@ -1124,8 +1124,8 @@ class TestCategorizeRulesDeleteCLI:
         )
         delete_result.assert_success()
         payload = json.loads(delete_result.stdout)
-        assert payload["rules_delete"]["rule_id"] == rule_id
-        assert payload["rules_delete"]["action"] == "deactivated"
+        assert payload["data"]["rule_id"] == rule_id
+        assert payload["data"]["action"] == "deactivated"
 
     def test_delete_nonexistent_rule_errors(
         self, _mutating_profile_template: Path, tmp_path: Path

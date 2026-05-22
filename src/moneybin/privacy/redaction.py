@@ -202,6 +202,21 @@ def _redact(value: Any, consent: ConsentSet | None, declared_type: Any) -> Any:
                 if value is None:
                     return None
                 continue
+            # Outer-Optional Annotated arm, e.g. Optional[Annotated[str,
+            # DataClass.ROUTING_NUMBER]]. get_origin(arm) is typing.Annotated,
+            # which isinstance() rejects — so without this branch the arm is
+            # skipped and a CRITICAL value falls through UNREDACTED. Match the
+            # underlying type, then recurse with the full Annotated alias so its
+            # DataClass still drives masking.
+            if get_origin(arm) is Annotated:
+                underlying = get_args(arm)[0]
+                underlying_check = get_origin(underlying) or underlying
+                try:
+                    if isinstance(value, underlying_check):
+                        return _redact(value, consent, arm)
+                except TypeError:
+                    pass
+                continue
             # Parameterized generic aliases (list[X], dict[K, V]) raise on
             # isinstance — match against the origin, then recurse with the full
             # alias so element/value types are still redacted. Without this the

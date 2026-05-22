@@ -160,8 +160,12 @@ def write_privacy_event(event: dict[str, Any]) -> None:
                 with os.fdopen(fd, "a", encoding="utf-8") as f:
                     f.write(line + "\n")
             except BaseException:
-                # fdopen takes ownership of fd on success; if fchmod (before
-                # fdopen) raised, close the raw fd ourselves to avoid a leak.
+                # Two raise paths reach here: (a) fchmod raised before fdopen —
+                # fd is still open and ownership never transferred, so we must
+                # close it; (b) the write raised inside the `with`, whose context
+                # manager already closed fd — our close then no-ops (EBADF →
+                # OSError, caught). Either way fd ends up closed exactly once
+                # logically, with no leak.
                 try:
                     os.close(fd)
                 except OSError:

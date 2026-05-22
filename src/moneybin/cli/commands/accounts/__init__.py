@@ -72,8 +72,11 @@ def accounts_list(
                 include_archived=include_archived, type_filter=type_filter
             )
     if output == OutputFormat.JSON:
+        # No explicit sensitivity: AccountSummary carries ACCOUNT_IDENTIFIER
+        # (CRITICAL); render_or_json derives the real tier. A literal "medium"
+        # understates it at the call site.
         render_or_json(
-            build_envelope(data=result, sensitivity="medium"),
+            build_envelope(data=result),
             output,
             cli_actor="accounts_list",
         )
@@ -99,8 +102,9 @@ def accounts_get(
         logger.error(f"❌ Account not found: {account_id}")
         raise typer.Exit(1)
     if output == OutputFormat.JSON:
+        # AccountDetail carries CRITICAL fields; render_or_json derives the tier.
         render_or_json(
-            build_envelope(data=record, sensitivity="medium"),
+            build_envelope(data=record),
             output,
             cli_actor="accounts_get",
         )
