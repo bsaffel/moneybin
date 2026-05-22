@@ -278,11 +278,13 @@ def gsheet_pull(
                 if not refresh_result.applied and refresh_result.error is not None:
                     refresh_error = refresh_result.error
 
-    # Any non-complete pull (auth_expired, unreachable, rate_limited, failed,
-    # drift_detected) is a runtime failure — exit non-zero so CI/agents detect
-    # it without parsing output. drift_detected counts: the pull did not load
-    # cleanly and needs reconnect.
-    pull_failed = any(r.status != "complete" for r in results)
+    # Hard-failure statuses (auth_expired, unreachable, rate_limited, failed)
+    # exit non-zero so CI/agents detect them without parsing output. drift_detected
+    # is surfaced as a ⚠️ warning, not a ❌ error — the command ran and reported a
+    # recoverable state (reconnect), so it stays exit 0, matching the ⚠️/❌ split
+    # in the text output below.
+    failure_statuses = {"auth_expired", "unreachable", "rate_limited", "failed"}
+    pull_failed = any(r.status in failure_statuses for r in results)
 
     if output == OutputFormat.JSON:
         typer.echo(
