@@ -184,6 +184,12 @@ tier signals what gates merge vs what's worth doing vs what's polish:
 Re-running the reviewer (`@claude` in a PR comment) re-evaluates against
 the current code and auto-resolves threads whose issues are now fixed.
 
+To skip the automated review on a specific push — for instance, the final
+nit-fix commit on an already-approved PR you're about to merge — put
+`[skip-review]` (or `[skip review]`) in that commit's message. Only that
+push is skipped; later pushes are reviewed normally, and `@claude` always
+re-summons a review on demand.
+
 ### 7. After it ships
 
 If the change is user-visible, update the docs surface per
