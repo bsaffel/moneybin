@@ -20,6 +20,7 @@ from moneybin.matching.persistence import (
     MatchStatus,
     get_match_decision,
     get_match_log,
+    get_pending_matches,
     undo_match,
     update_match_status,
 )
@@ -176,3 +177,23 @@ class MatchingService:
             status=cast("MatchStatus", status),
             decided_by=decided_by,
         )
+
+    def get_pending(self, *, match_type: str | None = None) -> list[dict[str, Any]]:
+        """Return pending match decisions awaiting review.
+
+        Wraps :func:`moneybin.matching.persistence.get_pending_matches`.
+        """
+        return get_pending_matches(self._db, match_type=match_type)
+
+    def accept_all_pending(self, *, match_type: str | None = None) -> int:
+        """Accept every pending match decision in scope. Returns the count.
+
+        Loops the single-row primitive rather than a bulk UPDATE so this adds
+        no new raw write to ``app.match_decisions``.
+        """
+        pending = get_pending_matches(self._db, match_type=match_type)
+        for row in pending:
+            update_match_status(
+                self._db, row["match_id"], status="accepted", decided_by="user"
+            )
+        return len(pending)

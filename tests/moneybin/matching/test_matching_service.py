@@ -90,3 +90,21 @@ def test_invalid_status_value_raises(db: Database) -> None:
     with pytest.raises(UserError) as exc:
         MatchingService(db).set_status("m5", status="bogus")
     assert exc.value.code == error_codes.MUTATION_INVALID_INPUT
+
+
+def test_get_pending_returns_only_pending(db: Database) -> None:
+    _seed(db, "p1", "pending")
+    _seed(db, "p2", "accepted")
+    pending = MatchingService(db).get_pending()
+    ids = {row["match_id"] for row in pending}
+    assert ids == {"p1"}
+
+
+def test_accept_all_pending_accepts_and_counts(db: Database) -> None:
+    _seed(db, "q1", "pending")
+    _seed(db, "q2", "pending")
+    _seed(db, "q3", "accepted")
+    count = MatchingService(db).accept_all_pending()
+    assert count == 2
+    assert get_match_decision(db, "q1")["match_status"] == "accepted"
+    assert MatchingService(db).get_pending() == []
