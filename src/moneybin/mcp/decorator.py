@@ -498,6 +498,19 @@ def mcp_tool(
                 err_env = _stamp_sensitivity(err_env)
                 await _emit_privacy_event(err_env)
                 return err_env
+            except asyncio.CancelledError:
+                # External cancellation (client disconnect / server shutdown)
+                # raises CancelledError — a BaseException that bypasses the
+                # TimeoutError and Exception handlers above. Without this branch
+                # the aborted invocation never reaches _emit_privacy_event and is
+                # missing from privacy.log.jsonl, leaving a hole in the tool-call
+                # audit surface. Emit the crash row, then re-raise — cancellation
+                # must never be swallowed. (Same emit-then-propagate pattern the
+                # timeout-cleanup sleep above already uses for this case.)
+                await _emit_privacy_event(
+                    _build_unclassified_failure_envelope(fn.__name__)
+                )
+                raise
             # _check_envelope raises TypeError when a tool returns a non-
             # ResponseEnvelope. That's an envelope-contract violation that
             # belongs in the audit trail like any other crash path; emit

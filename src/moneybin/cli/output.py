@@ -38,8 +38,7 @@ import typer
 from moneybin.errors import UserError
 from moneybin.privacy.introspection import derive_tier, extract_data_classes
 from moneybin.privacy.log import build_tool_call_event, write_privacy_event
-from moneybin.privacy.redaction import redact_typed
-from moneybin.privacy.taxonomy import Tier
+from moneybin.privacy.redaction import has_active_transform, redact_typed
 from moneybin.protocol.envelope import ResponseEnvelope, build_error_envelope
 
 logger = logging.getLogger(__name__)
@@ -129,16 +128,16 @@ def render_or_json(
         type(envelope.data) if envelope.data is not None else type(None)
     )  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
 
-    # Redact CRITICAL fields before serialising. Skip the walk for non-CRITICAL
-    # payloads — the result would be value-identical and the cost is real.
-    # Derive from the payload TYPE (same source the MCP decorator uses) rather
-    # than envelope.summary.sensitivity, which CLI commands set manually and
-    # often understate (e.g. accounts_resolve passes "low" but its payload
-    # contains ACCOUNT_IDENTIFIER → tier CRITICAL).
+    # Redact fields with an active transform before serialising. Skip the walk
+    # for payloads with none — the result would be value-identical and the cost
+    # is real. Derive from the payload TYPE (same source the MCP decorator uses)
+    # rather than envelope.summary.sensitivity, which CLI commands set manually
+    # and often understate (e.g. accounts_resolve passes "low" but its payload
+    # contains ACCOUNT_IDENTIFIER → an active transform).
     if (
         envelope.error is None
         and envelope.data is not None  # pyright: ignore[reportUnknownMemberType]
-        and _has_critical(original_data_type)  # pyright: ignore[reportUnknownArgumentType]
+        and _has_active_transform(original_data_type)  # pyright: ignore[reportUnknownArgumentType]
     ):
         redacted_data = redact_typed(envelope.data, consent=None)  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
         envelope = dataclasses.replace(envelope, data=redacted_data)  # pyright: ignore[reportUnknownArgumentType]
@@ -202,13 +201,18 @@ def _derive_log_sensitivity(payload_type: type, envelope_sensitivity: str) -> st
     return derive_tier(payload_type).name.lower()
 
 
-def _has_critical(payload_type: type) -> bool:
-    """Return True if ``payload_type`` carries any CRITICAL-tier field.
+def _has_active_transform(payload_type: type) -> bool:
+    """Return True if ``payload_type`` carries any field with an active transform.
 
-    Used by the JSON output path to skip ``redact_typed`` for payloads
-    that would pass through unchanged (every non-CRITICAL tier is
-    pass-through in PR 2). Mirrors the equivalent check in the
-    ``@mcp_tool`` decorator's wrapper.
+    Used by the JSON output path to skip ``redact_typed`` for payloads that
+    would pass through unchanged. Delegates to the same
+    ``has_active_transform`` gate the ``@mcp_tool`` decorator's wrapper uses
+    (``decorator.py``), so the CLI and MCP redaction paths stay coherent:
+    when PR3 wires HIGH/MEDIUM transforms (hash-placeholder for MERCHANT_NAME,
+    date-shifting for TXN_DATE), both paths begin redacting those fields
+    together. A ``tier == CRITICAL`` check here would be the "CRITICAL-only
+    trap" — it would leave the CLI ``--output json`` path leaking MEDIUM/HIGH
+    fields the MCP path masks.
 
     ``PrivacyContractError`` deliberately propagates: a typed payload
     missing ``Annotated[T, DataClass]`` metadata is a contract bug, not
@@ -222,7 +226,7 @@ def _has_critical(payload_type: type) -> bool:
     # "annotation missing on a typed payload".
     if payload_type in (list, dict, tuple, set):
         return False
-    return derive_tier(payload_type) == Tier.CRITICAL
+    return has_active_transform(payload_type)
 
 
 def emit_json_error(user_error: UserError) -> None:

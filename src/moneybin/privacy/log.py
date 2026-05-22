@@ -111,14 +111,21 @@ def write_privacy_event(event: dict[str, Any]) -> None:
             # no-profile path before any profile dir exists. mkdir(mode=0o700)
             # only applies the mode to the LEAF — intermediate parents created
             # by parents=True inherit the umask (typically 0o755, world-
-            # readable). Force the umask to 0o077 around the call so every
-            # created dir (parents included) lands at 0o700, matching the
-            # 0o600 file inside.
-            prev_umask = os.umask(0o077)
-            try:
-                log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-            finally:
-                os.umask(prev_umask)
+            # readable). Don't toggle the process-wide umask to force 0o700:
+            # umask is process-global, not thread-local, so a concurrent thread
+            # creating files (e.g. MCP tool work via asyncio.to_thread) could
+            # inherit it and get unintended permissions. Instead, snapshot which
+            # ancestors are missing, create the tree, then chmod exactly the dirs
+            # WE created to 0o700 — never touching pre-existing shared dirs.
+            missing_dirs = [p for p in (log_dir, *log_dir.parents) if not p.exists()]
+            log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            for created in missing_dirs:
+                try:
+                    created.chmod(0o700)
+                except OSError:
+                    # Best-effort: a TOCTOU race or platform quirk on one dir
+                    # must not break the audit write (fail-soft contract).
+                    pass
             log_path = log_dir / _LOG_FILE
             _rotate_if_new_day(log_path)
             line = json.dumps(event, sort_keys=True, separators=(",", ":"))

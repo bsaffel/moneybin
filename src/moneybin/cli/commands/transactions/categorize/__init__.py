@@ -105,9 +105,9 @@ def categorize_pending(
         typer.echo("No data — import transactions first.", err=True)
         raise typer.Exit(0)
 
-    # Wrap raw rows in the typed CatPendingPayload so the JSON path derives the
-    # CRITICAL tier (account_id) and redact_typed masks it — a bare list[dict]
-    # short-circuits _has_critical(list) → False and would emit account_id raw.
+    # Wrap raw rows in the typed CatPendingPayload so the JSON path sees the
+    # account_id's active transform and redact_typed masks it — a bare list[dict]
+    # short-circuits _has_active_transform(list) → False and would emit account_id raw.
     payload = CatPendingPayload(
         transactions=[
             PendingTxnRow(
