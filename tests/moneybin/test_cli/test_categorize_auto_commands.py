@@ -90,7 +90,7 @@ def test_auto_accept_explicit_accept(
 
     result = runner.invoke(app, ["auto", "accept", "--accept", "a1", "--accept", "a2"])
     assert result.exit_code == 0
-    svc.accept.assert_called_once_with(accept=["a1", "a2"], reject=[])
+    svc.accept.assert_called_once_with(accept=["a1", "a2"], reject=[], actor="cli")
 
 
 @patch("moneybin.services.auto_rule_service.AutoRuleService")
@@ -106,7 +106,7 @@ def test_auto_accept_explicit_reject(
 
     result = runner.invoke(app, ["auto", "accept", "--reject", "r1"])
     assert result.exit_code == 0
-    svc.accept.assert_called_once_with(accept=[], reject=["r1"])
+    svc.accept.assert_called_once_with(accept=[], reject=["r1"], actor="cli")
 
 
 @patch("moneybin.services.auto_rule_service.AutoRuleService")
@@ -126,7 +126,7 @@ def test_auto_accept_accept_all_expands_pending(
 
     result = runner.invoke(app, ["auto", "accept", "--accept-all"])
     assert result.exit_code == 0
-    svc.accept.assert_called_once_with(accept=["p1", "p2"], reject=[])
+    svc.accept.assert_called_once_with(accept=["p1", "p2"], reject=[], actor="cli")
 
 
 @patch("moneybin.services.auto_rule_service.AutoRuleService")
@@ -146,7 +146,7 @@ def test_auto_accept_reject_all_expands_pending(
 
     result = runner.invoke(app, ["auto", "accept", "--reject-all"])
     assert result.exit_code == 0
-    svc.accept.assert_called_once_with(accept=[], reject=["p1", "p2"])
+    svc.accept.assert_called_once_with(accept=[], reject=["p1", "p2"], actor="cli")
 
 
 @patch("moneybin.services.auto_rule_service.AutoRuleService")
@@ -167,7 +167,7 @@ def test_auto_accept_accept_all_with_explicit_reject_excludes_id(
 
     result = runner.invoke(app, ["auto", "accept", "--accept-all", "--reject", "p2"])
     assert result.exit_code == 0
-    svc.accept.assert_called_once_with(accept=["p1", "p3"], reject=["p2"])
+    svc.accept.assert_called_once_with(accept=["p1", "p3"], reject=["p2"], actor="cli")
 
 
 def test_auto_accept_rejects_both_all_flags() -> None:

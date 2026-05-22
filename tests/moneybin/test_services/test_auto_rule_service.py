@@ -17,6 +17,7 @@ from moneybin import config as config_module
 from moneybin.config import clear_settings_cache, set_current_profile
 from moneybin.database import Database
 from moneybin.mcp.adapters.categorize_adapters import auto_review_envelope
+from moneybin.services.audit_service import AuditService
 from moneybin.services.auto_rule_service import AutoRuleService
 from moneybin.services.categorization import CategorizationService
 from moneybin.tables import PROPOSED_RULES
@@ -223,6 +224,51 @@ def test_approve_promotes_to_active_rule(real_db: Database) -> None:
         [pid],
     ).fetchone()
     assert status == ("approved", "user")
+
+
+def test_approve_cascade_threads_parent_audit_id(real_db: Database) -> None:
+    """Rule promotion + proposal approval form one audit chain (Req 5).
+
+    The proposal-approve audit threads the rule-insert's audit id as its
+    ``parent_audit_id``, so ``AuditService.chain_for`` returns both as one
+    user action — the cascade-threading contract this batch exercises.
+    """
+    _seed_transaction(real_db, "t1")
+    svc = AutoRuleService(real_db)
+    pid = svc.record_categorization("t1", "Food & Drink", subcategory="Coffee")
+    assert pid is not None
+
+    svc.accept(accept=[pid], actor="cli")
+
+    rule_row = real_db.execute(
+        "SELECT rule_id FROM app.categorization_rules WHERE created_by = 'auto_rule'"
+    ).fetchone()
+    assert rule_row is not None
+    rule_id = rule_row[0]
+
+    # The rule-insert audit is the cascade parent.
+    rule_insert = real_db.execute(
+        "SELECT audit_id FROM app.audit_log "  # noqa: S608  # test query, not executing user SQL
+        "WHERE action = 'categorization_rule.insert' AND target_id = ?",
+        [rule_id],
+    ).fetchone()
+    assert rule_insert is not None
+    parent_id = rule_insert[0]
+
+    # The proposal-approve audit threads the rule-insert's audit id.
+    approve_row = real_db.execute(
+        "SELECT parent_audit_id FROM app.audit_log "  # noqa: S608  # test query, not executing user SQL
+        "WHERE action = 'proposed_rule.approve' AND target_id = ?",
+        [pid],
+    ).fetchone()
+    assert approve_row is not None
+    assert approve_row[0] == parent_id
+
+    # chain_for(parent) returns both the rule insert and the proposal approve.
+    chain = AuditService(real_db).chain_for(parent_id)
+    actions = {e.action for e in chain}
+    assert "categorization_rule.insert" in actions
+    assert "proposed_rule.approve" in actions
 
 
 def test_approve_immediately_categorizes_existing_uncategorized(
@@ -629,18 +675,32 @@ class TestDeactivateOverriddenRules:
         assert proposal_count is not None and proposal_count[0] == 0
 
         # Audit event emitted with full payload — exactly one row, all fields.
+        # The override path now routes through CategorizationRulesRepo.deactivate,
+        # so it shares the taxonomy-conformant action with manual deletes; the
+        # override-vs-manual distinction lives in context.reason.
         audit_count = real_db.execute(
-            "SELECT COUNT(*) FROM app.audit_log WHERE action = 'rule_deactivated'"
+            "SELECT COUNT(*) FROM app.audit_log "
+            "WHERE action = 'categorization_rule.deactivate'"
         ).fetchone()
         assert audit_count is not None and audit_count[0] == 1
 
         audit_row = real_db.execute(
-            "SELECT action, actor, target_schema, target_table, target_id, context_json "
-            "FROM app.audit_log WHERE action = 'rule_deactivated'"
+            "SELECT action, actor, target_schema, target_table, target_id, "
+            "before_value, after_value, context_json "
+            "FROM app.audit_log WHERE action = 'categorization_rule.deactivate'"
         ).fetchone()
         assert audit_row is not None
-        action, actor, target_schema, target_table, target_id, context_raw = audit_row
-        assert action == "rule_deactivated"
+        (
+            action,
+            actor,
+            target_schema,
+            target_table,
+            target_id,
+            before_raw,
+            after_raw,
+            context_raw,
+        ) = audit_row
+        assert action == "categorization_rule.deactivate"
         assert actor == "auto_rule_service"
         assert target_schema == "app"
         assert target_table == "categorization_rules"
@@ -652,6 +712,15 @@ class TestDeactivateOverriddenRules:
         ).fetchone()
         assert rule_id_row is not None
         assert target_id == rule_id_row[0]
+        # Full before/after row capture (Req 4), not a {is_active} subset.
+        before = json.loads(before_raw)
+        after = json.loads(after_raw)
+        assert before["is_active"] is True
+        assert after["is_active"] is False
+        assert "merchant_pattern" in before  # full row, not a column subset
+        # Override forensics live in context; `reason` keeps the override path
+        # distinguishable from a manual deactivation under the shared action.
         context = json.loads(context_raw)
+        assert context["reason"] == "override_threshold"
         assert context["override_count"] == 2
         assert len(context["sample_ids"]) == 2

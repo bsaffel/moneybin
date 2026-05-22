@@ -13,9 +13,11 @@ from moneybin.database import Database, sqlmesh_context
 from moneybin.errors import RecoveryAction
 from moneybin.tables import (
     AUDIT_LOG,
+    CATEGORIZATION_RULES,
     CATEGORY_OVERRIDES,
     FCT_TRANSACTIONS,
     GSHEET_CONNECTIONS,
+    PROPOSED_RULES,
     TRANSACTION_CATEGORIES,
     USER_CATEGORIES,
     USER_MERCHANTS,
@@ -95,9 +97,14 @@ class DoctorService:
         """Per-table integrity checks for protected ``app.*`` tables (Invariant 10).
 
         Covers every table wrapped in a repo so far (``user_categories``,
-        ``category_overrides``, ``gsheet_connections``, ``user_merchants``);
-        later repository PRs append one coverage call per newly-wrapped table
-        plus that table's FK/orphan specifics.
+        ``category_overrides``, ``gsheet_connections``, ``user_merchants``,
+        ``categorization_rules``, ``proposed_rules``); later repository PRs
+        append one coverage call per newly-wrapped table plus that table's
+        FK/orphan specifics.
+
+        ``proposed_rules`` has no ``updated_at`` column, so its coverage keys on
+        ``proposed_at`` (catches bypass INSERTs; bypass UPDATEs are the lint
+        rule's job — same heuristic limitation the helper documents).
         """
         return [
             self._run_app_audit_coverage(USER_CATEGORIES, "category_id", full=full),
@@ -106,44 +113,63 @@ class DoctorService:
                 GSHEET_CONNECTIONS, "connection_id", full=full
             ),
             self._run_app_audit_coverage(USER_MERCHANTS, "merchant_id", full=full),
+            self._run_app_audit_coverage(CATEGORIZATION_RULES, "rule_id", full=full),
+            self._run_app_audit_coverage(
+                PROPOSED_RULES,
+                "proposed_rule_id",
+                updated_col="proposed_at",
+                full=full,
+            ),
             self._run_user_categories_uniqueness(),
             self._run_user_merchants_orphans(),
+            self._run_proposed_rules_rule_fk(),
         ]
 
     def _run_app_audit_coverage(
-        self, table_ref: TableRef, pk_col: str, *, full: bool = False
+        self,
+        table_ref: TableRef,
+        pk_col: str,
+        *,
+        updated_col: str = "updated_at",
+        full: bool = False,
     ) -> InvariantResult:
         """Flag rows mutated without a paired ``app.audit_log`` row (Req 9).
 
-        Sampled by default: only rows whose ``updated_at`` falls within
+        Sampled by default: only rows whose mutation watermark falls within
         ``doctor.audit_coverage_lookback_days`` are checked, capped at
         ``doctor.audit_coverage_sample_cap``. ``full=True`` scans every row.
-        Requires the table to carry an ``updated_at`` column (every protected
-        table does).
+        ``updated_col`` names the watermark column — ``updated_at`` for most
+        protected tables, but tables without one pass their natural mutation
+        timestamp (e.g. ``proposed_rules`` → ``proposed_at``,
+        ``transaction_categories`` → ``categorized_at``).
 
         Limitations (by design — this is a sampled runtime *heuristic*, not a
-        proof): it scans rows that currently exist and keys on ``updated_at`` as
-        the mutation watermark, so a raw bypass that (a) deletes a row, or (b)
-        mutates without bumping ``updated_at``, leaves nothing for the scan to
-        flag. The *structural* guard against raw bypass writes is the lint rule
-        (rejects raw ``INSERT``/``UPDATE``/``DELETE`` against protected tables
-        outside ``*_repo.py``); content-based coverage is a hosted-tier follow-up
-        (see ``private/followups.md``). ``pk_col`` is a code-supplied constant,
-        quoted defensively per ``.claude/rules/security.md``.
+        proof): it scans rows that currently exist and keys on the watermark, so
+        a raw bypass that (a) deletes a row, or (b) mutates without bumping the
+        watermark, leaves nothing for the scan to flag. The *structural* guard
+        against raw bypass writes is the lint rule (rejects raw
+        ``INSERT``/``UPDATE``/``DELETE`` against protected tables outside
+        ``*_repo.py``); content-based coverage is a hosted-tier follow-up (see
+        ``private/followups.md``). ``pk_col`` and ``updated_col`` are
+        code-supplied constants, quoted defensively per
+        ``.claude/rules/security.md``.
         """
         name = f"app_audit_coverage_{table_ref.name}"
         settings = get_settings().doctor
         safe_pk = exp.to_identifier(pk_col, quoted=True).sql("duckdb")
+        safe_updated = exp.to_identifier(updated_col, quoted=True).sql("duckdb")
         if full:
             sampled_sql = (
-                f"SELECT {safe_pk} AS pk, updated_at FROM {table_ref.full_name}"  # noqa: S608  # TableRef + sqlglot-quoted identifier
+                f"SELECT {safe_pk} AS pk, {safe_updated} AS updated_at "  # noqa: S608  # TableRef + sqlglot-quoted identifiers
+                f"FROM {table_ref.full_name}"
             )
             sample_params: list[object] = []
         else:
             sampled_sql = (
-                f"SELECT {safe_pk} AS pk, updated_at FROM {table_ref.full_name} "  # noqa: S608  # TableRef + sqlglot-quoted identifier
-                "WHERE updated_at >= (now()::TIMESTAMP - (? * INTERVAL 1 DAY)) "
-                "ORDER BY updated_at DESC LIMIT ?"
+                f"SELECT {safe_pk} AS pk, {safe_updated} AS updated_at "  # noqa: S608  # TableRef + sqlglot-quoted identifiers
+                f"FROM {table_ref.full_name} "
+                f"WHERE {safe_updated} >= (now()::TIMESTAMP - (? * INTERVAL 1 DAY)) "
+                f"ORDER BY {safe_updated} DESC LIMIT ?"
             )
             sample_params = [
                 settings.audit_coverage_lookback_days,
@@ -274,6 +300,48 @@ class DoctorService:
                 name=name,
                 status="warn",
                 detail=f"{len(affected)} merchant(s) referenced by no categorization",
+                affected_ids=affected,
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _run_proposed_rules_rule_fk(self) -> InvariantResult:
+        """Flag ``proposed_rules.rule_id`` that doesn't resolve in ``categorization_rules``.
+
+        ``rule_id`` is NULL until a proposal is approved and links to its
+        promoted rule; a non-NULL value that names no existing rule is a
+        dangling FK (V016 replaced the text-keyed linkage with this id). NULL is
+        not a violation — only set-but-unresolved ids are flagged.
+        """
+        name = "app_proposed_rules_rule_fk"
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT p.proposed_rule_id
+                FROM {PROPOSED_RULES.full_name} p
+                WHERE p.rule_id IS NOT NULL
+                  AND NOT EXISTS (
+                    SELECT 1 FROM {CATEGORIZATION_RULES.full_name} r
+                    WHERE r.rule_id = p.rule_id
+                  )
+                ORDER BY p.proposed_rule_id
+                """  # noqa: S608  # TableRef constants, no user input
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — table may not exist before first write
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"FK check unavailable: {e}",
+                affected_ids=[],
+            )
+        if rows:
+            affected = [str(r[0]) for r in rows]
+            return InvariantResult(
+                name=name,
+                status="fail",
+                detail=(
+                    f"{len(affected)} proposed_rules row(s) reference a "
+                    "categorization_rules.rule_id that does not exist"
+                ),
                 affected_ids=affected,
             )
         return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])

@@ -207,7 +207,9 @@ def rules_create(
     with handle_cli_errors():
         validated, parse_errors = validate_rule_items(rules)
         with get_database() as db:
-            result = CategorizationService(db).create_rules(validated, reapply=reapply)
+            result = CategorizationService(db).create_rules(
+                validated, reapply=reapply, actor="cli"
+            )
         result.merge_parse_errors(parse_errors)
 
     if output == OutputFormat.JSON:
@@ -252,7 +254,7 @@ def rules_delete(
     with handle_cli_errors():
         with get_database() as db:
             deactivated = CategorizationService(db).deactivate_rule(
-                rule_id, reapply=reapply
+                rule_id, reapply=reapply, actor="cli"
             )
         if not deactivated:
             raise UserError(f"Rule {rule_id} not found", code="RULE_NOT_FOUND")

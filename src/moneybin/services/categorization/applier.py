@@ -24,7 +24,6 @@ warning in the bypass's docstring stays next to the guard it bypasses.
 from __future__ import annotations
 
 import logging
-import uuid
 from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -39,6 +38,7 @@ from moneybin.metrics.registry import (
     MERCHANT_EXEMPLAR_COUNT,
 )
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.repositories.categorization_rules_repo import CategorizationRulesRepo
 from moneybin.repositories.user_categories_repo import (
     CategoryOverridesRepo,
     UserCategoriesRepo,
@@ -145,6 +145,7 @@ class MatchApplier:
         self._user_categories = UserCategoriesRepo(db, audit=audit)
         self._category_overrides = CategoryOverridesRepo(db, audit=audit)
         self._user_merchants = UserMerchantsRepo(db, audit=audit)
+        self._rules = CategorizationRulesRepo(db, audit=audit)
 
     @contextmanager
     def _transaction(self) -> Generator[None]:
@@ -402,11 +403,14 @@ class MatchApplier:
     def create_rules_core(
         self,
         items: Sequence[CategorizationRuleInput],
+        *,
+        actor: str = "system",
     ) -> RuleCreationResult:
         """Insert categorization rules (idempotent on matcher + output shape).
 
-        Pure write; the facade's ``create_rules`` handles the optional
-        ``reapply`` post-commit sweep.
+        Each INSERT routes through :class:`CategorizationRulesRepo` so it emits
+        a paired audit row (Invariant 10). The facade's ``create_rules``
+        handles the optional ``reapply`` post-commit sweep.
 
         For each item, looks up an active rule with the same matcher and
         output (``merchant_pattern``, ``match_type``, ``min_amount``,
@@ -463,39 +467,31 @@ class MatchApplier:
                     existing += 1
                     rule_ids.append(found[0])
                     continue
-                rule_id = uuid.uuid4().hex[:12]
-                # Phase 1 dual-write: resolve the FK alongside the text snapshot.
-                # `None` is a permitted write — orphaned text is a real state
-                # during the dual-write window. Dedup posture is unchanged:
-                # text remains the canonical comparator for "same rule" in
-                # Phase 1.
+                # Phase 1 dual-write: resolve the FK alongside the text snapshot
+                # (read; stays in the service per Req 2). `None` is a permitted
+                # write — orphaned text is a real state during the dual-write
+                # window. Dedup posture is unchanged: text remains the canonical
+                # comparator for "same rule" in Phase 1.
                 category_id = resolve_category_id(
                     self._db, item.category, item.subcategory
                 )
-                self._db.execute(
-                    f"""
-                    INSERT INTO {CATEGORIZATION_RULES.full_name}
-                    (rule_id, name, merchant_pattern, match_type,
-                     min_amount, max_amount, account_id,
-                     category, subcategory, category_id, priority, is_active,
-                     created_by, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true,
-                            'ai', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                    """,  # noqa: S608  # TableRef constant, no user input interpolated
-                    [
-                        rule_id,
-                        item.name,
-                        item.merchant_pattern,
-                        item.match_type,
-                        item.min_amount,
-                        item.max_amount,
-                        item.account_id,
-                        item.category,
-                        item.subcategory,
-                        category_id,
-                        item.priority,
-                    ],
+                event = self._rules.insert(
+                    name=item.name,
+                    merchant_pattern=item.merchant_pattern,
+                    match_type=item.match_type,
+                    min_amount=item.min_amount,
+                    max_amount=item.max_amount,
+                    account_id=item.account_id,
+                    category=item.category,
+                    subcategory=item.subcategory,
+                    category_id=category_id,
+                    priority=item.priority,
+                    created_by="ai",
+                    actor=actor,
                 )
+                rule_id = event.target_id
+                if rule_id is None:  # pragma: no cover — insert always sets the id
+                    raise RuntimeError("CategorizationRulesRepo.insert returned no id")
                 created += 1
                 rule_ids.append(rule_id)
             except Exception:  # noqa: BLE001 — DuckDB raises untyped errors on constraint violations
@@ -514,24 +510,16 @@ class MatchApplier:
             rule_ids=rule_ids,
         )
 
-    def deactivate_rule_core(self, rule_id: str) -> bool:
+    def deactivate_rule_core(self, rule_id: str, *, actor: str = "system") -> bool:
         """Soft-delete a rule by setting ``is_active=false``.
 
-        Returns ``True`` if the rule existed (and is now inactive),
-        ``False`` if no rule with that ID was found. Pure write; the
-        facade's ``deactivate_rule`` handles the optional reapply tail
-        (categorization stripping + ``categorize_pending``).
+        Routes through :class:`CategorizationRulesRepo` so the deactivation
+        emits a paired audit row (Invariant 10). Returns ``True`` if the rule
+        existed (and is now inactive), ``False`` if no rule with that ID was
+        found. The facade's ``deactivate_rule`` handles the optional reapply
+        tail (categorization stripping + ``categorize_pending``).
         """
-        row = self._db.execute(
-            f"""
-            UPDATE {CATEGORIZATION_RULES.full_name}
-            SET is_active = false, updated_at = CURRENT_TIMESTAMP
-            WHERE rule_id = ?
-            RETURNING rule_id
-            """,  # noqa: S608  # TableRef constant, no user input interpolated
-            [rule_id],
-        ).fetchone()
-        return row is not None
+        return self._rules.deactivate(rule_id, actor=actor) is not None
 
     def delete_rule_categorizations(self, rule_id: str) -> None:
         """Strip categorizations a now-inactive rule had written.

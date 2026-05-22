@@ -12,7 +12,6 @@ does not import this module at module load time.
 """
 
 import logging
-import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -20,6 +19,8 @@ import duckdb
 
 from moneybin.config import get_settings
 from moneybin.database import Database
+from moneybin.repositories.categorization_rules_repo import CategorizationRulesRepo
+from moneybin.repositories.proposed_rules_repo import ProposedRulesRepo
 from moneybin.services._text import build_match_inputs, normalize_description
 from moneybin.services.audit_service import AuditService
 from moneybin.services.categorization import (
@@ -183,10 +184,18 @@ class AutoRuleService:
     lazy import on the categorization side to keep imports one-directional.
     """
 
-    def __init__(self, db: Database) -> None:
-        """Bind the service to a database connection."""
+    def __init__(self, db: Database, *, audit: AuditService | None = None) -> None:
+        """Bind the service to a database connection.
+
+        ``audit`` is keyword-only so existing positional callers are unchanged.
+        The rules + proposed-rules repos share it so every lifecycle mutation
+        emits a paired audit row (Invariant 10).
+        """
         self._db = db
         self._cat_service: CategorizationService | None = None
+        self._audit = audit if audit is not None else AuditService(db)
+        self._rules = CategorizationRulesRepo(db, audit=self._audit)
+        self._proposed = ProposedRulesRepo(db, audit=self._audit)
 
     @property
     def _categorization(self) -> CategorizationService:
@@ -255,6 +264,10 @@ class AutoRuleService:
         ):
             return None
 
+        # Threads the supersede audit id onto the new insert when a
+        # different-category proposal replaces an existing one (Req 5 cascade);
+        # stays None for a fresh proposal.
+        supersede_parent: str | None = None
         if existing is not None:
             (
                 proposed_rule_id,
@@ -278,44 +291,36 @@ class AutoRuleService:
                 # time (target category created after the proposal first
                 # landed) — without this, later FK-based cascades miss them.
                 category_id = resolve_category_id(self._db, category, subcategory)
-                self._db.execute(
-                    f"""
-                    UPDATE {PROPOSED_RULES.full_name}
-                    SET trigger_count = ?, sample_txn_ids = ?, status = ?,
-                        category_id = ?
-                    WHERE proposed_rule_id = ?
-                    """,
-                    [new_count, new_samples, new_status, category_id, proposed_rule_id],
+                self._proposed.reinforce(
+                    proposed_rule_id,
+                    trigger_count=new_count,
+                    sample_txn_ids=new_samples,
+                    status=new_status,
+                    category_id=category_id,
+                    actor="auto_rule_service",
                 )
                 return proposed_rule_id
-            # Different category: supersede the old proposal, fall through to create a new one
-            self._db.execute(
-                f"UPDATE {PROPOSED_RULES.full_name} SET status = 'superseded' WHERE proposed_rule_id = ?",
-                [proposed_rule_id],
-            )
+            # Different category: supersede the old proposal, then create a new
+            # one below — one user action, so the new insert threads the
+            # supersede's audit id (Req 5 cascade).
+            supersede_parent = self._proposed.supersede(
+                proposed_rule_id, actor="auto_rule_service"
+            ).audit_id
 
-        proposed_rule_id = uuid.uuid4().hex[:12]
         initial_status = "pending" if threshold <= 1 else "tracking"
         category_id = resolve_category_id(self._db, category, subcategory)
-        self._db.execute(
-            f"""
-            INSERT INTO {PROPOSED_RULES.full_name}
-            (proposed_rule_id, merchant_pattern, match_type, category, subcategory,
-             category_id, status, trigger_count, source, sample_txn_ids)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'pattern_detection', ?)
-            """,
-            [
-                proposed_rule_id,
-                pattern,
-                match_type,
-                category,
-                subcategory,
-                category_id,
-                initial_status,
-                [transaction_id],
-            ],
+        event = self._proposed.insert(
+            merchant_pattern=pattern,
+            match_type=match_type,
+            category=category,
+            subcategory=subcategory,
+            category_id=category_id,
+            status=initial_status,
+            sample_txn_ids=[transaction_id],
+            actor="auto_rule_service",
+            parent_audit_id=supersede_parent,
         )
-        return proposed_rule_id
+        return event.target_id
 
     # -- Decisions --
 
@@ -349,18 +354,21 @@ class AutoRuleService:
         self,
         accept: list[str] | None = None,
         reject: list[str] | None = None,
+        *,
+        actor: str = "system",
     ) -> AutoConfirmResult:
         """Accept and/or reject pending proposals; returns aggregate counts.
 
         IDs appearing in both lists are dropped from ``accept`` so an explicit
         reject always wins. The CLI does the same dedup before calling, but
         applying it here keeps direct service callers (MCP, scripts) safe.
+        ``actor`` is threaded onto the audit rows (CLI/MCP pass their surface).
         """
         approve_set = set(accept or [])
         reject_set = set(reject or [])
         approve_set -= reject_set
-        a = self.approve(sorted(approve_set))
-        r = self.reject(sorted(reject_set))
+        a = self.approve(sorted(approve_set), actor=actor)
+        r = self.reject(sorted(reject_set), actor=actor)
         return AutoConfirmResult(
             approved=a.approved,
             rejected=r.rejected,
@@ -369,7 +377,9 @@ class AutoRuleService:
             rule_ids=a.rule_ids,
         )
 
-    def approve(self, proposed_rule_ids: list[str]) -> ApproveResult:
+    def approve(
+        self, proposed_rule_ids: list[str], *, actor: str = "system"
+    ) -> ApproveResult:
         """Promote pending proposals to active rules and immediately categorize matching transactions."""
         settings = get_settings().categorization
         result = ApproveResult()
@@ -387,55 +397,51 @@ class AutoRuleService:
                 continue
 
             pattern, match_type, category, subcategory, _status = row
-            rule_id = uuid.uuid4().hex[:12]
-            # Wrap rule INSERT, proposal UPDATE, and back-fill INSERT in a single
+            # Wrap rule INSERT, proposal UPDATE, and back-fill in a single
             # transaction so a partial failure (e.g., interrupt between steps)
-            # cannot leave an active rule whose source proposal is still 'pending'
-            # — which would let approve() create a duplicate rule on retry.
+            # cannot leave an active rule whose source proposal is still
+            # 'pending' — which would let approve() create a duplicate rule on
+            # retry. The two repo writes join this outer txn (in_outer_txn=True;
+            # DuckDB has no nested txns), and the proposal approve threads the
+            # rule-insert's audit id so the promotion is one chain (Req 5).
             # Phase 1 dual-write: re-resolve the FK from the text snapshot at
-            # write time. The proposed_rule row carries its own `category_id`
-            # but it may have been NULL during V014 backfill if the target
-            # category didn't yet exist; the rule we are now promoting can
-            # find it.
+            # write time (the proposed_rule's own category_id may have been NULL
+            # during V014 backfill if the target category didn't yet exist).
             category_id = resolve_category_id(self._db, category, subcategory)
             self._db.begin()
             try:
-                self._db.execute(
-                    f"""
-                    INSERT INTO {CATEGORIZATION_RULES.full_name}
-                    (rule_id, name, merchant_pattern, match_type, category, subcategory,
-                     category_id, priority, is_active, created_by, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, true, 'auto_rule', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                    """,
-                    [
-                        rule_id,
-                        f"auto: {pattern}",
-                        pattern,
-                        match_type,
-                        category,
-                        subcategory,
-                        category_id,
-                        settings.auto_rule_default_priority,
-                    ],
+                rule_event = self._rules.insert(
+                    name=f"auto: {pattern}",
+                    merchant_pattern=pattern,
+                    match_type=match_type,
+                    min_amount=None,
+                    max_amount=None,
+                    account_id=None,
+                    category=category,
+                    subcategory=subcategory,
+                    category_id=category_id,
+                    priority=settings.auto_rule_default_priority,
+                    created_by="auto_rule",
+                    actor=actor,
+                    in_outer_txn=True,
                 )
-                # Write rule_id alongside status so the proposal->rule link
-                # is FK-keyed; check_overrides() supersedes via rule_id.
-                self._db.execute(
-                    f"""
-                    UPDATE {PROPOSED_RULES.full_name}
-                    SET status = 'approved',
-                        rule_id = ?,
-                        decided_at = CURRENT_TIMESTAMP,
-                        decided_by = 'user'
-                    WHERE proposed_rule_id = ?
-                    """,
-                    [rule_id, pid],
+                rule_id = rule_event.target_id
+                if rule_id is None:  # pragma: no cover — insert always sets the id
+                    raise RuntimeError("CategorizationRulesRepo.insert returned no id")
+                # Link rule_id onto the proposal (FK-keyed; check_overrides
+                # supersedes via rule_id), sharing the rule insert's audit id.
+                self._proposed.mark_approved(
+                    pid,
+                    rule_id=rule_id,
+                    actor=actor,
+                    parent_audit_id=rule_event.audit_id,
+                    in_outer_txn=True,
                 )
                 newly = self._categorize_existing_with_rule(
                     rule_id, category, subcategory
                 )
                 self._db.commit()
-            except Exception:
+            except BaseException:
                 self._db.rollback()
                 raise
             result.approved += 1
@@ -449,7 +455,9 @@ class AutoRuleService:
             )
         return result
 
-    def reject(self, proposed_rule_ids: list[str]) -> RejectResult:
+    def reject(
+        self, proposed_rule_ids: list[str], *, actor: str = "system"
+    ) -> RejectResult:
         """Mark pending proposals as rejected. No rule is created."""
         result = RejectResult()
         for pid in proposed_rule_ids:
@@ -460,14 +468,7 @@ class AutoRuleService:
             if not row or row[0] != "pending":
                 result.skipped += 1
                 continue
-            self._db.execute(
-                f"""
-                UPDATE {PROPOSED_RULES.full_name}
-                SET status = 'rejected', decided_at = CURRENT_TIMESTAMP, decided_by = 'user'
-                WHERE proposed_rule_id = ?
-                """,
-                [pid],
-            )
+            self._proposed.mark_rejected(pid, actor=actor)
             result.rejected += 1
         return result
 
@@ -505,7 +506,6 @@ class AutoRuleService:
             """
         ).fetchall()
         deactivated = 0
-        audit_service = AuditService(self._db)
 
         for (
             rule_id,
@@ -568,40 +568,24 @@ class AutoRuleService:
             if override_count < threshold:
                 continue
 
-            # Deactivate + emit audit event in a single transaction.
+            # Deactivate via the repo so the write + paired audit row commit
+            # atomically with a full before/after row (Req 4). The override
+            # forensics live in `context` (the deactivation reason +
+            # evidence), keeping the audit action taxonomy-conformant
+            # (categorization_rule.deactivate) for both manual and override
+            # paths.
             # REVISIT: re-proposal (insert a new pattern_detection rule shaped
             # by the winning override bucket) is intentionally omitted — the
             # replacement-rule heuristic lacks production signal.
-            self._db.begin()
-            try:
-                self._db.execute(
-                    f"UPDATE {CATEGORIZATION_RULES.full_name} "
-                    "SET is_active = false, updated_at = CURRENT_TIMESTAMP "
-                    "WHERE rule_id = ?",
-                    [rule_id],
-                )
-                audit_service.record_audit_event(
-                    actor="auto_rule_service",
-                    action="rule_deactivated",
-                    target=(
-                        CATEGORIZATION_RULES.schema,
-                        CATEGORIZATION_RULES.name,
-                        rule_id,
-                    ),
-                    # Rule must have been active prior to deactivation — the scan
-                    # query above filters on `is_active = true`, so before-state
-                    # is known without an extra read.
-                    before={"is_active": True},
-                    after={"is_active": False},
-                    context={
-                        "override_count": override_count,
-                        "sample_ids": sample_ids,
-                    },
-                )
-                self._db.commit()
-            except Exception:
-                self._db.rollback()
-                raise
+            self._rules.deactivate(
+                rule_id,
+                actor="auto_rule_service",
+                context={
+                    "reason": "override_threshold",
+                    "override_count": override_count,
+                    "sample_ids": sample_ids,
+                },
+            )
             deactivated += 1
 
         if deactivated:

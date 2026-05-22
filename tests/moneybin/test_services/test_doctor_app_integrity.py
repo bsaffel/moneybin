@@ -12,10 +12,51 @@ check added with the repository layer. Uses the function-scoped ``db`` fixture
 from __future__ import annotations
 
 from moneybin.database import Database
+from moneybin.repositories.categorization_rules_repo import CategorizationRulesRepo
+from moneybin.repositories.proposed_rules_repo import ProposedRulesRepo
 from moneybin.repositories.user_categories_repo import UserCategoriesRepo
 from moneybin.repositories.user_merchants_repo import UserMerchantsRepo
 from moneybin.services.doctor_service import DoctorService
-from moneybin.tables import USER_CATEGORIES, USER_MERCHANTS
+from moneybin.tables import (
+    CATEGORIZATION_RULES,
+    PROPOSED_RULES,
+    USER_CATEGORIES,
+    USER_MERCHANTS,
+)
+
+
+def _insert_rule(repo: CategorizationRulesRepo) -> str:
+    event = repo.insert(
+        name="r",
+        merchant_pattern="P",
+        match_type="contains",
+        min_amount=None,
+        max_amount=None,
+        account_id=None,
+        category="Dining",
+        subcategory=None,
+        category_id=None,
+        priority=100,
+        created_by="user",
+        actor="cli",
+    )
+    assert event.target_id is not None
+    return event.target_id
+
+
+def _insert_proposal(repo: ProposedRulesRepo, *, status: str = "tracking") -> str:
+    event = repo.insert(
+        merchant_pattern="P",
+        match_type="contains",
+        category="Dining",
+        subcategory=None,
+        category_id=None,
+        status=status,
+        sample_txn_ids=["t1"],
+        actor="system",
+    )
+    assert event.target_id is not None
+    return event.target_id
 
 
 def _insert_merchant(repo: UserMerchantsRepo, *, name: str) -> str:
@@ -159,6 +200,58 @@ def test_user_merchants_orphan_passes_for_recent_merchant(db: Database) -> None:
     assert result.status == "pass"
 
 
+# ---------------------------------------------------------------------------
+# categorization_rules + proposed_rules: coverage (proposed_rules uses
+# proposed_at as the watermark — no updated_at column) + proposal->rule FK
+# ---------------------------------------------------------------------------
+
+
+def test_audit_coverage_passes_for_repo_mutated_rule(db: Database) -> None:
+    _insert_rule(CategorizationRulesRepo(db))
+    result = DoctorService(db)._run_app_audit_coverage(CATEGORIZATION_RULES, "rule_id")
+    assert result.status == "pass"
+
+
+def test_audit_coverage_passes_for_repo_mutated_proposal(db: Database) -> None:
+    _insert_proposal(ProposedRulesRepo(db))
+    result = DoctorService(db)._run_app_audit_coverage(
+        PROPOSED_RULES, "proposed_rule_id", updated_col="proposed_at"
+    )
+    assert result.status == "pass"
+
+
+def test_audit_coverage_flags_bypass_proposal(db: Database) -> None:
+    db.execute(
+        "INSERT INTO app.proposed_rules "  # noqa: S608  # test input, not executing user SQL
+        "(proposed_rule_id, merchant_pattern, category, status, proposed_at) "
+        "VALUES ('bypassP', 'P', 'Dining', 'tracking', now()::TIMESTAMP)"
+    )
+    result = DoctorService(db)._run_app_audit_coverage(
+        PROPOSED_RULES, "proposed_rule_id", updated_col="proposed_at"
+    )
+    assert result.status == "fail"
+    assert "bypassP" in result.affected_ids
+
+
+def test_proposed_rules_rule_fk_flags_dangling_reference(db: Database) -> None:
+    repo = ProposedRulesRepo(db)
+    pid = _insert_proposal(repo, status="pending")
+    repo.mark_approved(pid, rule_id="ghostrule", actor="cli")  # no such rule
+    result = DoctorService(db)._run_proposed_rules_rule_fk()
+    assert result.status == "fail"
+    assert pid in result.affected_ids
+
+
+def test_proposed_rules_rule_fk_passes_for_resolved_and_null(db: Database) -> None:
+    rule_id = _insert_rule(CategorizationRulesRepo(db))
+    proposals = ProposedRulesRepo(db)
+    approved = _insert_proposal(proposals, status="pending")
+    proposals.mark_approved(approved, rule_id=rule_id, actor="cli")  # resolves
+    _insert_proposal(proposals)  # rule_id stays NULL — not an FK violation
+    result = DoctorService(db)._run_proposed_rules_rule_fk()
+    assert result.status == "pass"
+
+
 def test_run_all_includes_app_integrity_invariants(db: Database) -> None:
     report = DoctorService(db).run_all()
     names = {r.name for r in report.invariants}
@@ -166,3 +259,6 @@ def test_run_all_includes_app_integrity_invariants(db: Database) -> None:
     assert "app_user_categories_uniqueness" in names
     assert "app_audit_coverage_user_merchants" in names
     assert "app_user_merchants_orphans" in names
+    assert "app_audit_coverage_categorization_rules" in names
+    assert "app_audit_coverage_proposed_rules" in names
+    assert "app_proposed_rules_rule_fk" in names

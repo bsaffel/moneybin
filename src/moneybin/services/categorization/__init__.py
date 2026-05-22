@@ -294,21 +294,25 @@ class CategorizationService:
         items: Sequence[CategorizationRuleInput],
         *,
         reapply: bool = False,
+        actor: str = "system",
     ) -> RuleCreationResult:
         """Create multiple categorization rules in one call (idempotent).
 
-        Pure writes delegate to ``MatchApplier.create_rules_core``. When
-        ``reapply=True`` and at least one rule was newly created,
+        Delegates to ``MatchApplier.create_rules_core``, which routes each
+        INSERT through ``CategorizationRulesRepo`` (paired audit, Invariant 10).
+        When ``reapply=True`` and at least one rule was newly created,
         ``categorize_pending`` runs so the new rules fan out to uncategorized
-        rows immediately. Source-priority enforcement keeps user manual edits
-        safe regardless.
+        rows immediately. ``actor`` is threaded to the audit rows (CLI/MCP pass
+        their surface; default ``"system"``).
         """
-        result = self._applier.create_rules_core(items)
+        result = self._applier.create_rules_core(items, actor=actor)
         if reapply and result.created > 0:
             self.categorize_pending()
         return result
 
-    def deactivate_rule(self, rule_id: str, *, reapply: bool = False) -> bool:
+    def deactivate_rule(
+        self, rule_id: str, *, reapply: bool = False, actor: str = "system"
+    ) -> bool:
         """Soft-delete a rule by setting ``is_active=false``.
 
         Returns ``True`` if the rule existed (and is now inactive),
@@ -322,7 +326,7 @@ class CategorizationService:
         higher-priority sources (user/migration/ml/plaid) that happen to
         share this rule_id reference are left intact.
         """
-        deactivated = self._applier.deactivate_rule_core(rule_id)
+        deactivated = self._applier.deactivate_rule_core(rule_id, actor=actor)
         if reapply and deactivated:
             self._applier.delete_rule_categorizations(rule_id)
             self.categorize_pending()
