@@ -13,10 +13,9 @@ from moneybin.matching.engine import MatchResult, TransactionMatcher
 from moneybin.matching.persistence import (
     get_active_matches,
     get_pending_matches,
-    undo_match,
-    update_match_status,
 )
 from moneybin.matching.scoring import CandidatePair
+from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
 
 
 def _make_pair(confidence: float) -> CandidatePair:
@@ -321,9 +320,10 @@ class TestTransactionMatcher:
 
         # Undo and reject
         matches = get_active_matches(db, match_type="dedup")
-        undo_match(db, matches[0]["match_id"], reversed_by="user")
-        update_match_status(
-            db, matches[0]["match_id"], status="rejected", decided_by="user"
+        repo = MatchDecisionsRepo(db)
+        repo.reverse(matches[0]["match_id"], reversed_by="user", actor="cli")
+        repo.update_status(
+            matches[0]["match_id"], status="rejected", decided_by="user", actor="cli"
         )
 
         # Second run: should not re-propose
@@ -465,8 +465,11 @@ class TestTransferDetection:
         assert result1.pending_transfers >= 1
 
         pending = get_pending_matches(db, match_type="transfer")
+        repo = MatchDecisionsRepo(db)
         for m in pending:
-            update_match_status(db, m["match_id"], status="rejected", decided_by="user")
+            repo.update_status(
+                m["match_id"], status="rejected", decided_by="user", actor="cli"
+            )
 
         result2 = matcher.run()
         assert result2.pending_transfers == 0

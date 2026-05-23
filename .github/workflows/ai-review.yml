@@ -7,6 +7,16 @@ on:
   issue_comment:
     types: [created]
 
+# Serialize reviews per PR: when a review is already running, a new push waits for
+# it to finish instead of spinning up a second, overlapping review. cancel-in-progress
+# is false so the in-progress review always completes; GitHub holds only the latest
+# queued trigger (older queued pushes are superseded — only the newest code matters).
+# Interactive @claude mentions are keyed per-comment so each runs on its own and is
+# never queued-then-dropped behind a push.
+concurrency:
+  group: ai-review-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}-${{ github.event_name == 'issue_comment' && github.event.comment.id || 'review' }}
+  cancel-in-progress: false
+
 jobs:
   review:
     name: Claude Review

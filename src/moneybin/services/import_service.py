@@ -8,7 +8,6 @@ MCP tools call this same service — no duplication.
 import dataclasses
 import logging
 import time
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
@@ -28,6 +27,7 @@ from moneybin.metrics.registry import (
     TABULAR_DETECTION_CONFIDENCE,
     TABULAR_FORMAT_MATCHES,
 )
+from moneybin.repositories.imports_repo import ImportsRepo
 from moneybin.services._validators import validate_slug
 from moneybin.services.audit_service import AuditService
 from moneybin.services.refresh import refresh as _refresh
@@ -223,12 +223,12 @@ class ImportService:
         """Initialize ImportService with an open Database connection.
 
         ``audit`` is keyword-only so existing positional callers
-        (``ImportService(db)``) continue to work unchanged. Used by the label
-        methods below to emit ``import_label.*`` events alongside the
-        ``app.imports`` write inside one txn.
+        (``ImportService(db)``) continue to work unchanged. Shared with
+        ``ImportsRepo`` so the labels write and its audit row land in one txn.
         """
         self._db = db
         self._audit = audit if audit is not None else AuditService(db)
+        self._imports = ImportsRepo(db, audit=self._audit)
 
     def allocate_import_log(
         self,
@@ -968,7 +968,10 @@ class ImportService:
                     source="detected",
                     times_used=1,
                 )
-                save_format_to_db(self._db, detected_fmt)
+                # Auto-detected format is a system-learned side-effect of the
+                # import (source="detected"), not a user's explicit format edit —
+                # audit it as actor="system" (Invariant 10).
+                save_format_to_db(self._db, detected_fmt, actor="system")
                 logger.info(f"Auto-saved format {source_origin!r} for future imports")
             except Exception:  # noqa: BLE001 — format save is best-effort; import already succeeded
                 logger.debug("Could not auto-save format", exc_info=True)
@@ -1315,8 +1318,6 @@ class ImportService:
     # Import labels (spec Req 22–24).
     # ------------------------------------------------------------------
 
-    _LABEL_AUDIT_TARGET = ("app", "imports")
-
     def list_labels(self, import_id: str) -> list[str]:
         """Return the labels currently attached to ``import_id`` (or empty)."""
         row = self._db.conn.execute(
@@ -1341,114 +1342,76 @@ class ImportService:
         return [(str(r[0]), int(r[1])) for r in rows]
 
     def add_labels(self, import_id: str, labels: list[str], *, actor: str) -> list[str]:
-        """Append ``labels`` to the import's set; emit one audit event per added label."""
+        """Append ``labels`` to the import's set; return the resulting labels.
+
+        Reads the prior set and writes the union in one transaction via
+        ``ImportsRepo.set`` (one paired ``import.set`` audit row, Invariant 10).
+        """
         for label in labels:
             validate_slug(label)
-        return self._mutate_labels(
-            import_id=import_id,
-            actor=actor,
-            mutate=lambda prior: _merge_unique(prior, labels),
-            audit_action="import_label.add",
-            changed_only=lambda prior, new: [x for x in labels if x not in prior],
-        )
+        self._db.begin()
+        try:
+            prior = self.list_labels(import_id)
+            new = _merge_unique(prior, labels)
+            # Skip the write (and its audit row) when nothing changed — e.g.
+            # re-adding labels the import already has — so a no-op doesn't
+            # materialize a spurious app.imports row or audit entry.
+            if new != prior:
+                self._imports.set(import_id, labels=new, actor=actor, in_outer_txn=True)
+            self._db.commit()
+        except BaseException:
+            # Roll back on BaseException, not just Exception, so a
+            # KeyboardInterrupt/SystemExit mid-write doesn't leave the outer
+            # transaction open (matches BaseRepo._transaction). Re-raised, never
+            # swallowed.
+            self._db.rollback()
+            raise
+        return new
 
     def remove_labels(
         self, import_id: str, labels: list[str], *, actor: str
     ) -> list[str]:
-        """Drop ``labels`` from the import's set; emit one audit event per removed label."""
+        """Drop ``labels`` from the import's set; return the resulting labels.
+
+        Reads the prior set and writes the difference in one transaction via
+        ``ImportsRepo.set`` (one paired ``import.set`` audit row, Invariant 10).
+        """
         for label in labels:
             validate_slug(label)
         drop = set(labels)
-        return self._mutate_labels(
-            import_id=import_id,
-            actor=actor,
-            mutate=lambda prior: [x for x in prior if x not in drop],
-            audit_action="import_label.remove",
-            changed_only=lambda prior, new: [x for x in labels if x in prior],
-        )
+        self._db.begin()
+        try:
+            prior = self.list_labels(import_id)
+            new = [x for x in prior if x not in drop]
+            # Skip the write (and its audit row) when nothing was removed — e.g.
+            # removing a label the import lacks, or operating on a never-labeled
+            # import — so a no-op doesn't materialize a spurious app.imports row
+            # or audit entry.
+            if new != prior:
+                self._imports.set(import_id, labels=new, actor=actor, in_outer_txn=True)
+            self._db.commit()
+        except BaseException:
+            # Roll back on BaseException, not just Exception, so a
+            # KeyboardInterrupt/SystemExit mid-write doesn't leave the outer
+            # transaction open (matches BaseRepo._transaction). Re-raised, never
+            # swallowed.
+            self._db.rollback()
+            raise
+        return new
 
     def set_labels(self, import_id: str, labels: list[str], *, actor: str) -> list[str]:
-        """Replace the import's labels declaratively in one transaction.
+        """Replace the import's labels declaratively; return the canonical set.
 
-        Validates every requested label, then computes the add/remove diff
-        against the prior set and emits one ``import_label.add`` /
-        ``import_label.remove`` event per changed label inside the same
-        DuckDB transaction as the row write.
+        Validates every requested label, dedups while preserving order, then
+        upserts via ``ImportsRepo.set`` — one ``import.set`` audit row capturing
+        the full before/after row (Invariant 10).
         """
         for label in labels:
             validate_slug(label)
         # Dedup while preserving order so the stored list is canonical.
         canonical = _merge_unique([], labels)
-        self._db.begin()
-        try:
-            prior = self.list_labels(import_id)
-            added = [x for x in canonical if x not in prior]
-            removed = [x for x in prior if x not in canonical]
-            self._upsert_labels(import_id, canonical, actor)
-            for label in added:
-                self._audit.record_audit_event(
-                    action="import_label.add",
-                    target=(*self._LABEL_AUDIT_TARGET, import_id),
-                    before={"labels": prior},
-                    after={"labels": canonical, "label": label},
-                    actor=actor,
-                )
-            for label in removed:
-                self._audit.record_audit_event(
-                    action="import_label.remove",
-                    target=(*self._LABEL_AUDIT_TARGET, import_id),
-                    before={"labels": prior, "label": label},
-                    after={"labels": canonical},
-                    actor=actor,
-                )
-            self._db.commit()
-        except Exception:
-            self._db.rollback()
-            raise
+        self._imports.set(import_id, labels=canonical, actor=actor)
         return canonical
-
-    def _mutate_labels(
-        self,
-        *,
-        import_id: str,
-        actor: str,
-        mutate: Callable[[list[str]], list[str]],
-        audit_action: str,
-        changed_only: Callable[[list[str], list[str]], list[str]],
-    ) -> list[str]:
-        """Atomic read-modify-write helper for add/remove."""
-        self._db.begin()
-        try:
-            prior = self.list_labels(import_id)
-            new = mutate(prior)
-            self._upsert_labels(import_id, new, actor)
-            for label in changed_only(prior, new):
-                self._audit.record_audit_event(
-                    action=audit_action,
-                    target=(*self._LABEL_AUDIT_TARGET, import_id),
-                    before={"labels": prior},
-                    after={"labels": new, "label": label},
-                    actor=actor,
-                )
-            self._db.commit()
-        except Exception:
-            self._db.rollback()
-            raise
-        return new
-
-    def _upsert_labels(self, import_id: str, labels: list[str], actor: str) -> None:
-        """INSERT or UPDATE the single ``app.imports`` row for ``import_id``."""
-        self._db.conn.execute(
-            """
-            INSERT INTO app.imports (import_id, labels, updated_at, updated_by)
-            VALUES (?, ?, NOW(), ?)
-            ON CONFLICT (import_id) DO UPDATE SET
-                labels = EXCLUDED.labels,
-                updated_at = NOW(),
-                updated_by = EXCLUDED.updated_by
-            """,
-            [import_id, labels, actor],
-        )
 
 
 def _merge_unique(prior: list[str], additions: list[str]) -> list[str]:

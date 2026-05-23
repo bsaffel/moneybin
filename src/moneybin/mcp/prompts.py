@@ -207,7 +207,7 @@ def review_curation_history() -> str:
         **Workflow:**
         1. Call system_audit with from = (now - 7 days) and limit=500.
         2. Group by `action_pattern` prefix: note.*, tag.*, split.*,
-           import_label.*, manual.*, category.*.
+           import.*, manual.*, category.*.
         3. Report counts per group, top 3 actors, and any noteworthy
            outliers (parent tag.rename events, large split.clear bursts).
         4. Offer drill-down via further system_audit calls

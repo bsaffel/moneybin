@@ -39,7 +39,7 @@ def matches_run(
         with handle_cli_errors():
             with get_database() as db:
                 result = MatchingService(db).run(
-                    auto_accept_transfers=auto_accept_transfers
+                    auto_accept_transfers=auto_accept_transfers, actor="cli"
                 )
                 if result.has_matches:
                     logger.info(f"Matching: {result.summary()}")
@@ -120,11 +120,26 @@ def matches_undo(
     try:
         with handle_cli_errors():
             with get_database() as db:
-                MatchingService(db).undo(match_id, reversed_by="user")
+                MatchingService(db).undo(match_id, reversed_by="user", actor="cli")
                 logger.info(f"Reversed match {match_id[:8]}...")
     except ValueError as e:
         logger.error(f"❌ {e}")
         raise typer.Exit(1) from e
+
+
+@app.command("set")
+def matches_set(
+    match_id: str = typer.Argument(..., help="Match ID to accept or reject"),
+    status: str = typer.Option(..., "--status", help="accepted or rejected"),
+) -> None:
+    """Accept or reject one pending match by id."""
+    if status not in {"accepted", "rejected"}:
+        logger.error("❌ --status must be 'accepted' or 'rejected'")
+        raise typer.Exit(2)
+    with handle_cli_errors():
+        with get_database() as db:
+            MatchingService(db).set_status(match_id, status=status, actor="cli")
+    logger.info(f"✅ Set match {match_id[:8]}... to {status}")
 
 
 @app.command("backfill")
@@ -151,7 +166,7 @@ def matches_backfill(
                 )
 
                 result = MatchingService(db).run(
-                    auto_accept_transfers=auto_accept_transfers
+                    auto_accept_transfers=auto_accept_transfers, actor="cli"
                 )
 
                 logger.info(f"Backfill complete: {result.summary()}")
