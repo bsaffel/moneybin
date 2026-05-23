@@ -14,6 +14,8 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
+import pytest
+
 from moneybin.database import Database
 from moneybin.repositories.account_settings_repo import AccountSettingsRepo
 from moneybin.repositories.balance_assertions_repo import BalanceAssertionsRepo
@@ -445,6 +447,22 @@ def test_audit_coverage_passes_for_repo_mutated_import(db: Database) -> None:
     ImportsRepo(db).set("imp1", labels=["budget-2026"], actor="cli")
     result = DoctorService(db)._run_app_audit_coverage(IMPORTS, "import_id")
     assert result.status == "pass"
+
+
+def test_audit_coverage_rejects_non_allowlisted_updated_expr(db: Database) -> None:
+    # Defense-in-depth: a watermark expression outside the allowlist is refused
+    # before it can be spliced into SQL (security.md: allowlist dynamic SQL).
+    with pytest.raises(ValueError, match="updated_expr not in allowlist"):
+        DoctorService(db)._run_app_audit_coverage(
+            MATCH_DECISIONS, "match_id", updated_expr="decided_at); DROP TABLE x --"
+        )
+
+
+def test_audit_coverage_rejects_non_allowlisted_pk_expr(db: Database) -> None:
+    with pytest.raises(ValueError, match="pk_expr not in allowlist"):
+        DoctorService(db)._run_app_audit_coverage(
+            BALANCE_ASSERTIONS, "account_id", pk_expr="account_id); DROP TABLE x --"
+        )
 
 
 def test_match_decisions_account_fk_flags_orphan(db: Database) -> None:

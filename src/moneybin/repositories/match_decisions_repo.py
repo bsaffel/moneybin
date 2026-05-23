@@ -44,6 +44,22 @@ _MATCH_DECISIONS_COLUMNS = (
     "reversed_by",
 )
 
+# Columns stored as JSON-encoded text. Reads decode them to Python objects so the
+# audit ``before``/``after`` payload carries nested JSON, not a doubly-encoded
+# string (``AuditService`` json.dumps the whole payload). Writes json.dumps once.
+_JSON_COLUMNS = frozenset({"match_signals"})
+
+
+def _decode_row(row: tuple[Any, ...]) -> dict[str, Any]:
+    """Map a fetched row to a column → value dict, decoding JSON columns."""
+    out: dict[str, Any] = {}
+    for col, val in zip(_MATCH_DECISIONS_COLUMNS, row, strict=True):
+        if col in _JSON_COLUMNS and isinstance(val, str):
+            out[col] = json.loads(val)
+        else:
+            out[col] = val
+    return out
+
 
 class MatchDecisionsRepo(BaseRepo):
     """Audited CRUD over ``app.match_decisions``."""
@@ -54,7 +70,11 @@ class MatchDecisionsRepo(BaseRepo):
 
     def _fetch_row(self, match_id: str) -> dict[str, Any] | None:
         return self._fetch_one(
-            MATCH_DECISIONS, _MATCH_DECISIONS_COLUMNS, "match_id", match_id
+            MATCH_DECISIONS,
+            _MATCH_DECISIONS_COLUMNS,
+            "match_id",
+            match_id,
+            decode=_decode_row,
         )
 
     def insert(

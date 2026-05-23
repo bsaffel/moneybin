@@ -43,6 +43,15 @@ _BALANCE_ASSERTIONS_PK_EXPR = (
     f"CAST({exp.to_identifier('assertion_date', quoted=True).sql('duckdb')} AS VARCHAR)"
 )
 
+# Raw-interpolated SQL expressions allowed in `_run_app_audit_coverage`. Both
+# `updated_expr` and `pk_expr` are spliced into SQL unsanitized (a multi-column
+# expression can't be sqlglot-quoted as a single identifier), so each must be a
+# hard-coded constant from these sets — a runtime guard that enforces the
+# code-supplied-literal contract per `.claude/rules/security.md` (allowlist
+# dynamic SQL), closing the door before a future caller passes a tainted value.
+_ALLOWED_UPDATED_EXPRS = frozenset({"GREATEST(decided_at, reversed_at)"})
+_ALLOWED_PK_EXPRS = frozenset({_BALANCE_ASSERTIONS_PK_EXPR})
+
 
 @dataclass(frozen=True)
 class InvariantResult:
@@ -206,8 +215,10 @@ class DoctorService:
         ``match_decisions`` uses ``GREATEST(decided_at, reversed_at)`` (DuckDB's
         ``GREATEST`` ignores NULL, so this is the later of the two timestamps, or
         ``decided_at`` when never reversed) so a raw bypass that bumps *either*
-        column is flagged. ``updated_expr`` is interpolated raw (not sanitized),
-        so callers MUST pass a hard-coded SQL literal — never user input.
+        column is flagged. ``updated_expr`` and ``pk_expr`` are interpolated raw
+        (not sanitized), so each must be a hard-coded constant — enforced at
+        runtime against ``_ALLOWED_UPDATED_EXPRS`` / ``_ALLOWED_PK_EXPRS`` so a
+        future caller can't splice in a tainted value (``.claude/rules/security.md``).
 
         ``pk_expr`` overrides how the row's ``target_id`` is projected: most
         tables key on a single ``pk_col``, but a composite-PK table (e.g.
@@ -228,6 +239,12 @@ class DoctorService:
         code-supplied constants, quoted defensively per
         ``.claude/rules/security.md``.
         """
+        # Defense-in-depth: both raw-interpolated expressions must be code-supplied
+        # constants from their allowlists (the SQL below splices them unsanitized).
+        if updated_expr is not None and updated_expr not in _ALLOWED_UPDATED_EXPRS:
+            raise ValueError(f"updated_expr not in allowlist: {updated_expr!r}")
+        if pk_expr is not None and pk_expr not in _ALLOWED_PK_EXPRS:
+            raise ValueError(f"pk_expr not in allowlist: {pk_expr!r}")
         name = f"app_audit_coverage_{table_ref.name}"
         settings = get_settings().doctor
         # `pk_expr` (a code-supplied composite-key expression) wins over the

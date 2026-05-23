@@ -88,8 +88,9 @@ def test_set_writes_row_and_audit_row(db: Database) -> None:
     assert before is None
     after_json = json.loads(after)
     assert after_json["institution_name"] == "Chase"
-    # JSON columns round-trip through the audit payload as parseable JSON text.
-    assert json.loads(after_json["field_mapping"]) == {
+    # JSON columns decode to nested objects in the audit payload (not
+    # doubly-encoded strings).
+    assert after_json["field_mapping"] == {
         "date": "Transaction Date",
         "amount": "Amount",
     }

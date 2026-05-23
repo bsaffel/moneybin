@@ -52,7 +52,7 @@ def get_active_matches(
     """Return accepted, non-reversed match decisions."""
     where = "WHERE match_status = 'accepted' AND reversed_at IS NULL"
     params: list[Any] = []
-    if match_type:
+    if match_type is not None:
         if match_type not in VALID_MATCH_TYPES:
             raise ValueError(f"Invalid match_type: {match_type!r}")
         where += " AND match_type = ?"
@@ -80,7 +80,7 @@ def get_pending_matches(
     """
     where = "WHERE match_status = 'pending' AND reversed_at IS NULL"
     params: list[Any] = []
-    if match_type:
+    if match_type is not None:
         if match_type not in VALID_MATCH_TYPES:
             raise ValueError(f"Invalid match_type: {match_type!r}")
         where += " AND match_type = ?"
@@ -154,7 +154,7 @@ def get_match_log(
     """
     where = "WHERE match_status != 'pending'"
     params: list[Any] = []
-    if match_type:
+    if match_type is not None:
         if match_type not in VALID_MATCH_TYPES:
             raise ValueError(f"Invalid match_type: {match_type!r}")
         where += " AND match_type = ?"

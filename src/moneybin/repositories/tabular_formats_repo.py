@@ -44,6 +44,26 @@ _TABULAR_FORMATS_COLUMNS = (
     "updated_at",
 )
 
+# Columns stored as JSON-encoded text. Reads decode them to Python objects so the
+# audit ``before``/``after`` payload carries nested JSON, not a doubly-encoded
+# string (``AuditService`` json.dumps the whole payload). Writes json.dumps once.
+_JSON_COLUMNS = frozenset({
+    "header_signature",
+    "field_mapping",
+    "skip_trailing_patterns",
+})
+
+
+def _decode_row(row: tuple[Any, ...]) -> dict[str, Any]:
+    """Map a fetched row to a column → value dict, decoding JSON columns."""
+    out: dict[str, Any] = {}
+    for col, val in zip(_TABULAR_FORMATS_COLUMNS, row, strict=True):
+        if col in _JSON_COLUMNS and isinstance(val, str):
+            out[col] = json.loads(val)
+        else:
+            out[col] = val
+    return out
+
 
 class TabularFormatsRepo(BaseRepo):
     """Audited upsert/delete over ``app.tabular_formats``."""
@@ -53,7 +73,13 @@ class TabularFormatsRepo(BaseRepo):
     _AUDIT_TARGET = (TABULAR_FORMATS.schema, TABULAR_FORMATS.name)
 
     def _fetch_row(self, name: str) -> dict[str, Any] | None:
-        return self._fetch_one(TABULAR_FORMATS, _TABULAR_FORMATS_COLUMNS, "name", name)
+        return self._fetch_one(
+            TABULAR_FORMATS,
+            _TABULAR_FORMATS_COLUMNS,
+            "name",
+            name,
+            decode=_decode_row,
+        )
 
     def set(
         self,

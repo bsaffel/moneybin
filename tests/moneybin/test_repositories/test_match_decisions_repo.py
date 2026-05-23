@@ -84,7 +84,9 @@ def test_insert_writes_row_and_audit_row(db: Database) -> None:
     assert before is None
     after_json = json.loads(after)
     assert after_json["match_status"] == "pending"
-    assert json.loads(after_json["match_signals"])["date_distance"] == 0
+    # match_signals decodes to a nested object in the audit payload (not a
+    # doubly-encoded string).
+    assert after_json["match_signals"]["date_distance"] == 0
     assert actor == "system"
 
     assert _metric("match_decision.insert") - before_metric == 1.0
