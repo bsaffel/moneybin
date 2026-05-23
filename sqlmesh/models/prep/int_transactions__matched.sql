@@ -100,7 +100,7 @@ WITH RECURSIVE active_matches AS (
 ), group_confidence AS (
   SELECT
     mg.group_id,
-    MAX(am.confidence_score) AS match_confidence
+    MIN(am.confidence_score) AS match_confidence
   FROM match_groups AS mg
   JOIN active_matches AS am
     ON (

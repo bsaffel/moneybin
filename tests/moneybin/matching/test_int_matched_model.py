@@ -317,3 +317,62 @@ class TestIntTransactionsMatchedModel:
         assert distinct_tids == 1, (
             f"Expected 1 synthetic transaction_id for 4-node chain, got {distinct_tids}"
         )
+
+    def test_group_confidence_is_weakest_link(self, matched_db: Database) -> None:
+        """A group's match_confidence is the MIN (weakest-link) over its edges.
+
+        Three nodes A–B–C form one connected component with two accepted edges:
+          A–B at confidence 0.96
+          B–C at confidence 0.80
+        The group is only as trustworthy as its shakiest edge, so every member
+        must report match_confidence = 0.8000, not 0.9600.
+        """
+        from decimal import Decimal
+
+        acct = "acct_weakest"
+        node_a = "csv_aaaa000000000011"
+        node_b = "csv_bbbb000000000022"
+        node_c = "csv_cccc000000000033"
+
+        for stid in (node_a, node_b, node_c):
+            _insert_unioned_row(
+                matched_db,
+                source_transaction_id=stid,
+                source_type="csv",
+                account_id=acct,
+            )
+
+        _insert_match(
+            matched_db,
+            match_id="match_weak_0001",
+            stid_a=node_a,
+            st_a="csv",
+            stid_b=node_b,
+            st_b="csv",
+            account_id=acct,
+            confidence=0.96,
+        )
+        _insert_match(
+            matched_db,
+            match_id="match_weak_0002",
+            stid_a=node_b,
+            st_a="csv",
+            stid_b=node_c,
+            st_b="csv",
+            account_id=acct,
+            confidence=0.80,
+        )
+
+        rows = matched_db.execute(
+            """
+            SELECT DISTINCT match_confidence
+            FROM prep.int_transactions__matched
+            WHERE match_group_id IS NOT NULL
+            ORDER BY 1
+            """  # noqa: S608  # test input, not executing user SQL
+        ).fetchall()
+        # Exactly one confidence value in the group — the weakest edge.
+        assert len(rows) == 1, f"Expected 1 distinct confidence value, got {rows}"
+        assert rows[0][0] == Decimal("0.8000"), (
+            f"Expected weakest-link confidence 0.8000, got {rows[0][0]}"
+        )
