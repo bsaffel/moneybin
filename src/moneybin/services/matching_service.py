@@ -278,6 +278,31 @@ class MatchingService:
                 result[(member_acct, st, stid)] = component_key
         return result
 
+    def _component_key_for_row(
+        self, row: dict[str, Any], comp_keys: dict[tuple[str, str, str], str]
+    ) -> str:
+        """Resolve a pending dedup row's component_key, warning on the fallback.
+
+        Every pending dedup edge's side-A node is, by construction, a member of
+        the active-edge component map. If it ever isn't, the row would silently
+        split into its own single-edge cluster (over-counting groups, fragmenting
+        the review queue) — so emit a warning to make that anomaly observable
+        rather than degrading without a signal.
+        """
+        lookup_key = (
+            row["account_id"],
+            row["source_type_a"],
+            row["source_transaction_id_a"],
+        )
+        component_key = comp_keys.get(lookup_key)
+        if component_key is None:
+            logger.warning(
+                f"Pending dedup match {row['match_id']} side-A node absent from the "
+                f"active dedup edge map; treating it as its own cluster"
+            )
+            return row["match_id"]
+        return component_key
+
     def get_pending(
         self, *, match_type: str | None = None, limit: int | None = None
     ) -> list[dict[str, Any]]:
@@ -303,13 +328,7 @@ class MatchingService:
         enriched: list[dict[str, Any]] = []
         for row in rows:
             if row.get("match_type") == "dedup":
-                acct = row["account_id"]
-                stype_a = row["source_type_a"]
-                stid_a = row["source_transaction_id_a"]
-                lookup_key = (acct, stype_a, stid_a)
-                # Fall back to match_id if the node isn't in our edge map
-                # (should not happen for pending dedup, but be defensive)
-                component_key = comp_keys.get(lookup_key, row["match_id"])
+                component_key = self._component_key_for_row(row, comp_keys)
             else:
                 # Transfers are ungrouped; each edge is its own cluster
                 component_key = row["match_id"]
@@ -317,25 +336,25 @@ class MatchingService:
 
         return enriched
 
-    def count_pending_dedup_groups(self) -> int:
+    def count_pending_dedup_groups(self, *, match_type: str | None = None) -> int:
         """Distinct dedup components across the FULL pending queue (not one page).
 
         Counts over every pending dedup decision, so the figure is correct even
         when a caller paginates ``get_pending`` — a page-local count would
         undercount when ``has_more`` is true and mislead the reviewer about how
         many transactions still need review.
+
+        ``match_type`` mirrors the caller's ``get_pending`` filter so the count
+        stays consistent with the rows returned: a non-dedup scope (e.g.
+        ``"transfer"``) has zero dedup groups, not the whole unfiltered queue.
         """
+        if match_type is not None and match_type != "dedup":
+            return 0
         pending = get_pending_matches(self._db, match_type="dedup", limit=None)
         if not pending:
             return 0
         comp_keys = self._compute_component_keys()
-        return len({
-            comp_keys.get(
-                (r["account_id"], r["source_type_a"], r["source_transaction_id_a"]),
-                r["match_id"],
-            )
-            for r in pending
-        })
+        return len({self._component_key_for_row(r, comp_keys) for r in pending})
 
     def accept_all_pending(
         self, *, match_type: str | None = None, actor: str = "system"

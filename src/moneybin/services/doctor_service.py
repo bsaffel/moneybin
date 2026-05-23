@@ -801,7 +801,12 @@ class DoctorService:
             detail=(
                 f"expected {dedup_absorbed} absorbed row(s) from accepted dedup "
                 f"decisions but observed {observed_absorbed} "
-                f"(raw_total={raw_total}, core_count={core_count})"
+                f"(raw_total={raw_total}, core_count={core_count}). "
+                "If you imported data since the last transform, this is expected "
+                "until you re-run `moneybin transform`: staging counts new rows "
+                "(and pending, not-yet-accepted matches) immediately, but core only "
+                "reflects them after a transform. A mismatch that persists after a "
+                "fresh transform indicates a dedup leak or an un-applied decision."
             ),
             affected_ids=[],
         )

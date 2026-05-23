@@ -135,3 +135,55 @@ async def test_matches_pending_reports_dedup_group_count(mcp_db: object) -> None
     result = (await transactions_matches_pending()).to_dict()
     # Empty queue → zero groups; the field is structured payload data.
     assert result["data"]["n_dedup_groups"] == 0
+
+
+@pytest.mark.unit
+async def test_matches_pending_dedup_group_count_zero_for_transfer_scope(
+    mcp_db: object,
+) -> None:
+    """n_dedup_groups must honour the match_type filter, not the full queue.
+
+    A transfer-scoped call returns transfer rows; reporting the whole dedup
+    queue's group count alongside them would be a self-contradictory payload.
+    """
+    import json
+    from datetime import UTC, datetime
+
+    with get_database() as db:
+        db.execute(
+            """
+            INSERT INTO app.match_decisions (
+                match_id, source_transaction_id_a, source_type_a,
+                source_origin_a, source_transaction_id_b, source_type_b,
+                source_origin_b, account_id, confidence_score, match_signals,
+                match_type, match_tier, account_id_b, match_status,
+                match_reason, decided_by, decided_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,  # noqa: S608  # test input, not executing SQL
+            [
+                "td_ab",
+                "t1",
+                "csv",
+                "origin_a",
+                "t2",
+                "ofx",
+                "origin_b",
+                "ACC001",
+                0.9,
+                json.dumps({}),
+                "dedup",
+                "3",
+                None,
+                "pending",
+                None,
+                "matcher",
+                datetime.now(tz=UTC).isoformat(),
+            ],
+        )
+
+    # Dedup scope sees the one pending component...
+    dedup = (await transactions_matches_pending(match_type="dedup")).to_dict()
+    assert dedup["data"]["n_dedup_groups"] == 1
+    # ...transfer scope sees none (no dedup rows in scope).
+    transfer = (await transactions_matches_pending(match_type="transfer")).to_dict()
+    assert transfer["data"]["n_dedup_groups"] == 0

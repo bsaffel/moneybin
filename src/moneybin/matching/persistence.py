@@ -136,6 +136,8 @@ def get_active_dedup_edges(
         WHERE match_type = 'dedup'
           AND match_status IN ('accepted', 'pending')
           AND reversed_at IS NULL
+        ORDER BY account_id, source_type_a, source_transaction_id_a,
+                 source_type_b, source_transaction_id_b
         """,  # noqa: S608 — no user-supplied values; all literals
     ).fetchall()
     cols = (

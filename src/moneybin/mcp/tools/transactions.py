@@ -199,7 +199,9 @@ def transactions_matches_pending(
         total = svc.count_pending(match_type=match_type)
         # Count groups over the FULL pending queue (not just this page) so the
         # agent sees the true N-way cluster total even when has_more is true.
-        n_dedup_groups = svc.count_pending_dedup_groups()
+        # Pass the caller's filter through so the count matches the returned rows
+        # (a transfer-scoped call reports 0 dedup groups, not the whole queue).
+        n_dedup_groups = svc.count_pending_dedup_groups(match_type=match_type)
 
     return build_envelope(
         data=MatchesPendingPayload(

@@ -208,6 +208,57 @@ def _seed_dedup(
     )
 
 
+def test_count_pending_dedup_groups_respects_match_type_filter(db: Database) -> None:
+    """The group count must honour the caller's match_type, not hardcode dedup.
+
+    transactions_matches_pending(match_type="transfer") returns transfer rows;
+    reporting the full dedup-queue group count alongside them is a
+    self-contradictory payload. A transfer-scoped call has zero dedup groups.
+    """
+    # 3-copy dedup cluster on acct1: T1-T2-T3 (two pending edges, one component)
+    _seed_dedup(
+        db, "g_ab", "pending", stid_a="t1", stype_a="csv", stid_b="t2", stype_b="ofx"
+    )
+    _seed_dedup(
+        db, "g_bc", "pending", stid_a="t2", stype_a="ofx", stid_b="t3", stype_b="tiller"
+    )
+    svc = MatchingService(db)
+    # Unfiltered and dedup-scoped both see the one component.
+    assert svc.count_pending_dedup_groups() == 1
+    assert svc.count_pending_dedup_groups(match_type="dedup") == 1
+    # Transfer-scoped: no dedup groups are in scope.
+    assert svc.count_pending_dedup_groups(match_type="transfer") == 0
+
+
+def test_get_pending_warns_when_component_node_absent(
+    db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The defensive comp_keys fallback must surface a log warning, not split silently.
+
+    If a pending dedup row's side-A node is missing from the component map, the
+    row falls back to its own match_id (its own cluster). That "should not
+    happen" — emit a warning so it's observable if it ever does.
+    """
+    import logging
+
+    _seed_dedup(
+        db, "w_ab", "pending", stid_a="t1", stype_a="csv", stid_b="t2", stype_b="ofx"
+    )
+    svc = MatchingService(db)
+    # Force the fallback: pretend the component map is empty.
+    empty_map: dict[tuple[str, str, str], str] = {}
+    monkeypatch.setattr(svc, "_compute_component_keys", lambda: empty_map)
+    with caplog.at_level(logging.WARNING):
+        pending = svc.get_pending(match_type="dedup")
+    # Falls back to match_id and logs a warning naming the row.
+    assert pending[0]["component_key"] == "w_ab"
+    assert any(
+        "w_ab" in r.message and r.levelno == logging.WARNING for r in caplog.records
+    )
+
+
 def test_get_pending_assigns_component_key(db: Database) -> None:
     """Pending dedup rows that share a component get the same component_key.
 
