@@ -135,6 +135,8 @@ class BaseRepo:
         actor: str,
         parent_audit_id: str | None = None,
         context: dict[str, Any] | None = None,
+        is_undo: bool = False,
+        undoes_operation_id: str | None = None,
     ) -> AuditEvent:
         """Emit one paired ``app.audit_log`` row and bump the repo mutation metric.
 
@@ -150,6 +152,9 @@ class BaseRepo:
         lockstep (so the contract-violation gap *between* them is unaffected), and
         a rollback after a successful audit insert is rare. Prometheus counters are
         best-effort telemetry, not a durable ledger.
+
+        ``is_undo`` / ``undoes_operation_id`` mark rows written by :meth:`undo_event`
+        so the undo is itself queryable and undoable (REC-PR3).
         """
         event = self._audit.record_audit_event(
             action=action,
@@ -159,6 +164,8 @@ class BaseRepo:
             actor=actor,
             parent_audit_id=parent_audit_id,
             context=context,
+            is_undo=is_undo,
+            undoes_operation_id=undoes_operation_id,
         )
         app_mutation_audit_emitted_total.labels(
             repository=self.repository, action=action
@@ -230,3 +237,96 @@ class BaseRepo:
             else:
                 out[key] = value
         return out
+
+    def undo_event(
+        self,
+        event: AuditEvent,
+        *,
+        actor: str,
+        in_outer_txn: bool = False,
+    ) -> AuditEvent | None:
+        """Synthesize and apply the inverse of one audited mutation.
+
+        The inverse is derived purely from the event's full-row before/after
+        capture (Req 4), so one generic implementation reverses every repo:
+
+        - INSERT (``before`` is None) → DELETE the row it created.
+        - DELETE (``after`` is None) → re-INSERT the row it removed.
+        - UPDATE (both present) → restore every column to its before-image,
+          locating the row by the *after* image's primary key so a pk-changing
+          update (e.g. a tag rename) is found by its current key.
+
+        A no-op event (``before == after``, covering both-None and a zero-change
+        update) writes nothing and returns ``None``. Otherwise the undo is itself
+        audited (``is_undo=True``, ``undoes_operation_id=event.operation_id``) and
+        the new event is returned — so it is undoable in turn (undo-the-undo).
+
+        Values come straight from the JSON-decoded audit payload: DuckDB
+        auto-casts ISO strings to ``DATE``/``TIMESTAMP`` and decimal strings to
+        ``DECIMAL``, and binds ``dict``/``list`` directly to ``JSON``/array
+        columns — so no per-repo type handling is needed (``match_signals`` JSON
+        and ``exemplars`` arrays round-trip natively).
+        """
+        before = event.before_value
+        after = event.after_value
+        if before == after:
+            return None
+
+        with self._transaction(in_outer_txn=in_outer_txn):
+            if before is None and after is not None:
+                self._delete_by_pk(after)
+            elif after is None and before is not None:
+                self._insert_row(before)
+            elif before is not None and after is not None:
+                self._restore_row(before=before, locate=after)
+            return self._emit_audit(
+                action=f"{event.action}.undo",
+                target=(
+                    event.target_schema,
+                    event.target_table,
+                    event.target_id,
+                ),
+                before=after,
+                after=before,
+                actor=actor,
+                is_undo=True,
+                undoes_operation_id=event.operation_id,
+            )
+
+    def _pk_where(self, row: dict[str, Any]) -> tuple[str, list[Any]]:
+        """Build a ``col = ? AND …`` clause + params from ``pk_columns``."""
+        clauses = [f"{quote_ident(col)} = ?" for col in self.pk_columns]
+        return " AND ".join(clauses), [row[col] for col in self.pk_columns]
+
+    def _delete_by_pk(self, row: dict[str, Any]) -> None:
+        """Delete the row whose primary key matches ``row`` (undo of an INSERT)."""
+        where, params = self._pk_where(row)
+        self._db.execute(
+            f"DELETE FROM {self.table_ref.full_name} WHERE {where}",  # noqa: S608  # TableRef + sqlglot-quoted pk; values parameterized
+            params,
+        )
+
+    def _insert_row(self, row: dict[str, Any]) -> None:
+        """Re-insert a full captured row (undo of a DELETE)."""
+        cols = list(row.keys())
+        col_sql = ", ".join(quote_ident(c) for c in cols)
+        placeholders = ", ".join("?" for _ in cols)
+        self._db.execute(
+            f"INSERT INTO {self.table_ref.full_name} ({col_sql}) "  # noqa: S608  # TableRef + sqlglot-quoted columns; values parameterized
+            f"VALUES ({placeholders})",
+            [row[c] for c in cols],
+        )
+
+    def _restore_row(self, *, before: dict[str, Any], locate: dict[str, Any]) -> None:
+        """Restore every column to its before-image (undo of an UPDATE).
+
+        ``locate`` is the after-image, so the WHERE clause keys on the row's
+        *current* primary key — correct even when the update changed the key.
+        """
+        set_cols = list(before.keys())
+        set_sql = ", ".join(f"{quote_ident(c)} = ?" for c in set_cols)
+        where, where_params = self._pk_where(locate)
+        self._db.execute(
+            f"UPDATE {self.table_ref.full_name} SET {set_sql} WHERE {where}",  # noqa: S608  # TableRef + sqlglot-quoted columns; values parameterized
+            [before[c] for c in set_cols] + where_params,
+        )

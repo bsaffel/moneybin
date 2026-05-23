@@ -79,6 +79,8 @@ def test_emit_audit_returns_event_and_increments_metric() -> None:
         actor="user",
         parent_audit_id=None,
         context=None,
+        is_undo=False,
+        undoes_operation_id=None,
     )
     assert after - before == 1.0
 
