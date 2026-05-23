@@ -301,6 +301,48 @@ def test_fallback_log_omits_raw_sql(
     assert "sha256=" in logged
 
 
+def test_count_plus_critical_column_not_downgraded(populated_db: Database) -> None:
+    """A top-level COUNT alongside a surfaced CRITICAL column must not collapse to LOW.
+
+    `COUNT(*) + account_id GROUP BY account_id` surfaces account_id's value
+    directly; the count does not suppress it. Classifying the projection as
+    AGGREGATE would leak account numbers unmasked at sensitivity=low.
+    """
+    out = _classes(
+        "SELECT COUNT(*) + account_id AS x FROM core.dim_accounts GROUP BY account_id",
+        populated_db,
+    )
+    assert out == {"x": DataClass.ACCOUNT_IDENTIFIER}
+    assert derive_query_tier(out) is Tier.CRITICAL
+
+
+def test_count_of_critical_column_stays_aggregate(populated_db: Database) -> None:
+    """COUNT(account_id) — value confined inside the count — stays AGGREGATE.
+
+    Guards the boundary of the COUNT+sibling fix: a column whose only
+    appearance is inside a counting aggregate is collapsed (the fix must not
+    over-redact it to CRITICAL).
+    """
+    out = _classes("SELECT COUNT(account_id) AS n FROM core.dim_accounts", populated_db)
+    assert out == {"n": DataClass.AGGREGATE}
+
+
+def test_two_unaliased_projections_get_distinct_keys(populated_db: Database) -> None:
+    """Two unnamed projections must not collide on one output key.
+
+    `MIN(account_id)` and `MAX(routing_number)` both yield `""` from
+    alias_or_name; a positional suffix keeps each a distinct key so neither
+    class is dropped (a dropped class weakens sql_query's position-aligned
+    fallback).
+    """
+    out = _classes(
+        "SELECT MIN(account_id), MAX(routing_number) FROM core.dim_accounts",
+        populated_db,
+    )
+    assert len(out) == 2
+    assert all(c.tier is Tier.CRITICAL for c in out.values())
+
+
 def test_scalar_subquery_count_does_not_downgrade(populated_db: Database) -> None:
     """A COUNT inside a scalar subquery must not downgrade a co-referenced column.
 

@@ -320,6 +320,24 @@ def _within_subquery(node: exp.Expr, stop: exp.Expr) -> bool:
     return False
 
 
+def _within_counting_agg(node: exp.Expr, stop: exp.Expr) -> bool:
+    """True if ``node`` sits inside a counting aggregate at or below ``stop``.
+
+    A column inside ``COUNT(...)`` / ``COUNT(DISTINCT ...)`` is collapsed to a
+    count — its value never surfaces. Unlike ``_within_subquery`` this checks
+    ``stop`` itself, so a projection that *is* the count (``COUNT(account_id)``)
+    is handled correctly.
+    """
+    parent = node.parent
+    while parent is not None:
+        if isinstance(parent, _COUNTING_AGGS):
+            return True
+        if parent is stop:
+            break
+        parent = parent.parent
+    return False
+
+
 def _classify_projection(
     proj: exp.Expr,
     tree: exp.Expr,
@@ -329,13 +347,19 @@ def _classify_projection(
 ) -> DataClass:
     inner = proj.unalias() if isinstance(proj, exp.Alias) else proj
 
-    # A counting aggregate at the projection's TOP level → LOW (counts destroy
-    # individual values). A count inside a scalar subquery (e.g.
-    # `(SELECT COUNT(*) FROM t) + amount`) does not downgrade the projection —
-    # its tier still comes from the co-referenced columns (here, `amount`).
+    # A counting aggregate at the projection's TOP level collapses values to a
+    # count — but it only governs the projection when EVERY column reference is
+    # itself inside a counting aggregate (e.g. COUNT(DISTINCT account_id) → LOW).
+    # A column that surfaces ALONGSIDE the count (COUNT(*) + account_id) returns
+    # its value directly, so the count must NOT suppress it; fall through to
+    # classify by that column. A count inside a scalar subquery
+    # (`(SELECT COUNT(*) FROM t) + amount`) never governs — its tier still comes
+    # from the co-referenced columns (here, `amount`).
     if any(
         isinstance(n, _COUNTING_AGGS) and not _within_subquery(n, inner)
         for n in inner.find_all(exp.AggFunc)
+    ) and not any(
+        not _within_counting_agg(c, inner) for c in inner.find_all(exp.Column)
     ):
         return DataClass.AGGREGATE
 
@@ -398,7 +422,12 @@ def resolve_output_classes(
     ]
     out: dict[str, DataClass] = {}
     for i, proj in enumerate(branches[0].selects):
-        name = proj.alias_or_name or "?"
+        # Unaliased expressions (e.g. MIN(account_id)) yield "" from
+        # alias_or_name; a positional suffix keeps each one a distinct key so
+        # two unnamed projections don't collide (the second overwriting the
+        # first would drop a class and weaken sql_query's position-aligned
+        # fallback). The suffix preserves the projection's positional order.
+        name = proj.alias_or_name or f"?_{i}"
         candidates = [b[i] for b in per_branch if i < len(b)]
         out[name] = (
             max(candidates, key=lambda c: c.tier) if candidates else DataClass.AGGREGATE

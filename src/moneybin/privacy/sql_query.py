@@ -250,16 +250,19 @@ def execute_sql_query(db: Database, query: str, *, max_rows: int) -> SqlQueryRes
     # SqlSchemaError comes from the lineage qualify step; CatalogException from
     # DuckDB at execute time. Both mean "table/column doesn't exist".
     except (SqlSchemaError, duckdb.CatalogException) as e:
+        # Don't echo str(e) to the client: a DuckDB/lineage message can quote
+        # the query verbatim (including literal values). Log it server-side
+        # (SanitizedLogFormatter masks PII) — the code + message classify it.
+        logger.warning(f"sql_query unknown table/column: {e}")
         raise UserError(
             "Unknown table or column.",
             code=error_codes.SQL_UNKNOWN_TABLE,
-            details={"detail": str(e)},
         ) from e
     except duckdb.Error as e:
+        logger.warning(f"sql_query execution error: {e}")
         raise UserError(
             "Query execution failed.",
             code=error_codes.SQL_QUERY_ERROR,
-            details={"detail": str(e)},
         ) from e
 
     records = [dict(zip(columns, row, strict=False)) for row in rows]
@@ -305,8 +308,9 @@ def _fetch_metadata(
     try:
         return _fetch(db, query, max_rows)
     except duckdb.Error as e:
+        # See execute_sql_query: keep str(e) out of the client envelope.
+        logger.warning(f"sql_query metadata error: {e}")
         raise UserError(
             "Query execution failed.",
             code=error_codes.SQL_QUERY_ERROR,
-            details={"detail": str(e)},
         ) from e

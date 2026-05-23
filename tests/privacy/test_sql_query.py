@@ -132,6 +132,22 @@ def test_unknown_table_raises(populated_db: Database) -> None:
     assert ei.value.code == error_codes.SQL_UNKNOWN_TABLE
 
 
+def test_unknown_table_error_omits_raw_detail(populated_db: Database) -> None:
+    """The unknown-table error must not echo the raw query/DuckDB message.
+
+    str(e) from DuckDB/lineage can quote the query verbatim (literal values
+    included); it stays in the server log, never the client-facing envelope.
+    """
+    with pytest.raises(UserError) as ei:
+        execute_sql_query(
+            populated_db,
+            "SELECT x FROM core.does_not_exist WHERE note = 'acct 4111111111111111'",
+            max_rows=10,
+        )
+    assert ei.value.code == error_codes.SQL_UNKNOWN_TABLE
+    assert ei.value.details is None
+
+
 def test_truncation_sets_total_count(populated_db: Database) -> None:
     """When rows exceed max_rows, records are capped and total_count signals more."""
     _seed_txn(populated_db)
