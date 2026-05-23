@@ -91,7 +91,11 @@ class TestAssertionsCRUD:
     def test_assert_inserts(self, assertion_db: Database) -> None:
         svc = BalanceService(assertion_db)
         result = svc.assert_balance(
-            "acct_a", date(2026, 1, 31), Decimal("1234.56"), notes="from statement"
+            "acct_a",
+            date(2026, 1, 31),
+            Decimal("1234.56"),
+            notes="from statement",
+            actor="cli",
         )
         assert isinstance(result, BalanceAssertionPayload)
         assert result.assertion.balance == Decimal("1234.56")
@@ -100,8 +104,8 @@ class TestAssertionsCRUD:
     @pytest.mark.unit
     def test_assert_upserts_same_date(self, assertion_db: Database) -> None:
         svc = BalanceService(assertion_db)
-        svc.assert_balance("acct_a", date(2026, 1, 31), Decimal("100.00"))
-        svc.assert_balance("acct_a", date(2026, 1, 31), Decimal("200.00"))
+        svc.assert_balance("acct_a", date(2026, 1, 31), Decimal("100.00"), actor="cli")
+        svc.assert_balance("acct_a", date(2026, 1, 31), Decimal("200.00"), actor="cli")
         listed = svc.list_assertions("acct_a")
         assert isinstance(listed, BalanceAssertionListPayload)
         assert len(listed.assertions) == 1
@@ -110,20 +114,20 @@ class TestAssertionsCRUD:
     @pytest.mark.unit
     def test_delete_removes(self, assertion_db: Database) -> None:
         svc = BalanceService(assertion_db)
-        svc.assert_balance("acct_a", date(2026, 1, 31), Decimal("100.00"))
-        svc.delete_assertion("acct_a", date(2026, 1, 31))
+        svc.assert_balance("acct_a", date(2026, 1, 31), Decimal("100.00"), actor="cli")
+        svc.delete_assertion("acct_a", date(2026, 1, 31), actor="cli")
         assert svc.list_assertions("acct_a").assertions == []
 
     @pytest.mark.unit
     def test_delete_silent_on_missing(self, assertion_db: Database) -> None:
         svc = BalanceService(assertion_db)
-        svc.delete_assertion("acct_a", date(2099, 1, 1))  # no error
+        svc.delete_assertion("acct_a", date(2099, 1, 1), actor="cli")  # no error
 
     @pytest.mark.unit
     def test_list_filters_by_account(self, assertion_db: Database) -> None:
         svc = BalanceService(assertion_db)
-        svc.assert_balance("acct_a", date(2026, 1, 31), Decimal("100.00"))
-        svc.assert_balance("acct_b", date(2026, 1, 31), Decimal("200.00"))
+        svc.assert_balance("acct_a", date(2026, 1, 31), Decimal("100.00"), actor="cli")
+        svc.assert_balance("acct_b", date(2026, 1, 31), Decimal("200.00"), actor="cli")
         a_only = svc.list_assertions("acct_a")
         assert isinstance(a_only, BalanceAssertionListPayload)
         assert len(a_only.assertions) == 1
@@ -132,8 +136,8 @@ class TestAssertionsCRUD:
     @pytest.mark.unit
     def test_list_all_assertions(self, assertion_db: Database) -> None:
         svc = BalanceService(assertion_db)
-        svc.assert_balance("acct_a", date(2026, 1, 31), Decimal("100.00"))
-        svc.assert_balance("acct_b", date(2026, 1, 31), Decimal("200.00"))
+        svc.assert_balance("acct_a", date(2026, 1, 31), Decimal("100.00"), actor="cli")
+        svc.assert_balance("acct_b", date(2026, 1, 31), Decimal("200.00"), actor="cli")
         all_rows = svc.list_assertions(None)
         assert isinstance(all_rows, BalanceAssertionListPayload)
         assert len(all_rows.assertions) == 2
@@ -423,7 +427,9 @@ class TestAccountValidation:
         create_core_tables(db)
         svc = BalanceService(db)
         with pytest.raises(UserError, match="Account not found"):
-            svc.assert_balance("ACCTO1_typo", date(2026, 1, 31), Decimal("1234.56"))
+            svc.assert_balance(
+                "ACCTO1_typo", date(2026, 1, 31), Decimal("1234.56"), actor="cli"
+            )
 
     @pytest.mark.unit
     def test_assert_balance_accepts_known_account(self, db: Database) -> None:
@@ -437,6 +443,20 @@ class TestAccountValidation:
             """
         )
         svc = BalanceService(db)
-        result = svc.assert_balance("REAL_ACCT", date(2026, 1, 31), Decimal("500.00"))
+        result = svc.assert_balance(
+            "REAL_ACCT", date(2026, 1, 31), Decimal("500.00"), actor="cli"
+        )
         assert isinstance(result, BalanceAssertionPayload)
         assert result.assertion.balance == Decimal("500.00")
+
+    @pytest.mark.unit
+    def test_delete_assertion_unknown_account_is_noop(self, db: Database) -> None:
+        """delete_assertion is forgiving: an unknown account_id no-ops, not raises.
+
+        Asymmetric with assert_balance by design — you can't create an anchor for
+        an account that doesn't exist, but removing one is idempotent best-effort.
+        """
+        create_core_tables(db)
+        svc = BalanceService(db)
+        # Must not raise (contract also locked by the e2e delete-noop test).
+        svc.delete_assertion("ACCTO1_typo", date(2026, 1, 31), actor="cli")

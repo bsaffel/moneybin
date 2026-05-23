@@ -126,6 +126,7 @@ def accounts_balance_assert(
                 assertion_date=parsed_date,
                 balance=parsed_amount,
                 notes=notes,
+                actor="cli",
             )
     typer.echo(
         f"✅ Asserted balance for {account_id} on {parsed_date}: {result.assertion.balance}",
@@ -169,7 +170,7 @@ def accounts_balance_assertion_delete(
     with handle_cli_errors():
         with get_database() as db:
             parsed_date = _date.fromisoformat(assertion_date)
-            BalanceService(db).delete_assertion(account_id, parsed_date)
+            BalanceService(db).delete_assertion(account_id, parsed_date, actor="cli")
     typer.echo(
         f"✅ Deleted balance assertion for {account_id} on {parsed_date}",
         err=True,
