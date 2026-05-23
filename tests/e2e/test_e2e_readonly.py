@@ -246,6 +246,17 @@ class TestDBReadOnlyCommands:
         result = run_cli("transactions", "categorize", "rules", "list", env=e2e_profile)
         result.assert_success()
 
+    # ── privacy (read paths) ─────────────────────────────────────────────
+
+    def test_privacy_status(self, e2e_profile: dict[str, str]) -> None:
+        # status opens the DB read-only (get_database(read_only=True)).
+        result = run_cli("privacy", "status", env=e2e_profile)
+        result.assert_success()
+
+    def test_privacy_log(self, e2e_profile: dict[str, str]) -> None:
+        result = run_cli("privacy", "log", env=e2e_profile)
+        result.assert_success()
+
     # ── matches ─────────────────────────────────────────────────────────
 
     def test_matches_history(self, e2e_profile: dict[str, str]) -> None:

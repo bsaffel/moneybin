@@ -1292,3 +1292,43 @@ class TestCategorizeRulesDeleteCLI:
         assert result.exit_code != 0
         assert "Traceback (most recent call last)" not in result.stderr
         assert "Rule does-not-exist not found" in result.stderr
+
+
+class TestPrivacyConsent:
+    """Consent ledger CLI commands (grant / revoke / revoke-all)."""
+
+    def test_privacy_grant_status_log_revoke_cycle(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """Full lifecycle over a real subprocess + encrypted DB."""
+        env = make_workflow_env_fast(tmp_path, "privcycle", _mutating_profile_template)
+        env["MONEYBIN_AI__DEFAULT_BACKEND"] = "anthropic"
+
+        run_cli(
+            "privacy", "grant", "mcp-data-sharing", "--yes", env=env
+        ).assert_success()
+
+        status = run_cli("privacy", "status", "--output", "json", env=env)
+        status.assert_success()
+        assert "mcp-data-sharing" in status.stdout
+
+        log = run_cli("privacy", "log", env=env)
+        log.assert_success()
+        assert "consent.grant" in log.stdout
+
+        run_cli(
+            "privacy", "revoke", "mcp-data-sharing", "--yes", env=env
+        ).assert_success()
+
+    def test_privacy_revoke_all(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        env = make_workflow_env_fast(tmp_path, "privrevall", _mutating_profile_template)
+        env["MONEYBIN_AI__DEFAULT_BACKEND"] = "anthropic"
+        run_cli(
+            "privacy", "grant", "mcp-data-sharing", "--yes", env=env
+        ).assert_success()
+        run_cli(
+            "privacy", "grant", "ml-categorization", "--yes", env=env
+        ).assert_success()
+        run_cli("privacy", "revoke-all", "--yes", env=env).assert_success()
