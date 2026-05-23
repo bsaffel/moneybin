@@ -291,3 +291,36 @@ def _redact(value: Any, consent: ConsentSet | None, declared_type: Any) -> Any:
             return value
     # Primitive / unhandled — pass through.
     return value
+
+
+def redact_records(
+    records: list[dict[str, Any]],
+    output_classes: Mapping[str, DataClass],
+    consent: ConsentSet | None = None,
+) -> list[dict[str, Any]]:
+    """Mask dynamic SQL rows by column name using the shared ``_TRANSFORMS``.
+
+    The dynamic-SQL counterpart to ``redact_typed``: that walks static
+    ``Annotated[T, DataClass]`` metadata; this takes an explicit
+    column→class map from sqlglot lineage. Both share ``_TRANSFORMS`` so
+    masking behavior is identical across the typed and dynamic surfaces —
+    today CRITICAL is masked and everything else passes through; when
+    HIGH/MEDIUM transforms are wired later, both surfaces gain them at once.
+
+    Columns absent from ``output_classes`` pass through unchanged; the
+    lineage resolver is expected to classify every output column (with a
+    conservative fallback), so an unmapped column means the caller chose
+    not to classify it.
+    """
+    if not records:
+        return records
+    transforms = {
+        col: _TRANSFORMS.get(dc, _passthrough) for col, dc in output_classes.items()
+    }
+    return [
+        {
+            k: (transforms[k](v, consent) if k in transforms else v)
+            for k, v in row.items()
+        }
+        for row in records
+    ]
