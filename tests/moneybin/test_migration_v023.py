@@ -112,6 +112,23 @@ class TestExistingDbUpgrade:
         assert "idx_audit_log_operation_id" in indexes
         assert "idx_audit_log_occurred_at_op" in indexes
 
+    def test_pre_existing_indexes_survive_drop_restore(
+        self, pre_v023_db: Database
+    ) -> None:
+        # The SET NOT NULL workaround drops every explicit index and restores
+        # it from catalog DDL; assert the 5 base indexes seeded by _PRE_V023_DDL
+        # actually came back, not just the 2 new ones.
+        run_migration(pre_v023_db, migrate)
+        indexes = _indexes(pre_v023_db)
+        for name in (
+            "idx_audit_log_target",
+            "idx_audit_log_occurred",
+            "idx_audit_log_action",
+            "idx_audit_log_actor",
+            "idx_audit_log_parent",
+        ):
+            assert name in indexes, f"pre-existing index {name!r} was not restored"
+
     def test_idempotent_rerun(self, pre_v023_db: Database) -> None:
         run_migration(pre_v023_db, migrate)
         run_migration(pre_v023_db, migrate)
