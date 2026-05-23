@@ -20,6 +20,12 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   match_id`). The `actions[]` summary hint reports the edge-to-group ratio.
 
 ### Added
+- **N-way dedup collapse.** Three or more copies of the same transaction now
+  collapse to a single record even when the duplicates span sources *and*
+  overlapping within-source files (e.g. two CSV exports plus one OFX download
+  of the same statement). A union-find spanning forest groups every transitively
+  linked duplicate into one connected component, so chained matches (A=B, B=C)
+  resolve to one gold record instead of leaving a stray copy behind.
 - **Agent/CLI-callable `transactions matches pending`.** Lists pending matches
   grouped by component (copies of the same transaction cluster together),
   mirroring the `transactions_matches_pending` MCP tool. Closes the CLI gap where

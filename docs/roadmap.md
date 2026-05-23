@@ -82,7 +82,7 @@ Makes the numbers trustworthy. Spending totals match what you'd compute from ban
 | Smart tabular importer | ✅ | CSV/TSV/Excel/Parquet/Feather; auto-detects Tiller, Mint, YNAB, Maybe profiles. See [`smart-import-tabular.md`](specs/smart-import-tabular.md). |
 | OFX/QFX/QBO import | ✅ | Same import infrastructure as tabular. |
 | Watched-folder inbox | ✅ | Drop a statement in `~/Documents/MoneyBin/<profile>/inbox/` and it imports. |
-| Cross-source dedup | ✅ | Content hashes + golden-record merge. |
+| Cross-source dedup | ✅ | Content hashes + golden-record merge; N-way collapse merges 3+ copies across sources and overlapping within-source files into one record. |
 | Transfer detection | ✅ | Four-signal scoring across accounts. |
 | Auto-rule learning from edits | ✅ | Review queue surfaces proposed rules before they apply broadly. |
 | Account management | ✅ | List, get, set, resolve; reversible merging. |

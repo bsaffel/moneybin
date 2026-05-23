@@ -1,7 +1,7 @@
 # N-Way Dedup: Merge 3+ Copies of the Same Transaction
 
-> Last updated: 2026-05-23 — reconciled against merged prerequisites
-> Status: in-progress
+> Last updated: 2026-05-23 — end-to-end collapse scenario shipped (Stage 8)
+> Status: implemented
 > Parent: [`matching-overview.md`](matching-overview.md) (pillars A + C)
 > Enhances: [`matching-same-record-dedup.md`](matching-same-record-dedup.md) — supersedes its Requirement 3 (1:1 bipartite assignment)
 > Prerequisites (merged): matching-model reconciliation (#204, activated the `dedup_reconciliation` doctor check) and agent-callable match accept/reject (#209, the `transactions_matches_set` / `_pending` surface Req 11–12 build on)
