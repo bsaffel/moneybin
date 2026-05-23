@@ -1351,8 +1351,13 @@ class ImportService:
             validate_slug(label)
         self._db.begin()
         try:
-            new = _merge_unique(self.list_labels(import_id), labels)
-            self._imports.set(import_id, labels=new, actor=actor, in_outer_txn=True)
+            prior = self.list_labels(import_id)
+            new = _merge_unique(prior, labels)
+            # Skip the write (and its audit row) when nothing changed — e.g.
+            # re-adding labels the import already has — so a no-op doesn't
+            # materialize a spurious app.imports row or audit entry.
+            if new != prior:
+                self._imports.set(import_id, labels=new, actor=actor, in_outer_txn=True)
             self._db.commit()
         except BaseException:
             # Roll back on BaseException, not just Exception, so a
@@ -1376,8 +1381,14 @@ class ImportService:
         drop = set(labels)
         self._db.begin()
         try:
-            new = [x for x in self.list_labels(import_id) if x not in drop]
-            self._imports.set(import_id, labels=new, actor=actor, in_outer_txn=True)
+            prior = self.list_labels(import_id)
+            new = [x for x in prior if x not in drop]
+            # Skip the write (and its audit row) when nothing was removed — e.g.
+            # removing a label the import lacks, or operating on a never-labeled
+            # import — so a no-op doesn't materialize a spurious app.imports row
+            # or audit entry.
+            if new != prior:
+                self._imports.set(import_id, labels=new, actor=actor, in_outer_txn=True)
             self._db.commit()
         except BaseException:
             # Roll back on BaseException, not just Exception, so a

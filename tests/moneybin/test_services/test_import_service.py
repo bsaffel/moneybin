@@ -89,6 +89,37 @@ def test_remove_labels_drops_from_list(db: Database) -> None:
 
 
 @pytest.mark.unit
+def test_remove_labels_on_unlabeled_import_is_noop(db: Database) -> None:
+    # Removing from a never-labeled import changes nothing, so it must NOT
+    # materialize a spurious app.imports row or an import.set audit event.
+    svc = ImportService(db)
+    out = svc.remove_labels("imp-x", ["whatever"], actor="cli")
+    assert out == []
+    rows = db.conn.execute(
+        "SELECT COUNT(*) FROM app.imports WHERE import_id = ?", ["imp-x"]
+    ).fetchone()
+    assert rows is not None and rows[0] == 0
+    audits = db.conn.execute(
+        "SELECT COUNT(*) FROM app.audit_log WHERE action = 'import.set'"
+    ).fetchone()
+    assert audits is not None and audits[0] == 0
+
+
+@pytest.mark.unit
+def test_add_labels_noop_when_all_already_present(db: Database) -> None:
+    # Re-adding labels the import already has changes nothing, so the second
+    # call emits no new import.set audit row (only the first, real write does).
+    svc = ImportService(db)
+    svc.add_labels("imp-1", ["a", "b"], actor="cli")
+    out = svc.add_labels("imp-1", ["a", "b"], actor="cli")  # no change
+    assert out == ["a", "b"]
+    count = db.conn.execute(
+        "SELECT COUNT(*) FROM app.audit_log WHERE action = 'import.set'"
+    ).fetchone()
+    assert count is not None and count[0] == 1
+
+
+@pytest.mark.unit
 def test_set_labels_replaces_full_list(db: Database) -> None:
     svc = ImportService(db)
     svc.add_labels("imp-1", ["a", "b"], actor="cli")
