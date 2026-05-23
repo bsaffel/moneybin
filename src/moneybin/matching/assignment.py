@@ -93,11 +93,20 @@ def _node_b(pair: "CandidatePair") -> NodeKey:
     return (pair.source_type_b, pair.source_transaction_id_b, pair.account_id)
 
 
-class _UnionFind:
+class UnionFind:
+    """Connected-component union-find over node keys.
+
+    Public because dedup component identity must be computed identically in
+    three places — `assign_components` (matcher), `engine` (transfer
+    secondary-exclusion), and the pending-match clustering — and the prep fold.
+    """
+
     def __init__(self) -> None:
+        """Initialize an empty union-find."""
         self._parent: dict[NodeKey, NodeKey] = {}
 
     def find(self, x: NodeKey) -> NodeKey:
+        """Return the canonical root of x's set, with path compression."""
         self._parent.setdefault(x, x)
         root = x
         while self._parent[root] != root:
@@ -127,7 +136,7 @@ def assign_components(
     best-confidence-first with a deterministic tiebreak; keeps an edge only when
     it joins two distinct components (N-1 edges per group, no cycles).
     """
-    uf = _UnionFind()
+    uf = UnionFind()
     for a, b in seed_edges:
         uf.union(a, b)
     ordered = sorted(

@@ -6,6 +6,7 @@ Each tier: blocking -> scoring -> 1:1 assignment -> persist decisions.
 
 import logging
 import uuid
+from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -15,6 +16,7 @@ from moneybin.database import Database
 from moneybin.matching import UNIONED_TABLE
 from moneybin.matching.assignment import (
     NodeKey,
+    UnionFind,
     assign_components,
     assign_greedy,
 )
@@ -303,16 +305,34 @@ class TransactionMatcher:
         max_pri = len(priority)
         priority_index = {src: i for i, src in enumerate(priority)}
         edges: list[tuple[NodeKey, NodeKey]] = []
-        secondary: set[tuple[str, str, str]] = set()
         for row in rows:
             stid_a, st_a, stid_b, st_b, acct = row
             edges.append(((st_a, stid_a, acct), (st_b, stid_b, acct)))
-            pri_a = priority_index.get(st_a, max_pri)
-            pri_b = priority_index.get(st_b, max_pri)
-            if pri_a <= pri_b:
-                secondary.add((stid_b, st_b, acct))
-            else:
-                secondary.add((stid_a, st_a, acct))
+
+        # Build connected components over all edges so that every non-primary
+        # member of a component is excluded from transfer matching — not just
+        # the lower-priority side of each individual edge. Pairwise exclusion
+        # misses members that are the higher-priority side of their own edge
+        # but are still non-primary within the broader component (e.g. a "V"
+        # topology: manual–ofx and parquet–ofx share one component; pairwise
+        # keeps parquet eligible because parquet > ofx, but manual is primary).
+        uf = UnionFind()
+        for na, nb in edges:
+            uf.union(na, nb)
+        members_by_root: dict[NodeKey, list[NodeKey]] = defaultdict(list)
+        seen: set[NodeKey] = set()
+        for na, nb in edges:
+            for node in (na, nb):
+                if node not in seen:
+                    seen.add(node)
+                    members_by_root[uf.find(node)].append(node)
+        secondary: set[tuple[str, str, str]] = set()
+        for members in members_by_root.values():
+            # node is (source_type, source_transaction_id, account_id)
+            primary = min(members, key=lambda n: priority_index.get(n[0], max_pri))
+            for n in members:
+                if n != primary:
+                    secondary.add((n[1], n[0], n[2]))  # (stid, source_type, account_id)
         return _DedupDecisions(active_edges=edges, secondary_ids=secondary)
 
     def _get_transfer_matched_ids(self) -> set[tuple[str, str, str]]:

@@ -168,6 +168,71 @@ class TestFetchActiveDedupDecisions:
         assert ("ofx_pre2", "ofx", "acct1") in decisions.secondary_ids
         assert ("ofx_new", "ofx", "acct1") in decisions.secondary_ids
 
+    def test_secondary_ids_excludes_all_non_primary_members(self, db: Database) -> None:
+        """Component-based exclusion must exclude ALL non-primary members.
+
+        Topology that exposes the pairwise bug
+        ----------------------------------------
+        Three copies of one transaction in acct1:
+          manual (priority index 0 — highest)
+          parquet (priority index 6)
+          ofx     (priority index 8 — lowest)
+
+        Stored edges: manual–ofx and parquet–ofx  (a "V" shape, both pointing to ofx)
+
+        Pairwise analysis (old logic):
+          edge manual(0)–ofx(8):   pri_a(0) <= pri_b(8) → exclude ofx      ✓
+          edge parquet(6)–ofx(8):  pri_a(6) <= pri_b(8) → exclude ofx      (already in secondary)
+          Result: secondary = {ofx}.  parquet NOT excluded — BUG.
+          parquet is non-primary (manual is primary) but pairwise misses it
+          because parquet is the HIGHER-priority side of its own edge.
+
+        Component-based analysis (correct):
+          components = {{manual, parquet, ofx}}
+          primary = min priority_index member = manual
+          secondary = {parquet, ofx}  ← all non-primary members excluded
+        """
+        _create_test_table(db)
+
+        now = datetime.now(tz=UTC).isoformat()
+        db.execute(
+            """
+            INSERT INTO app.match_decisions
+            (match_id, source_transaction_id_a, source_type_a, source_origin_a,
+             source_transaction_id_b, source_type_b, source_origin_b,
+             account_id, confidence_score, match_signals, match_type, match_tier,
+             match_status, decided_by, decided_at)
+            VALUES
+            ('nway000001', 'man_x', 'manual', 'bank',
+             'ofx_x', 'ofx', 'bank',
+             'acct1', 0.99, '{}', 'dedup', '3', 'accepted', 'auto', ?),
+            ('nway000002', 'parq_x', 'parquet', 'bank',
+             'ofx_x', 'ofx', 'bank',
+             'acct1', 0.99, '{}', 'dedup', '3', 'accepted', 'auto', ?)
+            """,
+            [now, now],
+        )  # noqa: S608  # test fixture data, not user input
+
+        settings = MatchingSettings()
+        matcher = TransactionMatcher(db, settings, table="main._test_unioned")
+        decisions = matcher._fetch_active_dedup_decisions()  # pyright: ignore[reportPrivateUsage]
+        secondary = decisions.secondary_ids
+
+        # manual is primary (priority index 0 = highest): must NOT be excluded
+        assert ("man_x", "manual", "acct1") not in secondary, (
+            "manual is primary (highest priority) and must remain eligible for transfers"
+        )
+        # parquet (priority index 6) is non-primary: must be excluded
+        assert ("parq_x", "parquet", "acct1") in secondary, (
+            "parquet is non-primary — pairwise missed it because parquet is the "
+            "higher-priority side of the parquet–ofx edge, but component-based "
+            "exclusion must still exclude it"
+        )
+        # ofx (priority index 8) is non-primary: must be excluded
+        assert ("ofx_x", "ofx", "acct1") in secondary, (
+            "ofx is non-primary and must be excluded"
+        )
+
 
 def _create_test_table(db: Database) -> None:
     """Create a minimal unioned-style table for engine tests."""
