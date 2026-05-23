@@ -87,6 +87,13 @@ def _review_matches_noninteractive(
         logger.error("❌ --confirm-all cannot be combined with --confirm or --reject")
         raise typer.Exit(2)
 
+    # Same id to both flags would accept then immediately fail the reject (the
+    # match is no longer pending), leaving the accept silently committed behind
+    # an error exit. Reject the contradiction up front, like the guard above.
+    if confirm_id is not None and confirm_id == reject_id:
+        logger.error("❌ --confirm and --reject cannot target the same match_id")
+        raise typer.Exit(2)
+
     with handle_cli_errors():
         with get_database() as db:
             svc = MatchingService(db)

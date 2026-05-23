@@ -113,6 +113,16 @@ def test_set_rejected_match_recovery_points_at_history(db: Database) -> None:
     assert err.recovery_actions[0].tool == "transactions_matches_history"
 
 
+def test_set_reversed_match_recovery_points_at_history(db: Database) -> None:
+    # The other terminal non-pending status: reversed routes to history too.
+    _seed(db, "m4c", "reversed")
+    with pytest.raises(UserError) as exc:
+        MatchingService(db).set_status("m4c", status="accepted")
+    err = exc.value
+    assert err.recovery_actions
+    assert err.recovery_actions[0].tool == "transactions_matches_history"
+
+
 def test_invalid_status_value_raises(db: Database) -> None:
     _seed(db, "m5", "pending")
     with pytest.raises(UserError) as exc:

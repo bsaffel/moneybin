@@ -579,6 +579,31 @@ class TestMatchesMutating:
         assert result.exit_code == 2
         assert match_status(env, match_id) == "pending"
 
+    def test_review_confirm_and_reject_same_id_is_usage_error(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """--confirm X --reject X is contradictory → exit 2 before any commit."""
+        env = make_workflow_env_fast(
+            tmp_path, "review-same-id-guard", _mutating_profile_template
+        )
+        match_id = "e2e_cli_same_id_guard001"
+        seed_pending_match(env, match_id)
+
+        result = run_cli(
+            "transactions",
+            "review",
+            "--type",
+            "matches",
+            "--confirm",
+            match_id,
+            "--reject",
+            match_id,
+            env=env,
+        )
+        assert result.exit_code == 2
+        # Guard must fire before the accept commits — queue untouched.
+        assert match_status(env, match_id) == "pending"
+
     def test_matches_backfill(
         self, _mutating_profile_template: Path, tmp_path: Path
     ) -> None:
