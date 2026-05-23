@@ -121,4 +121,5 @@ GSHEET_ERROR = "gsheet_error"
 
 SQL_INVALID_QUERY = "sql_invalid_query"
 SQL_QUERY_ERROR = "sql_query_error"
+SQL_SCHEMA_NOT_ALLOWED = "sql_schema_not_allowed"
 SQL_UNKNOWN_TABLE = "sql_unknown_table"

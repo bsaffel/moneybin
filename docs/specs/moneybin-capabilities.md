@@ -101,7 +101,7 @@ not-yet-built.
 | 38| Accept or reject one pending match proposal                      | `transactions_matches_set` *(`match_id`, `status: accepted\|rejected`)* | `transactions matches set <match_id> --status accepted\|rejected` | — | live |
 | 39| Run the matching engine and propose new pending decisions         | `transactions_matches_run` *(operator alternative to `refresh_run(steps=["match"])`)* | `transactions matches run` | — | live |
 | 40| View recent match decisions (accepted and rejected)              | `transactions_matches_history` *(`limit?`, `match_type?`)* | `transactions matches history` *(`--type`, `--limit`)* | — | live |
-| 41| Execute an arbitrary read-only SQL query with CRITICAL columns masked via lineage | `sql_query` *(`query`)* | — *(cat 2 — operator path is `moneybin db query`, no privacy middleware)* | — | live |
+| 41| Execute a read-only SQL query over core/app with CRITICAL columns masked via lineage | `sql_query` *(`query`)* | — *(cat 2 — operator path is `moneybin db query`, no privacy middleware)* | — | live |
 
 *(Bootstrap rows only; full table populates incrementally as
 follow-up work closes the parity backlog. A prior row covering

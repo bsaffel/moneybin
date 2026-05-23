@@ -30,8 +30,10 @@ from moneybin.privacy.sql_lineage import (
     derive_query_tier,
     expand_star,
     get_current_schema_snapshot,
+    is_data_query,
     parse_cached,
     resolve_output_classes,
+    tables_outside_schemas,
 )
 from moneybin.protocol.envelope import (
     ResponseEnvelope,
@@ -40,13 +42,48 @@ from moneybin.protocol.envelope import (
 )
 from moneybin.services.schema_catalog import build_schema_doc
 
+# sql_query is limited to the schemas the privacy CLASSIFICATION registry
+# covers, so every queryable column has a known data class and the masking
+# guarantee is sound. reports.* is deferred until its views are classified
+# (tracked as a follow-up); raw/prep/meta are internal, non-consumer schemas.
+_ALLOWED_QUERY_SCHEMAS = frozenset({"core", "app"})
+
+
+def _execute_metadata_query(query: str) -> ResponseEnvelope[Any]:
+    """Run a DESCRIBE/SHOW/PRAGMA/EXPLAIN statement directly at LOW.
+
+    These return schema or query-plan text, not classified row data, so they
+    bypass the lineage gate. They still go through ``validate_read_only_query``
+    (caller) which blocks writes and file access.
+    """
+    try:
+        with get_database(read_only=True) as db:
+            result = db.execute(query)  # noqa: S608 — read-only metadata stmt, validated
+            columns = [desc[0] for desc in result.description]
+            rows = result.fetchmany(get_max_rows())
+    except duckdb.Error as e:
+        return build_error_envelope(
+            error=UserError(
+                "Query execution failed.",
+                code=error_codes.SQL_QUERY_ERROR,
+                details={"detail": str(e)},
+            ),
+            sensitivity="low",
+        )
+    records = [dict(zip(columns, row, strict=False)) for row in rows]
+    return build_envelope(
+        data=records, sensitivity="low", classes_returned=["aggregate"]
+    )
+
 
 @mcp_tool(dynamic_classification=True)
 def sql_query(query: str) -> ResponseEnvelope[Any]:
-    """Execute a read-only SQL query against the database.
+    """Execute a read-only SQL query against the core and app schemas.
 
-    Only SELECT, WITH, DESCRIBE, SHOW, PRAGMA, and EXPLAIN queries
-    are allowed. Write operations and file-access functions are blocked.
+    Only SELECT, WITH, DESCRIBE, SHOW, PRAGMA, and EXPLAIN queries are allowed.
+    Writes and file-access functions are blocked. Data queries may reference
+    only the ``core`` and ``app`` schemas (use the reports_* tools for curated
+    report views); other schemas are refused.
 
     Amounts use the accounting convention: negative = expense, positive = income.
     Currency is named in summary.display_currency.
@@ -57,8 +94,9 @@ def sql_query(query: str) -> ResponseEnvelope[Any]:
     is not a bypass around privacy enforcement. Other tiers (amounts, descriptions,
     dates) are returned in the clear, matching the typed tools' current behavior.
 
-    For schema, columns, and example queries, read resource
-    `moneybin://schema` before composing non-trivial queries.
+    Results are capped; when truncated, summary.has_more is true and total_count
+    exceeds returned_count. For schema, columns, and example queries, read
+    resource `moneybin://schema` before composing non-trivial queries.
 
     Args:
         query: The SQL query to execute.
@@ -71,15 +109,46 @@ def sql_query(query: str) -> ResponseEnvelope[Any]:
         )
 
     try:
+        tree = parse_cached(query)
+    except SqlParseError as e:
+        return build_error_envelope(
+            error=UserError(
+                "Could not parse SQL.",
+                code=error_codes.SQL_INVALID_QUERY,
+                details={"detail": str(e)},
+            ),
+            sensitivity="low",
+        )
+
+    # DESCRIBE/SHOW/PRAGMA/EXPLAIN return schema/plan text, not row data —
+    # execute directly at LOW; the lineage gate only applies to data queries.
+    if not is_data_query(tree):
+        return _execute_metadata_query(query)
+
+    try:
         with get_database(read_only=True) as db:
             snapshot = get_current_schema_snapshot(db)
-            tree = expand_star(parse_cached(query), snapshot)
-            output_classes = resolve_output_classes(tree, snapshot, query)
+            qtree = expand_star(tree, snapshot)
+            disallowed = tables_outside_schemas(qtree, snapshot, _ALLOWED_QUERY_SCHEMAS)
+            if disallowed:
+                return build_error_envelope(
+                    error=UserError(
+                        "sql_query is limited to the core and app schemas.",
+                        code=error_codes.SQL_SCHEMA_NOT_ALLOWED,
+                        hint="Use the reports_* tools for curated report views; "
+                        "raw/prep are internal schemas.",
+                        details={"disallowed": sorted(set(disallowed))},
+                    ),
+                    sensitivity="low",
+                )
+            output_classes = resolve_output_classes(qtree, snapshot, query)
+            max_rows = get_max_rows()
             # Security: validate_read_only_query gates write/file-access above.
             # The entire string is intentionally user SQL and cannot be parameterized.
             result = db.execute(query)  # noqa: S608 — read-only, validated above
             columns = [desc[0] for desc in result.description]
-            rows = result.fetchmany(get_max_rows())
+            # Fetch one extra row to detect truncation without a second query.
+            rows = result.fetchmany(max_rows + 1)
     except SqlParseError as e:
         return build_error_envelope(
             error=UserError(
@@ -110,12 +179,18 @@ def sql_query(query: str) -> ResponseEnvelope[Any]:
             sensitivity="low",
         )
 
+    truncated = len(rows) > max_rows
+    rows = rows[:max_rows]
     records = [dict(zip(columns, row, strict=False)) for row in rows]
     redacted = redact_records(records, output_classes, consent=None)
     tier = derive_query_tier(output_classes)
+    # total_count > returned_count makes build_envelope set has_more=True. We
+    # don't pay for an exact COUNT(*); +1 signals "at least one more row".
+    total_count = max_rows + 1 if truncated else len(records)
     return build_envelope(
         data=redacted,
         sensitivity=tier_to_sensitivity(tier).value,
+        total_count=total_count,
         classes_returned=sorted({c.value for c in output_classes.values()}),
     )
 

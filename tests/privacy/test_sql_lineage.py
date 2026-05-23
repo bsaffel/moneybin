@@ -18,8 +18,10 @@ from moneybin.privacy.sql_lineage import (
     derive_query_tier,
     expand_star,
     get_current_schema_snapshot,
+    is_data_query,
     parse_cached,
     resolve_output_classes,
+    tables_outside_schemas,
 )
 from moneybin.privacy.taxonomy import DataClass, Tier
 
@@ -227,3 +229,73 @@ def test_cte_outer_column_falls_back_to_max_inner_tier(populated_db: Database) -
         populated_db,
     )
     assert next(iter(out.values())).tier is Tier.CRITICAL
+
+
+def test_union_classifies_every_branch_by_position(populated_db: Database) -> None:
+    """A CRITICAL column in a later UNION branch masks the output position.
+
+    Output names come from the first branch (``description``, MEDIUM), but the
+    second branch supplies ``account_id`` (CRITICAL) by position. Classifying
+    only the first branch would leak account numbers in the ``description``
+    column; the per-position max-tier rule must yield CRITICAL.
+    """
+    out = _classes(
+        "SELECT description FROM core.fct_transactions "
+        "UNION ALL "
+        "SELECT account_id FROM core.dim_accounts",
+        populated_db,
+    )
+    assert list(out.keys()) == ["description"]
+    assert out["description"] is DataClass.ACCOUNT_IDENTIFIER
+    assert derive_query_tier(out) is Tier.CRITICAL
+
+
+def test_tables_outside_schemas_flags_raw_and_reports(populated_db: Database) -> None:
+    """raw.*/reports.* are flagged; core/app and CTE names are not."""
+    snap = get_current_schema_snapshot(populated_db)
+
+    def bad(sql: str) -> list[str]:
+        return tables_outside_schemas(
+            expand_star(parse_cached(sql), snap), snap, frozenset({"core", "app"})
+        )
+
+    assert bad("SELECT account_id FROM raw.ofx_transactions") == [
+        "raw.ofx_transactions"
+    ]
+    assert bad("SELECT x FROM reports.spending") == ["reports.spending"]
+    assert bad("SELECT amount FROM core.fct_transactions") == []
+    # Unqualified core table resolves via the snapshot — not flagged.
+    assert bad("SELECT amount FROM fct_transactions") == []
+    # CTE name is not a real table — not flagged.
+    assert (
+        bad("WITH s AS (SELECT amount FROM core.fct_transactions) SELECT * FROM s")
+        == []
+    )
+
+
+def test_is_data_query_separates_data_from_metadata() -> None:
+    """SELECT/UNION are data queries; DESCRIBE/SHOW/PRAGMA/EXPLAIN are not."""
+    assert is_data_query(parse_cached("SELECT 1"))
+    assert is_data_query(parse_cached("SELECT a FROM t UNION ALL SELECT b FROM u"))
+    assert not is_data_query(parse_cached("DESCRIBE core.fct_transactions"))
+    assert not is_data_query(parse_cached("SHOW TABLES"))
+    assert not is_data_query(parse_cached("PRAGMA database_list"))
+    assert not is_data_query(parse_cached("EXPLAIN SELECT 1"))
+
+
+def test_fallback_log_omits_raw_sql(
+    populated_db: Database, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The conservative-fallback WARNING logs a hash, never the raw SQL (no PII)."""
+    snap = get_current_schema_snapshot(populated_db)
+    pii_literal = "Chase acct 123456789"
+    # Literal embedded directly (no f-string) so this stays a static test string.
+    sql = (
+        "WITH s AS (SELECT account_id FROM core.fct_transactions "
+        "WHERE description = 'Chase acct 123456789') SELECT account_id FROM s"
+    )
+    with caplog.at_level("WARNING"):
+        resolve_output_classes(expand_star(parse_cached(sql), snap), snap, sql)
+    logged = "\n".join(r.getMessage() for r in caplog.records)
+    assert pii_literal not in logged
+    assert "sha256=" in logged

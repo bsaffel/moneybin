@@ -18,7 +18,9 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   `COUNT(DISTINCT col)` → LOW aggregate; `SUM`/`AVG` preserve the source class;
   `MIN`/`MAX` preserve the source class; multi-column expressions take the
   max-tier class; unresolvable projections fall back conservatively to the
-  max-tier input class.
+  max-tier input class. Data queries are limited to the `core`/`app` schemas
+  (use the `reports_*` tools for curated views); `DESCRIBE`/`SHOW`/`PRAGMA`/
+  `EXPLAIN` run as low-sensitivity metadata.
 - **Agent-callable transaction match accept/reject.** `transactions_matches_set` and
   `transactions_matches_pending` MCP tools (plus `transactions_matches_run` /
   `transactions_matches_history`), `moneybin transactions matches set`, and

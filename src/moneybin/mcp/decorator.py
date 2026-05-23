@@ -398,7 +398,14 @@ def mcp_tool(
             this a CRITICAL-tier tool (e.g. accounts_get) that raises would
             report summary.sensitivity="low" in its error response and audit
             row, understating the tier. Applied on every error return path.
+
+            No-op for dynamic_classification tools: their sensitivity is decided
+            per call (the static ``sensitivity`` here is only a HIGH placeholder),
+            so stamping it would inflate every cap/timeout/error envelope —
+            which carry no row data and should stay low — to HIGH.
             """
+            if dynamic_classification:
+                return env
             if sensitivity.value == env.summary.sensitivity:
                 return env
             updated = dataclasses.replace(
@@ -562,11 +569,9 @@ def mcp_tool(
             # Stamp summary.sensitivity with the decorator-derived tier so the
             # envelope reflects the statically-derived classification regardless
             # of what build_envelope() defaulted to in the tool body. Same helper
-            # the error-return paths use.
-            # Skip for dynamic_classification tools: they set their own per-call
-            # sensitivity and it must not be overwritten by the static placeholder.
-            if not dynamic_classification:
-                envelope = _stamp_sensitivity(envelope)
+            # the error-return paths use; it is a no-op for dynamic_classification
+            # tools (they own their per-call sensitivity).
+            envelope = _stamp_sensitivity(envelope)
             # Redact CRITICAL fields before returning. Skip the walk entirely
             # for tools whose return type has no CRITICAL field — the result
             # would be value-identical and the dataclass-tree rebuild is the

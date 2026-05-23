@@ -91,9 +91,13 @@ async def test_dynamic_tool_error_envelope_logs_unclassified() -> None:
         )
 
     with patch("moneybin.mcp.decorator.write_privacy_event", _capture_event):
-        await _error_tool()  # type: ignore[arg-type]
+        env = await _error_tool()  # type: ignore[arg-type]
 
     assert len(captured) == 1
     event = captured[0]
     # Error envelopes have no classes_returned → logged as ["unclassified"]
     assert event["classes_returned"] == ["unclassified"]
+    # The low error sensitivity must NOT be stamped up to the HIGH placeholder
+    # (dynamic tools own their per-call sensitivity, including error envelopes).
+    assert env.summary.sensitivity == "low"
+    assert event["sensitivity"] == "low"

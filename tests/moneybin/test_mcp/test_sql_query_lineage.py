@@ -122,3 +122,51 @@ def test_routing_number_masked(mcp_db: object) -> None:  # type: ignore[type-arg
         assert row["routing_number"] == "*****", (
             f"routing_number not masked: {row['routing_number']!r}"
         )
+
+
+@pytest.mark.integration
+def test_disallowed_schema_refused(mcp_db: object) -> None:  # type: ignore[type-arg]
+    """Queries against schemas outside core/app are refused (closes the leak).
+
+    The gate fires on the schema name before execution, so the table need not
+    exist — raw.* is rejected regardless.
+    """
+    env = _run("SELECT account_id FROM raw.ofx_transactions")
+    assert env.error is not None
+    assert env.error.code == "sql_schema_not_allowed"
+
+
+@pytest.mark.integration
+def test_describe_bypasses_lineage(mcp_db: object) -> None:  # type: ignore[type-arg]
+    """DESCRIBE is metadata, not row data — executes at LOW, not a lineage error."""
+    env = _run("DESCRIBE core.fct_transactions")
+    assert env.error is None, f"Unexpected error: {env.error}"
+    assert env.summary.sensitivity == "low"
+    assert len(env.data) > 0  # type: ignore[arg-type]
+
+
+@pytest.mark.integration
+def test_truncation_sets_has_more(
+    mcp_db: object,  # type: ignore[type-arg]
+    _seeded_txn: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When results exceed the row cap, has_more is true and total_count > returned."""
+    with get_database() as db:
+        db.execute("""
+            INSERT INTO core.fct_transactions
+                (transaction_id, account_id, transaction_date, amount,
+                 amount_absolute, transaction_direction, description,
+                 category, source_type, loaded_at, updated_at)
+            VALUES (
+                'TXN002', 'ACC001', '2025-06-16', -10.00,
+                10.00, 'expense', 'Second row', 'Food', 'ofx',
+                CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        """)
+    # Cap at 1 row so the 2 seeded rows trigger truncation.
+    monkeypatch.setattr("moneybin.mcp.tools.sql.get_max_rows", lambda: 1)
+    env = _run("SELECT amount FROM core.fct_transactions")
+    assert env.error is None, f"Unexpected error: {env.error}"
+    assert env.summary.returned_count == 1
+    assert env.summary.has_more is True
+    assert env.summary.total_count > env.summary.returned_count

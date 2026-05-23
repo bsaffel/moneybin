@@ -31,6 +31,7 @@ DO carry both ``name`` (real table) and ``db`` (schema) after qualify.
 from __future__ import annotations
 
 import functools
+import hashlib
 import logging
 import re
 from dataclasses import dataclass
@@ -292,8 +293,14 @@ def _fallback_class(
     restriction (see module docstring); within core/app, any query touching a
     CRITICAL column raises the fallback floor to CRITICAL.
     """
+    # Never log the raw SQL — it can carry literal PII (e.g. a description or
+    # account-number filter). A short hash gives forensic correlation without
+    # leaking content (No PII in logs).
+    sql_hash = (
+        hashlib.sha256(sql_for_log.encode()).hexdigest()[:12] if sql_for_log else "n/a"
+    )
     logger.warning(
-        f"sql_lineage: unresolved projection; conservative fallback. sql={sql_for_log!r}"
+        f"sql_lineage: unresolved projection; conservative fallback (sql sha256={sql_hash})"
     )
     best: DataClass = DataClass.AGGREGATE
     for key in collect_input_columns(tree, snapshot):
@@ -333,21 +340,95 @@ def _classify_projection(
     return max(classes, key=lambda c: c.tier)
 
 
+def _union_select_branches(node: exp.Expr) -> list[exp.Select]:
+    """Top-level SELECT branches of a (possibly nested) set operation.
+
+    A plain SELECT returns ``[self]``. A UNION/EXCEPT/INTERSECT (all subclass
+    ``exp.Union``) returns every branch's SELECT. ``tree.find(exp.Select)``
+    alone would see only the first branch and let a CRITICAL column in a later
+    branch leak: the result takes the first branch's column NAMES but its VALUES
+    come from every branch by position, so each position must be classified
+    across all branches.
+    """
+    if isinstance(node, exp.Union):
+        return _union_select_branches(node.left) + _union_select_branches(node.right)
+    if isinstance(node, exp.Select):
+        return [node]
+    inner = node.find(exp.Select)
+    return [inner] if inner is not None else []
+
+
 def resolve_output_classes(
     tree: exp.Expr,
     snapshot: SchemaSnapshot,
     sql_for_log: str = "",
 ) -> dict[str, DataClass]:
-    """Map each output column name (insertion-ordered) to its DataClass."""
-    select = tree.find(exp.Select)
-    if select is None:
+    """Map each output column name (insertion-ordered) to its DataClass.
+
+    Output names come from the first branch (SQL semantics). For set operations
+    each output position is classified across ALL branches and combined by max
+    tier, so a CRITICAL column in any branch masks that position.
+    """
+    branches = _union_select_branches(tree)
+    if not branches:
         raise SqlSchemaError("Query has no SELECT projection")
     alias_map = _build_alias_map(tree)
+    per_branch: list[list[DataClass]] = [
+        [
+            _classify_projection(proj, tree, alias_map, snapshot, sql_for_log)
+            for proj in sel.selects
+        ]
+        for sel in branches
+    ]
     out: dict[str, DataClass] = {}
-    for proj in select.selects:
+    for i, proj in enumerate(branches[0].selects):
         name = proj.alias_or_name or "?"
-        out[name] = _classify_projection(proj, tree, alias_map, snapshot, sql_for_log)
+        candidates = [b[i] for b in per_branch if i < len(b)]
+        out[name] = (
+            max(candidates, key=lambda c: c.tier) if candidates else DataClass.AGGREGATE
+        )
     return out
+
+
+def is_data_query(tree: exp.Expr) -> bool:
+    """True for row-returning queries (SELECT / set operations).
+
+    False for DESCRIBE / SHOW / PRAGMA / EXPLAIN, whose output is schema or
+    plan text, not classified row data — callers route those past the lineage
+    gate and treat them as LOW.
+    """
+    return isinstance(tree, (exp.Select, exp.Union))
+
+
+def tables_outside_schemas(
+    tree: exp.Expr, snapshot: SchemaSnapshot, allowed: frozenset[str]
+) -> list[str]:
+    """Return table references that resolve to a schema outside ``allowed``.
+
+    Schema-qualified tables are checked directly; unqualified tables are
+    resolved by name against the snapshot. CTE references (names bound by a
+    ``WITH`` clause) are not real tables and are skipped. Anything resolving to
+    a disallowed schema — or to no allowed schema at all — is returned so the
+    caller can refuse the query before any masking decision. This is what makes
+    the masking guarantee sound: every queryable column lives in a classified
+    schema.
+    """
+    known_by_name: dict[str, set[str]] = {}
+    for schema, table, _col in snapshot.columns:
+        known_by_name.setdefault(table, set()).add(schema)
+    cte_names = {cte.alias_or_name for cte in tree.find_all(exp.CTE)}
+    bad: list[str] = []
+    for tbl in tree.find_all(exp.Table):
+        schema = tbl.db
+        name = tbl.name
+        if not schema and name in cte_names:
+            continue
+        if schema:
+            if schema not in allowed:
+                bad.append(f"{schema}.{name}")
+        elif not (known_by_name.get(name, set()) & allowed):
+            bad.append(name)
+    return bad
 
 
 def derive_query_tier(output_classes: dict[str, DataClass]) -> Tier:
