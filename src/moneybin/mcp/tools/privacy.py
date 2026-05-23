@@ -52,6 +52,8 @@ def privacy_consent_grant(
         backend: AI backend; defaults to the configured default backend.
         mode: persistent (default) or one-time. NOTE: one-time enforcement is
             pending — a one-time grant currently persists until revoked.
+            Re-granting an existing active category+backend is a no-op and does
+            NOT change the mode; revoke then grant again to change it.
     """
     with get_database() as db:
         result = ConsentService(db).grant_consent(
@@ -136,17 +138,18 @@ def privacy_log(
     filters: dict[str, object] = {}
     if actor is not None:
         filters["actor"] = actor
-    events = read_privacy_events(filters, max_rows=last)
-    # When the read hit the server cap, signal truncation via has_more — a
-    # capped result is otherwise indistinguishable from a short log. total_count
-    # is a floor (len+1), not an exact count: counting all matches would mean a
-    # second full scan of the log.
-    capped = last >= MAX_LOG_ROWS and len(events) >= MAX_LOG_ROWS
+    effective = min(last, MAX_LOG_ROWS)
+    events = read_privacy_events(filters, max_rows=effective)
+    # A full page means more may exist — whether the caller's `last` or the
+    # server cap (MAX_LOG_ROWS) was the limiter. Over-signalling "more" beats a
+    # silent truncation; total_count is a floor (len+1), not an exact count
+    # (an exact count would require a second full scan of the log).
+    has_more = effective > 0 and len(events) >= effective
     return build_envelope(
         data=PrivacyLogPayload(
             events=[PrivacyLogRow.from_event(e) for e in events],
         ),
-        total_count=len(events) + 1 if capped else None,
+        total_count=len(events) + 1 if has_more else None,
     )
 
 

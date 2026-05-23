@@ -102,3 +102,19 @@ async def test_log_tool_returns_events(
     assert grants, "consent.grant event missing from privacy_log"
     # consent_mode must survive the round-trip — auditors need persistent vs one-time.
     assert grants[0].consent_mode == "persistent"
+
+
+async def test_log_signals_truncation_on_full_page(
+    mcp_db: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """has_more fires when `last` (not just the server cap) is the limiter."""
+    _set_backend(monkeypatch)
+    from moneybin.mcp.tools.privacy import privacy_consent_grant, privacy_log
+
+    # Two grants → at least two log events; request fewer than exist.
+    await privacy_consent_grant(category="mcp-data-sharing")
+    await privacy_consent_grant(category="ml-categorization")
+    env = await privacy_log(last=1)
+    assert env.error is None
+    assert len(env.data.events) == 1
+    assert env.summary.has_more is True

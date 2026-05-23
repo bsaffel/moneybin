@@ -91,8 +91,10 @@ class ConsentRepo(BaseRepo):
 
         Returns ``(grant, created)``. If an active grant already exists for
         the tuple it is returned unchanged with ``created=False`` (no new
-        row, no audit). Otherwise a new active grant is inserted with a
-        paired audit row and ``created=True``.
+        row, no audit) — a different ``consent_mode`` on the re-grant is NOT
+        applied; the existing grant and its mode are returned as-is. To change
+        a mode, revoke then re-grant. Otherwise a new active grant is inserted
+        with a paired audit row and ``created=True``.
         """
         with self._transaction(in_outer_txn=in_outer_txn):
             existing = self._active_for(feature_category, backend)
@@ -144,6 +146,8 @@ class ConsentRepo(BaseRepo):
                 [grant_id],
             )
             after = self._fetch_row(grant_id)
+            if after is None:  # pragma: no cover — just updated, must exist
+                raise RuntimeError(f"grant_id={grant_id!r} not found after revoke")
             self._emit_audit(
                 action="consent.revoke",
                 target=(*self._AUDIT_TARGET, grant_id),
@@ -177,6 +181,10 @@ class ConsentRepo(BaseRepo):
                     [grant.grant_id],
                 )
                 after = self._fetch_row(grant.grant_id)
+                if after is None:  # pragma: no cover — just updated, must exist
+                    raise RuntimeError(
+                        f"grant_id={grant.grant_id!r} not found after revoke"
+                    )
                 self._emit_audit(
                     action="consent.revoke",
                     target=(*self._AUDIT_TARGET, grant.grant_id),
