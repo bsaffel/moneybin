@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from moneybin.config import clear_settings_cache, set_current_profile
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.privacy.consent import ConsentMode
+from moneybin.privacy.log import read_privacy_events
 from moneybin.services.consent_service import ConsentService
 
 
@@ -143,3 +146,54 @@ def test_service_revoke_all(db: Database) -> None:
     assert svc.status().active_grants == []
     # Idempotent: a second revoke_all over an empty ledger is a no-op.
     assert svc.revoke_all(actor="cli") == 0
+
+
+def test_service_revoke_all_emits_per_grant_privacy_events(
+    db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """revoke_all writes one privacy.log event per grant, not a single wildcard.
+
+    The bulk-revoke must stay reconstructable from `privacy log` alone — a
+    `*`/`*` event would lose which (category, backend) pairs were revoked.
+    """
+    monkeypatch.setattr(
+        "moneybin.privacy.log._resolve_privacy_log_dir", lambda: tmp_path
+    )
+    svc = ConsentService(db)
+    svc.grant_consent(
+        feature_category="mcp-data-sharing",
+        backend="anthropic",
+        consent_mode=ConsentMode.PERSISTENT,
+        actor="cli",
+    )
+    svc.grant_consent(
+        feature_category="ml-categorization",
+        backend="openai",
+        consent_mode=ConsentMode.PERSISTENT,
+        actor="cli",
+    )
+    assert svc.revoke_all(actor="cli") == 2
+    revokes = read_privacy_events({"action": "consent.revoke"}, max_rows=10)
+    pairs = {(e["feature_category"], e["backend"]) for e in revokes}
+    assert pairs == {("mcp-data-sharing", "anthropic"), ("ml-categorization", "openai")}
+    assert "*" not in {e["feature_category"] for e in revokes}
+
+
+def test_service_grant_one_time_mode_persists_until_revoked(db: Database) -> None:
+    """one-time grants are recorded and persist — enforcement is deferred.
+
+    Pins the current record-only semantics: selecting one-time does NOT
+    auto-expire the grant. A future enforcement gate must change this test
+    deliberately, not silently.
+    """
+    svc = ConsentService(db)
+    result = svc.grant_consent(
+        feature_category="mcp-data-sharing",
+        backend="anthropic",
+        consent_mode=ConsentMode.ONE_TIME,
+        actor="cli",
+    )
+    assert result.grant.consent_mode is ConsentMode.ONE_TIME
+    # Still active across repeated reads — no auto-revocation on access.
+    assert svc.status().active_grants[0].consent_mode is ConsentMode.ONE_TIME
+    assert len(svc.status().active_grants) == 1

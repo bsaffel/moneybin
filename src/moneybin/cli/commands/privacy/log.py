@@ -22,18 +22,7 @@ def privacy_log(
         filters["actor"] = actor
     with handle_cli_errors():
         events = read_privacy_events(filters, max_rows=last)
-    payload = PrivacyLogPayload(
-        events=[
-            PrivacyLogRow(
-                ts=str(e.get("ts", "")),
-                action=str(e.get("action", "")),
-                actor=str(e.get("actor", "")),
-                feature_category=str(e.get("feature_category", "")),
-                backend=str(e.get("backend", "")),
-            )
-            for e in events
-        ]
-    )
+    payload = PrivacyLogPayload(events=[PrivacyLogRow.from_event(e) for e in events])
     if output == OutputFormat.JSON:
         render_or_json(build_envelope(data=payload), output, cli_actor="privacy_log")
         return
@@ -41,6 +30,9 @@ def privacy_log(
         typer.echo("No privacy log events.")
         return
     for e in payload.events:
-        typer.echo(
-            f"{e.ts} | {e.action} | {e.actor} | {e.feature_category} | {e.backend}"
-        )
+        if e.action == "tool_call":
+            classes = ",".join(e.classes_returned) or "(none)"
+            detail = f"sensitivity={e.sensitivity or '(n/a)'} classes={classes} rows={e.row_count}"
+        else:
+            detail = f"{e.feature_category} | {e.backend}"
+        typer.echo(f"{e.ts} | {e.action} | {e.actor} | {detail}")

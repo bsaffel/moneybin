@@ -109,6 +109,10 @@ class ConsentRepo(BaseRepo):
                 [grant_id, feature_category, backend, consent_mode.value, grant_prompt],
             )
             after = self._fetch_row(grant_id)
+            if after is None:  # pragma: no cover — just inserted, must exist
+                raise RuntimeError(f"grant_id={grant_id!r} not found after insert")
+            # Guard precedes _emit_audit so the impossible path never records an
+            # after=null audit row or bumps the audit metric before rollback.
             self._emit_audit(
                 action="consent.grant",
                 target=(*self._AUDIT_TARGET, grant_id),
@@ -117,8 +121,6 @@ class ConsentRepo(BaseRepo):
                 actor=actor,
                 parent_audit_id=parent_audit_id,
             )
-            if after is None:  # pragma: no cover — just inserted, must exist
-                raise RuntimeError(f"grant_id={grant_id!r} not found after insert")
             return _row_to_grant(after), True
 
     def revoke(

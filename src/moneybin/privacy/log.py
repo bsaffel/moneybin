@@ -30,6 +30,12 @@ _ROTATED_PREFIX = "privacy.log."
 _ROTATED_SUFFIX = ".jsonl"
 _LOCK = threading.Lock()
 
+# Upper bound on a single read_privacy_events call. A read scans JSONL files
+# line-by-line into memory; cap here (one enforcement point for both the CLI
+# --last flag and the MCP last param) so an unbounded request can't pull every
+# rotated log into a Python list.
+_MAX_LOG_ROWS = 1000
+
 
 def _resolve_privacy_log_dir() -> Path:
     """Return the directory the privacy log lives in.
@@ -218,6 +224,7 @@ def read_privacy_events(
     # otherwise return the first matching row (1 >= 0). Short-circuit here.
     if max_rows <= 0:
         return []
+    max_rows = min(max_rows, _MAX_LOG_ROWS)
     log_dir = _resolve_privacy_log_dir()
     if not log_dir.exists():
         return []

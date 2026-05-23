@@ -23,12 +23,22 @@ def privacy_revoke(
     output: OutputFormat = output_option,
 ) -> None:
     """Revoke consent for <category>; takes effect immediately."""
+    # Resolve before prompting so the confirmation names the backend actually
+    # being revoked (default-backend resolution happens in the service).
+    with handle_cli_errors():
+        ConsentService.validate_category(category)
+        resolved_backend = ConsentService.resolve_backend(backend)
     if not yes:
-        typer.confirm(f"Revoke consent for '{category}'?", abort=True)
+        typer.confirm(
+            f"Revoke consent for '{category}' (backend '{resolved_backend}')?",
+            abort=True,
+        )
     with handle_cli_errors():
         with get_database() as db:
             result = ConsentService(db).revoke_consent(
-                feature_category=category, backend=backend, actor="cli.privacy_revoke"
+                feature_category=category,
+                backend=resolved_backend,
+                actor="cli.privacy_revoke",
             )
     payload = ConsentMutationPayload(
         feature_category=category,

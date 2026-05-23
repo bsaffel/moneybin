@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import logging
 
+from sqlglot import exp
+
 logger = logging.getLogger(__name__)
 
 _CREATE_TABLE_SQL = """
@@ -65,11 +67,14 @@ def migrate(conn: object) -> None:
 
     for column, comment in _COLUMN_COMMENTS:
         # COMMENT ON COLUMN does not accept parameterized values; inline a
-        # single-quoted literal with standard SQL escaping (double the
-        # single quote). column names come from the static list, not user input.
+        # single-quoted literal with standard SQL escaping (double the single
+        # quote). Column names are from the static list above, but quote the
+        # identifier regardless — security.md requires double-quoting all
+        # interpolated identifiers as defense in depth.
         escaped = comment.replace("'", "''")
+        safe_column = exp.to_identifier(column, quoted=True).sql("duckdb")
         conn.execute(  # type: ignore[union-attr]
-            f"COMMENT ON COLUMN app.ai_consent_grants.{column} "  # noqa: S608  # static identifier + escaped literal
+            f"COMMENT ON COLUMN app.ai_consent_grants.{safe_column} "  # noqa: S608  # quoted identifier + escaped literal
             f"IS '{escaped}'"
         )
 

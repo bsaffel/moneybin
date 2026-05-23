@@ -33,4 +33,7 @@ def privacy_revoke_all(
             cli_actor="privacy_revoke_all",
         )
         return
-    logger.info(f"✅ Revoked {count} consent grant(s).")
+    if count:
+        logger.info(f"✅ Revoked {count} consent grant(s).")
+    else:
+        logger.info("No active consent grants to revoke.")

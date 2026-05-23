@@ -62,7 +62,18 @@ class ConsentService:
         self._db = db
         self._repo = ConsentRepo(db)
 
-    def _resolve_backend(self, backend: str | None) -> str:
+    @staticmethod
+    def resolve_backend(backend: str | None) -> str:
+        """Resolve to a concrete backend, falling back to the configured default.
+
+        Public + static so a CLI confirmation prompt can resolve before
+        asking — the user confirms consent for the *actual* backend, not a
+        ``(no default configured)`` placeholder that would later error.
+
+        An empty-string ``backend`` is treated as unspecified (falls through
+        to the default): an empty string is not a valid backend identifier,
+        so accepting it would create a grant with a blank recipient.
+        """
         if backend:
             return backend
         default = get_settings().ai.default_backend
@@ -75,7 +86,12 @@ class ConsentService:
         )
 
     @staticmethod
-    def _validate_category(feature_category: str) -> None:
+    def validate_category(feature_category: str) -> None:
+        """Raise UserError if ``feature_category`` is not a known category.
+
+        Public so a CLI command can validate before prompting — same reason
+        as ``resolve_backend``.
+        """
         if feature_category not in FEATURE_CATEGORIES:
             raise UserError(
                 f"Unknown feature category: {feature_category!r}.",
@@ -106,8 +122,8 @@ class ConsentService:
         Emits a ``privacy.log`` event only when a new grant is actually
         created — a no-op re-grant of an existing active grant adds no event.
         """
-        self._validate_category(feature_category)
-        resolved_backend = self._resolve_backend(backend)
+        self.validate_category(feature_category)
+        resolved_backend = self.resolve_backend(backend)
         prompt = self._build_prompt(feature_category, resolved_backend)
         grant, created = self._repo.grant(
             feature_category=feature_category,
@@ -136,8 +152,8 @@ class ConsentService:
         Returns the resolved backend and the number of grants revoked (0 or 1)
         so the caller can confirm exactly which backend was affected.
         """
-        self._validate_category(feature_category)
-        resolved_backend = self._resolve_backend(backend)
+        self.validate_category(feature_category)
+        resolved_backend = self.resolve_backend(backend)
         count = self._repo.revoke(
             feature_category=feature_category, backend=resolved_backend, actor=actor
         )
@@ -154,15 +170,23 @@ class ConsentService:
         return RevokeResult(backend=resolved_backend, count=count)
 
     def revoke_all(self, *, actor: str) -> int:
-        """Revoke every active grant. Returns count revoked."""
+        """Revoke every active grant. Returns count revoked.
+
+        Emits one ``privacy.log`` event per revoked grant (mirroring single
+        revoke) so ``privacy log`` can reconstruct exactly which
+        (category, backend) pairs were bulk-revoked — the same per-grant
+        detail the audit log already records. A single wildcard event would
+        lose that granularity.
+        """
+        active = self._repo.list_active()  # capture before the bulk UPDATE
         count = self._repo.revoke_all(actor=actor)
-        if count:
+        for grant in active:
             write_privacy_event(
                 build_consent_event(
                     actor=actor,
                     action="consent.revoke",
-                    feature_category="*",
-                    backend="*",
+                    feature_category=grant.feature_category,
+                    backend=grant.backend,
                     consent_mode=None,
                 )
             )

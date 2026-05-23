@@ -8,7 +8,6 @@ import typer
 
 from moneybin.cli.output import OutputFormat, output_option, render_or_json
 from moneybin.cli.utils import handle_cli_errors
-from moneybin.config import get_settings
 from moneybin.database import get_database
 from moneybin.privacy.consent import ConsentMode
 from moneybin.privacy.payloads.consent import ConsentMutationPayload
@@ -33,12 +32,13 @@ def privacy_grant(
 
     Account numbers and other CRITICAL fields always remain masked.
     """
+    # Resolve + validate before prompting so the user confirms consent for the
+    # backend that will actually be recorded — never a placeholder that then
+    # errors out after they've already agreed.
+    with handle_cli_errors():
+        ConsentService.validate_category(category)
+        resolved_backend = ConsentService.resolve_backend(backend)
     if not yes:
-        # Show the backend that will actually be recorded (resolved default),
-        # not the literal "default" — the recipient is the key consent decision.
-        shown_backend = (
-            backend or get_settings().ai.default_backend or "(no default configured)"
-        )
         caveat = (
             " Note: one-time enforcement is pending — this grant persists "
             "until you revoke it."
@@ -47,14 +47,14 @@ def privacy_grant(
         )
         typer.confirm(
             f"Grant {mode.value} consent to share '{category}' with backend "
-            f"'{shown_backend}'?{caveat}",
+            f"'{resolved_backend}'?{caveat}",
             abort=True,
         )
     with handle_cli_errors():
         with get_database() as db:
             result = ConsentService(db).grant_consent(
                 feature_category=category,
-                backend=backend,
+                backend=resolved_backend,
                 consent_mode=mode,
                 actor="cli.privacy_grant",
             )

@@ -5,6 +5,8 @@ Phase 1 covers the schema; Phase 2 adds the repository CRUD + audit tests.
 
 from __future__ import annotations
 
+import json
+
 from moneybin.database import Database
 from moneybin.privacy.consent import ConsentMode
 from moneybin.repositories.consent_repo import ConsentRepo
@@ -169,8 +171,6 @@ def test_revoke_all_audit_before_image_is_pre_update(db: Database) -> None:
         "WHERE action = 'consent.revoke'"
     ).fetchone()
     assert row is not None
-    import json
-
     before = json.loads(row[0])
     after = json.loads(row[1])
     assert before["revoked_at"] is None  # before-image: still active

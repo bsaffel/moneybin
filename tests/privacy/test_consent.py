@@ -1,6 +1,9 @@
 """Unit tests for moneybin.privacy.consent primitives."""
 
+import dataclasses
 from datetime import datetime
+
+import pytest
 
 from moneybin.privacy.consent import ConsentMode, GrantInfo
 
@@ -21,10 +24,6 @@ def test_grant_info_is_frozen():
         revoked_at=None,
     )
     assert info.feature_category == "mcp-data-sharing"
-    import dataclasses
-
-    import pytest
-
     with pytest.raises(dataclasses.FrozenInstanceError):
         info.backend = "openai"  # type: ignore[misc]
 

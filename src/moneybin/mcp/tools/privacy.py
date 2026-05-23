@@ -129,7 +129,8 @@ def privacy_log(
     """Return recent privacy log events (consent grants/revokes + tool calls).
 
     Args:
-        last: Maximum number of events to return (matches the CLI --last flag).
+        last: Maximum number of events to return (matches the CLI --last flag;
+            capped at 1000 server-side).
         actor: Optional exact-match actor filter.
     """
     filters: dict[str, object] = {}
@@ -138,16 +139,7 @@ def privacy_log(
     events = read_privacy_events(filters, max_rows=last)
     return build_envelope(
         data=PrivacyLogPayload(
-            events=[
-                PrivacyLogRow(
-                    ts=str(e.get("ts", "")),
-                    action=str(e.get("action", "")),
-                    actor=str(e.get("actor", "")),
-                    feature_category=str(e.get("feature_category", "")),
-                    backend=str(e.get("backend", "")),
-                )
-                for e in events
-            ]
+            events=[PrivacyLogRow.from_event(e) for e in events],
         ),
     )
 
