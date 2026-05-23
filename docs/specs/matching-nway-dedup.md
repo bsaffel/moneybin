@@ -1,10 +1,11 @@
 # N-Way Dedup: Merge 3+ Copies of the Same Transaction
 
-> Last updated: 2026-05-22 — design reviewed and approved
-> Status: ready
+> Last updated: 2026-05-23 — reconciled against merged prerequisites
+> Status: in-progress
 > Parent: [`matching-overview.md`](matching-overview.md) (pillars A + C)
 > Enhances: [`matching-same-record-dedup.md`](matching-same-record-dedup.md) — supersedes its Requirement 3 (1:1 bipartite assignment)
-> Companions: `CLAUDE.md` "Architecture: Data Layers", `.claude/rules/database.md` (recursive CTE syntax, column naming), `.claude/rules/surface-design.md` (review-surface shapes), `docs/specs/moneybin-doctor.md` (staging_coverage)
+> Prerequisites (merged): matching-model reconciliation (#204, activated the `dedup_reconciliation` doctor check) and agent-callable match accept/reject (#209, the `transactions_matches_set` / `_pending` surface Req 11–12 build on)
+> Companions: `CLAUDE.md` "Architecture: Data Layers", `.claude/rules/database.md` (recursive CTE syntax, column naming), `.claude/rules/surface-design.md` (review-surface shapes), `docs/specs/moneybin-doctor.md` (`dedup_reconciliation`)
 
 ## Goal
 
@@ -12,7 +13,7 @@ When the same real-world transaction is imported from **three or more sources** 
 
 ## Background
 
-The dedup matcher collapses at most **one pair per transaction**. Verified against `main` (commit `6cc8d2bc`, 2026-05-22):
+The dedup matcher collapses at most **one pair per transaction**. Verified against `main`, 2026-05-22, and re-confirmed unchanged after the prerequisite merges (#204/#209 touched the doctor check, specs, and the matches-review surface — not the matcher core in `assignment.py`/`engine.py` or the fold in `int_transactions__matched.sql`):
 
 - `src/moneybin/matching/assignment.py::assign_greedy` — greedy best-score-first 1:1: once a row is claimed by a winning pair it cannot join another pair.
 - `src/moneybin/matching/engine.py::TransactionMatcher.run` — runs Tier 2b (within-source) then Tier 3 (cross-source); `already_matched.update(...)` (lines 135, 150) excludes rows matched in an earlier tier from later tiers. A row therefore lands in **at most one** dedup edge across all tiers and re-runs.
@@ -48,7 +49,7 @@ N-way dedup is therefore predominantly a **matcher** problem: make the matcher e
 | Matcher shape | Union-find spanning forest | Smallest change that is correct; subsumes 1:1 exactly when every group has size 2 |
 | `app.match_decisions` semantics | **Pairwise edges, groups derived downstream** — no schema change | The component is a view over currently-accepted edges; accept/reject/undo stay per-edge and groups re-split for free. A stored group entity is a one-way-door schema change with no current need (YAGNI) |
 | Group confidence | **MIN (weakest link)** | The merged row is only as trustworthy as its shakiest accepted edge — honest about "is this all one transaction" |
-| Review/accept UX | **Presentation-layer grouping + edge-level mutation** | The mutation contract `transactions_matches_set(match_id, status)` stays edge-level; the review queue clusters pending edges by component. A group-id mutation is rejected: `match_group_id` is derived (changes each transform) and has no place in a public mutation contract |
+| Review/accept UX | **Presentation-layer grouping + edge-level mutation** | The accept/reject surface already exists (#209): `MatchingService.set_status` / `get_pending` / `accept_all_pending`; MCP `transactions_matches_set` / `_pending`; CLI `matches set` + `review --confirm/--reject/--confirm-all`. N-way only adds component clustering to the *read* side. A group-id mutation is rejected: `match_group_id` is derived (changes each transform) and has no place in a public mutation contract |
 | Tier interaction | Shared component set across 2b and 3, seeded from existing active edges | A row matched in 2b can still gain a cross-source edge in 3 when it connects a new component |
 | Prep fold | Recursive-CTE transitive closure | Robust for any group topology; the two-pass breaks at 4-node chains |
 | Transfer interaction | Exclude all non-primary component members | Generalizes the current "lower side of the pair" exclusion to groups |
@@ -81,18 +82,20 @@ This **applies** the existing dedup and medallion patterns rather than establish
 
 ### Review UX
 
-11. The review queue (`transactions review --type matches`, the `transactions_matches_*` MCP tools, `matches history`) **clusters pending dedup edges by their connected component** and presents each cluster as a unit (e.g., "3 copies of −$42.00 on 2024-03-15 across ofx/csv/plaid").
-12. "Accept group" / "reject group" expand to per-edge `transactions_matches_set(match_id, status)` calls over the pending edges in the cluster. The mutation contract is unchanged. Re-split is automatic via Requirement 6.
+The accept/reject surface shipped in #209; this requirement adds component clustering to the read side only.
 
-### Doctor / staging_coverage
+11. The pending-match read path (`MatchingService.get_pending` → MCP `transactions_matches_pending`, CLI `transactions review --type matches`, `matches history`) **clusters pending dedup edges by their connected component** and presents each cluster as a unit (e.g., "3 copies of −$42.00 on 2024-03-15 across ofx/csv/sources"). Components are computed from the same accepted+pending edge graph the matcher seeds from.
+12. "Accept group" / "reject group" expand to per-edge `MatchingService.set_status(match_id, status)` calls (MCP `transactions_matches_set`, CLI `matches set` / `review --confirm/--reject`) over the pending edges in the cluster; `accept_all_pending` already covers the whole-queue case. The edge-level mutation contract from #209 is unchanged. Re-split is automatic via Requirement 6.
 
-13. `doctor_service._run_staging_coverage` (currently a no-op `skipped` awaiting a non-existent `is_primary` column) is implemented group-aware. Expected dedup-absorbed rows are computed from the components as `Σ(group_size − 1)`:
+### Doctor / `dedup_reconciliation`
+
+13. `doctor_service._run_dedup_reconciliation` (activated by #204) currently asserts `raw_total − core_count == dedup_absorbed` where `dedup_absorbed = COUNT(accepted, non-reversed dedup decisions)` — exact only at 1:1. N-way changes the expected term to `Σ(group_size − 1)` over the connected components, as the method's own docstring (`doctor_service.py` ≈line 646) prescribes:
 
     ```
     dedup_absorbed = COUNT(rows with match_group_id) − COUNT(DISTINCT match_group_id)
     ```
 
-    off `prep.int_transactions__matched`. This is exact for any group size and removes the `is_primary` dependency. Update `docs/specs/moneybin-doctor.md` accordingly.
+    computed off `prep.int_transactions__matched` (one component per `match_group_id`). Exact for any group size. Update the `dedup_reconciliation` section of `docs/specs/moneybin-doctor.md` accordingly.
 
 ## Algorithm
 
@@ -149,8 +152,10 @@ Per `.claude/rules/testing.md` (real-DB fixtures; YAML scenario fixtures + indep
 
 ### Scenarios (`tests/scenarios/`)
 
-- **`dedup-nway` (new):** a persona where one transaction appears in **3 sources** (ofx + csv + plaid) **and** another appears across **3 overlapping within-source files**, asserting collapse to exactly one `core.fct_transactions` row each. Hand-derived expected row count.
-- **Negative:** distinct-but-similar transactions that must **not** over-merge — extend `dedup-negative-fixture` or add a sibling scenario.
+The scenario fixture loader (`tests/scenarios/_runner/fixture_loader.py`) supports only `source_type ∈ {csv, ofx}`, and stamps all csv fixtures with `source_origin="fixture"`. Two csv files are therefore **within-source** (Tier 2b) to each other and **cross-source** to ofx — enough to build the N-way topology without a plaid loader:
+
+- **`dedup-nway` (new):** one transaction appears in **csv_a + csv_b + ofx** (two within-source copies that Tier 2b merges, plus a cross-source ofx copy Tier 3 must attach — the mixed intra+inter path), and a second transaction appears across **csv_a + csv_b + csv_c** (pure 3-file within-source). Both must collapse to exactly one `core.fct_transactions` row. Use byte-identical descriptions across copies so confidence is 1.0 and every edge auto-merges (no review step needed). Row counts hand-derived from the fixtures.
+- **Negative:** distinct-but-similar transactions (e.g., same amount, dates outside the window) that must **not** over-merge — extend `dedup-negative-fixture` or add a sibling scenario.
 
 ### Unit
 
@@ -158,8 +163,8 @@ Per `.claude/rules/testing.md` (real-DB fixtures; YAML scenario fixtures + indep
 - Prep fold: 4+-node chain closes to one group (the case the two-pass broke); star topology.
 - Group confidence: MIN over mixed-confidence accepted edges.
 - Transfer exclusion: all non-primary members of a 3-member group excluded.
-- Doctor: `staging_coverage` green with a multi-member group; `Σ(group_size − 1)` matches absorbed.
+- Doctor: `dedup_reconciliation` green with a multi-member group; `Σ(group_size − 1)` matches `raw_total − core_count`; and a still-failing case (an unaccounted leak) to prove the check didn't go slack.
 
 ## Done when
 
-A real transaction imported from N≥3 sources (and N≥3 overlapping within-source files) collapses to exactly one `core.fct_transactions` row; a scenario test proves both the collapse and a negative (distinct transactions do not over-merge); `staging_coverage` is implemented and green with its expected term computed from group sizes; the prep fold is a recursive CTE; group confidence is weakest-link MIN; the review queue presents pending edges grouped by component; specs reconciled (`matching-same-record-dedup.md` Requirement 3 superseded, `moneybin-doctor.md` updated).
+A real transaction imported from N≥3 sources (and N≥3 overlapping within-source files) collapses to exactly one `core.fct_transactions` row; a scenario test proves both the collapse and a negative (distinct transactions do not over-merge); `dedup_reconciliation` stays green with its expected term computed from group sizes (`Σ(group_size − 1)`); the prep fold is a recursive CTE; group confidence is weakest-link MIN; the pending-match read path presents edges grouped by component; specs reconciled (`matching-same-record-dedup.md` Requirement 3 superseded, `moneybin-doctor.md` `dedup_reconciliation` section updated).
