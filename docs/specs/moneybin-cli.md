@@ -198,12 +198,16 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- review                     -- Unified review queue (matches + categorize)
 |   |     [--type matches|categorize|all]   Default all; walks matches first then categorize
 |   |     [--status]                        Counts only, no interactive loop
-|   |     [--confirm <id>]                  Non-interactive: confirm one (auto-detects type by ID)
-|   |     [--reject <id>]                   Non-interactive: reject one
-|   |     [--confirm-all]                   Non-interactive: confirm all in scope
+|   |     [--confirm <id>]                  Non-interactive: confirm one match or categorize item by ID
+|   |     [--reject <id>]                   Non-interactive: reject one match by ID
+|   |     [--confirm-all]                   Non-interactive: confirm all items in scope
 |   |     [--limit N]                       Cap items per session
+|   |   Note: --confirm/--reject/--confirm-all are fully implemented for --type matches.
+|   |         --type categorize review is not yet wired (stub); categorize items use
+|   |         transactions categorize commit instead.
 |   +-- matches                    -- Transfer detection + dedup workflow (no review — see transactions review)
 |   |   +-- run [--skip-transform] [--auto-accept-transfers]
+|   |   +-- set <match_id> --status accepted|rejected  -- Accept or reject one pending match
 |   |   +-- history [--type dedup|transfer] [--limit N]
 |   |   +-- undo <match_id> [--yes]
 |   |   +-- backfill [--skip-transform] [--auto-accept-transfers]
@@ -259,11 +263,29 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |
 +-- system                         -- System / data status meta-view
 |   +-- status                     -- What data exists, freshness, pending review queues
-|   +-- doctor                     -- Run pipeline integrity checks across all invariants
+|   +-- doctor                     -- Run pipeline integrity checks (--full: whole-table app.* audit-coverage scan)
 |   +-- audit                      -- Privacy / access audit utilities
 |
-+-- privacy                        -- Privacy utilities (redaction testing)
++-- privacy                        -- Privacy utilities (consent ledger + redaction testing)
 |   +-- redact                     -- Test the project redaction pipeline on a value
+|   +-- grant <category>           -- Grant consent for an AI feature category
+|   |     [--backend NAME]           Override the configured backend for this grant
+|   |     [--mode persistent|one-time]  Consent duration (default: persistent)
+|   |     [--output json]
+|   |     [--yes]                    Non-interactive mode
+|   +-- revoke <category>          -- Revoke a previously granted consent
+|   |     [--backend NAME]           Scope revocation to a specific backend
+|   |     [--output json]
+|   |     [--yes]
+|   +-- revoke-all                 -- Revoke all active consent grants (nuclear option)
+|   |     [--output json]
+|   |     [--yes]
+|   +-- status                     -- Show active consent grants, configured backend, and consent_policy
+|   |     [--output json]
+|   +-- log                        -- Query recent privacy-log events (consent grants/revokes + tool calls)
+|         [--last N]                 Number of recent events to show (default: 50)
+|         [--actor NAME]             Filter to a specific originating command or tool
+|         [--output json]
 |
 +-- synthetic                      -- Generate and manage synthetic financial data for testing
 |   +-- generate

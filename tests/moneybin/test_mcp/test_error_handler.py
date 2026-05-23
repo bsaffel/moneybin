@@ -35,7 +35,7 @@ def test_envelope_to_dict_includes_error_section() -> None:
 
 def test_envelope_to_dict_omits_error_when_none() -> None:
     """Successful envelopes do not carry an `error` key in their dict."""
-    env = build_envelope(data=[{"x": 1}], sensitivity="low")
+    env = build_envelope(data=[{"x": 1}])
     assert "error" not in env.to_dict()
 
 

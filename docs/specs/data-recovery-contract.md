@@ -2,7 +2,7 @@
 
 ## Status
 
-draft
+in-progress
 
 ## Goal
 
@@ -15,7 +15,7 @@ The work has eight pieces, all interlocking:
 3. An audit-log undo consumer — Phase 2 of Invariant 10 — exposed via `system_audit_undo` / `system_audit_history` / `system_audit_get`.
 4. A doctor recipe registry: each invariant audit ships with a Python recipe producing `recovery_actions` from the failure's affected IDs.
 5. A self-heal safelist run at refresh time — five active recipes, all reversible through the same audit-log undo, with five strict criteria that gate any future addition. A small "deferred" subsection captures known-shape future recipes that don't yet have a concrete trigger.
-6. The matches MCP surface (`transactions_matches_run` / `_review` / `_set` / `_history`) closing the CLI-only gap.
+6. The matches MCP surface (`transactions_matches_run` / `_pending` / `_set` / `_history`) closing the CLI-only gap.
 7. `RefreshResult` extensions surfacing matching and categorization crashes that today log at DEBUG and accumulate dupes silently.
 8. A new always-loaded project rule (`.claude/rules/data-recovery.md`) codifying the contract for future tools, audits, and refresh stages.
 
@@ -140,9 +140,9 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
     |-------|---------------|
     | `fct_transactions_fk_integrity` | (1) `accounts_get(account_id=<orphan>)` — investigate; (2) `import_revert(import_id=<source>)` if orphan from bad import. `confidence=suggested` |
     | `fct_transactions_sign_convention` | (1) `import_revert(import_id=<source>)` per affected txn. `confidence=suggested` |
-    | `bridge_transfers_balanced` | (1) `transactions_matches_set(transaction_id, match_group_id, primary=False)` to break bad match; (2) `transactions_get(transaction_id)` to investigate. `confidence=suggested` |
+    | `bridge_transfers_balanced` | (1) `transactions_matches_set(match_id, status="rejected")` to reject the bad transfer match; (2) `transactions_get(transaction_id)` to investigate. `confidence=suggested` |
     | `categorization_coverage` (warn) | (1) `transactions_categorize_run(methods=["rules","merchants"])`. `confidence=certain` |
-    | `staging_coverage` (skipped) | Returns `[]` until the `is_primary` unblock (tracked in `followups.md:131`) |
+    | `dedup_reconciliation` (fail) | (1) `refresh_run(steps=["match"])` to re-apply matching when a recorded decision didn't collapse its rows; (2) `system_doctor(verbose=True)` to inspect the raw/core count delta. `confidence=suggested` |
     | `orphan_app_state` (new) | (1) `transactions_notes_delete(note_ids=[...])` and/or `transactions_tags_set(transaction_id=..., tags=[])` per orphan. `confidence=certain` |
 
 8. **Self-heal safelist.** Five active recipes run at refresh time. Each MUST satisfy all five criteria:
@@ -193,19 +193,21 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
         timestamp: str
     ```
 
-    Behavior change: catches in matcher/categorizer move from `logger.debug(...)` to `logger.error(...)` and populate the `*_error` field. Refresh continues — one stage's failure doesn't abort the pipeline (same partial-failure-isolation pattern import already uses). If any `*_error` is set, the response envelope's `recovery_actions` includes:
+    Behavior change: a *real* crash in the matcher/categorizer moves from `logger.debug(...)` to `logger.error(...)` and populates the `*_error` field. A missing-view precondition (`duckdb.CatalogException` / `BinderException` — e.g. first load before SQLMesh apply built the views) is NOT a crash: it stays a quiet `logger.debug(...)` and leaves `*_error` `None`, so a fresh database's first refresh never reports a false failure. (This precondition discrimination is what genuinely closes `followups.md:71`; a blind DEBUG→ERROR would trade silent failure for false-positive noise.) Refresh continues — one stage's failure doesn't abort the pipeline (same partial-failure-isolation pattern import already uses). If any `*_error` is set, the response envelope's `recovery_actions` includes:
 
     - `refresh_run(steps=["match"])` or `refresh_run(steps=["categorize"])` for retry, `confidence=suggested`.
-    - `system_doctor(verbose=True)` for diagnosis, `confidence=suggested`.
+    - `system_doctor` for diagnosis, `confidence=suggested`. (Empty `arguments` — the `system_doctor` MCP tool takes no parameters; `--verbose` is a CLI-only flag, so a `verbose` argument would make the action non-executable.)
 
-10. **Matches MCP surface.** Four new MCP tools matching the existing CLI:
+10. **Matches MCP surface.** Four MCP tools over the pair-decision model (`app.match_decisions`, one row per proposed pair keyed by `match_id`):
 
     | MCP tool | Shape | CLI equivalent |
     |----------|-------|----------------|
     | `transactions_matches_run(scope?, force?)` | 3 (discrete-verb batch) | `moneybin transactions matches run` |
-    | `transactions_matches_review(scope?)` | 5 (collection projection) | `moneybin transactions matches review` |
-    | `transactions_matches_set(transaction_id, match_group_id, primary)` | 1b (entity upsert) | `moneybin transactions matches set` |
-    | `transactions_matches_history(since?, scope?)` | 5 (time-series) | `moneybin transactions matches history` |
+    | `transactions_matches_pending(match_type?, limit?)` | 5 (collection projection) | `moneybin transactions review --type matches` |
+    | `transactions_matches_set(match_id, status)` | 1b (accept/reject one decision) | `moneybin transactions matches set` |
+    | `transactions_matches_history(limit?, match_type?)` | 5 (time-series) | `moneybin transactions matches history` |
+
+    `_run` and `_history` mirror the existing CLI. `transactions_matches_pending` is named to match the existing `transactions_categorize_pending` convention; it lists pending match proposals (pair ids + confidence, no amounts or descriptions). `_set` is genuinely new non-interactive surface: today accept/reject lives only in the interactive `transactions review --type matches` queue, so agents can't reach it. `_set` accepts or rejects **one decision by `match_id`** (`status ∈ {accepted, rejected}`). Rejecting an already-accepted match errors with a recovery action pointing at `system_audit_undo` (the M2D audit-log undo consumer); until it ships, the CLI `moneybin transactions matches undo` is the manual interim route named in the action's rationale. There is no `match_group_id`/`primary` write surface — `match_group_id` is a derived prep-layer column (the connected-component group key in `int_transactions__matched`), and dedup collapses each group by field-level source-priority merge (`int_transactions__merged`), so no single physical row is "primary."
 
     No `transactions_matches_undo` MCP tool. `app.match_decisions` is protected by Invariant 10 → audit_log → `system_audit_undo`. The existing CLI `moneybin transactions matches undo` migrates to call `system_audit_undo` internally.
 
@@ -358,7 +360,7 @@ Phase 2 of Invariant 10 + sister contract work + matches MCP + refresh surfacing
 
 ### PR 5 — Matches MCP surface
 
-- Four new tools in `src/moneybin/mcp/tools/transactions_matches.py`, wrapping the existing matching service.
+- Four new tools in `src/moneybin/mcp/tools/transactions.py`, wrapping the existing matching service.
 - CLI: existing commands stay (already implemented); CLI's `transactions matches undo` migrates to call `system_audit_undo` internally (thin wrapper).
 - Tests: surface tests per `.claude/rules/testing.md`; cross-surface parity test asserts CLI and MCP yield equivalent JSON.
 
@@ -430,7 +432,7 @@ Per `.claude/rules/testing.md` test layers.
 - **Schema migration rollback.** Covered by `database-migration.md`. The Phase 2 schema additions in this spec are forward-only.
 - **External-state side-effect undo (M3A Plaid sync).** No external mutations in the current sync model; sync server is opaque per AGENTS.md. M3A spec decides if needed.
 - **Undoing `import_revert` via `system_audit_undo`.** `import_revert` mutates `raw.*`, which is outside Invariant 10 / audit_log scope by design (the schema boundary is load-bearing — `raw.*` is bytes-from-source). The cascade self-heal that `import_revert` triggers (orphan cleanup in `app.transaction_categories`, `app.transaction_splits`) IS audit-logged and individually undoable, but undoing those rows without re-importing would only restore orphans pointing at deleted raw rows. The correct recovery for an unwanted revert is to re-import the source file; `import_revert`'s error envelope on a "no, I want it back" agent prompt MUST escalate to the user with `error_code="recovery_no_path"` rather than silently chain audit undos.
-- **`staging_coverage` invariant unblock.** Blocked on `app.match_decisions.is_primary` column. Adjacent but not in this milestone; tracked in `followups.md:131`.
+- **`dedup_reconciliation` invariant (formerly `staging_coverage`).** Unblocked separately against the real pair-decision model — no `is_primary`/group column needed; the expected absorbed count is simply the accepted-dedup decision count. Now active; see `moneybin-doctor.md`. Not part of this milestone.
 - **`system_audit_undo_cascade` tool.** Block-don't-cascade is the Phase 1 default. Add later only if walk-and-retry pattern is verbose enough in real agent UX.
 - **Aggressive auto-heal beyond the safelist.** The five criteria are the gate. Adding a recipe requires explicit justification.
 - **Retroactive recovery_actions backfill on pre-spec error logs.** Errors before this spec don't get retroactive actions; the contract starts at deploy time.
@@ -471,4 +473,3 @@ Resolved during the 2026-05-19/2026-05-20 brainstorm. Captured so future readers
 - Adjacent: `data-reconciliation.md` (draft) — broader ETL invariant work; this spec lands the agent-recovery contract that draft references.
 - Companion rule: `.claude/rules/data-recovery.md` (new, lands in PR 10) — codifies the contract for future specs and tools.
 - Followup items rolled into this spec: `followups.md:71` (silent refresh crashes) — covered by Req 9.
-- Followup items NOT in scope: `followups.md:131` (`staging_coverage` invariant unblock) — separate concern, adjacent timing.

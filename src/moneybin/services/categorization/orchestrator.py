@@ -45,7 +45,7 @@ from moneybin.metrics.registry import (
     CATEGORIZE_ERRORS_TOTAL,
     CATEGORIZE_ITEMS_TOTAL,
 )
-from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.privacy.payloads.categorize import CategorizeCommitPayload
 from moneybin.services._text import build_match_inputs
 from moneybin.services.categorization._shared import (
     CategorizationItem,
@@ -73,22 +73,14 @@ class CategorizationResult:
     error_details: list[dict[str, Any]]
     merchants_created: int = 0
 
-    def to_envelope(self, input_count: int) -> ResponseEnvelope:
-        """Build a ResponseEnvelope from this categorization result."""
-        return build_envelope(
-            data={
-                "applied": self.applied,
-                "skipped": self.skipped,
-                "errors": self.errors,
-                "error_details": self.error_details,
-                "merchants_created": self.merchants_created,
-            },
-            sensitivity="medium",
-            total_count=input_count,
-            actions=[
-                "Use transactions_categorize_rules to review auto-created rules",
-                "Use transactions_categorize_pending to fetch the next batch",
-            ],
+    def to_payload(self) -> CategorizeCommitPayload:
+        """Return a typed payload for the MCP/CLI envelope boundary."""
+        return CategorizeCommitPayload(
+            applied=self.applied,
+            skipped=self.skipped,
+            errors=self.errors,
+            merchants_created=self.merchants_created,
+            error_details=list(self.error_details),
         )
 
     def merge_parse_errors(self, parse_errors: list[dict[str, Any]]) -> None:

@@ -51,6 +51,11 @@ requires-python = ">=3.12"
 dependencies = [
     # Data transforms (SQLMesh manages raw → staging → core pipeline)
     "sqlmesh[duckdb]>=0.200.0",
+    # SQL AST parsing for schema introspection and package-write validation.
+    # Also a transitive dep of sqlmesh, but declared directly because schema.py,
+    # privacy/comment_sync.py, and the package framework import it independently —
+    # a future sqlmesh pin change must not silently break those importers.
+    "sqlglot>=30.4.3",
     # Database and data manipulation
     "duckdb>=1.3.2",
     "polars>=1.32.3",
@@ -125,6 +130,11 @@ moneybin = [
 # Unified CLI entry point using Typer
 moneybin = "moneybin.cli.main:main"
 
+[project.entry-points."moneybin.packages"]
+# Reference packages register here in Plan 4:
+# assets = "moneybin.packages.assets"
+# us_tax = "moneybin.packages.us_tax"
+
 [dependency-groups]
 # Documentation: https://peps.python.org/pep-0735/
 # Modern dependency groups standard (PEP 735) for optional/development dependencies
@@ -147,6 +157,7 @@ dev = [
     "pytest-asyncio>=1.3.0",
     "pytest-xdist>=3.8.0",
     "respx>=0.21",
+    "pytest-memray>=1.8.0",
 ]
 
 docs = [
@@ -160,6 +171,16 @@ server = [
     "fastapi>=0.115.0",
     "uvicorn>=0.34.0",
     # plaid-python already in main dependencies
+]
+
+[tool.uv]
+constraint-dependencies = [
+    # click 8.4 made click.ParamType generic; typer 0.25.1's type stubs still
+    # reference ParamType without a type arg, so pyright infers ParamType[Unknown]
+    # and flags every typer.Option/Argument call (reportUnknownMemberType). typer
+    # accepts click>=8.2.1 at runtime, so this only holds back the type-stub
+    # regression. Drop once typer ships click-8.4-compatible stubs.
+    "click<8.4",
 ]
 
 [tool.ruff]
@@ -310,6 +331,7 @@ markers = [
     "unit: marks tests as unit tests",
     "e2e: marks tests as end-to-end subprocess tests",
     "scenarios: marks whole-pipeline scenario tests (slow, real DB, real SQLMesh)",
+    "perf: marks performance regression tests (require a fully-loaded persona DB)",
 ]
 filterwarnings = [
     # Ignore deprecation warnings from third-party libraries we don't control

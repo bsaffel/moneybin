@@ -164,6 +164,7 @@ Full schema reference (including `meta`, `seeds`, `synthetic`, prefix convention
 Feature specs live in `docs/specs/`. The **[Spec Index](docs/specs/INDEX.md)** is the single source of truth.
 
 - **Before implementing**, check `INDEX.md` for existing specs.
+- **Verify the spec against the code before building** — specs (especially `draft` ones) can describe a model that was never built or has drifted (e.g., a `match_group_id`/`is_primary` matching surface that never existed). Reconcile spec ↔ code at the `draft → ready` promotion, not mid-implementation.
 - **When starting**, update status to `in-progress` (spec file + `INDEX.md`).
 - **When complete**, update to `implemented`. See `.claude/rules/shipping.md` for README updates.
 - **Observability wiring**: Specs touching app code must include metrics. See `docs/specs/observability.md` and `src/moneybin/metrics/registry.py`.

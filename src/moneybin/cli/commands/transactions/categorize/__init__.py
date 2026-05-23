@@ -22,7 +22,6 @@ from moneybin.cli.output import (
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
 from moneybin.errors import UserError
-from moneybin.protocol.envelope import ResponseEnvelope
 
 from . import auto, ml, rules
 from .commit_from_file import categorize_commit_from_file
@@ -75,6 +74,7 @@ def categorize_pending(
       moneybin transactions categorize pending --min-amount 20 --output json
     """
     from moneybin.cli.output import render_or_json
+    from moneybin.privacy.payloads.categorize import CatPendingPayload, PendingTxnRow
     from moneybin.protocol.envelope import build_envelope
     from moneybin.services.account_service import AccountService
     from moneybin.services.categorization import CategorizationService
@@ -105,9 +105,28 @@ def categorize_pending(
         typer.echo("No data — import transactions first.", err=True)
         raise typer.Exit(0)
 
-    envelope = build_envelope(data=records, sensitivity="medium")
+    # Wrap raw rows in the typed CatPendingPayload so the JSON path sees the
+    # account_id's active transform and redact_typed masks it — a bare list[dict]
+    # short-circuits _has_active_transform(list) → False and would emit account_id raw.
+    payload = CatPendingPayload(
+        transactions=[
+            PendingTxnRow(
+                transaction_id=r["transaction_id"],
+                transaction_date=str(r["txn_date"])
+                if r.get("txn_date") is not None
+                else None,
+                amount=float(r["amount"]) if r.get("amount") is not None else None,
+                description=r.get("description"),
+                memo=r.get("memo"),
+                account_id=r.get("account_id"),
+                age_days=int(r["age_days"]) if r.get("age_days") is not None else None,
+            )
+            for r in records
+        ]
+    )
+    envelope = build_envelope(data=payload)
 
-    def _render_table(_: ResponseEnvelope) -> None:
+    def _render_table(_: object) -> None:
         if not records:
             logger.info("No uncategorized transactions.")
             return
@@ -117,7 +136,9 @@ def categorize_pending(
         rows = [tuple(r.values()) for r in records]
         render_rich_table(cols, rows)
 
-    render_or_json(envelope, output, render_fn=_render_table)
+    render_or_json(
+        envelope, output, render_fn=_render_table, cli_actor="categorize_pending"
+    )
 
 
 @app.command("commit")
@@ -200,7 +221,7 @@ def categorize_commit(
 
     input_count = len(items) + len(parse_errors)
 
-    def _render_table(_: ResponseEnvelope) -> None:
+    def _render_table(_: object) -> None:
         logger.info(
             f"✅ Applied {result.applied} | skipped {result.skipped} | errors {result.errors}"
         )
@@ -209,7 +230,17 @@ def categorize_commit(
         for err in result.error_details:
             logger.warning(f"⚠️  {err['transaction_id']}: {err['reason']}")
 
-    envelope = result.to_envelope(input_count)
+    from moneybin.protocol.envelope import build_envelope
+
+    envelope = build_envelope(
+        data=result.to_payload(),
+        sensitivity="medium",
+        total_count=input_count,
+        actions=[
+            "Use transactions_categorize_rules to review auto-created rules",
+            "Use transactions_categorize_pending to fetch the next batch",
+        ],
+    )
     if result.errors > 0:
         envelope = dataclasses.replace(
             envelope,
@@ -218,7 +249,9 @@ def categorize_commit(
                 code="categorization_errors",
             ),
         )
-    render_or_json(envelope, output, render_fn=_render_table)
+    render_or_json(
+        envelope, output, render_fn=_render_table, cli_actor="categorize_commit"
+    )
 
     if result.errors > 0 or result.skipped > 0:
         raise typer.Exit(1)
@@ -245,6 +278,7 @@ def categorize_run(
     from typing import Literal
 
     from moneybin.cli.output import render_or_json
+    from moneybin.privacy.payloads.categorize import CategorizeRunPayload
     from moneybin.protocol.envelope import build_envelope
     from moneybin.services.categorization import CategorizationService
 
@@ -270,15 +304,20 @@ def categorize_run(
         with get_database() as db:
             data = CategorizationService(db).categorize_run(methods=typed_methods)
 
-    envelope = build_envelope(data=data, sensitivity="medium")
+    payload = CategorizeRunPayload(
+        applied_by_method=data["applied_by_method"],
+        total_applied=data["total_applied"],
+    )
+    envelope = build_envelope(data=payload, sensitivity="medium")
 
-    def _render_table(_: ResponseEnvelope) -> None:
-        breakdown = data["applied_by_method"]
-        for method, count in breakdown.items():
+    def _render_table(_: object) -> None:
+        for method, count in payload.applied_by_method.items():
             logger.info(f"  {method}: {count}")
-        logger.info(f"✅ Applied {data['total_applied']} total")
+        logger.info(f"✅ Applied {payload.total_applied} total")
 
-    render_or_json(envelope, output, render_fn=_render_table)
+    render_or_json(
+        envelope, output, render_fn=_render_table, cli_actor="categorize_run"
+    )
 
 
 @app.command("assist")
@@ -312,6 +351,7 @@ def categorize_assist(
     from moneybin.cli.output import render_or_json
     from moneybin.mcp.privacy import audit_log
     from moneybin.metrics.registry import CATEGORIZE_ASSIST_CALLS_TOTAL
+    from moneybin.privacy.payloads.categorize import AssistRow, CatAssistPayload
     from moneybin.protocol.envelope import build_envelope
     from moneybin.services.categorization import CategorizationService
 
@@ -343,13 +383,31 @@ def categorize_assist(
         metadata={"txn_count": len(redacted), "account_filter": accounts},
     )
 
-    data = [r.to_dict() for r in redacted]
-    envelope = build_envelope(data=data, sensitivity="medium")
+    payload = CatAssistPayload(
+        transactions=[
+            AssistRow(
+                transaction_id=r.transaction_id,
+                description_redacted=r.description_redacted,
+                memo_redacted=r.memo_redacted,
+                source_type=r.source_type,
+                transaction_type=r.transaction_type,
+                check_number=r.check_number,
+                is_transfer=r.is_transfer,
+                transfer_pair_id=r.transfer_pair_id,
+                payment_channel=r.payment_channel,
+                amount_sign=r.amount_sign,
+            )
+            for r in redacted
+        ]
+    )
+    envelope = build_envelope(data=payload, sensitivity="medium")
 
-    def _render_table(_: ResponseEnvelope) -> None:
-        logger.info(f"Returned {len(data)} redacted record(s).")
+    def _render_table(_: object) -> None:
+        logger.info(f"Returned {len(payload.transactions)} redacted record(s).")
 
-    render_or_json(envelope, output, render_fn=_render_table)
+    render_or_json(
+        envelope, output, render_fn=_render_table, cli_actor="categorize_assist"
+    )
 
 
 @app.command("stats")

@@ -8,14 +8,19 @@ them. Consumed by both MCP tools and CLI commands.
 from __future__ import annotations
 
 import logging
-import uuid
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
-from typing import Any, Literal
+from typing import Literal
 
 from moneybin.database import Database
-from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.privacy.payloads.budget import (
+    BudgetCategoryStatusRow,
+    BudgetSetPayload,
+    BudgetStatusPayload,
+)
+from moneybin.repositories.budgets_repo import BudgetsRepo
+from moneybin.services.audit_service import AuditService
 from moneybin.services.categorization._shared import resolve_category_id
 from moneybin.tables import BUDGETS, FCT_TRANSACTIONS, TRANSACTION_CATEGORIES
 
@@ -29,83 +34,38 @@ class BudgetSetResult:
     category: str
     monthly_amount: Decimal
     action: Literal["created", "updated"]
+    start_month: str
 
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to a plain dict for JSON serialization."""
-        return {
-            "category": self.category,
-            "monthly_amount": self.monthly_amount,
-            "action": self.action,
-        }
-
-    def to_envelope(self) -> ResponseEnvelope:
-        """Build a ResponseEnvelope for MCP/CLI output."""
-        return build_envelope(
-            data=self.to_dict(),
-            sensitivity="low",
-            actions=[
-                "Use reports_budget to see spending vs budget",
-                "Use reports_spending for category breakdown",
-            ],
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class BudgetCategoryStatus:
-    """Budget status for a single category."""
-
-    category: str
-    budget: Decimal
-    spent: Decimal
-    remaining: Decimal
-    status: Literal["OK", "WARNING", "OVER"]
-
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to a plain dict for JSON serialization."""
-        return {
-            "category": self.category,
-            "budget": self.budget,
-            "spent": self.spent,
-            "remaining": self.remaining,
-            "status": self.status,
-        }
-
-
-@dataclass(slots=True)
-class BudgetStatusResult:
-    """Result of budget status query."""
-
-    categories: list[BudgetCategoryStatus]
-    month: str
-
-    def to_envelope(self) -> ResponseEnvelope:
-        """Build a ResponseEnvelope for MCP/CLI output."""
-        return build_envelope(
-            data=[c.to_dict() for c in self.categories],
-            sensitivity="low",
-            period=self.month,
-            actions=[
-                "Use `moneybin budget set` (CLI) to adjust a budget target",
-                "Use reports_spending for detailed category breakdown",
-            ],
+    def to_payload(self) -> BudgetSetPayload:
+        """Convert to a typed BudgetSetPayload for MCP/CLI envelopes."""
+        return BudgetSetPayload(
+            category=self.category,
+            monthly_amount=self.monthly_amount,
+            action=self.action,
+            start_month=self.start_month,
         )
 
 
 class BudgetService:
-    """Budget management operations.
+    """Budget management operations."""
 
-    All methods return typed dataclasses with a ``to_envelope()`` method.
-    """
+    def __init__(self, db: Database, *, audit: AuditService | None = None) -> None:
+        """Initialize BudgetService with an open Database connection.
 
-    def __init__(self, db: Database) -> None:
-        """Initialize BudgetService with an open Database connection."""
+        Composes :class:`BudgetsRepo` for audited ``app.budgets`` writes
+        (Invariant 10), sharing this service's ``AuditService``.
+        """
         self._db = db
+        self._audit = audit if audit is not None else AuditService(db)
+        self._budgets_repo = BudgetsRepo(db, audit=self._audit)
 
     def set_budget(
         self,
         category: str,
         monthly_amount: Decimal,
         start_month: str | None = None,
+        *,
+        actor: str,
     ) -> BudgetSetResult:
         """Create or update a budget target for a category.
 
@@ -117,6 +77,8 @@ class BudgetService:
             monthly_amount: Monthly spending target in USD.
             start_month: First active month (YYYY-MM). Defaults to current
                 month.
+            actor: Audit actor recorded on the ``budget.set`` event
+                (``"cli"`` / ``"mcp"``).
 
         Returns:
             BudgetSetResult indicating whether the budget was created or
@@ -125,9 +87,13 @@ class BudgetService:
         if start_month is None:
             start_month = date.today().strftime("%Y-%m")
 
-        # Check for existing budget with overlapping date range
+        # Check for existing budget with overlapping date range. Select its
+        # start_month too: an overlap can match a budget whose window opened in a
+        # different month than the request, and update() does not rewrite
+        # start_month — so the result must report the row's stored value, not the
+        # request argument.
         check_sql = f"""
-            SELECT budget_id
+            SELECT budget_id, start_month
             FROM {BUDGETS.full_name}
             WHERE category = ?
               AND start_month <= ?
@@ -141,41 +107,44 @@ class BudgetService:
         # the top-level dim row by passing None on the subcategory axis.
         category_id = resolve_category_id(self._db, category, None)
         if existing:
+            # Name the columns explicitly so a future SELECT-list change can't
+            # silently shift which value lands where (check_sql selects
+            # budget_id, start_month in that order).
+            existing_budget_id, existing_start_month = (
+                str(existing[0]),
+                str(existing[1]),
+            )
             # Re-resolve on update so a NULL FK from V014's backfill window heals
             # the first time the user touches this budget after creating the
             # matching user_category.
-            update_sql = f"""
-                UPDATE {BUDGETS.full_name}
-                SET monthly_amount = ?,
-                    category_id = ?,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE budget_id = ?
-            """
-            self._db.execute(
-                update_sql, [monthly_amount, category_id, str(existing[0])]
+            self._budgets_repo.update(
+                existing_budget_id,
+                monthly_amount=monthly_amount,
+                category_id=category_id,
+                actor=actor,
             )
             action = "updated"
+            result_start_month = existing_start_month  # the affected row's window
         else:
-            budget_id = uuid.uuid4().hex[:12]
-            insert_sql = f"""
-                INSERT INTO {BUDGETS.full_name}
-                    (budget_id, category, category_id, monthly_amount, start_month)
-                VALUES (?, ?, ?, ?, ?)
-            """
-            self._db.execute(
-                insert_sql,
-                [budget_id, category, category_id, monthly_amount, start_month],
+            self._budgets_repo.insert(
+                category=category,
+                category_id=category_id,
+                monthly_amount=monthly_amount,
+                start_month=start_month,
+                actor=actor,
             )
             action = "created"
+            result_start_month = start_month
 
         logger.info(f"Budget {action} for category")
         return BudgetSetResult(
             category=category,
             monthly_amount=monthly_amount,
             action=action,
+            start_month=result_start_month,
         )
 
-    def status(self, month: str | None = None) -> BudgetStatusResult:
+    def status(self, month: str | None = None) -> BudgetStatusPayload:
         """Get budget vs actual spending for a month.
 
         Joins budget targets with actual spending aggregated from
@@ -185,7 +154,7 @@ class BudgetService:
             month: Month to check (YYYY-MM). Defaults to current month.
 
         Returns:
-            BudgetStatusResult with per-category budget status.
+            BudgetStatusPayload with per-category budget status.
         """
         if month is None:
             month = date.today().strftime("%Y-%m")
@@ -211,21 +180,21 @@ class BudgetService:
         result = self._db.execute(sql, [month, month, month])
         rows = result.fetchall()
 
-        categories: list[BudgetCategoryStatus] = []
+        categories: list[BudgetCategoryStatusRow] = []
         for row in rows:
             budget_amount = Decimal(str(row[1]))
             spent = Decimal(str(row[2]))
             remaining = budget_amount - spent
 
             if spent > budget_amount:
-                status = "OVER"
+                status: Literal["OK", "WARNING", "OVER"] = "OVER"
             elif spent > budget_amount * Decimal("0.8"):
                 status = "WARNING"
             else:
                 status = "OK"
 
             categories.append(
-                BudgetCategoryStatus(
+                BudgetCategoryStatusRow(
                     category=str(row[0]),
                     budget=budget_amount,
                     spent=spent,
@@ -235,4 +204,4 @@ class BudgetService:
             )
 
         logger.info(f"Budget status: {len(categories)} categories for {month}")
-        return BudgetStatusResult(categories=categories, month=month)
+        return BudgetStatusPayload(categories=categories, month=month)

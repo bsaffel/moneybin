@@ -11,11 +11,14 @@ from unittest.mock import MagicMock
 import pytest
 
 from moneybin.database import Database
+from moneybin.privacy.payloads.budget import (
+    BudgetCategoryStatusRow,
+    BudgetSetPayload,
+    BudgetStatusPayload,
+)
 from moneybin.services.budget_service import (
-    BudgetCategoryStatus,
     BudgetService,
     BudgetSetResult,
-    BudgetStatusResult,
 )
 from moneybin.services.categorization import CategorizationService
 from tests.moneybin.db_helpers import create_core_tables_raw, seed_categories_view
@@ -76,7 +79,7 @@ class TestSetBudget:
     def test_creates_new_budget(self, budget_db: Database) -> None:
         service = BudgetService(budget_db)
         result = service.set_budget(
-            "Food & Drink", Decimal("200.00"), start_month="2026-04"
+            "Food & Drink", Decimal("200.00"), start_month="2026-04", actor="cli"
         )
         assert isinstance(result, BudgetSetResult)
         assert result.category == "Food & Drink"
@@ -87,25 +90,50 @@ class TestSetBudget:
     def test_updates_existing_budget(self, budget_db: Database) -> None:
         service = BudgetService(budget_db)
         # Create first
-        service.set_budget("Food & Drink", Decimal("200.00"), start_month="2026-04")
+        service.set_budget(
+            "Food & Drink", Decimal("200.00"), start_month="2026-04", actor="cli"
+        )
         # Update
         result = service.set_budget(
-            "Food & Drink", Decimal("300.00"), start_month="2026-04"
+            "Food & Drink", Decimal("300.00"), start_month="2026-04", actor="cli"
         )
         assert result.action == "updated"
         assert result.monthly_amount == Decimal("300.00")
 
     @pytest.mark.unit
-    def test_to_envelope_sensitivity_low(self, budget_db: Database) -> None:
+    def test_update_cross_month_overlap_reports_stored_start_month(
+        self, budget_db: Database
+    ) -> None:
+        # A later request whose start_month differs from the stored window must
+        # still match the overlap and report the STORED start_month, since
+        # update() does not rewrite start_month.
+        service = BudgetService(budget_db)
+        service.set_budget(
+            "Food & Drink", Decimal("200.00"), start_month="2026-01", actor="cli"
+        )
+        result = service.set_budget(
+            "Food & Drink", Decimal("300.00"), start_month="2026-06", actor="cli"
+        )
+        assert result.action == "updated"
+        assert result.start_month == "2026-01"  # stored window, not the request
+        # And the DB row's start_month is unchanged.
+        row = budget_db.execute(
+            "SELECT start_month FROM app.budgets WHERE category = 'Food & Drink'"
+        ).fetchone()
+        assert row == ("2026-01",)
+
+    @pytest.mark.unit
+    def test_to_payload_shape(self, budget_db: Database) -> None:
         service = BudgetService(budget_db)
         result = service.set_budget(
-            "Food & Drink", Decimal("200.00"), start_month="2026-04"
+            "Food & Drink", Decimal("200.00"), start_month="2026-04", actor="cli"
         )
-        envelope = result.to_envelope()
-        d = envelope.to_dict()
-        assert d["summary"]["sensitivity"] == "low"
-        assert d["data"]["category"] == "Food & Drink"
-        assert d["data"]["action"] == "created"
+        payload = result.to_payload()
+        assert isinstance(payload, BudgetSetPayload)
+        assert payload.category == "Food & Drink"
+        assert payload.monthly_amount == Decimal("200.00")
+        assert payload.action == "created"
+        assert payload.start_month == "2026-04"
 
 
 class TestBudgetStatus:
@@ -115,19 +143,23 @@ class TestBudgetStatus:
     def test_returns_status_result(self, budget_db: Database) -> None:
         service = BudgetService(budget_db)
         # Set a budget first
-        service.set_budget("Food & Drink", Decimal("200.00"), start_month="2026-04")
+        service.set_budget(
+            "Food & Drink", Decimal("200.00"), start_month="2026-04", actor="cli"
+        )
         result = service.status(month="2026-04")
-        assert isinstance(result, BudgetStatusResult)
+        assert isinstance(result, BudgetStatusPayload)
         assert result.month == "2026-04"
         assert len(result.categories) == 1
 
     @pytest.mark.unit
     def test_status_fields(self, budget_db: Database) -> None:
         service = BudgetService(budget_db)
-        service.set_budget("Food & Drink", Decimal("200.00"), start_month="2026-04")
+        service.set_budget(
+            "Food & Drink", Decimal("200.00"), start_month="2026-04", actor="cli"
+        )
         result = service.status(month="2026-04")
         cat = result.categories[0]
-        assert isinstance(cat, BudgetCategoryStatus)
+        assert isinstance(cat, BudgetCategoryStatusRow)
         assert cat.category == "Food & Drink"
         assert cat.budget == Decimal("200.00")
         # T1 (-50) + T2 (-30) = 80 spent
@@ -139,7 +171,9 @@ class TestBudgetStatus:
     def test_status_over_budget(self, budget_db: Database) -> None:
         service = BudgetService(budget_db)
         # Set budget lower than spending (80.00)
-        service.set_budget("Food & Drink", Decimal("50.00"), start_month="2026-04")
+        service.set_budget(
+            "Food & Drink", Decimal("50.00"), start_month="2026-04", actor="cli"
+        )
         result = service.status(month="2026-04")
         cat = result.categories[0]
         assert cat.status == "OVER"
@@ -149,21 +183,33 @@ class TestBudgetStatus:
     def test_status_warning_threshold(self, budget_db: Database) -> None:
         service = BudgetService(budget_db)
         # Budget of 90 with 80 spent = 88.9% => WARNING
-        service.set_budget("Food & Drink", Decimal("90.00"), start_month="2026-04")
+        service.set_budget(
+            "Food & Drink", Decimal("90.00"), start_month="2026-04", actor="cli"
+        )
         result = service.status(month="2026-04")
         cat = result.categories[0]
         assert cat.status == "WARNING"
 
     @pytest.mark.unit
-    def test_to_envelope_structure(self, budget_db: Database) -> None:
+    def test_status_envelope_via_build_envelope(self, budget_db: Database) -> None:
+        """build_envelope(data=BudgetStatusPayload) produces the expected envelope shape."""
+        from moneybin.protocol.envelope import build_envelope
+
         service = BudgetService(budget_db)
-        service.set_budget("Food & Drink", Decimal("200.00"), start_month="2026-04")
+        service.set_budget(
+            "Food & Drink", Decimal("200.00"), start_month="2026-04", actor="cli"
+        )
         result = service.status(month="2026-04")
-        envelope = result.to_envelope()
+        envelope = build_envelope(
+            data=result,
+            sensitivity="low",
+            period=result.month,
+            actions=["Use reports_spending for detailed category breakdown"],
+        )
         d = envelope.to_dict()
         assert d["summary"]["sensitivity"] == "low"
         assert d["summary"]["period"] == "2026-04"
-        assert isinstance(d["data"], list)
+        assert isinstance(d["data"]["categories"], list)
         assert len(d["actions"]) > 0
 
 
@@ -174,7 +220,7 @@ class TestEmptyResults:
     def test_status_no_budgets(self, budget_db: Database) -> None:
         service = BudgetService(budget_db)
         result = service.status(month="2026-04")
-        assert isinstance(result, BudgetStatusResult)
+        assert isinstance(result, BudgetStatusPayload)
         assert result.categories == []
 
 
@@ -186,7 +232,7 @@ class TestSetBudgetCategoryIdResolution:
         seed_categories_view(budget_db)
         cat_id = CategorizationService(budget_db).create_category("Hobbies")
         BudgetService(budget_db).set_budget(
-            "Hobbies", Decimal("100.00"), start_month="2026-05"
+            "Hobbies", Decimal("100.00"), start_month="2026-05", actor="cli"
         )
         row = budget_db.execute(
             "SELECT category_id FROM app.budgets WHERE category = 'Hobbies'"
@@ -197,7 +243,7 @@ class TestSetBudgetCategoryIdResolution:
     def test_orphan_text_stays_null(self, budget_db: Database) -> None:
         seed_categories_view(budget_db)
         BudgetService(budget_db).set_budget(
-            "NeverDefined", Decimal("50.00"), start_month="2026-05"
+            "NeverDefined", Decimal("50.00"), start_month="2026-05", actor="cli"
         )
         row = budget_db.execute(
             "SELECT category, category_id FROM app.budgets "

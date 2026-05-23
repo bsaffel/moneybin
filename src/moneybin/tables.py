@@ -70,6 +70,7 @@ PROPOSED_RULES = TableRef("app", "proposed_rules")
 SCHEMA_MIGRATIONS = TableRef("app", "schema_migrations")
 VERSIONS = TableRef("app", "versions")
 GSHEET_CONNECTIONS = TableRef("app", "gsheet_connections")
+AI_CONSENT_GRANTS = TableRef("app", "ai_consent_grants")
 
 # -- App tabular tables --
 TABULAR_FORMATS = TableRef("app", "tabular_formats")
@@ -82,6 +83,7 @@ SEED_SOURCE_PRIORITY = TableRef("app", "seed_source_priority")
 SEED_CATEGORIES = TableRef("seeds", "categories")
 
 # -- Prep / staging views (built by SQLMesh transforms) --
+INT_TRANSACTIONS_UNIONED = TableRef("prep", "int_transactions__unioned")
 INT_TRANSACTIONS_MATCHED = TableRef("prep", "int_transactions__matched")
 
 # -- Meta schema (cross-source provenance + lineage) --

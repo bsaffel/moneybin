@@ -59,11 +59,11 @@ async def test_import_files_accepts_list(
     ]
     paths = [str(p) for p in fixtures]
     env = await import_files(paths=paths, refresh=True)
-    assert env.data["total_count"] == 3
-    assert env.data["imported_count"] == 3
-    assert env.data["transforms_applied"] is True
-    assert len(env.data["files"]) == 3
-    assert all(r["status"] == "imported" for r in env.data["files"])
+    assert env.data.total_count == 3
+    assert env.data.imported_count == 3
+    assert env.data.transforms_applied is True
+    assert len(env.data.files) == 3
+    assert all(r.status == "imported" for r in env.data.files)
 
 
 async def test_import_files_continues_past_failure(
@@ -80,9 +80,9 @@ async def test_import_files_continues_past_failure(
         paths=[str(good_a), str(bogus), str(good_b)],
         refresh=True,
     )
-    assert env.data["imported_count"] == 2
-    assert env.data["failed_count"] == 1
-    assert any(r["status"] == "failed" for r in env.data["files"])
+    assert env.data.imported_count == 2
+    assert env.data.failed_count == 1
+    assert any(r.status == "failed" for r in env.data.files)
 
 
 async def test_import_files_refresh_false_skips(
@@ -92,7 +92,7 @@ async def test_import_files_refresh_false_skips(
     _setup_db(tmp_path, monkeypatch)
     fixture = _copy_fixture(FIXTURES_DIR / "sample_minimal.ofx", tmp_path)
     env = await import_files(paths=[str(fixture)], refresh=False)
-    assert env.data["transforms_applied"] is False
+    assert env.data.transforms_applied is False
     assert any("refresh_run" in a for a in env.actions)
 
 

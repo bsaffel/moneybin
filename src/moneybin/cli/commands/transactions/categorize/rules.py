@@ -11,10 +11,12 @@ from moneybin.cli.output import (
     OutputFormat,
     output_option,
     quiet_option,
+    render_or_json,
 )
-from moneybin.cli.utils import emit_json, handle_cli_errors
+from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
 from moneybin.errors import UserError
+from moneybin.protocol.envelope import build_envelope
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +68,11 @@ def rules_list(
             }
             for r in rows
         ]
-        emit_json("rules", rules)
+        render_or_json(
+            build_envelope(data=rules, sensitivity="low"),
+            output,
+            cli_actor="rules_list",
+        )
         return
 
     if not rows:
@@ -207,11 +213,19 @@ def rules_create(
     with handle_cli_errors():
         validated, parse_errors = validate_rule_items(rules)
         with get_database() as db:
-            result = CategorizationService(db).create_rules(validated, reapply=reapply)
+            result = CategorizationService(db).create_rules(
+                validated, reapply=reapply, actor="cli"
+            )
         result.merge_parse_errors(parse_errors)
 
     if output == OutputFormat.JSON:
-        emit_json("rules_create", result.to_envelope(len(rules)).data)
+        envelope = build_envelope(
+            data=result.to_payload(),
+            sensitivity="low",
+            total_count=len(rules),
+            actions=["Use transactions_categorize_rules to review all rules"],
+        )
+        render_or_json(envelope, output, cli_actor="rules_create")
     elif not quiet:
         logger.info(
             f"✅ Created {result.created} rule(s); "
@@ -252,13 +266,20 @@ def rules_delete(
     with handle_cli_errors():
         with get_database() as db:
             deactivated = CategorizationService(db).deactivate_rule(
-                rule_id, reapply=reapply
+                rule_id, reapply=reapply, actor="cli"
             )
         if not deactivated:
             raise UserError(f"Rule {rule_id} not found", code="RULE_NOT_FOUND")
 
     if output == OutputFormat.JSON:
-        emit_json("rules_delete", {"rule_id": rule_id, "action": "deactivated"})
+        render_or_json(
+            build_envelope(
+                data={"rule_id": rule_id, "action": "deactivated"},
+                sensitivity="low",
+            ),
+            output,
+            cli_actor="rules_delete",
+        )
         return
 
     if not quiet:

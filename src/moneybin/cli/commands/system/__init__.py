@@ -63,6 +63,7 @@ def system_status(
                 sensitivity="low",
             ),
             output,
+            cli_actor="system_status",
         )
         return
 

@@ -17,6 +17,11 @@ from moneybin.cli.output import (
 )
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
+from moneybin.privacy.payloads.transactions import (
+    NoteDeletePayload,
+    NotePayload,
+    NotesListPayload,
+)
 from moneybin.protocol.envelope import build_envelope
 from moneybin.services.transaction_service import Note
 
@@ -28,14 +33,14 @@ app = typer.Typer(
 )
 
 
-def _note_to_dict(n: Note) -> dict[str, str]:
-    return {
-        "note_id": n.note_id,
-        "transaction_id": n.transaction_id,
-        "text": n.text,
-        "author": n.author,
-        "created_at": n.created_at,
-    }
+def _note_payload(n: Note) -> NotePayload:
+    return NotePayload(
+        note_id=n.note_id,
+        transaction_id=n.transaction_id,
+        text=n.text,
+        author=n.author,
+        created_at=n.created_at,
+    )
 
 
 @app.command("add")
@@ -57,9 +62,12 @@ def transactions_notes_add(
         typer.echo(f"❌ {e}", err=True)
         raise typer.Exit(1) from e
 
-    payload = _note_to_dict(note)
     if output == OutputFormat.JSON:
-        render_or_json(build_envelope(data=payload, sensitivity="low"), output)
+        render_or_json(
+            build_envelope(data=_note_payload(note), sensitivity="low"),
+            output,
+            cli_actor="transactions_notes_add",
+        )
         return
     logger.info(f"✅ Added note {note.note_id} to {transaction_id}")
 
@@ -77,9 +85,14 @@ def transactions_notes_list(
         with get_database(read_only=True) as db:
             notes = TransactionService(db).list_notes(transaction_id)
 
-    payload = [_note_to_dict(n) for n in notes]
     if output == OutputFormat.JSON:
-        render_or_json(build_envelope(data=payload, sensitivity="low"), output)
+        render_or_json(
+            build_envelope(
+                data=NotesListPayload(notes=[_note_payload(n) for n in notes])
+            ),
+            output,
+            cli_actor="transactions_notes_list",
+        )
         return
 
     if not notes:
@@ -110,9 +123,12 @@ def transactions_notes_edit(
         typer.echo(f"❌ {e}", err=True)
         raise typer.Exit(1) from e
 
-    payload = _note_to_dict(note)
     if output == OutputFormat.JSON:
-        render_or_json(build_envelope(data=payload, sensitivity="low"), output)
+        render_or_json(
+            build_envelope(data=_note_payload(note), sensitivity="low"),
+            output,
+            cli_actor="transactions_notes_edit",
+        )
         return
     logger.info(f"✅ Updated note {note.note_id}")
 
@@ -141,10 +157,9 @@ def transactions_notes_delete(
 
     if output == OutputFormat.JSON:
         render_or_json(
-            build_envelope(
-                data={"note_id": note_id, "deleted": True}, sensitivity="low"
-            ),
+            build_envelope(data=NoteDeletePayload(note_id=note_id), sensitivity="low"),
             output,
+            cli_actor="transactions_notes_delete",
         )
         return
     logger.info(f"✅ Deleted note {note_id}")

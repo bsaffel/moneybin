@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from moneybin import error_codes
@@ -14,22 +16,22 @@ from moneybin.protocol.envelope import ResponseEnvelope
 async def test_mcp_tool_converts_user_error_to_envelope() -> None:
     """A UserError raised inside a tool becomes an error envelope."""
 
-    @mcp_tool(sensitivity="low")
-    def failing_tool() -> ResponseEnvelope:
+    @mcp_tool(unclassified=True)
+    def failing_tool() -> ResponseEnvelope[Any]:
         raise UserError("not found", code="NOT_FOUND")
 
     result = await failing_tool()
     assert isinstance(result, ResponseEnvelope)
     assert result.error is not None
     assert result.error.code == "NOT_FOUND"
-    assert result.data == []
+    assert result.data == []  # pyright: ignore[reportUnknownMemberType]
 
 
 async def test_mcp_tool_converts_database_key_error_to_envelope() -> None:
     """DatabaseKeyError is a recognised classified exception."""
 
-    @mcp_tool(sensitivity="low")
-    def failing_tool() -> ResponseEnvelope:
+    @mcp_tool(unclassified=True)
+    def failing_tool() -> ResponseEnvelope[Any]:
         raise DatabaseKeyError("missing key")
 
     result = await failing_tool()
@@ -45,8 +47,8 @@ async def test_mcp_tool_lets_unclassified_exceptions_propagate() -> None:
     server boundary.
     """
 
-    @mcp_tool(sensitivity="low")
-    def failing_tool() -> ResponseEnvelope:
+    @mcp_tool(unclassified=True)
+    def failing_tool() -> ResponseEnvelope[Any]:
         raise RuntimeError("internal detail leak")
 
     with pytest.raises(RuntimeError):
@@ -60,10 +62,10 @@ async def test_mcp_tool_returns_response_envelope_directly() -> None:
     """
     from moneybin.protocol.envelope import build_envelope
 
-    @mcp_tool(sensitivity="low")
-    def ok_tool() -> ResponseEnvelope:
-        return build_envelope(data=[{"x": 1}], sensitivity="low")
+    @mcp_tool(unclassified=True)
+    def ok_tool() -> ResponseEnvelope[Any]:
+        return build_envelope(data=[{"x": 1}])
 
     result = await ok_tool()
     assert isinstance(result, ResponseEnvelope)  # NOT a str
-    assert result.data == [{"x": 1}]
+    assert result.data == [{"x": 1}]  # pyright: ignore[reportUnknownMemberType]

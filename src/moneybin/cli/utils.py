@@ -24,8 +24,38 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _error_audit_classification(payload_type: type | None) -> tuple[str, list[str]]:
+    """Audit (sensitivity, classes) for a JSON-mode error row.
+
+    Conservative default: without the failed command's payload type we can't
+    derive its tier, so default ``"high"`` rather than under-report a
+    CRITICAL command's failure as ``"low"`` in ``privacy.log.jsonl`` — the
+    failure paths auditors care most about. When ``payload_type`` IS supplied
+    (wired by the command), derive the exact tier + classes the success path
+    would have logged. A misclassified payload (``PrivacyContractError``) also
+    falls back to the conservative ``"high"`` rather than breaking the error
+    path.
+    """
+    if payload_type is None:
+        return "high", []
+    from moneybin.cli.output import derive_log_sensitivity  # noqa: PLC0415
+    from moneybin.privacy.introspection import (  # noqa: PLC0415
+        PrivacyContractError,
+        extract_data_classes,
+    )
+
+    try:
+        sensitivity = derive_log_sensitivity(payload_type, "high")
+        classes = [c.value for c in sorted(extract_data_classes(payload_type))]
+    except PrivacyContractError:
+        return "high", []
+    return sensitivity, classes
+
+
 @contextmanager
-def handle_cli_errors() -> Generator[None, None, None]:
+def handle_cli_errors(
+    *, cli_actor: str | None = None, payload_type: type | None = None
+) -> Generator[None, None, None]:
     """Cross-cutting CLI error handler.
 
     Catches classified user-facing exceptions (DatabaseKeyError,
@@ -33,6 +63,17 @@ def handle_cli_errors() -> Generator[None, None, None]:
     code 1. When the active output format is JSON (set via ``output_option``
     callback), emits a structured error envelope to stdout; otherwise logs
     with the standard ❌ prefix. Unrecognized exceptions propagate unchanged.
+
+    On JSON-mode failure, writes a ``privacy.log.jsonl`` audit row mirroring
+    the success-path entry render_or_json writes — keeps failed/blocked CLI
+    invocations in the same audit trail. ``cli_actor`` names the command
+    (e.g. ``"accounts_get"``) when known; defaults to ``"unknown"`` so call
+    sites can adopt incrementally without changing observed behavior on
+    text-mode paths. ``payload_type`` is the command's success-path payload
+    type; when supplied the audit row's sensitivity + classes are derived
+    from it, otherwise the row defaults to the conservative ``"high"`` tier so
+    a CRITICAL command's failure is never under-reported (see
+    ``_error_audit_classification``).
 
     Does NOT open or yield a Database — commands acquire their own
     connections with ``get_database(read_only=...)``.
@@ -52,8 +93,24 @@ def handle_cli_errors() -> Generator[None, None, None]:
         if _flags.output == OutputFormat.JSON:
             # JSON-mode errors bypass logger.error intentionally: stdout stays
             # machine-readable for agents and the structured envelope carries
-            # the full error context. The agent's transcript is the audit trail.
+            # the full error context.
             emit_json_error(user_error)
+            # Mirror the MCP decorator's error-path audit emission so JSON-mode
+            # failures appear in privacy.log.jsonl alongside success rows.
+            from moneybin.privacy.log import (  # noqa: PLC0415 — defer import
+                build_tool_call_event,
+                write_privacy_event,
+            )
+
+            sensitivity, classes_returned = _error_audit_classification(payload_type)
+            write_privacy_event(
+                build_tool_call_event(
+                    actor=f"cli.{cli_actor or 'unknown'}",
+                    sensitivity=sensitivity,
+                    classes_returned=classes_returned,
+                    row_count=0,
+                )
+            )
         else:
             logger.error(f"❌ {user_error.message}")
             if user_error.hint:
@@ -62,8 +119,17 @@ def handle_cli_errors() -> Generator[None, None, None]:
 
 
 def emit_json(key: str, payload: object) -> None:
-    """Emit a single-key JSON envelope to stdout."""
-    typer.echo(json.dumps({key: payload}, indent=2, default=str))
+    """Emit a single-key JSON envelope to stdout.
+
+    Uses ``PayloadEncoder`` so typed dataclass / Pydantic payloads serialize
+    to dicts, not ``str(...)`` reprs. ``default=str`` would silently override
+    the encoder's dataclass handling — keep them mutually exclusive.
+    """
+    from moneybin.protocol.envelope import (  # noqa: PLC0415 — defer import
+        PayloadEncoder,
+    )
+
+    typer.echo(json.dumps({key: payload}, indent=2, cls=PayloadEncoder))
 
 
 def render_rich_table(cols: list[str], rows: list[tuple[object, ...]]) -> None:

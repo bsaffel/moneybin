@@ -45,31 +45,32 @@ class TestCashFlow:
 
     def test_by_account_groups_by_account_id_and_name(self, db: Database) -> None:
         _install_cash_flow_view(db)
-        cols, rows = ReportsService(db).cash_flow(by="account")
-        assert "account_id" in cols
-        assert "account_name" in cols
-        assert "category" not in cols
+        payload = ReportsService(db).cash_flow(by="account")
+        # account_id and account_name present; category is None
+        assert all(r.account_id is not None for r in payload.rows)
+        assert all(r.account_name is not None for r in payload.rows)
+        assert all(r.category is None for r in payload.rows)
         # Two accounts with the same display_name "Alpha" must not collapse.
-        account_ids = {row[cols.index("account_id")] for row in rows}
+        account_ids = {r.account_id for r in payload.rows}
         assert account_ids == {"A1", "A2"}
 
     def test_by_category_groups_by_category_only(self, db: Database) -> None:
         _install_cash_flow_view(db)
-        cols, rows = ReportsService(db).cash_flow(by="category")
-        assert "category" in cols
-        assert "account_id" not in cols
-        assert "account_name" not in cols
-        categories = {row[cols.index("category")] for row in rows}
+        payload = ReportsService(db).cash_flow(by="category")
+        assert all(r.category is not None for r in payload.rows)
+        assert all(r.account_id is None for r in payload.rows)
+        assert all(r.account_name is None for r in payload.rows)
+        categories = {r.category for r in payload.rows}
         assert categories == {"Food", "Travel"}
 
     def test_by_account_and_category_groups_by_both(self, db: Database) -> None:
         _install_cash_flow_view(db)
-        cols, rows = ReportsService(db).cash_flow(by="account-and-category")
-        assert "account_id" in cols
-        assert "account_name" in cols
-        assert "category" in cols
+        payload = ReportsService(db).cash_flow(by="account-and-category")
+        assert all(r.account_id is not None for r in payload.rows)
+        assert all(r.account_name is not None for r in payload.rows)
+        assert all(r.category is not None for r in payload.rows)
         # Two A1/Food/2026-01 rows do not collapse with A2/Food/2026-01.
-        assert len(rows) == 4
+        assert len(payload.rows) == 4
 
     def test_invalid_by_raises(self, db: Database) -> None:
         with pytest.raises(ValueError, match="Unknown by"):
@@ -78,11 +79,11 @@ class TestCashFlow:
     def test_from_to_bounds_filter_rows(self, db: Database) -> None:
         _install_cash_flow_view(db)
         # from_month accepts 'YYYY-MM' or 'YYYY-MM-DD' — the day is stripped.
-        cols, rows = ReportsService(db).cash_flow(
+        payload = ReportsService(db).cash_flow(
             from_month="2026-02-01", by="account-and-category"
         )
         # Only February rows survive.
-        year_months = {row[cols.index("year_month")] for row in rows}
+        year_months = {r.year_month for r in payload.rows}
         assert year_months == {"2026-02"}
 
 
@@ -203,15 +204,15 @@ class TestAccountFilterResolver:
     def test_balance_drift_filter_accepts_account_id(self, db: Database) -> None:
         _install_dim_accounts(db)
         _install_balance_drift_with_accounts(db)
-        cols, rows = ReportsService(db).balance_drift(account="A1")
-        ids = {row[cols.index("account_id")] for row in rows}
+        payload = ReportsService(db).balance_drift(account="A1")
+        ids = {row.account_id for row in payload.rows}
         assert ids == {"A1"}
 
     def test_balance_drift_filter_accepts_display_name(self, db: Database) -> None:
         _install_dim_accounts(db)
         _install_balance_drift_with_accounts(db)
-        cols, rows = ReportsService(db).balance_drift(account="Beta")
-        ids = {row[cols.index("account_id")] for row in rows}
+        payload = ReportsService(db).balance_drift(account="Beta")
+        ids = {row.account_id for row in payload.rows}
         assert ids == {"A2"}
 
     def test_balance_drift_filter_ambiguous_account_errors(self, db: Database) -> None:

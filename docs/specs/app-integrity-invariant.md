@@ -6,6 +6,21 @@ ready
 
 > **Drift note (2026-05-17).** Bypass-map line numbers below reference the single-file `services/categorization_service.py` at HEAD `f13f3c7`. PR #155 (post-spec) split that module into a facade + collaborators under `src/moneybin/services/categorization/` (`__init__.py`, `_shared.py`, `applier.py`, `assist.py`, `matcher.py`, `orchestrator.py`, `queries.py`). The protected-tables list (Req 6), repository contract (Req 2–5), lint rule (Req 8), doctor invariants (Req 9), and PR ordering (Req 10) are unaffected — only the source file the implementation PRs will edit changes. Each PR-by-PR mutation-site call-out below should be re-located against the post-split files at implementation time; the mutations themselves (and their target tables) are unchanged. PR #166 (`categories_delete` cascade) and PR #174 (`category_id` FK migration) also landed post-spec; both touch the same `categorization_service` paths but do not change the bypass-map shape.
 
+> **Batch B reconciliation (2026-05-22).** Implementing PRs 3–5 (`UserMerchantsRepo`, `CategorizationRulesRepo`, `ProposedRulesRepo`, `TransactionCategoriesRepo`) surfaced four spec↔code drifts, resolved as follows:
+> - **`app.rule_deactivations` was dropped in migration V018** (post-spec). `RuleDeactivationsRepo` and its FK check are obsolete and removed from scope; the override-driven deactivation already emits an audit row via the `categorization_rules` repo (see below). Req 6's row and PR 4's bullet are struck through.
+> - **The PR 4 FK doctor check direction was backwards.** `categorization_rules` has no `proposed_rule_id` column; the real link is `proposed_rules.rule_id → categorization_rules.rule_id` (added by V016). The shipped check (`app_proposed_rules_rule_fk`) follows the real direction.
+> - **The "`categorization_rules.priority` uniqueness" check (Req 9 / PR 4) does not correspond to a real invariant.** Priority is intentionally non-unique — user rules default to 100, auto-rules to 200, with deterministic tie-breaking by `created_at` (`categorization-auto-rules.md` §16). A strict uniqueness check would fail on every real database, so it is not implemented.
+> - **The doctor audit-coverage helper was generalized with an `updated_col` parameter.** Req 9 assumed every protected table carries `updated_at`; `proposed_rules` (keys on `proposed_at`) and `transaction_categories` (keys on `categorized_at`) do not. Bypass UPDATEs that don't advance the watermark remain the lint rule's job (the heuristic's documented limitation).
+> - **Rule deactivation unified on the `categorization_rule.deactivate` audit action** (taxonomy-conformant `<entity>.<verb>`), replacing the legacy non-conformant `rule_deactivated`. Override forensics (`reason`, `override_count`, `sample_ids`) moved to the audit `context`. The set/clear categorization paths kept their established `category.set` / `category.clear` actions but now capture the **full** row (Req 4), superseding their prior column-subset payload.
+> - **`delete_category`'s 6-table cascade stays raw** until `budgets` + `transaction_splits` get repos (AI-PR12), so it can thread `parent_audit_id` through all six in one coherent pass rather than a half-threaded mix. The lint rule (PR 13) lands after that.
+
+> **Batch C reconciliation (2026-05-22).** Implementing PRs 6, 9, 10 (`AccountSettingsRepo`, `BalanceAssertionsRepo`, `BudgetsRepo`) surfaced five spec↔code drifts, resolved as follows:
+> - **`account_service` already had a non-audited `AccountSettingsRepository` data-access class** (load/upsert/delete) — a near-namesake of the new `AccountSettingsRepo`. Two repository-shaped classes for one table is the coherence smell Invariant 10 exists to retire, so the old class was removed: its `load` (a read) folded into `AccountService` directly (matching how `list_accounts`/`get_account`/`summary` already read), and its `upsert`/`delete` migrated to the audited `AccountSettingsRepo`. Its `delete` had **zero production callers** (test-only) but is retained on the repo per Req 6's protected-mutation contract.
+> - **`app.balance_assertions` has a composite primary key** `(account_id, assertion_date)`, but `audit_log.target_id` and the `_run_app_audit_coverage` helper assume a single key. The repo emits a composite `target_id` of `"{account_id}|{assertion_date ISO}"`; the coverage helper gained an optional `pk_expr` parameter (same generalize-the-helper precedent as Batch B's `updated_col`) so the doctor projects the matching composite key.
+> - **`app.budgets.category_id` is nullable** (NULL for orphaned legacy rows from V014's dual-write backfill), so the FK doctor check skips NULLs (`IS NOT NULL` guard, mirroring `_run_proposed_rules_rule_fk`).
+> - **The CLI `budget set` command is a stub** (`_not_implemented`); only the MCP `budget_set` tool calls `BudgetService.set_budget`, so `actor` is threaded from MCP only. The deprecated `AccountService` delegates (`rename`/`archive`/`unarchive`/`set_include_in_net_worth`) are test-only; they default `actor="system"` (the `MatchApplier.add_merchant` precedent for programmatic callers) while the canonical `settings_update` requires an explicit `actor`.
+> - **Audit actions follow the upsert `.set` verb, not `.insert`.** `account_settings.set`, `balance_assertion.set`, and `budget.set` (insert + update branches) all use `.set` — matching the existing `category.set` upsert taxonomy — with `.delete` for removals. (The earlier `balance_assertion.insert` working-name was dropped: the write is an `ON CONFLICT DO UPDATE` upsert, so `.set` is the accurate, coherent verb.)
+
 ## Goal
 
 `app.*` holds the only non-reconstructible state in MoneyBin — user categories, merchant patterns, categorization rules, account settings, balance assertions, budgets, curation notes/tags/splits, match decisions, tabular-format profiles. A bad service mutation today can silently corrupt any of those tables: audit routing is enforced by convention, not structure, and `audit_service.record_audit_event()` is called at only a fraction of the mutation sites. The doctor has no `app.*` invariants — only pipeline ones. The hosted tier (M3D/M3E) cannot ship without per-user `app.*` integrity, and the agent-first thesis means bulk LLM-driven mutations need recoverability to be trustworthy. This spec adds **Invariant 10** to the architecture, introduces a `*Repo` layer that owns every protected `app.*` write, bakes in the data captured for a future undo surface, and enforces the contract via a lint rule and doctor checks. The undo *consumer* (CLI/MCP/UndoService) is deliberately deferred to Phase 2.
@@ -87,7 +102,7 @@ Source: 2026-05-16 CTO architecture review §2.2 + §3 leverage point #3, re-ver
    | `UserMerchantsRepo` | `app.user_merchants` | `categorization_service` |
    | `CategorizationRulesRepo` | `app.categorization_rules` | `categorization_service`, `auto_rule_service` |
    | `ProposedRulesRepo` | `app.proposed_rules` | `auto_rule_service` |
-   | `RuleDeactivationsRepo` | `app.rule_deactivations` | `auto_rule_service` |
+   | ~~`RuleDeactivationsRepo`~~ | ~~`app.rule_deactivations`~~ | — table dropped in V018; obsolete (see Batch B reconciliation) |
    | `TransactionCategoriesRepo` | `app.transaction_categories` | `categorization_service` |
    | `AccountSettingsRepo` | `app.account_settings` | `account_service` |
    | `TabularFormatsRepo` | `app.tabular_formats` | `extractors/tabular/formats.py` |
@@ -192,13 +207,14 @@ Phase 1 lands as a sequence of small reviewable PRs. Each PR after PR 1 adds one
 - `categorization_service.py:898, 983` → `UserMerchantsRepo`.
 - Doctor invariant: audit coverage + orphan warning (warn-only; deletion of a categorization referencing a merchant doesn't currently delete the merchant — that's by design).
 
-### PR 4 — `CategorizationRulesRepo` + `ProposedRulesRepo` + `RuleDeactivationsRepo`
+### PR 4 — `CategorizationRulesRepo` + `ProposedRulesRepo`
 
-- `categorization_service.py:1070, 1128` and `auto_rule_service.py:391` (rule promotion INSERT) + `auto_rule_service.py:570` (rule deactivation UPDATE) → `CategorizationRulesRepo`.
-- `auto_rule_service.py:278, 287, 295, 408, 445, 575, 583` → `ProposedRulesRepo`.
-- `auto_rule_service.py:601` → `RuleDeactivationsRepo`.
-- `auto_rule_service.py:391` (rule promotion INSERT) shares a `parent_audit_id` with the `ProposedRulesRepo` status update at L408 — this exercises the cascade-threading contract from Req 5.
-- Doctor invariants: `app.categorization_rules.priority` uniqueness; audit coverage for all three tables; FK from `categorization_rules.proposed_rule_id` to `proposed_rules.proposed_rule_id` where present.
+> Shipped without `RuleDeactivationsRepo` (its table was dropped in V018). FK direction and the priority-uniqueness check were corrected per the Batch B reconciliation note above. Mutation-site line numbers below drifted; they were re-located against the post-#155 split at implementation time.
+
+- Applier rule INSERT/UPDATE + `auto_rule_service` rule promotion INSERT + override deactivation UPDATE → `CategorizationRulesRepo` (`insert` / `deactivate`).
+- `auto_rule_service` proposal insert / reinforce / supersede / approve / reject → `ProposedRulesRepo`.
+- Rule promotion (`CategorizationRulesRepo.insert`) shares its `audit_id` as the `parent_audit_id` on the paired `ProposedRulesRepo.mark_approved` UPDATE — exercises the cascade-threading contract from Req 5 (proven by a `chain_for` test).
+- Doctor invariants: audit coverage for both tables; FK `proposed_rules.rule_id → categorization_rules.rule_id` (the real direction; `categorization_rules` has no `proposed_rule_id`). Priority uniqueness is **not** checked — priority is intentionally non-unique with deterministic tie-breaking (see reconciliation note).
 
 ### PR 5 — `TransactionCategoriesRepo`
 
@@ -209,6 +225,8 @@ Phase 1 lands as a sequence of small reviewable PRs. Each PR after PR 1 adds one
 
 - `account_service.py:259, 294` → `AccountSettingsRepo`.
 - Doctor invariant: audit coverage; FK from `account_id` to `core.dim_accounts`.
+
+> Shipped in Batch C. The pre-existing `AccountSettingsRepository` data-access class was removed (its `load` folded into `AccountService`; its writes migrated to the audited repo) — see the Batch C reconciliation note above. Actions: `account_settings.set` (upsert) / `account_settings.delete`.
 
 ### PR 7 — `TabularFormatsRepo`
 
@@ -225,10 +243,14 @@ Phase 1 lands as a sequence of small reviewable PRs. Each PR after PR 1 adds one
 - `balance_service.py:151, 170` → `BalanceAssertionsRepo`. Not in the original plan; identified during spec drafting (see [Resolved Design Decisions](#resolved-design-decisions) §3).
 - Doctor invariant: audit coverage; FK from `account_id` to `core.dim_accounts`.
 
+> Shipped in Batch C. Composite PK `(account_id, assertion_date)` → composite `target_id`; coverage helper gained `pk_expr` — see the Batch C reconciliation note above. Actions: `balance_assertion.set` (upsert) / `balance_assertion.delete`.
+
 ### PR 10 — `BudgetsRepo`
 
 - `budget_service.py:142, 153` → `BudgetsRepo`. Not in the original plan; identified during spec drafting.
 - Doctor invariant: audit coverage; FK from category fields where applicable.
+
+> Shipped in Batch C. The assignment-then-execute `update_sql`/`insert_sql` locals migrated to `BudgetsRepo.update` / `.insert`; FK `category_id → core.dim_categories` skips NULLs — see the Batch C reconciliation note above. Action: `budget.set` (both branches). The lint rule that must parse the assignment-then-execute shape is AI-PR13, not this batch.
 
 ### PR 11 — `ImportLabelsRepo`
 
@@ -288,6 +310,8 @@ Resolved 2026-05-16. The five items below were open at draft; user-confirmed bef
 3. **Scope expansion accepted: include `balance_assertions`, `budgets`, and `imports`-labels in Phase 1.** All three were bypass sites the original plan missed; partial coverage would block the lint rule from landing at end of Phase 1 (it would have three table-shaped holes) and require a Phase 1.5 follow-up that costs more to schedule than to bundle. Phase 1 estimate moves from ~3 weeks to ~3.5 weeks. PRs 9 (`BalanceAssertionsRepo`), 10 (`BudgetsRepo`), 11 (`ImportLabelsRepo`) are in Phase 1.
 
 4. **Lint rule: ruff plugin spike in PR 2, pytest fallback if >1 day.** PR 2 includes a time-boxed (1-day) spike on a ruff plugin that matches `execute(...)` calls against the protected-tables list. If the plugin needs custom AST + import-resolution work beyond the box, fall back to a pytest in `tests/integration/test_app_integrity_invariant_lint.py` that walks the source tree with `ast`. Contract identical either way; ruff runs in `make lint` (better feedback), pytest runs in CI (acceptable fallback). **Spike exit criteria (per Req 8):** the prototype MUST detect both inline-literal calls and the assignment-then-execute pattern (`sql = f"…"; self._db.execute(sql, …)`) — `budget_service.py:141-147` and `:152-160` are the in-tree exemplars. A literal-only matcher is not sufficient.
+
+   **Spike outcome (2026-05-22, AI-PR2): pytest AST walker chosen; ruff plugin ruled out.** Ruff (0.15.12) is a compiled-Rust linter with no public custom/external-rule plugin API (unlike flake8) — confirmed against `ruff check --help` and the absence of any plugin-registration surface. A custom "raw mutation against `app.<protected>` outside `*_repo.py`" rule therefore cannot ship as a ruff plugin. A ~60-line `ast`-walker prototype cleared every exit criterion: it resolves the inline-literal shape, resolves the assignment-then-execute shape by walking the enclosing function's `Assign` nodes, constant-folds `{TABLEREF.full_name}` → `app.<table>` from the imported `TableRef` constants, matches `INSERT INTO|UPDATE|DELETE FROM` against the protected set, and does **not** flag `SELECT`. AI-PR13 implements this as `tests/integration/test_app_integrity_invariant_lint.py` (runs in CI; `make lint` keeps ruff for everything else). Trade-off accepted: feedback is at test-time, not `make lint`-time — acceptable per the fallback clause, and the contract is identical.
 
 5. **All repositories live under `src/moneybin/repositories/`.** Non-service writers (`extractors/tabular/formats.py`, `matching/persistence.py`) import their repo across packages. Single directory = single lint allowlist glob (`**/repositories/*_repo.py`); cross-package imports are cheap; repository location is a two-way door per `.claude/rules/design-principles.md` and refactoring later is mechanical. The arguably-cleaner refactor (split `extractors/tabular/formats.py` into a loader plus a `TabularFormatService` that owns CRUD; consolidate `matching/persistence.py` into `matching_service.py`) is real but architecturally distinct from audit-routing — tracked in [Out of Scope](#out-of-scope).
 

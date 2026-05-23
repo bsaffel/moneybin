@@ -12,18 +12,19 @@ from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.mcp.privacy import audit_log
 from moneybin.metrics.registry import CATEGORIZE_ASSIST_CALLS_TOTAL
+from moneybin.privacy.payloads.categorize import AssistRow, CatAssistPayload
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.categorization import CategorizationService
 
 logger = logging.getLogger(__name__)
 
 
-@mcp_tool(sensitivity="medium", domain="categorize")
+@mcp_tool(domain="categorize")
 def transactions_categorize_assist(
     limit: int | None = None,
     account_filter: list[str] | None = None,
     date_range: dict[str, str] | None = None,
-) -> ResponseEnvelope:
+) -> ResponseEnvelope[CatAssistPayload]:
     """Return uncategorized transactions as redacted records for LLM categorization.
 
     The LLM proposes (category, subcategory, canonical_merchant_name) for each.
@@ -53,9 +54,7 @@ def transactions_categorize_assist(
     with get_database(read_only=True) as db:
         svc = CategorizationService(db)
         redacted = svc.categorize_assist(
-            limit=effective_limit,
-            account_filter=account_filter,
-            date_range=date_tuple,
+            limit=effective_limit, account_filter=account_filter, date_range=date_tuple
         )
 
     CATEGORIZE_ASSIST_CALLS_TOTAL.labels(surface="mcp").inc()
@@ -69,9 +68,25 @@ def transactions_categorize_assist(
         },
     )
 
+    payload = CatAssistPayload(
+        transactions=[
+            AssistRow(
+                transaction_id=r.transaction_id,
+                description_redacted=r.description_redacted,
+                memo_redacted=r.memo_redacted,
+                source_type=r.source_type,
+                transaction_type=r.transaction_type,
+                check_number=r.check_number,
+                is_transfer=r.is_transfer,
+                transfer_pair_id=r.transfer_pair_id,
+                payment_channel=r.payment_channel,
+                amount_sign=r.amount_sign,
+            )
+            for r in redacted
+        ]
+    )
     return build_envelope(
-        data=[r.to_dict() for r in redacted],
-        sensitivity="medium",
+        data=payload,
         actions=[
             "Propose (category, subcategory, canonical_merchant_name) per item",
             "Use transactions_categorize_commit to commit user-accepted proposals",

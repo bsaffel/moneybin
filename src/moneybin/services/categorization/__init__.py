@@ -45,6 +45,18 @@ from moneybin.metrics.registry import (
 from moneybin.metrics.registry import (
     MERCHANT_EXEMPLAR_COUNT as MERCHANT_EXEMPLAR_COUNT,
 )
+from moneybin.privacy.payloads.categories import (
+    CategoriesPayload as CategoriesPayload,
+)
+from moneybin.privacy.payloads.categories import (
+    MerchantsPayload as MerchantsPayload,
+)
+from moneybin.privacy.payloads.categorize import (
+    CategorizeRulesPayload as CategorizeRulesPayload,
+)
+from moneybin.privacy.payloads.categorize import (
+    CatPendingPayload as CatPendingPayload,
+)
 from moneybin.protocol.envelope import ResponseEnvelope as ResponseEnvelope
 from moneybin.protocol.envelope import build_envelope as build_envelope
 from moneybin.services._text import (
@@ -261,14 +273,17 @@ class CategorizationService:
         created_by: str = "ai",
         exemplars: list[str] | None = None,
         reapply: bool = False,
+        actor: str = "system",
     ) -> str:
         """Create a merchant mapping; optionally fan out to uncategorized rows.
 
-        Pure write delegates to ``MatchApplier.create_merchant_core``; when
+        Delegates to ``MatchApplier.create_merchant_core``, which routes the
+        INSERT through ``UserMerchantsRepo`` (paired audit, Invariant 10). When
         ``reapply=True``, ``categorize_pending`` runs after the insert so the
         new merchant fans out to uncategorized rows immediately. Callers
         inside a batch flow (e.g., ``categorize_items``) skip this and let the
-        enclosing snowball pass do the work instead.
+        enclosing snowball pass do the work instead. ``actor`` is threaded to
+        the audit row (CLI/MCP pass their surface; default ``"system"``).
         """
         merchant_id = self._applier.create_merchant_core(
             raw_pattern,
@@ -278,6 +293,7 @@ class CategorizationService:
             subcategory=subcategory,
             created_by=created_by,
             exemplars=exemplars,
+            actor=actor,
         )
         if reapply:
             self.categorize_pending()
@@ -290,21 +306,25 @@ class CategorizationService:
         items: Sequence[CategorizationRuleInput],
         *,
         reapply: bool = False,
+        actor: str = "system",
     ) -> RuleCreationResult:
         """Create multiple categorization rules in one call (idempotent).
 
-        Pure writes delegate to ``MatchApplier.create_rules_core``. When
-        ``reapply=True`` and at least one rule was newly created,
+        Delegates to ``MatchApplier.create_rules_core``, which routes each
+        INSERT through ``CategorizationRulesRepo`` (paired audit, Invariant 10).
+        When ``reapply=True`` and at least one rule was newly created,
         ``categorize_pending`` runs so the new rules fan out to uncategorized
-        rows immediately. Source-priority enforcement keeps user manual edits
-        safe regardless.
+        rows immediately. ``actor`` is threaded to the audit rows (CLI/MCP pass
+        their surface; default ``"system"``).
         """
-        result = self._applier.create_rules_core(items)
+        result = self._applier.create_rules_core(items, actor=actor)
         if reapply and result.created > 0:
             self.categorize_pending()
         return result
 
-    def deactivate_rule(self, rule_id: str, *, reapply: bool = False) -> bool:
+    def deactivate_rule(
+        self, rule_id: str, *, reapply: bool = False, actor: str = "system"
+    ) -> bool:
         """Soft-delete a rule by setting ``is_active=false``.
 
         Returns ``True`` if the rule existed (and is now inactive),
@@ -318,9 +338,9 @@ class CategorizationService:
         higher-priority sources (user/migration/ml/plaid) that happen to
         share this rule_id reference are left intact.
         """
-        deactivated = self._applier.deactivate_rule_core(rule_id)
+        deactivated = self._applier.deactivate_rule_core(rule_id, actor=actor)
         if reapply and deactivated:
-            self._applier.delete_rule_categorizations(rule_id)
+            self._applier.delete_rule_categorizations(rule_id, actor=actor)
             self.categorize_pending()
         return deactivated
 
@@ -332,19 +352,31 @@ class CategorizationService:
         *,
         subcategory: str | None = None,
         description: str | None = None,
+        actor: str = "system",
     ) -> str:
         """Create a custom user category (active by default)."""
         return self._applier.create_category(
-            category, subcategory=subcategory, description=description
+            category, subcategory=subcategory, description=description, actor=actor
         )
 
-    def toggle_category(self, category_id: str, *, is_active: bool) -> None:
+    def toggle_category(
+        self,
+        category_id: str,
+        *,
+        is_active: bool,
+        actor: str = "system",
+        in_outer_txn: bool = False,
+    ) -> None:
         """Enable or disable a category. Existing categorizations are preserved."""
-        self._applier.toggle_category(category_id, is_active=is_active)
+        self._applier.toggle_category(
+            category_id, is_active=is_active, actor=actor, in_outer_txn=in_outer_txn
+        )
 
-    def delete_category(self, category_id: str, *, force: bool = False) -> None:
+    def delete_category(
+        self, category_id: str, *, force: bool = False, actor: str = "system"
+    ) -> None:
         """Hard-delete a user-created category. See applier for full semantics."""
-        self._applier.delete_category(category_id, force=force)
+        self._applier.delete_category(category_id, force=force, actor=actor)
 
     # -- Categorization core --
 
@@ -358,8 +390,14 @@ class CategorizationService:
         merchant_id: str | None = None,
         rule_id: str | None = None,
         confidence: float | None = None,
+        in_outer_txn: bool = False,
     ) -> WriteOutcome:
-        """Insert or replace a categorization, respecting source precedence."""
+        """Insert or replace a categorization, respecting source precedence.
+
+        Pass ``in_outer_txn=True`` when the caller already owns a transaction
+        (e.g. the auto-rule approve cascade); the repo then joins it instead of
+        opening a nested one (DuckDB has no nested transactions).
+        """
         return self._applier.write_categorization(
             transaction_id=transaction_id,
             category=category,
@@ -368,6 +406,7 @@ class CategorizationService:
             merchant_id=merchant_id,
             rule_id=rule_id,
             confidence=confidence,
+            in_outer_txn=in_outer_txn,
         )
 
     # -- Batch orchestration --
@@ -452,17 +491,15 @@ class CategorizationService:
         """Get all active categories."""
         return self._queries.get_active_categories()
 
-    def get_all_categories(
-        self, *, include_inactive: bool
-    ) -> list[dict[str, str | bool | None]]:
+    def get_all_categories(self, *, include_inactive: bool) -> CategoriesPayload:
         """Get categories with consistent field shape including is_active."""
         return self._queries.get_all_categories(include_inactive=include_inactive)
 
-    def list_rules(self) -> list[dict[str, Any]]:
+    def list_rules(self) -> CategorizeRulesPayload:
         """List all categorization rules (active and inactive) ordered by priority."""
         return self._queries.list_rules()
 
-    def list_merchants(self) -> list[dict[str, str | None]]:
+    def list_merchants(self) -> MerchantsPayload:
         """List all merchant name mappings ordered by canonical name."""
         return self._queries.list_merchants()
 

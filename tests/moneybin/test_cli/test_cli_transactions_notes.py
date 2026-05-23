@@ -43,7 +43,7 @@ def test_notes_add_then_list(runner: CliRunner, db: Database) -> None:
         app, ["transactions", "notes", "list", "T1", "--output", "json"]
     )
     assert listed.exit_code == 0
-    notes = json.loads(listed.stdout)["data"]
+    notes = json.loads(listed.stdout)["data"]["notes"]
     assert len(notes) == 1
     assert notes[0]["text"] == "first"
 

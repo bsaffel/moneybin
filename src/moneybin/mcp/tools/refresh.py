@@ -18,27 +18,33 @@ from moneybin.database import get_database
 from moneybin.mcp._registration import register
 from moneybin.mcp.adapters.refresh_adapters import refresh_envelope
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.privacy.payloads.system import RefreshRunPayload
 from moneybin.protocol.envelope import ResponseEnvelope
 from moneybin.services.refresh import RefreshStep, expand_steps, refresh
 
 
-@mcp_tool(sensitivity="low", read_only=False)
+@mcp_tool(read_only=False)
 def refresh_run(
     steps: list[RefreshStep] | None = None,
-) -> ResponseEnvelope:
+) -> ResponseEnvelope[RefreshRunPayload]:
     """Run the post-load refresh pipeline: matching → SQLMesh apply → categorization.
 
     The single user-facing entry point for refreshing derived state from raw
     inputs. Idempotent; safe to retry after a failure. Matching and
-    categorization steps are best-effort and log-only on failure — only
-    SQLMesh apply errors surface in the response envelope.
+    categorization are best-effort: a real crash in either does NOT fail the
+    call but is surfaced in the envelope as ``matching_error`` /
+    ``categorization_error`` plus structured ``recovery_actions`` (a targeted
+    ``refresh_run(steps=[...])`` retry and a ``system_doctor`` diagnostic).
+    Only a SQLMesh apply error sets the top-level ``error``. (A first-load
+    missing-view precondition is not a crash and leaves those fields unset.)
 
     Args:
-        steps: Subset of ``["match", "transform", "categorize"]`` to run.
-            Defaults to None (full cascade). Steps execute in canonical
-            order (match → transform → categorize) regardless of input
-            order; dependencies enforce it (categorize reads SQLMesh-built
-            views). Pass ``["transform"]`` to run only SQLMesh apply.
+        steps: Subset of ``["gsheet", "match", "transform", "categorize"]``
+            to run. Defaults to None (full cascade). Steps execute in
+            canonical order (gsheet → match → transform → categorize)
+            regardless of input order; dependencies enforce it (categorize
+            reads SQLMesh-built views). Pass ``["transform"]`` to run only
+            SQLMesh apply.
 
     For SQLMesh-step granularity beyond apply (plan, validate, audit,
     per-step status), use the CLI: ``moneybin transform plan|validate|
@@ -63,10 +69,15 @@ def register_refresh_tools(mcp: FastMCP) -> None:
         "SQLMesh apply, deterministic categorization. The single "
         "always-visible entry point for refreshing derived tables (core.* "
         "and reports.*) from raw inputs. Idempotent — safe to retry. "
-        "Accepts optional steps (list of 'match', 'transform', 'categorize') "
-        "to scope which sub-operations execute; defaults to the full cascade. "
-        "Steps execute in canonical order (match → transform → categorize) "
-        "regardless of input order. "
+        "Accepts optional steps (list of 'gsheet', 'match', 'transform', "
+        "'categorize') to scope which sub-operations execute; defaults to "
+        "the full cascade. "
+        "Steps execute in canonical order (gsheet → match → transform → "
+        "categorize) regardless of input order. "
+        "Best-effort steps (match, categorize) don't fail the call: a real "
+        "crash is surfaced as matching_error/categorization_error plus "
+        "recovery_actions (a targeted refresh_run retry and system_doctor). "
+        "Only SQLMesh apply errors set the top-level error. "
         "Mutation surface: rebuilds core.* and reports.* views via SQLMesh "
         "and writes app.transaction_categories for newly-matched rules. "
         "No revert path; re-run after fixing inputs. "

@@ -4,22 +4,39 @@
 Tools:
     - transactions_get — Fetch transactions with filters (medium sensitivity)
     - transactions_review — Pending counts across queues (low)
+    - transactions_matches_pending — List pending match decisions (low)
+    - transactions_matches_set — Accept or reject one pending match (low)
+    - transactions_matches_history — Recent match decisions, newest first (low)
+    - transactions_matches_run — Run the matcher over existing transactions (low)
 """
 
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import Literal
 
 from fastmcp import FastMCP
 
 from moneybin.database import get_database
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.privacy.payloads.transactions import (
+    MatchesHistoryPayload,
+    MatchesPendingPayload,
+    MatchHistoryRow,
+    MatchPendingRow,
+    MatchRunPayload,
+    MatchSetPayload,
+    ReviewStatusPayload,
+    TransactionGetPayload,
+    TransactionRow,
+)
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.services.matching_service import MatchingService
 from moneybin.services.transaction_service import TransactionService
 
 
-@mcp_tool(sensitivity="medium", read_only=True)
+@mcp_tool(read_only=True)
 def transactions_get(
     accounts: list[str] | None = None,
     date_from: str | None = None,
@@ -31,7 +48,7 @@ def transactions_get(
     uncategorized_only: bool = False,
     limit: int = 50,
     cursor: str | None = None,
-) -> ResponseEnvelope:
+) -> ResponseEnvelope[TransactionGetPayload]:
     """Fetch transactions with optional filtering and cursor-based pagination.
 
     Returns full transaction records including curation metadata (notes, tags,
@@ -66,20 +83,47 @@ def transactions_get(
             limit=limit,
             cursor=cursor,
         )
-    return result.to_envelope()
+    payload = TransactionGetPayload(
+        transactions=[
+            TransactionRow(
+                transaction_id=t.transaction_id,
+                account_id=t.account_id,
+                transaction_date=t.transaction_date,
+                amount=t.amount,
+                description=t.description,
+                memo=t.memo,
+                source_type=t.source_type,
+                category=t.category,
+                subcategory=t.subcategory,
+                notes=t.notes,
+                tags=t.tags,
+                splits=t.splits,
+            )
+            for t in result.transactions
+        ],
+        next_cursor=result.next_cursor,
+    )
+    return build_envelope(
+        data=payload,
+        next_cursor=result.next_cursor,
+        actions=[
+            "Use transactions_get with the next_cursor value to fetch the next page",
+            "Use reports_spending for category breakdowns",
+            "Use transactions_categorize_commit to categorize uncategorized transactions",
+        ],
+    )
 
 
-@mcp_tool(sensitivity="low")
-def transactions_review() -> ResponseEnvelope:
+@mcp_tool()
+def transactions_review() -> ResponseEnvelope[ReviewStatusPayload]:
     """Return counts of pending reviews across both queues.
 
     Orientation tool: call this to decide which queue to drain first.
     For categorize, fetch items via ``transactions_categorize_pending``.
-    Match review is CLI-only today (``moneybin transactions review --type
-    matches``); a ``transactions_matches_pending`` MCP tool is planned.
+    For matches, fetch the queue via ``transactions_matches_pending`` and
+    decide each pair with ``transactions_matches_set``.
     """
     from moneybin.services.categorization import CategorizationService
-    from moneybin.services.matching_service import MatchingService
     from moneybin.services.review_service import ReviewService
 
     with get_database(read_only=True) as db:
@@ -89,16 +133,145 @@ def transactions_review() -> ResponseEnvelope:
         ).status()
 
     return build_envelope(
-        data={
-            "matches_pending": status.matches_pending,
-            "categorize_pending": status.categorize_pending,
-            "total": status.total,
-        },
-        sensitivity="low",
+        data=ReviewStatusPayload(
+            matches_pending=status.matches_pending,
+            categorize_pending=status.categorize_pending,
+            total=status.total,
+        ),
         actions=[
             "Use transactions_categorize_pending to fetch the categorize queue",
-            "For matches, run `moneybin transactions review --type matches` (CLI-only today)",
+            "Use transactions_matches_pending to fetch the matches queue",
         ],
+    )
+
+
+@mcp_tool(domain="matches", read_only=False)
+def transactions_matches_set(
+    match_id: str,
+    status: Literal["accepted", "rejected"],
+) -> ResponseEnvelope[MatchSetPayload]:
+    """Accept or reject one pending transaction match by id.
+
+    Mutates app.match_decisions (sets match_status). Only a *pending* decision
+    can be set. Re-asserting a decision's current status is an idempotent no-op;
+    any cross-status transition on an already-decided match errors with
+    recovery_actions (e.g. rejecting an already-accepted match). Reverse an
+    accepted match via `moneybin transactions matches undo` (no MCP undo tool
+    yet). Find ids with transactions_matches_pending.
+
+    Args:
+        match_id: The match decision id (from transactions_matches_pending).
+        status: 'accepted' folds the pair via dedup; 'rejected' keeps both and
+            prevents re-proposal.
+    """
+    with get_database() as db:
+        MatchingService(db).set_status(match_id, status=status)
+    return build_envelope(
+        data=MatchSetPayload(match_id=match_id, match_status=status),
+        actions=[
+            "Use transactions_matches_pending to review remaining pending matches",
+            "Run `moneybin transactions matches undo <match_id>` (CLI) to reverse "
+            "an accepted match — there is no MCP undo tool yet",
+        ],
+    )
+
+
+@mcp_tool(domain="matches")
+def transactions_matches_pending(
+    match_type: Literal["dedup", "transfer"] | None = None,
+    limit: int = 50,
+) -> ResponseEnvelope[MatchesPendingPayload]:
+    """List pending transaction matches awaiting accept/reject.
+
+    Returns pair decisions (match_id, type, confidence, the two source ids).
+    app.match_decisions carries no descriptions/amounts; the confidence score
+    and match type are the decision signal. Use transactions_matches_set to
+    accept or reject one. ``summary.has_more`` indicates whether more pending
+    matches exist beyond ``limit``.
+
+    Args:
+        match_type: Filter to 'dedup' or 'transfer'. Default None returns both.
+        limit: Maximum rows (default 50).
+    """
+    with get_database(read_only=True) as db:
+        svc = MatchingService(db)
+        rows = svc.get_pending(match_type=match_type, limit=limit)
+        total = svc.count_pending(match_type=match_type)
+    return build_envelope(
+        data=MatchesPendingPayload(
+            matches=[
+                MatchPendingRow(
+                    match_id=r["match_id"],
+                    match_type=r.get("match_type", "dedup"),
+                    match_tier=r.get("match_tier"),
+                    confidence_score=float(r.get("confidence_score") or 0.0),
+                    source_type_a=r["source_type_a"],
+                    source_transaction_id_a=r["source_transaction_id_a"],
+                    source_type_b=r["source_type_b"],
+                    source_transaction_id_b=r["source_transaction_id_b"],
+                    match_status=r["match_status"],
+                )
+                for r in rows
+            ]
+        ),
+        total_count=total,
+        actions=[
+            "Use transactions_matches_set to accept or reject one match by match_id",
+            "For full pair context (both transactions side by side), use the CLI "
+            "`moneybin transactions review --type matches` queue",
+        ],
+    )
+
+
+@mcp_tool(domain="matches", read_only=True)
+def transactions_matches_history(
+    limit: int = 20,
+    match_type: Literal["dedup", "transfer"] | None = None,
+) -> ResponseEnvelope[MatchesHistoryPayload]:
+    """Recent match decisions (accepted/rejected/reversed), newest first.
+
+    Args:
+        limit: Maximum rows (default 20).
+        match_type: Filter to 'dedup' or 'transfer'. Default None returns both.
+    """
+    with get_database(read_only=True) as db:
+        rows = MatchingService(db).get_log(limit=limit, match_type=match_type)
+    return build_envelope(
+        data=MatchesHistoryPayload(
+            matches=[
+                MatchHistoryRow(
+                    match_id=r["match_id"],
+                    match_type=r.get("match_type", "dedup"),
+                    match_status=r["match_status"],
+                    confidence_score=float(r.get("confidence_score") or 0.0),
+                    decided_by=r["decided_by"],
+                    decided_at=r.get("decided_at"),
+                )
+                for r in rows
+            ]
+        ),
+        actions=["Use transactions_matches_pending for the active queue"],
+    )
+
+
+@mcp_tool(domain="matches", read_only=False, idempotent=False)
+def transactions_matches_run() -> ResponseEnvelope[MatchRunPayload]:
+    """Run the matcher (dedup + transfer detection) over existing transactions.
+
+    Operator-territory: a granular alternative to refresh_run. Writes new pending
+    rows to app.match_decisions; review them with transactions_matches_pending and
+    finalize each with transactions_matches_set. Does not auto-accept. Reverse an
+    accepted match via `moneybin transactions matches undo` (no MCP undo tool yet).
+    """
+    with get_database() as db:
+        result = MatchingService(db).run()
+    return build_envelope(
+        data=MatchRunPayload(
+            auto_merged=result.auto_merged,
+            pending_review=result.pending_review,
+            pending_transfers=result.pending_transfers,
+        ),
+        actions=["Use transactions_matches_pending to review proposed matches"],
     )
 
 
@@ -122,4 +295,40 @@ def register_transactions_tools(mcp: FastMCP) -> None:
         "transactions_review",
         "Return pending counts for matches and categorize queues. "
         "Call this to orient before fetching specific queue contents.",
+    )
+    register(
+        mcp,
+        transactions_matches_set,
+        "transactions_matches_set",
+        "Accept or reject one pending transaction match by match_id. "
+        "Mutation of app.match_decisions; only pending decisions are settable. "
+        "Rejecting an already-accepted match errors — reverse via the CLI "
+        "`moneybin transactions matches undo`. Discover ids with "
+        "transactions_matches_pending.",
+    )
+    register(
+        mcp,
+        transactions_matches_pending,
+        "transactions_matches_pending",
+        "List pending transaction matches (dedup/transfer pairs) awaiting "
+        "accept/reject. Returns pair ids and confidence — no amounts/descriptions; "
+        "the confidence score is the decision signal. `summary.has_more` flags more "
+        "beyond `limit`. Pair with transactions_matches_set to decide.",
+    )
+    register(
+        mcp,
+        transactions_matches_run,
+        "transactions_matches_run",
+        "Run the matcher (dedup + transfer detection) over existing transactions, "
+        "proposing pending matches for review. Operator-level granular alternative "
+        "to refresh_run; does not auto-accept. Review results with "
+        "transactions_matches_pending.",
+    )
+    register(
+        mcp,
+        transactions_matches_history,
+        "transactions_matches_history",
+        "Recent transaction match decisions (accepted/rejected/reversed), newest "
+        "first. Filter by match_type (dedup/transfer) and limit. Read-only. Use "
+        "transactions_matches_pending for the active queue.",
     )

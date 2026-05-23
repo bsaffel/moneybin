@@ -63,19 +63,30 @@ def categories_delete(
     --force is passed. Default (seeded) categories cannot be deleted — disable
     them with `moneybin categories set <id> --inactive` instead.
     """
+    from moneybin.privacy.payloads.categories import (  # noqa: PLC0415
+        CategoryDeletePayload,
+    )
     from moneybin.services.categorization import (  # noqa: PLC0415
         CategorizationService,
     )
 
+    # Both imports resolve BEFORE the delete: an import failure after a
+    # committed deletion would strand the user with no confirmation/envelope.
     with handle_cli_errors():
         with get_database() as db:
-            CategorizationService(db).delete_category(category_id, force=force)
+            CategorizationService(db).delete_category(
+                category_id, force=force, actor="cli"
+            )
 
     envelope = build_envelope(
-        data={"category_id": category_id, "action": "deleted", "force": force},
+        data=CategoryDeletePayload(
+            category_id=category_id,
+            action="deleted",
+            force=force,
+        ),
         sensitivity="low",
     )
     if output == OutputFormat.JSON:
-        render_or_json(envelope, output)
+        render_or_json(envelope, output, cli_actor="categories_delete")
         return
     logger.info(f"✅ Deleted category {category_id}")

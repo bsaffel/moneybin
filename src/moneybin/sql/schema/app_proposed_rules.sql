@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS app.proposed_rules (
     sample_txn_ids VARCHAR[], -- Up to 5 transaction_ids that triggered this proposal
     proposed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- When the proposal was first created
     decided_at TIMESTAMP, -- When the user approved or rejected; NULL while pending
-    decided_by VARCHAR -- Who decided: 'user' or NULL while pending
+    decided_by VARCHAR -- Who decided: 'user' (CLI/MCP) or 'system' (automated); NULL while pending
 );
 
 CREATE INDEX IF NOT EXISTS idx_proposed_rules_pattern_status

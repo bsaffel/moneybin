@@ -10,6 +10,7 @@ from moneybin.cli.utils import emit_json, handle_cli_errors
 from moneybin.database import get_database
 from moneybin.matching.persistence import VALID_MATCH_TYPES
 from moneybin.services.matching_service import MatchingService
+from moneybin.tables import INT_TRANSACTIONS_UNIONED
 
 app = typer.Typer(
     help="Review and manage transaction matches (dedup, transfers)",
@@ -126,6 +127,21 @@ def matches_undo(
         raise typer.Exit(1) from e
 
 
+@app.command("set")
+def matches_set(
+    match_id: str = typer.Argument(..., help="Match ID to accept or reject"),
+    status: str = typer.Option(..., "--status", help="accepted or rejected"),
+) -> None:
+    """Accept or reject one pending match by id."""
+    if status not in {"accepted", "rejected"}:
+        logger.error("❌ --status must be 'accepted' or 'rejected'")
+        raise typer.Exit(2)
+    with handle_cli_errors():
+        with get_database() as db:
+            MatchingService(db).set_status(match_id, status=status)
+    logger.info(f"✅ Set match {match_id[:8]}... to {status}")
+
+
 @app.command("backfill")
 def matches_backfill(
     skip_transform: bool = typer.Option(
@@ -142,7 +158,7 @@ def matches_backfill(
         with handle_cli_errors():
             with get_database() as db:
                 count = db.execute(
-                    "SELECT COUNT(*) FROM prep.int_transactions__unioned"
+                    f"SELECT COUNT(*) FROM {INT_TRANSACTIONS_UNIONED.full_name}"  # noqa: S608 — TableRef constant
                 ).fetchone()
                 total = count[0] if count else 0
                 logger.info(

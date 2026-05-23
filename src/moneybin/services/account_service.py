@@ -13,11 +13,19 @@ import re
 from dataclasses import dataclass
 from decimal import Decimal
 from difflib import SequenceMatcher, get_close_matches
-from typing import Any, Literal, cast
+from typing import Any, cast
 
 from moneybin.database import Database
 from moneybin.errors import UserError
-from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.privacy.payloads.accounts import (
+    AccountDetail,
+    AccountListPayload,
+    AccountResolutionItem,
+    AccountResolvePayload,
+    AccountSummary,
+    AccountSummaryStats,
+)
+from moneybin.services.audit_service import AuditService
 from moneybin.tables import (
     ACCOUNT_SETTINGS,
     DIM_ACCOUNTS,
@@ -211,92 +219,6 @@ class AccountSettings:
             raise ValueError("credit_limit must be non-negative")
 
 
-class AccountSettingsRepository:
-    """SQL-layer access to app.account_settings.
-
-    All methods use parameterized queries — no string interpolation.
-    Per .claude/rules/database.md, this is the only place that touches
-    the app.account_settings table directly.
-    """
-
-    def __init__(self, db: Database) -> None:
-        """Initialize with an open Database connection."""
-        self._db = db
-
-    def load(self, account_id: str) -> AccountSettings | None:
-        """Load settings for an account; None if no row exists."""
-        row = self._db.execute(
-            f"""
-            SELECT account_id, display_name, official_name, last_four,
-                   account_subtype, holder_category, iso_currency_code,
-                   credit_limit, archived, include_in_net_worth
-            FROM {ACCOUNT_SETTINGS.full_name}
-            WHERE account_id = ?
-            """,
-            [account_id],
-        ).fetchone()
-        if row is None:
-            return None
-        return AccountSettings(
-            account_id=row[0],
-            display_name=row[1],
-            official_name=row[2],
-            last_four=row[3],
-            account_subtype=row[4],
-            holder_category=row[5],
-            iso_currency_code=row[6],
-            credit_limit=row[7],
-            archived=row[8],
-            include_in_net_worth=row[9],
-        )
-
-    def upsert(self, settings: AccountSettings) -> None:
-        """Insert or update by account_id; refreshes updated_at.
-
-        Uses NOW() instead of CURRENT_TIMESTAMP — DuckDB treats CURRENT_TIMESTAMP
-        as an identifier (not a function call) inside ON CONFLICT DO UPDATE clauses.
-        """
-        self._db.execute(
-            f"""
-            INSERT INTO {ACCOUNT_SETTINGS.full_name} (
-                account_id, display_name, official_name, last_four,
-                account_subtype, holder_category, iso_currency_code,
-                credit_limit, archived, include_in_net_worth
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT (account_id) DO UPDATE SET
-                display_name         = excluded.display_name,
-                official_name        = excluded.official_name,
-                last_four            = excluded.last_four,
-                account_subtype      = excluded.account_subtype,
-                holder_category      = excluded.holder_category,
-                iso_currency_code    = excluded.iso_currency_code,
-                credit_limit         = excluded.credit_limit,
-                archived             = excluded.archived,
-                include_in_net_worth = excluded.include_in_net_worth,
-                updated_at           = NOW()
-            """,
-            [
-                settings.account_id,
-                settings.display_name,
-                settings.official_name,
-                settings.last_four,
-                settings.account_subtype,
-                settings.holder_category,
-                settings.iso_currency_code,
-                settings.credit_limit,
-                settings.archived,
-                settings.include_in_net_worth,
-            ],
-        )
-
-    def delete(self, account_id: str) -> None:
-        """Delete the settings row for an account."""
-        self._db.execute(
-            f"DELETE FROM {ACCOUNT_SETTINGS.full_name} WHERE account_id = ?",
-            [account_id],
-        )
-
-
 _RESOLVE_STRICT_CANDIDATE_CAP = 25
 
 
@@ -378,31 +300,6 @@ class AccountResolution:
         }
 
 
-@dataclass(frozen=True, slots=True)
-class AccountListResult:
-    """Result of account listing query.
-
-    ``accounts`` is a list of plain dicts matching the wire format the
-    MCP envelope expects — one key per queried column. ``sensitivity``
-    is ``"medium"`` by default; ``"low"`` when the caller requested
-    ``redacted=True`` (last_four and credit_limit omitted).
-    """
-
-    accounts: list[dict[str, object]]
-    sensitivity: Literal["low", "medium", "high"] = "medium"
-
-    def to_envelope(self) -> ResponseEnvelope:
-        """Build a ResponseEnvelope for MCP/CLI output."""
-        return build_envelope(
-            data=list(self.accounts),
-            sensitivity=self.sensitivity,
-            actions=[
-                "Use accounts_balances for current balances",
-                "Use reports_spending with a category filter to drill in by account",
-            ],
-        )
-
-
 def assert_account_exists(db: Database, account_id: str) -> None:
     """Raise UserError if account_id is not in core.dim_accounts.
 
@@ -421,26 +318,74 @@ def assert_account_exists(db: Database, account_id: str) -> None:
 class AccountService:
     """Account and balance operations.
 
-    All methods return typed dataclasses with a ``to_envelope()`` method.
+    All methods return typed payload dataclasses with Annotated field markers.
     """
 
-    def __init__(self, db: Database) -> None:
-        """Initialize AccountService with an open Database connection."""
+    def __init__(self, db: Database, *, audit: AuditService | None = None) -> None:
+        """Initialize AccountService with an open Database connection.
+
+        Composes :class:`AccountSettingsRepo` for audited ``app.account_settings``
+        writes (Invariant 10); the repo shares this service's ``AuditService`` so
+        its writes participate in any caller-opened transaction.
+        """
+        # Deferred to break a circular import. `services/__init__` eagerly imports
+        # this module; the repo's `base` imports `services.audit_service`, which
+        # triggers `services/__init__`. When the repo is imported *first* (e.g. a
+        # repo test module: repo → base → audit_service → services/__init__ →
+        # account_service → repo, still mid-init), a module-level import here fails
+        # with "partially initialized module". budget_service can import its repo
+        # at module level only because it is NOT re-exported by services/__init__.
+        from moneybin.repositories.account_settings_repo import (  # noqa: PLC0415
+            AccountSettingsRepo,
+        )
+
         self._db = db
-        self._settings_repo = AccountSettingsRepository(db)
+        self._audit = audit if audit is not None else AuditService(db)
+        self._settings_repo = AccountSettingsRepo(db, audit=self._audit)
 
     def _assert_account_exists(self, account_id: str) -> None:
         """Raise UserError if account_id is not in core.dim_accounts."""
         assert_account_exists(self._db, account_id)
+
+    def _load_settings(self, account_id: str) -> AccountSettings | None:
+        """Load settings for an account; ``None`` if no row exists (read, free)."""
+        row = self._db.execute(
+            f"""
+            SELECT account_id, display_name, official_name, last_four,
+                   account_subtype, holder_category, iso_currency_code,
+                   credit_limit, archived, include_in_net_worth
+            FROM {ACCOUNT_SETTINGS.full_name}
+            WHERE account_id = ?
+            """,
+            [account_id],
+        ).fetchone()
+        if row is None:
+            return None
+        return AccountSettings(
+            account_id=row[0],
+            display_name=row[1],
+            official_name=row[2],
+            last_four=row[3],
+            account_subtype=row[4],
+            holder_category=row[5],
+            iso_currency_code=row[6],
+            credit_limit=row[7],
+            archived=row[8],
+            include_in_net_worth=row[9],
+        )
 
     def list_accounts(
         self,
         *,
         include_archived: bool = False,
         type_filter: str | None = None,
-        redacted: bool = False,
-    ) -> AccountListResult:
-        """List accounts. Hides archived by default. Redacted mode omits PII-adjacent fields."""
+    ) -> AccountListPayload:
+        """List accounts. Hides archived by default.
+
+        The ``redacted`` kwarg is removed — the middleware handles CRITICAL field
+        masking uniformly via ``Annotated[T, DataClass.X]`` metadata on
+        ``AccountSummary``. All fields are always returned; middleware masks as needed.
+        """
         where_clauses: list[str] = []
         params: list[object] = []
         if not include_archived:
@@ -463,10 +408,9 @@ class AccountService:
             "iso_currency_code",
             "archived",
             "include_in_net_worth",
+            "last_four",
+            "credit_limit",
         ]
-        if not redacted:
-            fields.extend(["last_four", "credit_limit"])
-
         field_list = ", ".join(fields)
         sql = f"""
             SELECT {field_list}
@@ -475,20 +419,31 @@ class AccountService:
             ORDER BY institution_name, account_type, account_id
         """  # noqa: S608  # field list is allowlisted above (literal strings)
         rows = self._db.execute(sql, params).fetchall()
-        accounts: list[dict[str, object]] = [
-            dict(zip(fields, row, strict=True)) for row in rows
+        account_summaries = [
+            AccountSummary(
+                account_id=str(row[0]),
+                display_name=row[1],
+                institution_name=row[2],
+                account_type=str(row[3]),
+                account_subtype=row[4],
+                holder_category=row[5],
+                iso_currency_code=str(row[6]),
+                archived=bool(row[7]),
+                include_in_net_worth=bool(row[8]),
+                last_four=row[9],
+                credit_limit=row[10],
+            )
+            for row in rows
         ]
-        sensitivity: Literal["low", "medium"] = "low" if redacted else "medium"
-        logger.info(f"Listed {len(accounts)} accounts")
-        return AccountListResult(accounts=accounts, sensitivity=sensitivity)
+        logger.info(f"Listed {len(account_summaries)} accounts")
+        return AccountListPayload(rows=account_summaries)
 
-    def get_account(self, account_id: str) -> dict[str, object] | None:
+    def get_account(self, account_id: str) -> AccountDetail | None:
         """Single account record with full settings + dim record. None if not found.
 
-        Always returns full fields including PII-adjacent values (last_four,
-        credit_limit, routing_number). Sensitivity is always medium; there is no
-        redacted variant. Callers requiring a redacted view should use
-        list_accounts(redacted=True) instead and filter to the desired account.
+        Returns full fields including all CRITICAL-tier values (last_four,
+        credit_limit, routing_number). The middleware masks CRITICAL fields
+        via ``Annotated[T, DataClass.X]`` metadata on ``AccountDetail``.
         """
         fields = [
             "account_id",
@@ -517,9 +472,25 @@ class AccountService:
         ).fetchone()
         if row is None:
             return None
-        return dict(zip(fields, row, strict=True))
+        r = dict(zip(fields, row, strict=True))
+        return AccountDetail(
+            account_id=str(r["account_id"]),
+            display_name=r["display_name"],  # type: ignore[arg-type]
+            official_name=r["official_name"],  # type: ignore[arg-type]
+            institution_name=r["institution_name"],  # type: ignore[arg-type]
+            account_type=str(r["account_type"]),
+            account_subtype=r["account_subtype"],  # type: ignore[arg-type]
+            holder_category=r["holder_category"],  # type: ignore[arg-type]
+            iso_currency_code=str(r["iso_currency_code"]),
+            last_four=r["last_four"],  # type: ignore[arg-type]
+            routing_number=r["routing_number"],  # type: ignore[arg-type]
+            credit_limit=r["credit_limit"],  # type: ignore[arg-type]
+            archived=bool(r["archived"]),
+            include_in_net_worth=bool(r["include_in_net_worth"]),
+            source_type=r["source_type"],  # type: ignore[arg-type]
+        )
 
-    def summary(self) -> dict[str, object]:
+    def summary(self) -> AccountSummaryStats:
         """Aggregate snapshot for accounts_summary tool / accounts://summary resource."""
         row = self._db.execute(
             f"""
@@ -567,63 +538,70 @@ class AccountService:
         recent = recent_row[0] if recent_row is not None else 0  # pragma: no cover
 
         logger.info(f"Summary: {total} total accounts, {archived} archived")
-        return {
-            "total_accounts": total,
-            "count_by_type": by_type,
-            "count_by_subtype": by_subtype,
-            "count_archived": archived,
-            "count_excluded_from_net_worth": excluded,
-            "count_with_recent_activity": recent,
-        }
+        return AccountSummaryStats(
+            total_accounts=total,
+            count_by_type=by_type,
+            count_by_subtype=by_subtype,
+            count_archived=archived,
+            count_excluded_from_net_worth=excluded,
+            count_with_recent_activity=recent,
+        )
 
     def _load_or_default(self, account_id: str) -> AccountSettings:
         """Load existing settings or construct a default for the given account."""
-        return self._settings_repo.load(account_id) or AccountSettings(
-            account_id=account_id
-        )
+        return self._load_settings(account_id) or AccountSettings(account_id=account_id)
 
-    def rename(self, account_id: str, display_name: str) -> AccountSettings:
+    def rename(
+        self, account_id: str, display_name: str, *, actor: str = "system"
+    ) -> AccountSettings:
         """Set or clear display_name. Empty string clears the override.
 
         Deprecated: prefer ``settings_update(display_name=...)``. Kept as a
-        thin delegate for internal callers that haven't migrated.
+        thin delegate for internal callers that haven't migrated; ``actor``
+        defaults to ``"system"`` (the programmatic-caller convention from
+        ``MatchApplier.add_merchant``) since no surface drives this path.
         """
         # Empty-string-clears semantics live in this delegate; settings_update
         # uses the CLEAR sentinel for nullable text fields.
         new_value: str | object = display_name if display_name else CLEAR
-        settings, _ = self.settings_update(account_id, display_name=new_value)
+        settings, _ = self.settings_update(
+            account_id, display_name=new_value, actor=actor
+        )
         return settings
 
     def set_include_in_net_worth(
-        self, account_id: str, include: bool
+        self, account_id: str, include: bool, *, actor: str = "system"
     ) -> AccountSettings:
         """Toggle include_in_net_worth flag. Idempotent.
 
         Deprecated: prefer ``settings_update(include_in_net_worth=...)``.
         """
-        settings, _ = self.settings_update(account_id, include_in_net_worth=include)
+        settings, _ = self.settings_update(
+            account_id, include_in_net_worth=include, actor=actor
+        )
         return settings
 
-    def archive(self, account_id: str) -> AccountSettings:
+    def archive(self, account_id: str, *, actor: str = "system") -> AccountSettings:
         """Set archived=TRUE; cascades include_in_net_worth=FALSE in the same write.
 
         Deprecated: prefer ``settings_update(archived=True)``.
         """
-        settings, _ = self.settings_update(account_id, archived=True)
+        settings, _ = self.settings_update(account_id, archived=True, actor=actor)
         return settings
 
-    def unarchive(self, account_id: str) -> AccountSettings:
+    def unarchive(self, account_id: str, *, actor: str = "system") -> AccountSettings:
         """Set archived=FALSE; does NOT restore include_in_net_worth (per spec).
 
         Deprecated: prefer ``settings_update(archived=False)``.
         """
-        settings, _ = self.settings_update(account_id, archived=False)
+        settings, _ = self.settings_update(account_id, archived=False, actor=actor)
         return settings
 
     def settings_update(
         self,
         account_id: str,
         *,
+        actor: str,
         official_name: str | None | object = None,
         last_four: str | None | object = None,
         account_subtype: str | None | object = None,
@@ -694,27 +672,46 @@ class AccountService:
                 "suggestion": suggest_holder_category(holder) or "",
             })
 
+        # No fields to change → no write. Under Invariant 10 a repo call would
+        # bump updated_at and emit an `account_settings.set` audit row for a
+        # mutation that changed nothing — misleading forensic evidence. Return
+        # the current state untouched (warnings are empty when diff is empty).
+        if not diff:
+            return current, warnings
+
         updated = dataclasses.replace(current, **cast(dict[str, Any], diff))
-        self._settings_repo.upsert(updated)
+        self._settings_repo.set(
+            account_id=updated.account_id,
+            display_name=updated.display_name,
+            official_name=updated.official_name,
+            last_four=updated.last_four,
+            account_subtype=updated.account_subtype,
+            holder_category=updated.holder_category,
+            iso_currency_code=updated.iso_currency_code,
+            credit_limit=updated.credit_limit,
+            archived=updated.archived,
+            include_in_net_worth=updated.include_in_net_worth,
+            actor=actor,
+        )
         logger.info(
             f"Updated settings for account {account_id}: fields={sorted(diff.keys())}"
         )
         return updated, warnings
 
-    def resolve(self, query: str, limit: int = 5) -> list[AccountResolution]:
+    def resolve(self, query: str, limit: int = 5) -> AccountResolvePayload:
         """Fuzzy-match a free-text query against core.dim_accounts.
 
         Scores each account against display_name, account_subtype, and
         institution_name using difflib.SequenceMatcher. Returns the top-`limit`
         matches sorted by confidence descending. ``limit < 1`` returns an empty
-        list — slicing with a negative value would silently return "all but the
+        payload — slicing with a negative value would silently return "all but the
         last N" matches, which violates the documented max-candidates semantics.
 
         See docs/specs/moneybin-mcp.md §accounts_resolve.
         """
         query_clean = query.lower().strip()
         if not query_clean or limit < 1:
-            return []
+            return AccountResolvePayload(matches=[])
 
         rows = self._db.execute(
             f"""
@@ -723,7 +720,7 @@ class AccountService:
             """
         ).fetchall()
 
-        scored: list[AccountResolution] = []
+        scored: list[AccountResolutionItem] = []
         for account_id, display_name, account_subtype, institution_name in rows:
             best = 0.0
             for field_value in (display_name, account_subtype, institution_name):
@@ -735,7 +732,7 @@ class AccountService:
                         best = ratio
             if best > 0:
                 scored.append(
-                    AccountResolution(
+                    AccountResolutionItem(
                         account_id=account_id,
                         display_name=display_name,
                         account_subtype=account_subtype,
@@ -745,11 +742,12 @@ class AccountService:
                 )
 
         scored.sort(key=lambda r: r.confidence, reverse=True)
+        top = scored[:limit]
         logger.info(
             f"Resolved query (len={len(query_clean)}): "
-            f"{len(scored)} candidates, returning {min(limit, len(scored))}"
+            f"{len(scored)} candidates, returning {len(top)}"
         )
-        return scored[:limit]
+        return AccountResolvePayload(matches=top)
 
     def resolve_strict(self, account_ref: str) -> str:
         """Resolve a free-text reference to a unique ``account_id``.

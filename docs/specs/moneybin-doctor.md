@@ -48,7 +48,7 @@ Each audit returns the offending `transaction_id` (or `debit_transaction_id` for
 
 ### DoctorService extras (hardcoded)
 
-**`staging_coverage`** — Cross-layer count check. `raw_total - core_count - known_dedup_secondaries` must be zero. Fails if any raw rows are unaccounted for. **Implementation state (2026-05-17):** marked permanently `skipped` because `app.match_decisions` has no `is_primary` column yet — the dedup secondary count cannot be derived. Will flip to active once that column lands; see `_run_staging_coverage()` in `src/moneybin/services/doctor_service.py`.
+**`dedup_reconciliation`** — Cross-layer count check that every imported row which disappears between the unioned staging layer and the core fact table is explained by a recorded dedup decision. The invariant is `raw_total - core_count == dedup_absorbed`, where `raw_total` is the row count of `prep.int_transactions__unioned`, `core_count` is the distinct `transaction_id` count of `core.fct_transactions`, and `dedup_absorbed` is the count of accepted, non-reversed `dedup` decisions in `app.match_decisions`. Under the matcher's 1:1 invariant each accepted dedup decision folds exactly one secondary row into its group, so the decision count is the expected number of absorbed rows — no `is_primary`/group column is needed. `fail` when the counts disagree (a leak: rows vanished without a decision; or an un-applied match: a recorded decision didn't collapse its rows); `skipped` before the first transform (prep/core views absent). See `_run_dedup_reconciliation()` in `src/moneybin/services/doctor_service.py`. **Coupling note:** the `dedup_absorbed == COUNT(decisions)` identity holds only while matching stays 1:1; if multi-hop (3+ way) merges are ever introduced, the expected term must change to `SUM(group_size - 1)` over the accepted-dedup connected components, in lockstep with `sqlmesh/models/prep/int_transactions__matched.sql`.
 
 **`categorization_coverage`** — What percentage of non-transfer transactions have a category. Status is `warn` (not `fail`) when below 50%; `pass` otherwise. Never blocks exit 0 on its own.
 
@@ -93,7 +93,7 @@ moneybin system doctor [--verbose] [--output text|json]
 ❌ bridge_transfers_balanced — 2 transfer pairs sum to > $0.01
    Run with --verbose for affected pair IDs
 ⚠️  categorization_coverage — 43% of non-transfer transactions are uncategorized
-✅ staging_coverage
+✅ dedup_reconciliation
 
 5 invariants checked across 14,203 transactions — 1 failing
 ```
@@ -119,7 +119,7 @@ With `--verbose`, affected IDs appear under each failing line:
       {"name": "fct_transactions_sign_convention", "status": "pass", "detail": null, "affected_ids": []},
       {"name": "bridge_transfers_balanced", "status": "fail", "detail": "2 transfer pairs sum to > $0.01", "affected_ids": []},
       {"name": "categorization_coverage", "status": "warn", "detail": "43% of non-transfer transactions are uncategorized", "affected_ids": []},
-      {"name": "staging_coverage", "status": "pass", "detail": null, "affected_ids": []}
+      {"name": "dedup_reconciliation", "status": "pass", "detail": null, "affected_ids": []}
     ]
   },
   "actions": ["Run with --verbose to see affected transaction IDs"]
@@ -145,7 +145,7 @@ Always runs with `verbose=False` — affected IDs are omitted (agents can query 
 
 ## Implementation Notes
 
-**`staging_coverage` SQL:** The query assumes `app.match_decisions` tracks dedup secondaries with an `is_primary` column. Verify the actual schema during implementation; if the column doesn't exist or the semantics differ, mark the invariant `skipped` rather than silently wrong.
+**`dedup_reconciliation` SQL:** Three independent `COUNT` queries — `raw_total` from `prep.int_transactions__unioned`, `core_count` as `COUNT(DISTINCT transaction_id)` from `core.fct_transactions`, and `dedup_absorbed` as accepted, non-reversed, `match_type='dedup'` rows in `app.match_decisions`. No `is_primary` column is involved: under the matcher's 1:1 invariant each accepted dedup decision collapses exactly one secondary row, so the decision count *is* the expected secondary count. All three queries are wrapped in one `try/except` so the invariant reports `skipped` (not errored) before the first transform, when the `prep`/`core` views don't yet exist.
 
 **Audit SQL column contract:** Each named audit's SELECT must return the violation entity's ID as the first column (e.g., `transaction_id`, `debit_transaction_id`). `DoctorService` uses `row[0]` for `affected_ids` — this is a convention, not schema-enforced. Document it in `sqlmesh/audits/README.md` or a comment in `DoctorService`.
 

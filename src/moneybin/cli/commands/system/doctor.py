@@ -27,21 +27,32 @@ verbose_option: bool = typer.Option(
     help="Show affected transaction IDs for each failing invariant.",
 )
 
+full_option: bool = typer.Option(
+    False,
+    "--full",
+    help=(
+        "Scan every protected app.* row for audit coverage instead of the "
+        "sampled, recent-rows-only default."
+    ),
+)
+
 
 def doctor_command(
     verbose: bool = verbose_option,
+    full: bool = full_option,
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
 ) -> None:
     """Run pipeline integrity checks across all invariants.
 
     Checks that all fct_transactions resolve to known accounts, amounts
-    are non-zero, transfer pairs balance, and categorization is healthy.
-    Exits 0 when all invariants pass or warn; exits 1 when any fail.
+    are non-zero, transfer pairs balance, categorization is healthy, and every
+    recent protected app.* mutation has a paired audit row. Exits 0 when all
+    invariants pass or warn; exits 1 when any fail.
     """
     with handle_cli_errors():
         with get_database() as db:
-            report = DoctorService(db).run_all(verbose=verbose)
+            report = DoctorService(db).run_all(verbose=verbose, full=full)
 
     status_icon = {"pass": "✅", "fail": "❌", "warn": "⚠️ ", "skipped": "⏭️ "}
 
@@ -84,7 +95,7 @@ def doctor_command(
             if failing > 0
             else base
         )
-        render_or_json(envelope, output)
+        render_or_json(envelope, output, cli_actor="doctor_command")
         if failing > 0:
             raise typer.Exit(1)
         return

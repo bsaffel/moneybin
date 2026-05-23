@@ -182,6 +182,27 @@ class ProvidersSettings(BaseModel):
     tabular: TabularProviderConfig = Field(default_factory=TabularProviderConfig)
 
 
+class PackagesSettings(BaseModel):
+    """Per-package configuration nested under MoneyBinSettings.packages.<name>.
+
+    Reference packages (assets, us_tax — Plan 4) declare fields here matching
+    their Pydantic settings models. Empty by default — packages may be
+    installed without any per-package overrides.
+
+    Env-var override: until reference packages declare typed sub-fields
+    (Plan 4), per-package values must use the JSON form, e.g.
+    MONEYBIN_PACKAGES='{"assets": {"valuation_provider": "zillow"}}'.
+    The nested-delimiter form (MONEYBIN_PACKAGES__ASSETS__...) works only
+    once a package declares the field as a typed model attribute.
+
+    Mirrors the ProvidersSettings pattern established by Plan 1. extra="allow"
+    lets a runtime-installed package populate this without a Core schema
+    change; reference packages add explicit typed fields when they land.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+
 class LoggingConfig(BaseModel):
     """Logging configuration settings."""
 
@@ -244,6 +265,39 @@ class MCPConfig(BaseModel):
             "the active DuckDB statement is interrupted and the connection is "
             "reset so subsequent calls aren't wedged behind a stale write lock."
         ),
+    )
+
+
+class AIConfig(BaseModel):
+    """AI backend and consent configuration.
+
+    Minimal surface for the consent ledger. ``default_backend`` is the
+    assumed consumer recorded on consent grants (the MCP/CLI surfaces
+    cannot reliably introspect which AI host consumes their output —
+    see privacy-and-ai-trust.md). ``consent_policy`` is recorded and
+    surfaced today; its enforcement (re-prompt on every call) lands with
+    the deferred consent-enforcement gate. (Distinct from a grant's
+    per-grant ``consent_mode`` of persistent/one-time.) The per-provider
+    API-key tree (Anthropic/OpenAI/Ollama configs) is deferred until an AI
+    backend client exists.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    default_backend: str | None = Field(
+        default=None,
+        description="Default AI backend (e.g. anthropic, openai, ollama). "
+        "None = no assumed backend; consent grants must name --backend explicitly.",
+    )
+    # Default is "standard" (non-disruptive). The field is inert until the
+    # enforcement gate ships, so the default only takes effect then — at which
+    # point the enforcement PR MUST make the secure-vs-ergonomic posture an
+    # explicit decision rather than silently inheriting "standard". Tracked
+    # with the deferred consent-enforcement gate (privacy-and-ai-trust.md).
+    consent_policy: Literal["standard", "strict"] = Field(
+        default="standard",
+        description="standard: persistent consent grants persist. strict: "
+        "(future) all AI calls re-prompt; recorded now, enforced with the consent gate.",
     )
 
 
@@ -329,6 +383,34 @@ class ImportSettings(BaseModel):
             "Parent directory for the user-facing import workspace. "
             "Per-profile subdirs (<inbox_root>/<profile>/{inbox,processed,failed}/) "
             "are created on first use. Defaults to ~/Documents/MoneyBin."
+        ),
+    )
+
+
+class DoctorSettings(BaseModel):
+    """`moneybin doctor` integrity-check configuration.
+
+    Tunes the per-table `app.*` audit-coverage invariants added by the
+    repository layer (see `docs/specs/app-integrity-invariant.md` Req 9).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    audit_coverage_lookback_days: int = Field(
+        default=7,
+        ge=1,
+        description=(
+            "Audit-coverage checks only inspect protected app.* rows mutated "
+            "within this many days. Bounds the cost on large profiles and lets "
+            "users suppress pre-migration noise by lowering it after rollout."
+        ),
+    )
+    audit_coverage_sample_cap: int = Field(
+        default=1000,
+        ge=1,
+        description=(
+            "Maximum rows sampled per table for the audit-coverage check. "
+            "`moneybin doctor --full` bypasses the cap and scans every row."
         ),
     )
 
@@ -529,8 +611,10 @@ class MoneyBinSettings(BaseSettings):
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     metrics: MetricsConfig = Field(default_factory=MetricsConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
+    ai: AIConfig = Field(default_factory=AIConfig)
     sync: SyncConfig = Field(default_factory=SyncConfig)
     matching: MatchingSettings = Field(default_factory=MatchingSettings)
+    doctor: DoctorSettings = Field(default_factory=DoctorSettings)
     categorization: CategorizationSettings = Field(
         default_factory=CategorizationSettings
     )
@@ -542,6 +626,10 @@ class MoneyBinSettings(BaseSettings):
     providers: ProvidersSettings = Field(
         default_factory=ProvidersSettings,
         description="Per-provider configuration (OFX, Plaid, tabular).",
+    )
+    packages: PackagesSettings = Field(
+        default_factory=PackagesSettings,
+        description="Per-package configuration for installed analysis packages.",
     )
 
     # Application settings

@@ -1,0 +1,32 @@
+name: test_synthetic
+display_name: Test Synthetic
+version: 1.0.0
+quality_scale: bronze
+owns_prefix: test_synthetic
+
+publisher:
+  name: MoneyBin Test Suite
+  url: https://moneybin.app
+  verified: true
+
+description: |
+  Minimal synthetic package used as the framework's regression surface.
+  Not user-installable; exists only inside the test suite.
+
+capabilities:
+  writes:
+    - app.test_synthetic_*
+    - reports.test_synthetic_*
+  reads:
+    - core.fct_transactions
+  network: []
+  secrets: []
+
+requires:
+  moneybin: ">=1.0.0,<2.0.0"
+
+entry_points:
+  tools: test_synthetic.tools:register
+  cli: test_synthetic.cli:register
+  models: test_synthetic.models
+  schema: test_synthetic.schema

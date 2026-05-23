@@ -533,7 +533,7 @@ Orientation tool: pending counts across the review queues.
 
 - **Sensitivity:** `low` — counts only.
 - **Unique parameters:** None.
-- **Behavior:** Returns `{matches_pending: int, categorize_pending: int, total: int}` so the agent can answer "anything to review?" in one call. The agent drills into `transactions_categorize_pending` for categorization items. Match-item review currently routes to CLI (`moneybin transactions review --type matches`) — the `transactions_matches_*` MCP namespace is blocked on `matching-overview.md` registration; the response envelope's `actions[]` surfaces that CLI hint until those tools register.
+- **Behavior:** Returns `{matches_pending: int, categorize_pending: int, total: int}` so the agent can answer "anything to review?" in one call. The agent drills into `transactions_categorize_pending` for categorization items and into `transactions_matches_pending` for match proposals. Use `transactions_matches_set` to accept or reject individual match proposals; use `transactions_categorize_commit` to persist categorization decisions.
 - **Service:** `TransactionService.review_counts() -> ReviewCounts`
 - **CLI:** `moneybin transactions review`
 
@@ -618,73 +618,54 @@ List audit events with filters.
 
 ### `transactions_matches.*` — Transaction matching sub-domain
 
-**Status:** blocked on [`matching-overview.md`](matching-overview.md) registration — all six `transactions_matches_*` tools below are documented for design alignment but NOT registered on the MCP surface today. See §17c dependency tracker.
+Match review is a distinct workflow within the transactions domain. These tools operate on match proposals — pairs of transactions that the matching engine believes represent the same real-world event (dedup) or two sides of a transfer. All four tools are **live and registered**.
 
-Match review is a distinct workflow within the transactions domain. These tools operate on match proposals — pairs of transactions that the matching engine believes represent the same real-world event (dedup) or two sides of a transfer.
-
-**Service class:** `MatchService`
-
-**Dependency:** All `transactions_matches.*` tools depend on the transaction matching spec (Pillars A+C for dedup, Pillar B for transfers).
+**Service class:** `MatchingService`
 
 #### `transactions_matches_pending`
 
-List match proposals awaiting review.
+List match proposals awaiting a decision.
 
-- **Sensitivity:** `medium` — shows transaction descriptions and amounts from both sides of a proposed match.
-- **Unique parameters:** `match_type: str?` (`dedup` or `transfer`), `min_confidence: float?`.
-- **Behavior:** Returns array of `{match_id, match_type, confidence, reason, transaction_a: {id, date, amount, description, source}, transaction_b: {id, date, amount, description, source}}`. Degraded response returns count of pending matches by type without transaction details.
-- **Service:** `MatchService.pending() -> list[PendingMatch]`
-- **CLI:** `moneybin transactions matches pending [--type dedup|transfer]`
+- **Sensitivity:** `low` — returns pair IDs and confidence scores; no transaction amounts, descriptions, or PII.
+- **Unique parameters:** `match_type: str?` (`dedup` or `transfer`; omit for all pending), `limit: int?` (default 50, applied as SQL `LIMIT`).
+- **Behavior:** Returns array of `{match_id, match_type, match_tier, confidence_score, source_type_a, source_transaction_id_a, source_type_b, source_transaction_id_b, match_status}` for proposals whose status is `pending`. No amounts/descriptions — call `transactions_get` on a source id for those. Use `transactions_matches_set` to accept or reject individual proposals.
+- **Service:** `MatchingService.get_pending()`
+- **CLI:** `moneybin transactions review --type matches` (orientation + interactive queue); `moneybin transactions review --type matches --status` (counts only)
+- **read_only:** true
 
-#### `transactions_matches_confirm`
+#### `transactions_matches_set`
 
-Accept one or more match proposals.
+Accept or reject one pending match proposal by `match_id`.
 
-- **Sensitivity:** `medium`
-- **Unique parameters:** `match_ids: list[str]` (required).
-- **Behavior:** Confirms matches, triggers gold-record merge (dedup) or transfer link (transfer). Returns `{confirmed, skipped, errors, error_details}`. Confirmed matches take effect on next `sqlmesh run`.
-- **Service:** `MatchService.confirm() -> ActionResult`
-- **CLI:** `moneybin transactions matches confirm --match-ids ID [ID ...]`
-
-#### `transactions_matches_reject`
-
-Reject one or more match proposals.
-
-- **Sensitivity:** `medium`
-- **Unique parameters:** `match_ids: list[str]` (required), `permanent: bool = false` — if true, the matcher won't re-propose this pair.
-- **Behavior:** Rejects proposals, removes from review queue. Returns `{rejected, errors}`.
-- **Service:** `MatchService.reject() -> ActionResult`
-- **CLI:** `moneybin transactions matches reject --match-ids ID [ID ...] [--permanent]`
-
-#### `transactions_matches_undo`
-
-Un-merge a previously confirmed match.
-
-- **Sensitivity:** `medium`
-- **Unique parameters:** `match_ids: list[str]` (required).
-- **Behavior:** Restores previously separate gold rows. Re-running the matcher will re-propose (not re-apply) the same match. Returns `{revoked, errors}`.
-- **Service:** `MatchService.revoke() -> ActionResult`
-- **CLI:** `moneybin transactions matches revoke --match-ids ID [ID ...]`
-
-#### `transactions_matches_log`
-
-Query match decision history.
-
-- **Sensitivity:** `low` — decision metadata only, not financial data.
-- **Unique parameters:** `match_type: str?`, `decided_by: str?` (`auto`, `user`, `system`).
-- **Behavior:** Returns array of `{match_id, match_type, decided_by, decided_at, match_reason, confidence, reversed_at}`.
-- **Service:** `MatchService.log() -> list[MatchDecision]`
-- **CLI:** `moneybin transactions matches log [--type dedup|transfer] [--decided-by auto|user]`
+- **Sensitivity:** `low` — the response carries only `{match_id, match_status}`; no amounts, descriptions, or PII. (The operation still mutates `app.match_decisions` — see Mutation surface.)
+- **Unique parameters:** `match_id: str` (required), `status: Literal["accepted", "rejected"]` (required).
+- **Behavior:** Shape-1b partial update — sets the decision status for one proposal. The read-validate-write runs in a single transaction (no TOCTOU window). Only `pending` decisions are settable; re-asserting a decision's current status is an idempotent no-op (hence `idempotent=True`), while any cross-status transition on an already-decided match errors with `recovery_actions` (e.g. rejecting an already-accepted proposal points at `system_audit_undo` — the audit-log undo, shipping in M2D; until it lands, the CLI `moneybin transactions matches undo` is the manual route). Accepted decisions collapse the matched pair on the next `refresh_run`; rejected decisions suppress the proposal from future review.
+- **Mutation surface:** writes `app.match_decisions`. Revert via `moneybin transactions matches undo <match_id>` (CLI) until `system_audit_undo` ships.
+- **Annotations:** `read_only=False`, `destructive=False`, `idempotent=True`.
+- **Service:** `MatchingService.set_status(match_id, status)`
+- **CLI:** `moneybin transactions matches set <match_id> --status accepted|rejected`
 
 #### `transactions_matches_run`
 
-Trigger the matching engine on-demand.
+Run the matching engine on-demand and propose new pending decisions.
 
-- **Sensitivity:** `low` — triggers a process, doesn't return financial data.
-- **Unique parameters:** `scope: str?` (`all`, `recent` — default `recent` scans transactions since last run).
-- **Behavior:** Runs the matcher synchronously. Returns `{auto_merged, pending_review, no_match, duration_seconds}`.
-- **Service:** `MatchService.run() -> MatchRunResult`
-- **CLI:** `moneybin transactions matches run [--scope all|recent]`
+- **Sensitivity:** `low` — triggers a pipeline step; returns counts, not financial data.
+- **Unique parameters:** None in the current implementation (the engine scans all unmatched transactions).
+- **Behavior:** Runs the matcher, writes new `pending` rows to `app.match_decisions` for newly-discovered pairs, and returns `{auto_merged: int, pending_review: int, pending_transfers: int}`. **Operator-territory granular alternative to `refresh_run(steps=["match"])`** — not promoted in the `instructions` field or user-facing `actions[]` hints; reach it via `refresh_run` for the standard path.
+- **Annotations:** `read_only=False`, `destructive=False`, `idempotent=False`.
+- **Service:** `MatchingService.run()`
+- **CLI:** `moneybin transactions matches run`
+
+#### `transactions_matches_history`
+
+Recent match decisions (accepted and rejected).
+
+- **Sensitivity:** `low` — decision metadata only (match IDs, type, status, timestamps); no financial data.
+- **Unique parameters:** `limit: int?` (default 50), `match_type: str?` (`dedup` or `transfer`; omit for all).
+- **Behavior:** Returns array of `{match_id, match_type, match_status, confidence_score, decided_by, decided_at}` ordered newest-first.
+- **Service:** `MatchingService.get_log()`
+- **CLI:** `moneybin transactions matches history [--type dedup|transfer] [--limit N]`
+- **read_only:** true
 
 ---
 
@@ -1032,11 +1013,9 @@ design. Tax data ingestion will be re-designed from scratch in a future brainsto
 
 ## 11. `privacy.*` — Privacy & consent
 
-**Service class:** `PrivacyService`
+**Service class:** `ConsentService`
 
-**Status:** all four `privacy_*` tools below are blocked on the consent management spec — NONE are registered today. The catalog entries describe the target design; per the surface-discipline rule in `.claude/rules/mcp-server.md`, individual `privacy.*` tools surface only when their backing spec reaches `in-progress` or `implemented` in `docs/specs/INDEX.md`. See §17c dependency tracker.
-
-**Dependency:** All `privacy.*` tools depend on the consent management spec, audit log spec, and provider profiles spec.
+**Status:** The consent ledger shipped in PR 3. All four `privacy_*` tools below are registered today. The **enforcement gate** (degraded/aggregate responses without consent) is deferred — granting/revoking records and reports consent but does not yet gate data; CRITICAL fields remain always-masked (PR 2).
 
 ### `privacy_status`
 
@@ -1044,39 +1023,39 @@ Current consent state, configured AI backend, and privacy mode.
 
 - **Sensitivity:** `low` — metadata about privacy configuration, not financial data.
 - **Unique parameters:** None.
-- **Behavior:** Returns `{consent_grants: [{feature, granted_at, backend}], configured_backend: {name, type, is_local}, consent_mode, unmask_critical}`. This is the tool version of the `moneybin://privacy` resource — useful when the AI needs to check consent before attempting a sensitive operation.
-- **Service:** `PrivacyService.status() -> PrivacyStatus`
+- **Behavior:** Returns active grants, configured backend, and `consent_policy` (the AIConfig standard/strict policy; distinct from each grant's per-grant `consent_mode`). Useful when the AI needs to check consent state before attempting a sensitive operation.
+- **Service:** `ConsentService.status()`
 - **CLI:** `moneybin privacy status`
 
-### `privacy_grant`
+### `privacy_consent_grant`
 
 Grant consent for a privacy feature category.
 
 - **Sensitivity:** `low` — modifying consent state, not accessing financial data.
-- **Unique parameters:** `feature: str` (required — e.g., `mcp-data-sharing`), `backend: str?` (override configured backend for this grant).
-- **Behavior:** Creates a persistent consent grant. Returns the grant record with timestamp. Idempotent — re-granting an active grant is a no-op that returns the existing grant.
-- **Service:** `PrivacyService.grant() -> ConsentGrant`
-- **CLI:** `moneybin privacy grant FEATURE`
+- **Unique parameters:** `category: str` (required — e.g., `mcp-data-sharing`), `backend: str?` (override configured backend for this grant), `mode: "persistent" | "one-time"` (default `"persistent"`).
+- **Behavior:** Writes to `app.ai_consent_grants` with a paired `app.audit_log` row (Invariant 10). Idempotent per `(category, backend)` — re-granting an active grant returns the existing grant. `read_only=False`. Revert via `privacy_consent_revoke`.
+- **Service:** `ConsentService.grant_consent()`
+- **CLI:** `moneybin privacy grant`
 
-### `privacy_revoke`
+### `privacy_consent_revoke`
 
 Revoke a previously granted consent.
 
 - **Sensitivity:** `low`
-- **Unique parameters:** `feature: str` (required).
-- **Behavior:** Revokes the active grant. Future tool calls at the relevant sensitivity tier will return degraded responses. Returns confirmation with revocation timestamp.
-- **Service:** `PrivacyService.revoke() -> RevokeResult`
-- **CLI:** `moneybin privacy revoke FEATURE`
+- **Unique parameters:** `category: str` (required), `backend: str?`.
+- **Behavior:** Sets `revoked_at` on the active grant row; the row is retained for audit. Returns confirmation with revocation timestamp. `read_only=False`. Revert via `privacy_consent_grant`.
+- **Service:** `ConsentService.revoke_consent()`
+- **CLI:** `moneybin privacy revoke`
 
-### `privacy_audit`
+### `privacy_log`
 
-Query the AI audit log.
+Query recent privacy-log events.
 
-- **Sensitivity:** `low` — the audit log is metadata (which tools were called, when, at what sensitivity), not financial data.
-- **Unique parameters:** `tool_name: str?` (filter to a specific tool).
-- **Behavior:** Returns array of `{timestamp, tool_name, sensitivity, consented, degraded, backend, backend_local}`.
-- **Service:** `PrivacyService.audit() -> list[AuditEntry]`
-- **CLI:** `moneybin privacy audit [--start-date DATE] [--tool-name NAME]`
+- **Sensitivity:** `low` — the privacy log records consent grants/revokes and MCP/CLI tool calls (metadata only: sensitivity tier, row count, actor). No financial data.
+- **Unique parameters:** `last: int?` (number of recent events to return), `actor: str?` (filter by originating command or tool name).
+- **Behavior:** Reads `<profile>/privacy.log.jsonl`; returns recent events in reverse-chronological order. `read_only=True`.
+- **Service:** privacy log reader (`read_privacy_events`) over `privacy.log.jsonl`.
+- **CLI:** `moneybin privacy log`
 
 ---
 
@@ -1099,10 +1078,10 @@ Data status dashboard — what data exists, how fresh it is, what's pending acti
 Pipeline integrity check — confirms the data pipeline is self-consistent before analysis.
 
 - **Sensitivity:** `low` — counts and status labels only.
-- **Unique parameters:** None.
-- **Behavior:** Runs all SQLMesh named audits (FK integrity, sign convention, transfer balance) plus two hardcoded checks (staging coverage, categorization coverage). Returns pass/fail/warn per invariant and total transaction count. Always runs with `verbose=False` — agents can query `core.fct_transactions` or `core.bridge_transfers` directly for drill-down. Exit is informational only (no exception on fail).
-- **Service:** `DoctorService.run_all(verbose=False) -> DoctorReport`
-- **CLI:** `moneybin system doctor [--verbose] [--output json]`
+- **Unique parameters:** `full: bool = False` — when true, the protected-`app.*` audit-coverage checks scan every row instead of the default sampled, recent-rows-only window.
+- **Behavior:** Runs all SQLMesh named audits (FK integrity, sign convention, transfer balance) plus hardcoded checks (staging coverage, categorization coverage) and per-table `app.*` audit-coverage + uniqueness invariants. Returns pass/fail/warn per invariant and total transaction count. Always runs with `verbose=False` — agents can query `core.fct_transactions` or `core.bridge_transfers` directly for drill-down. Exit is informational only (no exception on fail).
+- **Service:** `DoctorService.run_all(verbose=False, full=False) -> DoctorReport`
+- **CLI:** `moneybin system doctor [--verbose] [--full] [--output json]`
 
 ### `extension_validate`
 
@@ -1167,7 +1146,7 @@ Run the post-load refresh pipeline: cross-source matching, SQLMesh apply, determ
 - **Unique parameters:**
   - `steps: list[Literal["match", "transform", "categorize"]] | None = None` — subset of canonical steps to run; defaults to None (full cascade). Steps execute in canonical order (match → transform → categorize) regardless of input order; dependencies enforce it (categorize reads SQLMesh-built views). Pass `steps=["transform"]` to run SQLMesh apply alone.
 - **Mutation surface:** rebuilds `core.*` and `reports.*` via SQLMesh; writes `app.transaction_categories` for newly-matched rules. No revert path — re-run after fixing inputs.
-- **Behavior:** Single user-facing entry point for the refresh domain. Idempotent; safe to retry after a failure. Matching and categorization steps are best-effort and log-only on failure — only SQLMesh apply errors surface in the response envelope. Returns `{applied, duration_seconds, error?}`. On apply failure, `actions[]` hints at `moneybin transform plan` (CLI operator tool) to inspect, or `refresh_run` to retry. When `steps` includes `match` but excludes `categorize`, `actions[]` includes a follow-up hint pointing at `refresh_run(steps=["categorize"])`. Unknown step names raise `UserError(code="UNKNOWN_REFRESH_STEP")`. Symmetric with `transactions_categorize_run(methods=...)`.
+- **Behavior:** Single user-facing entry point for the refresh domain. Idempotent; safe to retry after a failure. Matching and categorization are best-effort: a SQLMesh apply error fails the call (`error`), but a matcher/categorizer crash does not abort the pipeline — it is surfaced instead of swallowed. Returns `{applied, duration_seconds, error?, matching_error?, categorization_error?, self_heal_actions}`. `matching_error` / `categorization_error` carry a real crash's message (a first-load missing-view precondition is not a crash and leaves them absent); `self_heal_actions` lists self-heal recipes that ran (empty until the M2D self-heal safelist lands). When a step crashes, the envelope's `recovery_actions` carries the targeted retry (`refresh_run(steps=["match"])` and/or `refresh_run(steps=["categorize"])`) followed by a single `system_doctor` diagnostic. On apply failure, `actions[]` hints at `moneybin transform plan` (CLI operator tool) to inspect, or `refresh_run` to retry. When `steps` includes `match` but excludes `categorize`, `actions[]` includes a follow-up hint pointing at `refresh_run(steps=["categorize"])`. Unknown step names raise `UserError(code="UNKNOWN_REFRESH_STEP")`. Symmetric with `transactions_categorize_run(methods=...)`.
 - **Service:** `moneybin.services.refresh.refresh(db, *, steps=None) -> RefreshResult`
 - **CLI:** `moneybin refresh [--step STEP]... [--output json] [-q]`
 
@@ -1372,12 +1351,11 @@ Tools that depend on unbuilt subsystems are documented in the catalog with depen
 
 | Dependency | Status | Blocked tools |
 |---|---|---|
-| **Consent management spec** | Not written | `privacy_grant`, `privacy_revoke`, `privacy_status`; all degraded response behavior across the surface |
-| **Audit log spec** | Not written | `privacy_audit`; audit logging in middleware |
+| **Consent management spec** | Ledger shipped (PR 3); enforcement gate deferred | degraded/aggregate response behavior across the surface (enforcement gate) |
+| **Audit log spec** | Not written | audit logging in middleware |
 | **Redaction engine spec** | Not written | `accounts_get` field masking; `high` sensitivity behavior |
 | **Provider profiles spec** | Not written | Verified-local bypass; `privacy_status` backend info |
-| **Transaction matching (Pillars A+C)** | Draft (umbrella) | All `transactions_matches.*` tools |
-| **Transaction matching (Pillar B)** | Draft (umbrella) | `transactions_matches.*` transfer-type filtering |
+| **Transaction matching (Pillar B — transfer detection)** | Draft (umbrella) | `transactions_matches.*` transfer-type filtering (dedup-type proposals are live; transfer-type proposals pending the Pillar B spec) |
 | **[Categorization overview](categorization-overview.md)** | Draft | ML tools deferred — see `categorization-ml.md` (planned) |
 | **Smart Import (Pillar A)** | Not written | `import_folder` |
 | **Smart Import (Pillar F) + Privacy** | Not written | `import_ai_preview`, `import_ai_parse` |
