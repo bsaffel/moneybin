@@ -42,6 +42,36 @@ jobs:
             echo "Review opt-out keyword found in tip commit; skipping automated review."
           fi
 
+      # The review protocol (tiering, scale calibration, thread resolution,
+      # approval contract) lives in .github/ai-review-protocol.md so the
+      # pull_request reviewer and the @claude re-review handler share one source
+      # of truth. Each job prepends only its own intro, then concatenates the
+      # shared protocol into the prompt. INTRO is a trusted, static string and
+      # the protocol is a checked-in file — no untrusted event payload is
+      # interpolated into any run: block, per .claude/rules/security.md.
+      - name: Build review prompt
+        id: review_prompt
+        if: |
+          (github.event_name == 'pull_request' && steps.optout.outputs.skip != 'true')
+          || github.event_name == 'workflow_dispatch'
+        env:
+          INTRO: |
+            Review this pull request for code quality, correctness, security, and adherence to
+            project conventions (see CLAUDE.md and .claude/rules/). Focus on:
+            - Bugs or logic errors
+            - Security issues (SQL injection, path traversal, hardcoded secrets)
+            - Violations of project standards (type hints, docstrings, error handling, sign conventions)
+            - Test coverage gaps for new business logic
+
+            Your complete, mandatory review protocol follows.
+        run: |
+          {
+            echo 'text<<PROMPT_EOF'
+            printf '%s\n\n' "$INTRO"
+            cat .github/ai-review-protocol.md
+            echo 'PROMPT_EOF'
+          } >> "$GITHUB_OUTPUT"
+
       - name: Automated PR review
         if: |
           (github.event_name == 'pull_request' && steps.optout.outputs.skip != 'true')
@@ -50,98 +80,27 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: "--allowedTools Bash,Read,Grep,Glob"
-          prompt: |
-            Review this pull request for code quality, correctness, security, and adherence to
-            project conventions (see CLAUDE.md and .claude/rules/). Focus on:
-            - Bugs or logic errors
-            - Security issues (SQL injection, path traversal, hardcoded secrets)
-            - Violations of project standards (type hints, docstrings, error handling, sign conventions)
-            - Test coverage gaps for new business logic
+          prompt: ${{ steps.review_prompt.outputs.text }}
 
-            ## Tiered findings — required prefix on every comment
+      - name: Build mention prompt
+        id: mention_prompt
+        if: github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')
+        env:
+          INTRO: |
+            Respond to the @claude mention in the PR comment. If the request is
+            a re-review (or otherwise asks you to re-evaluate the PR), inspect
+            the current code against previously-raised review threads and any
+            new concerns, using project conventions in CLAUDE.md and
+            .claude/rules/.
 
-            Every finding (inline comment AND summary bullet) MUST start with one of three tier markers:
-
-            - 🔴 **MUST FIX** — correctness bugs, security findings, breaking changes, missing tests
-              for new code paths, violations of explicit project rules. Gates merge; cannot ship as-is.
-
-            - 🟡 **CONSIDER** — substantive quality concerns: design issues, refactoring opportunities,
-              potential bugs that aren't certain, missing edge-case handling. CONSIDER gates approval
-              (see the Approval contract below): the author either fixes it in-PR or proposes a
-              deferral, which you must accept and resolve the thread before approving — a CONSIDER is
-              never silently ignored.
-
-            - 🔵 **NIT** — small consistency issues: docstring formatting, list-marker inconsistency,
-              naming drift, minor style. These ARE valuable — they catch real oversights — but they
-              are the lightest tier. Auto-deferred on later review iterations once main issues are
-              addressed.
-
-            Emit every finding you'd raise. The tier signal — not suppression — is what makes the
-            review scannable. Do NOT collapse a real 🔴 into a 🟡 to be polite; do NOT promote a
-            🔵 to a 🟡 to seem important. Pick the tier that matches the actual weight.
-
-            Format example for an inline comment:
-              🔵 NIT: this docstring uses `*` bullets while the rest of the file uses `-`; please
-              align for consistency.
-
-            Format example for a summary bullet:
-              - 🔴 MUST FIX: `subprocess.run(cmd, shell=True)` on line 42 with user-controlled
-                input — shell injection risk. Pass as list and drop `shell=True`.
-
-            Post inline comments on specific lines where relevant. Summarize findings as a PR
-            comment grouped by tier (🔴 MUST FIX first, then 🟡 CONSIDER, then 🔵 NIT).
-
-            After completing your review, resolve any previously-posted review threads whose
-            issues are now fixed in the current code. Use the gh CLI and environment variables
-            already present in the runner — do not interpolate untrusted event payload fields
-            into shell commands. Steps:
-            1. Determine the PR number: gh pr view --json number -q .number
-            2. Parse owner and repo from the GITHUB_REPOSITORY environment variable.
-            3. Fetch open threads via gh api graphql, passing owner, repo, and number as
-               -f variables so no user-controlled data is shell-interpolated.
-            4. For each unresolved thread, read its comment body, check whether the current
-               code addresses the issue, and if so resolve it via the resolveReviewThread
-               GraphQL mutation.
-            Only resolve threads where the fix is clearly present — leave threads open if
-            the issue is partially addressed or still present.
-
-            ## Approval contract — spell it out on every review
-
-            A PR is approved IF AND ONLY IF zero 🔴 MUST FIX AND zero 🟡 CONSIDER items
-            remain open. Only 🔵 NIT findings never block approval. A 🟡 CONSIDER is
-            "resolved" by a code fix OR by you accepting an explicit deferral and resolving
-            its thread. State this contract on every review so the author always knows exactly
-            what stands between the PR and approval — never leave the verdict implicit.
-
-            The goal is a genuine approval on almost every PR. When the contract is met you
-            MUST approve — do not withhold approval once zero 🔴/🟡 remain.
-
-            Submit your verdict as a review (NOT a bare issue comment), choosing the mechanism
-            by the most severe open finding so the PR's latest-review state reflects reality:
-
-            - Zero 🔴 and zero 🟡 remaining (all prior threads resolved) → approve. This also
-              clears any CHANGES_REQUESTED you previously posted.
-                gh pr review --approve --body "<body>"
-              Body MUST open with this exact line:
-                ✅ APPROVED — all 🔴 MUST FIX and 🟡 CONSIDER resolved.
-              then note any non-blocking remainder, e.g. "1 🔵 NIT (non-blocking)."
-
-            - A SEVERE 🔴 is open (security, data-loss/corruption, shipped-broken correctness,
-              or a broken public contract) → request changes (a hard block):
-                gh pr review --request-changes --body "<body>"
-
-            - Only NON-severe 🔴 and/or 🟡 are open → post a review comment (verdict without
-              freezing the PR):
-                gh pr review --comment --body "<body>"
-
-            For both NOT-APPROVED mechanisms, the body MUST open with this exact line
-            (N = open 🔴 count, M = open 🟡 count):
-                ❌ NOT APPROVED — N 🔴 MUST FIX + M 🟡 CONSIDER gate approval:
-              followed by an enumerated list of each blocking item (one line each, with
-              file:line), then this closing line:
-                🔵 NIT findings do not block approval.
-
-            Every review must end in exactly one verdict line (✅ APPROVED or ❌ NOT APPROVED).
+            Apply the review protocol below to any new findings and to your verdict.
+        run: |
+          {
+            echo 'text<<PROMPT_EOF'
+            printf '%s\n\n' "$INTRO"
+            cat .github/ai-review-protocol.md
+            echo 'PROMPT_EOF'
+          } >> "$GITHUB_OUTPUT"
 
       - name: Interactive @claude mentions
         if: github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')
@@ -149,65 +108,4 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: "--allowedTools Bash,Read,Grep,Glob"
-          prompt: |
-            Respond to the @claude mention in the PR comment. If the request is
-            a re-review (or otherwise asks you to re-evaluate the PR), inspect
-            the current code against previously-raised review threads and any
-            new concerns, using project conventions in CLAUDE.md and
-            .claude/rules/.
-
-            ## Tiered findings — required prefix on every comment
-
-            Any new finding you raise (inline or in summary) MUST start with one
-            of three tier markers:
-
-            - 🔴 **MUST FIX** — correctness, security, breaking changes, missing
-              tests for new code paths, violations of explicit project rules.
-            - 🟡 **CONSIDER** — substantive quality concerns: design, refactoring,
-              potential bugs, missing edge cases.
-            - 🔵 **NIT** — small consistency issues: docstring formatting, naming
-              drift, minor style.
-
-            Emit every finding you'd raise; tier is the signal. Format:
-            `<emoji> <TIER>: <one-sentence finding + suggestion>`.
-
-            Resolve any previously-posted review threads whose issues are now
-            fixed in the current code. Use the gh CLI and environment variables
-            already present in the runner — do not interpolate untrusted event
-            payload fields into shell commands. Steps:
-            1. Determine the PR number: gh pr view --json number -q .number
-            2. Parse owner and repo from the GITHUB_REPOSITORY environment variable.
-            3. Fetch open threads via gh api graphql, passing owner, repo, and
-               number as -f variables so no user-controlled data is
-               shell-interpolated.
-            4. For each unresolved thread, read its comment body, check whether
-               the current code addresses the issue, and if so resolve it via
-               the resolveReviewThread GraphQL mutation.
-            Only resolve threads where the fix is clearly present — leave
-            threads open if the issue is partially addressed or still present.
-
-            ## Approval contract — spell it out on every review
-
-            A PR is approved IF AND ONLY IF zero 🔴 MUST FIX AND zero 🟡 CONSIDER
-            remain open. Only 🔵 NIT never blocks. A 🟡 is resolved by a fix OR by
-            you accepting a deferral and resolving its thread. State this on every
-            review; the goal is a genuine approval on almost every PR, so when the
-            contract is met you MUST approve — do not withhold.
-
-            Submit your verdict as a review, choosing the mechanism by the most
-            severe open finding:
-
-            - Zero 🔴 and zero 🟡 → approve (this clears any CHANGES_REQUESTED you
-              previously posted):
-                gh pr review --approve --body "<body>"
-              Body opens: ✅ APPROVED — all 🔴 MUST FIX and 🟡 CONSIDER resolved.
-            - A SEVERE 🔴 open (security, data-loss, shipped-broken correctness,
-              broken public contract) → gh pr review --request-changes --body "<body>"
-            - Only non-severe 🔴 and/or 🟡 open → gh pr review --comment --body "<body>"
-
-            Both NOT-APPROVED bodies open (N = open 🔴, M = open 🟡):
-                ❌ NOT APPROVED — N 🔴 MUST FIX + M 🟡 CONSIDER gate approval:
-              then an enumerated list (one line each, file:line), then:
-                🔵 NIT findings do not block approval.
-
-            Every review ends in exactly one verdict line (✅ APPROVED or ❌ NOT APPROVED).
+          prompt: ${{ steps.mention_prompt.outputs.text }}
