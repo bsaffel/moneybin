@@ -198,12 +198,16 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- review                     -- Unified review queue (matches + categorize)
 |   |     [--type matches|categorize|all]   Default all; walks matches first then categorize
 |   |     [--status]                        Counts only, no interactive loop
-|   |     [--confirm <id>]                  Non-interactive: confirm one (auto-detects type by ID)
-|   |     [--reject <id>]                   Non-interactive: reject one
-|   |     [--confirm-all]                   Non-interactive: confirm all in scope
+|   |     [--confirm <id>]                  Non-interactive: confirm one match or categorize item by ID
+|   |     [--reject <id>]                   Non-interactive: reject one match by ID
+|   |     [--confirm-all]                   Non-interactive: confirm all items in scope
 |   |     [--limit N]                       Cap items per session
+|   |   Note: --confirm/--reject/--confirm-all are fully implemented for --type matches.
+|   |         --type categorize review is not yet wired (stub); categorize items use
+|   |         transactions categorize commit instead.
 |   +-- matches                    -- Transfer detection + dedup workflow (no review — see transactions review)
 |   |   +-- run [--skip-transform] [--auto-accept-transfers]
+|   |   +-- set <match_id> --status accepted|rejected  -- Accept or reject one pending match
 |   |   +-- history [--type dedup|transfer] [--limit N]
 |   |   +-- undo <match_id> [--yes]
 |   |   +-- backfill [--skip-transform] [--auto-accept-transfers]

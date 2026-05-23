@@ -97,6 +97,10 @@ not-yet-built.
 | 34| Revoke all active consent grants                                 | — *(bulk revoke; use `privacy_consent_revoke` per category)* | `privacy revoke-all` *(`--yes`)* | —             | live (CLI-only)       |
 | 35| View current consent state and configured backend                | `privacy_status`                    | `privacy status` *(`--output json`)*               | —          | live                  |
 | 36| Query recent privacy-log events (consent + tool calls)           | `privacy_log` *(`last?`, `actor?`)* | `privacy log` *(`--last`, `--actor`, `--output json`)* | —       | live                  |
+| 37| List pending transaction match proposals awaiting a decision     | `transactions_matches_pending` *(`match_type?`, `limit?`)* | `transactions review --type matches --status` *(counts)* / `transactions review --type matches` *(interactive queue)* | — | live |
+| 38| Accept or reject one pending match proposal                      | `transactions_matches_set` *(`match_id`, `status: accepted\|rejected`)* | `transactions matches set <match_id> --status accepted\|rejected` | — | live |
+| 39| Run the matching engine and propose new pending decisions         | `transactions_matches_run` *(operator alternative to `refresh_run(steps=["match"])`)* | `transactions matches run` | — | live |
+| 40| View recent match decisions (accepted and rejected)              | `transactions_matches_history` *(`limit?`, `match_type?`)* | `transactions matches history` *(`--type`, `--limit`)* | — | live |
 
 *(Bootstrap rows only; full table populates incrementally as
 follow-up work closes the parity backlog. A prior row covering
@@ -112,7 +116,11 @@ not-implemented placeholders with no backing spec. Rows 23–29 added
 `sync_connect` → `sync_link` rename co-shipped in the same PR.
 Rows 32–36 added 2026-05-22 with the consent ledger PR; row 34 is
 CLI-only because `revoke-all` is a bulk convenience with no MCP
-equivalent — use `privacy_consent_revoke` per category from MCP.)*
+equivalent — use `privacy_consent_revoke` per category from MCP.
+Rows 37–40 added 2026-05-22 with the matches accept/reject PR: four
+`transactions_matches_*` MCP tools registered; `transactions matches set`
+CLI command and non-interactive `transactions review --type matches
+--confirm/--reject/--confirm-all` flags wired.)*
 
 ## Exemption categories
 
