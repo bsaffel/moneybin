@@ -203,6 +203,47 @@ class TestIntTransactionsMatchedModel:
         assert row[0] is None  # no group
         assert row[1] is None  # no confidence
 
+    def test_pipe_in_source_transaction_id_does_not_truncate(
+        self, matched_db: Database
+    ) -> None:
+        """A source_transaction_id containing '|' must still group correctly.
+
+        Regression: the fold previously packed nodes as 'st|stid' and recovered
+        the id with SPLIT_PART(node, '|', 2), which truncated ids containing '|'
+        (possible for tabular source-provided ids) so the row failed to rejoin
+        its group and silently did not dedup.
+        """
+        acct = "acct_pipe"
+        stid_a = "TBL|2024-03-15|AMZN"  # tabular source id with delimiters
+        stid_b = "ofx_112233445566aabb"
+        _insert_unioned_row(
+            matched_db, source_transaction_id=stid_a, source_type="csv", account_id=acct
+        )
+        _insert_unioned_row(
+            matched_db, source_transaction_id=stid_b, source_type="ofx", account_id=acct
+        )
+        _insert_match(
+            matched_db,
+            match_id="match_pipe_0001",
+            stid_a=stid_a,
+            st_a="csv",
+            stid_b=stid_b,
+            st_b="ofx",
+            account_id=acct,
+        )
+
+        rows = matched_db.execute(
+            "SELECT source_transaction_id, match_group_id, transaction_id "
+            "FROM prep.int_transactions__matched "
+            "WHERE account_id = ? ORDER BY source_transaction_id",
+            [acct],
+        ).fetchall()
+        assert len(rows) == 2
+        assert all(r[1] is not None for r in rows)  # both got a match_group_id
+        assert len({r[1] for r in rows}) == 1  # one component
+        assert len({r[2] for r in rows}) == 1  # one gold record
+        assert stid_a in {r[0] for r in rows}  # '|' id preserved verbatim
+
     def test_pair_collapses_to_one_group(self, matched_db: Database) -> None:
         """Two matched transactions share a single match_group_id."""
         acct = "acct2"

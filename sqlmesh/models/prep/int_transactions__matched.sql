@@ -17,67 +17,70 @@ WITH RECURSIVE active_matches AS (
   FROM app.match_decisions
   WHERE
     match_status = 'accepted' AND reversed_at IS NULL AND match_type = 'dedup'
-), node_key AS (
-  /* Emit both directions of each edge so the graph is undirected. */
+), edges AS (
+  /* Undirected edges. Node identity is the (source_type, source_transaction_id)
+     pair scoped by account_id, carried as SEPARATE columns — never packed into a
+     delimited string. A source_transaction_id may itself contain '|' (tabular
+     imports keep source IDs as raw strings), so delimiter-based packing + later
+     SPLIT_PART would truncate the id and mis-group the row. */
   SELECT
-    source_type_a AS st,
-    source_transaction_id_a AS stid,
     account_id AS aid,
-    source_type_b AS nst,
-    source_transaction_id_b AS nstid
+    source_type_a AS src_st,
+    source_transaction_id_a AS src_stid,
+    source_type_b AS dst_st,
+    source_transaction_id_b AS dst_stid
   FROM active_matches
   UNION ALL
   SELECT
+    account_id,
     source_type_b,
     source_transaction_id_b,
-    account_id,
     source_type_a,
     source_transaction_id_a
   FROM active_matches
-), edges AS (
-  /* Pack each node as 'source_type|source_transaction_id'.
-     Delimiter '|' is safe: source_type is a closed vocabulary (csv, ofx, …)
-     and source_transaction_id values are hex content hashes or
-     alphanumeric source IDs — neither contains '|'. */
-  SELECT
-    aid,
-    st || '|' || stid AS src,
-    nst || '|' || nstid AS dst
-  FROM node_key
 ), nodes AS (
   SELECT DISTINCT
     aid,
-    src AS node
+    src_st AS st,
+    src_stid AS stid
   FROM edges
 ), reach AS (
-  /* Transitive closure via recursive label propagation.
-     UNION (not UNION ALL) terminates at the fixpoint — no new
-     (aid, node, member) triples to add. */
+  /* Transitive closure via recursive label propagation, comparing on the
+     (source_type, source_transaction_id) pair. UNION (not UNION ALL) terminates
+     at the fixpoint — no new (aid, node, member) rows to add. */
   SELECT
     aid,
-    node,
-    node AS member
+    st,
+    stid,
+    st AS mem_st,
+    stid AS mem_stid
   FROM nodes
   UNION
   SELECT
     r.aid,
-    r.node,
-    e.dst
+    r.st,
+    r.stid,
+    e.dst_st,
+    e.dst_stid
   FROM reach AS r
   JOIN edges AS e
-    ON r.aid = e.aid AND r.member = e.src
+    ON r.aid = e.aid AND r.mem_st = e.src_st AND r.mem_stid = e.src_stid
 ), match_groups AS (
-  /* Each node's group_id is the lexicographic MIN of all reachable members.
-     All nodes in the same connected component converge to the same MIN. */
+  /* source_type and source_transaction_id are recovered from the carried
+     columns (no splitting). group_id is the lexicographic MIN packed member of
+     the component — an opaque label that is only ever grouped/joined on, never
+     split back apart, so the delimiter is harmless here; all nodes in one
+     component converge to the same MIN. */
   SELECT
     aid AS account_id,
-    SPLIT_PART(node, '|', 1) AS source_type,
-    SPLIT_PART(node, '|', 2) AS source_transaction_id,
-    MIN(member) AS group_id
+    st AS source_type,
+    stid AS source_transaction_id,
+    MIN(mem_st || '|' || mem_stid) AS group_id
   FROM reach
   GROUP BY
     aid,
-    node
+    st,
+    stid
 ), group_gold_keys AS (
   SELECT
     mg.group_id,
