@@ -235,7 +235,7 @@ class MatchingService:
                 )
             # current_status == status falls through as an idempotent no-op.
             self._db.commit()
-        except Exception:
+        except BaseException:
             self._db.rollback()
             raise
 
