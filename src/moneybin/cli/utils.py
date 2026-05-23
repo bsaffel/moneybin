@@ -16,6 +16,7 @@ from moneybin.cli.output import OutputFormat, emit_json_error
 from moneybin.config import set_current_profile
 from moneybin.errors import classify_user_error
 from moneybin.observability import setup_observability
+from moneybin.services.mutation_context import operation
 from moneybin.utils.user_config import ensure_default_profile
 
 if TYPE_CHECKING:
@@ -78,44 +79,52 @@ def handle_cli_errors(
     Does NOT open or yield a Database — commands acquire their own
     connections with ``get_database(read_only=...)``.
 
-    """
-    try:
-        yield
-    except typer.Exit:
-        # Commands raise typer.Exit for their own early-exit paths
-        # (mutually exclusive flags, user-cancelled prompts). Don't run
-        # those through the user-error classifier.
-        raise
-    except Exception as e:
-        user_error = classify_user_error(e)
-        if user_error is None:
-            raise
-        if _flags.output == OutputFormat.JSON:
-            # JSON-mode errors bypass logger.error intentionally: stdout stays
-            # machine-readable for agents and the structured envelope carries
-            # the full error context.
-            emit_json_error(user_error)
-            # Mirror the MCP decorator's error-path audit emission so JSON-mode
-            # failures appear in privacy.log.jsonl alongside success rows.
-            from moneybin.privacy.log import (  # noqa: PLC0415 — defer import
-                build_tool_call_event,
-                write_privacy_event,
-            )
+    Binds one ``operation()`` for the command body so every audit row written
+    during this invocation shares one ``operation_id`` (REC-PR1) — the CLI
+    half of the surface seam, mirroring the MCP tool decorator.
 
-            sensitivity, classes_returned = _error_audit_classification(payload_type)
-            write_privacy_event(
-                build_tool_call_event(
-                    actor=f"cli.{cli_actor or 'unknown'}",
-                    sensitivity=sensitivity,
-                    classes_returned=classes_returned,
-                    row_count=0,
+    """
+    with operation():
+        try:
+            yield
+        except typer.Exit:
+            # Commands raise typer.Exit for their own early-exit paths
+            # (mutually exclusive flags, user-cancelled prompts). Don't run
+            # those through the user-error classifier.
+            raise
+        except Exception as e:
+            user_error = classify_user_error(e)
+            if user_error is None:
+                raise
+            if _flags.output == OutputFormat.JSON:
+                # JSON-mode errors bypass logger.error intentionally: stdout
+                # stays machine-readable for agents and the structured envelope
+                # carries the full error context.
+                emit_json_error(user_error)
+                # Mirror the MCP decorator's error-path audit emission so
+                # JSON-mode failures appear in privacy.log.jsonl alongside
+                # success rows.
+                from moneybin.privacy.log import (  # noqa: PLC0415 — defer import
+                    build_tool_call_event,
+                    write_privacy_event,
                 )
-            )
-        else:
-            logger.error(f"❌ {user_error.message}")
-            if user_error.hint:
-                logger.info(user_error.hint)
-        raise typer.Exit(1) from e
+
+                sensitivity, classes_returned = _error_audit_classification(
+                    payload_type
+                )
+                write_privacy_event(
+                    build_tool_call_event(
+                        actor=f"cli.{cli_actor or 'unknown'}",
+                        sensitivity=sensitivity,
+                        classes_returned=classes_returned,
+                        row_count=0,
+                    )
+                )
+            else:
+                logger.error(f"❌ {user_error.message}")
+                if user_error.hint:
+                    logger.info(user_error.hint)
+            raise typer.Exit(1) from e
 
 
 def emit_json(key: str, payload: object) -> None:

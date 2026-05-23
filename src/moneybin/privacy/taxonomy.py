@@ -125,6 +125,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "before_value": DataClass.TXN_AMOUNT,
         "context_json": DataClass.DESCRIPTION,
         "occurred_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "operation_id": DataClass.RECORD_ID,
         "parent_audit_id": DataClass.RECORD_ID,
         "target_id": DataClass.RECORD_ID,
         "target_schema": DataClass.RECORD_ID,

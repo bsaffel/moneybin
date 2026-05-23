@@ -333,6 +333,43 @@ Phase 2 of Invariant 10 + sister contract work + matches MCP + refresh surfacing
 - Backfill test: existing pre-spec audit rows get the legacy synthetic id; new rows from any tool share the contextvars value.
 - No behavior changes visible at the MCP/CLI surface yet.
 
+#### PR 1 — as implemented (REC-PR1, deviations from the plan above)
+
+Shipped as `feat/audit-operation-id`. Status stays `in-progress` (PRs 2–N
+remain). Four deliberate deviations from the bullets above, each verified
+against the code:
+
+1. **Column split.** REC-PR1 adds **only** `operation_id`. The two undo-marker
+   columns (`is_undo`, `undoes_operation_id`) in §4.4 are written solely by the
+   undo consumer, are additive (not one-way), and land with **PR 3**. Migration
+   is `V023__add_operation_id_to_audit_log.py`.
+2. **Contextvar-read, not a parameter.** `AuditService.record_audit_event()`
+   reads the current id from `mutation_context.current_operation_id()` directly
+   — it gains **no** `operation_id` parameter, and repositories are **not**
+   touched (every `BaseRepo._emit_audit` call inherits the context). A parameter
+   layered on top of a contextvar would be two ways to express one value; the
+   service signature is an internal two-way door, so Simplicity First applies.
+   The getter mints a fresh `op_<uuid4_hex>` when no context is active, so a bare
+   repo write outside any tool call is still its own valid NOT-NULL operation.
+3. **`SET NOT NULL` drops/restores indexes.** DuckDB (1.5) refuses
+   `ALTER COLUMN … SET NOT NULL` while any non-constraint index exists on the
+   table (`DependencyException`), and `audit_log` ships five base indexes — so
+   the spec's literal 4-step SQL would fail on every existing database. The
+   migration snapshots the table's explicit indexes from `duckdb_indexes()` (the
+   PRIMARY KEY is excluded and does not block the ALTER), drops them, tightens,
+   then restores them from their stored DDL before adding the two new indexes.
+4. **Column placed last; indexes deferred to the migration.**
+   `operation_id` is the final column in `app_audit_log.sql`'s `CREATE TABLE`
+   (matching `ADD COLUMN`'s append position, so column order is identical
+   fresh-vs-upgraded). The two new indexes live **only** in V023, not the schema
+   file — `init_schemas` runs before migrations, so an index DDL in the schema
+   file would bind against the pre-V023 table shape on existing DBs (same
+   pattern as `app_proposed_rules.sql` ↔ V016).
+
+`AuditEvent` (and `to_dict`, `list_events`, `chain_for`) carry `operation_id`
+so the row view stays faithful; no undo logic, `UndoService`, or `system_audit_*`
+tools ship here — those are PR 3.
+
 ### PR 2 — `RecoveryAction` type + error_code taxonomy + envelope plumbing
 
 - Define `RecoveryAction` (Pydantic model) and the `ErrorEnvelope` shape with the new optional field.
