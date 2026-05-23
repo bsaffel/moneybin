@@ -1,5 +1,6 @@
 ---
 description: "Post-implementation checklist: CHANGELOG, roadmap, features, README updates, pre-push /simplify pass"
+paths: ["CHANGELOG.md", "README.md", "docs/roadmap.md", "docs/features.md", "docs/specs/INDEX.md"]
 ---
 
 # Shipping & Public Documentation

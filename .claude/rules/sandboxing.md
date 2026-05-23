@@ -71,8 +71,6 @@ The sandbox is a guard, not an obstacle. Default to fixing the policy, not bypas
    - "Add `<path>` to the sandbox write allowlist" — preferred, durable fix.
    - "Run this one command unsandboxed: `<cmd>`" — only when the allowlist change would be too broad, too sensitive, or genuinely one-off.
 
-**Why this protocol:** false-positive bypasses (reaching for `dangerouslyDisableSandbox` because a command "felt blocked" when it wasn't, or when the real failure was elsewhere) train the system to treat the bypass as routine and erode the guard. Identifying the path first keeps each bypass intentional and reviewable.
-
 **Exception — `rm`:** `rm` traversals routinely touch paths outside the write-allowlist; sandboxing them adds friction without value. Use `dangerouslyDisableSandbox` for `rm` without the protocol.
 
 **Hook failures are NOT an allowlist problem.** When a pre-commit / lint hook (`end-of-file-fixer`, `trailing-whitespace`) fails because it touched a denied path (`.claude/settings.json`, `.claude/skills/*.md`, `.env*`), the deny is intentional. Two real fixes:

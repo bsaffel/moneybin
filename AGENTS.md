@@ -4,19 +4,16 @@ Personal financial data platform. Python + DuckDB + SQLMesh + Typer CLI + MCP se
 
 ## Guiding Principle: Build the Inevitable Choice
 
-Be what `uv` and `ruff` are for Python tooling — the option a serious user
-converges on because the foundation is rock-solid. Not first, not fastest to
-ship. **Inevitable.** A longer development lifecycle is acceptable when it
-buys durability.
+Be the option a serious user converges on because the foundation is
+rock-solid — inevitable, not first or fastest. A longer development
+lifecycle is acceptable when it buys durability.
 
 Three axes, distinct from "Simplicity First" below:
 
 - **Path selection (this principle):** For one-way-door choices (public
-  contracts, security postures, critical-path deps — see
-  `.claude/rules/design-principles.md` for the trigger list and launch
-  trigger), default to the path that still feels right in five years,
-  even if it costs months more. Pre-launch: iterate. Post-launch: lock
-  hard.
+  contracts, security postures, critical-path deps), default to the path
+  that still feels right in five years, even if it costs months more.
+  Pre-launch: iterate. Post-launch: lock hard.
 - **Coherence (every change):** When adding new X, follow the existing
   pattern for X. If the pattern is wrong, fix it everywhere — don't
   introduce a parallel pattern beside it. Two patterns for the same job is
@@ -25,64 +22,33 @@ Three axes, distinct from "Simplicity First" below:
   abstractions, module boundaries, refactors behind a stable contract) get
   the minimum code that solves the problem. No protocol.
 
-**Agent protocol for one-way-door decisions:** Surface both paths. Name
-each cost concretely (time, surface area, migration risk). Recommend the
-durable path; state what durability costs. Use the worked example in
-`.claude/rules/design-principles.md` as the output template. Wait for
-explicit override before taking the fast path — or, in subagent /
-autonomous-loop contexts with no user, default to durable and document
-the choice for the parent. If you can't tell whether a decision is
-one-way: treat it as one-way and invoke.
-
-Heuristics, trigger list, the public-contract / internal-abstraction split,
-and the coherence rule: `.claude/rules/design-principles.md`.
+**Agent protocol (one-way doors):** surface both paths, name each cost
+concretely, recommend the durable path and state what it costs; wait for
+explicit override before taking the fast path. With no user (subagent /
+autonomous), default to durable and document the choice. If you can't tell
+whether a decision is one-way, treat it as one-way. Full protocol, trigger
+list, worked example, and the public-contract / internal-abstraction split:
+`.claude/rules/design-principles.md`.
 
 ## Bias Toward UX / DX / AX
 
-Better user experience, developer experience, and agent experience is
-almost always the right choice. When tradeoffs are visible, default to the
-path that's nicer to use, build on, or drive from an LLM — and state the
-cost explicitly so the choice is informed, not silent. "Simpler to build,"
-"smaller v1 surface," or "less code" are not winning arguments if the
-result is meaningfully worse to use, develop against, or operate as an
-agent.
+When two viable paths exist and one is noticeably nicer for the **user**
+(UX — the human running the CLI, reading reports, driving MCP), the
+**developer** (DX — the contributor reading and extending the code), or
+the **agent** (AX — the LLM driving the MCP / CLI surface), take the
+ergonomics and name the cost explicitly. "Simpler to build," "smaller v1
+surface," or "less code" don't win if the result is meaningfully worse to
+use, build on, or operate as an agent. AX is a peer, not a poor cousin.
+This is a tiebreaker between viable paths — not a contradiction of
+Simplicity First (scope discipline) or the Guiding Principle (durable path
+selection), and not a license to gold-plate.
 
-The three audiences:
-
-- **UX (end user):** the human running the CLI, reading reports, or
-  driving MCP through their AI tool. Magic, predictability, recoverability.
-- **DX (developer):** the contributor reading the code, writing the next
-  feature, debugging a regression. Clear boundaries, named primitives,
-  small focused files.
-- **AX (agent):** the LLM consuming the MCP / CLI surface (Claude Code,
-  Codex, Gemini CLI, hosted Claude). Tool names that telegraph intent,
-  error envelopes that prescribe recovery via `actions[]`, response
-  envelopes that expose what the agent needs without a follow-up call,
-  taxonomy that lets the agent pick a tool confidently without
-  disambiguation. MoneyBin's CLI and MCP are first-class agent surfaces
-  (see [`feedback_cli_agent_surface`] memory + `.claude/rules/mcp-server.md`)
-  — AX is a peer, not a poor cousin.
-
-This is not a contradiction of "Simplicity First" (which is about scope
-discipline — don't ship features that weren't asked for) or the Guiding
-Principle (which is about durable path selection). It's a tiebreaker:
-when two viable paths exist and one has noticeably better ergonomics for
-any of the three audiences, take the ergonomics. The durable choice is
-usually also the one that feels good five years later — for all three.
-
-**Agent protocol:** When presenting options, lead with the better-XX path
-as the recommendation. Name what the XX advantage actually buys, per
-audience where relevant — one-click vs. 15 min of console clicking (UX);
-one named primitive vs. two parallel patterns (DX); one tool the agent
-picks confidently vs. two it disambiguates between (AX). Name the cost
-honestly (verification process, more code, larger blast radius). Default
-to the better-XX path unless the cost is genuinely disqualifying — and
-"more work for me" is not disqualifying. Reinforces the
-`.claude/rules/agent-experience.md` report's "what would have made this
-easier" question — answer it the first time, don't wait for the AX
-report. When XX trades against XX (e.g., AX wants verbose response
-envelopes, UX wants terse CLI output), surface the conflict and let the
-user pick.
+**Agent protocol:** lead with the better-ergonomics path; name what it buys
+per audience (one-click vs. 15 min of clicking; one named primitive vs. two
+parallel patterns; one tool the agent picks confidently vs. two it
+disambiguates) and name the cost honestly ("more work for me" is not
+disqualifying). When audiences conflict (e.g. AX wants verbose envelopes,
+UX wants terse output), surface it and let the user pick.
 
 ## Think Before Coding
 Don't assume. Don't hide confusion. Surface tradeoffs.
@@ -112,7 +78,7 @@ Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, sim
 - **Package manager**: `uv` only. Never `pip install`, `uv pip install`, or `python -m`.
 - **Linting/formatting**: `make format && make lint` (Ruff, line length 88).
 - **Type checking**: `uv run pyright` on modified files (not mypy).
-- **Tests**: Dev: `uv run pytest tests/path/to/test_file.py -v`. Pre-commit: `make test`. Always `uv run pytest` — never `uv run python -m pytest` (sandbox-denied per the `python -m` ban above). If `uv run pytest` resolves to the wrong interpreter, the venv has stale shebangs from a worktree move; fix with `uv sync --reinstall` rather than working around it via `python -m`.
+- **Tests**: Dev: `uv run pytest tests/path/to/test_file.py -v`. Pre-commit: `make test`. Always `uv run pytest`, never `python -m`. If it resolves to the wrong interpreter, run `uv sync --reinstall`.
 - **Pre-commit checklist**: `make check test` — format, lint, type-check, tests. Run once before committing.
 - **SQL formatting**: `uv run sqlmesh -p sqlmesh format`.
 - **Check library docs first**: Before implementing patterns with SQLMesh, DuckDB, Pydantic, etc., verify the correct API in official docs. Training knowledge may be outdated.
@@ -164,7 +130,7 @@ Full schema reference (including `meta`, `seeds`, `synthetic`, prefix convention
 Feature specs live in `docs/specs/`. The **[Spec Index](docs/specs/INDEX.md)** is the single source of truth.
 
 - **Before implementing**, check `INDEX.md` for existing specs.
-- **Verify the spec against the code before building** — specs (especially `draft` ones) can describe a model that was never built or has drifted (e.g., a `match_group_id`/`is_primary` matching surface that never existed). Reconcile spec ↔ code at the `draft → ready` promotion, not mid-implementation.
+- **Verify the spec against the code before building** — specs (especially `draft` ones) can describe a model that was never built or has drifted. Reconcile spec ↔ code at the `draft → ready` promotion, not mid-implementation.
 - **When starting**, update status to `in-progress` (spec file + `INDEX.md`).
 - **When complete**, update to `implemented`. See `.claude/rules/shipping.md` for README updates.
 - **Observability wiring**: Specs touching app code must include metrics. See `docs/specs/observability.md` and `src/moneybin/metrics/registry.py`.
@@ -204,6 +170,7 @@ Files in `.claude/rules/` auto-load via Claude Code's `paths:` frontmatter — p
 | `data-extraction.md` | Incremental sync, dedup, parameter design, new data sources |
 | `identifiers.md` | Content hashes, truncated UUIDs, source IDs, semantic slugs |
 | `documentation.md` | Diagram conventions (Mermaid over ASCII) |
+| `shipping.md` | Post-implementation checklist (CHANGELOG, roadmap, features, README, INDEX) — loads when editing those |
 
 ### Always loaded (workflow rules)
 
@@ -211,7 +178,6 @@ Files in `.claude/rules/` auto-load via Claude Code's `paths:` frontmatter — p
 |------|--------|
 | `design-principles.md` | Durable path selection: heuristics for "inevitable choice" decisions and the trigger list for the agent protocol |
 | `surface-design.md` | Cross-surface (MCP / CLI / REST) operation-shape taxonomy, verb vocabulary, audience layering. Consult before adding, renaming, or restructuring a tool/command/endpoint |
-| `shipping.md` | Post-implementation checklist: README updates, roadmap icons, `/simplify` pre-push pass |
 | `branching.md` | Branch prefix → PR label mapping, commit message style |
 | `sandboxing.md` | Bash invocation patterns: single commands, allowlisted pipelines, structured-output filtering, policy denials |
 | `agent-experience.md` | Required agent-experience report whenever you interact with MoneyBin's MCP server in a session |
