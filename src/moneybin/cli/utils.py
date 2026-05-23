@@ -189,7 +189,7 @@ def sqlmesh_command(
             if user_error.hint:
                 logger.info(user_error.hint)
         else:
-            logger.error(f"❌ {operation} failed: {e}")
+            logger.error(f"❌ {label} failed: {e}")
         raise typer.Exit(1) from e
 
 

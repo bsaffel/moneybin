@@ -14,6 +14,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+import typer
 
 import moneybin.database as db_module
 from moneybin.cli.utils import handle_cli_errors, sqlmesh_command
@@ -63,3 +64,20 @@ def test_separate_sqlmesh_commands_get_distinct_operation_ids(stub_db: None) -> 
     with sqlmesh_command("Test op"):
         second = current_operation_id()
     assert first != second
+
+
+def test_sqlmesh_command_unclassified_error_logs_label_not_function(
+    stub_db: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Error log interpolates the `label` string, not the `operation` function.
+
+    Regression guard for the rename that left `f"❌ {operation} failed"`
+    pointing at the imported context-manager object.
+    """
+    with caplog.at_level("ERROR"), pytest.raises(typer.Exit):
+        with sqlmesh_command("Seed materialization"):
+            raise RuntimeError("boom")  # unclassified → else branch
+
+    logged = " ".join(r.getMessage() for r in caplog.records)
+    assert "Seed materialization failed" in logged
+    assert "function operation" not in logged

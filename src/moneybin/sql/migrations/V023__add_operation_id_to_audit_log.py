@@ -98,6 +98,10 @@ def migrate(conn: object) -> None:
         conn.execute(  # type: ignore[union-attr]
             "ALTER TABLE app.audit_log ALTER COLUMN operation_id SET NOT NULL"
         )
+        # create_sql is never NULL here: duckdb_indexes() lists only explicit
+        # CREATE INDEX entries (which always carry their DDL) and excludes
+        # constraint-backed indexes — PRIMARY KEY and UNIQUE both absent,
+        # verified on DuckDB 1.5 — so the snapshot can't contain a NULL-sql row.
         for _index_name, create_sql in saved_indexes:
             conn.execute(create_sql)  # type: ignore[union-attr]
 

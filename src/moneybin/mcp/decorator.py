@@ -442,7 +442,9 @@ def mcp_tool(
                 # writes shares one operation_id (REC-PR1). Set before
                 # asyncio.to_thread so the copied context carries the id into
                 # the sync tool body's worker thread; async bodies inherit it
-                # via the task context.
+                # via the task context. Scoped to fn execution only — audit rows
+                # are written there; the except handlers below emit privacy-log
+                # events (not audit rows), so they need no operation context.
                 with operation():
                     async with cm:
                         if is_coro:
