@@ -13,9 +13,9 @@ from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.matching.persistence import (
     MatchStatus,
-    create_match_decision,
     get_match_decision,
 )
+from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
 from moneybin.services.matching_service import MatchingService
 
 
@@ -32,8 +32,7 @@ def db(tmp_path: Path, mock_secret_store: MagicMock) -> Generator[Database, None
 
 
 def _seed(db: Database, match_id: str, status: MatchStatus) -> None:
-    create_match_decision(
-        db,
+    MatchDecisionsRepo(db).insert(
         match_id=match_id,
         source_transaction_id_a="a1",
         source_type_a="csv",
@@ -47,6 +46,7 @@ def _seed(db: Database, match_id: str, status: MatchStatus) -> None:
         match_tier="3",
         match_status=status,
         decided_by="matcher",
+        actor="system",
     )
 
 
@@ -189,8 +189,7 @@ def _seed_dedup(
     account_id: str = "acct1",
 ) -> None:
     """Seed a dedup decision with explicit node IDs for component-key tests."""
-    create_match_decision(
-        db,
+    MatchDecisionsRepo(db).insert(
         match_id=match_id,
         source_transaction_id_a=stid_a,
         source_type_a=stype_a,
@@ -205,6 +204,7 @@ def _seed_dedup(
         match_status=status,
         decided_by="matcher",
         match_type="dedup",
+        actor="system",
     )
 
 

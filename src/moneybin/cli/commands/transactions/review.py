@@ -98,16 +98,16 @@ def _review_matches_noninteractive(
         with get_database() as db:
             svc = MatchingService(db)
             if confirm_all:
-                n = svc.accept_all_pending()
+                n = svc.accept_all_pending(actor="cli")
                 logger.info(f"✅ Accepted {n} pending match(es)")
                 return
             # Independent ifs (not elif): `--confirm X --reject Y` targets two
             # different matches in one invocation.
             if confirm_id:
-                svc.set_status(confirm_id, status="accepted")
+                svc.set_status(confirm_id, status="accepted", actor="cli")
                 logger.info(f"✅ Accepted match {confirm_id[:8]}...")
             if reject_id:
-                svc.set_status(reject_id, status="rejected")
+                svc.set_status(reject_id, status="rejected", actor="cli")
                 logger.info(f"✅ Rejected match {reject_id[:8]}...")
 
 

@@ -584,7 +584,7 @@ Mutating service methods write the audit event in the same DuckDB transaction as
 | `note.add`, `note.edit`, `note.delete` | `TransactionService.add_note`, `edit_note`, `delete_note` |
 | `tag.add`, `tag.remove`, `tag.rename` (parent), `tag.rename_row` (child) | `TransactionService.add_tags`, `remove_tags`, `rename_tag` |
 | `split.add`, `split.remove`, `split.clear` | `TransactionService.add_split`, `remove_split`, `clear_splits` |
-| `import_label.add`, `import_label.remove` | `ImportService.add_labels`, `remove_labels` |
+| `import.set` (full-row labels upsert) | `ImportService.{add,remove,set}_labels` → `ImportsRepo.set` (Invariant 10; supersedes the per-label `import_label.add`/`import_label.remove` events) |
 | `category.set`, `category.clear` | `CategorizationService` (extension; existing service emits) |
 | `merchant.create`, `merchant.set` | merchant service (extension) |
 | `rule.create`, `rule.update`, `rule.delete` | rule service (extension) |

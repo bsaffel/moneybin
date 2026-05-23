@@ -265,8 +265,8 @@ def import_labels_set(
 ) -> ResponseEnvelope[ImportLabelsSetPayload]:
     """Declarative target-state for an import's labels.
 
-    Computes the add/remove diff against the prior labels and emits one
-    ``import_label.add`` / ``import_label.remove`` per changed entry.
+    Replaces the import's label set and emits one full-row ``import.set`` audit
+    row (Invariant 10) capturing the complete before/after labels.
     """
     with get_database() as db:
         final = ImportService(db).set_labels(import_id, labels, actor="mcp")
@@ -392,8 +392,8 @@ def register_curation_tools(mcp: FastMCP) -> None:
         import_labels_set,
         "import_labels_set",
         "Declarative target-state: replace an import's labels; "
-        "emits per-label add/remove audit events. Writes app.imports.labels; "
-        "revert by calling again with the prior label list (diff captured in app.audit_log).",
+        "emits one full-row import.set audit event. Writes app.imports.labels; "
+        "revert by calling again with the prior label list (before/after captured in app.audit_log).",
     )
     register(
         mcp,

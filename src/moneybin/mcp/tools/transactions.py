@@ -165,7 +165,7 @@ def transactions_matches_set(
             prevents re-proposal.
     """
     with get_database() as db:
-        MatchingService(db).set_status(match_id, status=status)
+        MatchingService(db).set_status(match_id, status=status, actor="mcp")
     return build_envelope(
         data=MatchSetPayload(match_id=match_id, match_status=status),
         actions=[
@@ -272,7 +272,7 @@ def transactions_matches_run() -> ResponseEnvelope[MatchRunPayload]:
     accepted match via `moneybin transactions matches undo` (no MCP undo tool yet).
     """
     with get_database() as db:
-        result = MatchingService(db).run()
+        result = MatchingService(db).run(actor="mcp")
     return build_envelope(
         data=MatchRunPayload(
             auto_merged=result.auto_merged,

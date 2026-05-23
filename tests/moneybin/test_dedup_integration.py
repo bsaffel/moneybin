@@ -16,9 +16,9 @@ from moneybin.matching.engine import TransactionMatcher
 from moneybin.matching.hashing import gold_key_matched, gold_key_unmatched
 from moneybin.matching.persistence import (
     get_active_matches,
-    undo_match,
 )
 from moneybin.matching.priority import seed_source_priority
+from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
 
 
 @pytest.fixture()
@@ -246,7 +246,9 @@ class TestEndToEndDedup:
 
         # Undo (but don't reject)
         active = get_active_matches(db, match_type="dedup")
-        undo_match(db, active[0]["match_id"], reversed_by="user")
+        MatchDecisionsRepo(db).reverse(
+            active[0]["match_id"], reversed_by="user", actor="cli"
+        )
 
         # Re-run: should re-propose
         matcher2 = TransactionMatcher(db, settings, table="main._test_unioned")

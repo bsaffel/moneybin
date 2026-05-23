@@ -93,7 +93,7 @@ def matches_run(
         with handle_cli_errors():
             with get_database() as db:
                 result = MatchingService(db).run(
-                    auto_accept_transfers=auto_accept_transfers
+                    auto_accept_transfers=auto_accept_transfers, actor="cli"
                 )
                 if result.has_matches:
                     logger.info(f"Matching: {result.summary()}")
@@ -174,7 +174,7 @@ def matches_undo(
     try:
         with handle_cli_errors():
             with get_database() as db:
-                MatchingService(db).undo(match_id, reversed_by="user")
+                MatchingService(db).undo(match_id, reversed_by="user", actor="cli")
                 logger.info(f"Reversed match {match_id[:8]}...")
     except ValueError as e:
         logger.error(f"❌ {e}")
@@ -192,7 +192,7 @@ def matches_set(
         raise typer.Exit(2)
     with handle_cli_errors():
         with get_database() as db:
-            MatchingService(db).set_status(match_id, status=status)
+            MatchingService(db).set_status(match_id, status=status, actor="cli")
     logger.info(f"✅ Set match {match_id[:8]}... to {status}")
 
 
@@ -220,7 +220,7 @@ def matches_backfill(
                 )
 
                 result = MatchingService(db).run(
-                    auto_accept_transfers=auto_accept_transfers
+                    auto_accept_transfers=auto_accept_transfers, actor="cli"
                 )
 
                 logger.info(f"Backfill complete: {result.summary()}")

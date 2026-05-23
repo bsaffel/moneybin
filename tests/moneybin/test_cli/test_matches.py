@@ -27,7 +27,7 @@ class TestMatchesRun:
 
         result = runner.invoke(app, ["run", "--skip-transform"])
         assert result.exit_code == 0
-        mock_run.assert_called_once_with(auto_accept_transfers=False)
+        mock_run.assert_called_once_with(auto_accept_transfers=False, actor="cli")
 
 
 class TestMatchesHistory:

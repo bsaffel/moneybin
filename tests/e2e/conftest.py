@@ -316,7 +316,7 @@ def seed_pending_match(env: dict[str, str], match_id: str) -> None:
     from unittest.mock import MagicMock
 
     from moneybin.database import Database, invalidate_encryption_key_cache
-    from moneybin.matching.persistence import create_match_decision
+    from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
 
     mock_store = MagicMock()
     mock_store.get_key.return_value = TEST_ENCRYPTION_KEY
@@ -325,8 +325,7 @@ def seed_pending_match(env: dict[str, str], match_id: str) -> None:
         with Database(
             _workflow_db_path(env), secret_store=mock_store, no_auto_upgrade=True
         ) as db:
-            create_match_decision(
-                db,
+            MatchDecisionsRepo(db).insert(
                 match_id=match_id,
                 source_transaction_id_a="txn_aaa",
                 source_type_a="csv",
@@ -340,6 +339,7 @@ def seed_pending_match(env: dict[str, str], match_id: str) -> None:
                 match_tier="2b",
                 match_status="pending",
                 decided_by="engine",
+                actor="system",
             )
     finally:
         invalidate_encryption_key_cache()

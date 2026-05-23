@@ -14,12 +14,17 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
+import pytest
+
 from moneybin.database import Database
 from moneybin.repositories.account_settings_repo import AccountSettingsRepo
 from moneybin.repositories.balance_assertions_repo import BalanceAssertionsRepo
 from moneybin.repositories.budgets_repo import BudgetsRepo
 from moneybin.repositories.categorization_rules_repo import CategorizationRulesRepo
+from moneybin.repositories.imports_repo import ImportsRepo
+from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
 from moneybin.repositories.proposed_rules_repo import ProposedRulesRepo
+from moneybin.repositories.tabular_formats_repo import TabularFormatsRepo
 from moneybin.repositories.transaction_categories_repo import (
     TransactionCategoriesRepo,
 )
@@ -34,7 +39,10 @@ from moneybin.tables import (
     BALANCE_ASSERTIONS,
     BUDGETS,
     CATEGORIZATION_RULES,
+    IMPORTS,
+    MATCH_DECISIONS,
     PROPOSED_RULES,
+    TABULAR_FORMATS,
     TRANSACTION_CATEGORIES,
     USER_CATEGORIES,
     USER_MERCHANTS,
@@ -337,6 +345,164 @@ def test_transaction_categories_fk_passes_when_all_resolve(db: Database) -> None
     assert result.status == "pass"
 
 
+def _insert_match(
+    repo: MatchDecisionsRepo,
+    *,
+    match_id: str,
+    account_id: str = "a1",
+    account_id_b: str | None = None,
+) -> None:
+    repo.insert(
+        match_id=match_id,
+        source_transaction_id_a="sa",
+        source_type_a="csv",
+        source_origin_a="bank",
+        source_transaction_id_b="sb",
+        source_type_b="ofx",
+        source_origin_b="bank",
+        account_id=account_id,
+        confidence_score=0.95,
+        match_signals={},
+        match_tier="3",
+        match_status="accepted",
+        decided_by="auto",
+        account_id_b=account_id_b,
+        actor="system",
+    )
+
+
+def test_audit_coverage_passes_for_repo_mutated_tabular_format(db: Database) -> None:
+    TabularFormatsRepo(db).set(
+        name="chase_credit",
+        institution_name="Chase",
+        file_type="csv",
+        delimiter=",",
+        encoding="utf-8",
+        skip_rows=0,
+        sheet=None,
+        header_signature=["Date", "Amount"],
+        field_mapping={"date": "Date"},
+        sign_convention="negative_is_expense",
+        date_format="%m/%d/%Y",
+        number_format="us",
+        skip_trailing_patterns=None,
+        multi_account=False,
+        source="detected",
+        times_used=0,
+        last_used_at=None,
+        actor="system",
+    )
+    result = DoctorService(db)._run_app_audit_coverage(TABULAR_FORMATS, "name")
+    assert result.status == "pass"
+
+
+_MATCH_DECISIONS_WATERMARK = "GREATEST(decided_at, reversed_at)"
+
+
+def test_audit_coverage_passes_for_repo_mutated_match_decision(db: Database) -> None:
+    _insert_match(MatchDecisionsRepo(db), match_id="m1")
+    result = DoctorService(db)._run_app_audit_coverage(
+        MATCH_DECISIONS, "match_id", updated_expr=_MATCH_DECISIONS_WATERMARK
+    )
+    assert result.status == "pass"
+
+
+def test_audit_coverage_flags_bypass_reverse_match_decision(db: Database) -> None:
+    # Insert via the repo (audited), then a RAW reverse that bumps reversed_at
+    # without an audit row. The GREATEST(decided_at, reversed_at) watermark
+    # advances past the insert's audit, so the bypass reversal must be flagged —
+    # a plain decided_at watermark would miss it.
+    _insert_match(MatchDecisionsRepo(db), match_id="mrev")
+    db.execute(
+        "UPDATE app.match_decisions "  # noqa: S608  # test input, not executing user SQL
+        "SET reversed_at = now()::TIMESTAMP, reversed_by = 'user', "
+        "match_status = 'reversed' WHERE match_id = 'mrev'"
+    )
+    result = DoctorService(db)._run_app_audit_coverage(
+        MATCH_DECISIONS, "match_id", updated_expr=_MATCH_DECISIONS_WATERMARK
+    )
+    assert result.status == "fail"
+    assert "mrev" in result.affected_ids
+
+
+def test_audit_coverage_flags_bypass_decided_at_after_reverse(db: Database) -> None:
+    # The case COALESCE(reversed_at, decided_at) would miss: a reversed row whose
+    # decided_at is then bumped by a RAW update (no audit). GREATEST tracks the
+    # later of the two columns, so the post-reversal bump is still flagged.
+    repo = MatchDecisionsRepo(db)
+    _insert_match(repo, match_id="mpost")
+    repo.reverse("mpost", reversed_by="user", actor="cli")  # audited reverse
+    db.execute(
+        "UPDATE app.match_decisions "  # noqa: S608  # test input, not executing user SQL
+        "SET decided_at = now()::TIMESTAMP + INTERVAL 1 HOUR WHERE match_id = 'mpost'"
+    )
+    result = DoctorService(db)._run_app_audit_coverage(
+        MATCH_DECISIONS, "match_id", updated_expr=_MATCH_DECISIONS_WATERMARK
+    )
+    assert result.status == "fail"
+    assert "mpost" in result.affected_ids
+
+
+def test_audit_coverage_passes_for_repo_mutated_import(db: Database) -> None:
+    ImportsRepo(db).set("imp1", labels=["budget-2026"], actor="cli")
+    result = DoctorService(db)._run_app_audit_coverage(IMPORTS, "import_id")
+    assert result.status == "pass"
+
+
+def test_audit_coverage_rejects_non_allowlisted_updated_expr(db: Database) -> None:
+    # Defense-in-depth: a watermark expression outside the allowlist is refused
+    # before it can be spliced into SQL (security.md: allowlist dynamic SQL).
+    with pytest.raises(ValueError, match="updated_expr not in allowlist"):
+        DoctorService(db)._run_app_audit_coverage(
+            MATCH_DECISIONS, "match_id", updated_expr="decided_at); DROP TABLE x --"
+        )
+
+
+def test_audit_coverage_rejects_non_allowlisted_pk_expr(db: Database) -> None:
+    with pytest.raises(ValueError, match="pk_expr not in allowlist"):
+        DoctorService(db)._run_app_audit_coverage(
+            BALANCE_ASSERTIONS, "account_id", pk_expr="account_id); DROP TABLE x --"
+        )
+
+
+def test_match_decisions_account_fk_flags_orphan(db: Database) -> None:
+    create_core_tables(db)
+    db.execute(
+        "INSERT INTO core.dim_accounts (account_id) VALUES ('a1')"  # noqa: S608  # test input
+    )
+    repo = MatchDecisionsRepo(db)
+    _insert_match(repo, match_id="m_ok", account_id="a1")
+    _insert_match(repo, match_id="m_orphan", account_id="a_missing")
+    result = DoctorService(db)._run_match_decisions_account_fk()
+    assert result.status == "fail"
+    assert result.affected_ids == ["m_orphan"]
+
+
+def test_match_decisions_account_fk_flags_orphan_counterparty(db: Database) -> None:
+    create_core_tables(db)
+    db.execute(
+        "INSERT INTO core.dim_accounts (account_id) VALUES ('a1')"  # noqa: S608  # test input
+    )
+    repo = MatchDecisionsRepo(db)
+    # account_id resolves, but the transfer counterparty account_id_b does not.
+    _insert_match(repo, match_id="m_xfer", account_id="a1", account_id_b="a_missing")
+    result = DoctorService(db)._run_match_decisions_account_fk()
+    assert result.status == "fail"
+    assert result.affected_ids == ["m_xfer"]
+
+
+def test_match_decisions_account_fk_passes_when_all_resolve(db: Database) -> None:
+    create_core_tables(db)
+    db.execute(
+        "INSERT INTO core.dim_accounts (account_id) VALUES ('a1'), ('a2')"  # noqa: S608  # test input
+    )
+    repo = MatchDecisionsRepo(db)
+    _insert_match(repo, match_id="m1", account_id="a1")
+    _insert_match(repo, match_id="m2", account_id="a1", account_id_b="a2")
+    result = DoctorService(db)._run_match_decisions_account_fk()
+    assert result.status == "pass"
+
+
 def test_run_all_includes_app_integrity_invariants(db: Database) -> None:
     report = DoctorService(db).run_all()
     names = {r.name for r in report.invariants}
@@ -352,9 +518,13 @@ def test_run_all_includes_app_integrity_invariants(db: Database) -> None:
     assert "app_audit_coverage_account_settings" in names
     assert "app_audit_coverage_balance_assertions" in names
     assert "app_audit_coverage_budgets" in names
+    assert "app_audit_coverage_tabular_formats" in names
+    assert "app_audit_coverage_match_decisions" in names
+    assert "app_audit_coverage_imports" in names
     assert "app_account_settings_account_fk" in names
     assert "app_balance_assertions_account_fk" in names
     assert "app_budgets_category_fk" in names
+    assert "app_match_decisions_account_fk" in names
 
 
 # ---------------------------------------------------------------------------
