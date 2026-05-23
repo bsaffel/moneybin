@@ -264,8 +264,10 @@ class MatchesPendingPayload:
     """Payload for transactions_matches_pending."""
 
     matches: list[MatchPendingRow]
-    # Distinct dedup components among the returned pending rows — lets the agent
-    # see N-way grouping (rows sharing a component_key are copies of one txn).
+    # Distinct dedup components across the FULL pending dedup queue (not just the
+    # returned page) within the caller's match_type scope — lets the agent gauge
+    # the true N-way cluster total even when the queue is paginated. Rows sharing
+    # a component_key (within `matches`) are copies of one transaction.
     n_dedup_groups: int
 
 
