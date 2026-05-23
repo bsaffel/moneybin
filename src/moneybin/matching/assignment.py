@@ -5,6 +5,7 @@ scoring pair wins. Both rows in a winning pair are marked as "claimed"
 and cannot participate in further assignments.
 """
 
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Literal, Protocol
 
 if TYPE_CHECKING:
@@ -122,6 +123,32 @@ class UnionFind:
             return False
         self._parent[ra] = rb
         return True
+
+
+def connected_components(
+    edges: Iterable[tuple[NodeKey, NodeKey]],
+) -> list[list[NodeKey]]:
+    """Group the nodes touched by ``edges`` into connected components.
+
+    Returns one member list per component; each touched node appears in exactly
+    one list. The single grouping primitive shared by transfer secondary-
+    exclusion and pending-match clustering (the matcher's `assign_components` is
+    distinct — it builds the spanning forest incrementally rather than grouping
+    a fixed edge set).
+    """
+    uf = UnionFind()
+    seen: set[NodeKey] = set()
+    ordered: list[NodeKey] = []
+    for a, b in edges:
+        uf.union(a, b)
+        for node in (a, b):
+            if node not in seen:
+                seen.add(node)
+                ordered.append(node)
+    groups: dict[NodeKey, list[NodeKey]] = {}
+    for node in ordered:
+        groups.setdefault(uf.find(node), []).append(node)
+    return list(groups.values())
 
 
 def assign_components(

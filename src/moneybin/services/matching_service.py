@@ -17,7 +17,7 @@ from moneybin import error_codes
 from moneybin.config import MatchingSettings, get_settings
 from moneybin.database import Database
 from moneybin.errors import RecoveryAction, UserError
-from moneybin.matching.assignment import NodeKey, UnionFind
+from moneybin.matching.assignment import NodeKey, connected_components
 from moneybin.matching.engine import TransactionMatcher
 from moneybin.matching.persistence import (
     MatchStatus,
@@ -223,58 +223,21 @@ class MatchingService:
 
         Returns a dict keyed on (account_id, source_type, stid).
         """
-        edges = get_active_dedup_edges(self._db)
-        uf = UnionFind()
-
-        # Register all nodes and union each edge
-        for edge in edges:
-            acct = edge["account_id"]
-            node_a: NodeKey = (
-                edge["source_type_a"],
-                edge["source_transaction_id_a"],
-                acct,
+        edges: list[tuple[NodeKey, NodeKey]] = [
+            (
+                (e["source_type_a"], e["source_transaction_id_a"], e["account_id"]),
+                (e["source_type_b"], e["source_transaction_id_b"], e["account_id"]),
             )
-            node_b: NodeKey = (
-                edge["source_type_b"],
-                edge["source_transaction_id_b"],
-                acct,
-            )
-            uf.union(node_a, node_b)
-
-        # Collect every node that appeared in any edge, grouped by component root
-        # The key is (account_id, root) → list of packed "stype|stid" strings
-        component_members: dict[tuple[str, NodeKey], list[str]] = {}
-        for edge in edges:
-            acct = edge["account_id"]
-            for stype, stid in [
-                (edge["source_type_a"], edge["source_transaction_id_a"]),
-                (edge["source_type_b"], edge["source_transaction_id_b"]),
-            ]:
-                node: NodeKey = (stype, stid, acct)
-                root = uf.find(node)
-                bucket = component_members.setdefault((acct, root), [])
-                packed = f"{stype}|{stid}"
-                if packed not in bucket:
-                    bucket.append(packed)
-
-        # component_key = MIN packed member for each (account_id, root) bucket
-        comp_key_for: dict[tuple[str, NodeKey], str] = {
-            (acct, root): min(members)
-            for (acct, root), members in component_members.items()
-        }
-
-        # Build a lookup from (account_id, source_type, stid) → component_key
+            for e in get_active_dedup_edges(self._db)
+        ]
+        # Dedup edges only ever connect same-account nodes, so each component is
+        # account-scoped. component_key = MIN packed "stype|stid" over members,
+        # matching the prep fold's group_id.
         result: dict[tuple[str, str, str], str] = {}
-        for edge in edges:
-            acct = edge["account_id"]
-            for stype, stid in [
-                (edge["source_type_a"], edge["source_transaction_id_a"]),
-                (edge["source_type_b"], edge["source_transaction_id_b"]),
-            ]:
-                node = (stype, stid, acct)
-                root = uf.find(node)
-                result[(acct, stype, stid)] = comp_key_for[(acct, root)]
-
+        for members in connected_components(edges):
+            component_key = min(f"{st}|{stid}" for st, stid, _ in members)
+            for st, stid, acct in members:
+                result[(acct, st, stid)] = component_key
         return result
 
     def get_pending(

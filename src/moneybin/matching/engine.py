@@ -6,7 +6,6 @@ Each tier: blocking -> scoring -> 1:1 assignment -> persist decisions.
 
 import logging
 import uuid
-from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -16,9 +15,9 @@ from moneybin.database import Database
 from moneybin.matching import UNIONED_TABLE
 from moneybin.matching.assignment import (
     NodeKey,
-    UnionFind,
     assign_components,
     assign_greedy,
+    connected_components,
 )
 from moneybin.matching.persistence import (
     MatchStatus,
@@ -309,25 +308,15 @@ class TransactionMatcher:
             stid_a, st_a, stid_b, st_b, acct = row
             edges.append(((st_a, stid_a, acct), (st_b, stid_b, acct)))
 
-        # Build connected components over all edges so that every non-primary
-        # member of a component is excluded from transfer matching — not just
-        # the lower-priority side of each individual edge. Pairwise exclusion
-        # misses members that are the higher-priority side of their own edge
-        # but are still non-primary within the broader component (e.g. a "V"
-        # topology: manual–ofx and parquet–ofx share one component; pairwise
-        # keeps parquet eligible because parquet > ofx, but manual is primary).
-        uf = UnionFind()
-        for na, nb in edges:
-            uf.union(na, nb)
-        members_by_root: dict[NodeKey, list[NodeKey]] = defaultdict(list)
-        seen: set[NodeKey] = set()
-        for na, nb in edges:
-            for node in (na, nb):
-                if node not in seen:
-                    seen.add(node)
-                    members_by_root[uf.find(node)].append(node)
+        # Exclude every non-primary member of each component from transfer
+        # matching — not just the lower-priority side of each individual edge.
+        # Pairwise exclusion misses members that are the higher-priority side of
+        # their own edge but are still non-primary within the broader component
+        # (e.g. a "V" topology: manual–ofx and parquet–ofx share one component;
+        # pairwise keeps parquet eligible because parquet > ofx, but manual is
+        # primary).
         secondary: set[tuple[str, str, str]] = set()
-        for members in members_by_root.values():
+        for members in connected_components(edges):
             # node is (source_type, source_transaction_id, account_id)
             primary = min(members, key=lambda n: priority_index.get(n[0], max_pri))
             for n in members:
