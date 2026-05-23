@@ -11,6 +11,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 M2 closing out and M3 underway. M2A curator state shipped (transaction notes, tags, splits, manual entry, audit log). M2B architecture reference shipped (`architecture-shared-primitives.md`; writer-coordination contract via short-lived per-call connections). M2C brand surface advancing: `moneybin system doctor` integrity command, `reports.*` recipe library (eight curated views), and the `transform_*` MCP toolset closing the agent ingest loop. M3A Plaid Transactions sync shipped (Phase 1). Doc surface tightened for the personas reachable today; MCP surface hardened with protocol-standard annotations, `accounts_resolve`, list-parameter cap, structured error envelopes, and shell completion. Categorization correctness pass: memo-aware matcher, exemplar accumulation, source-precedence enforcement, auto-fan-out after apply; seed merchant catalogs retired in favor of user-driven and LLM-assist-driven merchant creation.
 
 ### Added
+- **`sql_query` MCP tool resolves each output column's data class via SQL lineage.**
+  sqlglot parses the query, expands `*` against a migration-version-keyed schema
+  snapshot, and maps every output column to the `DataClass` it derives from in
+  `core.*` / `app.*`. Aggregations follow settled tier rules: `COUNT(*)` /
+  `COUNT(DISTINCT col)` → LOW aggregate; `SUM`/`AVG` preserve the source class;
+  `MIN`/`MAX` preserve the source class; multi-column expressions take the
+  max-tier class; unresolvable projections fall back conservatively to the
+  max-tier input class.
 - AI consent ledger: `moneybin privacy grant/revoke/revoke-all/status/log` CLI
   commands and `privacy_consent_grant`, `privacy_consent_revoke`,
   `privacy_status`, `privacy_log` MCP tools, backed by the new
@@ -56,6 +64,11 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
 - `pyproject.toml` PyPI-publish-ready metadata (description, classifiers, URLs, keywords). Bumped setuptools floor to ≥77.0 for PEP 639 license metadata.
 
 ### Changed
+- **`sql_query` now reports per-query sensitivity instead of a fixed tier.**
+  `summary.sensitivity` reflects the highest-tier data class present in the
+  actual output columns (e.g. `"low"` for a pure `COUNT(*)` aggregate,
+  `"critical"` when an account-identifier column is projected). Previously the
+  tool always reported a static `"high"` tier via `unclassified=True`.
 - **Refresh now surfaces matcher/categorizer crashes (M2D PR 6).** `refresh_run` and `moneybin refresh` previously swallowed best-effort matching/categorization failures at DEBUG, so a partial pipeline (cross-source dupes accumulating, rows left uncategorized) looked healthy. `RefreshResult` gains `matching_error`, `categorization_error`, and a `self_heal_actions` list; the response envelope now carries structured `recovery_actions` (targeted `refresh_run(steps=[…])` retry plus a `system_doctor` diagnostic) when a step crashes. Real crashes log at ERROR; a first-load missing-view precondition stays a quiet DEBUG so a fresh database's first refresh doesn't report a false failure. Best-effort crashes still don't abort the pipeline or fail the command.
 - **Renamed CLI `sync connect` → `sync link` and MCP `sync_connect` → `sync_link`** (with `sync_connect_status` → `sync_link_status`). Establishes the verb-split formalized in `connect-gsheet.md`: `_link` for mediated providers (Plaid-style, server holds tokens), `_connect` for user-controlled storage (direct OAuth). The Plaid sync surface keeps Plaid's "Link" mental model users already recognize. Old names retained as deprecated aliases that warn and forward; will be removed in the next minor release.
 - **Error code taxonomy renamed under prefix-grouped namespaces** (M2D PR 2 — data-recovery-contract foundation). Bare-string codes emitted by `classify_user_error` and the `@mcp_tool` decorator now use prefixed forms via the new `moneybin.error_codes` module. Renames an agent might be branching on: `database_not_initialized` → `infra_database_not_initialized`, `database_locked` → `infra_database_locked`, `wrong_key` → `infra_wrong_key`, `schema_drift` → `infra_schema_drift`, `file_not_found` → `infra_file_not_found`, `io_error` → `infra_io_error`, `invalid_input` → `infra_invalid_input` (read-path default; write callers should `raise UserError(code=MUTATION_INVALID_INPUT)` directly per the in-tree migration in PRs 9a–N), `not_found` → `infra_not_found` (read-path; same write-site override applies for `MUTATION_NOT_FOUND`), `too_many_items` → `infra_too_many_items`, `timed_out` → `infra_timed_out`, `sync_error` → `sync_error` (already prefixed). Agents matching code literals against the old strings must update to the new constants. The six recovery-contract prefixes (`import_*`, `mutation_*`, `audit_*`, `refresh_*`, `undo_*`, `recovery_*`) plus `infra_*` and `sync_*` for absorbed legacy codes are documented in `src/moneybin/error_codes.py` and `docs/specs/data-recovery-contract.md` Req 3.
@@ -127,6 +140,12 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
 - **MCP resources `moneybin://status`, `moneybin://accounts`, `moneybin://privacy`, `moneybin://tools`, `accounts://summary`, `moneybin://recent-curation`, `net-worth://summary` removed.** These seven resources duplicated data already reachable via tools and added context-window overhead on every connect. `moneybin://schema` is retained — it has unique composition value for SQL generation that no single tool replicates.
 
 ### Security
+- **Account/routing-number columns in raw `sql_query` results are now masked,**
+  closing the raw-SQL masking bypass. CRITICAL-tier columns
+  (`ACCOUNT_IDENTIFIER`, `INSTITUTION_ACCOUNT_NUMBER`, `ROUTING_NUMBER`) are
+  masked with the same transforms the typed tools apply (`****<last4>` for
+  account numbers, `*****` for routing numbers) — `sql_query` is no longer a
+  privileged escape hatch around the privacy middleware.
 - **Privacy middleware shipped.** Account numbers, routing numbers, and other CRITICAL-tier fields are now masked by default in every MCP tool response and CLI `--output json` output. Masking is type-driven: tools declare `-> ResponseEnvelope[PayloadType]` whose fields carry `Annotated[..., DataClass.X]` registry markers; the runtime walks the type, derives sensitivity as the max tier across all annotated fields, applies per-class transforms (e.g. account number → `****<last4>`), and writes a structured event to `<profile>/privacy.log.jsonl`. `@mcp_tool` no longer accepts a `sensitivity=` kwarg — sensitivity is derived at registration time and tool registration fails at import if the return type lacks classification. `ResponseEnvelope` is now generic over the payload type. CLI `--output json` runs through the same redactor + log writer; text output bypasses (caller's renderer owns formatting). The `unclassified=True` opt-out on `@mcp_tool` is the documented escape hatch for `sql_query` / `sql_schema`, whose payload shape is decided by the caller's input (PR 4 replaces with sqlglot lineage). See [`docs/specs/privacy-data-classification.md`](docs/specs/privacy-data-classification.md) §"Implemented middleware". (PR #192)
 - Profile directories now created with `0o700` permissions (previously `0o755`), matching the `0o600` mode of the privacy event log and the privacy-sensitive nature of per-profile state (encrypted DB, secrets, daily events). (PR #192)
 

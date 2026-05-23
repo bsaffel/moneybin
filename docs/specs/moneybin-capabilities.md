@@ -97,6 +97,7 @@ not-yet-built.
 | 34| Revoke all active consent grants                                 | — *(bulk revoke; use `privacy_consent_revoke` per category)* | `privacy revoke-all` *(`--yes`)* | —             | live (CLI-only)       |
 | 35| View current consent state and configured backend                | `privacy_status`                    | `privacy status` *(`--output json`)*               | —          | live                  |
 | 36| Query recent privacy-log events (consent + tool calls)           | `privacy_log` *(`last?`, `actor?`)* | `privacy log` *(`--last`, `--actor`, `--output json`)* | —       | live                  |
+| 37| Execute an arbitrary read-only SQL query with CRITICAL columns masked via lineage | `sql_query` *(`query`)* | — *(cat 2 — operator path is `moneybin db query`, no privacy middleware)* | — | live |
 
 *(Bootstrap rows only; full table populates incrementally as
 follow-up work closes the parity backlog. A prior row covering
@@ -112,7 +113,10 @@ not-implemented placeholders with no backing spec. Rows 23–29 added
 `sync_connect` → `sync_link` rename co-shipped in the same PR.
 Rows 32–36 added 2026-05-22 with the consent ledger PR; row 34 is
 CLI-only because `revoke-all` is a bulk convenience with no MCP
-equivalent — use `privacy_consent_revoke` per category from MCP.)*
+equivalent — use `privacy_consent_revoke` per category from MCP.
+Row 37 added 2026-05-23 with the SQL lineage PR: `sql_query` now
+masks CRITICAL columns via sqlglot lineage; `moneybin db query` is
+CLI-only operator access (cat 2 — no privacy middleware).)*
 
 ## Exemption categories
 

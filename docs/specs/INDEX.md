@@ -73,7 +73,7 @@ Single source of truth for spec status. Update this table when a spec's status c
 | Spec | Type | Status | Summary |
 |---|---|---|---|
 | [Privacy & AI Trust](privacy-and-ai-trust.md) | Framework | ready | AI data flow tiers, consent model, provider profiles, redaction engine, audit log |
-| [Data Classification](privacy-data-classification.md) | Feature | implemented | `DataClass` registry + PR 2 middleware (introspection, redaction, privacy.log, generic `ResponseEnvelope[T]`, decorator derive-from-return-type, CLI parity). PR 3 shipped as the consent ledger (`app.ai_consent_grants` + CLI/MCP grant/revoke/status/log + paired audit; enforcement gate deferred). PR 4 (SQL lineage) tracked separately. |
+| [Data Classification](privacy-data-classification.md) | Feature | implemented | `DataClass` registry + PR 2 middleware (introspection, redaction, privacy.log, generic `ResponseEnvelope[T]`, decorator derive-from-return-type, CLI parity). PR 3 shipped the consent ledger (`app.ai_consent_grants` + CLI/MCP grant/revoke/status/log + paired audit; enforcement gate deferred). PR 4 shipped SQL lineage: `sql_query` now resolves each output column's `DataClass` via sqlglot and masks CRITICAL columns (account/routing numbers) — same rules as the typed tools. Consent gate still deferred project-wide. |
 | [Data Protection](privacy-data-protection.md) | Feature | implemented | DuckDB encryption at rest (AES-256-GCM), `Database` connection factory, key management, file permissions, PII log sanitization |
 | [Privacy & Security Roadmap](privacy-security-roadmap.md) | Roadmap | — | Three-tier data custody model overview |
 

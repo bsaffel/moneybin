@@ -138,6 +138,8 @@ Every command that **reads but does not mutate** state MUST accept:
 
 `db query` extends `--output` to `text|json|csv|markdown|box` since DuckDB's CLI supports all five natively.
 
+**Operator-bypass banner on direct-DB commands.** `db query`, `db shell`, and `db ui` are direct database access with no privacy middleware — CRITICAL-tier fields (account/routing numbers) are NOT masked. Each command emits a banner on stderr at invocation and includes the banner text in its `--help` output, directing operators to `moneybin sql query` for the privacy-safe MCP-backed path. Agents should use the `sql_query` MCP tool or `moneybin sql query` CLI command, not `moneybin db query`, when privacy enforcement is required.
+
 This makes every read command pipeable into `jq`, scripts, and AI agents. Audit-tested by `tests/moneybin/test_cli/test_cli_output_quiet.py`.
 
 ## Conventions

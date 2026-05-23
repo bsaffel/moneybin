@@ -1179,10 +1179,10 @@ Run the post-load refresh pipeline: cross-source matching, SQLMesh apply, determ
 
 Execute an arbitrary read-only SQL query against DuckDB.
 
-- **Sensitivity:** `medium` — can return any row-level data from core tables.
-- **Unique parameters:** `sql: str` (required).
-- **Behavior:** Validates query is read-only (SELECT, WITH, DESCRIBE, SHOW, PRAGMA, EXPLAIN). Blocks file-access functions (`read_csv`, `read_parquet`, etc.) and URL literals. Results capped at `MAX_ROWS` and `MAX_CHARS`. Returns results in the standard response envelope with column names as field keys. Degraded response rejects the query with a consent instruction — arbitrary SQL can't be meaningfully degraded to aggregates.
-- **CLI:** `moneybin db query "SELECT ..." [-o text|json|csv|markdown|box]`
+- **Sensitivity:** per-call — derived from the query's output columns via sqlglot lineage. CRITICAL if any output column is `ACCOUNT_IDENTIFIER`, `INSTITUTION_ACCOUNT_NUMBER`, or `ROUTING_NUMBER`; otherwise the max tier across classified output columns.
+- **Unique parameters:** `query: str` (required).
+- **Behavior:** Validates query is read-only (SELECT, WITH, DESCRIBE, SHOW, PRAGMA, EXPLAIN). Blocks file-access functions (`read_csv`, `read_parquet`, etc.) and URL literals. Results capped at `MAX_ROWS`. Each output column is resolved to its `DataClass` via sqlglot lineage against the live `core.*`/`app.*` schema snapshot; CRITICAL-tier columns (account and routing numbers) are masked using the same rules as the typed tools (`****<last4>` for account numbers, `*****` for routing numbers). HIGH/MEDIUM/LOW columns (amounts, descriptions, dates) pass through in the clear — same behavior as `transactions_get` and other typed tools. Returns results in the standard response envelope with per-query `summary.sensitivity`; `summary.classes_returned` lists the resolved `DataClass` values for audit. Lineage covers `core.*` and `app.*`; queries touching only `raw.*`/`prep.*` fall back to a conservative max-tier estimate. For the privacy-safe agent path, prefer this tool over direct `moneybin db query` CLI access (which has no privacy middleware).
+- **CLI:** `moneybin db query "SELECT ..." [-o text|json|csv|markdown|box]` — direct DB access, no privacy middleware; see operator-bypass banner in that command's help.
 
 ### `sql_schema`
 
