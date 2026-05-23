@@ -34,7 +34,7 @@ _LOCK = threading.Lock()
 # line-by-line into memory; cap here (one enforcement point for both the CLI
 # --last flag and the MCP last param) so an unbounded request can't pull every
 # rotated log into a Python list.
-_MAX_LOG_ROWS = 1000
+MAX_LOG_ROWS = 1000
 
 
 def _resolve_privacy_log_dir() -> Path:
@@ -224,7 +224,7 @@ def read_privacy_events(
     # otherwise return the first matching row (1 >= 0). Short-circuit here.
     if max_rows <= 0:
         return []
-    max_rows = min(max_rows, _MAX_LOG_ROWS)
+    max_rows = min(max_rows, MAX_LOG_ROWS)
     log_dir = _resolve_privacy_log_dir()
     if not log_dir.exists():
         return []

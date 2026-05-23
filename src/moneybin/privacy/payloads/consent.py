@@ -77,6 +77,7 @@ class PrivacyLogRow:
     # discriminates the shape; consumers branch on it, not on field null-ness.
     feature_category: Annotated[str | None, DataClass.CATEGORY] = None
     backend: Annotated[str | None, DataClass.INSTITUTION] = None
+    consent_mode: Annotated[str | None, DataClass.TXN_TYPE] = None
     sensitivity: Annotated[str | None, DataClass.AGGREGATE] = None
     row_count: Annotated[int | None, DataClass.AGGREGATE] = None
     classes_returned: Annotated[list[str] | None, DataClass.AGGREGATE] = None
@@ -86,6 +87,7 @@ class PrivacyLogRow:
         """Build a row from a raw privacy-log event dict (either event shape)."""
         fc = event.get("feature_category")
         bk = event.get("backend")
+        cm = event.get("consent_mode")
         sv = event.get("sensitivity")
         rc = event.get("row_count")
         cr = event.get("classes_returned")
@@ -95,6 +97,7 @@ class PrivacyLogRow:
             actor=str(event.get("actor", "")),
             feature_category=str(fc) if fc is not None else None,
             backend=str(bk) if bk is not None else None,
+            consent_mode=str(cm) if cm is not None else None,
             sensitivity=str(sv) if sv is not None else None,
             row_count=int(rc) if rc is not None else None,
             classes_returned=list(cr) if cr is not None else None,

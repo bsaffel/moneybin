@@ -12,13 +12,13 @@ from moneybin.protocol.envelope import build_envelope
 
 
 def privacy_log(
-    last: int = typer.Option(50, "--last", help="Max events to show"),
+    last: int = typer.Option(50, "--last", help="Max events to show (capped at 1000)"),
     actor: str | None = typer.Option(None, "--actor", help="Filter by actor"),
     output: OutputFormat = output_option,
 ) -> None:
     """Show recent privacy log events (consent grants/revokes + tool calls)."""
     filters: dict[str, object] = {}
-    if actor:
+    if actor is not None:
         filters["actor"] = actor
     with handle_cli_errors():
         events = read_privacy_events(filters, max_rows=last)
@@ -37,5 +37,6 @@ def privacy_log(
                 f"sensitivity={e.sensitivity or '(n/a)'} classes={classes} rows={rows}"
             )
         else:
-            detail = f"{e.feature_category or ''} | {e.backend or ''}"
+            mode = f" | {e.consent_mode}" if e.consent_mode else ""
+            detail = f"{e.feature_category or ''} | {e.backend or ''}{mode}"
         typer.echo(f"{e.ts} | {e.action} | {e.actor} | {detail}")

@@ -83,5 +83,7 @@ async def test_log_tool_returns_events(
     await privacy_consent_grant(category="mcp-data-sharing")
     env = await privacy_log(last=20)
     assert env.error is None
-    actions = {e.action for e in env.data.events}
-    assert "consent.grant" in actions
+    grants = [e for e in env.data.events if e.action == "consent.grant"]
+    assert grants, "consent.grant event missing from privacy_log"
+    # consent_mode must survive the round-trip — auditors need persistent vs one-time.
+    assert grants[0].consent_mode == "persistent"

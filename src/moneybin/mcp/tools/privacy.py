@@ -20,7 +20,7 @@ from moneybin.database import get_database
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.privacy.consent import ConsentMode
-from moneybin.privacy.log import read_privacy_events
+from moneybin.privacy.log import MAX_LOG_ROWS, read_privacy_events
 from moneybin.privacy.payloads.consent import (
     ConsentGrantRow,
     ConsentMutationPayload,
@@ -134,13 +134,19 @@ def privacy_log(
         actor: Optional exact-match actor filter.
     """
     filters: dict[str, object] = {}
-    if actor:
+    if actor is not None:
         filters["actor"] = actor
     events = read_privacy_events(filters, max_rows=last)
+    # When the read hit the server cap, signal truncation via has_more — a
+    # capped result is otherwise indistinguishable from a short log. total_count
+    # is a floor (len+1), not an exact count: counting all matches would mean a
+    # second full scan of the log.
+    capped = last > MAX_LOG_ROWS and len(events) >= MAX_LOG_ROWS
     return build_envelope(
         data=PrivacyLogPayload(
             events=[PrivacyLogRow.from_event(e) for e in events],
         ),
+        total_count=len(events) + 1 if capped else None,
     )
 
 
