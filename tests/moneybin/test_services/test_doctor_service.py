@@ -492,13 +492,14 @@ def test_run_all_returns_expected_invariants(
     monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
     svc = DoctorService(doctor_db)
     report = svc.run_all()
-    # 3 sqlmesh audits + dedup_reconciliation + categorization + 11 app.* integrity
+    # 3 sqlmesh audits + dedup_reconciliation + categorization + 15 app.* integrity
     # checks
     # (audit coverage for user_categories / category_overrides / gsheet_connections
     # / user_merchants / categorization_rules / proposed_rules /
-    # transaction_categories + user_categories uniqueness + user_merchants
-    # orphans + proposed_rules->rule FK + transaction_categories->fct FK).
-    assert len(report.invariants) == 16
+    # transaction_categories / tabular_formats / match_decisions / imports +
+    # user_categories uniqueness + user_merchants orphans + proposed_rules->rule
+    # FK + transaction_categories->fct FK + match_decisions->dim_accounts FK).
+    assert len(report.invariants) == 20
     names = [r.name for r in report.invariants]
     assert "fct_transactions_fk_integrity" in names
     assert "fct_transactions_sign_convention" in names
@@ -508,6 +509,10 @@ def test_run_all_returns_expected_invariants(
     assert "app_audit_coverage_user_categories" in names
     assert "app_audit_coverage_category_overrides" in names
     assert "app_audit_coverage_gsheet_connections" in names
+    assert "app_audit_coverage_tabular_formats" in names
+    assert "app_audit_coverage_match_decisions" in names
+    assert "app_audit_coverage_imports" in names
+    assert "app_match_decisions_account_fk" in names
     assert "app_user_categories_uniqueness" in names
 
 

@@ -15,11 +15,14 @@ from moneybin.tables import (
     AUDIT_LOG,
     CATEGORIZATION_RULES,
     CATEGORY_OVERRIDES,
+    DIM_ACCOUNTS,
     FCT_TRANSACTIONS,
     GSHEET_CONNECTIONS,
+    IMPORTS,
     INT_TRANSACTIONS_UNIONED,
     MATCH_DECISIONS,
     PROPOSED_RULES,
+    TABULAR_FORMATS,
     TRANSACTION_CATEGORIES,
     USER_CATEGORIES,
     USER_MERCHANTS,
@@ -105,15 +108,16 @@ class DoctorService:
 
         Covers every table wrapped in a repo so far (``user_categories``,
         ``category_overrides``, ``gsheet_connections``, ``user_merchants``,
-        ``categorization_rules``, ``proposed_rules``, ``transaction_categories``);
-        later repository PRs append one coverage call per newly-wrapped table
-        plus that table's FK/orphan specifics.
+        ``categorization_rules``, ``proposed_rules``, ``transaction_categories``,
+        plus the edge writers ``tabular_formats``, ``match_decisions``, and
+        ``imports``); later repository PRs append one coverage call per
+        newly-wrapped table plus that table's FK/orphan specifics.
 
         Tables without an ``updated_at`` column pass their natural watermark:
         ``proposed_rules`` → ``proposed_at``, ``transaction_categories`` →
-        ``categorized_at``. Those watermarks catch bypass INSERTs; bypass
-        UPDATEs are the lint rule's job — the heuristic limitation the helper
-        documents.
+        ``categorized_at``, ``match_decisions`` → ``decided_at``. Those
+        watermarks catch bypass INSERTs; bypass UPDATEs are the lint rule's job —
+        the heuristic limitation the helper documents.
         """
         return [
             self._run_app_audit_coverage(USER_CATEGORIES, "category_id", full=full),
@@ -135,10 +139,16 @@ class DoctorService:
                 updated_col="categorized_at",
                 full=full,
             ),
+            self._run_app_audit_coverage(TABULAR_FORMATS, "name", full=full),
+            self._run_app_audit_coverage(
+                MATCH_DECISIONS, "match_id", updated_col="decided_at", full=full
+            ),
+            self._run_app_audit_coverage(IMPORTS, "import_id", full=full),
             self._run_user_categories_uniqueness(),
             self._run_user_merchants_orphans(),
             self._run_proposed_rules_rule_fk(),
             self._run_transaction_categories_fk(),
+            self._run_match_decisions_account_fk(),
         ]
 
     def _run_app_audit_coverage(
@@ -398,6 +408,56 @@ class DoctorService:
                 detail=(
                     f"{len(affected)} transaction_categories row(s) reference a "
                     "transaction_id absent from core.fct_transactions"
+                ),
+                affected_ids=affected,
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _run_match_decisions_account_fk(self) -> InvariantResult:
+        """Flag ``match_decisions`` whose account references are absent from ``dim_accounts``.
+
+        ``match_decisions`` stores *source-native* transaction ids
+        (``source_transaction_id_a``/``_b`` + type + origin), which resolve in the
+        staging layer, not in ``core.fct_transactions`` — so there is no clean
+        transaction FK here (see the spec's Batch D reconciliation note). But
+        ``account_id`` IS the gold account key, and ``account_id_b`` is the
+        transfer counterparty (NULL for dedup); an account referenced by a
+        decision but missing from ``core.dim_accounts`` means a re-import dropped
+        the account while leaving its decisions (orphan). Skipped before the first
+        transform builds ``core.dim_accounts``.
+        """
+        name = "app_match_decisions_account_fk"
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT m.match_id
+                FROM {MATCH_DECISIONS.full_name} m
+                WHERE NOT EXISTS (
+                        SELECT 1 FROM {DIM_ACCOUNTS.full_name} a
+                        WHERE a.account_id = m.account_id
+                      )
+                   OR (m.account_id_b IS NOT NULL AND NOT EXISTS (
+                        SELECT 1 FROM {DIM_ACCOUNTS.full_name} a
+                        WHERE a.account_id = m.account_id_b
+                      ))
+                ORDER BY m.match_id
+                """  # noqa: S608  # TableRef constants, no user input
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — core.dim_accounts may not exist yet
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"FK check unavailable: {e}",
+                affected_ids=[],
+            )
+        if rows:
+            affected = [str(r[0]) for r in rows]
+            return InvariantResult(
+                name=name,
+                status="fail",
+                detail=(
+                    f"{len(affected)} match_decisions row(s) reference an "
+                    "account_id absent from core.dim_accounts"
                 ),
                 affected_ids=affected,
             )

@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 from moneybin.config import MatchingSettings, get_settings
 from moneybin.database import Database
 from moneybin.matching.engine import TransactionMatcher
-from moneybin.matching.persistence import get_match_log, undo_match
+from moneybin.matching.persistence import get_match_log
 from moneybin.matching.priority import seed_source_priority
 from moneybin.tables import MATCH_DECISIONS
 
@@ -45,15 +45,19 @@ class MatchingService:
         except Exception:  # noqa: BLE001 — table may not exist before first run
             return 0
 
-    def run(self, *, auto_accept_transfers: bool = False) -> MatchResult:
+    def run(
+        self, *, auto_accept_transfers: bool = False, actor: str = "system"
+    ) -> MatchResult:
         """Run same-record dedup (Tier 2b/3) and transfer detection (Tier 4).
 
         ``auto_accept_transfers`` simulates automated review — used by the
         scenario runner so evaluations can read accepted transfers from
-        ``core.bridge_transfers`` without an interactive step.
+        ``core.bridge_transfers`` without an interactive step. ``actor`` is the
+        audit actor for the decisions written this run (surfaces pass
+        ``"cli"``/``"mcp"``; defaults to ``"system"`` for automated callers).
         """
         seed_source_priority(self._db, self._settings)
-        return TransactionMatcher(self._db, self._settings).run(
+        return TransactionMatcher(self._db, self._settings, actor=actor).run(
             auto_accept_transfers=auto_accept_transfers
         )
 
@@ -67,14 +71,25 @@ class MatchingService:
         """
         seed_source_priority(self._db, self._settings)
 
-    def undo(self, match_id: str, *, reversed_by: str = "user") -> None:
-        """Reverse a match decision.
+    def undo(
+        self, match_id: str, *, reversed_by: str = "user", actor: str = "user"
+    ) -> None:
+        """Reverse a match decision (audited via ``MatchDecisionsRepo``).
 
-        Wraps :func:`moneybin.matching.persistence.undo_match` so adapters
-        route through the service rather than importing the persistence
-        module directly.
+        ``reversed_by`` is the domain column (``user``/``system``); ``actor`` is
+        the audit actor (the surface: ``cli``/``mcp``). Raises ``ValueError``
+        when no match with this id exists.
         """
-        undo_match(self._db, match_id, reversed_by=reversed_by)
+        # Deferred import: this module is eagerly imported by
+        # ``services.__init__``, and the repo's base → ``services.audit_service``
+        # chain re-enters that path; a module-top import here would cycle.
+        from moneybin.repositories.match_decisions_repo import (  # noqa: PLC0415
+            MatchDecisionsRepo,
+        )
+
+        MatchDecisionsRepo(self._db).reverse(
+            match_id, reversed_by=reversed_by, actor=actor
+        )
 
     def get_log(
         self, *, limit: int = 50, match_type: str | None = None

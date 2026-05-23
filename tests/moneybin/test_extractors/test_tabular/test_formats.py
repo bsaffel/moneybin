@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from moneybin.database import Database
 from moneybin.extractors.tabular.formats import TabularFormat
 
 
@@ -125,12 +126,16 @@ class TestTabularFormatModel:
 class TestFormatDBOperations:
     """Tests for DB persistence functions."""
 
-    def test_save_format_to_db(self) -> None:
-        from unittest.mock import MagicMock
+    def test_save_format_to_db(self, db: Database) -> None:
+        # Real-DB round-trip: save_format_to_db now delegates to
+        # TabularFormatsRepo (audited write), so assert the row reads back rather
+        # than mocking db.execute. Repo-level audit/rollback is covered in
+        # tests/moneybin/test_repositories/test_tabular_formats_repo.py.
+        from moneybin.extractors.tabular.formats import (
+            load_formats_from_db,
+            save_format_to_db,
+        )
 
-        from moneybin.extractors.tabular.formats import save_format_to_db
-
-        mock_db = MagicMock()
         fmt = TabularFormat(
             name="test_bank",
             institution_name="Test Bank",
@@ -139,8 +144,10 @@ class TestFormatDBOperations:
             sign_convention="negative_is_expense",
             date_format="%m/%d/%Y",
         )
-        save_format_to_db(mock_db, fmt)
-        assert mock_db.execute.called
+        save_format_to_db(db, fmt, actor="cli")
+        loaded = load_formats_from_db(db)
+        assert "test_bank" in loaded
+        assert loaded["test_bank"].institution_name == "Test Bank"
 
     def test_load_formats_from_db(self) -> None:
         from unittest.mock import MagicMock
@@ -153,25 +160,27 @@ class TestFormatDBOperations:
         assert isinstance(formats, dict)
         assert len(formats) == 0
 
-    def test_delete_format_from_db(self) -> None:
-        from unittest.mock import MagicMock
+    def test_delete_format_from_db(self, db: Database) -> None:
+        from moneybin.extractors.tabular.formats import (
+            delete_format_from_db,
+            save_format_to_db,
+        )
 
+        fmt = TabularFormat(
+            name="test_bank",
+            institution_name="Test Bank",
+            header_signature=["Date", "Amount"],
+            field_mapping={"transaction_date": "Date", "amount": "Amount"},
+            sign_convention="negative_is_expense",
+            date_format="%m/%d/%Y",
+        )
+        save_format_to_db(db, fmt, actor="cli")
+        assert delete_format_from_db(db, "test_bank", actor="cli") is True
+
+    def test_delete_nonexistent_format(self, db: Database) -> None:
         from moneybin.extractors.tabular.formats import delete_format_from_db
 
-        mock_db = MagicMock()
-        mock_db.execute.return_value.fetchone.return_value = ("test_bank",)
-        result = delete_format_from_db(mock_db, "test_bank")
-        assert result is True
-
-    def test_delete_nonexistent_format(self) -> None:
-        from unittest.mock import MagicMock
-
-        from moneybin.extractors.tabular.formats import delete_format_from_db
-
-        mock_db = MagicMock()
-        mock_db.execute.return_value.fetchone.return_value = None
-        result = delete_format_from_db(mock_db, "nonexistent")
-        assert result is False
+        assert delete_format_from_db(db, "nonexistent", actor="cli") is False
 
     def test_user_format_overrides_builtin(self) -> None:
         from moneybin.extractors.tabular.formats import (

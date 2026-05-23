@@ -18,7 +18,6 @@ from moneybin.matching.persistence import (
     MatchStatus,
     MatchTier,
     MatchType,
-    create_match_decision,
     get_rejected_pairs,
 )
 from moneybin.matching.scoring import (
@@ -95,11 +94,27 @@ class TransactionMatcher:
         settings: MatchingSettings,
         *,
         table: str = UNIONED_TABLE,
+        actor: str = "system",
     ) -> None:
-        """Initialize the matcher with a database connection, settings, and source table."""
+        """Initialize the matcher with a database connection, settings, and source table.
+
+        ``actor`` is the audit actor for the match decisions this run writes
+        (``"system"`` for automated runs; surfaces pass ``"cli"``/``"mcp"``).
+        Every decision is also ``decided_by="auto"`` — the matcher proposes, the
+        user disposes.
+        """
+        # Deferred import: engine is loaded via services.__init__ →
+        # matching_service → engine, and the repo's base → services.audit_service
+        # chain re-enters that path; a module-top import here would cycle.
+        from moneybin.repositories.match_decisions_repo import (  # noqa: PLC0415
+            MatchDecisionsRepo,
+        )
+
         self._db = db
         self._settings = settings
         self._table = table
+        self._actor = actor
+        self._decisions = MatchDecisionsRepo(db)
 
     def run(self, *, auto_accept_transfers: bool = False) -> MatchResult:
         """Run Tier 2b then Tier 3 matching.
@@ -189,10 +204,9 @@ class TransactionMatcher:
         status: MatchStatus,
         decided_by: str,
     ) -> None:
-        """Write one dedup match decision to the database."""
+        """Write one dedup match decision to the database (audited)."""
         match_id = uuid.uuid4().hex[:12]
-        create_match_decision(
-            self._db,
+        self._decisions.insert(
             match_id=match_id,
             source_transaction_id_a=pair.source_transaction_id_a,
             source_type_a=pair.source_type_a,
@@ -213,6 +227,7 @@ class TransactionMatcher:
                 f"Amount match, {pair.date_distance_days}d apart, "
                 f"desc similarity {pair.description_similarity:.2f}"
             ),
+            actor=self._actor,
         )
 
     def _run_tier(
@@ -358,8 +373,7 @@ class TransactionMatcher:
                 continue
 
             match_id = uuid.uuid4().hex[:12]
-            create_match_decision(
-                self._db,
+            self._decisions.insert(
                 match_id=match_id,
                 source_transaction_id_a=pair.source_transaction_id_a,
                 source_type_a=pair.source_type_a,
@@ -382,6 +396,7 @@ class TransactionMatcher:
                     f"Transfer: {pair.account_id_a[:8]} -> {pair.account_id_b[:8]}, "
                     f"{pair.date_distance_days}d apart"
                 ),
+                actor=self._actor,
             )
 
             if auto_accept:

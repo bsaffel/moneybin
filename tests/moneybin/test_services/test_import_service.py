@@ -40,15 +40,14 @@ def test_add_labels_creates_app_imports_row(db: Database) -> None:
     assert list(row[0]) == ["budget-2026", "tax:2026"]
     assert row[1] == "cli"
 
-    # Two add events emitted, each scoped to imports table.
+    # One full-row import.set event per write (Invariant 10, full before/after).
     audits = db.conn.execute(
-        "SELECT action, target_table, target_id, after_value FROM app.audit_log "
-        "WHERE action = 'import_label.add' ORDER BY occurred_at"
+        "SELECT target_table, target_id, after_value FROM app.audit_log "
+        "WHERE action = 'import.set' ORDER BY occurred_at"
     ).fetchall()
-    assert len(audits) == 2
-    assert all(a[1] == "imports" and a[2] == "imp-1" for a in audits)
-    payloads = [json.loads(a[3]) for a in audits]
-    assert {p["label"] for p in payloads} == {"budget-2026", "tax:2026"}
+    assert len(audits) == 1
+    assert audits[0][0] == "imports" and audits[0][1] == "imp-1"
+    assert json.loads(audits[0][2])["labels"] == ["budget-2026", "tax:2026"]
 
 
 @pytest.mark.unit
@@ -67,11 +66,11 @@ def test_add_labels_appends_to_existing(db: Database) -> None:
     svc.add_labels("imp-1", ["a"], actor="cli")
     out = svc.add_labels("imp-1", ["b", "a"], actor="cli")  # 'a' is dup
     assert out == ["a", "b"]
-    add_count = db.conn.execute(
-        "SELECT COUNT(*) FROM app.audit_log WHERE action = 'import_label.add'"
+    set_count = db.conn.execute(
+        "SELECT COUNT(*) FROM app.audit_log WHERE action = 'import.set'"
     ).fetchone()
-    # Only the new label produces an audit event (a + b initial, b on second).
-    assert add_count is not None and add_count[0] == 2
+    # Each add_labels call emits one full-row import.set audit event.
+    assert set_count is not None and set_count[0] == 2
 
 
 @pytest.mark.unit
@@ -80,11 +79,13 @@ def test_remove_labels_drops_from_list(db: Database) -> None:
     svc.add_labels("imp-1", ["a", "b", "c"], actor="cli")
     out = svc.remove_labels("imp-1", ["b", "missing"], actor="cli")
     assert out == ["a", "c"]
-    remove_count = db.conn.execute(
-        "SELECT COUNT(*) FROM app.audit_log WHERE action = 'import_label.remove'"
-    ).fetchone()
-    # Only 'b' was actually present, so only one remove event.
-    assert remove_count is not None and remove_count[0] == 1
+    # add + remove = two import.set events; the latest captures the result.
+    audits = db.conn.execute(
+        "SELECT after_value FROM app.audit_log WHERE action = 'import.set' "
+        "ORDER BY occurred_at"
+    ).fetchall()
+    assert len(audits) == 2
+    assert json.loads(audits[-1][0])["labels"] == ["a", "c"]
 
 
 @pytest.mark.unit
@@ -101,17 +102,15 @@ def test_set_labels_replaces_full_list(db: Database) -> None:
     assert list(row[0]) == ["b", "c"]
     assert row[1] == "mcp"
 
-    # set_labels emits 1 add ('c') + 1 remove ('a').
-    adds = db.conn.execute(
-        "SELECT COUNT(*) FROM app.audit_log "
-        "WHERE action = 'import_label.add' AND actor = 'mcp'"
-    ).fetchone()
-    removes = db.conn.execute(
-        "SELECT COUNT(*) FROM app.audit_log "
-        "WHERE action = 'import_label.remove' AND actor = 'mcp'"
-    ).fetchone()
-    assert adds is not None and adds[0] == 1
-    assert removes is not None and removes[0] == 1
+    # set_labels emits one full-row import.set with the new actor + state.
+    audits = db.conn.execute(
+        "SELECT before_value, after_value FROM app.audit_log "
+        "WHERE action = 'import.set' AND actor = 'mcp' ORDER BY occurred_at"
+    ).fetchall()
+    assert len(audits) == 1
+    before, after = json.loads(audits[0][0]), json.loads(audits[0][1])
+    assert before["labels"] == ["a", "b"]
+    assert after["labels"] == ["b", "c"]
 
 
 @pytest.mark.unit
