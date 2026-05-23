@@ -32,7 +32,8 @@ class TransactionTagsRepo(BaseRepo):
 
     repository = "transaction_tags"
 
-    _AUDIT_TARGET = (TRANSACTION_TAGS.schema, TRANSACTION_TAGS.name)
+    table_ref = TRANSACTION_TAGS
+    pk_columns = ("transaction_id", "tag")
 
     def _fetch_tag(self, transaction_id: str, tag: str) -> dict[str, Any] | None:
         """Read one (transaction_id, tag) row as a full dict, or ``None``.
@@ -75,7 +76,7 @@ class TransactionTagsRepo(BaseRepo):
             after = self._fetch_tag(transaction_id, tag)
             return self._emit_audit(
                 action="tag.add",
-                target=(*self._AUDIT_TARGET, transaction_id),
+                target=(*self._audit_target, transaction_id),
                 before=None,
                 after=self._serialize_for_audit(after),
                 actor=actor,
@@ -108,7 +109,7 @@ class TransactionTagsRepo(BaseRepo):
             )
             return self._emit_audit(
                 action="tag.remove",
-                target=(*self._AUDIT_TARGET, transaction_id),
+                target=(*self._audit_target, transaction_id),
                 before=self._serialize_for_audit(before),
                 after=None,
                 actor=actor,
@@ -145,7 +146,7 @@ class TransactionTagsRepo(BaseRepo):
             after = self._fetch_tag(transaction_id, new_tag)
             return self._emit_audit(
                 action="tag.rename_row",
-                target=(*self._AUDIT_TARGET, transaction_id),
+                target=(*self._audit_target, transaction_id),
                 before=self._serialize_for_audit(before),
                 after=self._serialize_for_audit(after),
                 actor=actor,

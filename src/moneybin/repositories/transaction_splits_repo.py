@@ -37,7 +37,8 @@ class TransactionSplitsRepo(BaseRepo):
 
     repository = "transaction_splits"
 
-    _AUDIT_TARGET = (TRANSACTION_SPLITS.schema, TRANSACTION_SPLITS.name)
+    table_ref = TRANSACTION_SPLITS
+    pk_columns = ("split_id",)
 
     def _fetch_row(self, split_id: str) -> dict[str, Any] | None:
         return self._fetch_one(
@@ -87,7 +88,7 @@ class TransactionSplitsRepo(BaseRepo):
             after = self._fetch_row(split_id)
             return self._emit_audit(
                 action="split.add",
-                target=(*self._AUDIT_TARGET, transaction_id),
+                target=(*self._audit_target, transaction_id),
                 before=None,
                 after=self._serialize_for_audit(after),
                 actor=actor,
@@ -116,7 +117,7 @@ class TransactionSplitsRepo(BaseRepo):
             )
             return self._emit_audit(
                 action="split.remove",
-                target=(*self._AUDIT_TARGET, before["transaction_id"]),
+                target=(*self._audit_target, before["transaction_id"]),
                 before=self._serialize_for_audit(before),
                 after=None,
                 actor=actor,

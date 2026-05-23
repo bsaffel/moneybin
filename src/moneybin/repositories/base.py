@@ -60,23 +60,47 @@ class BaseRepo:
     #: Stable repository label for the ``app_mutation_audit_emitted_total`` metric.
     repository: ClassVar[str]
 
-    def __init_subclass__(cls, **kwargs: object) -> None:
-        """Fail at class-definition time if a repo forgets its ``repository`` label.
+    #: The protected ``app.*`` table this repo owns. Drives undo targeting and
+    #: the dispatch registry (REC-PR3).
+    table_ref: ClassVar[TableRef]
 
-        Without this, a missing label only surfaces as an ``AttributeError`` the
-        first time ``_emit_audit`` runs at runtime — fail fast at import instead.
+    #: Primary-key column(s) of ``table_ref`` — a tuple so composite keys (e.g.
+    #: ``transaction_tags`` = ``(transaction_id, tag)``) work uniformly. The undo
+    #: engine builds its WHERE clause from these.
+    pk_columns: ClassVar[tuple[str, ...]]
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        """Fail at class-definition time if a repo omits required metadata.
+
+        Each repo must declare ``repository`` (metric label), ``table_ref`` (the
+        owned table), and ``pk_columns`` (its primary key). Without this, a
+        missing attr only surfaces as an ``AttributeError`` deep in a runtime
+        path — fail fast at import instead.
         """
         super().__init_subclass__(**kwargs)
-        if not hasattr(cls, "repository"):
-            raise TypeError(
-                f"{cls.__name__} must set a class-level `repository` label "
-                "(used for the app_mutation_audit_emitted_total metric)."
-            )
+        for attr, why in (
+            ("repository", "the app_mutation_audit_emitted_total metric label"),
+            ("table_ref", "the owned app.* table (undo targeting + dispatch)"),
+            ("pk_columns", "the table's primary-key columns (undo WHERE clause)"),
+        ):
+            if not hasattr(cls, attr):
+                raise TypeError(
+                    f"{cls.__name__} must set a class-level `{attr}` — {why}."
+                )
 
     def __init__(self, db: Database, *, audit: AuditService | None = None) -> None:
         """Bind to an open Database; lazily build an ``AuditService`` if absent."""
         self._db = db
         self._audit = audit if audit is not None else AuditService(db)
+
+    @property
+    def _audit_target(self) -> tuple[str, str]:
+        """The (schema, table) audit-target prefix, derived from ``table_ref``.
+
+        Repos pass ``(*self._audit_target, entity_id)`` as the audit target;
+        deriving it here keeps the table named in exactly one place per repo.
+        """
+        return (self.table_ref.schema, self.table_ref.name)
 
     @contextmanager
     def _transaction(self, *, in_outer_txn: bool = False) -> Generator[None]:

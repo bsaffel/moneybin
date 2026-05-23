@@ -20,12 +20,15 @@ from prometheus_client import REGISTRY
 
 from moneybin.repositories.base import BaseRepo
 from moneybin.services.audit_service import AuditEvent
+from moneybin.tables import TableRef
 
 
 class _FakeRepo(BaseRepo):
     """Minimal concrete repo for exercising BaseRepo in isolation."""
 
     repository = "fake"
+    table_ref = TableRef("app", "fake")
+    pk_columns = ("id",)
 
 
 def _metric_value(action: str) -> float:

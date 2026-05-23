@@ -66,7 +66,8 @@ class MatchDecisionsRepo(BaseRepo):
 
     repository = "match_decisions"
 
-    _AUDIT_TARGET = (MATCH_DECISIONS.schema, MATCH_DECISIONS.name)
+    table_ref = MATCH_DECISIONS
+    pk_columns = ("match_id",)
 
     def _fetch_row(self, match_id: str) -> dict[str, Any] | None:
         return self._fetch_one(
@@ -141,7 +142,7 @@ class MatchDecisionsRepo(BaseRepo):
             after = self._fetch_row(match_id)
             return self._emit_audit(
                 action="match_decision.insert",
-                target=(*self._AUDIT_TARGET, match_id),
+                target=(*self._audit_target, match_id),
                 before=None,
                 after=self._serialize_for_audit(after),
                 actor=actor,
@@ -176,7 +177,7 @@ class MatchDecisionsRepo(BaseRepo):
             after = self._fetch_row(match_id)
             return self._emit_audit(
                 action="match_decision.update_status",
-                target=(*self._AUDIT_TARGET, match_id),
+                target=(*self._audit_target, match_id),
                 before=self._serialize_for_audit(before),
                 after=self._serialize_for_audit(after),
                 actor=actor,
@@ -211,7 +212,7 @@ class MatchDecisionsRepo(BaseRepo):
             after = self._fetch_row(match_id)
             return self._emit_audit(
                 action="match_decision.reverse",
-                target=(*self._AUDIT_TARGET, match_id),
+                target=(*self._audit_target, match_id),
                 before=self._serialize_for_audit(before),
                 after=self._serialize_for_audit(after),
                 actor=actor,
