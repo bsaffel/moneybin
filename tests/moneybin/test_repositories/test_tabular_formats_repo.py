@@ -121,6 +121,8 @@ def test_set_upsert_captures_full_before_and_after(db: Database) -> None:
     assert before["institution_name"] == "Chase"
     assert after["institution_name"] == "Chase Bank"
     assert after["times_used"] == 5
+    # created_at is immutable across re-save (ON CONFLICT DO UPDATE omits it).
+    assert before["created_at"] == after["created_at"]
 
 
 def test_delete_captures_before_and_returns_event(db: Database) -> None:

@@ -72,13 +72,16 @@ class MatchingService:
         seed_source_priority(self._db, self._settings)
 
     def undo(
-        self, match_id: str, *, reversed_by: str = "user", actor: str = "user"
+        self, match_id: str, *, reversed_by: str = "user", actor: str = "system"
     ) -> None:
         """Reverse a match decision (audited via ``MatchDecisionsRepo``).
 
         ``reversed_by`` is the domain column (``user``/``system``); ``actor`` is
-        the audit actor (the surface: ``cli``/``mcp``). Raises ``ValueError``
-        when no match with this id exists.
+        the audit *surface* (``cli``/``mcp``/``system``), defaulting to
+        ``"system"`` for automated callers — matching ``run``'s default and the
+        actor taxonomy (``user`` is a ``decided_by`` value, not a surface).
+        Surfaces pass their own (``cli``/``mcp``). Raises ``ValueError`` when no
+        match with this id exists.
         """
         # Deferred import: this module is eagerly imported by
         # ``services.__init__``, and the repo's base → ``services.audit_service``

@@ -128,11 +128,13 @@ class DoctorService:
 
         Tables without an ``updated_at`` column pass their natural watermark:
         ``proposed_rules`` → ``proposed_at``, ``transaction_categories`` →
-        ``categorized_at``, ``match_decisions`` → ``decided_at``.
-        ``balance_assertions`` has a composite PK, so it passes ``pk_expr`` to
-        project the same composite ``target_id`` its repo emits. Those watermarks
-        catch bypass INSERTs; bypass UPDATEs are the lint rule's job — the
-        heuristic limitation the helper documents.
+        ``categorized_at``, ``match_decisions`` →
+        ``COALESCE(reversed_at, decided_at)`` (so a bypass reversal is caught,
+        not just a bypass insert). ``balance_assertions`` has a composite PK, so
+        it passes ``pk_expr`` to project the same composite ``target_id`` its repo
+        emits. Those watermarks catch bypass INSERTs (and, for match_decisions,
+        reversals); other bypass UPDATEs that don't advance the watermark are the
+        lint rule's job — the heuristic limitation the helper documents.
         """
         return [
             self._run_app_audit_coverage(USER_CATEGORIES, "category_id", full=full),
@@ -164,7 +166,10 @@ class DoctorService:
             self._run_app_audit_coverage(BUDGETS, "budget_id", full=full),
             self._run_app_audit_coverage(TABULAR_FORMATS, "name", full=full),
             self._run_app_audit_coverage(
-                MATCH_DECISIONS, "match_id", updated_col="decided_at", full=full
+                MATCH_DECISIONS,
+                "match_id",
+                updated_expr="COALESCE(reversed_at, decided_at)",
+                full=full,
             ),
             self._run_app_audit_coverage(IMPORTS, "import_id", full=full),
             self._run_user_categories_uniqueness(),
@@ -183,6 +188,7 @@ class DoctorService:
         pk_col: str,
         *,
         updated_col: str = "updated_at",
+        updated_expr: str | None = None,
         pk_expr: str | None = None,
         full: bool = False,
     ) -> InvariantResult:
@@ -194,7 +200,12 @@ class DoctorService:
         ``updated_col`` names the watermark column — ``updated_at`` for most
         protected tables, but tables without one pass their natural mutation
         timestamp (e.g. ``proposed_rules`` → ``proposed_at``,
-        ``transaction_categories`` → ``categorized_at``).
+        ``transaction_categories`` → ``categorized_at``). ``updated_expr`` (a
+        code-supplied SQL expression) overrides ``updated_col`` when a single
+        column can't express the latest-mutation watermark — e.g.
+        ``match_decisions`` uses ``COALESCE(reversed_at, decided_at)`` so a raw
+        bypass *reversal* (which bumps ``reversed_at``, not ``decided_at``) is
+        still flagged.
 
         ``pk_expr`` overrides how the row's ``target_id`` is projected: most
         tables key on a single ``pk_col``, but a composite-PK table (e.g.
@@ -224,7 +235,13 @@ class DoctorService:
             if pk_expr is not None
             else exp.to_identifier(pk_col, quoted=True).sql("duckdb")
         )
-        safe_updated = exp.to_identifier(updated_col, quoted=True).sql("duckdb")
+        # `updated_expr` (a code-supplied SQL expression for the watermark) wins
+        # over the single quoted column when present; both are code constants.
+        safe_updated = (
+            updated_expr
+            if updated_expr is not None
+            else exp.to_identifier(updated_col, quoted=True).sql("duckdb")
+        )
         if full:
             sampled_sql = (
                 f"SELECT {safe_pk} AS pk, {safe_updated} AS updated_at "  # noqa: S608  # TableRef + sqlglot-quoted identifiers

@@ -394,12 +394,33 @@ def test_audit_coverage_passes_for_repo_mutated_tabular_format(db: Database) -> 
     assert result.status == "pass"
 
 
+_MATCH_DECISIONS_WATERMARK = "COALESCE(reversed_at, decided_at)"
+
+
 def test_audit_coverage_passes_for_repo_mutated_match_decision(db: Database) -> None:
     _insert_match(MatchDecisionsRepo(db), match_id="m1")
     result = DoctorService(db)._run_app_audit_coverage(
-        MATCH_DECISIONS, "match_id", updated_col="decided_at"
+        MATCH_DECISIONS, "match_id", updated_expr=_MATCH_DECISIONS_WATERMARK
     )
     assert result.status == "pass"
+
+
+def test_audit_coverage_flags_bypass_reverse_match_decision(db: Database) -> None:
+    # Insert via the repo (audited), then a RAW reverse that bumps reversed_at
+    # without an audit row. The COALESCE(reversed_at, decided_at) watermark
+    # advances past the insert's audit, so the bypass reversal must be flagged —
+    # a plain decided_at watermark would miss it.
+    _insert_match(MatchDecisionsRepo(db), match_id="mrev")
+    db.execute(
+        "UPDATE app.match_decisions "  # noqa: S608  # test input, not executing user SQL
+        "SET reversed_at = now()::TIMESTAMP, reversed_by = 'user', "
+        "match_status = 'reversed' WHERE match_id = 'mrev'"
+    )
+    result = DoctorService(db)._run_app_audit_coverage(
+        MATCH_DECISIONS, "match_id", updated_expr=_MATCH_DECISIONS_WATERMARK
+    )
+    assert result.status == "fail"
+    assert "mrev" in result.affected_ids
 
 
 def test_audit_coverage_passes_for_repo_mutated_import(db: Database) -> None:

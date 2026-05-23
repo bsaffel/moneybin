@@ -79,29 +79,53 @@ class TabularFormatsRepo(BaseRepo):
         parent_audit_id: str | None = None,
         in_outer_txn: bool = False,
     ) -> AuditEvent:
-        """Upsert one format profile (INSERT OR REPLACE on ``name``) + audit.
+        """Upsert one format profile (INSERT…ON CONFLICT on ``name``) + audit.
 
         ``before`` is the prior row when the format already existed (re-save),
         else ``None``; ``after`` is the resulting row. ``target_id`` is ``name``.
+
+        Uses ``ON CONFLICT DO UPDATE`` rather than ``INSERT OR REPLACE``: the
+        latter is delete+reinsert, which would re-stamp ``created_at`` (immutable
+        per the DDL "first created") on every re-save and make the audit
+        ``before``/``after`` falsely show ``created_at`` changing. ``created_at``
+        is set only in the INSERT and omitted from ``DO UPDATE SET``.
         """
         with self._transaction(in_outer_txn=in_outer_txn):
             before = self._fetch_row(name)
             self._db.execute(
                 f"""
-                INSERT OR REPLACE INTO {TABULAR_FORMATS.full_name} (
+                INSERT INTO {TABULAR_FORMATS.full_name} (
                     name, institution_name, file_type, delimiter, encoding,
                     skip_rows, sheet, header_signature, field_mapping,
                     sign_convention, date_format, number_format,
                     skip_trailing_patterns, multi_account, source,
-                    times_used, last_used_at, updated_at
+                    times_used, last_used_at, created_at, updated_at
                 ) VALUES (
                     ?, ?, ?, ?, ?,
                     ?, ?, ?, ?,
                     ?, ?, ?,
                     ?, ?, ?,
-                    ?, ?, CURRENT_TIMESTAMP
+                    ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
                 )
-                """,  # noqa: S608  # TableRef + parameterized values
+                ON CONFLICT (name) DO UPDATE SET
+                    institution_name = EXCLUDED.institution_name,
+                    file_type = EXCLUDED.file_type,
+                    delimiter = EXCLUDED.delimiter,
+                    encoding = EXCLUDED.encoding,
+                    skip_rows = EXCLUDED.skip_rows,
+                    sheet = EXCLUDED.sheet,
+                    header_signature = EXCLUDED.header_signature,
+                    field_mapping = EXCLUDED.field_mapping,
+                    sign_convention = EXCLUDED.sign_convention,
+                    date_format = EXCLUDED.date_format,
+                    number_format = EXCLUDED.number_format,
+                    skip_trailing_patterns = EXCLUDED.skip_trailing_patterns,
+                    multi_account = EXCLUDED.multi_account,
+                    source = EXCLUDED.source,
+                    times_used = EXCLUDED.times_used,
+                    last_used_at = EXCLUDED.last_used_at,
+                    updated_at = EXCLUDED.updated_at
+                """,  # noqa: S608  # TableRef + parameterized values; created_at immutable (omitted from DO UPDATE)
                 [
                     name,
                     institution_name,

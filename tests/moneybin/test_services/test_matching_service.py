@@ -17,6 +17,8 @@ def test_run_delegates_to_transaction_matcher() -> None:
         svc = MatchingService(db)
         result = svc.run()
     matcher_cls.assert_called_once()
+    # actor forwards to the matcher (defaults to the 'system' surface).
+    assert matcher_cls.call_args.kwargs.get("actor") == "system"
     matcher_cls.return_value.run.assert_called_once()
     assert result is fake_result
 
@@ -61,14 +63,14 @@ def test_undo_delegates_to_match_decisions_repo() -> None:
 
 
 def test_undo_default_reversed_by_and_actor() -> None:
-    """reversed_by and actor default to 'user' when omitted."""
+    """reversed_by defaults to 'user'; actor defaults to the 'system' surface."""
     db = MagicMock()
     with patch(
         "moneybin.repositories.match_decisions_repo.MatchDecisionsRepo"
     ) as repo_cls:
         MatchingService(db).undo("match-123")
     repo_cls.return_value.reverse.assert_called_once_with(
-        "match-123", reversed_by="user", actor="user"
+        "match-123", reversed_by="user", actor="system"
     )
 
 
