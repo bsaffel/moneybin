@@ -46,6 +46,7 @@ from moneybin.privacy.introspection import (
 from moneybin.privacy.log import build_tool_call_event, write_privacy_event
 from moneybin.privacy.redaction import has_active_transform, redact_typed
 from moneybin.protocol.envelope import ResponseEnvelope, build_error_envelope
+from moneybin.services.mutation_context import operation
 
 logger = logging.getLogger(__name__)
 
@@ -437,21 +438,31 @@ def mcp_tool(
             # spurious DB resets and misleading "timed_out" envelopes.
             cm = asyncio.timeout(timeout_s)
             try:
-                async with cm:
-                    if is_coro:
-                        result = await fn(*args, **kwargs)
-                    else:
+                # Bind one operation() for this tool call so every audit row it
+                # writes shares one operation_id (REC-PR1). Set before
+                # asyncio.to_thread so the copied context carries the id into
+                # the sync tool body's worker thread; async bodies inherit it
+                # via the task context. Scoped to fn execution only — audit rows
+                # are written there; the except handlers below emit privacy-log
+                # events (not audit rows), so they need no operation context.
+                with operation():
+                    async with cm:
+                        if is_coro:
+                            result = await fn(*args, **kwargs)
+                        else:
 
-                        def _fn_with_conn_tracking(*a: Any, **kw: Any) -> Any:
-                            _write_conn_thread_local.conn_holder = _conn_for_this_call
-                            try:
-                                return fn(*a, **kw)
-                            finally:
-                                _write_conn_thread_local.conn_holder = None
+                            def _fn_with_conn_tracking(*a: Any, **kw: Any) -> Any:
+                                _write_conn_thread_local.conn_holder = (
+                                    _conn_for_this_call
+                                )
+                                try:
+                                    return fn(*a, **kw)
+                                finally:
+                                    _write_conn_thread_local.conn_holder = None
 
-                        result = await asyncio.to_thread(
-                            _fn_with_conn_tracking, *args, **kwargs
-                        )
+                            result = await asyncio.to_thread(
+                                _fn_with_conn_tracking, *args, **kwargs
+                            )
             except TimeoutError as exc:
                 if not cm.expired():
                     try:
