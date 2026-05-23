@@ -206,6 +206,9 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |         --type categorize review is not yet wired (stub); categorize items use
 |   |         transactions categorize commit instead.
 |   +-- matches                    -- Transfer detection + dedup workflow (no review — see transactions review)
+|   |   +-- list [--type dedup|transfer] [--limit N] [-o json|text]
+|   |   |         Pending proposals grouped by component_key (N-way dedup clusters appear
+|   |   |         as one block each). --output json returns rows incl. component_key.
 |   |   +-- run [--skip-transform] [--auto-accept-transfers]
 |   |   +-- set <match_id> --status accepted|rejected  -- Accept or reject one pending match
 |   |   +-- history [--type dedup|transfer] [--limit N]
@@ -423,6 +426,7 @@ The same hierarchy expresses across CLI, MCP, and (future) HTTP. Each protocol e
 | Assert a balance | `accounts balance assert ...` | `accounts_balance_assert` | `POST /accounts/{id}/balances` |
 | Balance history | `accounts balance history` | `accounts_balance_history` | `GET /accounts/{id}/balances/history` |
 | Net worth now | `reports networth` | `reports_networth` | `GET /reports/networth` |
+| Pending matches | `transactions matches pending` | `transactions_matches_pending` | `GET /transactions/matches/pending` |
 | Match history | `transactions matches history` | `transactions_matches_history` | `GET /transactions/matches` |
 | Undo a match | `transactions matches undo <id>` | `transactions_matches_undo` | `POST /transactions/matches/{id}/undo` |
 | Spending report | `reports spending` | `reports_spending` | `GET /reports/spending` |

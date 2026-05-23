@@ -231,6 +231,39 @@ def undo_match(db: Database, match_id: str, *, reversed_by: str) -> None:
     )
 
 
+def get_active_dedup_edges(
+    db: Database,
+) -> list[dict[str, str]]:
+    """Return all active (accepted + pending, non-reversed) dedup edges.
+
+    Each row carries the four fields needed to build UnionFind components:
+    ``source_type_a``, ``source_transaction_id_a``, ``source_type_b``,
+    ``source_transaction_id_b``, and ``account_id``.
+
+    Used by MatchingService.get_pending to compute component_key for pending
+    rows — the same component identity the prep fold uses for match_group_id.
+    """
+    rows = db.execute(
+        """
+        SELECT source_type_a, source_transaction_id_a,
+               source_type_b, source_transaction_id_b,
+               account_id
+        FROM app.match_decisions
+        WHERE match_type = 'dedup'
+          AND match_status IN ('accepted', 'pending')
+          AND reversed_at IS NULL
+        """,  # noqa: S608 — no user-supplied values; all literals
+    ).fetchall()
+    cols = (
+        "source_type_a",
+        "source_transaction_id_a",
+        "source_type_b",
+        "source_transaction_id_b",
+        "account_id",
+    )
+    return [dict(zip(cols, row, strict=True)) for row in rows]
+
+
 def get_rejected_pairs(
     db: Database, match_type: MatchType = "dedup"
 ) -> list[dict[str, Any]]:

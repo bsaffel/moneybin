@@ -175,3 +175,95 @@ def test_get_pending_limit_caps_rows_while_count_sees_all(db: Database) -> None:
     svc = MatchingService(db)
     assert len(svc.get_pending(limit=2)) == 2
     assert svc.count_pending() == 3
+
+
+def _seed_dedup(
+    db: Database,
+    match_id: str,
+    status: MatchStatus,
+    *,
+    stid_a: str,
+    stype_a: str,
+    stid_b: str,
+    stype_b: str,
+    account_id: str = "acct1",
+) -> None:
+    """Seed a dedup decision with explicit node IDs for component-key tests."""
+    create_match_decision(
+        db,
+        match_id=match_id,
+        source_transaction_id_a=stid_a,
+        source_type_a=stype_a,
+        source_origin_a="origin_a",
+        source_transaction_id_b=stid_b,
+        source_type_b=stype_b,
+        source_origin_b="origin_b",
+        account_id=account_id,
+        confidence_score=0.9,
+        match_signals={},
+        match_tier="3",
+        match_status=status,
+        decided_by="matcher",
+        match_type="dedup",
+    )
+
+
+def test_get_pending_assigns_component_key(db: Database) -> None:
+    """Pending dedup rows that share a component get the same component_key.
+
+    Component: T1(csv,t1) — T2(ofx,t2) — T3(tiller,t3) on acct1.
+    Edge m_ab: T1↔T2 (pending)
+    Edge m_bc: T2↔T3 (pending)
+    Both pending edges share a component; their component_key must match.
+    Unrelated edge m_zz (different account) is its own component.
+
+    component_key = MIN(source_type||'|'||source_transaction_id) over the
+    component's members, grouped per account — same rule as the prep fold.
+    On acct1: members are ("csv","t1"), ("ofx","t2"), ("tiller","t3").
+    Packed: "csv|t1", "ofx|t2", "tiller|t3" → MIN = "csv|t1".
+    """
+    # 3-copy dedup cluster on acct1: T1-T2-T3
+    _seed_dedup(
+        db,
+        "m_ab",
+        "pending",
+        stid_a="t1",
+        stype_a="csv",
+        stid_b="t2",
+        stype_b="ofx",
+    )
+    _seed_dedup(
+        db,
+        "m_bc",
+        "pending",
+        stid_a="t2",
+        stype_a="ofx",
+        stid_b="t3",
+        stype_b="tiller",
+    )
+    # Unrelated pending edge on a different account
+    _seed_dedup(
+        db,
+        "m_zz",
+        "pending",
+        stid_a="x1",
+        stype_a="csv",
+        stid_b="x2",
+        stype_b="ofx",
+        account_id="acct2",
+    )
+
+    pending = MatchingService(db).get_pending(match_type="dedup")
+    keys = {p["match_id"]: p["component_key"] for p in pending}
+
+    # m_ab and m_bc share a 3-copy component; their keys must be identical
+    assert keys["m_ab"] == keys["m_bc"], (
+        f"Expected m_ab and m_bc to share component_key, got {keys}"
+    )
+    # m_zz is on a different account — its own component
+    assert keys["m_zz"] != keys["m_ab"], (
+        f"Expected m_zz to have a different component_key from m_ab, got {keys}"
+    )
+    # Sanity: the shared key should be the MIN packed node key in the component.
+    # Members of the acct1 component: "csv|t1", "ofx|t2", "tiller|t3".
+    assert keys["m_ab"] == "csv|t1"

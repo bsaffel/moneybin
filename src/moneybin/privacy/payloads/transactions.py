@@ -241,6 +241,10 @@ class MatchPendingRow:
     source types, and a confidence score — so this row is low-sensitivity.
     For full pair context (both transactions side by side), use the CLI
     `moneybin transactions review --type matches` queue.
+
+    ``component_key`` groups edges that belong to the same N-way dedup
+    cluster. All pending edges sharing a cluster have the same
+    ``component_key``; transfer rows use their own ``match_id`` as the key.
     """
 
     match_id: Annotated[str, DataClass.RECORD_ID]
@@ -252,6 +256,7 @@ class MatchPendingRow:
     source_type_b: Annotated[str, DataClass.TXN_TYPE]
     source_transaction_id_b: Annotated[str, DataClass.RECORD_ID]
     match_status: Annotated[str, DataClass.TXN_TYPE]
+    component_key: Annotated[str, DataClass.RECORD_ID]
 
 
 @dataclass(frozen=True, slots=True)

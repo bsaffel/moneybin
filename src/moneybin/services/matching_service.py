@@ -17,10 +17,12 @@ from moneybin import error_codes
 from moneybin.config import MatchingSettings, get_settings
 from moneybin.database import Database
 from moneybin.errors import RecoveryAction, UserError
+from moneybin.matching.assignment import NodeKey, UnionFind
 from moneybin.matching.engine import TransactionMatcher
 from moneybin.matching.persistence import (
     MatchStatus,
     accept_pending_matches,
+    get_active_dedup_edges,
     get_match_decision,
     get_match_log,
     get_pending_matches,
@@ -211,15 +213,105 @@ class MatchingService:
             self._db.rollback()
             raise
 
+    def _compute_component_keys(self) -> dict[tuple[str, str, str], str]:
+        """Build a map from (account_id, source_type, stid) to component_key.
+
+        Fetches all active+pending non-reversed dedup edges, builds connected
+        components via UnionFind, then computes each component's key as
+        MIN(f"{source_type}|{source_transaction_id}") over its members within
+        the same account_id — matching the prep fold's group_id semantics.
+
+        Returns a dict keyed on (account_id, source_type, stid).
+        """
+        edges = get_active_dedup_edges(self._db)
+        uf = UnionFind()
+
+        # Register all nodes and union each edge
+        for edge in edges:
+            acct = edge["account_id"]
+            node_a: NodeKey = (
+                edge["source_type_a"],
+                edge["source_transaction_id_a"],
+                acct,
+            )
+            node_b: NodeKey = (
+                edge["source_type_b"],
+                edge["source_transaction_id_b"],
+                acct,
+            )
+            uf.union(node_a, node_b)
+
+        # Collect every node that appeared in any edge, grouped by component root
+        # The key is (account_id, root) → list of packed "stype|stid" strings
+        component_members: dict[tuple[str, NodeKey], list[str]] = {}
+        for edge in edges:
+            acct = edge["account_id"]
+            for stype, stid in [
+                (edge["source_type_a"], edge["source_transaction_id_a"]),
+                (edge["source_type_b"], edge["source_transaction_id_b"]),
+            ]:
+                node: NodeKey = (stype, stid, acct)
+                root = uf.find(node)
+                bucket = component_members.setdefault((acct, root), [])
+                packed = f"{stype}|{stid}"
+                if packed not in bucket:
+                    bucket.append(packed)
+
+        # component_key = MIN packed member for each (account_id, root) bucket
+        comp_key_for: dict[tuple[str, NodeKey], str] = {
+            (acct, root): min(members)
+            for (acct, root), members in component_members.items()
+        }
+
+        # Build a lookup from (account_id, source_type, stid) → component_key
+        result: dict[tuple[str, str, str], str] = {}
+        for edge in edges:
+            acct = edge["account_id"]
+            for stype, stid in [
+                (edge["source_type_a"], edge["source_transaction_id_a"]),
+                (edge["source_type_b"], edge["source_transaction_id_b"]),
+            ]:
+                node = (stype, stid, acct)
+                root = uf.find(node)
+                result[(acct, stype, stid)] = comp_key_for[(acct, root)]
+
+        return result
+
     def get_pending(
         self, *, match_type: str | None = None, limit: int | None = None
     ) -> list[dict[str, Any]]:
-        """Return pending match decisions awaiting review.
+        """Return pending match decisions awaiting review, enriched with component_key.
 
-        Wraps :func:`moneybin.matching.persistence.get_pending_matches`.
+        Dedup rows share a ``component_key`` when they belong to the same
+        connected component of active+pending dedup edges — the same grouping
+        the prep fold uses for ``match_group_id``. Transfer rows are not grouped;
+        their ``component_key`` is the row's own ``match_id``.
+
         ``limit`` is pushed to SQL; None returns all pending.
         """
-        return get_pending_matches(self._db, match_type=match_type, limit=limit)
+        rows = get_pending_matches(self._db, match_type=match_type, limit=limit)
+        if not rows:
+            return rows
+
+        # Build component keys once for all pending dedup rows in this call
+        comp_keys = self._compute_component_keys()
+
+        enriched: list[dict[str, Any]] = []
+        for row in rows:
+            if row.get("match_type") == "dedup":
+                acct = row["account_id"]
+                stype_a = row["source_type_a"]
+                stid_a = row["source_transaction_id_a"]
+                lookup_key = (acct, stype_a, stid_a)
+                # Fall back to match_id if the node isn't in our edge map
+                # (should not happen for pending dedup, but be defensive)
+                component_key = comp_keys.get(lookup_key, row["match_id"])
+            else:
+                # Transfers are ungrouped; each edge is its own cluster
+                component_key = row["match_id"]
+            enriched.append({**row, "component_key": component_key})
+
+        return enriched
 
     def accept_all_pending(self, *, match_type: str | None = None) -> int:
         """Accept every pending match decision in scope. Returns the count accepted.

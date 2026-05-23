@@ -23,6 +23,59 @@ _NO_TRANSFORMS_MSG = (
 )
 
 
+@app.command("pending")
+def matches_pending(
+    match_type: str | None = typer.Option(
+        None, "--type", help="Filter by match type: dedup or transfer"
+    ),
+    limit: int = typer.Option(50, "--limit", "-n", help="Max records to show"),
+    output: OutputFormat = output_option,
+    quiet: bool = quiet_option,
+) -> None:
+    """List pending matches, grouped by component (copies of the same transaction cluster together)."""
+    if match_type and match_type not in VALID_MATCH_TYPES:
+        logger.error("❌ --type must be 'dedup' or 'transfer'")
+        raise typer.Exit(2)
+
+    with handle_cli_errors():
+        with get_database(read_only=True) as db:
+            rows = MatchingService(db).get_pending(match_type=match_type, limit=limit)
+
+        if output == OutputFormat.JSON:
+            emit_json("matches", rows)
+            return
+
+        if not rows:
+            if not quiet:
+                logger.info("No pending matches")
+            return
+
+        # Group by component_key so N-way clusters surface as one block.
+        # Insertion order in dict preserves first-seen component ordering.
+        groups: dict[str, list[dict[str, object]]] = {}
+        for row in rows:
+            ck = str(row.get("component_key") or row["match_id"])
+            groups.setdefault(ck, []).append(row)
+
+        for ck, group_rows in groups.items():
+            typer.echo(f"\n── component {ck} ({len(group_rows)} edge(s)) ──")
+            typer.echo(
+                f"  {'Match ID':<14} {'Type':<9} {'Tier':<5} {'Score':>6} "
+                f"{'Type A':<8} {'Type B':<8}"
+            )
+            for row in group_rows:
+                score = float(row.get("confidence_score") or 0)  # pyright: ignore[reportArgumentType]
+                typer.echo(
+                    f"  {str(row['match_id'])[:12]:<14} "
+                    f"{str(row.get('match_type', 'dedup')):<9} "
+                    f"{str(row.get('match_tier') or '-'):<5} "
+                    f"{score:>6.2f} "
+                    f"{str(row['source_type_a']):<8} "
+                    f"{str(row['source_type_b']):<8}"
+                )
+        typer.echo()
+
+
 @app.command("run")
 def matches_run(
     skip_transform: bool = typer.Option(
