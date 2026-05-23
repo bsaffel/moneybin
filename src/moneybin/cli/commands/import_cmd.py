@@ -835,7 +835,7 @@ def formats_delete(
 
     with handle_cli_errors():
         with get_database() as db:
-            deleted = delete_format_from_db(db, name)
+            deleted = delete_format_from_db(db, name, actor="cli")
 
     if not deleted:
         logger.error(f"❌ Format {name!r} not found")

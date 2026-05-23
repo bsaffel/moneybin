@@ -1,4 +1,11 @@
-"""Tests for match decision persistence."""
+"""Tests for match decision read queries.
+
+Mutations (insert / status update / reverse) are owned by
+``MatchDecisionsRepo`` and tested in
+``tests/moneybin/test_repositories/test_match_decisions_repo.py``; this module
+sets up rows via the repo and exercises the read projections in
+``matching/persistence.py``.
+"""
 
 import uuid
 from collections.abc import Generator
@@ -10,15 +17,13 @@ import pytest
 from moneybin.database import Database
 from moneybin.matching.persistence import (
     MatchStatus,
-    create_match_decision,
     get_active_matches,
     get_match_decision,
     get_match_log,
     get_pending_matches,
     get_rejected_pairs,
-    undo_match,
-    update_match_status,
 )
+from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
 
 
 @pytest.fixture()
@@ -45,11 +50,13 @@ def _create_test_match(
     confidence: float = 0.98,
     stid_a: str = "a",
     stid_b: str = "b",
+    match_type: str = "dedup",
+    match_tier: str | None = "3",
+    account_id_b: str | None = None,
 ) -> str:
-    """Helper to create a match decision with sensible defaults."""
+    """Helper to create a match decision with sensible defaults (via the repo)."""
     mid = match_id or _make_match_id()
-    create_match_decision(
-        db,
+    MatchDecisionsRepo(db).insert(
         match_id=mid,
         source_transaction_id_a=stid_a,
         source_type_a="csv",
@@ -60,61 +67,14 @@ def _create_test_match(
         account_id="acct1",
         confidence_score=confidence,
         match_signals={},
-        match_tier="3",
+        match_tier=match_tier,
         match_status=status,
         decided_by="auto",
+        match_type=match_type,
+        account_id_b=account_id_b,
+        actor="system",
     )
     return mid
-
-
-class TestCreateMatchDecision:
-    """Tests for create_match_decision."""
-
-    def test_creates_accepted_match(self, db: Database) -> None:
-        match_id = _create_test_match(db, status="accepted", confidence=0.97)
-        result = db.execute(
-            "SELECT match_id, match_status, confidence_score "
-            "FROM app.match_decisions WHERE match_id = ?",
-            [match_id],
-        ).fetchone()
-        assert result is not None
-        assert result[0] == match_id
-        assert result[1] == "accepted"
-
-    def test_creates_pending_match(self, db: Database) -> None:
-        match_id = _create_test_match(db, status="pending", confidence=0.82)
-        result = db.execute(
-            "SELECT match_status FROM app.match_decisions WHERE match_id = ?",
-            [match_id],
-        ).fetchone()
-        assert result is not None
-        assert result[0] == "pending"
-
-    def test_stores_match_signals_as_json(self, db: Database) -> None:
-        mid = _make_match_id()
-        create_match_decision(
-            db,
-            match_id=mid,
-            source_transaction_id_a="x",
-            source_type_a="csv",
-            source_origin_a="bank",
-            source_transaction_id_b="y",
-            source_type_b="ofx",
-            source_origin_b="bank",
-            account_id="acct2",
-            confidence_score=0.90,
-            match_signals={"date_distance": 0, "amount_match": 1.0},
-            match_tier="3",
-            match_status="pending",
-            decided_by="auto",
-        )
-        result = db.execute(
-            "SELECT match_signals FROM app.match_decisions WHERE match_id = ?",
-            [mid],
-        ).fetchone()
-        assert result is not None
-        # match_signals stored as JSON string; non-empty
-        assert "date_distance" in result[0]
 
 
 class TestGetActiveMatches:
@@ -128,7 +88,7 @@ class TestGetActiveMatches:
 
     def test_excludes_reversed_matches(self, db: Database) -> None:
         match_id = _create_test_match(db)
-        undo_match(db, match_id, reversed_by="user")
+        MatchDecisionsRepo(db).reverse(match_id, reversed_by="user", actor="cli")
         matches = get_active_matches(db)
         assert len(matches) == 0
 
@@ -143,23 +103,13 @@ class TestGetActiveMatches:
         assert len(matches) == 0
 
     def test_filters_by_match_type(self, db: Database) -> None:
-        mid = _make_match_id()
-        create_match_decision(
+        _create_test_match(
             db,
-            match_id=mid,
-            source_transaction_id_a="t1",
-            source_type_a="csv",
-            source_origin_a="bank",
-            source_transaction_id_b="t2",
-            source_type_b="ofx",
-            source_origin_b="bank",
-            account_id="acct1",
-            confidence_score=0.95,
-            match_signals={},
-            match_tier=None,
-            match_status="accepted",
-            decided_by="auto",
+            stid_a="t1",
+            stid_b="t2",
+            confidence=0.95,
             match_type="transfer",
+            match_tier=None,
             account_id_b="acct2",
         )
         dedup_matches = get_active_matches(db, match_type="dedup")
@@ -187,52 +137,6 @@ class TestGetPendingMatches:
         )
         pending = get_pending_matches(db)
         assert pending[0]["confidence_score"] >= pending[1]["confidence_score"]
-
-
-class TestUpdateMatchStatus:
-    """Tests for update_match_status."""
-
-    def test_updates_status_to_accepted(self, db: Database) -> None:
-        match_id = _create_test_match(db, status="pending")
-        update_match_status(db, match_id, status="accepted", decided_by="user")
-        result = db.execute(
-            "SELECT match_status, decided_by FROM app.match_decisions WHERE match_id = ?",
-            [match_id],
-        ).fetchone()
-        assert result is not None
-        assert result[0] == "accepted"
-        assert result[1] == "user"
-
-    def test_updates_status_to_rejected(self, db: Database) -> None:
-        match_id = _create_test_match(db, status="pending")
-        update_match_status(db, match_id, status="rejected", decided_by="user")
-        result = db.execute(
-            "SELECT match_status FROM app.match_decisions WHERE match_id = ?",
-            [match_id],
-        ).fetchone()
-        assert result is not None
-        assert result[0] == "rejected"
-
-
-class TestUndoMatch:
-    """Tests for undo_match."""
-
-    def test_sets_reversed_fields(self, db: Database) -> None:
-        match_id = _create_test_match(db)
-        undo_match(db, match_id, reversed_by="user")
-        result = db.execute(
-            "SELECT reversed_at, reversed_by FROM app.match_decisions WHERE match_id = ?",
-            [match_id],
-        ).fetchone()
-        assert result is not None
-        assert result[0] is not None
-        assert result[1] == "user"
-
-    def test_reversed_match_no_longer_active(self, db: Database) -> None:
-        match_id = _create_test_match(db)
-        undo_match(db, match_id, reversed_by="system")
-        active = get_active_matches(db)
-        assert all(m["match_id"] != match_id for m in active)
 
 
 class TestGetRejectedPairs:
@@ -295,23 +199,13 @@ class TestGetMatchLog:
 
     def test_filters_by_match_type(self, db: Database) -> None:
         _create_test_match(db, stid_a="d1", stid_b="d2")  # dedup
-        mid = _make_match_id()
-        create_match_decision(
+        _create_test_match(
             db,
-            match_id=mid,
-            source_transaction_id_a="t1",
-            source_type_a="csv",
-            source_origin_a="bank",
-            source_transaction_id_b="t2",
-            source_type_b="ofx",
-            source_origin_b="bank",
-            account_id="acct1",
-            confidence_score=0.95,
-            match_signals={},
-            match_tier=None,
-            match_status="accepted",
-            decided_by="auto",
+            stid_a="t1",
+            stid_b="t2",
+            confidence=0.95,
             match_type="transfer",
+            match_tier=None,
             account_id_b="acct2",
         )
         transfer_log = get_match_log(db, match_type="transfer")

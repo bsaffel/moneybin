@@ -9,7 +9,7 @@ Exposes ``run``, ``seed_priority``, ``undo``, ``get_log``, and
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 import duckdb
 
@@ -19,19 +19,17 @@ from moneybin.database import Database
 from moneybin.errors import RecoveryAction, UserError
 from moneybin.matching.engine import TransactionMatcher
 from moneybin.matching.persistence import (
-    MatchStatus,
-    accept_pending_matches,
+    VALID_MATCH_TYPES,
     get_match_decision,
     get_match_log,
     get_pending_matches,
-    undo_match,
-    update_match_status,
 )
 from moneybin.matching.priority import seed_source_priority
 from moneybin.tables import MATCH_DECISIONS
 
 if TYPE_CHECKING:
     from moneybin.matching.engine import MatchResult
+    from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +80,19 @@ class MatchingService:
         self._db = db
         self._settings = settings or get_settings().matching
 
+    def _match_repo(self) -> MatchDecisionsRepo:
+        """Build the audited match-decisions repo (deferred import breaks a cycle).
+
+        This module is eagerly imported by ``services.__init__``, and the repo's
+        ``base`` → ``services.audit_service`` chain re-enters that path; a
+        module-top import would cycle.
+        """
+        from moneybin.repositories.match_decisions_repo import (  # noqa: PLC0415
+            MatchDecisionsRepo,
+        )
+
+        return MatchDecisionsRepo(self._db)
+
     def count_pending(self, *, match_type: str | None = None) -> int:
         """Return the number of match decisions awaiting user review.
 
@@ -90,7 +101,7 @@ class MatchingService:
         """
         where = "WHERE match_status = 'pending' AND reversed_at IS NULL"
         params: list[Any] = []
-        if match_type:
+        if match_type is not None:
             where += " AND match_type = ?"
             params.append(match_type)
         try:
@@ -105,15 +116,19 @@ class MatchingService:
         except duckdb.CatalogException:
             return 0  # table not created until the first matcher run
 
-    def run(self, *, auto_accept_transfers: bool = False) -> MatchResult:
+    def run(
+        self, *, auto_accept_transfers: bool = False, actor: str = "system"
+    ) -> MatchResult:
         """Run same-record dedup (Tier 2b/3) and transfer detection (Tier 4).
 
         ``auto_accept_transfers`` simulates automated review — used by the
         scenario runner so evaluations can read accepted transfers from
-        ``core.bridge_transfers`` without an interactive step.
+        ``core.bridge_transfers`` without an interactive step. ``actor`` is the
+        audit actor for the decisions written this run (surfaces pass
+        ``"cli"``/``"mcp"``; defaults to ``"system"`` for automated callers).
         """
         seed_source_priority(self._db, self._settings)
-        return TransactionMatcher(self._db, self._settings).run(
+        return TransactionMatcher(self._db, self._settings, actor=actor).run(
             auto_accept_transfers=auto_accept_transfers
         )
 
@@ -127,14 +142,19 @@ class MatchingService:
         """
         seed_source_priority(self._db, self._settings)
 
-    def undo(self, match_id: str, *, reversed_by: str = "user") -> None:
-        """Reverse a match decision.
+    def undo(
+        self, match_id: str, *, reversed_by: str = "user", actor: str = "system"
+    ) -> None:
+        """Reverse a match decision (audited via ``MatchDecisionsRepo``).
 
-        Wraps :func:`moneybin.matching.persistence.undo_match` so adapters
-        route through the service rather than importing the persistence
-        module directly.
+        ``reversed_by`` is the domain column (``user``/``system``); ``actor`` is
+        the audit *surface* (``cli``/``mcp``/``system``), defaulting to
+        ``"system"`` for automated callers — matching ``run``'s default and the
+        actor taxonomy (``user`` is a ``decided_by`` value, not a surface).
+        Surfaces pass their own (``cli``/``mcp``). Raises ``ValueError`` when no
+        match with this id exists.
         """
-        undo_match(self._db, match_id, reversed_by=reversed_by)
+        self._match_repo().reverse(match_id, reversed_by=reversed_by, actor=actor)
 
     def get_log(
         self, *, limit: int = 50, match_type: str | None = None
@@ -146,14 +166,21 @@ class MatchingService:
         return get_match_log(self._db, limit=limit, match_type=match_type)
 
     def set_status(
-        self, match_id: str, *, status: str, decided_by: str = "user"
+        self,
+        match_id: str,
+        *,
+        status: str,
+        decided_by: str = "user",
+        actor: str = "system",
     ) -> None:
-        """Accept or reject one pending match decision by id.
+        """Accept or reject one pending match decision by id (audited via repo).
 
-        Validates the transition the raw persistence primitive does not:
-        only a ``pending`` decision may move to ``accepted``/``rejected``.
-        Re-asserting the current status is an idempotent no-op (shape 1b).
-        Any other transition raises ``UserError`` carrying ``recovery_actions``.
+        Validates the transition: only a ``pending`` decision may move to
+        ``accepted``/``rejected``. Re-asserting the current status is an
+        idempotent no-op (shape 1b). Any other transition raises ``UserError``
+        carrying ``recovery_actions``. ``decided_by`` is the domain column
+        (``user``/``system``); ``actor`` is the audit surface (``cli``/``mcp``,
+        default ``"system"``).
         """
         if status not in _SETTABLE_STATUSES:
             raise UserError(
@@ -199,15 +226,16 @@ class MatchingService:
                         code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
                         recovery_actions=[_non_pending_recovery(current_status)],
                     )
-                update_match_status(
-                    self._db,
+                self._match_repo().update_status(
                     match_id,
-                    status=cast("MatchStatus", status),
+                    status=status,
                     decided_by=decided_by,
+                    actor=actor,
+                    in_outer_txn=True,
                 )
             # current_status == status falls through as an idempotent no-op.
             self._db.commit()
-        except Exception:
+        except BaseException:
             self._db.rollback()
             raise
 
@@ -221,14 +249,20 @@ class MatchingService:
         """
         return get_pending_matches(self._db, match_type=match_type, limit=limit)
 
-    def accept_all_pending(self, *, match_type: str | None = None) -> int:
+    def accept_all_pending(
+        self, *, match_type: str | None = None, actor: str = "system"
+    ) -> int:
         """Accept every pending match decision in scope. Returns the count accepted.
 
-        Delegates to the atomic bulk UPDATE in persistence (single statement,
-        all-or-nothing) rather than a per-row loop — so a mid-batch failure
-        can't leave the queue half-accepted and the count reflects exactly what
-        committed. ``WHERE match_status = 'pending'`` is itself the guard.
+        Routes through ``MatchDecisionsRepo.accept_pending`` so each acceptance
+        emits a paired ``app.audit_log`` row (Invariant 10), all inside one
+        transaction (all-or-nothing). ``actor`` is the audit surface
+        (``cli``/``mcp``, default ``"system"``). ``match_type``, when given, is
+        validated here (the repo's filter is parameterized but unguarded) so a
+        bad value raises instead of silently accepting nothing.
         """
-        return accept_pending_matches(
-            self._db, match_type=match_type, decided_by="user"
+        if match_type is not None and match_type not in VALID_MATCH_TYPES:
+            raise ValueError(f"Invalid match_type: {match_type!r}")
+        return self._match_repo().accept_pending(
+            match_type=match_type, decided_by="user", actor=actor
         )

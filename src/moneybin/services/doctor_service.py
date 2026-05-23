@@ -22,9 +22,11 @@ from moneybin.tables import (
     DIM_ACCOUNTS,
     FCT_TRANSACTIONS,
     GSHEET_CONNECTIONS,
+    IMPORTS,
     INT_TRANSACTIONS_UNIONED,
     MATCH_DECISIONS,
     PROPOSED_RULES,
+    TABULAR_FORMATS,
     TRANSACTION_CATEGORIES,
     USER_CATEGORIES,
     USER_MERCHANTS,
@@ -40,6 +42,15 @@ _BALANCE_ASSERTIONS_PK_EXPR = (
     f"{exp.to_identifier('account_id', quoted=True).sql('duckdb')} || '|' || "
     f"CAST({exp.to_identifier('assertion_date', quoted=True).sql('duckdb')} AS VARCHAR)"
 )
+
+# Raw-interpolated SQL expressions allowed in `_run_app_audit_coverage`. Both
+# `updated_expr` and `pk_expr` are spliced into SQL unsanitized (a multi-column
+# expression can't be sqlglot-quoted as a single identifier), so each must be a
+# hard-coded constant from these sets — a runtime guard that enforces the
+# code-supplied-literal contract per `.claude/rules/security.md` (allowlist
+# dynamic SQL), closing the door before a future caller passes a tainted value.
+_ALLOWED_UPDATED_EXPRS = frozenset({"GREATEST(decided_at, reversed_at)"})
+_ALLOWED_PK_EXPRS = frozenset({_BALANCE_ASSERTIONS_PK_EXPR})
 
 
 @dataclass(frozen=True)
@@ -119,16 +130,20 @@ class DoctorService:
         Covers every table wrapped in a repo so far (``user_categories``,
         ``category_overrides``, ``gsheet_connections``, ``user_merchants``,
         ``categorization_rules``, ``proposed_rules``, ``transaction_categories``,
-        ``account_settings``, ``balance_assertions``, ``budgets``); later
+        ``account_settings``, ``balance_assertions``, ``budgets``, plus the edge
+        writers ``tabular_formats``, ``match_decisions``, and ``imports``); later
         repository PRs append one coverage call per newly-wrapped table plus that
         table's FK/orphan specifics.
 
         Tables without an ``updated_at`` column pass their natural watermark:
         ``proposed_rules`` → ``proposed_at``, ``transaction_categories`` →
-        ``categorized_at``. ``balance_assertions`` has a composite PK, so it
-        passes ``pk_expr`` to project the same composite ``target_id`` its repo
-        emits. Those watermarks catch bypass INSERTs; bypass UPDATEs are the lint
-        rule's job — the heuristic limitation the helper documents.
+        ``categorized_at``, ``match_decisions`` →
+        ``GREATEST(decided_at, reversed_at)`` (the latest of any mutation, so a
+        bypass insert, status update, *or* reversal is caught). ``balance_assertions``
+        has a composite PK, so it passes ``pk_expr`` to project the same composite
+        ``target_id`` its repo emits. Those watermarks catch bypass mutations that
+        advance the watermark; other bypass UPDATEs that don't are the lint rule's
+        job — the heuristic limitation the helper documents.
         """
         return [
             self._run_app_audit_coverage(USER_CATEGORIES, "category_id", full=full),
@@ -158,6 +173,14 @@ class DoctorService:
                 full=full,
             ),
             self._run_app_audit_coverage(BUDGETS, "budget_id", full=full),
+            self._run_app_audit_coverage(TABULAR_FORMATS, "name", full=full),
+            self._run_app_audit_coverage(
+                MATCH_DECISIONS,
+                "match_id",
+                updated_expr="GREATEST(decided_at, reversed_at)",
+                full=full,
+            ),
+            self._run_app_audit_coverage(IMPORTS, "import_id", full=full),
             self._run_user_categories_uniqueness(),
             self._run_user_merchants_orphans(),
             self._run_proposed_rules_rule_fk(),
@@ -165,6 +188,7 @@ class DoctorService:
             self._run_account_settings_account_fk(),
             self._run_balance_assertions_account_fk(),
             self._run_budgets_category_fk(),
+            self._run_match_decisions_account_fk(),
         ]
 
     def _run_app_audit_coverage(
@@ -173,6 +197,7 @@ class DoctorService:
         pk_col: str,
         *,
         updated_col: str = "updated_at",
+        updated_expr: str | None = None,
         pk_expr: str | None = None,
         full: bool = False,
     ) -> InvariantResult:
@@ -184,7 +209,16 @@ class DoctorService:
         ``updated_col`` names the watermark column — ``updated_at`` for most
         protected tables, but tables without one pass their natural mutation
         timestamp (e.g. ``proposed_rules`` → ``proposed_at``,
-        ``transaction_categories`` → ``categorized_at``).
+        ``transaction_categories`` → ``categorized_at``). ``updated_expr`` (a
+        code-supplied SQL expression) overrides ``updated_col`` when a single
+        column can't express the latest-mutation watermark — e.g.
+        ``match_decisions`` uses ``GREATEST(decided_at, reversed_at)`` (DuckDB's
+        ``GREATEST`` ignores NULL, so this is the later of the two timestamps, or
+        ``decided_at`` when never reversed) so a raw bypass that bumps *either*
+        column is flagged. ``updated_expr`` and ``pk_expr`` are interpolated raw
+        (not sanitized), so each must be a hard-coded constant — enforced at
+        runtime against ``_ALLOWED_UPDATED_EXPRS`` / ``_ALLOWED_PK_EXPRS`` so a
+        future caller can't splice in a tainted value (``.claude/rules/security.md``).
 
         ``pk_expr`` overrides how the row's ``target_id`` is projected: most
         tables key on a single ``pk_col``, but a composite-PK table (e.g.
@@ -205,6 +239,12 @@ class DoctorService:
         code-supplied constants, quoted defensively per
         ``.claude/rules/security.md``.
         """
+        # Defense-in-depth: both raw-interpolated expressions must be code-supplied
+        # constants from their allowlists (the SQL below splices them unsanitized).
+        if updated_expr is not None and updated_expr not in _ALLOWED_UPDATED_EXPRS:
+            raise ValueError(f"updated_expr not in allowlist: {updated_expr!r}")
+        if pk_expr is not None and pk_expr not in _ALLOWED_PK_EXPRS:
+            raise ValueError(f"pk_expr not in allowlist: {pk_expr!r}")
         name = f"app_audit_coverage_{table_ref.name}"
         settings = get_settings().doctor
         # `pk_expr` (a code-supplied composite-key expression) wins over the
@@ -214,19 +254,27 @@ class DoctorService:
             if pk_expr is not None
             else exp.to_identifier(pk_col, quoted=True).sql("duckdb")
         )
-        safe_updated = exp.to_identifier(updated_col, quoted=True).sql("duckdb")
+        # The watermark SQL is either a code-supplied expression (`updated_expr`,
+        # used raw — a trusted constant, NOT a sanitized value) or a single
+        # sqlglot-quoted column (`updated_col`). Named `watermark_sql`, not
+        # `safe_*`, precisely because the expr branch is unsanitized by design.
+        watermark_sql = (
+            updated_expr
+            if updated_expr is not None
+            else exp.to_identifier(updated_col, quoted=True).sql("duckdb")
+        )
         if full:
             sampled_sql = (
-                f"SELECT {safe_pk} AS pk, {safe_updated} AS updated_at "  # noqa: S608  # TableRef + sqlglot-quoted identifiers
+                f"SELECT {safe_pk} AS pk, {watermark_sql} AS updated_at "  # noqa: S608  # TableRef + sqlglot-quoted pk + trusted watermark_sql
                 f"FROM {table_ref.full_name}"
             )
             sample_params: list[object] = []
         else:
             sampled_sql = (
-                f"SELECT {safe_pk} AS pk, {safe_updated} AS updated_at "  # noqa: S608  # TableRef + sqlglot-quoted identifiers
+                f"SELECT {safe_pk} AS pk, {watermark_sql} AS updated_at "  # noqa: S608  # TableRef + sqlglot-quoted pk + trusted watermark_sql
                 f"FROM {table_ref.full_name} "
-                f"WHERE {safe_updated} >= (now()::TIMESTAMP - (? * INTERVAL 1 DAY)) "
-                f"ORDER BY {safe_updated} DESC LIMIT ?"
+                f"WHERE {watermark_sql} >= (now()::TIMESTAMP - (? * INTERVAL 1 DAY)) "
+                f"ORDER BY {watermark_sql} DESC LIMIT ?"
             )
             sample_params = [
                 settings.audit_coverage_lookback_days,
@@ -439,6 +487,56 @@ class DoctorService:
                 detail=(
                     f"{len(affected)} transaction_categories row(s) reference a "
                     "transaction_id absent from core.fct_transactions"
+                ),
+                affected_ids=affected,
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _run_match_decisions_account_fk(self) -> InvariantResult:
+        """Flag ``match_decisions`` whose account references are absent from ``dim_accounts``.
+
+        ``match_decisions`` stores *source-native* transaction ids
+        (``source_transaction_id_a``/``_b`` + type + origin), which resolve in the
+        staging layer, not in ``core.fct_transactions`` — so there is no clean
+        transaction FK here (see the spec's Batch D reconciliation note). But
+        ``account_id`` IS the gold account key, and ``account_id_b`` is the
+        transfer counterparty (NULL for dedup); an account referenced by a
+        decision but missing from ``core.dim_accounts`` means a re-import dropped
+        the account while leaving its decisions (orphan). Skipped before the first
+        transform builds ``core.dim_accounts``.
+        """
+        name = "app_match_decisions_account_fk"
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT m.match_id
+                FROM {MATCH_DECISIONS.full_name} m
+                WHERE NOT EXISTS (
+                        SELECT 1 FROM {DIM_ACCOUNTS.full_name} a
+                        WHERE a.account_id = m.account_id
+                      )
+                   OR (m.account_id_b IS NOT NULL AND NOT EXISTS (
+                        SELECT 1 FROM {DIM_ACCOUNTS.full_name} a
+                        WHERE a.account_id = m.account_id_b
+                      ))
+                ORDER BY m.match_id
+                """  # noqa: S608  # TableRef constants, no user input
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — core.dim_accounts may not exist yet
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"FK check unavailable: {e}",
+                affected_ids=[],
+            )
+        if rows:
+            affected = [str(r[0]) for r in rows]
+            return InvariantResult(
+                name=name,
+                status="fail",
+                detail=(
+                    f"{len(affected)} match_decisions row(s) reference an "
+                    "account_id absent from core.dim_accounts"
                 ),
                 affected_ids=affected,
             )

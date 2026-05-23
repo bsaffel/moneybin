@@ -601,8 +601,8 @@ Shape-1a declarative target-state for an import's labels.
 
 - **Sensitivity:** `medium`
 - **Unique parameters:** `import_id: str`, `labels: list[str]`.
-- **Behavior:** Computes diff against prior labels; emits one `import_label.add` / `import_label.remove` per change.
-- **Mutation surface:** `app.import_labels`. Revert via another `_set` with prior list.
+- **Behavior:** Replaces the import's label set; emits one full-row `import.set` audit row (Invariant 10, via `ImportsRepo.set`).
+- **Mutation surface:** `app.imports` (labels overlay). Revert via another `_set` with the prior list (full before/after captured in `app.audit_log`).
 - **Service:** `ImportService.set_labels()`
 - **CLI:** Per `.claude/rules/surface-design.md` "parity is functional, not nominal" — MCP exposes shape 1a `import_labels_set(import_id, labels=[...])` (collection state-set, omission = delete). CLI ships as shape 2 lifecycle ops: `moneybin import labels add IMPORT_ID LABEL`, `moneybin import labels remove IMPORT_ID LABEL`, `moneybin import labels list IMPORT_ID`. Same user outcomes reachable on both surfaces; the underlying `ImportService.set_labels()` is the shared primitive.
 

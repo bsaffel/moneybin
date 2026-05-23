@@ -163,53 +163,43 @@ def load_builtin_formats() -> dict[str, TabularFormat]:
     return formats
 
 
-def save_format_to_db(db: Database, fmt: TabularFormat) -> None:
-    """Persist a TabularFormat to the app.tabular_formats table.
+def save_format_to_db(db: Database, fmt: TabularFormat, *, actor: str) -> None:
+    """Persist a TabularFormat to ``app.tabular_formats`` (audited via the repo).
 
-    Uses INSERT OR REPLACE so re-saving a format with the same name
+    Delegates to ``TabularFormatsRepo.set`` — the idempotent upsert (INSERT OR
+    REPLACE on ``name``) that pairs the write with an ``app.audit_log`` row in
+    one transaction (Invariant 10). Re-saving a format with the same name
     updates all fields in place.
 
     Args:
         db: Active Database connection.
         fmt: Format to persist.
+        actor: Audit actor for the write (e.g. ``"system"`` for an auto-detected
+            format saved during import, ``"cli"``/``"mcp"`` for an explicit save).
     """
-    db.execute(
-        """
-        INSERT OR REPLACE INTO app.tabular_formats (
-            name, institution_name, file_type, delimiter, encoding,
-            skip_rows, sheet, header_signature, field_mapping,
-            sign_convention, date_format, number_format,
-            skip_trailing_patterns, multi_account, source,
-            times_used, last_used_at, updated_at
-        ) VALUES (
-            ?, ?, ?, ?, ?,
-            ?, ?, ?, ?,
-            ?, ?, ?,
-            ?, ?, ?,
-            ?, ?, CURRENT_TIMESTAMP
-        )
-        """,
-        [
-            fmt.name,
-            fmt.institution_name,
-            fmt.file_type,
-            fmt.delimiter,
-            fmt.encoding,
-            fmt.skip_rows,
-            fmt.sheet,
-            json.dumps(fmt.header_signature),
-            json.dumps(fmt.field_mapping),
-            fmt.sign_convention,
-            fmt.date_format,
-            fmt.number_format,
-            json.dumps(fmt.skip_trailing_patterns)
-            if fmt.skip_trailing_patterns is not None
-            else None,
-            fmt.multi_account,
-            fmt.source,
-            fmt.times_used,
-            fmt.last_used_at,
-        ],
+    from moneybin.repositories.tabular_formats_repo import (  # noqa: PLC0415 — deferred to avoid a runtime database import in this loader module
+        TabularFormatsRepo,
+    )
+
+    TabularFormatsRepo(db).set(
+        name=fmt.name,
+        institution_name=fmt.institution_name,
+        file_type=fmt.file_type,
+        delimiter=fmt.delimiter,
+        encoding=fmt.encoding,
+        skip_rows=fmt.skip_rows,
+        sheet=fmt.sheet,
+        header_signature=fmt.header_signature,
+        field_mapping=fmt.field_mapping,
+        sign_convention=fmt.sign_convention,
+        date_format=fmt.date_format,
+        number_format=fmt.number_format,
+        skip_trailing_patterns=fmt.skip_trailing_patterns,
+        multi_account=fmt.multi_account,
+        source=fmt.source,
+        times_used=fmt.times_used,
+        last_used_at=fmt.last_used_at,
+        actor=actor,
     )
     logger.debug(f"Saved format to DB: {fmt.name}")
 
@@ -292,26 +282,27 @@ def load_formats_from_db(db: Database) -> dict[str, TabularFormat]:
     return formats
 
 
-def delete_format_from_db(db: Database, name: str) -> bool:
-    """Delete a user-saved format by name.
+def delete_format_from_db(db: Database, name: str, *, actor: str) -> bool:
+    """Delete a user-saved format by name (audited via the repo).
+
+    Delegates to ``TabularFormatsRepo.delete``, which captures the full prior
+    row in the paired ``app.audit_log`` entry (Invariant 10).
 
     Args:
         db: Active Database connection.
         name: Format name to delete.
+        actor: Audit actor for the write (e.g. ``"cli"``).
 
     Returns:
         True if the format was found and deleted, False if not found.
     """
-    row = db.execute(
-        "SELECT name FROM app.tabular_formats WHERE name = ?",
-        [name],
-    ).fetchone()
-    if row is None:
-        return False
-    db.execute(
-        "DELETE FROM app.tabular_formats WHERE name = ?",
-        [name],
+    from moneybin.repositories.tabular_formats_repo import (  # noqa: PLC0415 — deferred to avoid a runtime database import in this loader module
+        TabularFormatsRepo,
     )
+
+    event = TabularFormatsRepo(db).delete(name, actor=actor)
+    if event is None:
+        return False
     logger.debug(f"Deleted format from DB: {name!r}")
     return True
 

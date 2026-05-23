@@ -21,6 +21,15 @@ ready
 > - **The CLI `budget set` command is a stub** (`_not_implemented`); only the MCP `budget_set` tool calls `BudgetService.set_budget`, so `actor` is threaded from MCP only. The deprecated `AccountService` delegates (`rename`/`archive`/`unarchive`/`set_include_in_net_worth`) are test-only; they default `actor="system"` (the `MatchApplier.add_merchant` precedent for programmatic callers) while the canonical `settings_update` requires an explicit `actor`.
 > - **Audit actions follow the upsert `.set` verb, not `.insert`.** `account_settings.set`, `balance_assertion.set`, and `budget.set` (insert + update branches) all use `.set` — matching the existing `category.set` upsert taxonomy — with `.delete` for removals. (The earlier `balance_assertion.insert` working-name was dropped: the write is an `ON CONFLICT DO UPDATE` upsert, so `.set` is the accurate, coherent verb.)
 
+> **Batch D reconciliation (2026-05-22).** Implementing PRs 7, 8, 11 (the "edge" writers outside `services/`) surfaced these spec↔code drifts, resolved as follows:
+> - **`ImportLabelsRepo` is named `ImportsRepo`.** Every other repo is named for its table (`UserCategoriesRepo`↔`user_categories`); `ImportLabelsRepo` was the lone deviation, naming a payload instead of the table. The repo owns `app.imports` (`repository = "imports"`); labels are its only mutation today, but the boundary is the table. Req 6 + PR 11 below use `ImportsRepo`.
+> - **`app.imports` labels were already audited; PR 11's premise was wrong.** The spec said the labels write at "L1484" bypasses the audit chain. In reality `ImportService.{add,remove,set}_labels` already wrapped the write in a txn and emitted per-label `import_label.add`/`import_label.remove` events. The only Invariant-10 gap was that the raw SQL lived in the service. The migration moves the SQL into `ImportsRepo.set`, which emits **one full-row `import.set`** audit (Req 4 full-row capture, replacing the per-label events that captured only a label-list subset). `transaction-curation.md` §Audit log and `moneybin-mcp.md` §`import_labels_set` were updated to match.
+> - **`match_decisions` has no clean FK to `core.fct_transactions`.** PR 8 / Req 9 call for an FK on "transaction-id columns", but `match_decisions` stores *source-native* ids (`source_transaction_id_a`/`_b` + type + origin) that resolve in the staging layer, not in `core.fct_transactions` (gold hash `transaction_id` only). The applicable FK is `account_id`/`account_id_b → core.dim_accounts` (a gold key, and one of Req 9's own examples); the source-native→fct check is dropped. Doctor: `app_match_decisions_account_fk`.
+> - **`match_decisions` coverage watermark is `GREATEST(decided_at, reversed_at)`** (no single `updated_at` column; `reverse` bumps `reversed_at`, `insert`/`update_status` bump `decided_at`). `GREATEST` (DuckDB ignores NULL, so it's the later timestamp, or `decided_at` when never reversed) is the true latest-mutation watermark, so a raw bypass that bumps *either* column is flagged — the coverage helper gained an `updated_expr` parameter (same generalize-the-helper precedent as `updated_col`/`pk_expr`) to carry the expression.
+> - **`update_match_status` has no production caller** (only tests; there is no `matches confirm`/accept path today). Its raw UPDATE still moved into `MatchDecisionsRepo.update_status` for lint-rule symmetry and the future confirm surface; its tests were migrated to the repo.
+> - **Matcher-created decisions thread `actor` from the surface** (`cli`/`mcp`), defaulting to `"system"` for automated callers (refresh, scenario); `decided_by="auto"` still records the automated decision. The auto-saved tabular format (a detection side-effect during import, `source="detected"`) audits as `actor="system"` rather than threading actor through the whole import pipeline.
+> - **`tabular_formats` has no FK** (format-profile config, no core dim) — audit coverage only, per PR 7.
+
 ## Goal
 
 `app.*` holds the only non-reconstructible state in MoneyBin — user categories, merchant patterns, categorization rules, account settings, balance assertions, budgets, curation notes/tags/splits, match decisions, tabular-format profiles. A bad service mutation today can silently corrupt any of those tables: audit routing is enforced by convention, not structure, and `audit_service.record_audit_event()` is called at only a fraction of the mutation sites. The doctor has no `app.*` invariants — only pipeline ones. The hosted tier (M3D/M3E) cannot ship without per-user `app.*` integrity, and the agent-first thesis means bulk LLM-driven mutations need recoverability to be trustworthy. This spec adds **Invariant 10** to the architecture, introduces a `*Repo` layer that owns every protected `app.*` write, bakes in the data captured for a future undo surface, and enforces the contract via a lint rule and doctor checks. The undo *consumer* (CLI/MCP/UndoService) is deliberately deferred to Phase 2.
@@ -109,7 +118,7 @@ Source: 2026-05-16 CTO architecture review §2.2 + §3 leverage point #3, re-ver
    | `MatchDecisionsRepo` | `app.match_decisions` | `matching/persistence.py` |
    | `BalanceAssertionsRepo` | `app.balance_assertions` | `balance_service` |
    | `BudgetsRepo` | `app.budgets` | `budget_service` |
-   | `ImportLabelsRepo` | `app.imports` (labels payload) | `import_service` (the lifecycle write at L1484; lifecycle audit elsewhere stays) |
+   | `ImportsRepo` | `app.imports` (labels overlay) | `import_service` (labels write; lifecycle audit elsewhere stays) |
 
    `app.transaction_notes`, `app.transaction_tags`, `app.transaction_splits` are written by `transaction_service.py` which already routes through `AuditService` correctly; per Invariant 10 they require a `*_repo.py` home for lint-rule symmetry — wrapping the existing audited writes is mechanical and is included in Phase 1 (see [Implementation Plan](#implementation-plan)).
 
@@ -252,9 +261,9 @@ Phase 1 lands as a sequence of small reviewable PRs. Each PR after PR 1 adds one
 
 > Shipped in Batch C. The assignment-then-execute `update_sql`/`insert_sql` locals migrated to `BudgetsRepo.update` / `.insert`; FK `category_id → core.dim_categories` skips NULLs — see the Batch C reconciliation note above. Action: `budget.set` (both branches). The lint rule that must parse the assignment-then-execute shape is AI-PR13, not this batch.
 
-### PR 11 — `ImportLabelsRepo`
+### PR 11 — `ImportsRepo`
 
-- `import_service.py:1484` (`INSERT INTO app.imports (import_id, labels, …)`) → `ImportLabelsRepo`. The import lifecycle audit emissions in `import_service.py` (L1430, L1438, L1467) stay; this PR adds explicit audit for the *labels* mutation, which today bypasses the lifecycle audit chain.
+- The `app.imports` labels write (`ImportService._upsert_labels`, `INSERT … ON CONFLICT`) → `ImportsRepo.set`. The import lifecycle audit emissions in `import_service.py` stay. **Reconciled (see Batch D note):** the labels write was already audited (per-label `import_label.*` events), so this PR moves the raw SQL into the repo and switches to a single full-row `import.set` audit (Req 4); the repo is named `ImportsRepo` (table-named, not `ImportLabelsRepo`).
 
 ### PR 12 — Wrap existing audited writers in repos + backfill full-row capture
 

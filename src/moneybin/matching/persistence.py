@@ -1,11 +1,13 @@
-"""CRUD operations for app.match_decisions.
+"""Read queries for app.match_decisions.
 
-All database access uses parameterized queries via the Database class.
+All database access uses parameterized queries via the Database class. Mutations
+(insert / status update / reverse) live in
+``moneybin.repositories.match_decisions_repo.MatchDecisionsRepo`` so every write
+emits a paired ``app.audit_log`` row (Invariant 10); this module keeps the read
+projections the matcher and CLI consume.
 """
 
-import json
 import logging
-from datetime import UTC, datetime
 from typing import Any, Literal, get_args
 
 from moneybin.database import Database
@@ -44,65 +46,13 @@ _MATCH_DECISION_COLUMNS: tuple[str, ...] = (
 _MATCH_DECISION_SELECT = ", ".join(_MATCH_DECISION_COLUMNS)
 
 
-def create_match_decision(
-    db: Database,
-    *,
-    match_id: str,
-    source_transaction_id_a: str,
-    source_type_a: str,
-    source_origin_a: str,
-    source_transaction_id_b: str,
-    source_type_b: str,
-    source_origin_b: str,
-    account_id: str,
-    confidence_score: float,
-    match_signals: dict[str, Any],
-    match_tier: MatchTier | None,
-    match_status: MatchStatus,
-    decided_by: str,
-    match_reason: str | None = None,
-    match_type: MatchType = "dedup",
-    account_id_b: str | None = None,
-) -> None:
-    """Insert a new match decision."""
-    db.execute(
-        """
-        INSERT INTO app.match_decisions (
-            match_id, source_transaction_id_a, source_type_a, source_origin_a,
-            source_transaction_id_b, source_type_b, source_origin_b,
-            account_id, confidence_score, match_signals, match_type, match_tier,
-            account_id_b, match_status, match_reason, decided_by, decided_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        [
-            match_id,
-            source_transaction_id_a,
-            source_type_a,
-            source_origin_a,
-            source_transaction_id_b,
-            source_type_b,
-            source_origin_b,
-            account_id,
-            confidence_score,
-            json.dumps(match_signals),
-            match_type,
-            match_tier,
-            account_id_b,
-            match_status,
-            match_reason,
-            decided_by,
-            datetime.now(tz=UTC).isoformat(),
-        ],
-    )
-
-
 def get_active_matches(
     db: Database, match_type: str | None = None
 ) -> list[dict[str, Any]]:
     """Return accepted, non-reversed match decisions."""
     where = "WHERE match_status = 'accepted' AND reversed_at IS NULL"
     params: list[Any] = []
-    if match_type:
+    if match_type is not None:
         if match_type not in VALID_MATCH_TYPES:
             raise ValueError(f"Invalid match_type: {match_type!r}")
         where += " AND match_type = ?"
@@ -130,7 +80,7 @@ def get_pending_matches(
     """
     where = "WHERE match_status = 'pending' AND reversed_at IS NULL"
     params: list[Any] = []
-    if match_type:
+    if match_type is not None:
         if match_type not in VALID_MATCH_TYPES:
             raise ValueError(f"Invalid match_type: {match_type!r}")
         where += " AND match_type = ?"
@@ -163,72 +113,6 @@ def get_match_decision(db: Database, match_id: str) -> dict[str, Any] | None:
     if row is None:
         return None
     return dict(zip(_MATCH_DECISION_COLUMNS, row, strict=True))
-
-
-def update_match_status(
-    db: Database, match_id: str, *, status: MatchStatus, decided_by: str
-) -> None:
-    """Update the status of a match decision (e.g., pending -> accepted)."""
-    # Invariant 10: raw DML on app.match_decisions — no MatchDecisionsRepo yet.
-    # The repo wrapper + audit routing for this table is deferred (planned in
-    # docs/specs/app-integrity-invariant.md bypass map / MatchDecisionsRepo row).
-    db.execute(
-        """
-        UPDATE app.match_decisions
-        SET match_status = ?, decided_by = ?, decided_at = ?
-        WHERE match_id = ?
-        """,
-        [status, decided_by, datetime.now(tz=UTC).isoformat(), match_id],
-    )
-
-
-def accept_pending_matches(
-    db: Database, *, match_type: str | None = None, decided_by: str
-) -> int:
-    """Accept every pending match in one atomic UPDATE. Returns the count accepted.
-
-    A single statement (not a per-row loop) so the operation is all-or-nothing
-    and the returned count reflects exactly what committed. ``WHERE
-    match_status = 'pending'`` is itself the guard — only pending decisions are
-    touched, so no per-row transition check is needed.
-    """
-    # Invariant 10: raw DML on app.match_decisions — no MatchDecisionsRepo yet
-    # (deferred; see docs/specs/app-integrity-invariant.md bypass map).
-    where = "WHERE match_status = 'pending' AND reversed_at IS NULL"
-    params: list[Any] = [decided_by, datetime.now(tz=UTC).isoformat()]
-    if match_type:
-        if match_type not in VALID_MATCH_TYPES:
-            raise ValueError(f"Invalid match_type: {match_type!r}")
-        where += " AND match_type = ?"
-        params.append(match_type)
-    rows = db.execute(
-        f"""
-        UPDATE app.match_decisions
-        SET match_status = 'accepted', decided_by = ?, decided_at = ?
-        {where}
-        RETURNING match_id
-        """,  # noqa: S608 — match_type validated above; values parameterized
-        params,
-    ).fetchall()
-    return len(rows)
-
-
-def undo_match(db: Database, match_id: str, *, reversed_by: str) -> None:
-    """Reverse a match decision. Sets reversed_at, reversed_by, and match_status."""
-    row = db.execute(
-        "SELECT match_id FROM app.match_decisions WHERE match_id = ?",
-        [match_id],
-    ).fetchone()
-    if row is None:
-        raise ValueError(f"Match not found: {match_id}")
-    db.execute(
-        """
-        UPDATE app.match_decisions
-        SET reversed_at = ?, reversed_by = ?, match_status = 'reversed'
-        WHERE match_id = ?
-        """,
-        [datetime.now(tz=UTC).isoformat(), reversed_by, match_id],
-    )
 
 
 def get_rejected_pairs(
@@ -270,7 +154,7 @@ def get_match_log(
     """
     where = "WHERE match_status != 'pending'"
     params: list[Any] = []
-    if match_type:
+    if match_type is not None:
         if match_type not in VALID_MATCH_TYPES:
             raise ValueError(f"Invalid match_type: {match_type!r}")
         where += " AND match_type = ?"
