@@ -266,23 +266,21 @@ def execute_sql_query(db: Database, query: str, *, max_rows: int) -> SqlQueryRes
         ) from e
 
     records = [dict(zip(columns, row, strict=False)) for row in rows]
-    # Key the redaction map by DuckDB's ACTUAL result-column names, aligned to
-    # the lineage classes BY POSITION. sqlglot's alias_or_name for an unaliased
-    # expression (e.g. MIN(account_id) → '') diverges from DuckDB's column name
-    # ('min(account_id)'), so name-keying would miss the CRITICAL transform and
-    # leak the value. Projection order == result-column order, so position is
-    # the reliable join. On a count mismatch (rare — e.g. * expansion ordering),
-    # fail closed: apply the query's max tier to every column.
-    class_values = list(output_classes.values())
-    if len(class_values) == len(columns):
-        col_classes = dict(zip(columns, class_values, strict=True))
-    else:
-        floor = (
-            max(class_values, key=lambda c: c.tier)
-            if class_values
-            else DataClass.AGGREGATE
-        )
-        col_classes = dict.fromkeys(columns, floor)
+    # Map each DuckDB result column to its DataClass BY NAME. This is robust to
+    # any divergence between sqlglot's projection order and DuckDB's runtime
+    # column order (the SELECT * case), which a positional join is not. Named
+    # projections and expanded `*` columns match by name directly. Unaliased
+    # expressions are the one mismatch — sqlglot names MIN(account_id) ''/'?_i'
+    # while DuckDB names it 'min(account_id)' — so they FAIL CLOSED to the
+    # query's max tier. An unmasked CRITICAL value therefore can never slip
+    # through: a name we can't resolve is treated as the most sensitive class
+    # present (over-redaction, not under-redaction).
+    fallback = (
+        max(output_classes.values(), key=lambda c: c.tier)
+        if output_classes
+        else DataClass.AGGREGATE
+    )
+    col_classes = {col: output_classes.get(col, fallback) for col in columns}
     redacted = redact_records(records, col_classes, consent=None)
 
     return SqlQueryResult(

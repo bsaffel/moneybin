@@ -132,6 +132,39 @@ def test_unknown_table_raises(populated_db: Database) -> None:
     assert ei.value.code == error_codes.SQL_UNKNOWN_TABLE
 
 
+def test_select_star_masks_every_critical_column(populated_db: Database) -> None:
+    """SELECT * masks all CRITICAL columns regardless of column order.
+
+    Redaction maps DuckDB result columns to classes BY NAME, so it cannot be
+    fooled by any divergence between sqlglot's `*` expansion order and DuckDB's
+    runtime column order (the round-5 SELECT * bypass).
+    """
+    _seed_account(populated_db)
+    result = execute_sql_query(
+        populated_db, "SELECT * FROM core.dim_accounts", max_rows=100
+    )
+    row = result.records[0]
+    assert str(row["account_id"]).startswith("****")
+    assert row["routing_number"] == "*****"
+    assert result.tier is Tier.CRITICAL
+
+
+def test_unaliased_aggregate_fails_closed_to_max_tier(populated_db: Database) -> None:
+    """An unaliased expression DuckDB names differently than sqlglot fails closed.
+
+    `MIN(account_id)` → DuckDB column 'min(account_id)' vs sqlglot ''. The name
+    miss fails closed to the query's max tier (CRITICAL), so the value is masked
+    — never returned in the clear.
+    """
+    _seed_account(populated_db)
+    result = execute_sql_query(
+        populated_db, "SELECT MIN(account_id) FROM core.dim_accounts", max_rows=100
+    )
+    (value,) = result.records[0].values()
+    assert str(value).startswith("****")
+    assert result.tier is Tier.CRITICAL
+
+
 def test_unknown_table_error_omits_raw_detail(populated_db: Database) -> None:
     """The unknown-table error must not echo the raw query/DuckDB message.
 

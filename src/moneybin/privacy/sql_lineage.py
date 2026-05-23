@@ -133,20 +133,22 @@ def _schema_version(db: Database) -> int:
 
 @functools.lru_cache(maxsize=4)
 def _build_snapshot(
-    version: int, columns: frozenset[tuple[str, str, str]]
+    version: int, ordered_columns: tuple[tuple[str, str, str], ...]
 ) -> SchemaSnapshot:
-    # MappingSchema wants {db: {table: {column: type}}}. Types are irrelevant to
-    # name-based lineage; use a uniform placeholder.
-    # Build as dict[str, dict[str, dict[str, str]]] then cast to the
-    # MappingSchema constructor's dict[str, object] parameter to satisfy
-    # pyright's invariant dict check.
+    # ``ordered_columns`` preserves DuckDB's definition order (column_index) so
+    # sqlglot's MappingSchema expands ``SELECT *`` in the SAME order DuckDB
+    # returns columns at runtime. A frozenset here (hash-bucket order) would
+    # desync the two, and the privacy classification would then be matched to
+    # the wrong column — see ``redact`` in ``sql_query.py`` for why alignment
+    # matters. MappingSchema wants {db: {table: {column: type}}}; types are
+    # irrelevant to name-based lineage, so use a uniform placeholder.
     raw: dict[str, dict[str, dict[str, str]]] = {}
-    for schema, table, column in columns:
+    for schema, table, column in ordered_columns:
         raw.setdefault(schema, {}).setdefault(table, {})[column] = "UNKNOWN"
     nested = cast("dict[str, object]", raw)
     return SchemaSnapshot(
         version=version,
-        columns=columns,
+        columns=frozenset(ordered_columns),
         mapping=MappingSchema(nested, dialect="duckdb"),
     )
 
@@ -158,7 +160,10 @@ def get_current_schema_snapshot(db: Database) -> SchemaSnapshot:
     the core/app column list); both are sub-millisecond on a local DuckDB and
     dwarfed by the per-call connection open. The costly part — building the
     sqlglot ``MappingSchema`` — is memoised by ``_build_snapshot`` keyed on
-    (version, columns), so it runs only when the schema actually changes.
+    (version, ordered columns), so it runs only when the schema actually changes.
+
+    Columns are ordered by ``column_index`` (DuckDB's definition order) so star
+    expansion matches the runtime column order — see ``_build_snapshot``.
     """
     version = _schema_version(db)
     rows = db.execute(
@@ -166,10 +171,11 @@ def get_current_schema_snapshot(db: Database) -> SchemaSnapshot:
         SELECT schema_name, table_name, column_name
         FROM duckdb_columns()
         WHERE schema_name IN ('core', 'app')
+        ORDER BY schema_name, table_name, column_index
         """
     ).fetchall()
-    columns = frozenset((str(s), str(t), str(c)) for s, t, c in rows)
-    return _build_snapshot(version, columns)
+    ordered_columns = tuple((str(s), str(t), str(c)) for s, t, c in rows)
+    return _build_snapshot(version, ordered_columns)
 
 
 # ---------------------------------------------------------------------------

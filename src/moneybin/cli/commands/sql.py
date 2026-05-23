@@ -69,6 +69,9 @@ def sql_query_command(
     from moneybin.mcp.privacy import get_max_rows, tier_to_sensitivity  # noqa: PLC0415
     from moneybin.privacy.sql_query import execute_sql_query  # noqa: PLC0415
 
+    # render_or_json stays inside handle_cli_errors so a rendering/serialization
+    # failure (e.g. an unusual DuckDB column type) surfaces as a clean CLI error
+    # envelope, not an unhandled traceback.
     with handle_cli_errors(cli_actor="sql_query"):
         with get_database(read_only=True) as db:
             result = execute_sql_query(db, query, max_rows=get_max_rows())
@@ -79,18 +82,20 @@ def sql_query_command(
             classes_returned=result.classes_returned,
         )
 
-    def _render_text(_: object) -> None:
-        if not result.columns:
-            return
-        typer.echo(" | ".join(result.columns))
-        for record in result.records:
-            typer.echo(" | ".join(str(record.get(col, "")) for col in result.columns))
+        def _render_text(_: object) -> None:
+            if not result.columns:
+                return
+            typer.echo(" | ".join(result.columns))
+            for record in result.records:
+                typer.echo(
+                    " | ".join(str(record.get(col, "")) for col in result.columns)
+                )
 
-    render_or_json(
-        envelope,
-        output,
-        render_fn=_render_text,
-        json_fields=json_fields,
-        cli_actor="sql_query",
-        classes_returned=result.classes_returned,
-    )
+        render_or_json(
+            envelope,
+            output,
+            render_fn=_render_text,
+            json_fields=json_fields,
+            cli_actor="sql_query",
+            classes_returned=result.classes_returned,
+        )
