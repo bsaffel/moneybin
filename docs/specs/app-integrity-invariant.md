@@ -70,7 +70,7 @@ Source: 2026-05-16 CTO architecture review §2.2 + §3 leverage point #3, re-ver
 - [`architecture-shared-primitives.md`](architecture-shared-primitives.md) — Invariant 8 ("derivations live in SQLMesh, not in services") is a sibling architecture invariant. This spec appends Invariant 10 (`app.*` mutation routing) to that document.
 - [`transaction-curation.md`](transaction-curation.md) §Audit log Req 25–31 — the spec that introduced `AuditService` and the `app.audit_log` schema. This spec extends that infrastructure to cover every protected `app.*` table.
 - [`categorization-overview.md`](categorization-overview.md) / [`categorization-auto-rules.md`](categorization-auto-rules.md) — the categorization writers that this spec migrates onto repositories.
-- [`account-management.md`](account-management.md) / [`net-worth.md`](net-worth.md) — owners of `app.account_settings` and `app.balance_assertions` respectively.
+- [`account-management.md`](account-management.md) / [`reports-net-worth.md`](reports-net-worth.md) — owners of `app.account_settings` and `app.balance_assertions` respectively.
 - [`matching-same-record-dedup.md`](matching-same-record-dedup.md) — owns `app.match_decisions`; routing decision recorded in [Resolved Design Decisions](#resolved-design-decisions) §1.
 - [`moneybin-doctor.md`](moneybin-doctor.md) — adds new `app.*` invariants per [Requirement 9](#requirements).
 

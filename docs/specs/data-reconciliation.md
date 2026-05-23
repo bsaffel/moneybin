@@ -11,12 +11,12 @@ Provide automated, continuous data quality validation across the raw → staging
 
 MoneyBin is a data warehouse for personal financial data. Like any warehouse, data passes through multiple transformation layers (raw → prep → core) and arrives from multiple sources (OFX, tabular imports, future sync providers). Each layer and each source is an opportunity for silent data loss or corruption.
 
-Financial reconciliation ("does my balance match the bank?") is covered by [`net-worth.md`](net-worth.md) via `reconciliation_delta` in `fct_balances_daily`. This spec covers **pipeline reconciliation** — the data engineering concern of "did my ETL preserve data integrity?"
+Financial reconciliation ("does my balance match the bank?") is covered by [`reports-net-worth.md`](reports-net-worth.md) via `reconciliation_delta` in `fct_balances_daily`. This spec covers **pipeline reconciliation** — the data engineering concern of "did my ETL preserve data integrity?"
 
 The goal is warehouse-grade trust: every number in the analytics layer is provably traceable to a source record, and every source record is accounted for in the analytics layer.
 
 Related specs:
-- [`net-worth.md`](net-worth.md) — financial balance reconciliation (complementary, not overlapping)
+- [`reports-net-worth.md`](reports-net-worth.md) — financial balance reconciliation (complementary, not overlapping)
 - [`smart-import-tabular.md`](smart-import-tabular.md) — import pipeline with row-level rejection tracking
 - [`matching-same-record-dedup.md`](matching-same-record-dedup.md) — cross-source dedup that intentionally reduces row counts
 - [`observability.md`](observability.md) — metrics infrastructure used for reconciliation alerting
@@ -142,7 +142,7 @@ moneybin reconciliation check --layer import [--import-id UUID]
 ```
 - Filter to a specific import batch
 
-The financial balance reconciliation command (`moneybin accounts balance reconcile`) is defined in [`net-worth.md`](net-worth.md) and covers the institution-balance-vs-transactions concern. The financial reconciliation lives under `accounts balance reconcile` (per `net-worth.md` v2 + `moneybin-cli.md` v2).
+The financial balance reconciliation command (`moneybin accounts balance reconcile`) is defined in [`reports-net-worth.md`](reports-net-worth.md) and covers the institution-balance-vs-transactions concern. The financial reconciliation lives under `accounts balance reconcile` (per `reports-net-worth.md` v2 + `moneybin-cli.md` v2).
 
 ## MCP Interface
 
@@ -187,12 +187,12 @@ class ReconciliationConfig(BaseModel, frozen=True):
 
 - SQLMesh pipeline — reconciliation views query existing raw/prep/core tables
 - [`observability.md`](observability.md) — metrics for reconciliation results
-- [`net-worth.md`](net-worth.md) — financial reconciliation lives there; pipeline reconciliation lives here
+- [`reports-net-worth.md`](reports-net-worth.md) — financial reconciliation lives there; pipeline reconciliation lives here
 - `config.py` — `ReconciliationConfig` for threshold settings
 
 ## Out of Scope
 
-- **Financial balance reconciliation** — covered by `net-worth.md` (`reconciliation_delta` in `fct_balances_daily`)
+- **Financial balance reconciliation** — covered by `reports-net-worth.md` (`reconciliation_delta` in `fct_balances_daily`)
 - **Automated remediation** — reconciliation reports problems; it doesn't fix them. The user decides whether to reimport, revert, or investigate.
 - **Cross-source dedup validation** — covered by `matching-same-record-dedup.md`. This spec validates pipeline integrity, not match quality.
 - **Real-time monitoring** — reconciliation runs on-demand or after `sqlmesh run`, not as a continuous process.

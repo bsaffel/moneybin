@@ -1,5 +1,5 @@
 # src/moneybin/mcp/tools/accounts.py
-"""Accounts namespace tools — v2 per docs/specs/account-management.md + net-worth.md.
+"""Accounts namespace tools — v2 per docs/specs/account-management.md + reports-net-worth.md.
 
 Sensitivity is derived per tool from its payload's classified fields, not
 declared here — tools returning ``account_id`` (ACCOUNT_IDENTIFIER) or

@@ -40,7 +40,7 @@ This spec is the inaugurating implementation of that convention. It exercises th
 - [`moneybin-cli.md`](moneybin-cli.md) — v2 reports CLI namespace (`reports networth`, `reports spending`, `reports cashflow`, `reports budget`, `reports health`). This spec adds five more subcommands (`reports recurring`, `reports merchants`, `reports uncategorized`, `reports large-transactions`, `reports balance-drift`).
 - [`moneybin-mcp.md`](moneybin-mcp.md) — v2 `reports_*` MCP tools mirror the CLI 1:1.
 - [`mcp-sql-discoverability.md`](mcp-sql-discoverability.md) — `moneybin://schema` resource. **Extended** by this spec to include the `reports` schema with `audience: "interface"`.
-- [`net-worth.md`](net-worth.md) — owner of the existing `core.agg_net_worth` model, which this spec migrates. The two `NetworthService` SQL references are updated as part of the migration (no behavior change).
+- [`reports-net-worth.md`](reports-net-worth.md) — owner of the existing `core.agg_net_worth` model, which this spec migrates. The two `NetworthService` SQL references are updated as part of the migration (no behavior change).
 - [`transaction-curation.md`](transaction-curation.md) — sibling M2A spec that introduces `app.audit_log`, `app.transaction_tags`, etc. This spec does not depend on its tables; the doctor spec ([`moneybin-doctor.md`](moneybin-doctor.md), drafted next) will.
 - [`mcp-architecture.md`](mcp-architecture.md) — sensitivity tiers. All `reports_*` tools are **Tier 1 (Account-Level)** — they expose aggregate financial state and category breakdowns, never raw PII or full transaction descriptions.
 - [`extension-contracts.md`](extension-contracts.md) — governance layer for the Report extension type. Defines the contributor-facing surface (manifest, structured-comment format, auto-generated registration trinity, Quality Scale tiers). This spec describes WHAT the v1 in-tree `reports.*` models are; `extension-contracts.md` describes HOW any report — in-tree or contributed — registers and is validated. The eight v1 models migrate to the structured-comment shape as part of `extension-contracts.md`'s pre-launch surgical work.
@@ -599,7 +599,7 @@ Scenario fixtures use the YAML format owned by `testing-scenario-comprehensive.m
 
 ### 3. CLI/MCP smoke tests
 
-Per `e2e-testing.md`, add subprocess-based smoke tests for the five new CLI commands and update the three existing ones to verify they return `ResponseEnvelope`-shaped JSON with a non-empty `data` array on the standard fixture.
+Per `testing-e2e.md`, add subprocess-based smoke tests for the five new CLI commands and update the three existing ones to verify they return `ResponseEnvelope`-shaped JSON with a non-empty `data` array on the standard fixture.
 
 For MCP, add per-tool unit tests under `tests/moneybin/mcp/test_tools/` asserting:
 
@@ -644,7 +644,7 @@ The two PRs can be reviewed in parallel once both specs are written, but PR 1 mu
 ## Dependencies
 
 - **Required:** [`architecture-shared-primitives.md`](architecture-shared-primitives.md) — schema convention. **Met** (PR #118 merged).
-- **Required:** `core.fct_balances_daily`, `core.fct_transactions`, `core.dim_accounts`, `seeds.categories`, `app.balance_assertions`. **All exist** (shipped via `net-worth.md`, `account-management.md`, base scaffolding).
+- **Required:** `core.fct_balances_daily`, `core.fct_transactions`, `core.dim_accounts`, `seeds.categories`, `app.balance_assertions`. **All exist** (shipped via `reports-net-worth.md`, `account-management.md`, base scaffolding).
 - **Helpful:** Synthetic data persona library with subscription patterns. **Mostly met** — may need one persona update for `reports.recurring_subscriptions` "inactive" assertion.
 - **None blocking:** This spec does not depend on `transaction-curation.md` (Wave M2A). Doctor spec will, for its curator-stats section.
 
@@ -663,7 +663,7 @@ The two PRs can be reviewed in parallel once both specs are written, but PR 1 mu
 - [`moneybin-mcp.md`](moneybin-mcp.md) v2 — `reports_*` MCP tools.
 - [`mcp-sql-discoverability.md`](mcp-sql-discoverability.md) — `moneybin://schema` resource extended by this spec.
 - [`mcp-architecture.md`](mcp-architecture.md) — sensitivity tiers.
-- [`net-worth.md`](net-worth.md) — owner of the migrated `agg_net_worth` model.
+- [`reports-net-worth.md`](reports-net-worth.md) — owner of the migrated `agg_net_worth` model.
 
 ### Rules
 

@@ -343,13 +343,13 @@ This spec ships bundled with [`account-management.md`](account-management.md) â€
 
 | Artifact | Owner |
 |---|---|
-| `app.balance_assertions` table + migration | **net-worth.md** |
+| `app.balance_assertions` table + migration | **reports-net-worth.md** |
 | `app.account_settings` table + migration | **account-management.md** (consumed here for `include_in_net_worth`) |
 | `accounts` CLI parent group registration (`src/moneybin/cli/commands/accounts.py`) | **account-management.md** (this spec contributes the `balance` sub-group inside it) |
-| `reports` CLI parent group registration (`src/moneybin/cli/commands/reports.py`) | **net-worth.md** (this spec creates it; future report specs add subcommands) |
+| `reports` CLI parent group registration (`src/moneybin/cli/commands/reports.py`) | **reports-net-worth.md** (this spec creates it; future report specs add subcommands) |
 | `AccountService` extensions (entity ops: list/show/rename/archive/include) | **account-management.md** |
-| `BalanceService` (balance queries, assertions, reconciliation) | **net-worth.md** |
-| `NetworthService` (cross-account aggregation) | **net-worth.md** |
+| `BalanceService` (balance queries, assertions, reconciliation) | **reports-net-worth.md** |
+| `NetworthService` (cross-account aggregation) | **reports-net-worth.md** |
 | Account merge â†’ balance assertion fan-in invariants | **account-management.md** (must reassign assertion rows on merge; this spec verifies the post-merge invariant in scenarios) |
 
 When implementing: land both specs' schema migrations in the same migration window so `agg_net_worth`'s `LEFT JOIN app.account_settings` is never against a missing table.

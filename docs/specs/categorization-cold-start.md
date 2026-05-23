@@ -16,7 +16,7 @@ Design the first-run categorization experience: how a brand-new MoneyBin install
 
 - Parent: [`categorization-overview.md`](categorization-overview.md) — umbrella spec, priority hierarchy, pipeline contract
 - Downstream: [`categorization-auto-rules.md`](categorization-auto-rules.md) — auto-rules feed off cold-start categorizations
-- Layered on: [`categorize-bulk.md`](categorize-bulk.md) — the bulk categorize tool this spec wraps with a first-run prompt layer
+- Layered on: [`categorization-bulk.md`](categorization-bulk.md) — the bulk categorize tool this spec wraps with a first-run prompt layer
 - Privacy alignment: [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) — redaction aligns with this consent model
 - Tool registration: [`moneybin-mcp.md`](moneybin-mcp.md) — new MCP tools register here
 - Architecture rules: `.claude/rules/mcp.md`, `.claude/rules/cli.md`, `.claude/rules/database.md`
@@ -678,7 +678,7 @@ These extend the existing synthetic generator's persona/merchant YAML; no new ge
 - No new packages
 - No external services (LLM-assist runs through the user's chosen MCP client; CLI bridge is provider-agnostic)
 
-Prerequisite: `categorize-bulk.md` (implemented) — provides the underlying `categorize_items` service this spec wraps.
+Prerequisite: `categorization-bulk.md` (implemented) — provides the underlying `categorize_items` service this spec wraps.
 
 ## Open questions
 

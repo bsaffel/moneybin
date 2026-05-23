@@ -41,4 +41,4 @@ def reports_budget() -> None:
 @app.command("health")
 def reports_health(months: int = typer.Option(1, "--months")) -> None:
     """Cross-domain financial health snapshot."""
-    _not_implemented("net-worth.md")
+    _not_implemented("reports-net-worth.md")
