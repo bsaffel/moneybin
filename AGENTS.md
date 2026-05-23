@@ -78,7 +78,7 @@ Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, sim
 - **Package manager**: `uv` only. Never `pip install`, `uv pip install`, or `python -m`.
 - **Linting/formatting**: `make format && make lint` (Ruff, line length 88).
 - **Type checking**: `uv run pyright` on modified files (not mypy).
-- **Tests**: Dev: `uv run pytest tests/path/to/test_file.py -v`. Pre-commit: `make test`. Always `uv run pytest`, never `python -m`. If it resolves to the wrong interpreter, run `uv sync --reinstall`.
+- **Tests**: Dev `uv run pytest <path> -v`; pre-commit `make test`. Always `uv run pytest`; wrong interpreter → `uv sync --reinstall`.
 - **Pre-commit checklist**: `make check test` — format, lint, type-check, tests. Run once before committing.
 - **SQL formatting**: `uv run sqlmesh -p sqlmesh format`.
 - **Check library docs first**: Before implementing patterns with SQLMesh, DuckDB, Pydantic, etc., verify the correct API in official docs. Training knowledge may be outdated.
@@ -138,7 +138,7 @@ Feature specs live in `docs/specs/`. The **[Spec Index](docs/specs/INDEX.md)** i
 
 ## Plans vs Specs
 
-Specs (intent, durable) live in `docs/specs/` and are tracked. Implementation plans (step-by-step scaffolding from `superpowers:writing-plans` and similar) are ephemeral and **do not belong in the repo** — write them to `private/plans/` (gitignored). From a worktree, that is `../../private/plans/`. Before discarding a plan, lift any durable design rationale into the relevant spec or an ADR.
+Specs (intent, durable) live in `docs/specs/` and are tracked. Implementation plans (e.g. from `superpowers:writing-plans`) are ephemeral — write them to `private/plans/` (gitignored; `../../private/plans/` from a worktree), never the repo. Before discarding one, lift durable design rationale into a spec or ADR.
 
 ## Configuration
 
@@ -156,7 +156,7 @@ Security-critical parameters (crypto cost factors, key lengths, salt sizes) defi
 
 ## Rules Index
 
-Files in `.claude/rules/` auto-load via Claude Code's `paths:` frontmatter — path-scoped rules load when Claude reads a matching file; unscoped rules load every session. The table below is for discoverability when planning work that hasn't touched matching files yet. Read a rule directly if you need it before editing.
+Files in `.claude/rules/` auto-load via `paths:` frontmatter — path-scoped load on matching-file reads, unscoped load every session. This table aids discoverability before you've touched a matching file; read a rule directly if you need it sooner.
 
 ### Path-scoped
 
@@ -171,13 +171,13 @@ Files in `.claude/rules/` auto-load via Claude Code's `paths:` frontmatter — p
 | `identifiers.md` | Content hashes, truncated UUIDs, source IDs, semantic slugs |
 | `documentation.md` | Diagram conventions (Mermaid over ASCII) |
 | `shipping.md` | Post-implementation checklist (CHANGELOG, roadmap, features, README, INDEX) — loads when editing those |
+| `surface-design.md` | Cross-surface operation-shape taxonomy, verb vocabulary, audience layering — loads when touching mcp/cli/services code or the moneybin-mcp/cli/capabilities + mcp-architecture specs |
 
 ### Always loaded (workflow rules)
 
 | Rule | Covers |
 |------|--------|
 | `design-principles.md` | Durable path selection: heuristics for "inevitable choice" decisions and the trigger list for the agent protocol |
-| `surface-design.md` | Cross-surface (MCP / CLI / REST) operation-shape taxonomy, verb vocabulary, audience layering. Consult before adding, renaming, or restructuring a tool/command/endpoint |
 | `branching.md` | Branch prefix → PR label mapping, commit message style |
 | `sandboxing.md` | Bash invocation patterns: single commands, allowlisted pipelines, structured-output filtering, policy denials |
 | `agent-experience.md` | Required agent-experience report whenever you interact with MoneyBin's MCP server in a session |
