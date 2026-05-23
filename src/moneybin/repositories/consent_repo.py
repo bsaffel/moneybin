@@ -160,8 +160,13 @@ class ConsentRepo(BaseRepo):
         actor: str,
         parent_audit_id: str | None = None,
         in_outer_txn: bool = False,
-    ) -> int:
-        """Revoke every active grant; one audit row per revoked grant. Returns count."""
+    ) -> list[GrantInfo]:
+        """Revoke every active grant; one audit row per revoked grant.
+
+        Returns the grants that were revoked (the authoritative set captured
+        inside the transaction) so callers emit per-grant side effects from
+        exactly what changed — no second, possibly-divergent snapshot.
+        """
         with self._transaction(in_outer_txn=in_outer_txn):
             active = self.list_active()
             for grant in active:
@@ -180,7 +185,7 @@ class ConsentRepo(BaseRepo):
                     actor=actor,
                     parent_audit_id=parent_audit_id,
                 )
-            return len(active)
+            return active
 
     def list_active(self) -> list[GrantInfo]:
         """Return all active (non-revoked) grants, newest first."""

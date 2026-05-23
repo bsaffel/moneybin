@@ -26,6 +26,12 @@ def db(
 ) -> Generator[Database, None, None]:
     database = make_curation_db(tmp_path)
     patch_db(monkeypatch, database)
+    # Isolate the privacy log to tmp_path — grant/revoke/log all append events,
+    # and the real profile dir is shared across tests + xdist workers.
+    monkeypatch.setattr(
+        "moneybin.privacy.log._resolve_privacy_log_dir",
+        lambda: tmp_path / "privacy_log",
+    )
     yield database
     database.close()
 

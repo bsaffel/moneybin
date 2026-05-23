@@ -66,6 +66,19 @@ def test_service_grant_requires_backend_when_no_default(
         )
 
 
+def test_service_grant_rejects_empty_backend(db: Database) -> None:
+    """An explicit empty/whitespace backend is invalid input, not a default request."""
+    svc = ConsentService(db)
+    for bad in ("", "   "):
+        with pytest.raises(UserError):
+            svc.grant_consent(
+                feature_category="mcp-data-sharing",
+                backend=bad,
+                consent_mode=ConsentMode.PERSISTENT,
+                actor="cli",
+            )
+
+
 def test_service_rejects_unknown_category(db: Database) -> None:
     svc = ConsentService(db)
     with pytest.raises(UserError):

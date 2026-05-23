@@ -70,10 +70,18 @@ class ConsentService:
         asking — the user confirms consent for the *actual* backend, not a
         ``(no default configured)`` placeholder that would later error.
 
-        An empty-string ``backend`` is treated as unspecified (falls through
-        to the default): an empty string is not a valid backend identifier,
-        so accepting it would create a grant with a blank recipient.
+        ``None`` means "unspecified" → use the default. An empty / whitespace
+        string is rejected outright rather than silently falling through:
+        ``--backend ''`` is invalid input, not a request for the default, and
+        accepting it would record a grant against a blank recipient.
         """
+        if backend is not None and not backend.strip():
+            raise UserError(
+                "Backend cannot be empty.",
+                code=error_codes.MUTATION_INVALID_INPUT,
+                hint="Pass a backend name (e.g. anthropic), or omit it to use "
+                "the default.",
+            )
         if backend:
             return backend
         default = get_settings().ai.default_backend
@@ -178,9 +186,8 @@ class ConsentService:
         detail the audit log already records. A single wildcard event would
         lose that granularity.
         """
-        active = self._repo.list_active()  # capture before the bulk UPDATE
-        count = self._repo.revoke_all(actor=actor)
-        for grant in active:
+        revoked = self._repo.revoke_all(actor=actor)
+        for grant in revoked:
             write_privacy_event(
                 build_consent_event(
                     actor=actor,
@@ -190,7 +197,7 @@ class ConsentService:
                     consent_mode=None,
                 )
             )
-        return count
+        return len(revoked)
 
     def status(self) -> ConsentStatus:
         """Return the current ledger snapshot."""

@@ -31,8 +31,11 @@ def privacy_log(
         return
     for e in payload.events:
         if e.action == "tool_call":
-            classes = ",".join(e.classes_returned) or "(none)"
-            detail = f"sensitivity={e.sensitivity or '(n/a)'} classes={classes} rows={e.row_count}"
+            classes = ",".join(e.classes_returned or []) or "(none)"
+            rows = e.row_count if e.row_count is not None else "(n/a)"
+            detail = (
+                f"sensitivity={e.sensitivity or '(n/a)'} classes={classes} rows={rows}"
+            )
         else:
-            detail = f"{e.feature_category} | {e.backend}"
+            detail = f"{e.feature_category or ''} | {e.backend or ''}"
         typer.echo(f"{e.ts} | {e.action} | {e.actor} | {detail}")

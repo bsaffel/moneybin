@@ -146,7 +146,11 @@ def test_revoke_all(db: Database) -> None:
         grant_prompt="p",
         actor="cli",
     )
-    assert repo.revoke_all(actor="cli.privacy_revoke_all") == 2
+    revoked = repo.revoke_all(actor="cli.privacy_revoke_all")
+    assert {(g.feature_category, g.backend) for g in revoked} == {
+        ("mcp-data-sharing", "anthropic"),
+        ("ml-categorization", "openai"),
+    }
     assert repo.list_active() == []
 
 

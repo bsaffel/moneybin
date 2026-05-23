@@ -197,7 +197,7 @@ AI-call audit rows live in the unified `app.audit_log` defined by [`transaction-
 | `consent_reference` | string | FK to the `app.ai_consent_grants` row that authorized the call. |
 | `user_initiated` | boolean | True for direct MCP queries; false for system-initiated calls (Smart Import). |
 
-The `privacy_audit` consumer surface (per `moneybin-mcp.md` §1089) reads from `app.audit_log` filtered by `action='ai.external_call'` and projects `context_json` keys back into the original column names so callers see no API change.
+The planned `privacy_audit` consumer surface (not yet registered; see `moneybin-mcp.md` §11) reads from `app.audit_log` filtered by `action='ai.external_call'` and projects `context_json` keys back into the original column names so callers see no API change. This is distinct from the shipped `privacy_log`, which reads the JSONL privacy-event stream.
 
 ### Why no payload storage
 
@@ -211,7 +211,7 @@ The `data_sent_hash` allows forensic verification ("was this specific payload se
 ### User interface
 
 - **CLI:** `moneybin privacy audit [--last N] [--feature X] [--backend Y] [--since DATE]`
-- **MCP:** `privacy_audit` tool with the same filter parameters (per `moneybin-mcp.md` §1089)
+- **MCP:** planned `privacy_audit` tool with the same filter parameters (not yet registered; see `moneybin-mcp.md` §11)
 - **Example output:**
   ```
   2026-04-17 14:32:01 | tier 3 | smart_import_parse | anthropic/claude-sonnet-4-6

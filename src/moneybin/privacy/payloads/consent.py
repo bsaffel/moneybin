@@ -72,26 +72,32 @@ class PrivacyLogRow:
     ts: Annotated[str, DataClass.TIMESTAMP_OBSERVABILITY]
     action: Annotated[str, DataClass.TXN_TYPE]
     actor: Annotated[str, DataClass.TXN_TYPE]
-    feature_category: Annotated[str, DataClass.CATEGORY] = ""
-    backend: Annotated[str, DataClass.INSTITUTION] = ""
-    sensitivity: Annotated[str, DataClass.AGGREGATE] = ""
-    row_count: Annotated[int, DataClass.AGGREGATE] = 0
-    classes_returned: Annotated[list[str], DataClass.AGGREGATE] = field(
-        default_factory=list
-    )
+    # Cross-type fields are None when absent for this event's shape — null is
+    # honest where "" / 0 would read as a real (empty) value. `action`
+    # discriminates the shape; consumers branch on it, not on field null-ness.
+    feature_category: Annotated[str | None, DataClass.CATEGORY] = None
+    backend: Annotated[str | None, DataClass.INSTITUTION] = None
+    sensitivity: Annotated[str | None, DataClass.AGGREGATE] = None
+    row_count: Annotated[int | None, DataClass.AGGREGATE] = None
+    classes_returned: Annotated[list[str] | None, DataClass.AGGREGATE] = None
 
     @classmethod
     def from_event(cls, event: dict[str, Any]) -> PrivacyLogRow:
         """Build a row from a raw privacy-log event dict (either event shape)."""
+        fc = event.get("feature_category")
+        bk = event.get("backend")
+        sv = event.get("sensitivity")
+        rc = event.get("row_count")
+        cr = event.get("classes_returned")
         return cls(
             ts=str(event.get("ts", "")),
             action=str(event.get("action", "")),
             actor=str(event.get("actor", "")),
-            feature_category=str(event.get("feature_category", "")),
-            backend=str(event.get("backend", "")),
-            sensitivity=str(event.get("sensitivity", "")),
-            row_count=int(event.get("row_count", 0) or 0),
-            classes_returned=list(event.get("classes_returned") or []),
+            feature_category=str(fc) if fc is not None else None,
+            backend=str(bk) if bk is not None else None,
+            sensitivity=str(sv) if sv is not None else None,
+            row_count=int(rc) if rc is not None else None,
+            classes_returned=list(cr) if cr is not None else None,
         )
 
 
