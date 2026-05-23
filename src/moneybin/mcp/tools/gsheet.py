@@ -5,7 +5,7 @@ User-controlled-storage `connect-*` family per
 1:1: `gsheet_auth` runs the OAuth installed-app flow inside the local MCP
 server process (opens the browser, listens on a 127.0.0.1 callback) so
 agents can drive end-to-end onboarding without dropping the user to a
-terminal. The MCP server is local-only today (per mcp-server.md
+terminal. The MCP server is local-only today (per mcp.md
 "Connection Model"); a hosted-MCP variant would need a return-URL shape
 instead, but that's outside the launch trigger.
 

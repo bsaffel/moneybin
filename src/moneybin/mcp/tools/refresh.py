@@ -7,7 +7,7 @@ Wraps :func:`moneybin.services.refresh.refresh`. Operators needing
 SQLMesh-step granularity can pass ``steps=["transform"]`` (the granular
 form formerly exposed as ``transform_apply``), or use the CLI for
 read-only introspection: ``moneybin transform plan|validate|audit|status``
-(operator territory, not MCP-registered; see mcp-server.md category 2).
+(operator territory, not MCP-registered; see mcp.md category 2).
 """
 
 from __future__ import annotations

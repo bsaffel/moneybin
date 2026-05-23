@@ -1313,7 +1313,7 @@ through a mediated provider (Plaid). Full design:
 
 **No CLI-only carve-outs in this domain.** `gsheet_auth` was initially
 designed CLI-only on the assumption that OAuth's browser flow "has no
-MCP equivalent." That contradicted `mcp-server.md`'s explicit "Needs
+MCP equivalent." That contradicted `mcp.md`'s explicit "Needs
 OAuth / browser" guidance ("tools can return redirect URLs; clients open
 them"). Since the MCP server runs locally, the loopback callback lands
 on the same host — `gsheet_auth` runs the full PKCE flow in-process and
@@ -1341,13 +1341,13 @@ shape; tracked separately and does not block local launch.
 
 ## 17b. Forward namespace: `assets_*`
 
-Reserved for [`asset-tracking.md`](asset-tracking.md). Workflows (registration, valuation, liability linking, staleness) are defined there. Per the surface-discipline rule in `.claude/rules/mcp-server.md`, no `assets_*` tools register until the backing spec reaches `in-progress`; this entry exists so reviewers can confirm the namespace is reserved.
+Reserved for [`asset-tracking.md`](asset-tracking.md). Workflows (registration, valuation, liability linking, staleness) are defined there. Per the surface-discipline rule in `.claude/rules/mcp.md`, no `assets_*` tools register until the backing spec reaches `in-progress`; this entry exists so reviewers can confirm the namespace is reserved.
 
 ---
 
 ## 17c. Dependency tracker
 
-Tools that depend on unbuilt subsystems are documented in the catalog with dependency markers but **are not registered on the MCP surface until their backing spec reaches `in-progress` or `implemented`** in `docs/specs/INDEX.md`. The "Blocked tools" column below names the future tool set; today only entries whose dependency is `in-progress`/`implemented` are live. See `.claude/rules/mcp-server.md` "Surface change discipline" for the rule.
+Tools that depend on unbuilt subsystems are documented in the catalog with dependency markers but **are not registered on the MCP surface until their backing spec reaches `in-progress` or `implemented`** in `docs/specs/INDEX.md`. The "Blocked tools" column below names the future tool set; today only entries whose dependency is `in-progress`/`implemented` are live. See `.claude/rules/mcp.md` "Surface change discipline" for the rule.
 
 | Dependency | Status | Blocked tools |
 |---|---|---|
@@ -1396,7 +1396,7 @@ Every tool whose description omits a relevant invariant fails review. Required c
 - Tools that mutate state — reversibility statement, ID-composite requirements, `app.audit_log` reference.
 - Tools that return currency-bearing data — currency-pairing invariant per `architecture-shared-primitives.md` Invariant 7.
 
-Enforcement: a checklist applied during PR review on every change to an `@mcp_tool`-decorated function. Codified in [`.claude/rules/mcp-server.md`](../../.claude/rules/mcp-server.md) under "Description requirements" so future tool authors apply it at write-time. **No structural pytest** — description text is prose, and a regex-based check produces noise (false positives on intentional convention overrides, false negatives on synonyms). Graduate to a structural test only when ≥3 invariants become statable as `(signature predicate, literal-string requirement)` pairs.
+Enforcement: a checklist applied during PR review on every change to an `@mcp_tool`-decorated function. Codified in [`.claude/rules/mcp.md`](../../.claude/rules/mcp.md) under "Description requirements" so future tool authors apply it at write-time. **No structural pytest** — description text is prose, and a regex-based check produces noise (false positives on intentional convention overrides, false negatives on synonyms). Graduate to a structural test only when ≥3 invariants become statable as `(signature predicate, literal-string requirement)` pairs.
 
 Discharge: a one-time audit pass on the existing surface ran as part of the 2026-05 MCP gap-closure PR; subsequent enforcement is per-PR reviewer responsibility.
 
@@ -1404,7 +1404,7 @@ Discharge: a one-time audit pass on the existing surface ran as part of the 2026
 
 The tool list documented in this spec must match the runtime-registered set. Without discipline, the documentation drifts (the competitor `copilot-money-mcp` README claims 17 tools but its server registers 33 — exactly the failure mode this rule prevents).
 
-- **Rule:** any PR that adds, renames, or removes an `@mcp_tool`-decorated function MUST update this spec in the same change. Codified in [`.claude/rules/mcp-server.md`](../../.claude/rules/mcp-server.md) under "Surface change discipline."
+- **Rule:** any PR that adds, renames, or removes an `@mcp_tool`-decorated function MUST update this spec in the same change. Codified in [`.claude/rules/mcp.md`](../../.claude/rules/mcp.md) under "Surface change discipline."
 - **Enforcement:** PR review. Reviewers grep for `@mcp_tool` diffs and verify each touches a corresponding spec section.
 - **Why no automated test:** a fixture-based drift test would detect code-vs-fixture drift but not code-vs-spec drift (the original problem). A spec-parsing test would detect code-vs-spec drift but is fragile to spec restructuring. The PR-review rule directly addresses the documentation-discipline problem without introducing a third synced artifact. Revisit if review attention proves insufficient.
 - **One-time audit:** the 2026-05 MCP gap-closure PR ran the first runtime-vs-spec diff; findings (orphaned spec entries, undocumented tools, visibility-tagging discrepancies) were resolved or logged as deferred follow-ups in that PR's CHANGELOG.

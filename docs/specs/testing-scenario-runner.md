@@ -23,7 +23,7 @@
 > Status: implemented
 > Type: Feature
 > Parent: [`testing-overview.md`](testing-overview.md)
-> Companions: [`testing-synthetic-data.md`](testing-synthetic-data.md) (consumed for personas + ground truth), [`e2e-testing.md`](e2e-testing.md) (peer test layer), [`mcp-architecture.md`](mcp-architecture.md) §4 (`ResponseEnvelope` shape), [`database-migration.md`](database-migration.md), [`privacy-data-protection.md`](privacy-data-protection.md), `CLAUDE.md` "Architecture: Data Layers"
+> Companions: [`testing-synthetic-data.md`](testing-synthetic-data.md) (consumed for personas + ground truth), [`testing-e2e.md`](testing-e2e.md) (peer test layer), [`mcp-architecture.md`](mcp-architecture.md) §4 (`ResponseEnvelope` shape), [`database-migration.md`](database-migration.md), [`privacy-data-protection.md`](privacy-data-protection.md), `CLAUDE.md` "Architecture: Data Layers"
 
 ## Status
 
@@ -36,7 +36,7 @@ Whole-pipeline correctness with real data assertions. The scenario runner goes f
 ### Non-goals
 
 - **Not a replacement for unit tests.** Unit tests cover function-level logic. The runner runs over tens of seconds; unit tests must stay fast.
-- **Not a replacement for E2E subprocess tests.** [`e2e-testing.md`](e2e-testing.md) verifies CLI boot, command registration, schema init, and subprocess wiring. Scenarios verify that the data the pipeline produces is correct, not that the CLI surface starts.
+- **Not a replacement for E2E subprocess tests.** [`testing-e2e.md`](testing-e2e.md) verifies CLI boot, command registration, schema init, and subprocess wiring. Scenarios verify that the data the pipeline produces is correct, not that the CLI surface starts.
 - **Not a load test or performance benchmark.** Scenario size is personal-finance scale (years of one persona's data). Performance assertions exist but are not the focus.
 - **Not a Plaid Sandbox harness.** Live-provider testing is owned by [`sync-overview.md`](sync-overview.md).
 - **No separate scenarios for CLI vs MCP.** Both surfaces are thin wrappers over the service layer; surface wiring is covered elsewhere. The runner tests the service layer behind both.
@@ -59,7 +59,7 @@ The runner is the missing layer. It complements existing tests rather than repla
 
 - [`testing-overview.md`](testing-overview.md) — umbrella; sketched the scenario format inline. This spec extracts and extends.
 - [`testing-synthetic-data.md`](testing-synthetic-data.md) — shipped generator. Personas, deterministic seeding, `synthetic.ground_truth`. The runner consumes this.
-- [`e2e-testing.md`](e2e-testing.md) — shipped subprocess tests. Different concern (boot/wiring); peer layer.
+- [`testing-e2e.md`](testing-e2e.md) — shipped subprocess tests. Different concern (boot/wiring); peer layer.
 - [`matching-same-record-dedup.md`](matching-same-record-dedup.md) §"Testing Strategy" — synthetic data contract for dedup correctness.
 - [`matching-transfer-detection.md`](matching-transfer-detection.md) §"Synthetic Data Contract" — happy path, recurring, false-positive, and edge-case scenarios.
 
@@ -632,7 +632,7 @@ The runner is being designed after several features have already shipped. Rather
 | [`database-migration.md`](database-migration.md) | `migration-roundtrip` | Down-migration / rollback scenarios deferred until rollback is itself a feature |
 | [`observability.md`](observability.md) | None in v1 | Future: `assert_metrics_emitted(metric_name, min_count)` primitive once metric assertions are needed; defer until first observability regression |
 | [`testing-synthetic-data.md`](testing-synthetic-data.md) | Every scenario consumes the generator; `*-full-pipeline` doubles as the generator's regression test | None — generator is the runner's input, not its target |
-| [`e2e-testing.md`](e2e-testing.md) | Peer layer, not a target | None — the runner complements E2E rather than covering it |
+| [`testing-e2e.md`](testing-e2e.md) | Peer layer, not a target | None — the runner complements E2E rather than covering it |
 | [`moneybin-cli.md`](moneybin-cli.md) | E2E layer covers command tree | None — CLI surface wiring stays in E2E |
 | [`matching-same-record-dedup.md`](matching-same-record-dedup.md) (in-progress) | `dedup-cross-source` | Pillar A+C scenarios complete on landing |
 | [`matching-transfer-detection.md`](matching-transfer-detection.md) (in-progress) | `transfer-detection-cross-account` | Edge cases (FX legs, three-leg sweeps) deferred |
@@ -672,7 +672,7 @@ Meta-testing — what's the test plan for the test runner.
 
 ### E2E tests (`tests/e2e/test_e2e_synthetic_verify.py`)
 
-Per `e2e-testing.md`, every CLI command needs an E2E test. The new `--list`, `--scenario`, and `--all` flags get parametrized E2E entries. `--scenario=basic-full-pipeline` is included in the E2E suite because it doubles as a smoke test for the entire pipeline.
+Per `testing-e2e.md`, every CLI command needs an E2E test. The new `--list`, `--scenario`, and `--all` flags get parametrized E2E entries. `--scenario=basic-full-pipeline` is included in the E2E suite because it doubles as a smoke test for the entire pipeline.
 
 ### CI gating
 

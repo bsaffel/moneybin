@@ -4,7 +4,7 @@
 surface, not the functional coverage. Names should match where doing so
 costs nothing; divergence is allowed when it has a documented reason
 (batch-vs-fine-grained shape, surface-idiom conventions, secret-material
-or operator-territory exemptions per `.claude/rules/mcp-server.md`). The
+or operator-territory exemptions per `.claude/rules/mcp.md`). The
 allowlists below carry those citations inline.
 
 **What this test is NOT.** It is not a functional-parity check. Two
@@ -82,7 +82,7 @@ import typer
 from moneybin.cli.main import app as cli_app
 from moneybin.mcp import server as mcp_server
 
-# Names allowed CLI-only by `.claude/rules/mcp-server.md` "When CLI-only
+# Names allowed CLI-only by `.claude/rules/mcp.md` "When CLI-only
 # is justified." Grouped by category for documentation; the test only
 # uses the union.
 CLI_ONLY_ALLOWED: frozenset[str] = frozenset({
@@ -130,7 +130,7 @@ CLI_ONLY_ALLOWED: frozenset[str] = frozenset({
     "transform_restate",
     # Folded into refresh_run(steps=["transform"]) — the MCP path is the
     # umbrella, the CLI command stays as the operator-territory granular
-    # path. See `.claude/rules/mcp-server.md` "When CLI-only is justified"
+    # path. See `.claude/rules/mcp.md` "When CLI-only is justified"
     # and `private/plans/2026-05-17-refresh-run-steps-and-transform-apply-fold.md`.
     "transform_apply",
     # Category 3 — Typer-idiomatic `<group> list` subcommands whose MCP
@@ -269,7 +269,7 @@ def test_cli_mcp_name_drift() -> None:
             _format_diff("CLI commands without MCP siblings", cli_only)
             + "\n  → Add the MCP tool, or add to CLI_ONLY_ALLOWED. The only "
             "approved CLI-only justifications are in `.claude/rules/"
-            "mcp-server.md` 'When CLI-only is justified'."
+            "mcp.md` 'When CLI-only is justified'."
         )
 
     assert not messages, "\n\n".join(messages)

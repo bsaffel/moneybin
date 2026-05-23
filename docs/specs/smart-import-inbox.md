@@ -181,7 +181,7 @@ Tests at every layer per `testing.md`:
   - Idempotence: empty inbox sync is a no-op success; re-imported file (content hash already known) lands in `processed/` with a numeric suffix and zero new transactions.
 - **CLI (`test_import_inbox.py`)** — subprocess-style tests covering `inbox`, `inbox list`, `inbox path` happy paths and the failure-with-sidecar output.
 - **MCP (`test_import_inbox_tools.py`)** — envelope shape, sensitivity tier, actions hints in the failure case.
-- **E2E** — extend the existing E2E suite with a "drop file in inbox, run sync, query transactions" scenario per `e2e-testing.md`.
+- **E2E** — extend the existing E2E suite with a "drop file in inbox, run sync, query transactions" scenario per `testing-e2e.md`.
 
 Synthetic data: existing `synthetic` fixtures suffice; the inbox service is composed on top of the importer rather than introducing new data shapes.
 

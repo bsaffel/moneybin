@@ -21,14 +21,14 @@ CLI serves three peer consumers, not just one:
 2. **Shell scripts and pipelines** — `--output json` + `jq`, exit codes, stdout/stderr separation.
 3. **AI agents** — Claude Code, Codex CLI, Gemini CLI, and similar agents drive CLI commands directly as a peer pathway to MCP. They pipe and chain commands the way humans use shells, and parse JSON output the way scripts do.
 
-**The CLI is a first-class agent surface, not a fallback for users without MCP.** When MoneyBin offers a capability via MCP, it ships with a CLI equivalent (per `mcp-server.md` principle 5) — and that CLI is designed for both humans and agents from the start.
+**The CLI is a first-class agent surface, not a fallback for users without MCP.** When MoneyBin offers a capability via MCP, it ships with a CLI equivalent (per `mcp.md` principle 5) — and that CLI is designed for both humans and agents from the start.
 
 What this means in practice:
 
 - Data primitives (export commands, file-based inputs, stdin/stdout JSON) are designed once and serve all three consumers.
 - Redaction contracts apply identically across CLI and MCP — never assume CLI users are "trusted enough to skip redaction."
 - Every interactive prompt must have a flag equivalent (see Non-Interactive Parity below) — agents cannot navigate prompts.
-- `--output json` returns the same envelope shape MCP returns (see `mcp-server.md` Response Envelope).
+- `--output json` returns the same envelope shape MCP returns (see `mcp.md` Response Envelope).
 
 When designing a new command, ask: "Could an agent drive this end-to-end without a human?" If not, redesign — that's a flag-equivalence gap or a JSON-output gap, not an acceptable limitation.
 

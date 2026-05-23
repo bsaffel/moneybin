@@ -323,7 +323,7 @@ No new tools.
 Each scenario follows `testing-scenario-comprehensive.md`'s five-tier assertion taxonomy with independent expectations files.
 
 ### E2E smoke tests
-Existing OFX golden-path test (`e2e-testing.md`) extended to also exercise `import revert` for an OFX batch.
+Existing OFX golden-path test (`testing-e2e.md`) extended to also exercise `import revert` for an OFX batch.
 
 ### Fixtures
 QBO samples from at least 2 institutions live in `tests/fixtures/ofx/`. Sanitization is hand-done for v1; future runs migrate to `testing-anonymized-data.md` once that ships. YAML expectation files alongside per project convention.

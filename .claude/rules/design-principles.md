@@ -162,22 +162,15 @@ high — sprawl devalues the format and trains contributors to skip them.
 If any one fails: capture the decision in the PR description, the
 relevant spec, or an inline comment. Don't create an ADR.
 
-**ADR-worthy:**
-- DuckDB as the embedded analytical store (ADR-000) — establishes the
-  storage pattern every other choice inherits.
-- Medallion data layers (ADR-001) — establishes raw/prep/core/app.
-- Privacy tiers and sensitivity model (ADR-002) — establishes the
-  classification every MCP tool inherits.
-- Encryption key management (ADR-009) — establishes the crypto pattern.
+**ADR-worthy** (establishes a pattern others inherit): embedded analytical
+store (ADR-000), medallion data layers (ADR-001), privacy tiers (ADR-002),
+encryption key management (ADR-009).
 
-**Not ADR-worthy:**
-- Adding a `merchant_id` column or a new dim table — applies ADR-001.
-- Renaming a CLI command or restructuring a subgroup — applies the CLI
-  taxonomy in the relevant spec.
-- Adding a new MCP tool — applies the MCP architecture spec.
-- Bumping a dependency, even a critical one — no pattern change.
-- Choosing a column type (`DECIMAL(18,2)` vs `DECIMAL(20,4)`) — applies
-  the accounting-precision convention.
+**Not ADR-worthy** (applies an existing pattern): a new `merchant_id` column
+or dim table (ADR-001), renaming/restructuring a CLI command (CLI taxonomy
+spec), a new MCP tool (MCP architecture spec), a dependency bump (no pattern
+change), a column-type choice like `DECIMAL(18,2)` (accounting-precision
+convention).
 
 When in doubt: don't create the ADR. The principle's job is to make
 durable choices, not to generate paperwork about them.

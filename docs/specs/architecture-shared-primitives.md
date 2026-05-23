@@ -220,7 +220,7 @@ Sensitivity tiers and the `ResponseEnvelope` are MoneyBin-specific primitives. T
 
 ### MCP exposure principle
 
-Per `.claude/rules/mcp-server.md` "When CLI-only is justified": the default for every new operation is "expose to MCP." CLI-only status requires one of two justifications:
+Per `.claude/rules/mcp.md` "When CLI-only is justified": the default for every new operation is "expose to MCP." CLI-only status requires one of two justifications:
 
 1. The tool accepts secret material (passphrases, encryption keys) that must not pass through an LLM context window.
 2. The tool requires hands-on operator presence and is meaningless when the database is locked or the server isn't running (`db init`, `db unlock`, `db migrate`, `mcp serve`, `mcp config_*`, `profile_*`).
@@ -229,7 +229,7 @@ Anything else — long-running operations, OAuth flows, destructive actions, int
 
 ### CLI as a first-class agent surface
 
-Per `.claude/rules/mcp-server.md` design philosophy point 5: agents (Claude Code, Codex CLI, Gemini CLI) drive CLI commands directly as a peer pathway to MCP. When designing data-flow primitives — JSON I/O on `--output json`, stdin/stdout contracts, redaction — assume both human and agent consumers. The `ResponseEnvelope` returned by `--output json` is the same shape an MCP tool returns; the same redaction rules apply on both surfaces.
+Per `.claude/rules/mcp.md` design philosophy point 5: agents (Claude Code, Codex CLI, Gemini CLI) drive CLI commands directly as a peer pathway to MCP. When designing data-flow primitives — JSON I/O on `--output json`, stdin/stdout contracts, redaction — assume both human and agent consumers. The `ResponseEnvelope` returned by `--output json` is the same shape an MCP tool returns; the same redaction rules apply on both surfaces.
 
 ## Observability Hooks
 
@@ -430,7 +430,7 @@ Two narrow naming changes rode along with this spec landing — both shipped. Re
 
 - `.claude/rules/security.md` — SQL injection prevention, input validation, PII in logs, exception wrapping.
 - `.claude/rules/database.md` — DuckDB patterns, SQL conventions, schema, column comments, model naming.
-- `.claude/rules/mcp-server.md` — Tool taxonomy, response envelope, sensitivity tiers, MCP exposure principle, CLI as agent surface.
+- `.claude/rules/mcp.md` — Tool taxonomy, response envelope, sensitivity tiers, MCP exposure principle, CLI as agent surface.
 - `.claude/rules/cli.md` — Typer patterns, error handling, command registration.
 - `.claude/rules/testing.md` — Pytest patterns, fixtures, scenario expectation independence rule.
 - `.claude/rules/identifiers.md` — Content hashes, truncated UUIDs, source IDs, semantic slugs.
