@@ -170,3 +170,32 @@ def test_truncation_sets_has_more(
     assert env.summary.returned_count == 1
     assert env.summary.has_more is True
     assert env.summary.total_count > env.summary.returned_count
+
+
+@pytest.mark.integration
+def test_unaliased_aggregate_critical_masked(mcp_db: object) -> None:  # type: ignore[type-arg]
+    """Unaliased MIN(account_id) is masked despite the sqlglot/DuckDB name split.
+
+    sqlglot names the projection `''` while DuckDB calls the result column
+    `min(account_id)`; name-keyed redaction would miss it and leak the account
+    number. Position-aligned redaction masks it by the real column name.
+    """
+    env = _run("SELECT MIN(account_id) FROM core.dim_accounts")
+    assert env.error is None, f"Unexpected error: {env.error}"
+    assert env.summary.sensitivity == "critical"
+    row = env.data[0]  # type: ignore[index]
+    (value,) = row.values()
+    assert str(value).startswith("****"), f"unaliased account_id not masked: {value!r}"
+
+
+@pytest.mark.integration
+def test_metadata_query_truncation_sets_has_more(
+    mcp_db: object,  # type: ignore[type-arg]
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DESCRIBE on a wide table truncates with has_more, not silently."""
+    monkeypatch.setattr("moneybin.mcp.tools.sql.get_max_rows", lambda: 1)
+    env = _run("DESCRIBE core.fct_transactions")
+    assert env.error is None, f"Unexpected error: {env.error}"
+    assert env.summary.returned_count == 1
+    assert env.summary.has_more is True

@@ -35,6 +35,7 @@ from moneybin.privacy.sql_lineage import (
     resolve_output_classes,
     tables_outside_schemas,
 )
+from moneybin.privacy.taxonomy import DataClass
 from moneybin.protocol.envelope import (
     ResponseEnvelope,
     build_envelope,
@@ -56,11 +57,13 @@ def _execute_metadata_query(query: str) -> ResponseEnvelope[Any]:
     bypass the lineage gate. They still go through ``validate_read_only_query``
     (caller) which blocks writes and file access.
     """
+    max_rows = get_max_rows()
     try:
         with get_database(read_only=True) as db:
             result = db.execute(query)  # noqa: S608 — read-only metadata stmt, validated
             columns = [desc[0] for desc in result.description]
-            rows = result.fetchmany(get_max_rows())
+            # Fetch one extra to detect truncation (e.g. DESCRIBE on a wide table).
+            rows = result.fetchmany(max_rows + 1)
     except duckdb.Error as e:
         return build_error_envelope(
             error=UserError(
@@ -70,9 +73,14 @@ def _execute_metadata_query(query: str) -> ResponseEnvelope[Any]:
             ),
             sensitivity="low",
         )
+    truncated = len(rows) > max_rows
+    rows = rows[:max_rows]
     records = [dict(zip(columns, row, strict=False)) for row in rows]
     return build_envelope(
-        data=records, sensitivity="low", classes_returned=["aggregate"]
+        data=records,
+        sensitivity="low",
+        total_count=max_rows + 1 if truncated else len(records),
+        classes_returned=["aggregate"],
     )
 
 
@@ -182,7 +190,24 @@ def sql_query(query: str) -> ResponseEnvelope[Any]:
     truncated = len(rows) > max_rows
     rows = rows[:max_rows]
     records = [dict(zip(columns, row, strict=False)) for row in rows]
-    redacted = redact_records(records, output_classes, consent=None)
+    # Key the redaction map by DuckDB's ACTUAL result-column names, aligned to
+    # the lineage classes BY POSITION. sqlglot's alias_or_name for an unaliased
+    # expression (e.g. MIN(account_id) → '') diverges from DuckDB's column name
+    # ('min(account_id)'), so name-keying would miss the CRITICAL transform and
+    # leak the value. Projection order == result-column order, so position is
+    # the reliable join. On a count mismatch (rare — e.g. * expansion ordering),
+    # fail closed: apply the query's max tier to every column.
+    class_values = list(output_classes.values())
+    if len(class_values) == len(columns):
+        col_classes = dict(zip(columns, class_values, strict=True))
+    else:
+        floor = (
+            max(class_values, key=lambda c: c.tier)
+            if class_values
+            else DataClass.AGGREGATE
+        )
+        col_classes = dict.fromkeys(columns, floor)
+    redacted = redact_records(records, col_classes, consent=None)
     tier = derive_query_tier(output_classes)
     # total_count > returned_count makes build_envelope set has_more=True. We
     # don't pay for an exact COUNT(*); +1 signals "at least one more row".

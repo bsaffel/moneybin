@@ -299,3 +299,17 @@ def test_fallback_log_omits_raw_sql(
     logged = "\n".join(r.getMessage() for r in caplog.records)
     assert pii_literal not in logged
     assert "sha256=" in logged
+
+
+def test_scalar_subquery_count_does_not_downgrade(populated_db: Database) -> None:
+    """A COUNT inside a scalar subquery must not downgrade a co-referenced column.
+
+    `(SELECT COUNT(*) ...) + amount` references `amount` (HIGH) at the top
+    level; the nested COUNT must not collapse the projection to LOW aggregate.
+    """
+    out = _classes(
+        "SELECT (SELECT COUNT(*) FROM core.fct_transactions) + amount AS total "
+        "FROM core.fct_transactions",
+        populated_db,
+    )
+    assert out == {"total": DataClass.TXN_AMOUNT}

@@ -310,6 +310,16 @@ def _fallback_class(
     return best
 
 
+def _within_subquery(node: exp.Expr, stop: exp.Expr) -> bool:
+    """True if ``node`` sits inside a scalar subquery nested within ``stop``."""
+    parent = node.parent
+    while parent is not None and parent is not stop:
+        if isinstance(parent, exp.Subquery):
+            return True
+        parent = parent.parent
+    return False
+
+
 def _classify_projection(
     proj: exp.Expr,
     tree: exp.Expr,
@@ -319,8 +329,14 @@ def _classify_projection(
 ) -> DataClass:
     inner = proj.unalias() if isinstance(proj, exp.Alias) else proj
 
-    # Any counting aggregate in the projection → LOW (destroys individual values).
-    if any(isinstance(n, _COUNTING_AGGS) for n in inner.find_all(exp.AggFunc)):
+    # A counting aggregate at the projection's TOP level → LOW (counts destroy
+    # individual values). A count inside a scalar subquery (e.g.
+    # `(SELECT COUNT(*) FROM t) + amount`) does not downgrade the projection —
+    # its tier still comes from the co-referenced columns (here, `amount`).
+    if any(
+        isinstance(n, _COUNTING_AGGS) and not _within_subquery(n, inner)
+        for n in inner.find_all(exp.AggFunc)
+    ):
         return DataClass.AGGREGATE
 
     cols = list(inner.find_all(exp.Column))
