@@ -289,6 +289,11 @@ class AIConfig(BaseModel):
         description="Default AI backend (e.g. anthropic, openai, ollama). "
         "None = no assumed backend; consent grants must name --backend explicitly.",
     )
+    # Default is "standard" (non-disruptive). The field is inert until the
+    # enforcement gate ships, so the default only takes effect then — at which
+    # point the enforcement PR MUST make the secure-vs-ergonomic posture an
+    # explicit decision rather than silently inheriting "standard". Tracked
+    # with the deferred consent-enforcement gate (privacy-and-ai-trust.md).
     consent_policy: Literal["standard", "strict"] = Field(
         default="standard",
         description="standard: persistent consent grants persist. strict: "

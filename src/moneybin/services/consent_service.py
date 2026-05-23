@@ -70,23 +70,26 @@ class ConsentService:
         asking — the user confirms consent for the *actual* backend, not a
         ``(no default configured)`` placeholder that would later error.
 
-        ``None`` means "unspecified" → use the default. An empty / whitespace
-        string is rejected outright rather than silently falling through:
-        ``--backend ''`` is invalid input, not a request for the default, and
-        accepting it would record a grant against a blank recipient.
+        ``None`` means "unspecified" → use the default. A provided backend is
+        stripped before use, and an empty / whitespace-only string is rejected
+        outright: ``--backend ''`` is invalid input, not a request for the
+        default. Stripping matters because the stored value is matched
+        exactly on revoke — a padded ``" anthropic"`` grant would otherwise be
+        unrevocable from the normal surface.
         """
-        if backend is not None and not backend.strip():
-            raise UserError(
-                "Backend cannot be empty.",
-                code=error_codes.MUTATION_INVALID_INPUT,
-                hint="Pass a backend name (e.g. anthropic), or omit it to use "
-                "the default.",
-            )
-        if backend:
-            return backend
+        if backend is not None:
+            stripped = backend.strip()
+            if not stripped:
+                raise UserError(
+                    "Backend cannot be empty.",
+                    code=error_codes.MUTATION_INVALID_INPUT,
+                    hint="Pass a backend name (e.g. anthropic), or omit it to "
+                    "use the default.",
+                )
+            return stripped
         default = get_settings().ai.default_backend
-        if default:
-            return default
+        if default and default.strip():
+            return default.strip()
         raise UserError(
             "No AI backend specified and no default configured.",
             code=error_codes.MUTATION_INVALID_INPUT,

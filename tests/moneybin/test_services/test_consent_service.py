@@ -79,6 +79,23 @@ def test_service_grant_rejects_empty_backend(db: Database) -> None:
             )
 
 
+def test_service_grant_strips_backend_whitespace(db: Database) -> None:
+    """A padded backend is normalized so a later canonical-form revoke matches."""
+    svc = ConsentService(db)
+    result = svc.grant_consent(
+        feature_category="mcp-data-sharing",
+        backend="  anthropic  ",
+        consent_mode=ConsentMode.PERSISTENT,
+        actor="cli",
+    )
+    assert result.grant.backend == "anthropic"
+    # Revoke with the canonical form must find the grant stored from padded input.
+    revoke = svc.revoke_consent(
+        feature_category="mcp-data-sharing", backend="anthropic", actor="cli"
+    )
+    assert revoke.count == 1
+
+
 def test_service_rejects_unknown_category(db: Database) -> None:
     svc = ConsentService(db)
     with pytest.raises(UserError):
