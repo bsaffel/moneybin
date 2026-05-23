@@ -153,9 +153,11 @@ def transactions_matches_set(
     """Accept or reject one pending transaction match by id.
 
     Mutates app.match_decisions (sets match_status). Only a *pending* decision
-    can be set. Rejecting an already-accepted match errors — reverse it via
-    `moneybin transactions matches undo` instead (no MCP undo tool yet).
-    Find ids with transactions_matches_pending.
+    can be set. Re-asserting a decision's current status is an idempotent no-op;
+    any cross-status transition on an already-decided match errors with
+    recovery_actions (e.g. rejecting an already-accepted match). Reverse an
+    accepted match via `moneybin transactions matches undo` (no MCP undo tool
+    yet). Find ids with transactions_matches_pending.
 
     Args:
         match_id: The match decision id (from transactions_matches_pending).
@@ -251,12 +253,14 @@ def transactions_matches_history(
     )
 
 
-@mcp_tool(domain="matches", read_only=False)
+@mcp_tool(domain="matches", read_only=False, idempotent=False)
 def transactions_matches_run() -> ResponseEnvelope[MatchRunPayload]:
     """Run the matcher (dedup + transfer detection) over existing transactions.
 
-    Operator-territory: a granular alternative to refresh_run. Proposes pending
-    matches for review via transactions_matches_pending. Does not auto-accept.
+    Operator-territory: a granular alternative to refresh_run. Writes new pending
+    rows to app.match_decisions; review them with transactions_matches_pending and
+    finalize each with transactions_matches_set. Does not auto-accept. Reverse an
+    accepted match via `moneybin transactions matches undo` (no MCP undo tool yet).
     """
     with get_database() as db:
         result = MatchingService(db).run()

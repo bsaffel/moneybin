@@ -239,8 +239,8 @@ class MatchPendingRow:
 
     app.match_decisions carries no description/amount columns — only IDs,
     source types, and a confidence score — so this row is low-sensitivity.
-    To inspect the underlying transactions, call transactions_get with the
-    source_transaction_id values.
+    For full pair context (both transactions side by side), use the CLI
+    `moneybin transactions review --type matches` queue.
     """
 
     match_id: Annotated[str, DataClass.RECORD_ID]

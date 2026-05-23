@@ -169,6 +169,9 @@ def update_match_status(
     db: Database, match_id: str, *, status: MatchStatus, decided_by: str
 ) -> None:
     """Update the status of a match decision (e.g., pending -> accepted)."""
+    # Invariant 10: raw DML on app.match_decisions — no MatchDecisionsRepo yet.
+    # The repo wrapper + audit routing for this table is deferred (planned in
+    # docs/specs/app-integrity-invariant.md bypass map / MatchDecisionsRepo row).
     db.execute(
         """
         UPDATE app.match_decisions
@@ -189,6 +192,8 @@ def accept_pending_matches(
     match_status = 'pending'`` is itself the guard — only pending decisions are
     touched, so no per-row transition check is needed.
     """
+    # Invariant 10: raw DML on app.match_decisions — no MatchDecisionsRepo yet
+    # (deferred; see docs/specs/app-integrity-invariant.md bypass map).
     where = "WHERE match_status = 'pending' AND reversed_at IS NULL"
     params: list[Any] = [decided_by, datetime.now(tz=UTC).isoformat()]
     if match_type:

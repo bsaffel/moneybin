@@ -130,6 +130,15 @@ def test_invalid_status_value_raises(db: Database) -> None:
     assert exc.value.code == error_codes.MUTATION_INVALID_INPUT
 
 
+def test_set_status_to_pending_is_invalid_input(db: Database) -> None:
+    # "pending" is a real status but not user-settable (only accept/reject are);
+    # an agent trying to "un-decide" a match hits the invalid-input guard.
+    _seed(db, "m5b", "accepted")
+    with pytest.raises(UserError) as exc:
+        MatchingService(db).set_status("m5b", status="pending")
+    assert exc.value.code == error_codes.MUTATION_INVALID_INPUT
+
+
 def test_get_pending_returns_only_pending(db: Database) -> None:
     _seed(db, "p1", "pending")
     _seed(db, "p2", "accepted")

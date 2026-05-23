@@ -321,26 +321,28 @@ def seed_pending_match(env: dict[str, str], match_id: str) -> None:
     mock_store = MagicMock()
     mock_store.get_key.return_value = TEST_ENCRYPTION_KEY
     invalidate_encryption_key_cache()
-    with Database(
-        _workflow_db_path(env), secret_store=mock_store, no_auto_upgrade=True
-    ) as db:
-        create_match_decision(
-            db,
-            match_id=match_id,
-            source_transaction_id_a="txn_aaa",
-            source_type_a="csv",
-            source_origin_a="test",
-            source_transaction_id_b="txn_bbb",
-            source_type_b="csv",
-            source_origin_b="test",
-            account_id="acct_test",
-            confidence_score=0.95,
-            match_signals={"exact_amount": True},
-            match_tier="2b",
-            match_status="pending",
-            decided_by="engine",
-        )
-    invalidate_encryption_key_cache()
+    try:
+        with Database(
+            _workflow_db_path(env), secret_store=mock_store, no_auto_upgrade=True
+        ) as db:
+            create_match_decision(
+                db,
+                match_id=match_id,
+                source_transaction_id_a="txn_aaa",
+                source_type_a="csv",
+                source_origin_a="test",
+                source_transaction_id_b="txn_bbb",
+                source_type_b="csv",
+                source_origin_b="test",
+                account_id="acct_test",
+                confidence_score=0.95,
+                match_signals={"exact_amount": True},
+                match_tier="2b",
+                match_status="pending",
+                decided_by="engine",
+            )
+    finally:
+        invalidate_encryption_key_cache()
 
 
 def match_status(env: dict[str, str], match_id: str) -> str | None:
@@ -353,9 +355,11 @@ def match_status(env: dict[str, str], match_id: str) -> str | None:
     mock_store = MagicMock()
     mock_store.get_key.return_value = TEST_ENCRYPTION_KEY
     invalidate_encryption_key_cache()
-    with Database(
-        _workflow_db_path(env), secret_store=mock_store, no_auto_upgrade=True
-    ) as db:
-        row = get_match_decision(db, match_id)
-    invalidate_encryption_key_cache()
+    try:
+        with Database(
+            _workflow_db_path(env), secret_store=mock_store, no_auto_upgrade=True
+        ) as db:
+            row = get_match_decision(db, match_id)
+    finally:
+        invalidate_encryption_key_cache()
     return row["match_status"] if row is not None else None

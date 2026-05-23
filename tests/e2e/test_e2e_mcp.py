@@ -423,6 +423,9 @@ class TestMatchesTools:
 
         # History excludes pending — accept the match first so it's a decision.
         seed_pending_match(matches_env, "e2e_hist_001")
+        # A second match left pending must NOT surface in history (pins the
+        # get_match_log pending-exclusion at the MCP layer).
+        seed_pending_match(matches_env, "e2e_hist_pending_002")
         server_params = StdioServerParameters(
             command="uv",  # noqa: S607
             args=["run", "moneybin", "mcp", "serve"],
@@ -437,7 +440,7 @@ class TestMatchesTools:
                 )
                 assert not set_result.isError, f"set failed: {set_result.content}"
                 result = await session.call_tool(
-                    "transactions_matches_history", {"limit": 5}
+                    "transactions_matches_history", {"limit": 50}
                 )
                 assert not result.isError, f"Tool returned error: {result.content}"
                 content = result.content[0]
@@ -446,6 +449,9 @@ class TestMatchesTools:
                 matches = envelope["data"]["matches"]
                 ids = [m["match_id"] for m in matches]
                 assert "e2e_hist_001" in ids, "accepted decision must appear in history"
+                assert "e2e_hist_pending_002" not in ids, (
+                    "pending proposals must be excluded from history"
+                )
                 entry = next(m for m in matches if m["match_id"] == "e2e_hist_001")
                 # A time-series view must carry the decision timestamp.
                 assert entry["decided_at"]
