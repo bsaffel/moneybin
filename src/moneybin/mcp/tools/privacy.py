@@ -141,7 +141,7 @@ def privacy_log(
     # capped result is otherwise indistinguishable from a short log. total_count
     # is a floor (len+1), not an exact count: counting all matches would mean a
     # second full scan of the log.
-    capped = last > MAX_LOG_ROWS and len(events) >= MAX_LOG_ROWS
+    capped = last >= MAX_LOG_ROWS and len(events) >= MAX_LOG_ROWS
     return build_envelope(
         data=PrivacyLogPayload(
             events=[PrivacyLogRow.from_event(e) for e in events],
@@ -160,7 +160,9 @@ def register_privacy_tools(mcp: FastMCP) -> None:
         "smart-import-parsing, ml-categorization, matching-overview) with your "
         "AI backend. CRITICAL fields (account/routing numbers) always stay "
         "masked. Writes app.ai_consent_grants (one active grant per "
-        "category+backend; idempotent); revert with privacy_consent_revoke.",
+        "category+backend; idempotent); revert with privacy_consent_revoke. "
+        "Named _grant (not _set) because recording consent is an authorization "
+        "event, not a generic state assertion.",
     )
     register(
         mcp,
@@ -168,7 +170,9 @@ def register_privacy_tools(mcp: FastMCP) -> None:
         "privacy_consent_revoke",
         "Revoke consent for a data category; effective immediately. Writes "
         "app.ai_consent_grants (sets revoked_at; row retained for audit); "
-        "revert by calling privacy_consent_grant again.",
+        "revert by calling privacy_consent_grant again. Named _revoke (not "
+        "_delete) to preserve the consent-withdrawal semantics a generic "
+        "delete would erase — the row is retained, not removed.",
     )
     register(
         mcp,

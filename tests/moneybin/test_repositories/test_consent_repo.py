@@ -154,6 +154,50 @@ def test_revoke_all(db: Database) -> None:
     assert repo.list_active() == []
 
 
+def test_grant_revoke_regrant_cycle(db: Database) -> None:
+    """Re-granting after revoke creates a distinct active grant with its own audit.
+
+    Core ledger invariant: revoke is not deletion, so a later re-grant must
+    mint a new grant_id, leave exactly one active row, and add a second grant
+    audit entry alongside the revoke entry.
+    """
+    repo = ConsentRepo(db)
+    g1, created1 = repo.grant(
+        feature_category="mcp-data-sharing",
+        backend="anthropic",
+        consent_mode=ConsentMode.PERSISTENT,
+        grant_prompt="p",
+        actor="cli",
+    )
+    assert created1 is True
+    assert (
+        repo.revoke(
+            feature_category="mcp-data-sharing", backend="anthropic", actor="cli"
+        )
+        == 1
+    )
+    g2, created2 = repo.grant(
+        feature_category="mcp-data-sharing",
+        backend="anthropic",
+        consent_mode=ConsentMode.PERSISTENT,
+        grant_prompt="p",
+        actor="cli",
+    )
+    assert created2 is True
+    assert g2.grant_id != g1.grant_id
+    active = repo.list_active()
+    assert len(active) == 1
+    assert active[0].grant_id == g2.grant_id
+    actions = [
+        r[0]
+        for r in db.conn.execute(
+            "SELECT action FROM app.audit_log WHERE action LIKE 'consent.%'"
+        ).fetchall()
+    ]
+    assert actions.count("consent.grant") == 2
+    assert actions.count("consent.revoke") == 1
+
+
 def test_revoke_all_audit_before_image_is_pre_update(db: Database) -> None:
     """revoke_all must capture the before-image BEFORE setting revoked_at.
 

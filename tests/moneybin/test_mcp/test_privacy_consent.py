@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from moneybin import error_codes
 from moneybin.config import clear_settings_cache, set_current_profile
 
 pytestmark = pytest.mark.usefixtures("mcp_db")
@@ -41,6 +42,20 @@ async def test_grant_consent_tool(
     assert env.error is None
     assert env.data.action in ("granted", "noop")
     assert env.data.backend == "anthropic"
+
+
+async def test_grant_no_backend_returns_error_envelope(
+    mcp_db: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No backend + no default → a well-formed error envelope, not an exception."""
+    monkeypatch.delenv("MONEYBIN_AI__DEFAULT_BACKEND", raising=False)
+    clear_settings_cache()
+    set_current_profile("test")
+    from moneybin.mcp.tools.privacy import privacy_consent_grant
+
+    env = await privacy_consent_grant(category="mcp-data-sharing")
+    assert env.error is not None
+    assert env.error.code == error_codes.MUTATION_INVALID_INPUT
 
 
 async def test_status_tool_reflects_grant(
