@@ -155,27 +155,31 @@ def render_rich_table(cols: list[str], rows: list[tuple[object, ...]]) -> None:
 
 @contextmanager
 def sqlmesh_command(
-    operation: str, *, success: str | None = None
+    label: str, *, success: str | None = None
 ) -> Generator[Database, None, None]:
     """Wrap a SQLMesh-fronted command with consistent ⚙️/✅/❌ logging.
 
     Opens its own write connection, yields it, and handles both classified
-    user errors and SQLMesh's broad untyped exceptions.
+    user errors and SQLMesh's broad untyped exceptions. Binds one
+    ``operation()`` for the body so transform commands routed through here
+    (not ``handle_cli_errors``) still share one ``operation_id`` per call —
+    the same CLI seam REC-PR1 establishes. ``label`` is named to avoid
+    shadowing the imported ``operation`` context manager.
 
     Args:
-        operation: Verb-noun describing the action (e.g. ``"SQLMesh plan"``).
-            Used in the leading ``⚙️ {operation}…`` and trailing
-            ``❌ {operation} failed`` lines.
+        label: Verb-noun describing the action (e.g. ``"SQLMesh plan"``).
+            Used in the leading ``⚙️ {label}…`` and trailing
+            ``❌ {label} failed`` lines.
         success: Custom success message after ``✅ ``. Defaults to
-            ``f"{operation} completed"``.
+            ``f"{label} completed"``.
     """
     from moneybin.database import get_database  # noqa: PLC0415 — defer heavy import
 
-    logger.info(f"⚙️  {operation}...")
+    logger.info(f"⚙️  {label}...")
     try:
-        with get_database() as db:
+        with operation(), get_database() as db:
             yield db
-        logger.info(f"✅ {success or f'{operation} completed'}")
+        logger.info(f"✅ {success or f'{label} completed'}")
     except typer.Exit:
         raise
     except Exception as e:  # noqa: BLE001
