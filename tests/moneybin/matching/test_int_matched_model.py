@@ -14,7 +14,6 @@ LISTAGG), so it runs identically inside a plain DuckDB connection.
 from __future__ import annotations
 
 import re
-import uuid
 from collections.abc import Generator
 from datetime import date
 from pathlib import Path
@@ -81,10 +80,6 @@ def _load_model_view_sql() -> str:
     # the closing parenthesis on its own line).
     body = re.sub(r"^MODEL\s*\(.*?\);\s*", "", raw, flags=re.DOTALL).strip()
     return f"CREATE OR REPLACE VIEW prep.int_transactions__matched AS\n{body}"
-
-
-def _make_match_id() -> str:
-    return uuid.uuid4().hex[:12]
 
 
 def _insert_match(
