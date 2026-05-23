@@ -36,6 +36,7 @@ import re
 from dataclasses import dataclass
 from typing import cast
 
+import duckdb
 import sqlglot
 from sqlglot import MappingSchema, exp
 from sqlglot.errors import OptimizeError, ParseError
@@ -118,10 +119,15 @@ class SchemaSnapshot:
 
 
 def _schema_version(db: Database) -> int:
-    row = db.execute(
-        "SELECT COALESCE(MAX(version), 0) FROM app.schema_migrations"
-    ).fetchone()
-    return int(row[0]) if row else 0
+    try:
+        row = db.execute(
+            "SELECT COALESCE(MAX(version), 0) FROM app.schema_migrations"
+        ).fetchone()
+        return int(row[0]) if row else 0
+    except duckdb.CatalogException:
+        # app.schema_migrations absent (fresh/bootstrap/test DBs) → version 0.
+        # Narrow to the catalog error so a genuine query failure still surfaces.
+        return 0
 
 
 @functools.lru_cache(maxsize=4)

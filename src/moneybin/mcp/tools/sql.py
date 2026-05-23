@@ -2,7 +2,7 @@
 """SQL namespace tools — direct read-only SQL queries.
 
 Tools:
-    - sql_query — Execute a read-only SQL query (medium sensitivity)
+    - sql_query — Execute a read-only SQL query with per-column privacy classification
     - sql_schema — Return the curated schema doc (low sensitivity)
 """
 
@@ -10,13 +10,28 @@ from __future__ import annotations
 
 from typing import Any
 
+import duckdb
 from fastmcp import FastMCP
 
 from moneybin.database import get_database
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.privacy import get_max_rows, validate_read_only_query
+from moneybin.mcp.privacy import (
+    get_max_rows,
+    tier_to_sensitivity,
+    validate_read_only_query,
+)
+from moneybin.privacy.redaction import redact_records
+from moneybin.privacy.sql_lineage import (
+    SqlParseError,
+    SqlSchemaError,
+    derive_query_tier,
+    expand_star,
+    get_current_schema_snapshot,
+    parse_cached,
+    resolve_output_classes,
+)
 from moneybin.protocol.envelope import (
     ResponseEnvelope,
     build_envelope,
@@ -25,53 +40,93 @@ from moneybin.protocol.envelope import (
 from moneybin.services.schema_catalog import build_schema_doc
 
 
-@mcp_tool(
-    unclassified=True
-)  # DEPRECATED: unclassified=True — PR 4 wires sqlglot lineage
+@mcp_tool(dynamic_classification=True)
 def sql_query(query: str) -> ResponseEnvelope[Any]:
     """Execute a read-only SQL query against the database.
 
     Only SELECT, WITH, DESCRIBE, SHOW, PRAGMA, and EXPLAIN queries
     are allowed. Write operations and file-access functions are blocked.
 
-    Use this for ad-hoc analysis not covered by other tools. Results
-    are limited to the configured maximum row count.
+    Amounts use the accounting convention: negative = expense, positive = income.
+    Currency is named in summary.display_currency.
+
+    Privacy: each output column is resolved to its data class via SQL lineage
+    (sqlglot). CRITICAL columns (account/routing numbers) are ALWAYS masked
+    (****<last4>) — exactly as the typed account tools mask them — so raw SQL
+    is not a bypass around privacy enforcement. Other tiers (amounts, descriptions,
+    dates) are returned in the clear, matching the typed tools' current behavior.
 
     For schema, columns, and example queries, read resource
     `moneybin://schema` before composing non-trivial queries.
-
-    Note: privacy redaction is not applied to ``sql_query`` results — the
-    payload shape is decided by the caller's query, so the static-type-driven
-    redaction the rest of the surface uses cannot kick in. Avoid selecting
-    CRITICAL-tier columns directly (``account_id``, ``routing_number``,
-    ``last_four``); prefer the dedicated tools that mask those values. PR 4
-    replaces this opt-out with sqlglot column-lineage redaction.
 
     Args:
         query: The SQL query to execute.
     """
     error = validate_read_only_query(query)
     if error:
-        return build_envelope(
-            data={"error": error},
+        return build_error_envelope(
+            error=UserError(error, code="invalid_query"),
             sensitivity="low",
         )
 
-    # Security: This tool intentionally executes user-provided SQL.
-    # Parameterized queries are not applicable here — the entire query
-    # is user input. Safety relies on validate_read_only_query() above,
-    # which blocks write operations, file-access functions, and URL schemes.
-    with get_database(read_only=True) as db:
-        result = db.execute(query)
-        columns = [desc[0] for desc in result.description]
-        rows = result.fetchmany(get_max_rows())
+    try:
+        with get_database(read_only=True) as db:
+            snapshot = get_current_schema_snapshot(db)
+            tree = expand_star(parse_cached(query), snapshot)
+            output_classes = resolve_output_classes(tree, snapshot, query)
+            # Security: validate_read_only_query gates write/file-access above.
+            # The entire string is intentionally user SQL and cannot be parameterized.
+            result = db.execute(query)  # noqa: S608 — read-only, validated above
+            columns = [desc[0] for desc in result.description]
+            rows = result.fetchmany(get_max_rows())
+    except SqlParseError as e:
+        return build_error_envelope(
+            error=UserError(
+                "Could not parse SQL.",
+                code="invalid_query",
+                details={"detail": str(e)},
+            ),
+            sensitivity="low",
+        )
+    except SqlSchemaError as e:
+        return build_error_envelope(
+            error=UserError(
+                "Unknown table or column.",
+                code="unknown_table",
+                details={"detail": str(e)},
+            ),
+            sensitivity="low",
+        )
+    except duckdb.CatalogException as e:
+        return build_error_envelope(
+            error=UserError(
+                "Unknown table or column.",
+                code="unknown_table",
+                details={"detail": str(e)},
+            ),
+            sensitivity="low",
+        )
+    except duckdb.Error as e:
+        return build_error_envelope(
+            error=UserError(
+                "Query execution failed.",
+                code="query_error",
+                details={"detail": str(e)},
+            ),
+            sensitivity="low",
+        )
+
     records = [dict(zip(columns, row, strict=False)) for row in rows]
-    return build_envelope(data=records, sensitivity="medium")
+    redacted = redact_records(records, output_classes, consent=None)
+    tier = derive_query_tier(output_classes)
+    return build_envelope(
+        data=redacted,
+        sensitivity=tier_to_sensitivity(tier).value,
+        classes_returned=sorted({c.value for c in output_classes.values()}),
+    )
 
 
-@mcp_tool(
-    unclassified=True
-)  # DEPRECATED: unclassified=True — PR 4 wires sqlglot lineage
+@mcp_tool(dynamic_classification=True)
 def sql_schema(table: str | None = None) -> ResponseEnvelope[Any]:
     """Return the curated database schema for ad-hoc SQL composition.
 
@@ -114,6 +169,7 @@ def sql_schema(table: str | None = None) -> ResponseEnvelope[Any]:
                 "beyond_the_interface": doc.get("beyond_the_interface"),
             },
             sensitivity="low",
+            classes_returned=["aggregate"],
             actions=[
                 "Pass table='<schema.name>' (e.g. 'core.fct_transactions') to "
                 "fetch columns, comments, and example queries for one table.",
@@ -122,7 +178,9 @@ def sql_schema(table: str | None = None) -> ResponseEnvelope[Any]:
         )
 
     if table == "*":
-        return build_envelope(data=doc, sensitivity="low")
+        return build_envelope(
+            data=doc, sensitivity="low", classes_returned=["aggregate"]
+        )
 
     matches = [t for t in tables if t["name"] == table]
     if not matches:
@@ -146,6 +204,7 @@ def sql_schema(table: str | None = None) -> ResponseEnvelope[Any]:
             "tables": matches,
         },
         sensitivity="low",
+        classes_returned=["aggregate"],
     )
 
 
@@ -157,6 +216,11 @@ def register_sql_tools(mcp: FastMCP) -> None:
         "sql_query",
         "Execute a read-only SQL query against the database. "
         "Supports SELECT, WITH, DESCRIBE, SHOW, PRAGMA, EXPLAIN. "
+        "Each output column is classified via SQL lineage; CRITICAL columns "
+        "(account/routing numbers) are ALWAYS masked (****<last4>), exactly like "
+        "the typed tools — raw SQL is not a privacy bypass. "
+        "Amounts use the accounting convention (negative=expense, positive=income); "
+        "currency is in summary.display_currency. "
         "Call sql_schema (or read resource moneybin://schema) for tables, "
         "columns, and example queries.",
     )

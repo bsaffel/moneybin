@@ -238,7 +238,7 @@ def mcp_tool(
     idempotent: bool = True,
     open_world: bool = False,
     max_items: int | None | _UnsetType = _UNSET,
-    unclassified: bool = False,  # DEPRECATED: unclassified=True — PR 4 wires sqlglot lineage
+    dynamic_classification: bool = False,
     timeout_seconds: float | _UnsetType = _UNSET,
 ) -> Callable[..., Any]:
     """Mark a function as an MCP tool. Sensitivity is derived from the return type.
@@ -261,11 +261,15 @@ def mcp_tool(
         open_world: MCP openWorldHint — defaults to False (closed-world).
         max_items: Per-tool override for ``MCPConfig.max_items``. ``None``
             disables the cap. Sentinel ``_UNSET`` inherits from settings.
-        unclassified: Opt-out for tools whose return shape is determined at
-            call time (e.g. dynamic SQL). When True, sensitivity defaults to
-            HIGH, redact_typed is skipped, and the privacy log records
-            classes_returned=["unclassified"]. DEPRECATED — PR 4 replaces
-            this with sqlglot lineage derivation.
+        dynamic_classification: Per-call classification mode for tools whose
+            return shape is determined at call time (e.g. dynamic SQL). When
+            True, the tool is responsible for setting ``summary.sensitivity``
+            and ``classes_returned`` via ``build_envelope``; the decorator
+            skips static sensitivity stamping and ``redact_typed`` (the tool
+            already redacted via ``redact_records``), and logs the per-call
+            values from the envelope instead of static closure constants.
+            Use ``sql_query``-style tools that invoke sqlglot lineage and
+            ``redact_records`` per call. Static tools must NOT use this flag.
         timeout_seconds: Per-tool override for ``MCPConfig.tool_timeout_seconds``.
             Sentinel ``_UNSET`` inherits from settings. Use this for tools whose
             natural runtime exceeds the default cap (e.g. interactive OAuth
@@ -273,16 +277,18 @@ def mcp_tool(
 
     Every tool is wrapped with:
     1. Wall-clock timeout guard (unchanged from prior behavior)
-    2. Privacy redaction via ``redact_typed`` (PR 2: CRITICAL masks, unless unclassified)
+    2. Privacy redaction via ``redact_typed`` (PR 2: CRITICAL masks, unless dynamic_classification)
     3. ``privacy.log.jsonl`` event write per call
     """
 
     def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
         # Derive sensitivity at registration time from the return type annotation.
         # Raises PrivacyContractError if the return type isn't ResponseEnvelope[T]
-        # with classified T — unless unclassified=True is set.
-        if unclassified:
-            # Dynamic-return tool: can't classify statically. Default to HIGH.
+        # with classified T — unless dynamic_classification=True is set.
+        if dynamic_classification:
+            # Per-call classification: can't classify statically. Use HIGH as a
+            # placeholder; the actual per-call sensitivity is set by the tool
+            # itself and preserved by the decorator (not stamped over).
             sensitivity = Sensitivity.HIGH
             classes_for_log: list[str] = ["unclassified"]
             payload_type_arg: Any = None
@@ -365,11 +371,21 @@ def mcp_tool(
             invocations, not just successes. The write (lock + file I/O) runs
             via asyncio.to_thread so a slow/NFS log mount can't stall the event
             loop and serialize concurrent tool calls.
+
+            For dynamic_classification tools, reads sensitivity and classes from
+            the envelope itself (set by the tool per call); for static tools,
+            uses the registration-time closure values.
             """
+            if dynamic_classification:
+                ev_sensitivity = env.summary.sensitivity
+                ev_classes = env.classes_returned or ["unclassified"]
+            else:
+                ev_sensitivity = sensitivity.value
+                ev_classes = classes_for_log
             event = build_tool_call_event(
                 actor=f"mcp.{fn.__name__}",
-                sensitivity=sensitivity.value,
-                classes_returned=classes_for_log,
+                sensitivity=ev_sensitivity,
+                classes_returned=ev_classes,
                 # Generic envelope type erased; _envelope_row_count handles Any.
                 row_count=_envelope_row_count(env),  # pyright: ignore[reportUnknownArgumentType]
             )
@@ -547,15 +563,18 @@ def mcp_tool(
             # envelope reflects the statically-derived classification regardless
             # of what build_envelope() defaulted to in the tool body. Same helper
             # the error-return paths use.
-            envelope = _stamp_sensitivity(envelope)
+            # Skip for dynamic_classification tools: they set their own per-call
+            # sensitivity and it must not be overwritten by the static placeholder.
+            if not dynamic_classification:
+                envelope = _stamp_sensitivity(envelope)
             # Redact CRITICAL fields before returning. Skip the walk entirely
             # for tools whose return type has no CRITICAL field — the result
             # would be value-identical and the dataclass-tree rebuild is the
-            # most expensive thing on the hot path. Unclassified tools also
-            # skip (their payload shape is decided at call time).
+            # most expensive thing on the hot path. Dynamic-classification tools
+            # also skip: they already applied redact_records per call.
             if (
                 has_critical
-                and not unclassified
+                and not dynamic_classification
                 and envelope.error is None
                 # ResponseEnvelope.data type param is erased after the
                 # dataclasses.replace above; pyright can't see it's narrowable.

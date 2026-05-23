@@ -123,8 +123,9 @@ class TestToolRegistration:
 
         result = await sql_schema()
         parsed = result.to_dict()
-        # sql_schema uses unclassified=True (dynamic return shape) → HIGH sensitivity
-        assert parsed["summary"]["sensitivity"] == "high"
+        # sql_schema uses dynamic_classification=True and sets low sensitivity explicitly
+        # (schema metadata only — no financial data)
+        assert parsed["summary"]["sensitivity"] == "low"
         data = parsed["data"]
         assert data["version"] == 1
         names = {t["name"] for t in data["tables"]}
