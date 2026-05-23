@@ -44,6 +44,8 @@ class AuditEvent:
     parent_audit_id: str | None
     operation_id: str
     context_json: dict[str, Any] | None = None
+    is_undo: bool = False
+    undoes_operation_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a JSON-friendly dict (CLI/MCP envelope payload)."""
@@ -60,6 +62,8 @@ class AuditEvent:
             "parent_audit_id": self.parent_audit_id,
             "operation_id": self.operation_id,
             "context_json": self.context_json,
+            "is_undo": self.is_undo,
+            "undoes_operation_id": self.undoes_operation_id,
         }
 
 
@@ -80,8 +84,14 @@ class AuditService:
         actor: str,
         parent_audit_id: str | None = None,
         context: dict[str, Any] | None = None,
+        is_undo: bool = False,
+        undoes_operation_id: str | None = None,
     ) -> AuditEvent:
-        """Insert one audit event. Caller manages the surrounding txn."""
+        """Insert one audit event. Caller manages the surrounding txn.
+
+        ``is_undo`` / ``undoes_operation_id`` mark rows written by the undo
+        consumer (REC-PR3); a normal mutation leaves them at the defaults.
+        """
         target_schema, target_table, target_id = target
         # Full UUID4 hex (32 chars). Audit log grows with every mutation plus
         # per-row tag.rename_row children — well past identifiers.md's 100K-row
@@ -98,8 +108,9 @@ class AuditService:
             INSERT INTO app.audit_log (
                 audit_id, actor, action,
                 target_schema, target_table, target_id,
-                before_value, after_value, parent_audit_id, operation_id, context_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                before_value, after_value, parent_audit_id, operation_id,
+                context_json, is_undo, undoes_operation_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 audit_id,
@@ -113,6 +124,8 @@ class AuditService:
                 parent_audit_id,
                 operation_id,
                 json.dumps(context) if context is not None else None,
+                is_undo,
+                undoes_operation_id,
             ],
         )
         audit_events_emitted_total.labels(action=action, actor=actor).inc()
@@ -130,6 +143,8 @@ class AuditService:
             parent_audit_id=parent_audit_id,
             operation_id=operation_id,
             context_json=context,
+            is_undo=is_undo,
+            undoes_operation_id=undoes_operation_id,
         )
 
     def list_events(
@@ -171,7 +186,7 @@ class AuditService:
             SELECT audit_id, occurred_at, actor, action,
                    target_schema, target_table, target_id,
                    before_value, after_value, parent_audit_id,
-                   operation_id, context_json
+                   operation_id, context_json, is_undo, undoes_operation_id
               FROM app.audit_log
               {where}
               ORDER BY occurred_at DESC
@@ -188,7 +203,7 @@ class AuditService:
             SELECT audit_id, occurred_at, actor, action,
                    target_schema, target_table, target_id,
                    before_value, after_value, parent_audit_id,
-                   operation_id, context_json
+                   operation_id, context_json, is_undo, undoes_operation_id
               FROM app.audit_log
              WHERE audit_id = ? OR parent_audit_id = ?
              ORDER BY occurred_at ASC, audit_id ASC
@@ -212,4 +227,6 @@ class AuditService:
             parent_audit_id=row[9],
             operation_id=row[10],
             context_json=json.loads(row[11]) if row[11] is not None else None,
+            is_undo=bool(row[12]),
+            undoes_operation_id=row[13],
         )
