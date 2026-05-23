@@ -294,3 +294,72 @@ def make_workflow_env_fast(
     env = base_env(target_home, _TEMPLATE_PROFILE_NAME)
     env["MONEYBIN_IMPORT___INBOX_ROOT"] = str(target_home / "inbox-root")
     return env
+
+
+def _workflow_db_path(env: dict[str, str]) -> Path:
+    """Resolve the encrypted DuckDB path for a workflow-env profile."""
+    return (
+        Path(env["MONEYBIN_HOME"])
+        / "profiles"
+        / env["MONEYBIN_PROFILE"]
+        / "moneybin.duckdb"
+    )
+
+
+def seed_pending_match(env: dict[str, str], match_id: str) -> None:
+    """Insert one pending match decision into a workflow-env database.
+
+    Opens the encrypted DB directly (same key the CLI/MCP subprocess uses) so
+    the row is visible before the subprocess starts. Shared by the CLI and MCP
+    e2e suites — keep a single copy here, not per-file duplicates.
+    """
+    from unittest.mock import MagicMock
+
+    from moneybin.database import Database, invalidate_encryption_key_cache
+    from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
+
+    mock_store = MagicMock()
+    mock_store.get_key.return_value = TEST_ENCRYPTION_KEY
+    invalidate_encryption_key_cache()
+    try:
+        with Database(
+            _workflow_db_path(env), secret_store=mock_store, no_auto_upgrade=True
+        ) as db:
+            MatchDecisionsRepo(db).insert(
+                match_id=match_id,
+                source_transaction_id_a="txn_aaa",
+                source_type_a="csv",
+                source_origin_a="test",
+                source_transaction_id_b="txn_bbb",
+                source_type_b="csv",
+                source_origin_b="test",
+                account_id="acct_test",
+                confidence_score=0.95,
+                match_signals={"exact_amount": True},
+                match_tier="2b",
+                match_status="pending",
+                decided_by="engine",
+                actor="system",
+            )
+    finally:
+        invalidate_encryption_key_cache()
+
+
+def match_status(env: dict[str, str], match_id: str) -> str | None:
+    """Read back one match decision's status from a workflow-env database."""
+    from unittest.mock import MagicMock
+
+    from moneybin.database import Database, invalidate_encryption_key_cache
+    from moneybin.matching.persistence import get_match_decision
+
+    mock_store = MagicMock()
+    mock_store.get_key.return_value = TEST_ENCRYPTION_KEY
+    invalidate_encryption_key_cache()
+    try:
+        with Database(
+            _workflow_db_path(env), secret_store=mock_store, no_auto_upgrade=True
+        ) as db:
+            row = get_match_decision(db, match_id)
+    finally:
+        invalidate_encryption_key_cache()
+    return row["match_status"] if row is not None else None

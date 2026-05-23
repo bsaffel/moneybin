@@ -127,6 +127,21 @@ def matches_undo(
         raise typer.Exit(1) from e
 
 
+@app.command("set")
+def matches_set(
+    match_id: str = typer.Argument(..., help="Match ID to accept or reject"),
+    status: str = typer.Option(..., "--status", help="accepted or rejected"),
+) -> None:
+    """Accept or reject one pending match by id."""
+    if status not in {"accepted", "rejected"}:
+        logger.error("❌ --status must be 'accepted' or 'rejected'")
+        raise typer.Exit(2)
+    with handle_cli_errors():
+        with get_database() as db:
+            MatchingService(db).set_status(match_id, status=status, actor="cli")
+    logger.info(f"✅ Set match {match_id[:8]}... to {status}")
+
+
 @app.command("backfill")
 def matches_backfill(
     skip_transform: bool = typer.Option(

@@ -197,3 +197,40 @@ class MatchDecisionsRepo(BaseRepo):
                 actor=actor,
                 parent_audit_id=parent_audit_id,
             )
+
+    def accept_pending(
+        self,
+        *,
+        match_type: str | None = None,
+        decided_by: str,
+        actor: str,
+        in_outer_txn: bool = False,
+    ) -> int:
+        """Accept every pending, non-reversed match (optionally filtered by type).
+
+        Bulk acceptance is the per-row ``update_status`` applied inside one
+        transaction, so each acceptance emits its own paired ``app.audit_log``
+        row (Invariant 10) and the batch is all-or-nothing. ``match_type`` is a
+        code-supplied filter (validated by the caller); ``decided_by`` is the
+        domain column, ``actor`` the audit surface. Returns the count accepted.
+        """
+        with self._transaction(in_outer_txn=in_outer_txn):
+            where = "WHERE match_status = 'pending' AND reversed_at IS NULL"
+            params: list[object] = []
+            if match_type is not None:
+                where += " AND match_type = ?"
+                params.append(match_type)
+            rows = self._db.execute(
+                f"SELECT match_id FROM {MATCH_DECISIONS.full_name} "  # noqa: S608  # TableRef + literal WHERE; value parameterized
+                f"{where} ORDER BY match_id",
+                params,
+            ).fetchall()
+            for (match_id,) in rows:
+                self.update_status(
+                    match_id,
+                    status="accepted",
+                    decided_by=decided_by,
+                    actor=actor,
+                    in_outer_txn=True,
+                )
+            return len(rows)

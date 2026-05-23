@@ -18,6 +18,7 @@ from moneybin.database import Database
 from moneybin.matching.persistence import (
     MatchStatus,
     get_active_matches,
+    get_match_decision,
     get_match_log,
     get_pending_matches,
     get_rejected_pairs,
@@ -159,14 +160,36 @@ class TestGetRejectedPairs:
         assert "account_id" in rejected[0]
 
 
+class TestGetMatchDecision:
+    """Tests for get_match_decision."""
+
+    def test_returns_row_when_present(self, db: Database) -> None:
+        _create_test_match(
+            db,
+            match_id="m_abc123",
+            status="pending",
+            stid_a="a1",
+            stid_b="b1",
+        )
+        row = get_match_decision(db, "m_abc123")
+        assert row is not None
+        assert row["match_id"] == "m_abc123"
+        assert row["match_status"] == "pending"
+
+    def test_returns_none_when_absent(self, db: Database) -> None:
+        assert get_match_decision(db, "nope") is None
+
+
 class TestGetMatchLog:
     """Tests for get_match_log."""
 
-    def test_returns_recent_decisions(self, db: Database) -> None:
-        _create_test_match(db, stid_a="l1", stid_b="l2")
+    def test_returns_recent_decisions_excluding_pending(self, db: Database) -> None:
+        _create_test_match(db, stid_a="l1", stid_b="l2")  # accepted (default)
         _create_test_match(db, status="pending", stid_a="l3", stid_b="l4")
         log = get_match_log(db)
-        assert len(log) == 2
+        # Pending proposals are not decisions — the log excludes them.
+        assert len(log) == 1
+        assert all(row["match_status"] != "pending" for row in log)
 
     def test_respects_limit(self, db: Database) -> None:
         for i in range(5):

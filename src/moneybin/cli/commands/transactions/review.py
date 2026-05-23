@@ -59,12 +59,56 @@ def transactions_review(
         return
 
     if confirm_id or reject_id or confirm_all:
-        _not_implemented(
-            "moneybin-cli.md (review collapse — non-interactive flags pending)"
+        if type_ != "matches":
+            logger.error(
+                "❌ --confirm/--reject/--confirm-all require --type matches "
+                "(categorize non-interactive review is not yet supported)"
+            )
+            raise typer.Exit(2)
+        _review_matches_noninteractive(
+            confirm_id=confirm_id, reject_id=reject_id, confirm_all=confirm_all
         )
         return
 
     _not_implemented("moneybin-cli.md (review collapse — interactive loop pending)")
+
+
+def _review_matches_noninteractive(
+    *, confirm_id: str | None, reject_id: str | None, confirm_all: bool
+) -> None:
+    from moneybin.cli.utils import handle_cli_errors
+    from moneybin.services.matching_service import MatchingService
+
+    # --confirm-all bulk-accepts the whole queue; pairing it with a targeted
+    # --confirm/--reject is ambiguous (the targeted id would be silently
+    # dropped), so reject the combination as a usage error rather than run a
+    # partial action.
+    if confirm_all and (confirm_id or reject_id):
+        logger.error("❌ --confirm-all cannot be combined with --confirm or --reject")
+        raise typer.Exit(2)
+
+    # Same id to both flags would accept then immediately fail the reject (the
+    # match is no longer pending), leaving the accept silently committed behind
+    # an error exit. Reject the contradiction up front, like the guard above.
+    if confirm_id is not None and confirm_id == reject_id:
+        logger.error("❌ --confirm and --reject cannot target the same match_id")
+        raise typer.Exit(2)
+
+    with handle_cli_errors():
+        with get_database() as db:
+            svc = MatchingService(db)
+            if confirm_all:
+                n = svc.accept_all_pending(actor="cli")
+                logger.info(f"✅ Accepted {n} pending match(es)")
+                return
+            # Independent ifs (not elif): `--confirm X --reject Y` targets two
+            # different matches in one invocation.
+            if confirm_id:
+                svc.set_status(confirm_id, status="accepted", actor="cli")
+                logger.info(f"✅ Accepted match {confirm_id[:8]}...")
+            if reject_id:
+                svc.set_status(reject_id, status="rejected", actor="cli")
+                logger.info(f"✅ Rejected match {reject_id[:8]}...")
 
 
 def _print_status(type_: str, output: OutputFormat) -> None:

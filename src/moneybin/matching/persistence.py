@@ -69,13 +69,14 @@ def get_active_matches(
 
 
 def get_pending_matches(
-    db: Database, match_type: str | None = None
+    db: Database, match_type: str | None = None, *, limit: int | None = None
 ) -> list[dict[str, Any]]:
     """Return pending match decisions awaiting user review.
 
     Args:
         db: Database instance.
         match_type: Filter by type ('dedup', 'transfer'), or None for all.
+        limit: Max rows (pushed to SQL ``LIMIT``), or None for all pending.
     """
     where = "WHERE match_status = 'pending' AND reversed_at IS NULL"
     params: list[Any] = []
@@ -84,15 +85,34 @@ def get_pending_matches(
             raise ValueError(f"Invalid match_type: {match_type!r}")
         where += " AND match_type = ?"
         params.append(match_type)
+    limit_clause = ""
+    if limit is not None:
+        limit_clause = "LIMIT ?"
+        params.append(limit)
     rows = db.execute(
         f"""
         SELECT {_MATCH_DECISION_SELECT} FROM app.match_decisions
         {where}
         ORDER BY confidence_score DESC
-        """,  # noqa: S608 — match_type validated above
+        {limit_clause}
+        """,  # noqa: S608 — match_type validated above; limit is parameterized
         params,
     ).fetchall()
     return [dict(zip(_MATCH_DECISION_COLUMNS, row, strict=True)) for row in rows]
+
+
+def get_match_decision(db: Database, match_id: str) -> dict[str, Any] | None:
+    """Return one match decision by id, or None if absent."""
+    row = db.execute(
+        f"""
+        SELECT {_MATCH_DECISION_SELECT} FROM app.match_decisions
+        WHERE match_id = ?
+        """,  # noqa: S608 — column list is a module constant, not user input
+        [match_id],
+    ).fetchone()
+    if row is None:
+        return None
+    return dict(zip(_MATCH_DECISION_COLUMNS, row, strict=True))
 
 
 def get_rejected_pairs(
@@ -126,8 +146,13 @@ def get_rejected_pairs(
 def get_match_log(
     db: Database, *, limit: int = 50, match_type: str | None = None
 ) -> list[dict[str, Any]]:
-    """Return recent match decisions for display."""
-    where = "WHERE 1=1"
+    """Return recent match *decisions* for display.
+
+    Excludes ``pending`` rows: a pending proposal is not yet a decision, and its
+    ``decided_at`` holds the proposal time, not a decision time. The pending
+    queue is read via :func:`get_pending_matches`.
+    """
+    where = "WHERE match_status != 'pending'"
     params: list[Any] = []
     if match_type:
         if match_type not in VALID_MATCH_TYPES:
