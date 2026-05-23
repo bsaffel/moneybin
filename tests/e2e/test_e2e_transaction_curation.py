@@ -247,6 +247,70 @@ class TestTagRenameAuditChain:
         )
 
 
+class TestSystemAuditUndo:
+    """E2E parity for `moneybin system audit undo|history|get` (REC-PR3)."""
+
+    def _tagged_txn_op(self, env: dict[str, str]) -> str:
+        """Create a transaction, tag it, return the tag operation's operation_id."""
+        result = run_cli(
+            "transactions",
+            "create",
+            "--account",
+            "manual-acct",
+            "--date",
+            "2024-06-03",
+            "--output",
+            "json",
+            "--",
+            "-9.00",
+            "lunch",
+            env=env,
+        )
+        result.assert_success()
+        tid = _loads(result.stdout)["data"]["transaction_id"]
+        run_cli("transactions", "tags", "add", tid, "trip", env=env).assert_success()
+
+        history = run_cli(
+            "system",
+            "audit",
+            "history",
+            "--domain",
+            "tag",
+            "--output",
+            "json",
+            env=env,
+        )
+        history.assert_success()
+        ops: list[dict[str, Any]] = _loads(history.stdout)["data"]
+        tag_ops = [o for o in ops if "tag.add" in o["actions"]]
+        assert tag_ops, ops
+        return tag_ops[0]["operation_id"]
+
+    def test_undo_round_trip(self, e2e_home: Path) -> None:
+        env = make_workflow_env(e2e_home, "wf-audit-undo")
+        _bootstrap_account(env, "manual-acct")
+        op = self._tagged_txn_op(env)
+
+        # get shows the op as undoable with the tag.add event.
+        got = run_cli("system", "audit", "get", op, "--output", "json", env=env)
+        got.assert_success()
+        detail = _loads(got.stdout)["data"]
+        assert detail["can_undo"] is True
+        assert any(e["action"] == "tag.add" for e in detail["events"])
+
+        # undo reverses the tag.
+        undone = run_cli("system", "audit", "undo", op, "--output", "json", env=env)
+        undone.assert_success()
+        assert _loads(undone.stdout)["data"]["reversed_row_count"] == 1
+        remaining = _query_json(env, "SELECT COUNT(*) AS n FROM app.transaction_tags")
+        assert remaining[0]["n"] == 0
+
+        # undoing again is refused with the already-undone code.
+        again = run_cli("system", "audit", "undo", op, "--output", "json", env=env)
+        assert again.exit_code == 1
+        assert _loads(again.stdout)["error"]["code"] == "undo_already_undone"
+
+
 class TestImportLabelsGoldenPath:
     """CSV import → import labels add → list shows the label."""
 
