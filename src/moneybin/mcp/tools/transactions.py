@@ -197,11 +197,9 @@ def transactions_matches_pending(
         svc = MatchingService(db)
         rows = svc.get_pending(match_type=match_type, limit=limit)
         total = svc.count_pending(match_type=match_type)
-
-    # Count distinct dedup clusters so the agent sees N-way grouping at a glance.
-    n_dedup_groups = len({
-        r["component_key"] for r in rows if r.get("match_type") == "dedup"
-    })
+        # Count groups over the FULL pending queue (not just this page) so the
+        # agent sees the true N-way cluster total even when has_more is true.
+        n_dedup_groups = svc.count_pending_dedup_groups()
 
     return build_envelope(
         data=MatchesPendingPayload(

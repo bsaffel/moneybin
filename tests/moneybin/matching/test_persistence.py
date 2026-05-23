@@ -234,6 +234,13 @@ class TestUndoMatch:
         active = get_active_matches(db)
         assert all(m["match_id"] != match_id for m in active)
 
+    def test_double_reverse_raises(self, db: Database) -> None:
+        """Re-reversing an already-reversed match is rejected (audit integrity)."""
+        match_id = _create_test_match(db)
+        undo_match(db, match_id, reversed_by="user")
+        with pytest.raises(ValueError, match="already reversed"):
+            undo_match(db, match_id, reversed_by="user")
+
 
 class TestGetRejectedPairs:
     """Tests for get_rejected_pairs."""

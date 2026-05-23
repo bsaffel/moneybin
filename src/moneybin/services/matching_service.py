@@ -216,10 +216,16 @@ class MatchingService:
     def _compute_component_keys(self) -> dict[tuple[str, str, str], str]:
         """Build a map from (account_id, source_type, stid) to component_key.
 
-        Fetches all active+pending non-reversed dedup edges, builds connected
-        components via UnionFind, then computes each component's key as
-        MIN(f"{source_type}|{source_transaction_id}") over its members within
-        the same account_id — matching the prep fold's group_id semantics.
+        Fetches all active (accepted + pending) non-reversed dedup edges, builds
+        connected components via UnionFind, and keys each by
+        MIN(f"{source_type}|{source_transaction_id}") over its members within the
+        same account_id.
+
+        This is a *prospective* grouping identifier, NOT the prep fold's
+        ``match_group_id``: the fold groups accepted edges only, so a cluster
+        that is still pending review has a non-null ``component_key`` here while
+        its ``match_group_id`` in ``core``/``prep`` is NULL until the edges are
+        accepted. Use it to cluster the review queue, not to join against core.
 
         Returns a dict keyed on (account_id, source_type, stid).
         """
@@ -231,8 +237,7 @@ class MatchingService:
             for e in get_active_dedup_edges(self._db)
         ]
         # Dedup edges only ever connect same-account nodes, so each component is
-        # account-scoped. component_key = MIN packed "stype|stid" over members,
-        # matching the prep fold's group_id.
+        # account-scoped. component_key = MIN packed "stype|stid" over members.
         result: dict[tuple[str, str, str], str] = {}
         for members in connected_components(edges):
             component_key = min(f"{st}|{stid}" for st, stid, _ in members)
@@ -246,9 +251,12 @@ class MatchingService:
         """Return pending match decisions awaiting review, enriched with component_key.
 
         Dedup rows share a ``component_key`` when they belong to the same
-        connected component of active+pending dedup edges — the same grouping
-        the prep fold uses for ``match_group_id``. Transfer rows are not grouped;
-        their ``component_key`` is the row's own ``match_id``.
+        connected component of active+pending dedup edges, so the reviewer can
+        cluster copies of one transaction. This is a prospective grouping id, not
+        the prep fold's ``match_group_id`` (which groups accepted edges only) —
+        see ``_compute_component_keys``; don't use it to join against core.
+        Transfer rows are not grouped; their ``component_key`` is their own
+        ``match_id``.
 
         ``limit`` is pushed to SQL; None returns all pending.
         """
@@ -275,6 +283,26 @@ class MatchingService:
             enriched.append({**row, "component_key": component_key})
 
         return enriched
+
+    def count_pending_dedup_groups(self) -> int:
+        """Distinct dedup components across the FULL pending queue (not one page).
+
+        Counts over every pending dedup decision, so the figure is correct even
+        when a caller paginates ``get_pending`` — a page-local count would
+        undercount when ``has_more`` is true and mislead the reviewer about how
+        many transactions still need review.
+        """
+        pending = get_pending_matches(self._db, match_type="dedup", limit=None)
+        if not pending:
+            return 0
+        comp_keys = self._compute_component_keys()
+        return len({
+            comp_keys.get(
+                (r["account_id"], r["source_type_a"], r["source_transaction_id_a"]),
+                r["match_id"],
+            )
+            for r in pending
+        })
 
     def accept_all_pending(self, *, match_type: str | None = None) -> int:
         """Accept every pending match decision in scope. Returns the count accepted.
