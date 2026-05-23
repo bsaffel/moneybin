@@ -169,6 +169,38 @@ class TestHistory:
         assert summary.undo_blocked_by == [op2]
 
 
+class TestMetrics:
+    """undo() records its outcome and reversed-row count to Prometheus."""
+
+    def _outcome(self, outcome: str) -> float:
+        from prometheus_client import REGISTRY
+
+        return (
+            REGISTRY.get_sample_value("moneybin_audit_undo_total", {"outcome": outcome})
+            or 0.0
+        )
+
+    def _rows(self) -> float:
+        from prometheus_client import REGISTRY
+
+        return (
+            REGISTRY.get_sample_value("moneybin_audit_undo_rows_reversed_total") or 0.0
+        )
+
+    def test_success_increments_outcome_and_rows(self, db: Database) -> None:
+        op = _note_and_tag_op(db)
+        before_ok, before_rows = self._outcome("success"), self._rows()
+        UndoService(db).undo(op, actor="cli")
+        assert self._outcome("success") - before_ok == 1.0
+        assert self._rows() - before_rows == 2.0
+
+    def test_refusal_increments_its_outcome(self, db: Database) -> None:
+        before = self._outcome("not_found")
+        with pytest.raises(UserError):
+            UndoService(db).undo("op_missing", actor="cli")
+        assert self._outcome("not_found") - before == 1.0
+
+
 class TestGet:
     """get() returns full before/after for each row, with undoability flags."""
 

@@ -22,6 +22,10 @@ from typing import cast
 from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import RecoveryAction, UserError
+from moneybin.metrics.registry import (
+    audit_undo_rows_reversed_total,
+    audit_undo_total,
+)
 from moneybin.services.audit_service import AuditEvent, AuditService
 from moneybin.services.mutation_context import operation
 from moneybin.services.undo_dispatch import is_registered, repo_for
@@ -99,6 +103,7 @@ class UndoService:
         """
         events = self._audit.events_for_operation(operation_id)
         if not events:
+            audit_undo_total.labels(outcome="not_found").inc()
             raise UserError(
                 f"No operation found with id {operation_id!r}.",
                 code=error_codes.UNDO_OPERATION_NOT_FOUND,
@@ -114,6 +119,7 @@ class UndoService:
             )
         undone_by = self._already_undone_by(operation_id)
         if undone_by is not None:
+            audit_undo_total.labels(outcome="already_undone").inc()
             raise UserError(
                 f"Operation {operation_id!r} was already undone by {undone_by!r}.",
                 code=error_codes.UNDO_ALREADY_UNDONE,
@@ -121,6 +127,7 @@ class UndoService:
             )
         unresolvable = self._unresolvable_tables(events)
         if unresolvable:
+            audit_undo_total.labels(outcome="no_path").inc()
             raise UserError(
                 f"Operation {operation_id!r} touched {', '.join(unresolvable)}, "
                 "outside the undoable app.* surface — not reversible via undo.",
@@ -128,6 +135,7 @@ class UndoService:
             )
         blockers = self._cascade_blockers(operation_id)
         if blockers:
+            audit_undo_total.labels(outcome="cascade_blocked").inc()
             raise UserError(
                 f"Operation {operation_id!r} cannot be undone: later operations "
                 f"modified the same rows. Undo those first.",
@@ -156,6 +164,8 @@ class UndoService:
                 self._db.rollback()
                 raise
         tables = sorted({e.target_table for e in undone if e.target_table})
+        audit_undo_total.labels(outcome="success").inc()
+        audit_undo_rows_reversed_total.inc(len(undone))
         logger.info(
             f"audit_undo undone_op={operation_id} undo_op={undo_op} "
             f"rows={len(undone)} actor={actor}"
