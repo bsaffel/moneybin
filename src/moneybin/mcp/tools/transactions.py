@@ -170,7 +170,8 @@ def transactions_matches_set(
         data=MatchSetPayload(match_id=match_id, match_status=status),
         actions=[
             "Use transactions_matches_pending to review remaining pending matches",
-            "Use transactions_matches_undo (CLI) to reverse an accepted match",
+            "Run `moneybin transactions matches undo <match_id>` (CLI) to reverse "
+            "an accepted match — there is no MCP undo tool yet",
         ],
     )
 
