@@ -289,9 +289,16 @@ def _class_of_key(key: tuple[str, str, str]) -> DataClass | None:
 
 
 def _fallback_class(
-    tree: exp.Expr, snapshot: SchemaSnapshot, sql_for_log: str
+    scope: exp.Expr, snapshot: SchemaSnapshot, sql_for_log: str
 ) -> DataClass:
-    """Max-tier class among all input columns; AGGREGATE if none resolvable.
+    """Max-tier class among ``scope``'s input columns; AGGREGATE if none resolve.
+
+    ``scope`` is the SELECT the unresolved projection belongs to — a single
+    UNION branch, not the whole tree. Scoping per branch keeps alias resolution
+    correct: a UNION can reuse one alias for different tables across branches,
+    so collecting input columns tree-wide would resolve aliases against the
+    wrong branch's table and miss the CRITICAL column we're falling back to
+    protect.
 
     "None resolvable" → AGGREGATE (LOW) is correct only when the query is
     restricted to classified (core/app) schemas: an unclassified-schema query
@@ -309,7 +316,7 @@ def _fallback_class(
         f"sql_lineage: unresolved projection; conservative fallback (sql sha256={sql_hash})"
     )
     best: DataClass = DataClass.AGGREGATE
-    for key in collect_input_columns(tree, snapshot):
+    for key in collect_input_columns(scope, snapshot):
         dc = _class_of_key(key)
         if dc is not None and dc.tier > best.tier:
             best = dc
@@ -346,11 +353,13 @@ def _within_counting_agg(node: exp.Expr, stop: exp.Expr) -> bool:
 
 def _classify_projection(
     proj: exp.Expr,
-    tree: exp.Expr,
+    scope: exp.Expr,
     alias_map: dict[str, tuple[str, str]],
     snapshot: SchemaSnapshot,
     sql_for_log: str,
 ) -> DataClass:
+    # ``scope`` is the projection's own SELECT (a single UNION branch), passed
+    # through to _fallback_class so alias resolution stays branch-local.
     inner = proj.unalias() if isinstance(proj, exp.Alias) else proj
 
     # A counting aggregate at the projection's TOP level collapses values to a
@@ -379,7 +388,7 @@ def _classify_projection(
         key = _column_key(col, alias_map, snapshot)
         dc = _class_of_key(key) if key is not None else None
         if dc is None:
-            return _fallback_class(tree, snapshot, sql_for_log)
+            return _fallback_class(scope, snapshot, sql_for_log)
         classes.append(dc)
 
     # Value-preserving agg or plain expression: highest-tier referenced class.
@@ -418,10 +427,14 @@ def resolve_output_classes(
     branches = _union_select_branches(tree)
     if not branches:
         raise SqlSchemaError("Query has no SELECT projection")
-    alias_map = _build_alias_map(tree)
+    # Alias scope is per-branch: a UNION may reuse one alias for different
+    # tables across branches (legal SQL), so a tree-wide map (last-write-wins)
+    # would resolve a branch's column against the wrong table and under-redact.
     per_branch: list[list[DataClass]] = [
         [
-            _classify_projection(proj, tree, alias_map, snapshot, sql_for_log)
+            _classify_projection(
+                proj, sel, _build_alias_map(sel), snapshot, sql_for_log
+            )
             for proj in sel.selects
         ]
         for sel in branches

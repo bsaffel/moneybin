@@ -241,14 +241,10 @@ def execute_sql_query(db: Database, query: str, *, max_rows: int) -> SqlQueryRes
             )
         output_classes = resolve_output_classes(qtree, snapshot, query)
         columns, rows, truncated = _fetch(db, query, max_rows)
-    except SqlParseError as e:
-        raise UserError(
-            "Could not parse SQL.",
-            code=error_codes.SQL_INVALID_QUERY,
-            details={"detail": str(e)},
-        ) from e
     # SqlSchemaError comes from the lineage qualify step; CatalogException from
-    # DuckDB at execute time. Both mean "table/column doesn't exist".
+    # DuckDB at execute time. Both mean "table/column doesn't exist". (Parsing
+    # happens above at parse_cached, outside this block, so SqlParseError can't
+    # surface here.)
     except (SqlSchemaError, duckdb.CatalogException) as e:
         # Don't echo str(e) to the client: a DuckDB/lineage message can quote
         # the query verbatim (including literal values). Log it server-side

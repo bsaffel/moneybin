@@ -149,6 +149,30 @@ def test_select_star_masks_every_critical_column(populated_db: Database) -> None
     assert result.tier is Tier.CRITICAL
 
 
+def test_union_reused_alias_masks_critical(populated_db: Database) -> None:
+    """A UNION reusing one alias for two tables still masks the CRITICAL column.
+
+    Both branches bind alias ``a`` to a different table; branch 0 projects the
+    CRITICAL ``routing_number``. Per-branch alias scoping classifies the output
+    position CRITICAL, so every value in that column is masked — the routing
+    number is never returned in the clear (the round-6 UNION alias-collision
+    leak).
+    """
+    _seed_account(populated_db)
+    _seed_txn(populated_db)
+    result = execute_sql_query(
+        populated_db,
+        "SELECT a.routing_number FROM core.dim_accounts a "
+        "UNION ALL "
+        "SELECT a.description FROM core.fct_transactions a",
+        max_rows=100,
+    )
+    assert result.tier is Tier.CRITICAL
+    values = [str(r["routing_number"]) for r in result.records]
+    assert "021000021" not in values
+    assert all(v == "*****" for v in values)
+
+
 def test_unaliased_aggregate_fails_closed_to_max_tier(populated_db: Database) -> None:
     """An unaliased expression DuckDB names differently than sqlglot fails closed.
 

@@ -386,7 +386,13 @@ def mcp_tool(
             """
             if dynamic_classification:
                 ev_sensitivity = env.summary.sensitivity
-                ev_classes = env.classes_returned or ["unclassified"]
+                # Only an absent (None) field falls back; an explicit empty list
+                # is a real "no data classes" signal and is preserved as-is.
+                ev_classes = (
+                    env.classes_returned
+                    if env.classes_returned is not None
+                    else ["unclassified"]
+                )
             else:
                 ev_sensitivity = sensitivity.value
                 ev_classes = classes_for_log

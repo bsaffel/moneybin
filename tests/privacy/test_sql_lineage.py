@@ -154,6 +154,25 @@ def test_derive_query_tier_takes_max(populated_db: Database) -> None:
     assert derive_query_tier(out) is Tier.CRITICAL
 
 
+def test_union_reused_alias_does_not_leak_critical(populated_db: Database) -> None:
+    """A UNION reusing one alias for two tables must not under-redact.
+
+    Both branches bind alias ``a`` to a different table. A single tree-wide
+    alias map (last-write-wins) resolves ``a`` to the *last* branch's table, so
+    branch 0's ``a.routing_number`` misses, falls back to that branch's tier,
+    and the CRITICAL routing number classifies as DESCRIPTION (MEDIUM) —
+    unmasked. Per-branch alias scoping keeps the output position CRITICAL.
+    """
+    out = _classes(
+        "SELECT a.routing_number FROM core.dim_accounts a "
+        "UNION ALL "
+        "SELECT a.description FROM core.fct_transactions a",
+        populated_db,
+    )
+    assert out == {"routing_number": DataClass.ROUTING_NUMBER}
+    assert derive_query_tier(out) is Tier.CRITICAL
+
+
 # ---------------------------------------------------------------------------
 # Task 5: Parametrized corpus (≥50 entries)
 # ---------------------------------------------------------------------------
