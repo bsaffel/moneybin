@@ -17,9 +17,11 @@ from moneybin import error_codes
 from moneybin.config import MatchingSettings, get_settings
 from moneybin.database import Database
 from moneybin.errors import RecoveryAction, UserError
+from moneybin.matching.assignment import NodeKey, connected_components
 from moneybin.matching.engine import TransactionMatcher
 from moneybin.matching.persistence import (
     VALID_MATCH_TYPES,
+    get_active_dedup_edges,
     get_match_decision,
     get_match_log,
     get_pending_matches,
@@ -239,15 +241,120 @@ class MatchingService:
             self._db.rollback()
             raise
 
+    def _compute_component_keys(self) -> dict[tuple[str, str, str], str]:
+        """Build a map from (account_id, source_type, stid) to component_key.
+
+        Fetches all active (accepted + pending) non-reversed dedup edges, builds
+        connected components via UnionFind, and keys each by
+        MIN(f"{source_type}|{source_transaction_id}") over its members within the
+        same account_id.
+
+        This is a *prospective* grouping identifier, NOT the prep fold's
+        ``match_group_id``: the fold groups accepted edges only, so a cluster
+        that is still pending review has a non-null ``component_key`` here while
+        its ``match_group_id`` in ``core``/``prep`` is NULL until the edges are
+        accepted. Use it to cluster the review queue, not to join against core.
+
+        Returns a dict keyed on (account_id, source_type, stid).
+        """
+        edges: list[tuple[NodeKey, NodeKey]] = [
+            (
+                (e["source_type_a"], e["source_transaction_id_a"], e["account_id"]),
+                (e["source_type_b"], e["source_transaction_id_b"], e["account_id"]),
+            )
+            for e in get_active_dedup_edges(self._db)
+        ]
+        # Dedup edges only ever connect same-account nodes, so each component is
+        # account-scoped. component_key = account_id prefixed onto the MIN packed
+        # "stype|stid" over members — the account prefix makes it globally unique
+        # (source_transaction_id only repeats within an account), matching the
+        # prep fold's account-prefixed group_id and preventing two accounts'
+        # clusters from colliding in the review queue.
+        result: dict[tuple[str, str, str], str] = {}
+        for members in connected_components(edges):
+            acct = members[0][2]  # all members of a component share one account
+            component_key = f"{acct}|" + min(f"{st}|{stid}" for st, stid, _ in members)
+            for st, stid, member_acct in members:
+                result[(member_acct, st, stid)] = component_key
+        return result
+
+    def _component_key_for_row(
+        self, row: dict[str, Any], comp_keys: dict[tuple[str, str, str], str]
+    ) -> str:
+        """Resolve a pending dedup row's component_key, warning on the fallback.
+
+        Every pending dedup edge's side-A node is, by construction, a member of
+        the active-edge component map. If it ever isn't, the row would silently
+        split into its own single-edge cluster (over-counting groups, fragmenting
+        the review queue) — so emit a warning to make that anomaly observable
+        rather than degrading without a signal.
+        """
+        lookup_key = (
+            row["account_id"],
+            row["source_type_a"],
+            row["source_transaction_id_a"],
+        )
+        component_key = comp_keys.get(lookup_key)
+        if component_key is None:
+            logger.warning(
+                f"Pending dedup match {row['match_id']} side-A node absent from the "
+                f"active dedup edge map; treating it as its own cluster"
+            )
+            return row["match_id"]
+        return component_key
+
     def get_pending(
         self, *, match_type: str | None = None, limit: int | None = None
     ) -> list[dict[str, Any]]:
-        """Return pending match decisions awaiting review.
+        """Return pending match decisions awaiting review, enriched with component_key.
 
-        Wraps :func:`moneybin.matching.persistence.get_pending_matches`.
+        Dedup rows share a ``component_key`` when they belong to the same
+        connected component of active+pending dedup edges, so the reviewer can
+        cluster copies of one transaction. This is a prospective grouping id, not
+        the prep fold's ``match_group_id`` (which groups accepted edges only) —
+        see ``_compute_component_keys``; don't use it to join against core.
+        Transfer rows are not grouped; their ``component_key`` is their own
+        ``match_id``.
+
         ``limit`` is pushed to SQL; None returns all pending.
         """
-        return get_pending_matches(self._db, match_type=match_type, limit=limit)
+        rows = get_pending_matches(self._db, match_type=match_type, limit=limit)
+        if not rows:
+            return rows
+
+        # Build component keys once for all pending dedup rows in this call
+        comp_keys = self._compute_component_keys()
+
+        enriched: list[dict[str, Any]] = []
+        for row in rows:
+            if row.get("match_type") == "dedup":
+                component_key = self._component_key_for_row(row, comp_keys)
+            else:
+                # Transfers are ungrouped; each edge is its own cluster
+                component_key = row["match_id"]
+            enriched.append({**row, "component_key": component_key})
+
+        return enriched
+
+    def count_pending_dedup_groups(self, *, match_type: str | None = None) -> int:
+        """Distinct dedup components across the FULL pending queue (not one page).
+
+        Counts over every pending dedup decision, so the figure is correct even
+        when a caller paginates ``get_pending`` — a page-local count would
+        undercount when ``has_more`` is true and mislead the reviewer about how
+        many transactions still need review.
+
+        ``match_type`` mirrors the caller's ``get_pending`` filter so the count
+        stays consistent with the rows returned: a non-dedup scope (e.g.
+        ``"transfer"``) has zero dedup groups, not the whole unfiltered queue.
+        """
+        if match_type is not None and match_type != "dedup":
+            return 0
+        pending = get_pending_matches(self._db, match_type="dedup", limit=None)
+        if not pending:
+            return 0
+        comp_keys = self._compute_component_keys()
+        return len({self._component_key_for_row(r, comp_keys) for r in pending})
 
     def accept_all_pending(
         self, *, match_type: str | None = None, actor: str = "system"

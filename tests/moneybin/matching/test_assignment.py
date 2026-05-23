@@ -4,6 +4,7 @@ from decimal import Decimal
 
 from moneybin.matching.assignment import (
     _claim_key,  # pyright: ignore[reportPrivateUsage]
+    assign_components,
     assign_greedy,
 )
 from moneybin.matching.scoring import CandidatePair
@@ -257,3 +258,62 @@ class TestAssignGreedyTransfers:
         assigned = assign_greedy(candidates)
         assert len(assigned) == 1
         assert assigned[0].source_transaction_id_a == "chk_1"
+
+
+def _edge(
+    st_a: str, stid_a: str, st_b: str, stid_b: str, score: float, acct: str = "acct1"
+) -> CandidatePair:
+    return CandidatePair(
+        source_transaction_id_a=stid_a,
+        source_type_a=st_a,
+        source_origin_a="o",
+        source_transaction_id_b=stid_b,
+        source_type_b=st_b,
+        source_origin_b="o",
+        account_id=acct,
+        date_distance_days=0,
+        description_similarity=score,
+        confidence_score=score,
+        description_a="",
+        description_b="",
+    )
+
+
+class TestAssignComponents:
+    """Tests for the assign_components union-find spanning-forest assignment."""
+
+    def test_triangle_yields_spanning_tree(self) -> None:
+        # 3 copies of txn X from csv/ofx/manual -> 2 edges (N-1), no cycle.
+        pairs = [
+            _edge("csv", "X", "ofx", "X", 0.96),
+            _edge("csv", "X", "manual", "X", 0.90),
+            _edge("ofx", "X", "manual", "X", 0.88),
+        ]
+        added = assign_components(pairs, seed_edges=[])
+        assert len(added) == 2
+        # highest-two by score; the third (ofx-manual) is within-component -> skipped
+        assert {(p.source_type_a, p.source_type_b) for p in added} == {
+            ("csv", "ofx"),
+            ("csv", "manual"),
+        }
+
+    def test_seed_edge_blocks_redundant_proposal(self) -> None:
+        # csv:X -- ofx:X already active; manual:X joins via the higher-score edge.
+        added = assign_components(
+            [
+                _edge("ofx", "X", "manual", "X", 0.90),
+                _edge("csv", "X", "manual", "X", 0.88),
+            ],
+            seed_edges=[(("csv", "X", "acct1"), ("ofx", "X", "acct1"))],
+        )
+        assert len(added) == 1
+        assert added[0].source_type_b == "manual"
+
+    def test_deterministic_tiebreak_on_equal_scores(self) -> None:
+        # Two independent edges, equal score -> order by (st_a, stid_a, st_b, stid_b).
+        pairs = [_edge("csv", "Q", "ofx", "Q", 0.9), _edge("csv", "P", "ofx", "P", 0.9)]
+        result = assign_components(pairs, seed_edges=[])
+        assert [p.source_transaction_id_a for p in result] == ["P", "Q"]
+
+    def test_empty(self) -> None:
+        assert assign_components([], seed_edges=[]) == []

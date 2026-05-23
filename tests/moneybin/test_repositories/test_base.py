@@ -52,6 +52,7 @@ def test_emit_audit_returns_event_and_increments_metric() -> None:
         before_value=None,
         after_value={"k": "v"},
         parent_audit_id=None,
+        operation_id="op_00000000000000000000000000000000",
     )
     audit.record_audit_event.return_value = sentinel
     repo = _FakeRepo(MagicMock(), audit=audit)

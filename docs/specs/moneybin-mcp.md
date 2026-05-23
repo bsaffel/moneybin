@@ -628,9 +628,9 @@ List match proposals awaiting a decision.
 
 - **Sensitivity:** `low` — returns pair IDs and confidence scores; no transaction amounts, descriptions, or PII.
 - **Unique parameters:** `match_type: str?` (`dedup` or `transfer`; omit for all pending), `limit: int?` (default 50, applied as SQL `LIMIT`).
-- **Behavior:** Returns array of `{match_id, match_type, match_tier, confidence_score, source_type_a, source_transaction_id_a, source_type_b, source_transaction_id_b, match_status}` for proposals whose status is `pending`. No amounts/descriptions — call `transactions_get` on a source id for those. Use `transactions_matches_set` to accept or reject individual proposals.
+- **Behavior:** Returns array of `{match_id, match_type, match_tier, confidence_score, source_type_a, source_transaction_id_a, source_type_b, source_transaction_id_b, match_status, component_key}` for proposals whose status is `pending`. No amounts/descriptions — call `transactions_get` on a source id for those. Use `transactions_matches_set` to accept or reject individual proposals. `component_key` groups all edges that belong to the same N-way dedup cluster (MIN packed member key per component, matching `match_group_id` semantics in the prep fold); transfer rows use their own `match_id` as the key. The `actions[]` summary hint reports `N pending dedup edges across M groups`.
 - **Service:** `MatchingService.get_pending()`
-- **CLI:** `moneybin transactions review --type matches` (orientation + interactive queue); `moneybin transactions review --type matches --status` (counts only)
+- **CLI:** `moneybin transactions matches pending` (grouped pending display); `moneybin transactions review --type matches` (orientation + interactive queue); `moneybin transactions review --type matches --status` (counts only)
 - **read_only:** true
 
 #### `transactions_matches_set`

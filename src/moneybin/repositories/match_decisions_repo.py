@@ -195,10 +195,14 @@ class MatchDecisionsRepo(BaseRepo):
         """Reverse a decision (sets ``reversed_at``/``reversed_by``, status reversed).
 
         Captures the full prior row in ``before``. Raises ``ValueError`` when no
-        match with this id exists.
+        match with this id exists, or when it is already reversed — re-reversing
+        would overwrite the original reversal's audit trail
+        (``reversed_at``/``reversed_by``), so a second reverse is rejected.
         """
         with self._transaction(in_outer_txn=in_outer_txn):
             before = self._require(self._fetch_row(match_id), "match_id", match_id)
+            if before["reversed_at"] is not None:
+                raise ValueError(f"Match already reversed: {match_id}")
             self._db.execute(
                 f"""
                 UPDATE {MATCH_DECISIONS.full_name}
