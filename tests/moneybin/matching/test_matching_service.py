@@ -217,10 +217,11 @@ def test_get_pending_assigns_component_key(db: Database) -> None:
     Both pending edges share a component; their component_key must match.
     Unrelated edge m_zz (different account) is its own component.
 
-    component_key = MIN(source_type||'|'||source_transaction_id) over the
-    component's members, grouped per account — same rule as the prep fold.
+    component_key = account_id prefixed onto
+    MIN(source_type||'|'||source_transaction_id) over the component's members —
+    same account-prefixed rule as the prep fold's group_id.
     On acct1: members are ("csv","t1"), ("ofx","t2"), ("tiller","t3").
-    Packed: "csv|t1", "ofx|t2", "tiller|t3" → MIN = "csv|t1".
+    Packed: "csv|t1", "ofx|t2", "tiller|t3" → MIN = "csv|t1" → "acct1|csv|t1".
     """
     # 3-copy dedup cluster on acct1: T1-T2-T3
     _seed_dedup(
@@ -265,5 +266,6 @@ def test_get_pending_assigns_component_key(db: Database) -> None:
         f"Expected m_zz to have a different component_key from m_ab, got {keys}"
     )
     # Sanity: the shared key should be the MIN packed node key in the component.
-    # Members of the acct1 component: "csv|t1", "ofx|t2", "tiller|t3".
-    assert keys["m_ab"] == "csv|t1"
+    # Members of the acct1 component: "csv|t1", "ofx|t2", "tiller|t3";
+    # account-prefixed → "acct1|csv|t1".
+    assert keys["m_ab"] == "acct1|csv|t1"

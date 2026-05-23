@@ -244,6 +244,48 @@ class TestIntTransactionsMatchedModel:
         assert len({r[2] for r in rows}) == 1  # one gold record
         assert stid_a in {r[0] for r in rows}  # '|' id preserved verbatim
 
+    def test_same_source_ids_in_two_accounts_do_not_conflate(
+        self, matched_db: Database
+    ) -> None:
+        """Two accounts reusing the same source_transaction_ids stay separate.
+
+        Regression: group_id was the MIN packed member, unique only within an
+        account; source-provided ids can repeat across accounts, so two accounts'
+        components would share a group_id and conflate into one gold key. The
+        account-prefixed group_id keeps them distinct.
+        """
+        for acct in ("acctA", "acctB"):
+            _insert_unioned_row(
+                matched_db,
+                source_transaction_id="s1",
+                source_type="csv",
+                account_id=acct,
+            )
+            _insert_unioned_row(
+                matched_db,
+                source_transaction_id="s2",
+                source_type="ofx",
+                account_id=acct,
+            )
+            _insert_match(
+                matched_db,
+                match_id=f"m_{acct}",
+                stid_a="s1",
+                st_a="csv",
+                stid_b="s2",
+                st_b="ofx",
+                account_id=acct,
+            )
+
+        rows = matched_db.execute(
+            "SELECT account_id, match_group_id, transaction_id "
+            "FROM prep.int_transactions__matched WHERE match_group_id IS NOT NULL"
+        ).fetchall()
+        # 4 member rows, but two distinct components and two distinct gold keys.
+        assert len(rows) == 4
+        assert len({r[1] for r in rows}) == 2  # distinct match_group_id per account
+        assert len({r[2] for r in rows}) == 2  # distinct gold record per account
+
     def test_pair_collapses_to_one_group(self, matched_db: Database) -> None:
         """Two matched transactions share a single match_group_id."""
         acct = "acct2"

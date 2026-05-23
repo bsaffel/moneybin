@@ -265,12 +265,17 @@ class MatchingService:
             for e in get_active_dedup_edges(self._db)
         ]
         # Dedup edges only ever connect same-account nodes, so each component is
-        # account-scoped. component_key = MIN packed "stype|stid" over members.
+        # account-scoped. component_key = account_id prefixed onto the MIN packed
+        # "stype|stid" over members — the account prefix makes it globally unique
+        # (source_transaction_id only repeats within an account), matching the
+        # prep fold's account-prefixed group_id and preventing two accounts'
+        # clusters from colliding in the review queue.
         result: dict[tuple[str, str, str], str] = {}
         for members in connected_components(edges):
-            component_key = min(f"{st}|{stid}" for st, stid, _ in members)
-            for st, stid, acct in members:
-                result[(acct, st, stid)] = component_key
+            acct = members[0][2]  # all members of a component share one account
+            component_key = f"{acct}|" + min(f"{st}|{stid}" for st, stid, _ in members)
+            for st, stid, member_acct in members:
+                result[(member_acct, st, stid)] = component_key
         return result
 
     def get_pending(

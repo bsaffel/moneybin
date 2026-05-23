@@ -67,15 +67,18 @@ WITH RECURSIVE active_matches AS (
     ON r.aid = e.aid AND r.mem_st = e.src_st AND r.mem_stid = e.src_stid
 ), match_groups AS (
   /* source_type and source_transaction_id are recovered from the carried
-     columns (no splitting). group_id is the lexicographic MIN packed member of
-     the component — an opaque label that is only ever grouped/joined on, never
-     split back apart, so the delimiter is harmless here; all nodes in one
-     component converge to the same MIN. */
+     columns (no splitting). group_id is account_id prefixed onto the
+     lexicographic MIN packed member of the component — an opaque label that is
+     only ever grouped/joined/counted on, never split back apart. The account
+     prefix makes it GLOBALLY unique: source_transaction_id is only unique within
+     an account (source-provided ids can repeat across accounts), so without it
+     two accounts sharing a min member would collide into one group_id and
+     conflate their gold keys, confidence, and match_group_id counts. */
   SELECT
     aid AS account_id,
     st AS source_type,
     stid AS source_transaction_id,
-    MIN(mem_st || '|' || mem_stid) AS group_id
+    aid || '|' || MIN(mem_st || '|' || mem_stid) AS group_id
   FROM reach
   GROUP BY
     aid,
