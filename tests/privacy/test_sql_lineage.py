@@ -1,22 +1,31 @@
 """Tests for the sqlglot-based SQL column lineage resolver.
 
 TDD order: Task 1 (parse cache), Task 2 (schema snapshot),
-Task 3 (star expansion + input columns), Task 4 (output-class resolution).
+Task 3 (star expansion + input columns), Task 4 (output-class resolution),
+Task 5 (corpus + parametrized), Task 6 (conservative fallback).
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
+import yaml
 
 from moneybin.database import Database
 from moneybin.privacy.sql_lineage import (
     SqlParseError,
+    derive_query_tier,
     expand_star,
     get_current_schema_snapshot,
     parse_cached,
     resolve_output_classes,
 )
 from moneybin.privacy.taxonomy import DataClass, Tier
+
+_CORPUS = yaml.safe_load(
+    (Path(__file__).parent / "fixtures" / "sql_lineage_corpus.yaml").read_text()
+)
 
 
 def test_parse_cached_returns_expression_and_caches() -> None:
@@ -137,9 +146,84 @@ def test_multi_column_expression_takes_max_tier(populated_db: Database) -> None:
 
 
 def test_derive_query_tier_takes_max(populated_db: Database) -> None:
-    from moneybin.privacy.sql_lineage import derive_query_tier
-
     out = _classes(
         "SELECT account_id, account_type FROM core.dim_accounts", populated_db
     )
     assert derive_query_tier(out) is Tier.CRITICAL
+
+
+# ---------------------------------------------------------------------------
+# Task 5: Parametrized corpus (≥50 entries)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("case", _CORPUS, ids=[c["description"] for c in _CORPUS])
+def test_corpus_resolves_expected_classes(
+    case: dict[str, object], populated_db: Database
+) -> None:
+    sql = str(case["sql"])
+    snap = get_current_schema_snapshot(populated_db)
+    tree = expand_star(parse_cached(sql), snap)
+    got = {k: v.value for k, v in resolve_output_classes(tree, snap, sql).items()}
+    assert got == case["expected_output_classes"]
+    tier = derive_query_tier(resolve_output_classes(tree, snap, sql))
+    assert tier.name.lower() == case["expected_query_tier"]
+
+
+# ---------------------------------------------------------------------------
+# Task 6: Conservative fallback verification
+# ---------------------------------------------------------------------------
+
+
+def test_unresolvable_projection_falls_back_to_max_input_tier(
+    populated_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Monkeypatch _column_key to fail for 'amount'; assert fallback = CRITICAL.
+
+    The query touches account_id (CRITICAL) in its input columns, so when
+    the 'amount' projection cannot be resolved, the conservative fallback
+    raises the floor to the max input tier: CRITICAL. This ensures we
+    over-redact rather than under-redact.
+    """
+    import moneybin.privacy.sql_lineage as lin
+
+    sql = "SELECT account_id, amount FROM core.fct_transactions"
+    snap = get_current_schema_snapshot(populated_db)
+    tree = lin.expand_star(lin.parse_cached(sql), snap)
+
+    real = lin._column_key  # pyright: ignore[reportPrivateUsage]
+
+    def flaky(
+        col: object,
+        alias_map: object,
+        snapshot: object,
+    ) -> object:
+        # _column_key(col, alias_map, snapshot) — fail only for 'amount'
+        from sqlglot import exp as _exp
+
+        if isinstance(col, _exp.Column) and col.name == "amount":
+            return None
+        return real(col, alias_map, snapshot)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(lin, "_column_key", flaky)  # pyright: ignore[reportPrivateUsage]
+
+    out = lin.resolve_output_classes(tree, snap, sql)
+    # account_id still resolves to CRITICAL; amount falls back to max input tier
+    # (CRITICAL, because account_id is among the input columns).
+    assert out["amount"].tier is Tier.CRITICAL
+
+
+def test_cte_outer_column_falls_back_to_max_inner_tier(populated_db: Database) -> None:
+    """CTE outer SELECT cannot resolve column to schema directly; falls back to max input tier.
+
+    The CTE inner query references account_id (CRITICAL) and amount (HIGH).
+    The outer SELECT's account_id projection hits the fallback (CTE column is
+    not in the schema snapshot), and the max input tier from the whole tree is
+    CRITICAL (account_id is present). The fallback is conservative — CRITICAL.
+    """
+    out = _classes(
+        "WITH spend AS (SELECT account_id, amount FROM core.fct_transactions) "
+        "SELECT account_id FROM spend",
+        populated_db,
+    )
+    assert next(iter(out.values())).tier is Tier.CRITICAL
