@@ -1,3 +1,8 @@
+---
+description: "Cross-surface operation-shape taxonomy, verb vocabulary, audience layering (MCP / CLI / REST). Consult before adding, renaming, or restructuring a tool, command, or endpoint."
+paths: ["src/moneybin/mcp/**", "src/moneybin/cli/**", "src/moneybin/services/**", "src/moneybin/main.py", "docs/specs/moneybin-mcp.md", "docs/specs/moneybin-cli.md", "docs/specs/moneybin-capabilities.md"]
+---
+
 # Surface Design: Tools, Commands, and APIs
 
 Cross-surface pattern for MoneyBin's three agent/user surfaces — MCP tools, CLI commands, and (future) REST endpoints. Invoke whenever adding, renaming, or restructuring an entry on any of those surfaces.
