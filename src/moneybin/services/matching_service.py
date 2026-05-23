@@ -19,6 +19,7 @@ from moneybin.database import Database
 from moneybin.errors import RecoveryAction, UserError
 from moneybin.matching.engine import TransactionMatcher
 from moneybin.matching.persistence import (
+    VALID_MATCH_TYPES,
     get_match_decision,
     get_match_log,
     get_pending_matches,
@@ -256,8 +257,12 @@ class MatchingService:
         Routes through ``MatchDecisionsRepo.accept_pending`` so each acceptance
         emits a paired ``app.audit_log`` row (Invariant 10), all inside one
         transaction (all-or-nothing). ``actor`` is the audit surface
-        (``cli``/``mcp``, default ``"system"``).
+        (``cli``/``mcp``, default ``"system"``). ``match_type``, when given, is
+        validated here (the repo's filter is parameterized but unguarded) so a
+        bad value raises instead of silently accepting nothing.
         """
+        if match_type is not None and match_type not in VALID_MATCH_TYPES:
+            raise ValueError(f"Invalid match_type: {match_type!r}")
         return self._match_repo().accept_pending(
             match_type=match_type, decided_by="user", actor=actor
         )

@@ -206,7 +206,8 @@ class DoctorService:
         ``match_decisions`` uses ``GREATEST(decided_at, reversed_at)`` (DuckDB's
         ``GREATEST`` ignores NULL, so this is the later of the two timestamps, or
         ``decided_at`` when never reversed) so a raw bypass that bumps *either*
-        column is flagged.
+        column is flagged. ``updated_expr`` is interpolated raw (not sanitized),
+        so callers MUST pass a hard-coded SQL literal — never user input.
 
         ``pk_expr`` overrides how the row's ``target_id`` is projected: most
         tables key on a single ``pk_col``, but a composite-PK table (e.g.

@@ -186,3 +186,50 @@ def test_insert_rolls_back_when_audit_raises(db: Database) -> None:
         "SELECT 1 FROM app.match_decisions WHERE match_id = ?", ["ghost_match"]
     ).fetchall()
     assert rows == []
+
+
+def _statuses(db: Database) -> dict[str, str]:
+    return {
+        r[0]: r[1]
+        for r in db.conn.execute(
+            "SELECT match_id, match_status FROM app.match_decisions"
+        ).fetchall()
+    }
+
+
+def test_accept_pending_filters_by_type_and_audits_each(db: Database) -> None:
+    repo = MatchDecisionsRepo(db)
+    _insert(repo, match_id="d1", match_status="pending")
+    _insert(repo, match_id="d2", match_status="pending")
+    _insert(
+        repo,
+        match_id="t1",
+        match_status="pending",
+        match_type="transfer",
+        match_tier=None,
+        account_id_b="acct2",
+    )
+
+    n = repo.accept_pending(match_type="dedup", decided_by="user", actor="cli")
+
+    # count reflects exactly the matching rows; transfer is untouched.
+    assert n == 2
+    assert _statuses(db) == {"d1": "accepted", "d2": "accepted", "t1": "pending"}
+
+    # each acceptance emitted its own audited update_status row (Invariant 10).
+    updates = db.conn.execute(
+        "SELECT COUNT(*) FROM app.audit_log WHERE action = 'match_decision.update_status'"
+    ).fetchone()
+    assert updates is not None and updates[0] == 2
+
+
+def test_accept_pending_no_filter_accepts_all_pending(db: Database) -> None:
+    repo = MatchDecisionsRepo(db)
+    _insert(repo, match_id="p1", match_status="pending")
+    _insert(repo, match_id="p2", match_status="pending")
+    _insert(repo, match_id="r1", match_status="rejected")  # not pending — skipped
+
+    n = repo.accept_pending(decided_by="user", actor="cli")
+
+    assert n == 2
+    assert _statuses(db) == {"p1": "accepted", "p2": "accepted", "r1": "rejected"}
