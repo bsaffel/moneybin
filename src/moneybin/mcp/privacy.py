@@ -1,8 +1,10 @@
 """Privacy controls and query validation for the MCP server.
 
-This module enforces query safety: read-only validation for the general
-query tool, managed write validation for dedicated write tools, and
-result size limits.
+This module enforces query safety: managed write validation for dedicated
+write tools, table allowlisting, and result size limits. Read-only query
+validation lives in :mod:`moneybin.privacy.sql_query` (a SQL-safety
+primitive shared with the CLI) and is re-exported here for callers that
+import it from this module.
 """
 
 import functools
@@ -11,6 +13,9 @@ import re
 from enum import StrEnum
 
 from moneybin.config import get_settings
+from moneybin.privacy.sql_query import (
+    validate_read_only_query as validate_read_only_query,  # re-export
+)
 from moneybin.privacy.taxonomy import Tier
 
 logger = logging.getLogger(__name__)
@@ -102,47 +107,6 @@ def get_max_rows() -> int:
     return max_rows
 
 
-# DuckDB table-valued functions that read local files or make network requests.
-# These pass the read-only prefix check (SELECT/WITH) but can exfiltrate data.
-# Includes scan_* and legacy parquet_scan aliases (resolve identically to read_*).
-# glob() is matched as a function call only — \bglob\b would false-positive on
-# DuckDB's GLOB infix comparison operator (e.g. WHERE desc GLOB '*AMAZON*').
-_FILE_ACCESS_FUNCTIONS = re.compile(
-    r"\b(read_csv|read_csv_auto|read_parquet|read_json|read_json_auto|"
-    r"read_ndjson|read_text|read_blob|read_delta|read_iceberg|"
-    r"scan_parquet|scan_csv|scan_csv_auto|scan_json|scan_ndjson|parquet_scan|"
-    r"glob)\s*\(",
-    re.IGNORECASE,
-)
-
-# URL scheme literals used as path arguments to DuckDB table scans when httpfs
-# is loaded. These bypass function-name matching because DuckDB accepts
-# `SELECT * FROM 'https://evil.com/data.parquet'` with no function keyword.
-_URL_SCHEME_PATTERNS = re.compile(
-    r"(https?://|s3://|az://|gcs://)",
-    re.IGNORECASE,
-)
-
-# DuckDB replacement scans can read files with `FROM 'path/to/file.csv'`
-# without using read_csv/read_parquet. A single-quoted table source is not a
-# normal catalog table reference, so reject it before execution.
-_QUOTED_TABLE_SCAN = re.compile(
-    r"(?<!')\b(FROM|JOIN)\s*'[^']+'",
-    re.IGNORECASE,
-)
-
-# Patterns that indicate read-only SQL statements
-_READ_ONLY_PREFIXES = re.compile(
-    r"^\s*(SELECT|WITH|DESCRIBE|SHOW|PRAGMA|EXPLAIN)\b",
-    re.IGNORECASE,
-)
-
-# Patterns that indicate write operations (even inside CTEs)
-_WRITE_PATTERNS = re.compile(
-    r"\b(INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|TRUNCATE|REPLACE|MERGE|COPY|ATTACH|DETACH|EXPORT|IMPORT)\b",
-    re.IGNORECASE,
-)
-
 # Dangerous DDL operations never allowed through managed writes
 _DANGEROUS_OPS = re.compile(
     r"\b(DROP|ALTER|TRUNCATE|ATTACH|DETACH|EXPORT|COPY)\b",
@@ -164,53 +128,6 @@ _CORE_TRANSFORM = re.compile(
     r"^\s*CREATE\s+OR\s+REPLACE\s+TABLE\s+(?:\"?core\"?\.)",
     re.IGNORECASE,
 )
-
-
-def validate_read_only_query(sql: str) -> str | None:
-    """Validate that a SQL query is read-only.
-
-    Args:
-        sql: The SQL query string to validate.
-
-    Returns:
-        None if the query is valid, or an error message string if rejected.
-    """
-    stripped = sql.strip()
-
-    if not stripped:
-        return "Empty query is not allowed."
-
-    if not _READ_ONLY_PREFIXES.match(stripped):
-        return (
-            "Only read-only queries are allowed. "
-            "Queries must start with SELECT, WITH, DESCRIBE, SHOW, PRAGMA, or EXPLAIN."
-        )
-
-    if _FILE_ACCESS_FUNCTIONS.search(stripped):
-        return (
-            "File-access functions (read_csv, read_parquet, read_json, glob, etc.) "
-            "are not allowed through the MCP server."
-        )
-
-    if _URL_SCHEME_PATTERNS.search(stripped):
-        return (
-            "URL literals (https://, s3://, etc.) are not allowed. "
-            "Queries must read from database tables only."
-        )
-
-    if _QUOTED_TABLE_SCAN.search(stripped):
-        return (
-            "Quoted file/table path scans are not allowed through the MCP server. "
-            "Queries must read from database tables only."
-        )
-
-    if _WRITE_PATTERNS.search(stripped):
-        return (
-            "Write operations (INSERT, UPDATE, DELETE, DROP, CREATE, ALTER, etc.) "
-            "are not allowed through the MCP server."
-        )
-
-    return None
 
 
 def check_table_allowed(table_name: str) -> str | None:

@@ -21,6 +21,14 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   max-tier input class. Data queries are limited to the `core`/`app` schemas
   (use the `reports_*` tools for curated views); `DESCRIBE`/`SHOW`/`PRAGMA`/
   `EXPLAIN` run as low-sensitivity metadata.
+- **`moneybin sql query` CLI command — the privacy-safe ad-hoc SQL path.** Full
+  CLI↔MCP parity with `sql_query`: both surfaces route through one shared
+  `execute_sql_query` primitive (read-only gate, core/app schema restriction,
+  sqlglot lineage, CRITICAL masking), so the CLI masks account/routing numbers
+  identically and raw SQL is not a privacy bypass on either surface. `--output
+  text|json` returns the same envelope shape as MCP. `moneybin db query`/`db
+  shell`/`db ui` remain raw, unmasked operator access and point here via their
+  banner.
 - **Agent-callable transaction match accept/reject.** `transactions_matches_set` and
   `transactions_matches_pending` MCP tools (plus `transactions_matches_run` /
   `transactions_matches_history`), `moneybin transactions matches set`, and

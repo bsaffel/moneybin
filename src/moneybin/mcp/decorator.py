@@ -265,11 +265,18 @@ def mcp_tool(
             return shape is determined at call time (e.g. dynamic SQL). When
             True, the tool is responsible for setting ``summary.sensitivity``
             and ``classes_returned`` via ``build_envelope``; the decorator
-            skips static sensitivity stamping and ``redact_typed`` (the tool
-            already redacted via ``redact_records``), and logs the per-call
-            values from the envelope instead of static closure constants.
-            Use ``sql_query``-style tools that invoke sqlglot lineage and
-            ``redact_records`` per call. Static tools must NOT use this flag.
+            skips static sensitivity stamping and ``redact_typed``, and logs
+            the per-call values from the envelope instead of static closure
+            constants.
+
+            TRUST CONTRACT — a ``dynamic_classification=True`` tool MUST call
+            ``redact_records`` (from ``moneybin.privacy.redaction``), or run an
+            equivalent masking pass, on EVERY data path before returning. The
+            decorator does NOT redact on its behalf: skipping ``redact_typed``
+            means a tool that forgets ``redact_records`` (or only masks on the
+            success path) returns unmasked CRITICAL data with no safety net.
+            Prefer routing through ``moneybin.privacy.sql_query.execute_sql_query``,
+            which redacts before returning. Static tools must NOT use this flag.
         timeout_seconds: Per-tool override for ``MCPConfig.tool_timeout_seconds``.
             Sentinel ``_UNSET`` inherits from settings. Use this for tools whose
             natural runtime exceeds the default cap (e.g. interactive OAuth
