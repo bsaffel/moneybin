@@ -212,7 +212,7 @@ def register_core_tools() -> None:
     # ``budget-tracking.md`` is ``draft`` (today's ``budget_set`` is a partial
     # slice of the planned set/status/delete + rollovers feature). Transform
     # tools are CLI-accessible operator territory (category 2 per
-    # mcp-server.md). Per ``.claude/rules/mcp-server.md`` "Surface change
+    # mcp.md). Per ``.claude/rules/mcp.md`` "Surface change
     # discipline" they re-register when their backing spec reaches
     # ``in-progress`` or ``implemented``. The tool implementation files
     # (``tools/budget.py``, ``tools/transform.py``) stay in place as building

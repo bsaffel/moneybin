@@ -54,7 +54,7 @@ For hand-crafted reference data where readability matters more than uniqueness g
 
 ## Propagation
 
-Choosing the right ID strategy is half the job — the other half is keeping the ID intact across layers. PR #174 (category text → `category_id` FK) and the 2026-05-18 identifier-hygiene audit (merchant_id at the view boundary, account filters, proposed_rules linkage) surfaced the same bug class at three different boundaries. Three guards close those boundaries.
+Choosing the right ID strategy is half the job — the other half is keeping the ID intact across layers. Three guards close the boundaries where it leaks.
 
 ### Guard 1 — Carry the ID through views
 
@@ -62,7 +62,7 @@ When a `core.dim_*` entity has a stable ID, every view that exposes that entity 
 
 Concretely: if a SQLMesh model joins to `core.dim_merchants` and selects `canonical_name`, it must also select `merchant_id`. Same for `dim_accounts`, `dim_categories`, and any future `dim_*`. The display column is for rendering; the ID is for joining and aggregating.
 
-Worked example: `core.fct_transactions` joins `core.dim_merchants` to resolve `merchant_name` (`sqlmesh/models/core/fct_transactions.sql`). The view projects both `merchant_id` and `merchant_name`. Downstream reports (`merchant_activity`, `recurring_subscriptions`, `large_transactions`, `uncategorized_queue`) GROUP/PARTITION BY `merchant_id` with `merchant_name` carried as display — a rename in `app.user_merchants.canonical_name` no longer re-buckets historical aggregations.
+Worked example: `core.fct_transactions` joins `core.dim_merchants` to resolve `merchant_name` and projects both `merchant_id` and `merchant_name`. Downstream reports GROUP/PARTITION BY `merchant_id` with `merchant_name` carried as display — a rename in `app.user_merchants.canonical_name` no longer re-buckets historical aggregations.
 
 ### Guard 2 — Bind filters to the ID; resolve free-text at the boundary
 
@@ -79,7 +79,7 @@ If a filter accepts free-text, ALSO update the MCP tool description and CLI `--h
 
 ### Guard 3 — FK across `app.*` tables; never text-key cross-table relationships
 
-When an `app.*` table references another table's entity, the reference column MUST be the FK (`*_id`), not the text equivalent. PR #174 retired seven `(category, subcategory)` text references in favor of `category_id`. V016 retired the `LOWER(merchant_pattern)` text linkage in favor of `rule_id`. The pattern: if a SQL statement uses `WHERE text_col = ?` (or worse, `WHERE LOWER(text_col) = LOWER(?)`) to identify a row that has a stable ID, the FK column is missing — add it, dual-write through a migration, then drop the text predicate.
+When an `app.*` table references another table's entity, the reference column MUST be the FK (`*_id`), not the text equivalent. The pattern: if a SQL statement uses `WHERE text_col = ?` (or worse, `WHERE LOWER(text_col) = LOWER(?)`) to identify a row that has a stable ID, the FK column is missing — add it, dual-write through a migration, then drop the text predicate.
 
 Three smells that signal the bug:
 
@@ -108,4 +108,4 @@ When designing a new schema column or surface parameter that names another entit
 3. If the column must accept free-text input — is it a filter / surface parameter? (Then accept text, resolve to id at the service boundary, raise on ambiguity.)
 4. If the cross-table predicate is text-keyed — is there a smell from the three above? (Then surface the FK.)
 
-When in doubt, follow the pattern PR #174 and the 2026-05-18 fixes established: additive FK column → dual-write window → text-predicate retirement.
+When in doubt, follow the pattern: additive FK column → dual-write window → text-predicate retirement.

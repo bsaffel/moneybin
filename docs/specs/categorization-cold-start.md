@@ -16,10 +16,10 @@ Design the first-run categorization experience: how a brand-new MoneyBin install
 
 - Parent: [`categorization-overview.md`](categorization-overview.md) — umbrella spec, priority hierarchy, pipeline contract
 - Downstream: [`categorization-auto-rules.md`](categorization-auto-rules.md) — auto-rules feed off cold-start categorizations
-- Layered on: [`categorize-bulk.md`](categorize-bulk.md) — the bulk categorize tool this spec wraps with a first-run prompt layer
+- Layered on: [`categorization-bulk.md`](categorization-bulk.md) — the bulk categorize tool this spec wraps with a first-run prompt layer
 - Privacy alignment: [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) — redaction aligns with this consent model
 - Tool registration: [`moneybin-mcp.md`](moneybin-mcp.md) — new MCP tools register here
-- Architecture rules: `.claude/rules/mcp-server.md`, `.claude/rules/cli.md`, `.claude/rules/database.md`
+- Architecture rules: `.claude/rules/mcp.md`, `.claude/rules/cli.md`, `.claude/rules/database.md`
 
 The categorization overview commits to several v1 bootstrap strategies (migration imports, Plaid pass-through) and acknowledges LLM-assist categorization as the lowest-priority solver in the precedence ladder. What's missing — and what this spec addresses — is the cold-start *workflow* that ties these solvers together for first-run, plus the PII redaction contract that makes LLM-assist privacy-defensible.
 
@@ -334,7 +334,7 @@ flowchart LR
     M3 --> C
 ```
 
-Mode 3 (agent driving CLI) is functionally equivalent to Mode 1 (MCP). Same redaction, same audit trail, same outcome. This is a free win from designing the CLI as a peer to MCP rather than a fallback. See `.claude/rules/mcp-server.md` principle 5 and `.claude/rules/cli.md` Consumer Model section.
+Mode 3 (agent driving CLI) is functionally equivalent to Mode 1 (MCP). Same redaction, same audit trail, same outcome. This is a free win from designing the CLI as a peer to MCP rather than a fallback. See `.claude/rules/mcp.md` principle 5 and `.claude/rules/cli.md` Consumer Model section.
 
 ## PII redaction contract
 
@@ -489,7 +489,7 @@ User-facing: `moneybin privacy audit --tool transactions_categorize_assist`.
 - `src/moneybin/metrics/registry.py` — register `categorize_assist_*` metrics per `observability.md`
 - `docs/specs/categorization-overview.md` — apply 7 edits per "Edits to overview spec" section below
 - `docs/specs/INDEX.md` — add this spec at status `ready`
-- `.claude/rules/mcp-server.md` — strengthen principle 5 with agent-as-CLI-consumer framing
+- `.claude/rules/mcp.md` — strengthen principle 5 with agent-as-CLI-consumer framing
 - `.claude/rules/cli.md` — add Consumer Model section
 - `README.md` — update categorization roadmap and "What Works Today" section per `.claude/rules/shipping.md`
 - `tests/e2e/test_e2e_workflows.py` — update for renamed commands
@@ -574,7 +574,7 @@ Renamed:
 
 The `approve` framing is preserved for rule *promotion* (when an accepted proposal becomes an active rule).
 
-Both new and renamed tools live under the `categorize.*` namespace per `mcp-server.md`. The namespace is visible at connect alongside all other registered tools — client-driven progressive disclosure (and its `moneybin_discover` meta-tool) was retired 2026-05-17; see [`mcp-architecture.md`](mcp-architecture.md) §3 "Tool disclosure: full surface, taxonomy-led". The agent reaches `transactions_categorize_assist` directly when uncategorized transactions exist (surfaced via `system_status` and via the `import_inbox_sync` envelope's `actions[]` hint).
+Both new and renamed tools live under the `categorize.*` namespace per `mcp.md`. The namespace is visible at connect alongside all other registered tools — client-driven progressive disclosure (and its `moneybin_discover` meta-tool) was retired 2026-05-17; see [`mcp-architecture.md`](mcp-architecture.md) §3 "Tool disclosure: full surface, taxonomy-led". The agent reaches `transactions_categorize_assist` directly when uncategorized transactions exist (surfaced via `system_status` and via the `import_inbox_sync` envelope's `actions[]` hint).
 
 ## Forward compatibility
 
@@ -678,7 +678,7 @@ These extend the existing synthetic generator's persona/merchant YAML; no new ge
 - No new packages
 - No external services (LLM-assist runs through the user's chosen MCP client; CLI bridge is provider-agnostic)
 
-Prerequisite: `categorize-bulk.md` (implemented) — provides the underlying `categorize_items` service this spec wraps.
+Prerequisite: `categorization-bulk.md` (implemented) — provides the underlying `categorize_items` service this spec wraps.
 
 ## Open questions
 

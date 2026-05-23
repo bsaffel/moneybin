@@ -1,6 +1,6 @@
 """Structural guardrail: adapters must route domain mutations through services.
 
-The MoneyBin layering convention (see `.claude/rules/mcp-server.md`,
+The MoneyBin layering convention (see `.claude/rules/mcp.md`,
 `.claude/rules/cli.md`, and `.claude/rules/surface-design.md`):
 
     MCP tools / CLI commands  →  ServiceClass(db).method(...)  →  DuckDB
