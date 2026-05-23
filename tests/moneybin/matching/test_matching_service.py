@@ -74,6 +74,12 @@ def test_set_status_same_status_is_idempotent(db: Database) -> None:
     assert _status_of(db, "m3") == "accepted"
 
 
+def test_set_status_rejected_to_rejected_is_idempotent(db: Database) -> None:
+    _seed(db, "m3b", "rejected")
+    MatchingService(db).set_status("m3b", status="rejected")  # no error
+    assert _status_of(db, "m3b") == "rejected"
+
+
 def test_set_status_unknown_id_raises_not_found_with_recovery(db: Database) -> None:
     with pytest.raises(UserError) as exc:
         MatchingService(db).set_status("missing", status="accepted")
@@ -95,6 +101,16 @@ def test_reject_accepted_raises_constraint_with_undo_recovery(db: Database) -> N
     # phantom transactions_matches_undo; the CLI interim is named in rationale.
     assert action.tool == "system_audit_undo"
     assert "matches undo" in action.rationale
+
+
+def test_set_rejected_match_recovery_points_at_history(db: Database) -> None:
+    # A rejected row isn't in the pending queue; recovery must point at history.
+    _seed(db, "m4b", "rejected")
+    with pytest.raises(UserError) as exc:
+        MatchingService(db).set_status("m4b", status="accepted")
+    err = exc.value
+    assert err.recovery_actions
+    assert err.recovery_actions[0].tool == "transactions_matches_history"
 
 
 def test_invalid_status_value_raises(db: Database) -> None:

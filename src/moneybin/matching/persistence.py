@@ -257,8 +257,13 @@ def get_rejected_pairs(
 def get_match_log(
     db: Database, *, limit: int = 50, match_type: str | None = None
 ) -> list[dict[str, Any]]:
-    """Return recent match decisions for display."""
-    where = "WHERE 1=1"
+    """Return recent match *decisions* for display.
+
+    Excludes ``pending`` rows: a pending proposal is not yet a decision, and its
+    ``decided_at`` holds the proposal time, not a decision time. The pending
+    queue is read via :func:`get_pending_matches`.
+    """
+    where = "WHERE match_status != 'pending'"
     params: list[Any] = []
     if match_type:
         if match_type not in VALID_MATCH_TYPES:

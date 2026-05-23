@@ -421,6 +421,7 @@ class TestMatchesTools:
         from mcp.client.stdio import StdioServerParameters, stdio_client
         from mcp.types import TextContent
 
+        # History excludes pending — accept the match first so it's a decision.
         seed_pending_match(matches_env, "e2e_hist_001")
         server_params = StdioServerParameters(
             command="uv",  # noqa: S607
@@ -430,6 +431,11 @@ class TestMatchesTools:
         async with stdio_client(server_params) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
+                set_result = await session.call_tool(
+                    "transactions_matches_set",
+                    {"match_id": "e2e_hist_001", "status": "accepted"},
+                )
+                assert not set_result.isError, f"set failed: {set_result.content}"
                 result = await session.call_tool(
                     "transactions_matches_history", {"limit": 5}
                 )
@@ -438,9 +444,11 @@ class TestMatchesTools:
                 assert isinstance(content, TextContent)
                 envelope = json.loads(content.text)
                 matches = envelope["data"]["matches"]
-                assert matches, "history should include the seeded decision"
+                ids = [m["match_id"] for m in matches]
+                assert "e2e_hist_001" in ids, "accepted decision must appear in history"
+                entry = next(m for m in matches if m["match_id"] == "e2e_hist_001")
                 # A time-series view must carry the decision timestamp.
-                assert matches[0]["decided_at"]
+                assert entry["decided_at"]
 
     async def test_transactions_matches_run_registered(
         self, matches_env: dict[str, str]

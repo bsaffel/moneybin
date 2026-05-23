@@ -279,11 +279,13 @@ class TestGetMatchDecision:
 class TestGetMatchLog:
     """Tests for get_match_log."""
 
-    def test_returns_recent_decisions(self, db: Database) -> None:
-        _create_test_match(db, stid_a="l1", stid_b="l2")
+    def test_returns_recent_decisions_excluding_pending(self, db: Database) -> None:
+        _create_test_match(db, stid_a="l1", stid_b="l2")  # accepted (default)
         _create_test_match(db, status="pending", stid_a="l3", stid_b="l4")
         log = get_match_log(db)
-        assert len(log) == 2
+        # Pending proposals are not decisions — the log excludes them.
+        assert len(log) == 1
+        assert all(row["match_status"] != "pending" for row in log)
 
     def test_respects_limit(self, db: Database) -> None:
         for i in range(5):

@@ -11,6 +11,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, cast
 
+import duckdb
+
 from moneybin import error_codes
 from moneybin.config import MatchingSettings, get_settings
 from moneybin.database import Database
@@ -58,12 +60,14 @@ def _non_pending_recovery(current_status: str) -> RecoveryAction:
             confidence="suggested",
             idempotent=False,
         )
+    # rejected / reversed: the row is no longer pending, so the pending list
+    # would be a dead end — point at history, which has no status filter.
     return RecoveryAction(
-        tool="transactions_matches_pending",
+        tool="transactions_matches_history",
         arguments={},
         rationale=(
-            f"This decision is {current_status}, not pending; list current "
-            "pending matches instead."
+            f"This decision is {current_status}, not pending; view it in the "
+            "match history (the pending queue excludes it)."
         ),
         confidence="suggested",
         idempotent=True,
@@ -98,8 +102,8 @@ class MatchingService:
                 params,
             ).fetchone()
             return int(row[0]) if row else 0
-        except Exception:  # noqa: BLE001 — table may not exist before first run
-            return 0
+        except duckdb.CatalogException:
+            return 0  # table not created until the first matcher run
 
     def run(self, *, auto_accept_transfers: bool = False) -> MatchResult:
         """Run same-record dedup (Tier 2b/3) and transfer detection (Tier 4).
