@@ -1,6 +1,9 @@
 # tests/moneybin/test_services/test_account_service.py
 """Tests for AccountService, soft-validation classifier, and canonical lists."""
 
+# Persistence assertions read back via AccountService._load_settings (the
+# service owns app.account_settings reads after the Invariant 10 migration).
+# pyright: reportPrivateUsage=false
 from __future__ import annotations
 
 from collections.abc import Generator
@@ -20,26 +23,12 @@ from moneybin.services.account_service import (
     PLAID_CANONICAL_SUBTYPES,
     AccountService,
     AccountSettings,
-    AccountSettingsRepository,
     is_canonical_holder_category,
     is_canonical_subtype,
     suggest_holder_category,
     suggest_subtype,
 )
 from tests.moneybin.db_helpers import create_core_tables, create_core_tables_raw
-
-
-def _make_settings(**overrides: object) -> AccountSettings:
-    """Construct an AccountSettings with sensible defaults; override fields as needed."""
-    defaults: dict[str, object] = {
-        "account_id": "acct_abc",
-        "display_name": "Checking",
-        "last_four": "1234",
-        "iso_currency_code": "USD",
-        "archived": False,
-        "include_in_net_worth": True,
-    }
-    return AccountSettings(**{**defaults, **overrides})  # type: ignore[arg-type]
 
 
 class TestSubtypeClassifier:
@@ -269,50 +258,24 @@ def test_db(
         database.close()
 
 
-class TestAccountSettingsRepository:
-    """Tests for AccountSettingsRepository SQL operations."""
+class TestAccountSettingsLoad:
+    """Tests for AccountService._load_settings (app.account_settings read path).
+
+    Audited write coverage (upsert/delete + audit-row pairing) lives in
+    tests/moneybin/test_repositories/test_account_settings_repo.py.
+    """
 
     @pytest.mark.unit
     def test_load_returns_none_when_absent(self, test_db: Database) -> None:
-        repo = AccountSettingsRepository(test_db)
-        assert repo.load("acct_missing") is None
+        assert AccountService(test_db)._load_settings("acct_missing") is None
 
     @pytest.mark.unit
-    def test_upsert_then_load(self, test_db: Database) -> None:
-        repo = AccountSettingsRepository(test_db)
-        s = _make_settings(account_id="acct_a", display_name="Checking")
-        repo.upsert(s)
-        loaded = repo.load("acct_a")
+    def test_settings_update_then_load(self, test_db: Database) -> None:
+        svc = AccountService(test_db)
+        svc.settings_update("acct_a", actor="cli", display_name="Checking")
+        loaded = svc._load_settings("acct_a")
         assert loaded is not None
         assert loaded.display_name == "Checking"
-
-    @pytest.mark.unit
-    def test_upsert_is_idempotent(self, test_db: Database) -> None:
-        repo = AccountSettingsRepository(test_db)
-        s = _make_settings(account_id="acct_a", display_name="Checking")
-        repo.upsert(s)
-        repo.upsert(s)  # second write
-        rows = test_db.execute(
-            "SELECT COUNT(*) FROM app.account_settings WHERE account_id = ?",
-            ["acct_a"],
-        ).fetchone()
-        assert rows[0] == 1  # type: ignore[index]
-
-    @pytest.mark.unit
-    def test_upsert_updates_changed_fields(self, test_db: Database) -> None:
-        repo = AccountSettingsRepository(test_db)
-        repo.upsert(_make_settings(account_id="acct_a", display_name="A"))
-        repo.upsert(_make_settings(account_id="acct_a", display_name="B"))
-        loaded = repo.load("acct_a")
-        assert loaded is not None
-        assert loaded.display_name == "B"
-
-    @pytest.mark.unit
-    def test_delete(self, test_db: Database) -> None:
-        repo = AccountSettingsRepository(test_db)
-        repo.upsert(_make_settings(account_id="acct_a", display_name="A"))
-        repo.delete("acct_a")
-        assert repo.load("acct_a") is None
 
 
 class TestEmptyResults:
@@ -360,7 +323,7 @@ class TestAccountServiceMutators:
         svc = AccountService(test_db)
         svc.set_include_in_net_worth("acct_a", True)
         svc.set_include_in_net_worth("acct_a", True)
-        loaded = AccountSettingsRepository(test_db).load("acct_a")
+        loaded = svc._load_settings("acct_a")
         assert loaded is not None
         assert loaded.include_in_net_worth is True
 
@@ -383,13 +346,16 @@ class TestAccountServiceMutators:
     def test_settings_update_partial(self, test_db: Database) -> None:
         svc = AccountService(test_db)
         updated, warnings = svc.settings_update(
-            "acct_a", account_subtype="checking", credit_limit=Decimal("5000.00")
+            "acct_a",
+            actor="cli",
+            account_subtype="checking",
+            credit_limit=Decimal("5000.00"),
         )
         assert updated.account_subtype == "checking"
         assert updated.credit_limit == Decimal("5000.00")
         assert warnings == []  # canonical subtype, no warning
         # Verify persisted, not just returned
-        loaded = AccountSettingsRepository(test_db).load("acct_a")
+        loaded = svc._load_settings("acct_a")
         assert loaded is not None
         assert loaded.account_subtype == "checking"
         assert loaded.credit_limit == Decimal("5000.00")
@@ -399,14 +365,16 @@ class TestAccountServiceMutators:
         self, test_db: Database
     ) -> None:
         svc = AccountService(test_db)
-        svc.settings_update("acct_a", credit_limit=Decimal("5000.00"))
-        updated, _ = svc.settings_update("acct_a", credit_limit=CLEAR)
+        svc.settings_update("acct_a", actor="cli", credit_limit=Decimal("5000.00"))
+        updated, _ = svc.settings_update("acct_a", actor="cli", credit_limit=CLEAR)
         assert updated.credit_limit is None
 
     @pytest.mark.unit
     def test_settings_update_soft_validation_warning(self, test_db: Database) -> None:
         svc = AccountService(test_db)
-        updated, warnings = svc.settings_update("acct_a", account_subtype="chequing")
+        updated, warnings = svc.settings_update(
+            "acct_a", actor="cli", account_subtype="chequing"
+        )
         assert updated.account_subtype == "chequing"  # write succeeded
         assert len(warnings) == 1
         assert warnings[0]["field"] == "account_subtype"
@@ -416,7 +384,9 @@ class TestAccountServiceMutators:
     @pytest.mark.unit
     def test_settings_update_holder_category_warning(self, test_db: Database) -> None:
         svc = AccountService(test_db)
-        updated, warnings = svc.settings_update("acct_a", holder_category="corporate")
+        updated, warnings = svc.settings_update(
+            "acct_a", actor="cli", holder_category="corporate"
+        )
         assert updated.holder_category == "corporate"
         assert len(warnings) == 1
         assert warnings[0]["field"] == "holder_category"
@@ -433,20 +403,24 @@ class TestSettingsUpdateExtended:
     @pytest.mark.unit
     def test_set_display_name(self, test_db: Database) -> None:
         svc = AccountService(test_db)
-        result, _ = svc.settings_update("acct_a", display_name="My Renamed Account")
+        result, _ = svc.settings_update(
+            "acct_a", actor="cli", display_name="My Renamed Account"
+        )
         assert result.display_name == "My Renamed Account"
 
     @pytest.mark.unit
     def test_set_include_in_net_worth_false(self, test_db: Database) -> None:
         svc = AccountService(test_db)
-        result, _ = svc.settings_update("acct_a", include_in_net_worth=False)
+        result, _ = svc.settings_update(
+            "acct_a", actor="cli", include_in_net_worth=False
+        )
         assert result.include_in_net_worth is False
 
     @pytest.mark.unit
     def test_set_archived_true_cascades_include_false(self, test_db: Database) -> None:
         svc = AccountService(test_db)
         # Start from the default include_in_net_worth=True.
-        result, _ = svc.settings_update("acct_a", archived=True)
+        result, _ = svc.settings_update("acct_a", actor="cli", archived=True)
         assert result.archived is True
         assert result.include_in_net_worth is False, (
             "Archiving must cascade include_in_net_worth to False"
@@ -458,17 +432,17 @@ class TestSettingsUpdateExtended:
     ) -> None:
         svc = AccountService(test_db)
         # Archive (cascades include=False).
-        svc.settings_update("acct_a", archived=True)
+        svc.settings_update("acct_a", actor="cli", archived=True)
         # Unarchive — include stays False, matching the prior unarchive() contract.
-        result, _ = svc.settings_update("acct_a", archived=False)
+        result, _ = svc.settings_update("acct_a", actor="cli", archived=False)
         assert result.archived is False
         assert result.include_in_net_worth is False
 
     @pytest.mark.unit
     def test_clear_display_name_via_clear_sentinel(self, test_db: Database) -> None:
         svc = AccountService(test_db)
-        svc.settings_update("acct_a", display_name="Temporary Name")
-        result, _ = svc.settings_update("acct_a", display_name=CLEAR)
+        svc.settings_update("acct_a", actor="cli", display_name="Temporary Name")
+        result, _ = svc.settings_update("acct_a", actor="cli", display_name=CLEAR)
         assert result.display_name is None
 
     @pytest.mark.unit
@@ -476,11 +450,38 @@ class TestSettingsUpdateExtended:
         svc = AccountService(test_db)
         result, _ = svc.settings_update(
             "acct_a",
+            actor="cli",
             display_name="Multi Field",
             include_in_net_worth=False,
         )
         assert result.display_name == "Multi Field"
         assert result.include_in_net_worth is False
+
+    @pytest.mark.unit
+    def test_empty_diff_is_noop_no_audit(self, test_db: Database) -> None:
+        """No field changes → no write and no phantom account_settings.set audit row."""
+        svc = AccountService(test_db)
+        _settings, warnings = svc.settings_update("acct_a", actor="cli")
+        assert warnings == []
+        # No write happened: no settings row created, no audit row emitted.
+        assert svc._load_settings("acct_a") is None
+        audit_count = test_db.execute(
+            "SELECT COUNT(*) FROM app.audit_log "
+            "WHERE target_id = ? AND action = 'account_settings.set'",
+            ["acct_a"],
+        ).fetchone()
+        assert audit_count[0] == 0  # type: ignore[index]
+
+    @pytest.mark.unit
+    def test_empty_diff_still_rejects_unknown_account(self, test_db: Database) -> None:
+        """Account existence is checked before the empty-diff early-return.
+
+        A no-op (empty diff) against a nonexistent account must still raise, not
+        silently return defaults.
+        """
+        svc = AccountService(test_db)
+        with pytest.raises(UserError, match="Account not found"):
+            svc.settings_update("ACCTO1_typo", actor="cli")
 
 
 # ---------------------------------------------------------------------------
@@ -783,7 +784,7 @@ class TestMutatorAccountValidation:
     ) -> None:
         svc = AccountService(extended_db)
         with pytest.raises(UserError, match="Account not found"):
-            svc.settings_update("ACCTO1_typo", official_name="New Name")
+            svc.settings_update("ACCTO1_typo", actor="cli", official_name="New Name")
 
 
 class TestAccountResolution:

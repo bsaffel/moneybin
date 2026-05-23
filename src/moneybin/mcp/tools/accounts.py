@@ -197,6 +197,7 @@ def accounts_set(
     with get_database() as db:
         settings, warnings = AccountService(db).settings_update(
             account_id,
+            actor="mcp",
             **kwargs,  # type: ignore[arg-type]  # CLEAR sentinel + Optional unioned for partial update
         )
     d = settings.to_dict()
@@ -313,6 +314,7 @@ def accounts_balance_assert(
             assertion_date=parsed_date,
             balance=parsed_balance,
             notes=notes,
+            actor="mcp",
         )
     return build_envelope(data=result)
 
@@ -329,7 +331,7 @@ def accounts_balance_assertion_delete(
     """
     parsed_date = _date.fromisoformat(assertion_date)
     with get_database() as db:
-        BalanceService(db).delete_assertion(account_id, parsed_date)
+        BalanceService(db).delete_assertion(account_id, parsed_date, actor="mcp")
     return build_envelope(
         data=BalanceAssertionDeletePayload(
             account_id=account_id, assertion_date=parsed_date, deleted=True

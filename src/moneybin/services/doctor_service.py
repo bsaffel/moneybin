@@ -12,7 +12,11 @@ from moneybin.config import get_settings
 from moneybin.database import Database, sqlmesh_context
 from moneybin.errors import RecoveryAction
 from moneybin.tables import (
+    ACCOUNT_SETTINGS,
     AUDIT_LOG,
+    BALANCE_ASSERTIONS,
+    BUDGETS,
+    CATEGORIES,
     CATEGORIZATION_RULES,
     CATEGORY_OVERRIDES,
     DIM_ACCOUNTS,
@@ -30,6 +34,14 @@ from moneybin.tables import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Composite-PK projection for app.balance_assertions audit coverage. Must match
+# BalanceAssertionsRepo's `target_id` ("{account_id}|{assertion_date ISO}"):
+# DuckDB casts a DATE to the same YYYY-MM-DD string date.isoformat() produces.
+_BALANCE_ASSERTIONS_PK_EXPR = (
+    f"{exp.to_identifier('account_id', quoted=True).sql('duckdb')} || '|' || "
+    f"CAST({exp.to_identifier('assertion_date', quoted=True).sql('duckdb')} AS VARCHAR)"
+)
 
 
 @dataclass(frozen=True)
@@ -109,15 +121,18 @@ class DoctorService:
         Covers every table wrapped in a repo so far (``user_categories``,
         ``category_overrides``, ``gsheet_connections``, ``user_merchants``,
         ``categorization_rules``, ``proposed_rules``, ``transaction_categories``,
-        plus the edge writers ``tabular_formats``, ``match_decisions``, and
-        ``imports``); later repository PRs append one coverage call per
-        newly-wrapped table plus that table's FK/orphan specifics.
+        ``account_settings``, ``balance_assertions``, ``budgets``, plus the edge
+        writers ``tabular_formats``, ``match_decisions``, and ``imports``); later
+        repository PRs append one coverage call per newly-wrapped table plus that
+        table's FK/orphan specifics.
 
         Tables without an ``updated_at`` column pass their natural watermark:
         ``proposed_rules`` → ``proposed_at``, ``transaction_categories`` →
-        ``categorized_at``, ``match_decisions`` → ``decided_at``. Those
-        watermarks catch bypass INSERTs; bypass UPDATEs are the lint rule's job —
-        the heuristic limitation the helper documents.
+        ``categorized_at``, ``match_decisions`` → ``decided_at``.
+        ``balance_assertions`` has a composite PK, so it passes ``pk_expr`` to
+        project the same composite ``target_id`` its repo emits. Those watermarks
+        catch bypass INSERTs; bypass UPDATEs are the lint rule's job — the
+        heuristic limitation the helper documents.
         """
         return [
             self._run_app_audit_coverage(USER_CATEGORIES, "category_id", full=full),
@@ -139,6 +154,14 @@ class DoctorService:
                 updated_col="categorized_at",
                 full=full,
             ),
+            self._run_app_audit_coverage(ACCOUNT_SETTINGS, "account_id", full=full),
+            self._run_app_audit_coverage(
+                BALANCE_ASSERTIONS,
+                "account_id",
+                pk_expr=_BALANCE_ASSERTIONS_PK_EXPR,
+                full=full,
+            ),
+            self._run_app_audit_coverage(BUDGETS, "budget_id", full=full),
             self._run_app_audit_coverage(TABULAR_FORMATS, "name", full=full),
             self._run_app_audit_coverage(
                 MATCH_DECISIONS, "match_id", updated_col="decided_at", full=full
@@ -148,6 +171,9 @@ class DoctorService:
             self._run_user_merchants_orphans(),
             self._run_proposed_rules_rule_fk(),
             self._run_transaction_categories_fk(),
+            self._run_account_settings_account_fk(),
+            self._run_balance_assertions_account_fk(),
+            self._run_budgets_category_fk(),
             self._run_match_decisions_account_fk(),
         ]
 
@@ -157,6 +183,7 @@ class DoctorService:
         pk_col: str,
         *,
         updated_col: str = "updated_at",
+        pk_expr: str | None = None,
         full: bool = False,
     ) -> InvariantResult:
         """Flag rows mutated without a paired ``app.audit_log`` row (Req 9).
@@ -168,6 +195,14 @@ class DoctorService:
         protected tables, but tables without one pass their natural mutation
         timestamp (e.g. ``proposed_rules`` → ``proposed_at``,
         ``transaction_categories`` → ``categorized_at``).
+
+        ``pk_expr`` overrides how the row's ``target_id`` is projected: most
+        tables key on a single ``pk_col``, but a composite-PK table (e.g.
+        ``balance_assertions``) passes a code-supplied SQL expression that
+        reconstructs the same composite ``target_id`` its repo emits. The check
+        name always derives from ``table_ref.name``; ``pk_col`` is only the
+        single-column projection fallback, used when ``pk_expr`` is ``None`` (and
+        otherwise ignored).
 
         Limitations (by design — this is a sampled runtime *heuristic*, not a
         proof): it scans rows that currently exist and keys on the watermark, so
@@ -182,7 +217,13 @@ class DoctorService:
         """
         name = f"app_audit_coverage_{table_ref.name}"
         settings = get_settings().doctor
-        safe_pk = exp.to_identifier(pk_col, quoted=True).sql("duckdb")
+        # `pk_expr` (a code-supplied composite-key expression) wins over the
+        # single-column projection when present; both are code constants.
+        safe_pk = (
+            pk_expr
+            if pk_expr is not None
+            else exp.to_identifier(pk_col, quoted=True).sql("duckdb")
+        )
         safe_updated = exp.to_identifier(updated_col, quoted=True).sql("duckdb")
         if full:
             sampled_sql = (
@@ -458,6 +499,127 @@ class DoctorService:
                 detail=(
                     f"{len(affected)} match_decisions row(s) reference an "
                     "account_id absent from core.dim_accounts"
+                ),
+                affected_ids=affected,
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _run_account_settings_account_fk(self) -> InvariantResult:
+        """Flag ``account_settings.account_id`` with no ``core.dim_accounts`` row.
+
+        ``account_id`` is the NOT-NULL PK and a 1:1 FK to the canonical account;
+        a settings row for an account that no longer exists (e.g. a re-import
+        dropped it) is an orphan. Skipped before the first transform builds
+        ``core.dim_accounts``.
+        """
+        name = "app_account_settings_account_fk"
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT s.account_id
+                FROM {ACCOUNT_SETTINGS.full_name} s
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM {DIM_ACCOUNTS.full_name} a
+                    WHERE a.account_id = s.account_id
+                )
+                ORDER BY s.account_id
+                """  # noqa: S608  # TableRef constants, no user input
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — core.dim_accounts may not exist yet
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"FK check unavailable: {e}",
+                affected_ids=[],
+            )
+        if rows:
+            affected = [str(r[0]) for r in rows]
+            return InvariantResult(
+                name=name,
+                status="fail",
+                detail=(
+                    f"{len(affected)} account_settings row(s) reference an "
+                    "account_id absent from core.dim_accounts"
+                ),
+                affected_ids=affected,
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _run_balance_assertions_account_fk(self) -> InvariantResult:
+        """Flag ``balance_assertions.account_id`` with no ``core.dim_accounts`` row.
+
+        Reports distinct violating ``account_id`` values (one account may have
+        assertions across many dates). Skipped before ``core.dim_accounts`` exists.
+        """
+        name = "app_balance_assertions_account_fk"
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT DISTINCT b.account_id
+                FROM {BALANCE_ASSERTIONS.full_name} b
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM {DIM_ACCOUNTS.full_name} a
+                    WHERE a.account_id = b.account_id
+                )
+                ORDER BY b.account_id
+                """  # noqa: S608  # TableRef constants, no user input
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — core.dim_accounts may not exist yet
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"FK check unavailable: {e}",
+                affected_ids=[],
+            )
+        if rows:
+            affected = [str(r[0]) for r in rows]
+            return InvariantResult(
+                name=name,
+                status="fail",
+                detail=(
+                    f"{len(affected)} account(s) with balance_assertions reference an "
+                    "account_id absent from core.dim_accounts"
+                ),
+                affected_ids=affected,
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _run_budgets_category_fk(self) -> InvariantResult:
+        """Flag ``budgets.category_id`` that doesn't resolve in ``core.dim_categories``.
+
+        ``category_id`` is nullable (NULL for orphaned legacy rows from V014's
+        dual-write backfill); NULL is not a violation, so only set-but-unresolved
+        ids are flagged. Skipped before ``core.dim_categories`` exists.
+        """
+        name = "app_budgets_category_fk"
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT b.budget_id
+                FROM {BUDGETS.full_name} b
+                WHERE b.category_id IS NOT NULL
+                  AND NOT EXISTS (
+                    SELECT 1 FROM {CATEGORIES.full_name} c
+                    WHERE c.category_id = b.category_id
+                  )
+                ORDER BY b.budget_id
+                """  # noqa: S608  # TableRef constants, no user input
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — core.dim_categories may not exist yet
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"FK check unavailable: {e}",
+                affected_ids=[],
+            )
+        if rows:
+            affected = [str(r[0]) for r in rows]
+            return InvariantResult(
+                name=name,
+                status="fail",
+                detail=(
+                    f"{len(affected)} budgets row(s) reference a "
+                    "category_id absent from core.dim_categories"
                 ),
                 affected_ids=affected,
             )

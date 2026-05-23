@@ -253,7 +253,12 @@ class TestAccountsBalanceAssertionDelete:
                 ],
             )
         assert result.exit_code == 0, result.stderr
-        mock_service_class.return_value.delete_assertion.assert_called_once()
+        delete_mock = mock_service_class.return_value.delete_assertion
+        delete_mock.assert_called_once()
+        # Inspect args so a dropped account_id or actor kwarg can't slip through.
+        call = delete_mock.call_args
+        assert call.args[0] == "acct_a"
+        assert call.kwargs["actor"] == "cli"
 
 
 class TestAccountsBalanceReconcile:
