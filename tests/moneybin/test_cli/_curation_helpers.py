@@ -74,6 +74,10 @@ def patch_db(monkeypatch: pytest.MonkeyPatch, database: Database) -> None:
         "moneybin.cli.commands.transactions.review",
         "moneybin.cli.commands.transactions.categorize.auto",
         "moneybin.cli.commands.system",
+        "moneybin.cli.commands.privacy.grant",
+        "moneybin.cli.commands.privacy.revoke",
+        "moneybin.cli.commands.privacy.revoke_all",
+        "moneybin.cli.commands.privacy.status",
     ]
 
     @contextmanager

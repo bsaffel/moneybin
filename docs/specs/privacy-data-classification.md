@@ -283,18 +283,48 @@ The runtime mechanism that turns the registry into enforcement:
 - **Profile dir hardening**: profile directories are now created with
   `0o700` (was `0o755`), matching the privacy log file's `0o600` mode.
 
+## PR 3 — Consent ledger
+
+Shipped alongside PR 2 middleware as a separate PR. Adds:
+
+- **`app.ai_consent_grants` table** — columns `grant_id, feature_category,
+  backend, consent_mode, granted_at, revoked_at, grant_prompt`;
+  `consent_mode ∈ {persistent, one-time}`. Created by schema DDL on fresh
+  installs; V022 migration adds the table to existing databases. Revoked
+  grants are retained with `revoked_at` set, never hard-deleted.
+- **`ConsentRepo`** — all mutations to `app.ai_consent_grants` route through
+  this repository, which pairs a `app.audit_log` row in the same DuckDB
+  transaction (Invariant 10). Raw `INSERT/UPDATE/DELETE` against
+  `ai_consent_grants` outside `ConsentRepo` / `AuditService` is a lint error.
+- **`ConsentService`** — `grant_consent`, `revoke_consent`, `revoke_all`,
+  `status`, `list_grants`; emits `privacy.log` consent events (metadata
+  only — never the grant prompt or financial data).
+- **Classification audit entry for `grant_prompt`**: classified
+  `DataClass.DESCRIPTION` (MEDIUM). Rationale: the column contains
+  fixed system prose — the consent prompt text the user saw. The taxonomy
+  has no non-sensitive-text class; DESCRIPTION is the conservative choice.
+  The field is intentionally **omitted from `privacy_status` and `privacy_log`
+  read payloads** so those tools remain LOW-tier — `grant_prompt` lives only
+  in the database for audit traceability, not on the wire.
+
+### What is unchanged by PR 3
+
+`redact_typed`, the `ConsentSet` enrichment path, the `@mcp_tool` decorator,
+and all per-class HIGH/MEDIUM transforms are **unchanged**. The enforcement
+gate (degraded/aggregate responses when consent is absent) is **deferred** —
+PR 3 records and reports consent but does not yet gate MCP data. The
+verified-local detection and CRITICAL-unmask path remain deferred.
+
 ## Out of Scope
 - `Annotated[..., DataClass.X]` propagation on service return types (PR 2).
 - Redaction engine (`redact_typed`, `redact_polars_frame`) (PR 2).
 - `privacy.log` JSONL writer (PR 2).
-- `app.ai_consent_grants` schema + `moneybin privacy grant/revoke/status`
-  CLI + consent MCP tools (PR 3).
 - sqlglot lineage on `sql_query` (PR 4).
 - Presidio integration for unstructured-text scrubbing (deferred).
 - MCP elicitation fallback when consent is missing (deferred).
 - Per-tool consent granularity (schema supports, UX deferred).
-- Revisions to `privacy-and-ai-trust.md` (blocked on parallel MCP rename
-  work; this PR does not touch the MCP layer).
+- `ConsentSet` enrichment on the redaction path (deferred — enforcement gate).
+- Per-class HIGH/MEDIUM transforms beyond always-on CRITICAL masking (deferred).
 
 ## Performance validation (PR 2)
 

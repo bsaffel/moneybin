@@ -262,8 +262,26 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- doctor                     -- Run pipeline integrity checks (--full: whole-table app.* audit-coverage scan)
 |   +-- audit                      -- Privacy / access audit utilities
 |
-+-- privacy                        -- Privacy utilities (redaction testing)
++-- privacy                        -- Privacy utilities (consent ledger + redaction testing)
 |   +-- redact                     -- Test the project redaction pipeline on a value
+|   +-- grant <category>           -- Grant consent for an AI feature category
+|   |     [--backend NAME]           Override the configured backend for this grant
+|   |     [--mode persistent|one-time]  Consent duration (default: persistent)
+|   |     [--output json]
+|   |     [--yes]                    Non-interactive mode
+|   +-- revoke <category>          -- Revoke a previously granted consent
+|   |     [--backend NAME]           Scope revocation to a specific backend
+|   |     [--output json]
+|   |     [--yes]
+|   +-- revoke-all                 -- Revoke all active consent grants (nuclear option)
+|   |     [--output json]
+|   |     [--yes]
+|   +-- status                     -- Show active consent grants, configured backend, and consent_policy
+|   |     [--output json]
+|   +-- log                        -- Query recent privacy-log events (consent grants/revokes + tool calls)
+|         [--last N]                 Number of recent events to show (default: 50)
+|         [--actor NAME]             Filter to a specific originating command or tool
+|         [--output json]
 |
 +-- synthetic                      -- Generate and manage synthetic financial data for testing
 |   +-- generate

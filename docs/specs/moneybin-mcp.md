@@ -1032,11 +1032,9 @@ design. Tax data ingestion will be re-designed from scratch in a future brainsto
 
 ## 11. `privacy.*` — Privacy & consent
 
-**Service class:** `PrivacyService`
+**Service class:** `ConsentService`
 
-**Status:** all four `privacy_*` tools below are blocked on the consent management spec — NONE are registered today. The catalog entries describe the target design; per the surface-discipline rule in `.claude/rules/mcp-server.md`, individual `privacy.*` tools surface only when their backing spec reaches `in-progress` or `implemented` in `docs/specs/INDEX.md`. See §17c dependency tracker.
-
-**Dependency:** All `privacy.*` tools depend on the consent management spec, audit log spec, and provider profiles spec.
+**Status:** The consent ledger shipped in PR 3. All four `privacy_*` tools below are registered today. The **enforcement gate** (degraded/aggregate responses without consent) is deferred — granting/revoking records and reports consent but does not yet gate data; CRITICAL fields remain always-masked (PR 2).
 
 ### `privacy_status`
 
@@ -1044,39 +1042,39 @@ Current consent state, configured AI backend, and privacy mode.
 
 - **Sensitivity:** `low` — metadata about privacy configuration, not financial data.
 - **Unique parameters:** None.
-- **Behavior:** Returns `{consent_grants: [{feature, granted_at, backend}], configured_backend: {name, type, is_local}, consent_mode, unmask_critical}`. This is the tool version of the `moneybin://privacy` resource — useful when the AI needs to check consent before attempting a sensitive operation.
-- **Service:** `PrivacyService.status() -> PrivacyStatus`
+- **Behavior:** Returns active grants, configured backend, and `consent_policy` (the AIConfig standard/strict policy; distinct from each grant's per-grant `consent_mode`). Useful when the AI needs to check consent state before attempting a sensitive operation.
+- **Service:** `ConsentService.status()`
 - **CLI:** `moneybin privacy status`
 
-### `privacy_grant`
+### `privacy_consent_grant`
 
 Grant consent for a privacy feature category.
 
 - **Sensitivity:** `low` — modifying consent state, not accessing financial data.
-- **Unique parameters:** `feature: str` (required — e.g., `mcp-data-sharing`), `backend: str?` (override configured backend for this grant).
-- **Behavior:** Creates a persistent consent grant. Returns the grant record with timestamp. Idempotent — re-granting an active grant is a no-op that returns the existing grant.
-- **Service:** `PrivacyService.grant() -> ConsentGrant`
-- **CLI:** `moneybin privacy grant FEATURE`
+- **Unique parameters:** `category: str` (required — e.g., `mcp-data-sharing`), `backend: str?` (override configured backend for this grant), `mode: "persistent" | "one-time"` (default `"persistent"`).
+- **Behavior:** Writes to `app.ai_consent_grants` with a paired `app.audit_log` row (Invariant 10). Idempotent per `(category, backend)` — re-granting an active grant returns the existing grant. `read_only=False`. Revert via `privacy_consent_revoke`.
+- **Service:** `ConsentService.grant_consent()`
+- **CLI:** `moneybin privacy grant`
 
-### `privacy_revoke`
+### `privacy_consent_revoke`
 
 Revoke a previously granted consent.
 
 - **Sensitivity:** `low`
-- **Unique parameters:** `feature: str` (required).
-- **Behavior:** Revokes the active grant. Future tool calls at the relevant sensitivity tier will return degraded responses. Returns confirmation with revocation timestamp.
-- **Service:** `PrivacyService.revoke() -> RevokeResult`
-- **CLI:** `moneybin privacy revoke FEATURE`
+- **Unique parameters:** `category: str` (required), `backend: str?`.
+- **Behavior:** Sets `revoked_at` on the active grant row; the row is retained for audit. Returns confirmation with revocation timestamp. `read_only=False`. Revert via `privacy_consent_grant`.
+- **Service:** `ConsentService.revoke_consent()`
+- **CLI:** `moneybin privacy revoke`
 
-### `privacy_audit`
+### `privacy_log`
 
-Query the AI audit log.
+Query recent privacy-log events.
 
-- **Sensitivity:** `low` — the audit log is metadata (which tools were called, when, at what sensitivity), not financial data.
-- **Unique parameters:** `tool_name: str?` (filter to a specific tool).
-- **Behavior:** Returns array of `{timestamp, tool_name, sensitivity, consented, degraded, backend, backend_local}`.
-- **Service:** `PrivacyService.audit() -> list[AuditEntry]`
-- **CLI:** `moneybin privacy audit [--start-date DATE] [--tool-name NAME]`
+- **Sensitivity:** `low` — the privacy log records consent grants/revokes and MCP/CLI tool calls (metadata only: sensitivity tier, row count, actor). No financial data.
+- **Unique parameters:** `last: int?` (number of recent events to return), `actor: str?` (filter by originating command or tool name).
+- **Behavior:** Reads `<profile>/privacy.log.jsonl`; returns recent events in reverse-chronological order. `read_only=True`.
+- **Service:** privacy log reader (`read_privacy_events`) over `privacy.log.jsonl`.
+- **CLI:** `moneybin privacy log`
 
 ---
 
@@ -1372,8 +1370,8 @@ Tools that depend on unbuilt subsystems are documented in the catalog with depen
 
 | Dependency | Status | Blocked tools |
 |---|---|---|
-| **Consent management spec** | Not written | `privacy_grant`, `privacy_revoke`, `privacy_status`; all degraded response behavior across the surface |
-| **Audit log spec** | Not written | `privacy_audit`; audit logging in middleware |
+| **Consent management spec** | Ledger shipped (PR 3); enforcement gate deferred | degraded/aggregate response behavior across the surface (enforcement gate) |
+| **Audit log spec** | Not written | audit logging in middleware |
 | **Redaction engine spec** | Not written | `accounts_get` field masking; `high` sensitivity behavior |
 | **Provider profiles spec** | Not written | Verified-local bypass; `privacy_status` backend info |
 | **Transaction matching (Pillars A+C)** | Draft (umbrella) | All `transactions_matches.*` tools |
