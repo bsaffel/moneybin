@@ -3,7 +3,7 @@ MODEL (
   kind VIEW
 );
 
-WITH active_matches AS (
+WITH RECURSIVE active_matches AS (
   SELECT
     match_id,
     source_transaction_id_a,
@@ -17,78 +17,67 @@ WITH active_matches AS (
   FROM app.match_decisions
   WHERE
     match_status = 'accepted' AND reversed_at IS NULL AND match_type = 'dedup'
-), node_min_match AS (
+), node_key AS (
+  /* Emit both directions of each edge so the graph is undirected. */
   SELECT
-    st,
-    stid,
+    source_type_a AS st,
+    source_transaction_id_a AS stid,
+    account_id AS aid,
+    source_type_b AS nst,
+    source_transaction_id_b AS nstid
+  FROM active_matches
+  UNION ALL
+  SELECT
+    source_type_b,
+    source_transaction_id_b,
+    account_id,
+    source_type_a,
+    source_transaction_id_a
+  FROM active_matches
+), edges AS (
+  /* Pack each node as 'source_type|source_transaction_id'.
+     Delimiter '|' is safe: source_type is a closed vocabulary (csv, ofx, …)
+     and source_transaction_id values are hex content hashes or
+     alphanumeric source IDs — neither contains '|'. */
+  SELECT
     aid,
-    MIN(match_id) AS initial_component
-  FROM (
-    SELECT
-      source_type_a AS st,
-      source_transaction_id_a AS stid,
-      account_id AS aid,
-      match_id
-    FROM active_matches
-    UNION ALL
-    SELECT
-      source_type_b AS st,
-      source_transaction_id_b AS stid,
-      account_id AS aid,
-      match_id
-    FROM active_matches
-  ) AS sub
-  GROUP BY
-    st,
-    stid,
-    aid
-), match_component /* NOTE: This single-pass connected-component algorithm is correct only when
-   each transaction participates in at most one match (1:1 bipartite assignment).
-   The greedy matcher enforces this invariant. If multi-hop matches are added
-   (e.g., 3+ way merges), replace with a recursive CTE label-propagation. */ AS (
+    st || '|' || stid AS src,
+    nst || '|' || nstid AS dst
+  FROM node_key
+), nodes AS (
+  SELECT DISTINCT
+    aid,
+    src AS node
+  FROM edges
+), reach AS (
+  /* Transitive closure via recursive label propagation.
+     UNION (not UNION ALL) terminates at the fixpoint — no new
+     (aid, node, member) triples to add. */
   SELECT
-    am.match_id,
-    LEAST(n1.initial_component, n2.initial_component) AS component
-  FROM active_matches AS am
-  JOIN node_min_match AS n1
-    ON am.source_type_a = n1.st
-    AND am.source_transaction_id_a = n1.stid
-    AND am.account_id = n1.aid
-  JOIN node_min_match AS n2
-    ON am.source_type_b = n2.st
-    AND am.source_transaction_id_b = n2.stid
-    AND am.account_id = n2.aid
+    aid,
+    node,
+    node AS member
+  FROM nodes
+  UNION
+  SELECT
+    r.aid,
+    r.node,
+    e.dst
+  FROM reach AS r
+  JOIN edges AS e
+    ON r.aid = e.aid AND r.member = e.src
 ), match_groups AS (
+  /* Each node's group_id is the lexicographic MIN of all reachable members.
+     All nodes in the same connected component converge to the same MIN. */
   SELECT
-    st AS source_type,
-    stid AS source_transaction_id,
     aid AS account_id,
-    MIN(mc.component) AS group_id
-  FROM (
-    SELECT
-      source_type_a AS st,
-      source_transaction_id_a AS stid,
-      account_id AS aid,
-      mc.component
-    FROM active_matches AS am
-    JOIN match_component AS mc
-      ON am.match_id = mc.match_id
-    UNION ALL
-    SELECT
-      source_type_b AS st,
-      source_transaction_id_b AS stid,
-      account_id AS aid,
-      mc.component
-    FROM active_matches AS am
-    JOIN match_component AS mc
-      ON am.match_id = mc.match_id
-  ) AS sub
-  JOIN match_component AS mc
-    ON sub.component = mc.component
+    SPLIT_PART(node, '|', 1) AS source_type,
+    SPLIT_PART(node, '|', 2) AS source_transaction_id,
+    MIN(member) AS group_id
+  FROM reach
   GROUP BY
-    st,
-    stid,
-    aid
+    aid,
+    node
 ), group_gold_keys AS (
   SELECT
     mg.group_id,
