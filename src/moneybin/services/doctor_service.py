@@ -22,8 +22,8 @@ from moneybin.tables import (
     DIM_ACCOUNTS,
     FCT_TRANSACTIONS,
     GSHEET_CONNECTIONS,
+    INT_TRANSACTIONS_MATCHED,
     INT_TRANSACTIONS_UNIONED,
-    MATCH_DECISIONS,
     PROPOSED_RULES,
     TRANSACTION_CATEGORIES,
     USER_CATEGORIES,
@@ -637,18 +637,16 @@ class DoctorService:
 
             raw_total - core_count == dedup_absorbed
 
-        where ``dedup_absorbed`` is the count of accepted, non-reversed dedup
-        decisions. Each such decision collapses exactly one secondary row into
-        its group — so the decision count equals the expected number of
-        absorbed rows. A mismatch means rows collapsed without a decision (a
-        leak) or a decision failed to collapse its rows (an un-applied match).
+        where ``dedup_absorbed`` is ``Σ(group_size - 1)`` over every connected
+        component in ``prep.int_transactions__matched`` — equivalently,
+        ``COUNT(*) - COUNT(DISTINCT match_group_id)`` over rows where
+        ``match_group_id IS NOT NULL``.
 
-        The ``dedup_absorbed == COUNT(decisions)`` identity holds only while
-        matching stays 1:1 (each transaction in at most one match — the
-        invariant the matcher enforces and ``int_transactions__matched.sql``
-        relies on). If multi-hop (3+ way) merges are ever introduced, this
-        formula must change to ``SUM(group_size - 1)`` over the connected
-        components, in lockstep with that model.
+        This formula is exact for any group topology including N-way merges and
+        cyclic accepted-edge sets (e.g. three accepted edges over a 3-node
+        group still absorbs only 2 rows). A mismatch means rows collapsed
+        without a recorded match (a leak) or a match failed to collapse its
+        rows (an un-applied decision).
         """
         try:
             raw_total = self._scalar_int(
@@ -659,11 +657,10 @@ class DoctorService:
             )
             dedup_absorbed = self._scalar_int(
                 f"""
-                SELECT COUNT(*) FROM {MATCH_DECISIONS.full_name}
-                WHERE match_status = 'accepted'
-                  AND reversed_at IS NULL
-                  AND match_type = 'dedup'
-                """  # noqa: S608 — TableRef constant
+                SELECT COUNT(*) - COUNT(DISTINCT match_group_id)
+                FROM {INT_TRANSACTIONS_MATCHED.full_name}
+                WHERE match_group_id IS NOT NULL
+                """  # noqa: S608 — TableRef constant; = SUM(group_size - 1) over components
             )
         except Exception as e:  # noqa: BLE001 — degrade gracefully; surface cause at DEBUG
             # Expected case: prep/core views absent before the first transform.
