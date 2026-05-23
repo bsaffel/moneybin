@@ -121,3 +121,111 @@ async def test_system_doctor_sensitivity_is_low(mcp_db: object) -> None:
     result = await system_doctor()
     # SystemDoctorPayload has DESCRIPTION fields → Tier.MEDIUM derived sensitivity
     assert result.to_dict()["summary"]["sensitivity"] == "medium"
+
+
+# ── system_audit_undo / _history / _get ─────────────────────────────────────
+
+
+def _make_tag_op(tag: str = "trip") -> str:
+    """Create one audited operation adding ``tag`` to txn_1; return its op id."""
+    from moneybin.database import get_database
+    from moneybin.repositories.transaction_tags_repo import TransactionTagsRepo
+    from moneybin.services.mutation_context import operation
+
+    with get_database() as db, operation() as op:
+        TransactionTagsRepo(db).add(transaction_id="txn_1", tag=tag, actor="cli")
+    return op
+
+
+@pytest.mark.unit
+async def test_audit_undo_reverses_operation(mcp_db: object) -> None:
+    from moneybin.database import get_database
+    from moneybin.mcp.tools.system import system_audit_undo
+
+    op = _make_tag_op()
+    result = await system_audit_undo(op)
+    parsed = result.to_dict()
+    assert parsed["status"] == "ok"
+    assert parsed["data"]["undone_operation_id"] == op
+    assert parsed["data"]["reversed_row_count"] == 1
+    assert parsed["data"]["tables"] == ["transaction_tags"]
+    with get_database(read_only=True) as db:
+        remaining = db.execute("SELECT COUNT(*) FROM app.transaction_tags").fetchone()
+    assert remaining == (0,)
+
+
+@pytest.mark.unit
+async def test_audit_undo_not_found_returns_error_envelope(mcp_db: object) -> None:
+    from moneybin.mcp.tools.system import system_audit_undo
+
+    parsed = (await system_audit_undo("op_missing")).to_dict()
+    assert parsed["status"] == "error"
+    assert parsed["error"]["code"] == "undo_operation_not_found"
+    assert parsed["recovery_actions"]  # history hint present
+
+
+@pytest.mark.unit
+async def test_audit_undo_cascade_blocked_lists_blocker(mcp_db: object) -> None:
+    from moneybin.mcp.tools.system import system_audit_undo
+
+    op1 = _make_tag_op("a")
+    op2 = _make_tag_op("b")  # same target, later → blocks op1
+    parsed = (await system_audit_undo(op1)).to_dict()
+    assert parsed["status"] == "error"
+    assert parsed["error"]["code"] == "undo_cascade_blocked"
+    blockers = [a["arguments"]["operation_id"] for a in parsed["recovery_actions"]]
+    assert blockers == [op2]
+
+
+@pytest.mark.unit
+async def test_audit_undo_sensitivity_low(mcp_db: object) -> None:
+    from moneybin.mcp.tools.system import system_audit_undo
+
+    op = _make_tag_op()
+    parsed = (await system_audit_undo(op)).to_dict()
+    assert parsed["summary"]["sensitivity"] == "low"
+
+
+@pytest.mark.unit
+async def test_audit_history_lists_operations_newest_first(mcp_db: object) -> None:
+    from moneybin.mcp.tools.system import system_audit_history
+
+    op1 = _make_tag_op("a")
+    op2 = _make_tag_op("b")
+    parsed = (await system_audit_history()).to_dict()
+    ids = [o["operation_id"] for o in parsed["data"]["operations"]]
+    assert ids[:2] == [op2, op1]
+    assert parsed["data"]["operations"][0]["can_undo"] is True
+
+
+@pytest.mark.unit
+async def test_audit_get_returns_before_after(mcp_db: object) -> None:
+    from moneybin.mcp.tools.system import system_audit_get
+
+    op = _make_tag_op()
+    parsed = (await system_audit_get(op)).to_dict()
+    assert parsed["data"]["operation_id"] == op
+    assert len(parsed["data"]["events"]) == 1
+    event = parsed["data"]["events"][0]
+    assert event["action"] == "tag.add"
+    assert event["after_value"]["tag"] == "trip"
+    assert parsed["data"]["can_undo"] is True
+    # before/after carry TXN_AMOUNT → high sensitivity (matches system_audit)
+    assert parsed["summary"]["sensitivity"] == "high"
+
+
+@pytest.mark.unit
+async def test_audit_get_not_found_returns_error_envelope(mcp_db: object) -> None:
+    from moneybin.mcp.tools.system import system_audit_get
+
+    parsed = (await system_audit_get("op_missing")).to_dict()
+    assert parsed["status"] == "error"
+    assert parsed["error"]["code"] == "undo_operation_not_found"
+
+
+@pytest.mark.unit
+async def test_register_undo_tools() -> None:
+    srv = FastMCP("test")
+    register_system_tools(srv)
+    names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    assert {"system_audit_undo", "system_audit_history", "system_audit_get"} <= names

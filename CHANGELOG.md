@@ -11,6 +11,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 M2 closing out and M3 underway. M2A curator state shipped (transaction notes, tags, splits, manual entry, audit log). M2B architecture reference shipped (`architecture-shared-primitives.md`; writer-coordination contract via short-lived per-call connections). M2C brand surface advancing: `moneybin system doctor` integrity command, `reports.*` recipe library (eight curated views), and the `transform_*` MCP toolset closing the agent ingest loop. M3A Plaid Transactions sync shipped (Phase 1). Doc surface tightened for the personas reachable today; MCP surface hardened with protocol-standard annotations, `accounts_resolve`, list-parameter cap, structured error envelopes, and shell completion. Categorization correctness pass: memo-aware matcher, exemplar accumulation, source-precedence enforcement, auto-fan-out after apply; seed merchant catalogs retired in favor of user-driven and LLM-assist-driven merchant creation.
 
 ### Added
+- **Audit-log undo consumer.** `system_audit_undo`, `system_audit_history`, and
+  `system_audit_get` MCP tools (plus `moneybin system audit undo|history|get`
+  CLI parity) make any audited `app.*` mutation reversible as a unit keyed on
+  `operation_id`. Each row's inverse is synthesized from its full audit
+  before/after image and routed back through the `*Repo` layer; the undo is
+  itself audited (`is_undo`/`undoes_operation_id`) and undoable. Block-don't-
+  cascade: when a later operation modified the same rows, undo refuses with
+  `undo_cascade_blocked` and returns the blocker operations to walk explicitly,
+  rather than silently reversing unrelated later work. Notes, tags, and splits
+  mutations are now routed through dedicated repos so every annotation is
+  undoable. See
+  [`docs/specs/data-recovery-contract.md`](docs/specs/data-recovery-contract.md).
 - **Agent-callable transaction match accept/reject.** `transactions_matches_set` and
   `transactions_matches_pending` MCP tools (plus `transactions_matches_run` /
   `transactions_matches_history`), `moneybin transactions matches set`, and

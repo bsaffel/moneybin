@@ -311,3 +311,66 @@ class SystemAuditPayload:
     """Payload for ``system_audit`` — filtered audit log events."""
 
     events: list[SystemAuditEventPayload]
+
+
+# ---------------------------------------------------------------------------
+# system_audit_undo / _history / _get payloads (REC-PR3)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class SystemAuditUndoPayload:
+    """Payload for ``system_audit_undo`` — outcome of reversing one operation.
+
+    Carries no financial values (only ids + counts), so it derives Tier.LOW even
+    though the rows it reversed may have. The fresh ``undo_operation_id`` lets the
+    agent undo the undo.
+    """
+
+    undo_operation_id: Annotated[str, DataClass.RECORD_ID]
+    undone_operation_id: Annotated[str, DataClass.RECORD_ID]
+    reversed_row_count: Annotated[int, DataClass.AGGREGATE]
+    tables: Annotated[list[str], DataClass.RECORD_ID]
+
+
+@dataclass(frozen=True, slots=True)
+class SystemAuditHistoryEntryPayload:
+    """One operation in ``system_audit_history``, grouped by ``operation_id``.
+
+    Undoability is expressed structurally via ``can_undo`` + ``undo_blocked_by``
+    (the blocker operation ids the agent must undo first); no financial values
+    appear, so the entry derives Tier.LOW.
+    """
+
+    operation_id: Annotated[str, DataClass.RECORD_ID]
+    occurred_at: Annotated[str, DataClass.TIMESTAMP_OBSERVABILITY]
+    actor: Annotated[str, DataClass.TXN_TYPE]
+    actions: Annotated[list[str], DataClass.TXN_TYPE]
+    tables: Annotated[list[str], DataClass.RECORD_ID]
+    row_count: Annotated[int, DataClass.AGGREGATE]
+    is_undo: Annotated[bool, DataClass.TXN_TYPE]
+    undoes_operation_id: Annotated[str | None, DataClass.RECORD_ID]
+    can_undo: Annotated[bool, DataClass.TXN_TYPE]
+    undo_blocked_by: Annotated[list[str] | None, DataClass.RECORD_ID]
+
+
+@dataclass(frozen=True, slots=True)
+class SystemAuditHistoryPayload:
+    """Payload for ``system_audit_history`` — recent operations, newest first."""
+
+    operations: list[SystemAuditHistoryEntryPayload]
+
+
+@dataclass(frozen=True, slots=True)
+class SystemAuditGetPayload:
+    """Payload for ``system_audit_get`` — full before/after for one operation.
+
+    Reuses :class:`SystemAuditEventPayload`, whose ``before_value`` /
+    ``after_value`` are TXN_AMOUNT, so this payload derives the same high tier as
+    ``system_audit`` — the agent can pre-check exactly what an undo would change.
+    """
+
+    operation_id: Annotated[str, DataClass.RECORD_ID]
+    events: list[SystemAuditEventPayload]
+    can_undo: Annotated[bool, DataClass.TXN_TYPE]
+    undo_blocked_by: Annotated[list[str] | None, DataClass.RECORD_ID]
