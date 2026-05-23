@@ -101,7 +101,7 @@ class MatchingService:
         """
         where = "WHERE match_status = 'pending' AND reversed_at IS NULL"
         params: list[Any] = []
-        if match_type:
+        if match_type is not None:
             where += " AND match_type = ?"
             params.append(match_type)
         try:
