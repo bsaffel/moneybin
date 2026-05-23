@@ -311,6 +311,7 @@ def system_audit(
                     before_value=e.before_value,
                     after_value=e.after_value,
                     parent_audit_id=e.parent_audit_id,
+                    operation_id=e.operation_id,
                     context_json=e.context_json,
                 )
                 for e in events

@@ -129,6 +129,24 @@ class TestExistingDbUpgrade:
         ):
             assert name in indexes, f"pre-existing index {name!r} was not restored"
 
+    def test_nullable_column_partial_rerun_backfills_and_tightens(
+        self, pre_v023_db: Database
+    ) -> None:
+        # Simulate a crash between ADD COLUMN and SET NOT NULL: the column
+        # exists but is still nullable with NULL values. The migration's
+        # nullable branch must backfill the stragglers and tighten.
+        pre_v023_db.execute("ALTER TABLE app.audit_log ADD COLUMN operation_id VARCHAR")
+        run_migration(pre_v023_db, migrate)
+        _data_type, is_nullable = column_info(
+            pre_v023_db, "app", "audit_log", "operation_id"
+        )
+        assert is_nullable is False
+        rows = pre_v023_db.execute(
+            "SELECT audit_id, operation_id FROM app.audit_log"
+        ).fetchall()
+        for audit_id, operation_id in rows:
+            assert operation_id == f"op_legacy_{audit_id}"
+
     def test_idempotent_rerun(self, pre_v023_db: Database) -> None:
         run_migration(pre_v023_db, migrate)
         run_migration(pre_v023_db, migrate)

@@ -67,9 +67,12 @@ def migrate(conn: object) -> None:
         )
         conn.execute(_BACKFILL_SQL)  # type: ignore[union-attr]
         needs_tighten = True
-    elif col_map["operation_id"] is True:
-        # Column exists but nullable: partial prior run (crash between the two
-        # ALTERs) or a hand-altered DB. Backfill any stragglers, then tighten.
+    elif col_map.get("operation_id"):
+        # Column exists but nullable (truthy is_nullable): partial prior run
+        # (crash between the two ALTERs) or a hand-altered DB. Backfill any
+        # stragglers, then tighten. Truthiness, not `is True`, so a non-bool
+        # catalog value (e.g. 1) still routes here — matching migration_helpers'
+        # defensive bool() wrap.
         logger.info("V023: backfilling nullable app.audit_log.operation_id")
         conn.execute(_BACKFILL_SQL)  # type: ignore[union-attr]
         needs_tighten = True
