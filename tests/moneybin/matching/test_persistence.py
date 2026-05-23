@@ -17,6 +17,7 @@ import pytest
 from moneybin.database import Database
 from moneybin.matching.persistence import (
     MatchStatus,
+    get_active_dedup_edges,
     get_active_matches,
     get_match_decision,
     get_match_log,
@@ -116,6 +117,27 @@ class TestGetActiveMatches:
         transfer_matches = get_active_matches(db, match_type="transfer")
         assert len(dedup_matches) == 0
         assert len(transfer_matches) == 1
+
+
+class TestGetActiveDedupEdges:
+    """Tests for get_active_dedup_edges."""
+
+    def test_returns_accepted_and_pending_dedup(self, db: Database) -> None:
+        _create_test_match(db, status="accepted", stid_a="a1", stid_b="b1")
+        _create_test_match(db, status="pending", stid_a="a2", stid_b="b2")
+        _create_test_match(db, status="rejected", stid_a="a3", stid_b="b3")
+        edges = get_active_dedup_edges(db)
+        # accepted + pending only; rejected excluded.
+        assert len(edges) == 2
+
+    def test_ordered_deterministically(self, db: Database) -> None:
+        # Insert side-A ids out of order; the query must return them sorted so
+        # downstream component assignment is stable across DuckDB scan order
+        # (VACUUM, storage reorg) without relying on insertion order.
+        for stid_a in ("t3", "t1", "t2"):
+            _create_test_match(db, status="accepted", stid_a=stid_a, stid_b="z")
+        edges = get_active_dedup_edges(db)
+        assert [e["source_transaction_id_a"] for e in edges] == ["t1", "t2", "t3"]
 
 
 class TestGetPendingMatches:

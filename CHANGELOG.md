@@ -10,7 +10,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 M2 closing out and M3 underway. M2A curator state shipped (transaction notes, tags, splits, manual entry, audit log). M2B architecture reference shipped (`architecture-shared-primitives.md`; writer-coordination contract via short-lived per-call connections). M2C brand surface advancing: `moneybin system doctor` integrity command, `reports.*` recipe library (eight curated views), and the `transform_*` MCP toolset closing the agent ingest loop. M3A Plaid Transactions sync shipped (Phase 1). Doc surface tightened for the personas reachable today; MCP surface hardened with protocol-standard annotations, `accounts_resolve`, list-parameter cap, structured error envelopes, and shell completion. Categorization correctness pass: memo-aware matcher, exemplar accumulation, source-precedence enforcement, auto-fan-out after apply; seed merchant catalogs retired in favor of user-driven and LLM-assist-driven merchant creation.
 
+### Changed
+- **Pending-match output now groups copies of the same transaction by component.**
+  `transactions_matches_pending` (MCP) and `moneybin transactions matches pending` (CLI)
+  enrich each pending dedup row with a `component_key` — the lexicographic MIN packed
+  member key of its connected component across all active+pending dedup edges. Edges
+  belonging to the same N-way cluster share one `component_key`; the CLI groups them
+  into one display block per cluster. Transfer rows are ungrouped (`component_key =
+  match_id`). The `actions[]` summary hint reports the edge-to-group ratio.
+
 ### Added
+- **N-way dedup collapse.** Three or more copies of the same transaction now
+  collapse to a single record even when the duplicates span sources *and*
+  overlapping within-source files (e.g. two CSV exports plus one OFX download
+  of the same statement). A union-find spanning forest groups every transitively
+  linked duplicate into one connected component, so chained matches (A=B, B=C)
+  resolve to one gold record instead of leaving a stray copy behind.
+- **Agent/CLI-callable `transactions matches pending`.** Lists pending matches
+  grouped by component (copies of the same transaction cluster together),
+  mirroring the `transactions_matches_pending` MCP tool. Closes the CLI gap where
+  `transactions review --type matches --status` only reported counts, never rows.
 - **Agent-callable transaction match accept/reject.** `transactions_matches_set` and
   `transactions_matches_pending` MCP tools (plus `transactions_matches_run` /
   `transactions_matches_history`), `moneybin transactions matches set`, and

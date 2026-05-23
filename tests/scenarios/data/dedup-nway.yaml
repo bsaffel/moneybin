@@ -1,0 +1,97 @@
+scenario: dedup-nway
+description: "N-way dedup: 3+ copies across overlapping within-source files and a cross-source file collapse to one record each; an out-of-window near-miss stays separate"
+
+setup:
+  persona: family
+  seed: 42
+  years: 1
+  fixtures:
+    - path: dedup-nway/csv_a.csv
+      account: amazon-card
+      source_type: csv
+    - path: dedup-nway/csv_b.csv
+      account: amazon-card
+      source_type: csv
+    - path: dedup-nway/csv_c.csv
+      account: amazon-card
+      source_type: csv
+    - path: dedup-nway/ofx_x.csv
+      account: amazon-card
+      source_type: ofx
+
+pipeline:
+  - load_fixtures
+  - transform
+  - match
+
+assertions:
+  - name: no_duplicate_gold_records
+    fn: assert_no_duplicates
+    args:
+      table: core.fct_transactions
+      columns: [transaction_id]
+  - name: provenance_complete
+    fn: assert_no_orphans
+    args:
+      parent: core.fct_transactions
+      parent_column: transaction_id
+      child: meta.fct_transaction_provenance
+      child_column: transaction_id
+
+expectations:
+  - kind: match_decision
+    description: "X: csv_a + csv_b (within-source) + ofx (cross-source) collapse to one dedup record"
+    transactions:
+      - source_transaction_id: CSVA_X
+        source_type: csv
+      - source_transaction_id: CSVB_X
+        source_type: csv
+      - source_transaction_id: OFX_X
+        source_type: ofx
+    expected: matched
+    expected_match_type: dedup
+    expected_confidence_min: 0.9
+  - kind: gold_record_count
+    description: "X's three copies (2 within-source CSVs + 1 cross-source OFX) collapse to one gold record"
+    fixture_source_ids:
+      - CSVA_X
+      - CSVB_X
+      - OFX_X
+    expected_collapsed_count: 1
+  - kind: match_decision
+    description: "Y: csv_a + csv_b + csv_c (pure within-source) collapse to one dedup record"
+    transactions:
+      - source_transaction_id: CSVA_Y
+        source_type: csv
+      - source_transaction_id: CSVB_Y
+        source_type: csv
+      - source_transaction_id: CSVC_Y
+        source_type: csv
+    expected: matched
+    expected_match_type: dedup
+    expected_confidence_min: 0.9
+  - kind: gold_record_count
+    description: "Y's three within-source copies collapse to one gold record"
+    fixture_source_ids:
+      - CSVA_Y
+      - CSVB_Y
+      - CSVC_Y
+    expected_collapsed_count: 1
+  - kind: match_decision
+    description: "NEGATIVE: Z (csv 04-10) and Z' (ofx 04-30) are >3 days apart; blocking never pairs them"
+    transactions:
+      - source_transaction_id: CSVA_Z
+        source_type: csv
+      - source_transaction_id: OFX_Z
+        source_type: ofx
+    expected: not_matched
+  - kind: gold_record_count
+    description: "NEGATIVE: Z and Z' stay as two separate gold records (date out of window)"
+    fixture_source_ids:
+      - CSVA_Z
+      - OFX_Z
+    expected_collapsed_count: 2
+
+gates:
+  required_assertions: all
+  required_expectations: all

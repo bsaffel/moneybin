@@ -96,7 +96,7 @@ class TestFetchActiveDedupDecisions:
         """Verify _fetch_active_dedup_decisions covers pre-seeded and newly-created matches.
 
         Pre-seeds two dedup decisions, runs the matcher on a fresh pair, then
-        asserts both matched_ids and secondary_ids include all three pairs.
+        asserts both active_edges and secondary_ids include all three pairs.
         """
         _create_test_table(db)
 
@@ -143,19 +143,94 @@ class TestFetchActiveDedupDecisions:
         # Now call _fetch_active_dedup_decisions directly and verify both sets.
         decisions = matcher._fetch_active_dedup_decisions()  # pyright: ignore[reportPrivateUsage]
 
-        # matched_ids must include both sides of all three pairs.
-        assert ("csv_pre1", "acct1") in decisions.matched_ids
-        assert ("ofx_pre1", "acct1") in decisions.matched_ids
-        assert ("csv_pre2", "acct1") in decisions.matched_ids
-        assert ("ofx_pre2", "acct1") in decisions.matched_ids
-        assert ("csv_new", "acct1") in decisions.matched_ids
-        assert ("ofx_new", "acct1") in decisions.matched_ids
+        # active_edges must include one full-triple edge per pair (pre-seeded + new).
+        # Each side is (source_type, source_transaction_id, account_id).
+        assert (
+            ("csv", "csv_pre1", "acct1"),
+            ("ofx", "ofx_pre1", "acct1"),
+        ) in decisions.active_edges
+        assert (
+            ("csv", "csv_pre2", "acct1"),
+            ("ofx", "ofx_pre2", "acct1"),
+        ) in decisions.active_edges
+        # The new pair is persisted (source_type,source_transaction_id) ordered by
+        # the candidate query's (source_type, source_origin, source_transaction_id)
+        # tuple comparison: 'csv' < 'ofx', so csv is side a.
+        assert (
+            ("csv", "csv_new", "acct1"),
+            ("ofx", "ofx_new", "acct1"),
+        ) in decisions.active_edges
 
         # secondary_ids: ofx is lower-priority than csv per default source_priority,
         # so the ofx side of each pair is the secondary (excluded from transfers).
         assert ("ofx_pre1", "ofx", "acct1") in decisions.secondary_ids
         assert ("ofx_pre2", "ofx", "acct1") in decisions.secondary_ids
         assert ("ofx_new", "ofx", "acct1") in decisions.secondary_ids
+
+    def test_secondary_ids_excludes_all_non_primary_members(self, db: Database) -> None:
+        """Component-based exclusion must exclude ALL non-primary members.
+
+        Topology that exposes the pairwise bug
+        ----------------------------------------
+        Three copies of one transaction in acct1:
+          manual (priority index 0 — highest)
+          parquet (priority index 6)
+          ofx     (priority index 8 — lowest)
+
+        Stored edges: manual–ofx and parquet–ofx  (a "V" shape, both pointing to ofx)
+
+        Pairwise analysis (old logic):
+          edge manual(0)–ofx(8):   pri_a(0) <= pri_b(8) → exclude ofx      ✓
+          edge parquet(6)–ofx(8):  pri_a(6) <= pri_b(8) → exclude ofx      (already in secondary)
+          Result: secondary = {ofx}.  parquet NOT excluded — BUG.
+          parquet is non-primary (manual is primary) but pairwise misses it
+          because parquet is the HIGHER-priority side of its own edge.
+
+        Component-based analysis (correct):
+          components = {{manual, parquet, ofx}}
+          primary = min priority_index member = manual
+          secondary = {parquet, ofx}  ← all non-primary members excluded
+        """
+        _create_test_table(db)
+
+        now = datetime.now(tz=UTC).isoformat()
+        db.execute(
+            """
+            INSERT INTO app.match_decisions
+            (match_id, source_transaction_id_a, source_type_a, source_origin_a,
+             source_transaction_id_b, source_type_b, source_origin_b,
+             account_id, confidence_score, match_signals, match_type, match_tier,
+             match_status, decided_by, decided_at)
+            VALUES
+            ('nway000001', 'man_x', 'manual', 'bank',
+             'ofx_x', 'ofx', 'bank',
+             'acct1', 0.99, '{}', 'dedup', '3', 'accepted', 'auto', ?),
+            ('nway000002', 'parq_x', 'parquet', 'bank',
+             'ofx_x', 'ofx', 'bank',
+             'acct1', 0.99, '{}', 'dedup', '3', 'accepted', 'auto', ?)
+            """,
+            [now, now],
+        )  # noqa: S608  # test fixture data, not user input
+
+        settings = MatchingSettings()
+        matcher = TransactionMatcher(db, settings, table="main._test_unioned")
+        decisions = matcher._fetch_active_dedup_decisions()  # pyright: ignore[reportPrivateUsage]
+        secondary = decisions.secondary_ids
+
+        # manual is primary (priority index 0 = highest): must NOT be excluded
+        assert ("man_x", "manual", "acct1") not in secondary, (
+            "manual is primary (highest priority) and must remain eligible for transfers"
+        )
+        # parquet (priority index 6) is non-primary: must be excluded
+        assert ("parq_x", "parquet", "acct1") in secondary, (
+            "parquet is non-primary — pairwise missed it because parquet is the "
+            "higher-priority side of the parquet–ofx edge, but component-based "
+            "exclusion must still exclude it"
+        )
+        # ofx (priority index 8) is non-primary: must be excluded
+        assert ("ofx_x", "ofx", "acct1") in secondary, (
+            "ofx is non-primary and must be excluded"
+        )
 
 
 def _create_test_table(db: Database) -> None:
@@ -335,6 +410,197 @@ class TestTransactionMatcher:
         result = MatchResult(auto_merged=5, pending_review=2)
         assert "5 auto-merged" in result.summary()
         assert "2 pending review" in result.summary()
+
+
+def _active_dedup_edges(
+    db: Database,
+) -> list[tuple[tuple[str, str, str], tuple[str, str, str]]]:
+    """Read active/pending dedup edges from app.match_decisions as node-key pairs.
+
+    Each node is the full (source_type, source_transaction_id, account_id) triple
+    — the same identity assign_components and the prep fold key on.
+    """
+    rows = db.execute(
+        """
+        SELECT source_type_a, source_transaction_id_a,
+               source_type_b, source_transaction_id_b,
+               account_id
+        FROM app.match_decisions
+        WHERE match_status IN ('accepted', 'pending')
+          AND reversed_at IS NULL
+          AND match_type = 'dedup'
+        """
+    ).fetchall()
+    edges: list[tuple[tuple[str, str, str], tuple[str, str, str]]] = []
+    for st_a, stid_a, st_b, stid_b, acct in rows:
+        edges.append(((st_a, stid_a, acct), (st_b, stid_b, acct)))
+    return edges
+
+
+def _component_count(
+    edges: list[tuple[tuple[str, str, str], tuple[str, str, str]]],
+) -> int:
+    """Count connected components formed by the given edges (union-find)."""
+    parent: dict[tuple[str, str, str], tuple[str, str, str]] = {}
+
+    def find(x: tuple[str, str, str]) -> tuple[str, str, str]:
+        parent.setdefault(x, x)
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for a, b in edges:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+    roots = {find(n) for edge in edges for n in edge}
+    return len(roots)
+
+
+def _node_count(
+    edges: list[tuple[tuple[str, str, str], tuple[str, str, str]]],
+) -> int:
+    """Count distinct nodes touched by the given edges."""
+    nodes: set[tuple[str, str, str]] = set()
+    for a, b in edges:
+        nodes.add(a)
+        nodes.add(b)
+    return len(nodes)
+
+
+class TestNWayDedup:
+    """Tests for N-way (3+ copy) dedup forming a single component."""
+
+    def test_three_copies_form_one_component(self, db: Database) -> None:
+        """Three identical copies of one transaction must form ONE component.
+
+        Fixture: same account, amount, date, and description across three rows —
+        two csv (same source_type/source_origin, different source_file → a Tier-2b
+        within-source pair) and one ofx (→ Tier-3 cross-source).
+
+        Confidence math (date_window_days=3): identical dates → date_distance=0 →
+        date_score=1.0; identical descriptions → jaro_winkler=1.0 → desc_sim=1.0;
+        confidence = 0.40*1.0 + 0.60*1.0 = 1.0 for every pair. 1.0 >= 0.95
+        (high_confidence_threshold) so every kept edge auto-merges as 'accepted'.
+
+        Candidate pairs: Tier 2b → (csv_1, csv_2); Tier 3 → (csv_1, ofx_1),
+        (csv_2, ofx_1). Union-find over 3 nodes keeps N-1 = 2 edges:
+        Tier 2b adds (csv_1, csv_2); Tier 3 adds exactly one csv↔ofx edge (the
+        second is already within the merged component). Expected: 2 edges,
+        1 component, 3 nodes — before this stage only 1 edge was written and the
+        ofx row was excluded entirely (1 component, 2 nodes).
+        """
+        _create_test_table(db)
+        _insert(
+            db,
+            "csv_1",
+            "acct1",
+            "2026-03-15",
+            "-42.50",
+            "STARBUCKS",
+            "csv",
+            "bank",
+            sfile="a.csv",
+        )
+        _insert(
+            db,
+            "csv_2",
+            "acct1",
+            "2026-03-15",
+            "-42.50",
+            "STARBUCKS",
+            "csv",
+            "bank",
+            sfile="b.csv",
+        )
+        _insert(
+            db,
+            "ofx_1",
+            "acct1",
+            "2026-03-15",
+            "-42.50",
+            "STARBUCKS",
+            "ofx",
+            "bank",
+            sfile="x.ofx",
+        )
+
+        settings = MatchingSettings()
+        matcher = TransactionMatcher(db, settings, table="main._test_unioned")
+        matcher.run()
+
+        edges = _active_dedup_edges(db)
+        assert _node_count(edges) == 3, (
+            f"Expected all three copies covered by edges, got nodes from {edges}"
+        )
+        assert _component_count(edges) == 1, (
+            f"Expected one connected component, got {edges}"
+        )
+
+    def test_cross_run_attachment(self, db: Database) -> None:
+        """A copy imported in a later run attaches to the existing component.
+
+        First run sees only the two csv copies → one accepted Tier-2b edge
+        (csv_1, csv_2). The ofx copy is then inserted and the matcher re-runs;
+        the seed_edges carry the prior edge, so Tier 3 attaches ofx_1 to the
+        existing {csv_1, csv_2} component with a single new edge rather than
+        forming a separate edge-less row. Expected after second run: 2 edges,
+        1 component, 3 nodes.
+        """
+        _create_test_table(db)
+        _insert(
+            db,
+            "csv_1",
+            "acct1",
+            "2026-03-15",
+            "-42.50",
+            "STARBUCKS",
+            "csv",
+            "bank",
+            sfile="a.csv",
+        )
+        _insert(
+            db,
+            "csv_2",
+            "acct1",
+            "2026-03-15",
+            "-42.50",
+            "STARBUCKS",
+            "csv",
+            "bank",
+            sfile="b.csv",
+        )
+
+        settings = MatchingSettings()
+        matcher = TransactionMatcher(db, settings, table="main._test_unioned")
+        matcher.run()
+
+        first_edges = _active_dedup_edges(db)
+        assert _node_count(first_edges) == 2
+        assert _component_count(first_edges) == 1
+
+        # Now import the third copy and re-run.
+        _insert(
+            db,
+            "ofx_1",
+            "acct1",
+            "2026-03-15",
+            "-42.50",
+            "STARBUCKS",
+            "ofx",
+            "bank",
+            sfile="x.ofx",
+        )
+        matcher.run()
+
+        edges = _active_dedup_edges(db)
+        assert _node_count(edges) == 3, (
+            f"Expected ofx copy to attach to the existing component, got {edges}"
+        )
+        assert _component_count(edges) == 1, (
+            f"Expected one connected component after attachment, got {edges}"
+        )
 
 
 class TestTransferDetection:

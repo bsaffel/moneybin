@@ -176,6 +176,15 @@ def test_reverse_raises_for_missing_match(db: Database) -> None:
         repo.reverse("nope", reversed_by="user", actor="cli")
 
 
+def test_reverse_raises_when_already_reversed(db: Database) -> None:
+    """Re-reversing an already-reversed match is rejected (audit integrity)."""
+    repo = MatchDecisionsRepo(db)
+    _insert(repo, match_status="accepted")
+    repo.reverse("m0000000001", reversed_by="user", actor="cli")
+    with pytest.raises(ValueError, match="already reversed"):
+        repo.reverse("m0000000001", reversed_by="user", actor="cli")
+
+
 def test_insert_rolls_back_when_audit_raises(db: Database) -> None:
     audit = MagicMock()
     audit.record_audit_event.side_effect = RuntimeError("simulated audit failure")
