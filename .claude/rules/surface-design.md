@@ -164,7 +164,7 @@ MoneyBin's surface mixes three audiences:
 | **Mid-CRUD** | `transactions_tags_set`, `budget_set`, `categories_set` | Surfaced as the agent's hands — referenced by user-intent tools' `actions[]` and in workflow examples |
 | **Operator territory** | `sql_query`, `system_doctor`, `system_audit` | Visible but deprioritized: description prose calls out the operator audience; not promoted in `instructions` enumeration; reached via specific `actions[]` hints when relevant |
 
-**Per `docs/specs/mcp-architecture.md` §3 ("Tool disclosure: full surface, taxonomy-led"):** the full registered tool surface is visible at connect — client-driven progressive disclosure was retired. Audience positioning happens through three levers MoneyBin controls end-to-end: the FastMCP `instructions` field, prefix-grouped tool names with sharp descriptions, and surface discipline (tools register only when their backing spec reaches `in-progress`/`implemented`, per `mcp-server.md` "Surface change discipline"). The `@mcp_tool(domain=...)` markers stay as dormant metadata for a future first-party client that can implement schema injection in the style of Claude Code's `tool_search`.
+**Per `docs/specs/mcp-architecture.md` §3 ("Tool disclosure: full surface, taxonomy-led"):** the full registered tool surface is visible at connect — client-driven progressive disclosure was retired. Audience positioning happens through three levers MoneyBin controls end-to-end: the FastMCP `instructions` field, prefix-grouped tool names with sharp descriptions, and surface discipline (tools register only when their backing spec reaches `in-progress`/`implemented`, per `mcp.md` "Surface change discipline"). The `@mcp_tool(domain=...)` markers stay as dormant metadata for a future first-party client that can implement schema injection in the style of Claude Code's `tool_search`.
 
 **Test:** if a tool's primary caller is a human operator (or a power-user agent explicitly inspecting internals), the tool's description should say so, it should NOT be cited in user-facing tools' `actions[]` hints, and it should NOT appear in the `instructions` field's top-level enumeration. If the primary caller is an agent helping a user with their finances, the opposite — surface it prominently across those three levers.
 
@@ -184,7 +184,7 @@ Everything else transfers directly:
 
 - Operation shapes — same five.
 - Verb vocabulary — same table, expressed as subcommands (`<group> set`, `<group> create`, `<group> delete`, `<group> run`).
-- CLI symmetry — every MCP tool has a CLI command via the same service layer (`mcp-server.md`, CLI symmetry principle). The same shape choice surfaces in both.
+- CLI symmetry — every MCP tool has a CLI command via the same service layer (`mcp.md`, CLI symmetry principle). The same shape choice surfaces in both.
 
 ### REST API (future, M3D+)
 

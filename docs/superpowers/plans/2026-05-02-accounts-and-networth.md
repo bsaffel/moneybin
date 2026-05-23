@@ -17,7 +17,7 @@
 - `.claude/rules/database.md` — DuckDB/SQLMesh patterns, column comments, decimal types
 - `.claude/rules/security.md` — parameterized SQL, input validation, PII in logs
 - `.claude/rules/cli.md` — Typer patterns, `handle_cli_errors`, output flags, soft-validation UX
-- `.claude/rules/mcp-server.md` — sensitivity tiers, response envelope, tool registration
+- `.claude/rules/mcp.md` — sensitivity tiers, response envelope, tool registration
 - `.claude/rules/testing.md` — test layers, query-count assertions, scenario expectations
 - `.claude/rules/identifiers.md` — UUID4 truncated to 12 hex for entity IDs
 - `.claude/rules/shipping.md` — README updates, roadmap icon flips, `/simplify` pre-push

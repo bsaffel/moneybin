@@ -164,7 +164,7 @@ Files in `.claude/rules/` auto-load via Claude Code's `paths:` frontmatter — p
 |------|--------|
 | `security.md` | SQL injection, input validation, XSS, PII, exception wrapping |
 | `database.md` | DuckDB patterns, SQL conventions, schema, column comments |
-| `mcp-server.md` | Tool taxonomy, response envelope, sensitivity tiers, services |
+| `mcp.md` | Tool taxonomy, response envelope, sensitivity tiers, services |
 | `cli.md` | Typer patterns, error handling, command registration, icons |
 | `testing.md` | Pytest patterns, fixtures, mocking strategy, DB test helpers |
 | `data-extraction.md` | Incremental sync, dedup, parameter design, new data sources |

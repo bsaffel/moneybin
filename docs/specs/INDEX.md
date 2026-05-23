@@ -33,7 +33,7 @@ Single source of truth for spec status. Update this table when a spec's status c
 
 | Spec | Type | Status | Summary |
 |---|---|---|---|
-| [Capabilities Map](moneybin-capabilities.md) | Architecture | draft | Cross-surface outcome map: one row per user-facing capability, one column per active surface (MCP, CLI, future REST). Single source of truth for "what user outcome reaches which surface, and under what registered name." Bootstrap rows demonstrate every coverage pattern; full population (~30–60 rows) lands incrementally. Referenced by the surface-change-discipline rule in `.claude/rules/mcp-server.md`. |
+| [Capabilities Map](moneybin-capabilities.md) | Architecture | draft | Cross-surface outcome map: one row per user-facing capability, one column per active surface (MCP, CLI, future REST). Single source of truth for "what user outcome reaches which surface, and under what registered name." Bootstrap rows demonstrate every coverage pattern; full population (~30–60 rows) lands incrementally. Referenced by the surface-change-discipline rule in `.claude/rules/mcp.md`. |
 
 ## Smart Import
 
