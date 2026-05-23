@@ -111,8 +111,8 @@ async def test_matches_pending_component_key_present(mcp_db: object) -> None:
 
 
 @pytest.mark.unit
-async def test_matches_pending_summary_hint_present(mcp_db: object) -> None:
-    """actions[] includes the N-pending-edges-across-M-groups summary hint."""
+async def test_matches_pending_reports_dedup_group_count(mcp_db: object) -> None:
+    """The payload carries the distinct-dedup-component count (not an action string)."""
     result = (await transactions_matches_pending()).to_dict()
-    # When queue is empty the hint still appears
-    assert any("pending dedup edge" in a for a in result["actions"])
+    # Empty queue → zero groups; the field is structured payload data.
+    assert result["data"]["n_dedup_groups"] == 0

@@ -1,6 +1,7 @@
 """Match review and management commands."""
 
 import logging
+from typing import Any
 
 import duckdb as duckdb_mod
 import typer
@@ -52,10 +53,10 @@ def matches_pending(
 
         # Group by component_key so N-way clusters surface as one block.
         # Insertion order in dict preserves first-seen component ordering.
-        groups: dict[str, list[dict[str, object]]] = {}
+        # get_pending always sets component_key on every row.
+        groups: dict[str, list[dict[str, Any]]] = {}
         for row in rows:
-            ck = str(row.get("component_key") or row["match_id"])
-            groups.setdefault(ck, []).append(row)
+            groups.setdefault(str(row["component_key"]), []).append(row)
 
         for ck, group_rows in groups.items():
             typer.echo(f"\n── component {ck} ({len(group_rows)} edge(s)) ──")
@@ -64,7 +65,7 @@ def matches_pending(
                 f"{'Type A':<8} {'Type B':<8}"
             )
             for row in group_rows:
-                score = float(row.get("confidence_score") or 0)  # pyright: ignore[reportArgumentType]
+                score = float(row.get("confidence_score") or 0)
                 typer.echo(
                     f"  {str(row['match_id'])[:12]:<14} "
                     f"{str(row.get('match_type', 'dedup')):<9} "

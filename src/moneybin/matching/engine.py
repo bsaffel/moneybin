@@ -24,6 +24,7 @@ from moneybin.matching.persistence import (
     MatchTier,
     MatchType,
     create_match_decision,
+    get_active_dedup_edges,
     get_rejected_pairs,
 )
 from moneybin.matching.scoring import (
@@ -282,31 +283,24 @@ class TransactionMatcher:
         return newly_added
 
     def _fetch_active_dedup_decisions(self) -> _DedupDecisions:
-        """Query active/pending dedup decisions and derive both projections.
+        """Derive both projections from the active+pending dedup edge set.
 
         Returns active_edges (one (node_a, node_b) full-triple pair per decision,
         used to seed the union-find so new copies attach to existing components)
-        and secondary_ids (the lower-priority side of each pair, used to prevent
-        duplicated transfer proposals for deduped source rows).
+        and secondary_ids (all non-primary component members, excluded from
+        transfer detection so deduped source rows don't form duplicate transfer
+        proposals).
         """
-        rows = self._db.execute(
-            """
-            SELECT source_transaction_id_a, source_type_a,
-                   source_transaction_id_b, source_type_b,
-                   account_id
-            FROM app.match_decisions
-            WHERE match_status IN ('accepted', 'pending')
-              AND reversed_at IS NULL
-              AND match_type = 'dedup'
-            """
-        ).fetchall()
         priority = self._settings.source_priority
         max_pri = len(priority)
         priority_index = {src: i for i, src in enumerate(priority)}
-        edges: list[tuple[NodeKey, NodeKey]] = []
-        for row in rows:
-            stid_a, st_a, stid_b, st_b, acct = row
-            edges.append(((st_a, stid_a, acct), (st_b, stid_b, acct)))
+        edges: list[tuple[NodeKey, NodeKey]] = [
+            (
+                (e["source_type_a"], e["source_transaction_id_a"], e["account_id"]),
+                (e["source_type_b"], e["source_transaction_id_b"], e["account_id"]),
+            )
+            for e in get_active_dedup_edges(self._db)
+        ]
 
         # Exclude every non-primary member of each component from transfer
         # matching — not just the lower-priority side of each individual edge.

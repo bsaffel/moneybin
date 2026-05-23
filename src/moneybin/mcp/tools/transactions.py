@@ -198,14 +198,14 @@ def transactions_matches_pending(
         rows = svc.get_pending(match_type=match_type, limit=limit)
         total = svc.count_pending(match_type=match_type)
 
-    # Summarise dedup clusters so the agent can see grouping at a glance
-    dedup_rows = [r for r in rows if r.get("match_type") == "dedup"]
-    n_groups = len({r["component_key"] for r in dedup_rows})
-    n_edges = len(dedup_rows)
-    group_hint = f"{n_edges} pending dedup edge(s) across {n_groups} group(s)"
+    # Count distinct dedup clusters so the agent sees N-way grouping at a glance.
+    n_dedup_groups = len({
+        r["component_key"] for r in rows if r.get("match_type") == "dedup"
+    })
 
     return build_envelope(
         data=MatchesPendingPayload(
+            n_dedup_groups=n_dedup_groups,
             matches=[
                 MatchPendingRow(
                     match_id=r["match_id"],
@@ -220,11 +220,10 @@ def transactions_matches_pending(
                     component_key=r["component_key"],
                 )
                 for r in rows
-            ]
+            ],
         ),
         total_count=total,
         actions=[
-            f"Summary: {group_hint}",
             "Use transactions_matches_set to accept or reject one match by match_id",
             "Group rows by component_key to review all edges of one N-way dedup "
             "cluster together",
