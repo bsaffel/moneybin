@@ -109,7 +109,7 @@ def test_assertion_edit_advances_fct_balances_updated_at() -> None:
         account_id = account_row[0]
 
         svc = BalanceService(db)
-        svc.assert_balance(account_id, date(2020, 1, 1), Decimal("100.00"))
+        svc.assert_balance(account_id, date(2020, 1, 1), Decimal("100.00"), actor="cli")
         before_row = db.execute(
             "SELECT updated_at FROM core.fct_balances "
             "WHERE account_id = ? AND source_type = 'assertion' "
@@ -123,7 +123,7 @@ def test_assertion_edit_advances_fct_balances_updated_at() -> None:
 
         time.sleep(0.01)
 
-        svc.assert_balance(account_id, date(2020, 1, 1), Decimal("200.00"))
+        svc.assert_balance(account_id, date(2020, 1, 1), Decimal("200.00"), actor="cli")
         after_row = db.execute(
             "SELECT updated_at FROM core.fct_balances "
             "WHERE account_id = ? AND source_type = 'assertion' "
