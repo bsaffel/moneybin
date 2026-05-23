@@ -12,33 +12,14 @@ declares its metadata.
 
 from __future__ import annotations
 
-import importlib
-import pkgutil
-
-from moneybin import repositories as _repos_pkg
 from moneybin.database import Database
+from moneybin.repositories import concrete_repo_classes
 from moneybin.repositories.base import BaseRepo
-
-
-def _discover_repo_classes() -> list[type[BaseRepo]]:
-    """Import every repo module and return the concrete ``BaseRepo`` subclasses.
-
-    ``__subclasses__`` only sees imported classes, so the package walk is what
-    makes discovery exhaustive. Test-only fakes in other packages are excluded.
-    """
-    for mod in pkgutil.iter_modules(_repos_pkg.__path__):
-        if mod.name != "base":
-            importlib.import_module(f"{_repos_pkg.__name__}.{mod.name}")
-    return [
-        c
-        for c in BaseRepo.__subclasses__()
-        if c.__module__.startswith("moneybin.repositories.")
-    ]
 
 
 def _build_registry() -> dict[tuple[str, str], type[BaseRepo]]:
     registry: dict[tuple[str, str], type[BaseRepo]] = {}
-    for cls in _discover_repo_classes():
+    for cls in concrete_repo_classes():
         key = (cls.table_ref.schema, cls.table_ref.name)
         existing = registry.get(key)
         if existing is not None and existing is not cls:

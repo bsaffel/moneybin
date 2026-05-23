@@ -11,31 +11,15 @@ returning the wrong repo.
 # pyright: reportPrivateUsage=false
 from __future__ import annotations
 
-import importlib
-import pkgutil
-
 import pytest
 
-from moneybin import repositories as repos_pkg
 from moneybin.database import Database
-from moneybin.repositories.base import BaseRepo
+from moneybin.repositories import concrete_repo_classes
 from moneybin.services.undo_dispatch import _REGISTRY, repo_for
 
 
-def _discover_repo_classes() -> list[type[BaseRepo]]:
-    """Independently discover repo classes (oracle for the registry's coverage)."""
-    for mod in pkgutil.iter_modules(repos_pkg.__path__):
-        if mod.name != "base":
-            importlib.import_module(f"{repos_pkg.__name__}.{mod.name}")
-    return [
-        c
-        for c in BaseRepo.__subclasses__()
-        if c.__module__.startswith("moneybin.repositories.")
-    ]
-
-
 def test_every_repo_resolves_to_itself(db: Database) -> None:
-    for cls in _discover_repo_classes():
+    for cls in concrete_repo_classes():
         ref = cls.table_ref
         repo = repo_for(ref.schema, ref.name, db)
         assert isinstance(repo, cls), f"{ref.full_name} resolved to {type(repo)}"
@@ -48,7 +32,7 @@ def test_resolved_repo_is_bound_to_given_db(db: Database) -> None:
 
 def test_registry_covers_every_concrete_repo() -> None:
     registered = set(_REGISTRY.values())
-    discovered = set(_discover_repo_classes())
+    discovered = set(concrete_repo_classes())
     assert discovered, "no repos discovered"
     assert discovered == registered, (
         f"registry out of sync: missing {discovered - registered}, "

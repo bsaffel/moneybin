@@ -9,33 +9,13 @@ PRIMARY KEY in the live catalog, so a typo can't silently break undo targeting.
 
 from __future__ import annotations
 
-import importlib
-import pkgutil
-
-from moneybin import repositories as repos_pkg
 from moneybin.database import Database
-from moneybin.repositories.base import BaseRepo
+from moneybin.repositories import concrete_repo_classes
 from moneybin.tables import TableRef
 
 
-def _concrete_repo_classes() -> list[type[BaseRepo]]:
-    """All BaseRepo subclasses defined under ``moneybin.repositories``.
-
-    Imports every module in the package so the subclasses register, then filters
-    to the package (excludes test-only fakes that live in other modules).
-    """
-    for mod in pkgutil.iter_modules(repos_pkg.__path__):
-        if mod.name != "base":
-            importlib.import_module(f"{repos_pkg.__name__}.{mod.name}")
-    return [
-        c
-        for c in BaseRepo.__subclasses__()
-        if c.__module__.startswith("moneybin.repositories.")
-    ]
-
-
 def test_repos_discovered() -> None:
-    classes = _concrete_repo_classes()
+    classes = concrete_repo_classes()
     names = {c.__name__ for c in classes}
     assert "TransactionNotesRepo" in names
     assert "TransactionTagsRepo" in names
@@ -45,7 +25,7 @@ def test_repos_discovered() -> None:
 
 
 def test_all_repos_declare_metadata() -> None:
-    for cls in _concrete_repo_classes():
+    for cls in concrete_repo_classes():
         table_ref = getattr(cls, "table_ref", None)
         assert isinstance(table_ref, TableRef), f"{cls.__name__} missing table_ref"
         pk_columns = getattr(cls, "pk_columns", None)
@@ -55,7 +35,7 @@ def test_all_repos_declare_metadata() -> None:
 
 
 def test_pk_columns_match_catalog(db: Database) -> None:
-    for cls in _concrete_repo_classes():
+    for cls in concrete_repo_classes():
         ref = cls.table_ref
         row = db.execute(
             "SELECT constraint_column_names FROM duckdb_constraints() "

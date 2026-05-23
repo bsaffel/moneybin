@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import cast
+from typing import Literal, cast
 
 from moneybin import error_codes
 from moneybin.database import Database
@@ -74,12 +74,24 @@ class OperationDetail:
     undo_blocked_by: list[str] | None
 
 
-def _undo_action(operation_id: str, *, confidence: str = "certain") -> RecoveryAction:
+@dataclass(frozen=True)
+class _Undoability:
+    """The three conditions that decide whether one operation can be undone."""
+
+    can_undo: bool
+    blockers: list[str]
+    undone_by: str | None
+    unresolvable: list[str]
+
+
+def _undo_action(
+    operation_id: str, *, confidence: Literal["certain", "suggested"] = "certain"
+) -> RecoveryAction:
     return RecoveryAction(
         tool="system_audit_undo",
         arguments={"operation_id": operation_id},
         rationale=f"Reverse operation {operation_id} as a unit.",
-        confidence="certain" if confidence == "certain" else "suggested",
+        confidence=confidence,
         idempotent=False,  # a second undo of the same op raises already_undone
     )
 
@@ -104,43 +116,29 @@ class UndoService:
         events = self._audit.events_for_operation(operation_id)
         if not events:
             audit_undo_total.labels(outcome="not_found").inc()
-            raise UserError(
-                f"No operation found with id {operation_id!r}.",
-                code=error_codes.UNDO_OPERATION_NOT_FOUND,
-                recovery_actions=[
-                    RecoveryAction(
-                        tool="system_audit_history",
-                        arguments={},
-                        rationale="List recent operations to find a valid id.",
-                        confidence="certain",
-                        idempotent=True,
-                    )
-                ],
-            )
-        undone_by = self._already_undone_by(operation_id)
-        if undone_by is not None:
+            raise self._not_found_error(operation_id)
+        u = self._undoability(operation_id)
+        if u.undone_by is not None:
             audit_undo_total.labels(outcome="already_undone").inc()
             raise UserError(
-                f"Operation {operation_id!r} was already undone by {undone_by!r}.",
+                f"Operation {operation_id!r} was already undone by {u.undone_by!r}.",
                 code=error_codes.UNDO_ALREADY_UNDONE,
-                recovery_actions=[_undo_action(undone_by, confidence="suggested")],
+                recovery_actions=[_undo_action(u.undone_by, confidence="suggested")],
             )
-        unresolvable = self._unresolvable_tables(events)
-        if unresolvable:
+        if u.unresolvable:
             audit_undo_total.labels(outcome="no_path").inc()
             raise UserError(
-                f"Operation {operation_id!r} touched {', '.join(unresolvable)}, "
+                f"Operation {operation_id!r} touched {', '.join(u.unresolvable)}, "
                 "outside the undoable app.* surface — not reversible via undo.",
                 code=error_codes.RECOVERY_NO_PATH,
             )
-        blockers = self._cascade_blockers(operation_id)
-        if blockers:
+        if u.blockers:
             audit_undo_total.labels(outcome="cascade_blocked").inc()
             raise UserError(
                 f"Operation {operation_id!r} cannot be undone: later operations "
                 f"modified the same rows. Undo those first.",
                 code=error_codes.UNDO_CASCADE_BLOCKED,
-                recovery_actions=[_undo_action(b) for b in blockers],
+                recovery_actions=[_undo_action(b) for b in u.blockers],
             )
 
         # Reverse newest-first inside one transaction under a fresh operation id.
@@ -240,61 +238,84 @@ class UndoService:
         """
         events = self._audit.events_for_operation(operation_id)
         if not events:
-            raise UserError(
-                f"No operation found with id {operation_id!r}.",
-                code=error_codes.UNDO_OPERATION_NOT_FOUND,
-                recovery_actions=[
-                    RecoveryAction(
-                        tool="system_audit_history",
-                        arguments={},
-                        rationale="List recent operations to find a valid id.",
-                        confidence="certain",
-                        idempotent=True,
-                    )
-                ],
-            )
-        blockers = self._cascade_blockers(operation_id)
-        can_undo = (
-            self._already_undone_by(operation_id) is None
-            and not blockers
-            and not self._unresolvable_tables(events)
-        )
+            raise self._not_found_error(operation_id)
+        u = self._undoability(operation_id)
         return OperationDetail(
             operation_id=operation_id,
             events=events,
-            can_undo=can_undo,
-            undo_blocked_by=blockers or None,
+            can_undo=u.can_undo,
+            undo_blocked_by=u.blockers or None,
         )
 
     def _summarize(self, row: tuple[object, ...]) -> OperationSummary:
-        operation_id = str(row[0])
-        blockers = self._cascade_blockers(operation_id)
-        undone_by = self._already_undone_by(operation_id)
-        events = self._audit.events_for_operation(operation_id)
-        unresolvable = bool(self._unresolvable_tables(events))
-        can_undo = undone_by is None and not blockers and not unresolvable
-        if can_undo:
+        (
+            op_raw,
+            occurred_at,
+            actor,
+            row_count,
+            is_undo,
+            undoes_op,
+            actions_raw,
+            tables_raw,
+        ) = row
+        operation_id = str(op_raw)
+        u = self._undoability(operation_id)
+        if u.can_undo:
             recovery = [_undo_action(operation_id)]
-        elif blockers:
-            recovery = [_undo_action(b) for b in blockers]
-        elif undone_by is not None:
-            recovery = [_undo_action(undone_by, confidence="suggested")]
+        elif u.blockers:
+            recovery = [_undo_action(b) for b in u.blockers]
+        elif u.undone_by is not None:
+            recovery = [_undo_action(u.undone_by, confidence="suggested")]
         else:
             recovery = []
-        actions = cast("list[str] | None", row[6]) or []
-        tables = cast("list[str | None] | None", row[7]) or []
+        actions = cast("list[str] | None", actions_raw) or []
+        tables = cast("list[str | None] | None", tables_raw) or []
         return OperationSummary(
             operation_id=operation_id,
-            occurred_at=str(row[1]),
-            actor=str(row[2]),
+            occurred_at=str(occurred_at),
+            actor=str(actor),
             actions=sorted(actions),
             tables=sorted(t for t in tables if t is not None),
-            row_count=int(cast("int", row[3])) if row[3] is not None else 0,
-            is_undo=bool(row[4]),
-            undoes_operation_id=None if row[5] is None else str(row[5]),
-            can_undo=can_undo,
-            undo_blocked_by=blockers or None,
+            row_count=int(cast("int", row_count)) if row_count is not None else 0,
+            is_undo=bool(is_undo),
+            undoes_operation_id=None if undoes_op is None else str(undoes_op),
+            can_undo=u.can_undo,
+            undo_blocked_by=u.blockers or None,
             recovery_actions=recovery,
+        )
+
+    @staticmethod
+    def _not_found_error(operation_id: str) -> UserError:
+        """The shared ``UNDO_OPERATION_NOT_FOUND`` error (undo and get)."""
+        return UserError(
+            f"No operation found with id {operation_id!r}.",
+            code=error_codes.UNDO_OPERATION_NOT_FOUND,
+            recovery_actions=[
+                RecoveryAction(
+                    tool="system_audit_history",
+                    arguments={},
+                    rationale="List recent operations to find a valid id.",
+                    confidence="certain",
+                    idempotent=True,
+                )
+            ],
+        )
+
+    def _undoability(self, operation_id: str) -> _Undoability:
+        """Compute the three undo-gating conditions once, for a single operation.
+
+        Shared by ``undo`` (which branches on the individual fields to raise its
+        specialized errors), ``get``, and ``history``'s per-operation summary — so
+        "what makes an operation undoable" lives in exactly one place.
+        """
+        undone_by = self._already_undone_by(operation_id)
+        blockers = self._cascade_blockers(operation_id)
+        unresolvable = self._unresolvable_tables(operation_id)
+        return _Undoability(
+            can_undo=undone_by is None and not blockers and not unresolvable,
+            blockers=blockers,
+            undone_by=undone_by,
+            unresolvable=unresolvable,
         )
 
     def _already_undone_by(self, operation_id: str) -> str | None:
@@ -306,14 +327,22 @@ class UndoService:
         ).fetchone()
         return str(row[0]) if row is not None else None
 
-    def _unresolvable_tables(self, events: list[AuditEvent]) -> list[str]:
-        """``schema.table`` of any mutated row no repo owns (sorted, deduped)."""
-        return sorted({
-            f"{e.target_schema}.{e.target_table}"
-            for e in events
-            if e.target_id is not None
-            and not is_registered(e.target_schema or "", e.target_table or "")
-        })
+    def _unresolvable_tables(self, operation_id: str) -> list[str]:
+        """``schema.table`` of any mutated row no repo owns (sorted, deduped).
+
+        Queries the distinct targets directly rather than loading and JSON-decoding
+        every row's full before/after payload just to derive this set.
+        """
+        rows = self._db.conn.execute(
+            "SELECT DISTINCT target_schema, target_table FROM app.audit_log "
+            "WHERE operation_id = ? AND target_id IS NOT NULL",
+            [operation_id],
+        ).fetchall()
+        return sorted(
+            f"{schema}.{table}"
+            for schema, table in rows
+            if not is_registered(str(schema or ""), str(table or ""))
+        )
 
     def _cascade_blockers(self, operation_id: str) -> list[str]:
         """Operation ids that modified this op's rows *after* it, newest first.
