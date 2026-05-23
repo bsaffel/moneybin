@@ -18,6 +18,7 @@ VALID_PREFIXES = (
     "infra_",
     "sync_",
     "gsheet_",
+    "sql_",
 )
 
 

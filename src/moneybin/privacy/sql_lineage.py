@@ -162,9 +162,9 @@ def get_current_schema_snapshot(db: Database) -> SchemaSnapshot:
     version = _schema_version(db)
     rows = db.execute(
         """
-        SELECT table_schema, table_name, column_name
-        FROM information_schema.columns
-        WHERE table_schema IN ('core', 'app')
+        SELECT schema_name, table_name, column_name
+        FROM duckdb_columns()
+        WHERE schema_name IN ('core', 'app')
         """
     ).fetchall()
     columns = frozenset((str(s), str(t), str(c)) for s, t, c in rows)
@@ -220,7 +220,12 @@ def _qualified(tree: exp.Expr, snapshot: SchemaSnapshot) -> exp.Expr:
 
 
 def expand_star(tree: exp.Expr, snapshot: SchemaSnapshot) -> exp.Expr:
-    """Expand ``*`` / ``t.*`` against the schema; returns a new qualified tree."""
+    """Expand ``*`` / ``t.*`` against the schema; returns a new qualified tree.
+
+    Public alias for ``_qualified`` — gives callers a stable name for the
+    star-expansion step (which sqlglot folds into ``qualify``) without exposing
+    the internal helper.
+    """
     return _qualified(tree, snapshot)
 
 

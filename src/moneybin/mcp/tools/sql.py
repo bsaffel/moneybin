@@ -13,6 +13,7 @@ from typing import Any
 import duckdb
 from fastmcp import FastMCP
 
+from moneybin import error_codes
 from moneybin.database import get_database
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
@@ -65,7 +66,7 @@ def sql_query(query: str) -> ResponseEnvelope[Any]:
     error = validate_read_only_query(query)
     if error:
         return build_error_envelope(
-            error=UserError(error, code="invalid_query"),
+            error=UserError(error, code=error_codes.SQL_INVALID_QUERY),
             sensitivity="low",
         )
 
@@ -83,25 +84,18 @@ def sql_query(query: str) -> ResponseEnvelope[Any]:
         return build_error_envelope(
             error=UserError(
                 "Could not parse SQL.",
-                code="invalid_query",
+                code=error_codes.SQL_INVALID_QUERY,
                 details={"detail": str(e)},
             ),
             sensitivity="low",
         )
-    except SqlSchemaError as e:
+    # SqlSchemaError comes from the lineage qualify step; CatalogException from
+    # DuckDB at execute time. Both mean "table/column doesn't exist" — one envelope.
+    except (SqlSchemaError, duckdb.CatalogException) as e:
         return build_error_envelope(
             error=UserError(
                 "Unknown table or column.",
-                code="unknown_table",
-                details={"detail": str(e)},
-            ),
-            sensitivity="low",
-        )
-    except duckdb.CatalogException as e:
-        return build_error_envelope(
-            error=UserError(
-                "Unknown table or column.",
-                code="unknown_table",
+                code=error_codes.SQL_UNKNOWN_TABLE,
                 details={"detail": str(e)},
             ),
             sensitivity="low",
@@ -110,7 +104,7 @@ def sql_query(query: str) -> ResponseEnvelope[Any]:
         return build_error_envelope(
             error=UserError(
                 "Query execution failed.",
-                code="query_error",
+                code=error_codes.SQL_QUERY_ERROR,
                 details={"detail": str(e)},
             ),
             sensitivity="low",
@@ -189,7 +183,7 @@ def sql_schema(table: str | None = None) -> ResponseEnvelope[Any]:
         return build_error_envelope(
             error=UserError(
                 f"Unknown table: {table}",
-                code="unknown_table",
+                code=error_codes.SQL_UNKNOWN_TABLE,
                 hint=f"Available tables: {known}",
                 details={"available_tables": available},
             ),

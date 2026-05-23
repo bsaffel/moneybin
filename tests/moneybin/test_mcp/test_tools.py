@@ -175,5 +175,5 @@ class TestToolRegistration:
         result = await sql_schema(table="core.nonexistent")
         parsed = result.to_dict()
         assert parsed["status"] == "error"
-        assert parsed["error"]["code"] == "unknown_table"
+        assert parsed["error"]["code"] == "sql_unknown_table"
         assert "core.fct_transactions" in parsed["error"]["details"]["available_tables"]
