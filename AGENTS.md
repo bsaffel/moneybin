@@ -171,7 +171,7 @@ Files in `.claude/rules/` auto-load via `paths:` frontmatter — path-scoped loa
 | `identifiers.md` | Content hashes, truncated UUIDs, source IDs, semantic slugs |
 | `documentation.md` | Diagram conventions (Mermaid over ASCII) |
 | `shipping.md` | Post-implementation checklist (CHANGELOG, roadmap, features, README, INDEX) — loads when editing those |
-| `surface-design.md` | Cross-surface operation-shape taxonomy, verb vocabulary, audience layering — loads when touching mcp/cli/services or the surface specs |
+| `surface-design.md` | Cross-surface operation-shape taxonomy, verb vocabulary, audience layering — loads when touching mcp/cli/services code or the moneybin-mcp/cli/capabilities + mcp-architecture specs |
 
 ### Always loaded (workflow rules)
 

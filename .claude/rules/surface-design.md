@@ -1,6 +1,6 @@
 ---
 description: "Cross-surface operation-shape taxonomy, verb vocabulary, audience layering (MCP / CLI / REST). Consult before adding, renaming, or restructuring a tool, command, or endpoint."
-paths: ["src/moneybin/mcp/**", "src/moneybin/cli/**", "src/moneybin/services/**", "src/moneybin/main.py", "docs/specs/moneybin-mcp.md", "docs/specs/moneybin-cli.md", "docs/specs/moneybin-capabilities.md"]
+paths: ["src/moneybin/mcp/**", "src/moneybin/cli/**", "src/moneybin/services/**", "docs/specs/moneybin-mcp.md", "docs/specs/moneybin-cli.md", "docs/specs/moneybin-capabilities.md", "docs/specs/mcp-architecture.md"]
 ---
 
 # Surface Design: Tools, Commands, and APIs
