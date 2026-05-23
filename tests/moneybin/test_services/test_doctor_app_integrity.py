@@ -394,7 +394,7 @@ def test_audit_coverage_passes_for_repo_mutated_tabular_format(db: Database) -> 
     assert result.status == "pass"
 
 
-_MATCH_DECISIONS_WATERMARK = "COALESCE(reversed_at, decided_at)"
+_MATCH_DECISIONS_WATERMARK = "GREATEST(decided_at, reversed_at)"
 
 
 def test_audit_coverage_passes_for_repo_mutated_match_decision(db: Database) -> None:
@@ -407,7 +407,7 @@ def test_audit_coverage_passes_for_repo_mutated_match_decision(db: Database) -> 
 
 def test_audit_coverage_flags_bypass_reverse_match_decision(db: Database) -> None:
     # Insert via the repo (audited), then a RAW reverse that bumps reversed_at
-    # without an audit row. The COALESCE(reversed_at, decided_at) watermark
+    # without an audit row. The GREATEST(decided_at, reversed_at) watermark
     # advances past the insert's audit, so the bypass reversal must be flagged —
     # a plain decided_at watermark would miss it.
     _insert_match(MatchDecisionsRepo(db), match_id="mrev")
@@ -421,6 +421,24 @@ def test_audit_coverage_flags_bypass_reverse_match_decision(db: Database) -> Non
     )
     assert result.status == "fail"
     assert "mrev" in result.affected_ids
+
+
+def test_audit_coverage_flags_bypass_decided_at_after_reverse(db: Database) -> None:
+    # The case COALESCE(reversed_at, decided_at) would miss: a reversed row whose
+    # decided_at is then bumped by a RAW update (no audit). GREATEST tracks the
+    # later of the two columns, so the post-reversal bump is still flagged.
+    repo = MatchDecisionsRepo(db)
+    _insert_match(repo, match_id="mpost")
+    repo.reverse("mpost", reversed_by="user", actor="cli")  # audited reverse
+    db.execute(
+        "UPDATE app.match_decisions "  # noqa: S608  # test input, not executing user SQL
+        "SET decided_at = now()::TIMESTAMP + INTERVAL 1 HOUR WHERE match_id = 'mpost'"
+    )
+    result = DoctorService(db)._run_app_audit_coverage(
+        MATCH_DECISIONS, "match_id", updated_expr=_MATCH_DECISIONS_WATERMARK
+    )
+    assert result.status == "fail"
+    assert "mpost" in result.affected_ids
 
 
 def test_audit_coverage_passes_for_repo_mutated_import(db: Database) -> None:

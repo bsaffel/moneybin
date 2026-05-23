@@ -129,12 +129,12 @@ class DoctorService:
         Tables without an ``updated_at`` column pass their natural watermark:
         ``proposed_rules`` → ``proposed_at``, ``transaction_categories`` →
         ``categorized_at``, ``match_decisions`` →
-        ``COALESCE(reversed_at, decided_at)`` (so a bypass reversal is caught,
-        not just a bypass insert). ``balance_assertions`` has a composite PK, so
-        it passes ``pk_expr`` to project the same composite ``target_id`` its repo
-        emits. Those watermarks catch bypass INSERTs (and, for match_decisions,
-        reversals); other bypass UPDATEs that don't advance the watermark are the
-        lint rule's job — the heuristic limitation the helper documents.
+        ``GREATEST(decided_at, reversed_at)`` (the latest of any mutation, so a
+        bypass insert, status update, *or* reversal is caught). ``balance_assertions``
+        has a composite PK, so it passes ``pk_expr`` to project the same composite
+        ``target_id`` its repo emits. Those watermarks catch bypass mutations that
+        advance the watermark; other bypass UPDATEs that don't are the lint rule's
+        job — the heuristic limitation the helper documents.
         """
         return [
             self._run_app_audit_coverage(USER_CATEGORIES, "category_id", full=full),
@@ -168,7 +168,7 @@ class DoctorService:
             self._run_app_audit_coverage(
                 MATCH_DECISIONS,
                 "match_id",
-                updated_expr="COALESCE(reversed_at, decided_at)",
+                updated_expr="GREATEST(decided_at, reversed_at)",
                 full=full,
             ),
             self._run_app_audit_coverage(IMPORTS, "import_id", full=full),
@@ -203,9 +203,10 @@ class DoctorService:
         ``transaction_categories`` → ``categorized_at``). ``updated_expr`` (a
         code-supplied SQL expression) overrides ``updated_col`` when a single
         column can't express the latest-mutation watermark — e.g.
-        ``match_decisions`` uses ``COALESCE(reversed_at, decided_at)`` so a raw
-        bypass *reversal* (which bumps ``reversed_at``, not ``decided_at``) is
-        still flagged.
+        ``match_decisions`` uses ``GREATEST(decided_at, reversed_at)`` (DuckDB's
+        ``GREATEST`` ignores NULL, so this is the later of the two timestamps, or
+        ``decided_at`` when never reversed) so a raw bypass that bumps *either*
+        column is flagged.
 
         ``pk_expr`` overrides how the row's ``target_id`` is projected: most
         tables key on a single ``pk_col``, but a composite-PK table (e.g.
@@ -235,25 +236,27 @@ class DoctorService:
             if pk_expr is not None
             else exp.to_identifier(pk_col, quoted=True).sql("duckdb")
         )
-        # `updated_expr` (a code-supplied SQL expression for the watermark) wins
-        # over the single quoted column when present; both are code constants.
-        safe_updated = (
+        # The watermark SQL is either a code-supplied expression (`updated_expr`,
+        # used raw — a trusted constant, NOT a sanitized value) or a single
+        # sqlglot-quoted column (`updated_col`). Named `watermark_sql`, not
+        # `safe_*`, precisely because the expr branch is unsanitized by design.
+        watermark_sql = (
             updated_expr
             if updated_expr is not None
             else exp.to_identifier(updated_col, quoted=True).sql("duckdb")
         )
         if full:
             sampled_sql = (
-                f"SELECT {safe_pk} AS pk, {safe_updated} AS updated_at "  # noqa: S608  # TableRef + sqlglot-quoted identifiers
+                f"SELECT {safe_pk} AS pk, {watermark_sql} AS updated_at "  # noqa: S608  # TableRef + sqlglot-quoted pk + trusted watermark_sql
                 f"FROM {table_ref.full_name}"
             )
             sample_params: list[object] = []
         else:
             sampled_sql = (
-                f"SELECT {safe_pk} AS pk, {safe_updated} AS updated_at "  # noqa: S608  # TableRef + sqlglot-quoted identifiers
+                f"SELECT {safe_pk} AS pk, {watermark_sql} AS updated_at "  # noqa: S608  # TableRef + sqlglot-quoted pk + trusted watermark_sql
                 f"FROM {table_ref.full_name} "
-                f"WHERE {safe_updated} >= (now()::TIMESTAMP - (? * INTERVAL 1 DAY)) "
-                f"ORDER BY {safe_updated} DESC LIMIT ?"
+                f"WHERE {watermark_sql} >= (now()::TIMESTAMP - (? * INTERVAL 1 DAY)) "
+                f"ORDER BY {watermark_sql} DESC LIMIT ?"
             )
             sample_params = [
                 settings.audit_coverage_lookback_days,
