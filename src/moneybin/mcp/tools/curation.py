@@ -6,7 +6,7 @@ owns transactional integrity and audit emission. The MCP wrapper only
 projects service results into JSON-safe dicts and the standard
 ``{summary, data, actions}`` envelope.
 
-Sensitivity tiers (per ``.claude/rules/mcp-server.md``):
+Sensitivity tiers (per ``.claude/rules/mcp.md``):
 
 - Mutations against transaction-keyed state (notes, tags, splits, manual
   entries) and ``import_labels_set`` are tagged ``medium`` because the

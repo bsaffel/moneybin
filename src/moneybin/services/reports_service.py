@@ -3,7 +3,7 @@
 CLI commands and MCP tools both read the reports.* views through this
 service per the architecture rule that MCP tools and CLI commands are
 thin wrappers around a shared service layer (see
-``.claude/rules/mcp-server.md`` "Architecture" and ``.claude/rules/cli.md``
+``.claude/rules/mcp.md`` "Architecture" and ``.claude/rules/cli.md``
 "Core Principle"). Each method constructs and returns a typed payload
 dataclass so callers can iterate payload.rows with attribute access.
 

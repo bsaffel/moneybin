@@ -315,7 +315,7 @@ CLI footnote: `moneybin db query` (the CLI raw-SQL command) wraps `sql_query` an
 - **No writes to `core.*`.** Canonical models are rebuilt by SQLMesh; agents trigger that via `refresh_run`, never by direct write.
 - **No DDL.** `CREATE`, `ALTER`, `DROP` are rejected by `sql_query`.
 - **No app-state mutations through `sql_query`.** Writes to `app.*` flow through dedicated tools (`categories_set`, `merchants_create`, `transactions_notes_add`, …) so the audit log captures intent.
-- **No secret material.** Tools that touch passphrases, encryption keys, or sync credentials are CLI-only by design. See `.claude/rules/mcp-server.md` "When CLI-only is justified" for the policy.
+- **No secret material.** Tools that touch passphrases, encryption keys, or sync credentials are CLI-only by design. See `.claude/rules/mcp.md` "When CLI-only is justified" for the policy.
 - **No filesystem escape.** `import_files` validates paths before handing them to DuckDB readers.
 
 ## Transport

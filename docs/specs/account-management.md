@@ -5,7 +5,7 @@ implemented
 
 ## Goal
 
-Own the `accounts` entity namespace end-to-end for v1: list/show, user-controlled display preferences (rename), lifecycle ops (archive/unarchive, include/exclude from net worth), and the per-account metadata layer modeled on Plaid's account schema. Provide the `app.account_settings` table that other specs (notably [`net-worth.md`](net-worth.md)) reference for per-account configuration. Account merging is explicitly deferred — see [Out of Scope](#out-of-scope).
+Own the `accounts` entity namespace end-to-end for v1: list/show, user-controlled display preferences (rename), lifecycle ops (archive/unarchive, include/exclude from net worth), and the per-account metadata layer modeled on Plaid's account schema. Provide the `app.account_settings` table that other specs (notably [`reports-net-worth.md`](reports-net-worth.md)) reference for per-account configuration. Account merging is explicitly deferred — see [Out of Scope](#out-of-scope).
 
 ## Background
 
@@ -13,12 +13,12 @@ Own the `accounts` entity namespace end-to-end for v1: list/show, user-controlle
 
 The v1 surface has no answer for any of this. Users see raw account IDs, every account counts toward net worth, and there is no place to record metadata that isn't carried by the import. The [v2 CLI restructure](moneybin-cli.md) introduces the `accounts` top-level group as the home for these workflows; this spec defines what lives there.
 
-Net worth ([`net-worth.md`](net-worth.md)) ships in the same release because the two specs share the `accounts` namespace and the `app.account_settings` table. Splitting them would mean two churning passes over the same files and a half-formed `accounts` group landing first. See [`net-worth.md` §Coordination](net-worth.md#coordination-with-account-managementmd) for the artifact ownership table.
+Net worth ([`reports-net-worth.md`](reports-net-worth.md)) ships in the same release because the two specs share the `accounts` namespace and the `app.account_settings` table. Splitting them would mean two churning passes over the same files and a half-formed `accounts` group landing first. See [`reports-net-worth.md` §Coordination](reports-net-worth.md#coordination-with-account-managementmd) for the artifact ownership table.
 
 The metadata schema mirrors **Plaid's account model** (Plaid Parity), so when [`sync-plaid.md`](sync-plaid.md) ships it can populate the same fields automatically with no migration.
 
 Related specs and docs:
-- [`net-worth.md`](net-worth.md) — consumes `app.account_settings.include_in_net_worth` and `archived` for `agg_net_worth`; ships bundled with this spec
+- [`reports-net-worth.md`](reports-net-worth.md) — consumes `app.account_settings.include_in_net_worth` and `archived` for `agg_net_worth`; ships bundled with this spec
 - [`moneybin-cli.md`](moneybin-cli.md) v2 — defines the `accounts` top-level group; this spec extends with the unified `accounts set` (moneybin-cli.md amendment landed alongside)
 - [`moneybin-mcp.md`](moneybin-mcp.md) v2 — `accounts` / `accounts_get` already enumerated; this spec adds the entity-mutation tools and `accounts_summary`
 - [`privacy-data-protection.md`](privacy-data-protection.md) — settings table encrypted at rest; `last_four` and `credit_limit` are PII-adjacent and require sensitivity-tier handling
@@ -103,7 +103,7 @@ Consumers (CLI, MCP, `agg_net_worth`) read from `core.dim_accounts` and get the 
 
 ## CLI Interface
 
-The `accounts` top-level group is created by this spec. All commands support `--output json|table` (default `table`) and `-q` per `.claude/rules/cli.md`. Balance subcommands (`accounts balance …`) live inside the same `accounts.py` module but are owned by [`net-worth.md`](net-worth.md).
+The `accounts` top-level group is created by this spec. All commands support `--output json|table` (default `table`) and `-q` per `.claude/rules/cli.md`. Balance subcommands (`accounts balance …`) live inside the same `accounts.py` module but are owned by [`reports-net-worth.md`](reports-net-worth.md).
 
 ### Read commands
 
@@ -263,7 +263,7 @@ Synthetic persona with multiple account types. Hand-derived expectations:
 
 ## Dependencies
 
-- [`net-worth.md`](net-worth.md) — bundled co-release; consumes `app.account_settings.include_in_net_worth` and `archived`. Owns `accounts balance *` subcommands within `accounts.py`.
+- [`reports-net-worth.md`](reports-net-worth.md) — bundled co-release; consumes `app.account_settings.include_in_net_worth` and `archived`. Owns `accounts balance *` subcommands within `accounts.py`.
 - [`database-migration.md`](database-migration.md) — new table requires migration entry
 - [`privacy-data-protection.md`](privacy-data-protection.md) — `last_four` and `credit_limit` are PII-adjacent; sensitivity-tier handling enforced
 - [`moneybin-mcp.md`](moneybin-mcp.md) — registration of new write tools and sensitivity tiers
@@ -306,7 +306,7 @@ Tests:
 
 - `src/moneybin/sql/schema.py` — register `app_account_settings.sql`
 - `src/moneybin/services/account_service.py` — add settings CRUD, soft-validation classifier, summary aggregator; extend list / show / get with new fields
-- `src/moneybin/cli/main.py` — register the new top-level `accounts` group; remove the legacy `track` registration if [`net-worth.md`](net-worth.md) hasn't already (the two specs split the cleanup)
+- `src/moneybin/cli/main.py` — register the new top-level `accounts` group; remove the legacy `track` registration if [`reports-net-worth.md`](reports-net-worth.md) hasn't already (the two specs split the cleanup)
 - `src/moneybin/cli/commands/stubs.py` — drop `track_app` and its sub-stubs (replaced by real `accounts` and `reports` groups; `recurring`, `investments`, `budget` stubs move to their v2 homes per `moneybin-cli.md` v2)
 - `sqlmesh/models/core/dim_accounts.sql` — add `LEFT JOIN app.account_settings`; add the new columns per [Modified SQLMesh model](#modified-sqlmesh-model-coredim_accounts)
 - `src/moneybin/mcp/tools/__init__.py` (and per-tool registry) — register `accounts_summary` and `accounts_set` (single write tool covering structural + behavioral fields after the Group 13 collapse); extend `accounts` with `redacted` param and revised sensitivity
@@ -328,4 +328,4 @@ Tests:
 7. **`accounts_summary` exists alongside `accounts://summary` resource.** Many MCP clients don't surface resources; the tool form is universally accessible.
 8. **`accounts` defaults to `medium` sensitivity** because `last_four` and `credit_limit` are PII-adjacent. `redacted: true` downgrades to `low`.
 9. **Account merge deferred.** v1 ships archive as the only lifecycle terminator. Merge requires recomputing consumer views of `account_id` and is not in scope.
-10. **Bundled landing with `net-worth.md`.** Shared `accounts` namespace and `app.account_settings` cross-reference. See [`net-worth.md` §Coordination](net-worth.md#coordination-with-account-managementmd).
+10. **Bundled landing with `reports-net-worth.md`.** Shared `accounts` namespace and `app.account_settings` cross-reference. See [`reports-net-worth.md` §Coordination](reports-net-worth.md#coordination-with-account-managementmd).

@@ -32,7 +32,7 @@ catalog is expected to land at ~30–60 capabilities once populated.
 - Each row is one capability.
 - Each surface column shows the **registered name** reaching this
   capability on that surface, OR an **exemption citation** linking back
-  to `.claude/rules/mcp-server.md` "When CLI-only is justified."
+  to `.claude/rules/mcp.md` "When CLI-only is justified."
 - The **Status** column indicates:
   - `live` — reachable today on every non-exempt surface.
   - `pending-build (<surface>)` — capability is real but the named
@@ -109,7 +109,7 @@ when client-driven progressive disclosure was retired (see
 [`mcp-architecture.md`](mcp-architecture.md) §3); the current
 rows 12–13 are unrelated and were added 2026-05-17 with the
 rules-CLI parity work. Row 17 added 2026-05-19: transform_* de-registered
-from MCP (PR #185) — operator territory per mcp-server.md category 2.
+from MCP (PR #185) — operator territory per mcp.md category 2.
 `sync_schedule_set/show/remove` stubs removed from MCP (PR #185) — were
 not-implemented placeholders with no backing spec. Rows 23–29 added
 2026-05-21 with the connect-gsheet PR; rows 30–31 capture the
@@ -124,7 +124,7 @@ CLI command and non-interactive `transactions review --type matches
 
 ## Exemption categories
 
-Defined in [`.claude/rules/mcp-server.md`](../../.claude/rules/mcp-server.md)
+Defined in [`.claude/rules/mcp.md`](../../.claude/rules/mcp.md)
 "When CLI-only is justified":
 
 | # | Category                  | Short description                                                           | Status            |
@@ -160,10 +160,10 @@ When a PR adds, renames, or removes a tool or command:
    actually does — reviewer responsibility, not author judgment.
 4. **If exempting a surface,** cite the category by number and ensure
    the citation is consistent with
-   [`.claude/rules/mcp-server.md`](../../.claude/rules/mcp-server.md).
+   [`.claude/rules/mcp.md`](../../.claude/rules/mcp.md).
 
 PR review enforces 1 and 2; the surface-change-discipline rule in
-`.claude/rules/mcp-server.md` cites this contract.
+`.claude/rules/mcp.md` cites this contract.
 
 ## What this spec is NOT
 
@@ -182,4 +182,4 @@ PR review enforces 1 and 2; the surface-change-discipline rule in
 - [`moneybin-cli.md`](moneybin-cli.md) — CLI command taxonomy and conventions.
 - [`mcp-architecture.md`](mcp-architecture.md) — Design-level MCP architecture (not surface-level).
 - [`architecture-shared-primitives.md`](architecture-shared-primitives.md) — Cross-protocol symmetry contract.
-- [`.claude/rules/mcp-server.md`](../../.claude/rules/mcp-server.md) — Surface change discipline and CLI-only justifications.
+- [`.claude/rules/mcp.md`](../../.claude/rules/mcp.md) — Surface change discipline and CLI-only justifications.
