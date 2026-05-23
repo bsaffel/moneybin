@@ -388,6 +388,48 @@ tools ship here — those are PR 3.
 - Undo emission: each undo writes a new audit row per affected entity with `is_undo=TRUE`, `undoes_operation_id=<original>`, and a fresh `operation_id` of its own. The returned summary includes that new operation_id so the undo itself is queryable and undoable.
 - Tests: round-trip per Invariant 10 protected table; cascade-blocked scenario; double-undo (`undo_already_undone`); `undo_operation_not_found`.
 
+#### PR 3 — as implemented (deviations from the design above)
+
+Shipped on `feat/data-recovery-undo`. Status stays `in-progress` (PR 4+ remain).
+Deviations from the design as written, with rationale:
+
+- **notes/tags/splits repo-ified first.** The inverse is synthesized generically
+  from each audit row's full before/after image, which requires every audited
+  `app.*` table to have a repo. `transaction_notes`, `transaction_tags`, and
+  `transaction_splits` previously mutated via raw SQL in `TransactionService`;
+  they now flow through `TransactionNotesRepo` / `TransactionTagsRepo` /
+  `TransactionSplitsRepo`. Audit shape changes that fell out of this: full-row
+  capture (not partial diffs); no `noop` audit rows for idempotent tag re-adds;
+  `split.clear` emits one `split.remove` per row so each split is individually
+  reversible.
+- **One generic reverser, no per-repo overrides.** `BaseRepo.undo_event` keys its
+  WHERE clause on `pk_columns` and binds JSON/array columns natively (DuckDB
+  accepts `dict`/`list`), so `match_decisions` (JSON `match_signals`) needs no
+  override. The earlier sketch of a `MatchDecisionsRepo.undo_event` delegating to
+  the domain `reverse()` was dropped — it would mis-handle undo-of-insert and
+  undo-of-status-change and re-trigger the double-reverse timestamp bug; the
+  generic row-restore is strictly more correct.
+- **Cascade excludes already-reversed work.** A later operation blocks only if it
+  is a *live forward* mutation: undo rows (`is_undo=TRUE`) and forward ops that
+  have themselves been undone do not block. Without this, the documented walk
+  (undo the blocker, then the original) could never resolve.
+- **`recovery_no_path` for raw-targeted operations.** An operation that touched a
+  table outside the undoable `app.*` surface (e.g. `manual.create` →
+  `raw.manual_transactions`) is refused with `recovery_no_path` rather than
+  crashing; the recovery is re-import, per the "Undoing `import_revert`" deferred
+  note below.
+- **`history` summarizes by action verb.** The operation context records
+  `operation_id` and `actor` but not the originating tool name/arguments, so
+  history entries carry `actions[]` (distinct verbs) rather than the spec's
+  `tool`/`arguments` fields, plus structured `can_undo` / `undo_blocked_by`.
+  `include_undone` toggles visibility of the undo operations themselves
+  (`is_undo=TRUE`).
+- **`transactions matches undo` not migrated.** Re-pointing that command at
+  `system_audit_undo` stays PR 5 work (it keys on `match_id`, not `operation_id`).
+- **Service-level integration coverage** lives in `test_undo_service.py` (real DB,
+  real repos, no mocks) plus the surface E2E in `test_e2e_transaction_curation.py`,
+  rather than separate `tests/integration/test_audit_undo*.py` files.
+
 ### PR 4 — Doctor recipe registry + recipes for existing audits
 
 - `src/moneybin/audits/recipes/__init__.py`, `registry.py`, plus one Python module per existing audit (per Req 7).
