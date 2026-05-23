@@ -196,6 +196,27 @@ class AuditService:
         ).fetchall()
         return [self._row_to_event(r) for r in rows]
 
+    def events_for_operation(self, operation_id: str) -> list[AuditEvent]:
+        """Return every audit row written under one ``operation_id``, oldest first.
+
+        The undo consumer (REC-PR3) loads an operation as a unit: ``UndoService``
+        reverses the rows newest-first and ``system_audit_get`` exposes their
+        full before/after.
+        """
+        rows = self._db.conn.execute(
+            """
+            SELECT audit_id, occurred_at, actor, action,
+                   target_schema, target_table, target_id,
+                   before_value, after_value, parent_audit_id,
+                   operation_id, context_json, is_undo, undoes_operation_id
+              FROM app.audit_log
+             WHERE operation_id = ?
+             ORDER BY occurred_at ASC, audit_id ASC
+            """,
+            [operation_id],
+        ).fetchall()
+        return [self._row_to_event(r) for r in rows]
+
     def chain_for(self, audit_id: str) -> list[AuditEvent]:
         """Return the parent event plus all events whose ``parent_audit_id`` matches."""
         rows = self._db.conn.execute(

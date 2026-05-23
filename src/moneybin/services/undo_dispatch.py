@@ -54,6 +54,11 @@ def _build_registry() -> dict[tuple[str, str], type[BaseRepo]]:
 _REGISTRY: dict[tuple[str, str], type[BaseRepo]] = _build_registry()
 
 
+def is_registered(schema: str, table: str) -> bool:
+    """Whether a repo owns ``schema.table`` (i.e. it sits on the undoable surface)."""
+    return (schema, table) in _REGISTRY
+
+
 def repo_for(schema: str, table: str, db: Database) -> BaseRepo:
     """Return a repo instance that owns ``schema.table``, bound to ``db``.
 
