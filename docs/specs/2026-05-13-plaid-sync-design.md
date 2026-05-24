@@ -905,7 +905,7 @@ Client PR (this branch) and server PR ship paired. Until the server endpoints la
 - `sync schedule` commands (Phase 2 — automation track in `sync-overview.md` build order)
 - E2E encryption (Phase 3 — gated on server implementing client-side key exchange). `sync key rotate` stub stays in CLI. Open design question for Phase 3: whether key rotation can be MCP-exposed safely (no passphrase material in the LLM context — the agent triggers rotation; new keys generated locally; public key goes server-via-HTTPS — but operational consistency with `db_unlock`/`db_rotate_key` (which DO require passphrases) argues for CLI-only uniformity). Decision deferred to the Phase 3 spec.
 - Post-quantum cryptography (Phase 4 — designed in `sync-overview.md`)
-- Plaid Investments product (separate spec, gated on `investment-tracking.md`)
+- Plaid Investments product (separate spec, gated on `investments-overview.md`)
 - Plaid Liabilities product
 - SimpleFIN, MX, TrueLayer integration (Phase 2/3 — `connect_type` discriminator is in place for forward compat; `POST /sync/connect/submit` endpoint and the `token_paste` client path are NOT in this PR)
 - Local web server callback for OAuth on the CLI (Phase 1 polish — no server API changes needed; deferred)

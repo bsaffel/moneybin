@@ -384,7 +384,7 @@ Env var overrides follow the `MONEYBIN_` convention:
 - **Transfer detection** — pillar B, separate spec (`matching-transfer-detection.md`). Different semantics: links two records rather than collapsing them.
 - **Per-field or per-transaction merge overrides** — v1 uses a single global source-priority ranking. Enhancement spec if needed.
 - **ML/learned matching** — v1 uses deterministic scoring. Learned promotions deferred per umbrella spec.
-- **Investment transaction dedup** — depends on investment-tracking spec.
+- **Investment transaction dedup** — depends on `investments-data-model.md`.
 - **Account-level dedup** — `dim_accounts` already handles this via `account_id` partitioning.
 - **MCP tools** — Phase 2. CLI-only for v1.
 

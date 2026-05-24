@@ -184,11 +184,13 @@ description: |
   wash-sale detection, estimated quarterly payments, qualified dividends.
 capabilities:
   writes:
-    - app.us_tax_*               # filing-status config, lot-selection overrides
+    - app.us_tax_*               # filing-status config, wash-sale adjustments
     - reports.us_tax_*           # Schedule D, wash-sale flags
   reads:
     - core.dim_holdings
     - core.fct_investment_transactions
+    - core.fct_realized_gains    # Schedule D inputs (realized gain/loss per lot)
+    - app.lot_selections         # core lot-selection overrides (cost basis is core, not this package)
     - core.fct_transactions      # deductible-categorization data
     - core.dim_currencies
   network: []
