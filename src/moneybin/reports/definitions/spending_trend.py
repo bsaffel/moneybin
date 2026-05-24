@@ -53,6 +53,9 @@ def spending_trend(
         reports_spending(category="Groceries")
         reports_spending(from_month="2023-01", to_month="2023-12")
     """
+    # Validate so agents see the allowed values and can't pass arbitrary strings;
+    # the view returns all three comparison columns regardless, so `compare` has
+    # no effect on the SQL below (caller-side intent only — the raise is reachable).
     if compare not in SPENDING_COMPARES:
         raise ValueError(f"Unknown compare: {compare}")
     from_month, to_month, period, hint = resolve_window(from_month, to_month)

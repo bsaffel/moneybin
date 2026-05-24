@@ -13,7 +13,7 @@ from moneybin.database import Database
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.mcp.privacy import tier_to_sensitivity
 from moneybin.privacy.taxonomy import DataClass, Tier
-from moneybin.reports._framework.contract import ReportQuery
+from moneybin.reports._framework.contract import ParamSpec, ReportQuery, ReportSpec
 from moneybin.reports._framework.execute import ReportResult
 from moneybin.reports._framework.introspect import build_spec
 from moneybin.reports._framework.mcp_register import make_tool_fn, register_report_mcp
@@ -55,6 +55,29 @@ def test_make_tool_fn_signature_matches_params() -> None:
     )
     assert sig.parameters["top"].default == 25
     assert sig.parameters["month"].default is None
+
+
+def test_make_tool_fn_uses_any_for_unannotated_params() -> None:
+    # A param with no resolved annotation (ParamSpec.annotation is None) falls
+    # back to ``Any`` in the generated MCP signature and __annotations__ so
+    # FastMCP accepts it rather than rejecting an empty annotation.
+    from typing import Any
+
+    spec = ReportSpec(
+        name="unannotated",
+        description="Per-account summary.",
+        view=_VIEW,
+        runner=_runner,
+        classes={"account_id": DataClass.ACCOUNT_IDENTIFIER},
+        params=(
+            ParamSpec(
+                name="raw", annotation=None, default=None, required=False, help=""
+            ),
+        ),
+    )
+    fn = make_tool_fn(spec)
+    assert inspect.signature(fn).parameters["raw"].annotation is Any
+    assert fn.__annotations__["raw"] is Any
 
 
 def test_make_tool_fn_builds_envelope_from_result() -> None:
