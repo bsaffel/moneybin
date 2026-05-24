@@ -241,3 +241,24 @@ def test_build_spec_rejects_empty_classes() -> None:
     # Every report must declare its column privacy contract (ADR-013).
     with pytest.raises(ValueError, match="classes"):
         build_spec(_sample, name="sample", view=REPORTS_MERCHANT_ACTIVITY, classes={})
+
+
+def test_build_spec_rejects_output_reserved_param() -> None:
+    # `output` collides with the shared --output CLI option the registrar
+    # injects; without this guard the collision surfaces as a cryptic duplicate-
+    # parameter error that crashes the whole reports command group at build.
+    def runner(db: Database, *, output: str = "x") -> ReportQuery:
+        """Summary."""
+        return ReportQuery("SELECT 1", [])
+
+    with pytest.raises(ValueError, match="output"):
+        build_spec(runner, name="r", view=REPORTS_MERCHANT_ACTIVITY, classes=_CLASSES)
+
+
+def test_build_spec_rejects_quiet_reserved_param() -> None:
+    def runner(db: Database, *, quiet: bool = False) -> ReportQuery:
+        """Summary."""
+        return ReportQuery("SELECT 1", [])
+
+    with pytest.raises(ValueError, match="quiet"):
+        build_spec(runner, name="r", view=REPORTS_MERCHANT_ACTIVITY, classes=_CLASSES)

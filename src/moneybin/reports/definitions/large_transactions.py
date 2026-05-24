@@ -15,6 +15,8 @@ from moneybin.tables import REPORTS_LARGE_TRANSACTIONS
     classes={
         "transaction_id": DataClass.RECORD_ID,
         "account_id": DataClass.ACCOUNT_IDENTIFIER,
+        # dim_accounts.display_name (user-authored) → USER_NOTE; not the bank's
+        # official_name (INSTITUTION) nor gsheet_connections.account_name.
         "account_name": DataClass.USER_NOTE,
         "txn_date": DataClass.TXN_DATE,
         "amount": DataClass.TXN_AMOUNT,

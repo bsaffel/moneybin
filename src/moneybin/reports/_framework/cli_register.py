@@ -72,12 +72,14 @@ def build_cli_command(spec: ReportSpec) -> Callable[..., None]:
         # results table (no status chatter) and JSON output ignores it.
         kwargs.pop("quiet", None)
         with handle_cli_errors(cli_actor=spec.mcp_tool_name):
-            try:
-                with get_database(read_only=True) as db:
-                    result = run_report(spec, db, max_rows=_CLI_MAX_ROWS, **kwargs)
-            except ValueError as exc:
-                # Runner enum/validation errors → clean CLI exit, not a traceback.
-                raise typer.BadParameter(str(exc)) from exc
+            # Runner enum/validation errors raise bare ValueError; let it
+            # propagate to handle_cli_errors, which classifies ValueError →
+            # INFRA_INVALID_INPUT and emits the JSON error envelope under
+            # --output json (and a clean ❌ line otherwise). Catching it here to
+            # raise typer.BadParameter would bypass that envelope (Typer prints
+            # plain text, exit 2) — breaking the JSON contract for agents.
+            with get_database(read_only=True) as db:
+                result = run_report(spec, db, max_rows=_CLI_MAX_ROWS, **kwargs)
 
             def _render_text(_: ResponseEnvelope[Any]) -> None:
                 if result.records:

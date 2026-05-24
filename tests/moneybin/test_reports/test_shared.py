@@ -43,3 +43,19 @@ def test_resolve_window_passes_through_explicit_bounds() -> None:
     assert (from_month, to_month) == ("2024-01", "2024-12")
     assert period == "2024-01 to 2024-12"
     assert hint is None  # no hint when the caller set the window
+
+
+def test_resolve_window_one_sided_from_only_reports_period() -> None:
+    # A single bound still filters; the envelope's period must signal that a
+    # temporal filter was applied (was silently None for one-sided windows).
+    from_month, to_month, period, hint = resolve_window("2024-03", None)
+    assert (from_month, to_month) == ("2024-03", None)
+    assert period == "from 2024-03"
+    assert hint is None
+
+
+def test_resolve_window_one_sided_to_only_reports_period() -> None:
+    from_month, to_month, period, hint = resolve_window(None, "2024-09")
+    assert (from_month, to_month) == (None, "2024-09")
+    assert period == "through 2024-09"
+    assert hint is None

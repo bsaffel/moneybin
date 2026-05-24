@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 import typer
 from typer.testing import CliRunner
 
+from moneybin import error_codes
 from moneybin.cli.output import OutputFormat
 from moneybin.database import Database
 from moneybin.privacy.taxonomy import DataClass, Tier
@@ -71,6 +72,69 @@ def _result() -> ReportResult:
     )
 
 
+def _windowed_runner(
+    db: Database, *, from_month: str | None = None, to_month: str | None = None
+) -> ReportQuery:
+    """Windowed summary.
+
+    Args:
+        db: Open read-only database connection.
+        from_month: Inclusive start month (YYYY-MM).
+        to_month: Inclusive end month (YYYY-MM).
+    """
+    return ReportQuery("SELECT 1", [])
+
+
+def _windowed_app():  # noqa: ANN202 — test helper
+    app = typer.Typer()
+    spec = build_spec(
+        _windowed_runner,
+        name="windowed",
+        view=_VIEW,
+        classes={"account_id": DataClass.ACCOUNT_IDENTIFIER},
+    )
+    register_report_cli(spec, app)
+    app.command("noop")(lambda: None)
+    return app
+
+
+def test_cli_command_accepts_hyphenated_window_flags() -> None:
+    # The underscore→hyphen flag derivation (from_month → --from-month) is the
+    # most prominent breaking change in the report-framework migration. Assert
+    # the derived flags parse and forward end-to-end through the injected
+    # __signature__ — not just that the Python param name exists.
+    app = _windowed_app()
+    captured: dict[str, object] = {}
+
+    def _fake_run_report(
+        spec: object, db: object, *, max_rows: int, **kwargs: object
+    ) -> ReportResult:
+        captured.update(kwargs)
+        return _result()
+
+    with (
+        patch("moneybin.reports._framework.cli_register.get_database", MagicMock()),
+        patch(
+            "moneybin.reports._framework.execute.run_report",
+            side_effect=_fake_run_report,
+        ),
+    ):
+        result = _runner_cli.invoke(
+            app,
+            [
+                "windowed",
+                "--from-month",
+                "2024-01",
+                "--to-month",
+                "2024-06",
+                "--output",
+                "json",
+            ],
+        )
+    assert result.exit_code == 0, result.output
+    assert captured == {"from_month": "2024-01", "to_month": "2024-06"}
+
+
 def test_build_cli_command_signature_has_params_and_output() -> None:
     cmd = build_cli_command(_spec())
     sig = inspect.signature(cmd)
@@ -127,7 +191,11 @@ def test_cli_command_passes_classes_returned_to_audit() -> None:
     ]
 
 
-def test_cli_command_surfaces_value_error_as_bad_parameter() -> None:
+def test_cli_command_value_error_emits_json_error_envelope() -> None:
+    # A runner ValueError (bad enum value) under --output json must flow through
+    # the shared classified-error path (handle_cli_errors → INFRA_INVALID_INPUT)
+    # and emit a JSON error envelope — NOT a plain-text typer.BadParameter that
+    # bypasses the envelope and exits 2, breaking the JSON contract for agents.
     app = _multi_command_app()
     with (
         patch("moneybin.reports._framework.cli_register.get_database", MagicMock()),
@@ -137,5 +205,8 @@ def test_cli_command_surfaces_value_error_as_bad_parameter() -> None:
         ),
     ):
         result = _runner_cli.invoke(app, ["balance-drift", "--output", "json"])
-    assert result.exit_code != 0
-    assert "Unknown status: bogus" in result.output
+    assert result.exit_code == 1, result.output
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "error"
+    assert payload["error"]["code"] == error_codes.INFRA_INVALID_INPUT
+    assert "Unknown status: bogus" in payload["error"]["message"]

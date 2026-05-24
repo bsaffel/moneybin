@@ -137,3 +137,27 @@ def test_balance_drift_ambiguous_account_raises(db: Database) -> None:
     _install_balance_drift(db)
     with pytest.raises(AmbiguousAccountError):
         balance_drift(db, account="Joint")
+
+
+def _install_recurring(db: Database) -> None:
+    db.execute("CREATE SCHEMA IF NOT EXISTS reports")
+    db.execute("""
+        CREATE OR REPLACE VIEW reports.recurring_subscriptions AS
+        SELECT * FROM (VALUES
+            ('m1', 'Netflix', -15.99, 'monthly', 30.0, 1.5, 12,
+             DATE '2025-01-01', DATE '2025-12-01', 'active', -191.88, 0.95)
+        ) AS t(merchant_id, merchant_normalized, avg_amount, cadence,
+               interval_days_avg, interval_days_stddev, occurrence_count,
+               first_seen, last_seen, status, annualized_cost, confidence)
+    """)
+
+
+def test_recurring_projects_all_declared_interval_columns(db: Database) -> None:
+    # The runner SELECT must project every column it declares in `classes`,
+    # including interval_days_avg/stddev — otherwise reports_recurring silently
+    # drops two metrics it claims to return (the masking declares them, but the
+    # query never selected them).
+    _install_recurring(db)
+    rows = _rows(db, recurring_subscriptions)
+    assert "interval_days_avg" in rows[0]
+    assert "interval_days_stddev" in rows[0]

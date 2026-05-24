@@ -80,6 +80,9 @@ def run_report(
 
     # Classify output columns from the report's DECLARED classes map (ADR-013),
     # then mask via the shared redaction path. An undeclared column fails closed.
+    # consent=None mirrors the sibling sql_query surface (sql_query.py:280): both
+    # MCP and CLI report calls always mask CRITICAL columns — the CLI posture is
+    # intentionally identical to MCP, not a per-surface divergence.
     col_classes = classify_columns(spec, columns)
     redacted = redact_records(records, col_classes, consent=None)
 

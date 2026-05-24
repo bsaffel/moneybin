@@ -1,8 +1,9 @@
 """Shared vocabulary and helpers for the in-tree report runners.
 
 The enum allowlists are the canonical parameter vocabularies — runners validate
-against them and raise ``ValueError`` (the CLI registrar turns that into a clean
-``BadParameter``; the MCP decorator into an error envelope).
+against them and raise ``ValueError``. Both surfaces turn that into a clean error
+envelope: the CLI via ``handle_cli_errors`` (ValueError → INFRA_INVALID_INPUT),
+the MCP decorator via its own classified-error path.
 """
 
 from __future__ import annotations
@@ -67,5 +68,14 @@ def resolve_window(
     defaulted = from_month is None and to_month is None
     if defaulted:
         from_month, to_month = default_window(12)
-    period = f"{from_month} to {to_month}" if from_month and to_month else None
+    # A one-sided window still filters; report it so the envelope's period signals
+    # that a temporal bound was applied rather than reading as "no filter" (None).
+    if from_month and to_month:
+        period = f"{from_month} to {to_month}"
+    elif from_month:
+        period = f"from {from_month}"
+    elif to_month:
+        period = f"through {to_month}"
+    else:
+        period = None
     return from_month, to_month, period, (_WIDEN_WINDOW_HINT if defaulted else None)

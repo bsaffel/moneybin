@@ -40,6 +40,12 @@ _KNOWN_SECTIONS = frozenset({
 # An "name: help" or "name (type): help" Args entry.
 _ARG_ENTRY = re.compile(r"^(\w+)\s*(?:\([^)]*\))?\s*:\s*(.*)$")
 
+# Names the CLI registrar injects as shared options (see cli_register._cli_signature).
+# A runner param colliding with one of these would raise a cryptic duplicate-
+# parameter error deep in Signature construction, crashing the whole reports
+# command group at build; reject it here with a clear message instead.
+_RESERVED_CLI_PARAMS = frozenset({"output", "quiet"})
+
 
 def _section_tag(stripped: str) -> str | None:
     """Lowercased section name if ``stripped`` is a known Google header, else None."""
@@ -62,8 +68,9 @@ def build_spec(
 
     Raises:
         ValueError: if the runner has no docstring, its first parameter is not
-            ``db``, any non-``db`` parameter is not keyword-only, or ``classes``
-            is empty (every report must declare its column privacy contract).
+            ``db``, any non-``db`` parameter is not keyword-only or collides with
+            a reserved CLI option (``output``/``quiet``), or ``classes`` is empty
+            (every report must declare its column privacy contract).
     """
     if view.schema != "reports":
         raise ValueError(
@@ -97,6 +104,12 @@ def build_spec(
             raise ValueError(
                 f"Report runner {fn.__name__!r} parameter {p.name!r} must be "
                 "keyword-only (declare runner params after a bare '*')."
+            )
+        if p.name in _RESERVED_CLI_PARAMS:
+            raise ValueError(
+                f"Report runner {fn.__name__!r} parameter {p.name!r} collides "
+                "with a shared CLI option; rename it (reserved: "
+                f"{', '.join(sorted(_RESERVED_CLI_PARAMS))})."
             )
         required = p.default is inspect.Parameter.empty
         param_specs.append(

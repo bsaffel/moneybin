@@ -57,6 +57,7 @@ def recurring_subscriptions(
 
     sql = f"""
         SELECT merchant_id, merchant_normalized, cadence, avg_amount,
+               interval_days_avg, interval_days_stddev,
                occurrence_count, first_seen, last_seen, status,
                annualized_cost, confidence
         FROM {REPORTS_RECURRING_SUBSCRIPTIONS.full_name}

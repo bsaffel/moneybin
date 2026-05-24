@@ -15,6 +15,8 @@ from moneybin.tables import REPORTS_BALANCE_DRIFT
     view=REPORTS_BALANCE_DRIFT,
     classes={
         "account_id": DataClass.ACCOUNT_IDENTIFIER,
+        # dim_accounts.display_name (user-authored) → USER_NOTE; not the bank's
+        # official_name (INSTITUTION) nor gsheet_connections.account_name.
         "account_name": DataClass.USER_NOTE,
         "assertion_date": DataClass.TXN_DATE,
         "asserted_balance": DataClass.BALANCE,

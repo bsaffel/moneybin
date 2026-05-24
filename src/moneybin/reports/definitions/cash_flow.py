@@ -15,6 +15,8 @@ from moneybin.tables import REPORTS_CASH_FLOW
     classes={
         "year_month": DataClass.TXN_DATE,
         "account_id": DataClass.ACCOUNT_IDENTIFIER,
+        # dim_accounts.display_name (user-authored) → USER_NOTE; not the bank's
+        # official_name (INSTITUTION) nor gsheet_connections.account_name.
         "account_name": DataClass.USER_NOTE,
         "category": DataClass.CATEGORY,
         "inflow": DataClass.TXN_AMOUNT,
