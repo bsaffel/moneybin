@@ -8,6 +8,8 @@ real repos (no mocks). Operations are built by wrapping repo calls in
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from moneybin import error_codes
@@ -87,6 +89,82 @@ class TestUndo:
         UndoService(db).undo(op1, actor="cli")  # now op1 undoes cleanly
         tags = db.execute("SELECT COUNT(*) FROM app.transaction_tags").fetchone()
         assert tags == (0,)
+
+    def test_can_reundo_after_round_trip(self, db: Database) -> None:
+        # op -> undo -> undo-the-undo restores op's effect, so op is LIVE again and
+        # must be undoable a second time. "Already undone" is net liveness, not
+        # "an undo of op was ever recorded".
+        op = _tag_op(db, "a")
+        undo1 = UndoService(db).undo(op, actor="cli")  # tag removed
+        UndoService(db).undo(undo1.undo_operation_id, actor="cli")  # tag back, op live
+        UndoService(db).undo(op, actor="cli")  # must succeed, not raise already_undone
+        tags = db.execute("SELECT COUNT(*) FROM app.transaction_tags").fetchone()
+        assert tags == (0,)
+
+    def test_cascade_blocks_after_blocker_round_trip(self, db: Database) -> None:
+        # op2 modified op1's row after it, then op2 was round-tripped
+        # (undo -> undo-the-undo) so op2's effect is LIVE again. undo(op1) must
+        # still be blocked by op2 — net liveness, not "op2 was ever undone".
+        # Without this, undo(op1) would silently clobber op2's live row.
+        op1 = _tag_op(db, "a")
+        op2 = _tag_op(db, "b")  # same target (txn_1), later
+        undo2 = UndoService(db).undo(op2, actor="cli")  # op2 effect removed
+        UndoService(db).undo(undo2.undo_operation_id, actor="cli")  # op2 effect live
+        with pytest.raises(UserError) as exc:
+            UndoService(db).undo(op1, actor="cli")
+        assert exc.value.code == error_codes.UNDO_CASCADE_BLOCKED
+        assert exc.value.recovery_actions is not None
+        blockers = [a.arguments["operation_id"] for a in exc.value.recovery_actions]
+        assert op2 in blockers
+
+    def test_undo_replays_in_reverse_write_order(self, db: Database) -> None:
+        # Undo reverses rows in the reverse of their write order (so a future
+        # parent-then-child insert undoes child-first). All rows in one operation
+        # share occurred_at, so order hinges on the tiebreaker; the old code sorted
+        # by the random audit_id. Force audit_id order opposite to write (rowid)
+        # order and assert undo still replays newest-first.
+        repo = TransactionTagsRepo(db)
+        with operation() as op:
+            for tag in ("a1", "a2", "a3"):
+                repo.add(transaction_id="txn_1", tag=tag, actor="cli")
+        rowids = [
+            r[0]
+            for r in db.execute(
+                "SELECT rowid FROM app.audit_log WHERE operation_id = ? ORDER BY rowid",
+                [op],
+            ).fetchall()
+        ]
+        for rowid, audit_id in zip(rowids, ("z3", "z2", "z1"), strict=True):
+            db.execute(
+                "UPDATE app.audit_log SET audit_id = ? WHERE rowid = ?",
+                [audit_id, rowid],
+            )
+        undo = UndoService(db).undo(op, actor="cli")
+        undo_rows = db.execute(
+            "SELECT before_value FROM app.audit_log "
+            "WHERE operation_id = ? AND is_undo = TRUE ORDER BY rowid",
+            [undo.undo_operation_id],
+        ).fetchall()
+        replayed = [json.loads(r[0])["tag"] for r in undo_rows]
+        assert replayed == ["a3", "a2", "a1"]
+
+    def test_partial_legacy_row_refuses_with_recovery_no_path(
+        self, db: Database
+    ) -> None:
+        # A pre-PR note.delete captured only a partial before_value (no
+        # transaction_id / created_at). undo_event's re-INSERT branch would hit a
+        # raw DuckDB NOT NULL; instead it must refuse cleanly with RECOVERY_NO_PATH.
+        db.execute(
+            "INSERT INTO app.audit_log "
+            "(audit_id, actor, action, target_schema, target_table, target_id, "
+            " before_value, after_value, operation_id) "
+            "VALUES ('legacy1','cli','note.delete','app','transaction_notes','n1', "
+            " ?, NULL, 'op_legacy')",
+            [json.dumps({"note_id": "n1", "text": "hi", "author": "cli"})],
+        )
+        with pytest.raises(UserError) as exc:
+            UndoService(db).undo("op_legacy", actor="cli")
+        assert exc.value.code == error_codes.RECOVERY_NO_PATH
 
     def test_raw_target_is_not_undoable(self, db: Database) -> None:
         # A manual.create writes an audit row targeting raw.manual_transactions,

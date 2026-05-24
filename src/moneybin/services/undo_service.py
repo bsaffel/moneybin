@@ -16,7 +16,7 @@ service silently reversing unrelated later work.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, cast
 
 from moneybin import error_codes
@@ -84,6 +84,41 @@ class _Undoability:
     unresolvable: list[str]
 
 
+@dataclass
+class _UndoLiveness:
+    """Net liveness over the undo graph, computed once from its edges.
+
+    An operation is *currently* undone iff it has an undo that is not itself
+    currently undone — the recursive definition
+    ``is_undone(op) = ∃U: U.undoes == op ∧ ¬is_undone(U)``. The graph branches
+    after a re-undo (an op gains a second undo child once its first is reversed),
+    so a parity-by-depth walk is wrong; this evaluates the definition directly,
+    memoized over the (small) set of undo edges. ``_children`` maps an operation
+    id to the operation ids that undo it.
+    """
+
+    _children: dict[str, list[str]]
+    _memo: dict[str, bool] = field(default_factory=dict)
+
+    def is_undone(self, operation_id: str) -> bool:
+        """Whether ``operation_id``'s effects are currently reversed (net)."""
+        cached = self._memo.get(operation_id)
+        if cached is not None:
+            return cached
+        result = any(
+            not self.is_undone(child) for child in self._children.get(operation_id, [])
+        )
+        self._memo[operation_id] = result
+        return result
+
+    def live_undo_of(self, operation_id: str) -> str | None:
+        """The id of a currently-live undo of ``operation_id``, or ``None``."""
+        for child in self._children.get(operation_id, []):
+            if not self.is_undone(child):
+                return child
+        return None
+
+
 def _undo_action(
     operation_id: str, *, confidence: Literal["certain", "suggested"] = "certain"
 ) -> RecoveryAction:
@@ -141,16 +176,18 @@ class UndoService:
                 recovery_actions=[_undo_action(b) for b in u.blockers],
             )
 
-        # Reverse newest-first inside one transaction under a fresh operation id.
-        # Marker rows (target_id is None, e.g. the tag.rename parent) carry no
-        # single-row mutation, so they are skipped — only the per-row children
-        # are inverted.
+        # Reverse in the exact reverse of write order inside one transaction under
+        # a fresh operation id. ``events`` is write-ordered (events_for_operation
+        # tiebreaks on rowid), so reversing it undoes the last write first — the
+        # order a future parent-then-child insert needs. Marker rows (target_id is
+        # None, e.g. the tag.rename parent) carry no single-row mutation, so they
+        # are skipped — only the per-row children are inverted.
         row_events = [e for e in events if e.target_id is not None]
         with operation() as undo_op:
             self._db.begin()
             try:
                 undone: list[AuditEvent] = []
-                for event in sorted(row_events, key=lambda e: e.audit_id, reverse=True):
+                for event in reversed(row_events):
                     repo = repo_for(
                         event.target_schema or "", event.target_table or "", self._db
                     )
@@ -228,7 +265,8 @@ class UndoService:
             """,  # noqa: S608  # WHERE built from literal clauses; values parameterized
             params,
         ).fetchall()
-        return [self._summarize(r) for r in rows]
+        liveness = self._build_undo_liveness()
+        return [self._summarize(r, liveness) for r in rows]
 
     def get(self, operation_id: str) -> OperationDetail:
         """Return full before/after for every row of one operation.
@@ -247,7 +285,9 @@ class UndoService:
             undo_blocked_by=u.blockers or None,
         )
 
-    def _summarize(self, row: tuple[object, ...]) -> OperationSummary:
+    def _summarize(
+        self, row: tuple[object, ...], liveness: _UndoLiveness
+    ) -> OperationSummary:
         (
             op_raw,
             occurred_at,
@@ -259,7 +299,7 @@ class UndoService:
             tables_raw,
         ) = row
         operation_id = str(op_raw)
-        u = self._undoability(operation_id)
+        u = self._undoability(operation_id, liveness)
         if u.can_undo:
             recovery = [_undo_action(operation_id)]
         elif u.blockers:
@@ -301,15 +341,21 @@ class UndoService:
             ],
         )
 
-    def _undoability(self, operation_id: str) -> _Undoability:
+    def _undoability(
+        self, operation_id: str, liveness: _UndoLiveness | None = None
+    ) -> _Undoability:
         """Compute the three undo-gating conditions once, for a single operation.
 
         Shared by ``undo`` (which branches on the individual fields to raise its
         specialized errors), ``get``, and ``history``'s per-operation summary — so
-        "what makes an operation undoable" lives in exactly one place.
+        "what makes an operation undoable" lives in exactly one place. ``history``
+        passes a prebuilt ``liveness`` so the undo-edge set loads once per call
+        rather than once per operation.
         """
-        undone_by = self._already_undone_by(operation_id)
-        blockers = self._cascade_blockers(operation_id)
+        if liveness is None:
+            liveness = self._build_undo_liveness()
+        undone_by = liveness.live_undo_of(operation_id)
+        blockers = self._cascade_blockers(operation_id, liveness)
         unresolvable = self._unresolvable_tables(operation_id)
         return _Undoability(
             can_undo=undone_by is None and not blockers and not unresolvable,
@@ -318,14 +364,21 @@ class UndoService:
             unresolvable=unresolvable,
         )
 
-    def _already_undone_by(self, operation_id: str) -> str | None:
-        """Return the operation id of an existing undo of ``operation_id``, if any."""
-        row = self._db.conn.execute(
-            "SELECT operation_id FROM app.audit_log "
-            "WHERE undoes_operation_id = ? LIMIT 1",
-            [operation_id],
-        ).fetchone()
-        return str(row[0]) if row is not None else None
+    def _build_undo_liveness(self) -> _UndoLiveness:
+        """Load every undo edge once and index it for net-liveness queries.
+
+        One small scan of the undo rows (those carrying ``undoes_operation_id``)
+        backs both "is this op currently undone?" and "is this candidate blocker
+        still live?" — see :class:`_UndoLiveness`.
+        """
+        rows = self._db.conn.execute(
+            "SELECT DISTINCT operation_id, undoes_operation_id FROM app.audit_log "
+            "WHERE undoes_operation_id IS NOT NULL"
+        ).fetchall()
+        children: dict[str, list[str]] = {}
+        for undo_op, undone_op in rows:
+            children.setdefault(str(undone_op), []).append(str(undo_op))
+        return _UndoLiveness(children)
 
     def _unresolvable_tables(self, operation_id: str) -> list[str]:
         """``schema.table`` of any mutated row no repo owns (sorted, deduped).
@@ -344,14 +397,22 @@ class UndoService:
             if not is_registered(str(schema or ""), str(table or ""))
         )
 
-    def _cascade_blockers(self, operation_id: str) -> list[str]:
+    def _cascade_blockers(
+        self, operation_id: str, liveness: _UndoLiveness
+    ) -> list[str]:
         """Operation ids that modified this op's rows *after* it, newest first.
 
         A later operation blocks only if it is a still-live *forward* mutation:
         undo rows (``is_undo=TRUE``) restore prior state rather than introduce a
-        conflicting change, and a forward op that has itself been undone no longer
-        has a live effect. Excluding both is what makes the documented walk —
-        "undo the blocker, then the original undoes cleanly" — actually work.
+        conflicting change, and a forward op whose effect is *currently* undone no
+        longer conflicts. Excluding both is what makes the documented walk — "undo
+        the blocker, then the original undoes cleanly" — actually work.
+
+        "Currently undone" is net liveness, not "was ever undone": after a
+        blocker is round-tripped (undo then undo-the-undo) its effect is live
+        again and it must block once more, so the live check is delegated to
+        :meth:`_UndoLiveness.is_undone` rather than a "ever appears in
+        ``undoes_operation_id``" subquery.
 
         Ordered by ``rowid`` (monotonic, append-only audit log) rather than
         ``occurred_at`` so sub-second sequential operations order deterministically.
@@ -375,13 +436,9 @@ class UndoService:
              WHERE a.operation_id <> ?
                AND a.rowid > (SELECT r FROM boundary)
                AND a.is_undo = FALSE
-               AND a.operation_id NOT IN (
-                   SELECT undoes_operation_id FROM app.audit_log
-                    WHERE undoes_operation_id IS NOT NULL
-               )
              GROUP BY a.operation_id
              ORDER BY latest DESC
             """,
             [operation_id, operation_id],
         ).fetchall()
-        return [str(r[0]) for r in rows]
+        return [str(r[0]) for r in rows if not liveness.is_undone(str(r[0]))]

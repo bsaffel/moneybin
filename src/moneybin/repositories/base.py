@@ -18,14 +18,16 @@ rather than per-method discipline:
 
 from __future__ import annotations
 
-from collections.abc import Callable, Generator, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from decimal import Decimal
 from typing import Any, ClassVar
 
 from sqlglot import exp
 
+from moneybin import error_codes
 from moneybin.database import Database
+from moneybin.errors import UserError
 from moneybin.metrics.registry import app_mutation_audit_emitted_total
 from moneybin.services.audit_service import AuditEvent, AuditService
 from moneybin.tables import TableRef
@@ -274,10 +276,13 @@ class BaseRepo:
 
         with self._transaction(in_outer_txn=in_outer_txn):
             if before is None and after is not None:
+                self._require_capture(after, self.pk_columns, event)
                 self._delete_by_pk(after)
             elif after is None and before is not None:
+                self._require_capture(before, self._not_null_columns(), event)
                 self._insert_row(before)
             elif before is not None and after is not None:
+                self._require_capture(after, self.pk_columns, event)
                 self._restore_row(before=before, locate=after)
             return self._emit_audit(
                 action=f"{event.action}.undo",
@@ -291,6 +296,39 @@ class BaseRepo:
                 actor=actor,
                 is_undo=True,
                 undoes_operation_id=event.operation_id,
+            )
+
+    def _not_null_columns(self) -> set[str]:
+        """Column names of ``table_ref`` that reject NULL, from the live catalog.
+
+        Used to reject undo of a legacy partial-capture row *before* it reaches a
+        raw DuckDB NOT NULL error — see :meth:`_require_capture`.
+        """
+        rows = self._db.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = ? AND table_name = ? AND is_nullable = 'NO'",
+            [self.table_ref.schema, self.table_ref.name],
+        ).fetchall()
+        return {r[0] for r in rows}
+
+    def _require_capture(
+        self, image: dict[str, Any], required: Iterable[str], event: AuditEvent
+    ) -> None:
+        """Refuse to reverse an audit row whose capture is missing ``required`` keys.
+
+        Pre-PR rows (e.g. a ``note.delete`` that stored only ``note_id``/``text``)
+        predate the full-row capture Invariant 10 Req 4 now guarantees. Reversing
+        them would re-INSERT a row missing NOT NULL columns or locate by an absent
+        primary key — surfacing as a raw DuckDB / ``KeyError`` crash. Fail cleanly
+        with a recovery code the surface can render instead.
+        """
+        missing = set(required) - set(image)
+        if missing:
+            raise UserError(
+                f"Cannot undo {event.action!r}: its audit row predates full-row "
+                f"capture and is missing {sorted(missing)} on {event.target_table} "
+                "— not reversible.",
+                code=error_codes.RECOVERY_NO_PATH,
             )
 
     def _pk_where(self, row: dict[str, Any]) -> tuple[str, list[Any]]:

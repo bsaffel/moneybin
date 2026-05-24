@@ -409,10 +409,23 @@ Deviations from the design as written, with rationale:
   the domain `reverse()` was dropped — it would mis-handle undo-of-insert and
   undo-of-status-change and re-trigger the double-reverse timestamp bug; the
   generic row-restore is strictly more correct.
-- **Cascade excludes already-reversed work.** A later operation blocks only if it
-  is a *live forward* mutation: undo rows (`is_undo=TRUE`) and forward ops that
-  have themselves been undone do not block. Without this, the documented walk
-  (undo the blocker, then the original) could never resolve.
+- **Cascade excludes currently-reversed work (net liveness).** A later operation
+  blocks only if it is a *live forward* mutation: undo rows (`is_undo=TRUE`) never
+  block, and a forward op blocks only while its effect is *currently* live.
+  "Currently" is net parity over the undo chain — an op that was undone and then
+  had that undo itself reversed (a round-trip) is live again and blocks once more;
+  likewise an op stays undoable after such a round-trip. Correctness is the
+  chain's net liveness, not whether an undo was *ever* recorded — a one-shot
+  "ever undone" check both traps the user out of re-undoing a round-tripped op and
+  lets undo silently clobber a round-tripped blocker. Without this, the documented
+  walk (undo the blocker, then the original) could never resolve.
+- **Deterministic, reversible replay order + partial-capture guard.** Rows replay
+  in the exact reverse of write order (`events_for_operation` tiebreaks on the
+  monotonic `rowid`, never the random `audit_id`), so a future parent-then-child
+  insert undoes child-first. An audit row predating full-row capture (Req 4) — a
+  legacy partial `note.delete`/`note.edit` missing NOT NULL columns or its primary
+  key — is refused with `recovery_no_path` rather than crashing on a raw DuckDB
+  `NOT NULL` / `KeyError`.
 - **`recovery_no_path` for raw-targeted operations.** An operation that touched a
   table outside the undoable `app.*` surface (e.g. `manual.create` →
   `raw.manual_transactions`) is refused with `recovery_no_path` rather than

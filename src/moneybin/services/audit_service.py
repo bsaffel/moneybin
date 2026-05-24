@@ -202,6 +202,12 @@ class AuditService:
         The undo consumer (REC-PR3) loads an operation as a unit: ``UndoService``
         reverses the rows newest-first and ``system_audit_get`` exposes their
         full before/after.
+
+        Tiebreak on ``rowid`` (monotonic, append-only), never ``audit_id``: every
+        row in one operation shares ``occurred_at`` (DuckDB ``CURRENT_TIMESTAMP``
+        is transaction-stable) and ``audit_id`` is a random uuid4, so ordering by
+        it would scramble replay order. ``rowid`` is the same write-order key
+        ``UndoService._cascade_blockers`` relies on.
         """
         rows = self._db.conn.execute(
             """
@@ -211,7 +217,7 @@ class AuditService:
                    operation_id, context_json, is_undo, undoes_operation_id
               FROM app.audit_log
              WHERE operation_id = ?
-             ORDER BY occurred_at ASC, audit_id ASC
+             ORDER BY occurred_at ASC, rowid ASC
             """,
             [operation_id],
         ).fetchall()

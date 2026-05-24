@@ -140,3 +140,25 @@ class TestQueryHelpers:
         chain = audit_service.chain_for(parent.audit_id)
         assert len(chain) == 3
         assert chain[0].audit_id == parent.audit_id
+
+
+class TestEventOrdering:
+    """events_for_operation replays in write (rowid) order, not random audit_id."""
+
+    def test_orders_by_rowid_not_random_audit_id(self, db: Database) -> None:
+        # Every row in one operation shares occurred_at (DuckDB CURRENT_TIMESTAMP is
+        # transaction-stable), so the ORDER BY tiebreaker alone decides replay order.
+        # audit_id is a random uuid4 — using it as the tiebreaker scrambles the
+        # order. Insert with audit_ids that sort opposite to write order and assert
+        # we get write (rowid) order back, which the undo consumer reverses.
+        ts = "2026-05-24 00:00:00"
+        for audit_id, target in (("zc", "t1"), ("zb", "t2"), ("za", "t3")):
+            db.execute(
+                "INSERT INTO app.audit_log "
+                "(audit_id, occurred_at, actor, action, target_schema, "
+                " target_table, target_id, operation_id) "
+                "VALUES (?, ?, 'cli', 'tag.add', 'app', 'transaction_tags', ?, ?)",
+                [audit_id, ts, target, "op_order"],
+            )
+        events = AuditService(db).events_for_operation("op_order")
+        assert [e.target_id for e in events] == ["t1", "t2", "t3"]
