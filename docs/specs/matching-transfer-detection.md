@@ -415,7 +415,7 @@ Requirements for the synthetic data generator (`testing-synthetic-data.md`) to s
 - **Many-to-one / one-to-many transfers** — e.g., paycheck + bonus -> one deposit. v1 is 1:1 pairs only. Future enhancement.
 - **Auto-confirmation (v2 learned promotions)** — after user confirms N matches of the same pattern, offer to auto-confirm. Deferred per umbrella spec. v1 is always-review.
 - **Same-record dedup** — pillar A+C, sibling spec. Different semantics: collapses records rather than linking them.
-- **Investment transaction transfers** — depends on investment-tracking spec.
+- **Investment transaction transfers** — depends on `investments-data-model.md`.
 
 ## Future Enhancements
 

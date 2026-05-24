@@ -388,7 +388,7 @@ The original phase 1 (schema) and phase 2 (`import_log` extraction) are ~1 file 
 
 - **QIF support** — legacy Quicken text format. User-confirmed: modern formats only in v1. Defer until requested.
 - **IIF support** — QuickBooks Desktop interchange. Tabular-shaped, would route through tabular pipeline if added; not in v1.
-- **Investment-account OFX** (`<INVSTMTRS>`) — current extractor handles bank/credit only; investment OFX gates on `investment-tracking.md` and is its own spec.
+- **Investment-account OFX** (`<INVSTMTRS>`) — current extractor handles bank/credit only; investment OFX gates on `investments-data-model.md` and is its own spec.
 - **PDF statement import** — covered by `smart-import-pdf.md`.
 - **AI-assisted parsing fallback** — covered by `smart-import-ai-parsing.md`.
 - **Unifying `raw.ofx_*` and `raw.tabular_*` into a single schema** — explicitly rejected. See Background.

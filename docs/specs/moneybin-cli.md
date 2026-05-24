@@ -185,11 +185,22 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |   +-- assertion-delete <account_id> <date> [--yes]
 |   |   +-- reconcile [--account ID] [--threshold AMOUNT]
 |   |   +-- history --account ID [--from DATE] [--to DATE]
-|   +-- investments                -- (future spec, gated on investment-tracking.md)
 |
 +-- assets                         -- (future spec) Physical assets (real estate, vehicles, valuables)
 |                                     Workflows defined in asset-tracking.md.
 |                                     Contributes to reports networth alongside accounts.
+|
++-- investments                    -- (future spec) Brokerage/crypto holdings, lots, cost basis
+|                                     Workflows defined in investments-data-model.md.
+|                                     Contributes to reports networth via holdings valuation.
+|   +-- add                        -- Record an investment event (buy/sell/dividend/transfer/...)
+|   +-- list                       -- List ledger events
+|   +-- holdings                   -- Current positions (cost basis; market value when price feeds land)
+|   +-- lots [--open|--all]        -- Tax lots with remaining quantity + basis
+|   |   +-- select <disposal_id> --lot <lot_id>:<qty> [--lot ...]  -- Replace lot selection (declarative set; multi-lot)
+|   +-- gains                      -- Realized gain/loss (the 1099-B surface)
+|   +-- securities                 -- Security catalog
+|       +-- list / add / set       -- Manage catalog (set carries --method per-security override)
 |
 +-- transactions
 |   +-- list                       -- List transactions [--account ID] [--from] [--to]
@@ -641,7 +652,7 @@ This is a hard cut. No aliases, no deprecation period. v1 paths break in the sam
 | `track networth history` | `reports networth-history` | |
 | `track budget *` | `budget *` | Top-level (mutation); reports → `reports budget` |
 | `track recurring *` | `transactions recurring *` | Pattern detection on transactions |
-| `track investments *` | `accounts investments *` | Holdings as account-typed entity |
+| `track investments *` | `investments *` | Top-level domain group (4-pillar: holdings, lots, cost basis) per `investments-data-model.md` |
 | `matches *` | `transactions matches *` | Workflow on transactions |
 | `categorize *` (workflow + rules + auto + ml) | `transactions categorize *` | Workflow on transactions |
 | `categorize categories / create-category / toggle-category` | `categories list / create / set / delete` | Reference-data taxonomy → top-level entity group |
@@ -721,7 +732,7 @@ Restructure-only. Move and rename existing commands to the new tree; rename MCP 
 | Pull `categorize merchants *` and `categorize create-merchants` → top-level `merchants` group | Promote to entity group |
 | Move `track budget` → `budget` (top-level, still stub) | Rename + flatten |
 | Move `track recurring` → `transactions recurring` (still stub) | Reparent |
-| Move `track investments` → `accounts investments` (still stub) | Reparent |
+| Add top-level `investments` group (placeholder; workflows owned by `investments-data-model.md`); supersedes the `accounts investments` stub | New CLI module |
 | Dissolve `track` group | Delete CLI module |
 | Add `reports` group with stubbed subcommands (`spending`, `cashflow`, `budget`) | New CLI module, all stubs |
 | Rename MCP tools to path-prefix-verb-suffix convention | Update tool registry, regenerate client configs via `mcp install` |
@@ -773,7 +784,7 @@ Reserve the namespace. Users see the command in `--help` but get a clear message
 | `track balance` / `track networth` | `reports-net-worth.md` |
 | `track budget` | `budget-tracking.md` |
 | `track recurring` | Future spec |
-| `track investments` | Future spec (gated on `investment-tracking.md`) |
+| `investments` | [`investments-data-model.md`](investments-data-model.md) (draft) |
 | `export` | Future spec |
 | `stats` | `observability.md` (depends on metrics tables) |
 | `db migrate` | `database-migration.md` |
@@ -790,7 +801,7 @@ These commands are fully implemented when their owning spec is implemented. The 
 | `track networth show/history` | `reports-net-worth.md` | Updated from original top-level `networth` placement |
 | `track budget *` | `budget-tracking.md` | CLI TBD when spec matures |
 | `track recurring *` | Future spec | Recurring transaction detection |
-| `track investments *` | Future spec | Gated on `investment-tracking.md` |
+| `investments add/list/holdings/lots/gains/securities` | [`investments-data-model.md`](investments-data-model.md) | Top-level group (was placeholder `accounts investments`); implementation lands with the foundation child |
 | `sync login/logout/connect/disconnect/pull/status/schedule/rotate-key` | `sync-overview.md` | Full sync implementation |
 | `export *` | Future spec | Export to CSV, Excel, Google Sheets |
 | `stats` | `observability.md` | Depends on metrics tables and instrumentation |

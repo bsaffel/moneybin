@@ -10,7 +10,7 @@
 
 Twelve cross-cutting primitives have crystallized through Levels 0–1 — a connection factory, a secret store, a service-layer contract, a table registry, a response envelope, an MCP decorator and privacy middleware, observability hooks, a sanitized log formatter, an ingestion primitive, a settings model, SQLMesh layer conventions, and a scenario fixture format. Each is referenced by ≥3 callers across the codebase and is implicitly assumed by every new feature spec.
 
-This spec names the primitives, their invariants, and the layer conventions they live within. It does not introduce new behavior. Its job is to remove ambiguity from every subsequent spec — `transaction-curation.md`, `investment-tracking.md`, `multi-currency.md`, `sync-plaid.md` rewrite — so authors cite the contract instead of re-deriving it.
+This spec names the primitives, their invariants, and the layer conventions they live within. It does not introduce new behavior. Its job is to remove ambiguity from every subsequent spec — `transaction-curation.md`, `investments-data-model.md`, `multi-currency.md`, `sync-plaid.md` rewrite — so authors cite the contract instead of re-deriving it.
 
 It is **not** a feature spec. There is no implementation plan. The two narrow naming changes called out below ride along with this spec landing.
 

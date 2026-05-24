@@ -328,7 +328,7 @@ This lets the scenario suite (`make test-scenarios`) validate that `fct_balances
 
 ## Out of Scope
 
-- **Investment holdings in net worth** — M3B concern. Net worth v1 is cash-only. Investment tracking (`investment-tracking.md`, M3B) will extend `fct_balances` with holdings valuation when it ships.
+- **Investment holdings in net worth** — M3B concern. Net worth v1 is cash-only. Investment tracking (`investments-overview.md`, M3B — Pillar D net-worth integration) will extend `fct_balances` with holdings valuation when it ships.
 - **Multi-currency conversion** — M3C concern. All balances assumed single-currency for v1. Multi-currency (`multi-currency.md`, M3C) will add home-currency conversion to `fct_balances_daily`.
 - **Balance forecasting/projection** — "What will my net worth be in 6 months?" is a separate feature requiring trend extrapolation.
 - **Balance alerts/notifications** — "Notify me when balance drops below X" is out of scope for the data model spec.
