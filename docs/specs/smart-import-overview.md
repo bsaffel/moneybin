@@ -36,7 +36,7 @@ Smart Import decomposes into six independent subsystems. Each has its own child 
 | Pillar | Purpose | Touches cloud? | Child spec |
 |---|---|---|---|
 | **A+B.** Smart tabular import | Universal tabular importer: CSV, TSV, Excel, Parquet, Feather with heuristic column detection, multi-account support, and migration formats (Tiller, Mint, YNAB). Pillars A and B merged — Excel is just another file type reader feeding the same detection engine. JSON/JSONL deferred to a separate spec (nested types → DuckDB native STRUCT/LIST/MAP). | No | [`smart-import-tabular.md`](smart-import-tabular.md) |
-| **C.** Structured PDF import | Native-text PDFs via `pdfplumber`/`camelot`. Targets statements and brokerage reports. | No | `smart-import-pdf.md` |
+| **C.** Structured PDF import | Native-text PDFs via `pdfplumber`/`camelot`. Targets statements and brokerage reports. | Deterministic: no. Bridge escalation: egress to the driving agent (honest, not a configured backend) | `smart-import-pdf.md` |
 | **D.** ML-powered categorization | Local scikit-learn (TF-IDF + SVM) trained on the user's own `transaction_categories`. High-confidence → auto-apply; medium → suggest; low → defer. | No | Owned by [`categorization-overview.md`](categorization-overview.md) |
 | **E.** Auto-rule generation | Hook `categorize_transaction()` / `categorize_items()` to synthesize rules and merchant mappings from user edits and high-confidence ML picks. | No | Owned by [`categorization-overview.md`](categorization-overview.md) |
 | **F.** AI-assisted parsing | LLM fallback for files A/B can't crack. (PDF/C escalation is owned by the bridge inside [`smart-import-pdf.md`](smart-import-pdf.md), not Pillar F.) Extracts structured data from document content. | **Yes — consent-gated** | `smart-import-ai-parsing.md`, gated by `docs/specs/privacy-and-ai-trust.md` |
@@ -59,7 +59,7 @@ Throughout this initiative, **"format"** refers to a saved column mapping + meta
 
 Explicitly deferred until after v1. Revisit per pillar as the initiative matures.
 
-- **Scanned PDFs and image-only PDFs** — requires OCR + vision model; different trust and accuracy profile from text parsing
+- **Local/offline OCR for scanned PDFs** — scanned and image-only PDFs are read via the PDF bridge's vision (the driving agent; see [`smart-import-pdf.md`](smart-import-pdf.md)); a *zero-egress, offline* OCR path (no agent, e.g. `pytesseract`) is deferred — different trust and accuracy profile from text parsing
 - **Receipt photos** — different document shape (one transaction per doc, not a list); belongs with a separate receipt-capture feature
 - **Email inbox scraping** — separate integration surface; belongs with Plaid / sync, not smart import
 - **Non-financial documents** — generic invoices, utility bills; widens product beyond personal finance
@@ -93,7 +93,7 @@ Already referenced throughout this doc. Constrains pillar F. Foundational alongs
 
 **Consent-gated cloud, per-file prompt with redacted preview.**
 
-Every local path (A, B, C, D, E) has zero external traffic. On a fresh install with no AI backend configured, Smart Import can still import files the heuristics can handle and never makes a network call. (PDF/C's deterministic rung is local; a layout it can't crack escalates to the *driving agent* — see the PDF exception below.)
+Every local path — A, B, D, E, and PDF/C's deterministic rung — has zero external traffic. On a fresh install with no AI backend configured, Smart Import can still import files the heuristics can handle and never makes a network call. PDF/C escalates to the *driving agent* only when the deterministic rung can't crack a layout (see the PDF exception below).
 
 When Smart Import invokes AI-assisted parsing (pillar F), the user sees — before any data leaves the machine — a confirmation showing:
 
