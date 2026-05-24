@@ -726,7 +726,7 @@ Phase 1 of this spec maps to **M3A — Plaid Transactions sync** in [`docs/roadm
 
 | Provider | Child spec | Status | Notes |
 |---|---|---|---|
-| Plaid | [`sync-plaid.md`](sync-plaid.md) | Draft | First provider. Transactions product only (v1). Investments/Liabilities are future child specs gated on `investment-tracking.md`. |
+| Plaid | [`sync-plaid.md`](sync-plaid.md) | Draft | First provider. Transactions product only (v1). Investments is a future child gated on `investments-data-model.md`; Liabilities is a separate future child (no investments dependency). |
 | SimpleFIN | `sync-simplefin.md` | Planned | Alternative aggregator used by Actual Budget. Lower coverage but no per-institution fees. |
 | MX | `sync-mx.md` | Planned | Enterprise-grade aggregator. Potential alternative to Plaid for hosted tier. |
 
@@ -759,7 +759,7 @@ Infrastructure spec. The `Database` class that sync loaders write through handle
 Not designed here. Architectural constraints noted so the current design does not preclude them.
 
 1. **`sync push`** — multi-device sync. Push encrypted DuckDB state (or deltas) to the server so another device can pull it. Would add `moneybin sync push` command and bidirectional protocol extensions.
-2. **Plaid Investments** — sync holdings, securities, and investment transactions. Gated on `investment-tracking.md` spec (M3B). New child spec: `sync-plaid-investments.md`.
+2. **Plaid Investments** — sync holdings, securities, and investment transactions. Gated on `investments-data-model.md` (M3B). New child spec: `sync-plaid-investments.md`.
 3. **Plaid Liabilities** — sync loan, mortgage, and credit card debt details. Separate child spec.
 4. **Webhook-based sync** — server pushes notifications when new data is available, eliminating polling. Requires a client-side listener or notification mechanism.
 5. **Integration test environment** — coordinated setup for running server-dependent tests. Separate spec covering docker-compose, Auth0 test tenant, sandbox credential management.

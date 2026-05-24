@@ -1,27 +1,25 @@
-"""Scenario: audit log captures every event; idempotent re-applies are marked.
+"""Scenario: replaying idempotent curation is state-stable and audit-clean.
 
-Per transaction-curation spec Req 30, the audit log records every
-mutation attempt — including idempotent re-applications — and tags those
-re-applies with ``context_json.noop=true`` so reviewers can distinguish
-"nothing changed" from "no event was emitted." Replaying a fixed
-sequence of curation operations whose semantics are idempotent must:
+The audit log records only real mutations: an idempotent re-apply (re-adding
+a tag that already exists) performs no row change and emits NO audit row
+(REC-PR3 DN2 — repos audit real mutations only). Replaying a fixed sequence
+of curation operations must:
 
 1. Leave ``app.transaction_notes`` / ``transaction_tags`` /
    ``transaction_splits`` row counts and contents identical to the
-   first-run end-state.
-2. Exactly DOUBLE the ``app.audit_log`` row count (every operation in
-   the second run still emits an event).
-3. Mark the second-run re-applications with ``context_json.noop=true``
-   on the audit row, where the operation is genuinely a noop on state
-   (the ``add_tags`` no-op branch in ``TransactionService.add_tags``).
+   first-run end-state (true idempotency of state).
+2. Emit FEWER events on the second run, by exactly the count of ops that
+   became no-ops on replay — here the two ``add_tags`` re-adds (both tags
+   already exist from run 1), so run 2 emits ``first_run - 2`` events.
+3. Carry no ``context_json.noop`` rows anywhere, and exactly one
+   ``tag.add`` per distinct tag (the re-add emitted nothing).
 
-The sequence below is deliberately constrained to operations that are
-either idempotent at the API level (``add_tags`` re-add, ``set_splits``
-declarative clear-and-replace) or whose emission shape is invariant on
-replay (``rename_tag`` with no matching rows still emits a parent
-event). Notes are the one non-idempotent surface (``add_note`` always
-inserts a fresh ``note_id``); the test creates the note once in setup
-and exercises only ``edit_note`` inside the replayed sequence.
+The sequence below is deliberately constrained: ``edit_note`` rewrites the
+same text (a real UPDATE, emitted both runs); ``add_tags`` re-adds are the
+idempotent no-ops; ``set_splits`` declaratively clears-and-replaces, emitting
+the same per-row event count both runs. Notes are non-idempotent at creation
+(``add_note`` mints a fresh ``note_id``), so the note is created once in setup
+and only ``edit_note`` runs inside the replayed sequence.
 """
 
 from __future__ import annotations
@@ -46,7 +44,7 @@ def _curation_sequence(
 
     All ops in this sequence are idempotent at the row level:
     ``edit_note`` writes the same text; ``add_tags`` re-add hits the
-    no-op branch on replay (and emits ``context_json.noop=true``);
+    no-op branch on replay (no row change, no audit row — DN2);
     ``set_splits`` clear-and-replaces, recreating the same final shape.
 
     ``rename_tag`` is intentionally excluded: rename is a one-shot
@@ -156,35 +154,38 @@ def test_audit_log_idempotency() -> None:
             f"second: {second_state}"
         )
 
-        # Assertion 2: audit row count exactly doubled across the
-        # second run — every operation in run 2 still emitted an event.
-        assert second_run_emitted == first_run_emitted, (
+        # Assertion 2: run 2 emits exactly 2 fewer events than run 1 (DN2).
+        # The sequence's only ops that become no-ops on replay are the two
+        # add_tags re-adds (both tags already exist from run 1); every other
+        # op (edit_note, set_splits clear+add) is a real mutation both runs.
+        # Hand-derived: 2 idempotent re-adds emit nothing on replay.
+        assert second_run_emitted == first_run_emitted - 2, (
             f"second-run emitted {second_run_emitted} audit events vs "
-            f"{first_run_emitted} on first run — audit log did not double"
+            f"{first_run_emitted} on first run — expected exactly 2 fewer "
+            f"(the two idempotent tag re-adds emit no audit row under DN2)"
         )
-        assert audit_after_second - audit_before_first == 2 * first_run_emitted
 
-        # Assertion 3: the second run's noop tag re-adds carry
-        # ``context_json.noop=true``. The first ``add_tags`` call in the
-        # sequence re-adds 'tax:business-expense' which is already
-        # present (added in run 1) → noop branch.
-        noop_count = db.execute(
-            """
-            SELECT COUNT(*) FROM app.audit_log
-             WHERE action = 'tag.add'
-               AND target_id = ?
-               AND json_extract_string(context_json, '$.noop') = 'true'
-            """,
-            [transaction_id],
+        # Assertion 3: no noop-marked rows anywhere, and exactly one tag.add
+        # per distinct tag — the re-adds emitted nothing rather than a noop row.
+        no_noops = db.execute(
+            "SELECT COUNT(*) FROM app.audit_log "
+            "WHERE json_extract_string(context_json, '$.noop') = 'true'"
         ).fetchone()
-        assert noop_count is not None
-        # Two add_tags calls in the sequence; on replay both should be
-        # noops since both tags already exist (one direct, one via
-        # rename in run 1). Hand-derived: 2 noop emissions in run 2,
-        # 0 in run 1 → total 2.
-        assert int(noop_count[0]) == 2, (
-            f"expected 2 noop tag.add events on replay, got {noop_count[0]} — "
-            f"idempotent re-applies are not being marked"
+        assert no_noops is not None and int(no_noops[0]) == 0, (
+            "no-op audit rows must not be emitted (DN2); "
+            f"found {no_noops[0] if no_noops else '?'}"
+        )
+        # Row-grain target_id is the composite "transaction_id:tag", so match the
+        # delimiter-anchored prefix rather than the bare transaction_id.
+        tag_adds = db.execute(
+            "SELECT COUNT(*) FROM app.audit_log "
+            "WHERE action = 'tag.add' AND target_id LIKE ?",
+            [f"{transaction_id}:%"],
+        ).fetchone()
+        # Two distinct tags, each added once in run 1; run 2 re-adds emit nothing.
+        assert tag_adds is not None and int(tag_adds[0]) == 2, (
+            f"expected exactly 2 tag.add events (one per tag), got "
+            f"{tag_adds[0] if tag_adds else '?'}"
         )
 
 

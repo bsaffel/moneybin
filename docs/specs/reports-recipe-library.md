@@ -650,7 +650,7 @@ The two PRs can be reviewed in parallel once both specs are written, but PR 1 mu
 - **Multi-currency rollups.** Owned by future `multi-currency.md` (M3). All `reports.*` v1 models assume profile currency. See `architecture-shared-primitives.md` §Open Architectural Questions (b).
 - **Forecast/projection models.** "What will my net worth be in 6 months?" is a separate concern (forecasting); recipe library is descriptive analytics only.
 - **Cancellation-as-a-service workflow.** Rocket Money-style cancellation concierge is out of scope and will likely never be in scope (it's their business model, not ours).
-- **Portfolio/holdings reports.** Gated on `investment-tracking.md`. Will land as `reports.portfolio`, `reports.holdings`, etc. once the schema decisions there are made.
+- **Portfolio/holdings reports.** Gated on `investments-data-model.md`. Will land as `reports.portfolio`, `reports.holdings`, etc. once the schema decisions there are made.
 - **Tax reports.** Owned by `tax-*.md` specs (separate top-level CLI group per `moneybin-cli.md` v2; `tax` is not nested under `reports`).
 
 ## Dependencies

@@ -16,7 +16,9 @@ CREATE TABLE IF NOT EXISTS app.audit_log (
     after_value     JSON,                                         -- Full resulting row state; NULL on deletion (DELETE). Invariant 10: complete post-mutation row, not a diff.
     parent_audit_id VARCHAR,                                      -- Self-FK; chains AI-call → user-confirm → category-write, or bulk-rename → per-row events
     context_json    JSON,                                         -- Discriminator-shaped extras: AI fields (flow_tier, backend, model, data_sent_hash), source surface, hashes, etc.
-    operation_id    VARCHAR NOT NULL                              -- Per-call group: every row from one MCP/CLI call shares this op_<uuid4_hex>. A flat sibling group (vs parent_audit_id's causal tree); the unit a later system_audit_undo reverses. Set by the service-layer MutationContext. (Placed last + indexes deferred to V023 — see below.)
+    operation_id    VARCHAR NOT NULL,                             -- Per-call group: every row from one MCP/CLI call shares this op_<uuid4_hex>. A flat sibling group (vs parent_audit_id's causal tree); the unit a later system_audit_undo reverses. Set by the service-layer MutationContext. (Placed last + indexes deferred to V023 — see below.)
+    is_undo         BOOLEAN NOT NULL DEFAULT FALSE,               -- TRUE for rows produced by system_audit_undo; FALSE for original mutations. (Added by V024.)
+    undoes_operation_id VARCHAR                                   -- When is_undo=TRUE, the operation_id this undo reverses; NULL otherwise. (Added by V024.)
 );
 CREATE INDEX IF NOT EXISTS idx_audit_log_target ON app.audit_log(target_table, target_id);
 CREATE INDEX IF NOT EXISTS idx_audit_log_occurred ON app.audit_log(occurred_at DESC);

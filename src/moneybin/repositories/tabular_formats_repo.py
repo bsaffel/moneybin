@@ -70,7 +70,8 @@ class TabularFormatsRepo(BaseRepo):
 
     repository = "tabular_formats"
 
-    _AUDIT_TARGET = (TABULAR_FORMATS.schema, TABULAR_FORMATS.name)
+    table_ref = TABULAR_FORMATS
+    pk_columns = ("name",)
 
     def _fetch_row(self, name: str) -> dict[str, Any] | None:
         return self._fetch_one(
@@ -177,7 +178,7 @@ class TabularFormatsRepo(BaseRepo):
             after = self._fetch_row(name)
             return self._emit_audit(
                 action="tabular_format.set",
-                target=(*self._AUDIT_TARGET, name),
+                target=(*self._audit_target, name),
                 before=self._serialize_for_audit(before),
                 after=self._serialize_for_audit(after),
                 actor=actor,
@@ -208,7 +209,7 @@ class TabularFormatsRepo(BaseRepo):
             )
             return self._emit_audit(
                 action="tabular_format.delete",
-                target=(*self._AUDIT_TARGET, name),
+                target=(*self._audit_target, name),
                 before=self._serialize_for_audit(before),
                 after=None,
                 actor=actor,

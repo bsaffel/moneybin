@@ -18,14 +18,16 @@ rather than per-method discipline:
 
 from __future__ import annotations
 
-from collections.abc import Callable, Generator, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from decimal import Decimal
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 from sqlglot import exp
 
+from moneybin import error_codes
 from moneybin.database import Database
+from moneybin.errors import UserError
 from moneybin.metrics.registry import app_mutation_audit_emitted_total
 from moneybin.services.audit_service import AuditEvent, AuditService
 from moneybin.tables import TableRef
@@ -60,23 +62,47 @@ class BaseRepo:
     #: Stable repository label for the ``app_mutation_audit_emitted_total`` metric.
     repository: ClassVar[str]
 
-    def __init_subclass__(cls, **kwargs: object) -> None:
-        """Fail at class-definition time if a repo forgets its ``repository`` label.
+    #: The protected ``app.*`` table this repo owns. Drives undo targeting and
+    #: the dispatch registry (REC-PR3).
+    table_ref: ClassVar[TableRef]
 
-        Without this, a missing label only surfaces as an ``AttributeError`` the
-        first time ``_emit_audit`` runs at runtime — fail fast at import instead.
+    #: Primary-key column(s) of ``table_ref`` — a tuple so composite keys (e.g.
+    #: ``transaction_tags`` = ``(transaction_id, tag)``) work uniformly. The undo
+    #: engine builds its WHERE clause from these.
+    pk_columns: ClassVar[tuple[str, ...]]
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        """Fail at class-definition time if a repo omits required metadata.
+
+        Each repo must declare ``repository`` (metric label), ``table_ref`` (the
+        owned table), and ``pk_columns`` (its primary key). Without this, a
+        missing attr only surfaces as an ``AttributeError`` deep in a runtime
+        path — fail fast at import instead.
         """
         super().__init_subclass__(**kwargs)
-        if not hasattr(cls, "repository"):
-            raise TypeError(
-                f"{cls.__name__} must set a class-level `repository` label "
-                "(used for the app_mutation_audit_emitted_total metric)."
-            )
+        for attr, why in (
+            ("repository", "the app_mutation_audit_emitted_total metric label"),
+            ("table_ref", "the owned app.* table (undo targeting + dispatch)"),
+            ("pk_columns", "the table's primary-key columns (undo WHERE clause)"),
+        ):
+            if not hasattr(cls, attr):
+                raise TypeError(
+                    f"{cls.__name__} must set a class-level `{attr}` — {why}."
+                )
 
     def __init__(self, db: Database, *, audit: AuditService | None = None) -> None:
         """Bind to an open Database; lazily build an ``AuditService`` if absent."""
         self._db = db
         self._audit = audit if audit is not None else AuditService(db)
+
+    @property
+    def _audit_target(self) -> tuple[str, str]:
+        """The (schema, table) audit-target prefix, derived from ``table_ref``.
+
+        Repos pass ``(*self._audit_target, entity_id)`` as the audit target;
+        deriving it here keeps the table named in exactly one place per repo.
+        """
+        return (self.table_ref.schema, self.table_ref.name)
 
     @contextmanager
     def _transaction(self, *, in_outer_txn: bool = False) -> Generator[None]:
@@ -111,6 +137,8 @@ class BaseRepo:
         actor: str,
         parent_audit_id: str | None = None,
         context: dict[str, Any] | None = None,
+        is_undo: bool = False,
+        undoes_operation_id: str | None = None,
     ) -> AuditEvent:
         """Emit one paired ``app.audit_log`` row and bump the repo mutation metric.
 
@@ -126,6 +154,9 @@ class BaseRepo:
         lockstep (so the contract-violation gap *between* them is unaffected), and
         a rollback after a successful audit insert is rare. Prometheus counters are
         best-effort telemetry, not a durable ledger.
+
+        ``is_undo`` / ``undoes_operation_id`` mark rows written by :meth:`undo_event`
+        so the undo is itself queryable and undoable (REC-PR3).
         """
         event = self._audit.record_audit_event(
             action=action,
@@ -135,6 +166,8 @@ class BaseRepo:
             actor=actor,
             parent_audit_id=parent_audit_id,
             context=context,
+            is_undo=is_undo,
+            undoes_operation_id=undoes_operation_id,
         )
         app_mutation_audit_emitted_total.labels(
             repository=self.repository, action=action
@@ -206,3 +239,152 @@ class BaseRepo:
             else:
                 out[key] = value
         return out
+
+    def undo_event(
+        self,
+        event: AuditEvent,
+        *,
+        actor: str,
+        in_outer_txn: bool = False,
+    ) -> AuditEvent | None:
+        """Synthesize and apply the inverse of one audited mutation.
+
+        The inverse is derived purely from the event's full-row before/after
+        capture (Req 4), so one generic implementation reverses every repo:
+
+        - INSERT (``before`` is None) → DELETE the row it created.
+        - DELETE (``after`` is None) → re-INSERT the row it removed.
+        - UPDATE (both present) → restore every column to its before-image,
+          locating the row by the *after* image's primary key so a pk-changing
+          update (e.g. a tag rename) is found by its current key.
+
+        A no-op event (``before == after``, covering both-None and a zero-change
+        update) writes nothing and returns ``None``. Otherwise the undo is itself
+        audited (``is_undo=True``, ``undoes_operation_id=event.operation_id``) and
+        the new event is returned — so it is undoable in turn (undo-the-undo).
+
+        Values come straight from the JSON-decoded audit payload: DuckDB
+        auto-casts ISO strings to ``DATE``/``TIMESTAMP`` and decimal strings to
+        ``DECIMAL``, and binds ``dict``/``list`` directly to ``JSON``/array
+        columns — so no per-repo type handling is needed (``match_signals`` JSON
+        and ``exemplars`` arrays round-trip natively).
+        """
+        before = event.before_value
+        after = event.after_value
+        if before == after:
+            return None
+
+        with self._transaction(in_outer_txn=in_outer_txn):
+            if before is None and after is not None:
+                self._require_capture(after, self.pk_columns, event)
+                self._delete_by_pk(after)
+            elif after is None and before is not None:
+                self._require_capture(before, self._not_null_columns(), event)
+                self._insert_row(before)
+            elif before is not None and after is not None:
+                self._require_capture(after, self.pk_columns, event)
+                # before must be as complete as after, or the restore silently
+                # writes only the captured columns and leaves the rest at their
+                # current (post-mutation) values.
+                self._require_capture(before, after.keys(), event)
+                self._restore_row(before=before, locate=after)
+            # Target the row the inverse actually leaves behind, not event.target_id:
+            # a PK-changing undo (tag rename restore) lands on the *before* key, so
+            # reusing the post-mutation key would mis-scope cascade blocking. One of
+            # before/after is always set here — the both-None case returned early.
+            result_row = cast("dict[str, Any]", before if before is not None else after)
+            return self._emit_audit(
+                action=f"{event.action}.undo",
+                target=(
+                    event.target_schema,
+                    event.target_table,
+                    self._row_target_id(result_row),
+                ),
+                before=after,
+                after=before,
+                actor=actor,
+                is_undo=True,
+                undoes_operation_id=event.operation_id,
+            )
+
+    def _not_null_columns(self) -> set[str]:
+        """Column names of ``table_ref`` that reject NULL, from the live catalog.
+
+        Used to reject undo of a legacy partial-capture row *before* it reaches a
+        raw DuckDB NOT NULL error — see :meth:`_require_capture`.
+        """
+        rows = self._db.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = ? AND table_name = ? AND is_nullable = 'NO'",
+            [self.table_ref.schema, self.table_ref.name],
+        ).fetchall()
+        return {r[0] for r in rows}
+
+    def _require_capture(
+        self, image: dict[str, Any], required: Iterable[str], event: AuditEvent
+    ) -> None:
+        """Refuse to reverse an audit row whose capture is missing ``required`` keys.
+
+        Pre-PR rows (e.g. a ``note.delete`` that stored only ``note_id``/``text``)
+        predate the full-row capture Invariant 10 Req 4 now guarantees. Reversing
+        them would re-INSERT a row missing NOT NULL columns or locate by an absent
+        primary key — surfacing as a raw DuckDB / ``KeyError`` crash. Fail cleanly
+        with a recovery code the surface can render instead.
+        """
+        missing = set(required) - set(image)
+        if missing:
+            raise UserError(
+                f"Cannot undo {event.action!r}: its audit row predates full-row "
+                f"capture and is missing {sorted(missing)} on {event.target_table} "
+                "— not reversible.",
+                code=error_codes.RECOVERY_NO_PATH,
+            )
+
+    def _row_target_id(self, row: dict[str, Any]) -> str:
+        """The audit ``target_id`` for ``row`` — the row's own identity (row-grain).
+
+        Default: the single primary-key column. Repos with a composite key
+        override to flatten it to one string. This MUST mirror the value the
+        repo's forward mutations pass as ``target_id`` so undo rows and forward
+        rows scope to the same row (e.g. tag rename undo must land on the
+        pre-rename key, not the post-rename one).
+        """
+        return str(row[self.pk_columns[0]])
+
+    def _pk_where(self, row: dict[str, Any]) -> tuple[str, list[Any]]:
+        """Build a ``col = ? AND …`` clause + params from ``pk_columns``."""
+        clauses = [f"{quote_ident(col)} = ?" for col in self.pk_columns]
+        return " AND ".join(clauses), [row[col] for col in self.pk_columns]
+
+    def _delete_by_pk(self, row: dict[str, Any]) -> None:
+        """Delete the row whose primary key matches ``row`` (undo of an INSERT)."""
+        where, params = self._pk_where(row)
+        self._db.execute(
+            f"DELETE FROM {self.table_ref.full_name} WHERE {where}",  # noqa: S608  # TableRef + sqlglot-quoted pk; values parameterized
+            params,
+        )
+
+    def _insert_row(self, row: dict[str, Any]) -> None:
+        """Re-insert a full captured row (undo of a DELETE)."""
+        cols = list(row.keys())
+        col_sql = ", ".join(quote_ident(c) for c in cols)
+        placeholders = ", ".join("?" for _ in cols)
+        self._db.execute(
+            f"INSERT INTO {self.table_ref.full_name} ({col_sql}) "  # noqa: S608  # TableRef + sqlglot-quoted columns; values parameterized
+            f"VALUES ({placeholders})",
+            [row[c] for c in cols],
+        )
+
+    def _restore_row(self, *, before: dict[str, Any], locate: dict[str, Any]) -> None:
+        """Restore every column to its before-image (undo of an UPDATE).
+
+        ``locate`` is the after-image, so the WHERE clause keys on the row's
+        *current* primary key — correct even when the update changed the key.
+        """
+        set_cols = list(before.keys())
+        set_sql = ", ".join(f"{quote_ident(c)} = ?" for c in set_cols)
+        where, where_params = self._pk_where(locate)
+        self._db.execute(
+            f"UPDATE {self.table_ref.full_name} SET {set_sql} WHERE {where}",  # noqa: S608  # TableRef + sqlglot-quoted columns; values parameterized
+            [before[c] for c in set_cols] + where_params,
+        )

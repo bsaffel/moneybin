@@ -18,6 +18,9 @@ from decimal import Decimal
 from typing import Any
 
 from moneybin.database import Database
+from moneybin.repositories.transaction_notes_repo import TransactionNotesRepo
+from moneybin.repositories.transaction_splits_repo import TransactionSplitsRepo
+from moneybin.repositories.transaction_tags_repo import TransactionTagsRepo
 from moneybin.services._validators import validate_note_text, validate_slug
 from moneybin.services.audit_service import AuditService
 from moneybin.services.categorization._shared import resolve_category_id
@@ -29,11 +32,10 @@ from moneybin.tables import (
 
 logger = logging.getLogger(__name__)
 
-# Audit target prefix for note operations (schema, table); the third tuple
-# element is the per-event transaction_id so chains stitch by entity.
-_AUDIT_TARGET_NOTES = ("app", "transaction_notes")
+# Audit target prefixes (schema, table) for the audit events still emitted
+# directly by this service: the cross-row tag.rename parent marker and manual
+# entry (raw.*). Notes/tags/splits row mutations go through their repos.
 _AUDIT_TARGET_TAGS = ("app", "transaction_tags")
-_AUDIT_TARGET_SPLITS = ("app", "transaction_splits")
 _AUDIT_TARGET_MANUAL = ("raw", "manual_transactions")
 _MANUAL_BATCH_MAX = 100
 _MANUAL_FORMAT_NAME = "manual_entry"
@@ -176,6 +178,11 @@ class TransactionService:
         """
         self._db = db
         self._audit = audit if audit is not None else AuditService(db)
+        # Repo-backed mutations for notes/tags/splits (Invariant 10); share the
+        # audit service so emissions land on one connection/transaction.
+        self._notes_repo = TransactionNotesRepo(db, audit=self._audit)
+        self._tags_repo = TransactionTagsRepo(db, audit=self._audit)
+        self._splits_repo = TransactionSplitsRepo(db, audit=self._audit)
 
     def _resolve_account_ids(self, accounts: list[str]) -> list[str]:
         """Resolve display names or IDs to account_id strings.
@@ -560,30 +567,9 @@ class TransactionService:
         """
         validate_note_text(text)
         note_id = uuid.uuid4().hex[:12]
-        # Explicit begin/commit — DuckDB's connection context-manager closes the
-        # connection on exit, which would invalidate the long-lived process-wide
-        # connection. We pair the mutation and audit insert atomically instead.
-        self._db.begin()
-        try:
-            self._db.conn.execute(
-                """
-                INSERT INTO app.transaction_notes
-                    (note_id, transaction_id, text, author)
-                VALUES (?, ?, ?, ?)
-                """,
-                [note_id, transaction_id, text, actor],
-            )
-            self._audit.record_audit_event(
-                action="note.add",
-                target=(*_AUDIT_TARGET_NOTES, transaction_id),
-                before=None,
-                after={"note_id": note_id, "text": text, "author": actor},
-                actor=actor,
-            )
-            self._db.commit()
-        except Exception:
-            self._db.rollback()
-            raise
+        self._notes_repo.add(
+            transaction_id=transaction_id, note_id=note_id, text=text, actor=actor
+        )
         row = self._db.conn.execute(
             """
             SELECT note_id, transaction_id, text, author, created_at
@@ -603,34 +589,7 @@ class TransactionService:
         Raises ``LookupError`` if ``note_id`` is unknown.
         """
         validate_note_text(text)
-        self._db.begin()
-        try:
-            existing = self._db.conn.execute(
-                """
-                SELECT transaction_id, text
-                  FROM app.transaction_notes
-                 WHERE note_id = ?
-                """,
-                [note_id],
-            ).fetchone()
-            if existing is None:
-                raise LookupError(f"note_id={note_id} not found")
-            txn_id, prior = existing[0], existing[1]
-            self._db.conn.execute(
-                "UPDATE app.transaction_notes SET text = ? WHERE note_id = ?",
-                [text, note_id],
-            )
-            self._audit.record_audit_event(
-                action="note.edit",
-                target=(*_AUDIT_TARGET_NOTES, txn_id),
-                before={"text": prior},
-                after={"text": text},
-                actor=actor,
-            )
-            self._db.commit()
-        except Exception:
-            self._db.rollback()
-            raise
+        self._notes_repo.edit(note_id=note_id, text=text, actor=actor)
         row = self._db.conn.execute(
             """
             SELECT note_id, transaction_id, text, author, created_at
@@ -649,34 +608,7 @@ class TransactionService:
 
         Raises ``LookupError`` if ``note_id`` is unknown.
         """
-        self._db.begin()
-        try:
-            existing = self._db.conn.execute(
-                """
-                SELECT transaction_id, text, author
-                  FROM app.transaction_notes
-                 WHERE note_id = ?
-                """,
-                [note_id],
-            ).fetchone()
-            if existing is None:
-                raise LookupError(f"note_id={note_id} not found")
-            txn_id, text, author = existing[0], existing[1], existing[2]
-            self._db.conn.execute(
-                "DELETE FROM app.transaction_notes WHERE note_id = ?",
-                [note_id],
-            )
-            self._audit.record_audit_event(
-                action="note.delete",
-                target=(*_AUDIT_TARGET_NOTES, txn_id),
-                before={"note_id": note_id, "text": text, "author": author},
-                after=None,
-                actor=actor,
-            )
-            self._db.commit()
-        except Exception:
-            self._db.rollback()
-            raise
+        self._notes_repo.delete(note_id=note_id, actor=actor)
         logger.info(f"note.delete note_id={note_id} actor={actor}")
 
     # ------------------------------------------------------------------
@@ -686,12 +618,12 @@ class TransactionService:
     def add_tags(
         self, transaction_id: str, tags: list[str], *, actor: str
     ) -> list[str]:
-        """Apply tags to a transaction; emit one ``tag.add`` event per tag.
+        """Apply tags to a transaction; emit one ``tag.add`` event per new tag.
 
-        Idempotent: re-adding an existing tag emits a ``tag.add`` event with
-        ``context_json={"noop": True}`` and no row change. All tag patterns
-        are validated up front so a bad tag never half-mutates state.
-        Returns the list of tags that were actually inserted (excludes no-ops).
+        Idempotent: re-adding an existing tag is skipped silently — no row change
+        and no audit row (DN2: no ``noop`` audit noise). All tag patterns are
+        validated up front so a bad tag never half-mutates state. Returns the
+        list of tags that were actually inserted (excludes the skipped ones).
         """
         for t in tags:
             validate_slug(t)
@@ -700,36 +632,17 @@ class TransactionService:
         try:
             for tag in tags:
                 existed = self._db.conn.execute(
-                    """
-                    SELECT 1 FROM app.transaction_tags
-                     WHERE transaction_id = ? AND tag = ?
-                    """,
+                    "SELECT 1 FROM app.transaction_tags "
+                    "WHERE transaction_id = ? AND tag = ?",
                     [transaction_id, tag],
                 ).fetchone()
                 if existed:
-                    self._audit.record_audit_event(
-                        action="tag.add",
-                        target=(*_AUDIT_TARGET_TAGS, transaction_id),
-                        before={"tag": tag},
-                        after={"tag": tag},
-                        actor=actor,
-                        context={"noop": True},
-                    )
-                    continue
-                self._db.conn.execute(
-                    """
-                    INSERT INTO app.transaction_tags
-                        (transaction_id, tag, applied_by)
-                    VALUES (?, ?, ?)
-                    """,
-                    [transaction_id, tag, actor],
-                )
-                self._audit.record_audit_event(
-                    action="tag.add",
-                    target=(*_AUDIT_TARGET_TAGS, transaction_id),
-                    before=None,
-                    after={"tag": tag},
+                    continue  # idempotent: re-adding an existing tag is a no-op
+                self._tags_repo.add(
+                    transaction_id=transaction_id,
+                    tag=tag,
                     actor=actor,
+                    in_outer_txn=True,
                 )
                 added.append(tag)
             self._db.commit()
@@ -745,46 +658,28 @@ class TransactionService:
     def remove_tags(
         self, transaction_id: str, tags: list[str], *, actor: str
     ) -> list[str]:
-        """Remove tags from a transaction; emit one ``tag.remove`` per tag.
+        """Remove tags from a transaction; emit one ``tag.remove`` per removed tag.
 
-        Idempotent: removing an absent tag emits a ``tag.remove`` event with
-        ``context_json={"noop": True}`` and no row change. Returns the list
-        of tags that were actually deleted.
+        Idempotent: removing an absent tag is skipped silently — no row change
+        and no audit row (DN2). Returns the list of tags that were actually
+        deleted.
         """
         removed: list[str] = []
         self._db.begin()
         try:
             for tag in tags:
                 existed = self._db.conn.execute(
-                    """
-                    SELECT 1 FROM app.transaction_tags
-                     WHERE transaction_id = ? AND tag = ?
-                    """,
+                    "SELECT 1 FROM app.transaction_tags "
+                    "WHERE transaction_id = ? AND tag = ?",
                     [transaction_id, tag],
                 ).fetchone()
                 if not existed:
-                    self._audit.record_audit_event(
-                        action="tag.remove",
-                        target=(*_AUDIT_TARGET_TAGS, transaction_id),
-                        before=None,
-                        after=None,
-                        actor=actor,
-                        context={"noop": True},
-                    )
-                    continue
-                self._db.conn.execute(
-                    """
-                    DELETE FROM app.transaction_tags
-                     WHERE transaction_id = ? AND tag = ?
-                    """,
-                    [transaction_id, tag],
-                )
-                self._audit.record_audit_event(
-                    action="tag.remove",
-                    target=(*_AUDIT_TARGET_TAGS, transaction_id),
-                    before={"tag": tag},
-                    after=None,
+                    continue  # idempotent: removing an absent tag is a no-op
+                self._tags_repo.remove(
+                    transaction_id=transaction_id,
+                    tag=tag,
                     actor=actor,
+                    in_outer_txn=True,
                 )
                 removed.append(tag)
             self._db.commit()
@@ -821,35 +716,18 @@ class TransactionService:
             to_add = sorted(desired - current)
             to_remove = sorted(current - desired)
             for tag in to_add:
-                self._db.conn.execute(
-                    """
-                    INSERT INTO app.transaction_tags
-                        (transaction_id, tag, applied_by)
-                    VALUES (?, ?, ?)
-                    """,
-                    [transaction_id, tag, actor],
-                )
-                self._audit.record_audit_event(
-                    action="tag.add",
-                    target=(*_AUDIT_TARGET_TAGS, transaction_id),
-                    before=None,
-                    after={"tag": tag},
+                self._tags_repo.add(
+                    transaction_id=transaction_id,
+                    tag=tag,
                     actor=actor,
+                    in_outer_txn=True,
                 )
             for tag in to_remove:
-                self._db.conn.execute(
-                    """
-                    DELETE FROM app.transaction_tags
-                     WHERE transaction_id = ? AND tag = ?
-                    """,
-                    [transaction_id, tag],
-                )
-                self._audit.record_audit_event(
-                    action="tag.remove",
-                    target=(*_AUDIT_TARGET_TAGS, transaction_id),
-                    before={"tag": tag},
-                    after=None,
+                self._tags_repo.remove(
+                    transaction_id=transaction_id,
+                    tag=tag,
                     actor=actor,
+                    in_outer_txn=True,
                 )
             self._db.commit()
         except Exception:
@@ -876,6 +754,8 @@ class TransactionService:
                 "SELECT transaction_id FROM app.transaction_tags WHERE tag = ?",
                 [old_tag],
             ).fetchall()
+            # Parent is a cross-row audit marker (target_id=None), not a
+            # single-row mutation, so it's emitted directly rather than via the repo.
             parent = self._audit.record_audit_event(
                 action="tag.rename",
                 target=(*_AUDIT_TARGET_TAGS, None),
@@ -884,21 +764,13 @@ class TransactionService:
                 actor=actor,
             )
             for (txn_id,) in rows:
-                self._db.conn.execute(
-                    """
-                    UPDATE app.transaction_tags
-                       SET tag = ?
-                     WHERE transaction_id = ? AND tag = ?
-                    """,
-                    [new_tag, txn_id, old_tag],
-                )
-                self._audit.record_audit_event(
-                    action="tag.rename_row",
-                    target=(*_AUDIT_TARGET_TAGS, txn_id),
-                    before={"tag": old_tag},
-                    after={"tag": new_tag},
+                self._tags_repo.rename_row(
+                    transaction_id=txn_id,
+                    old_tag=old_tag,
+                    new_tag=new_tag,
                     actor=actor,
                     parent_audit_id=parent.audit_id,
+                    in_outer_txn=True,
                 )
             self._db.commit()
         except Exception:
@@ -985,38 +857,17 @@ class TransactionService:
             ).fetchone()
             next_ord = int(ord_row[0]) if ord_row is not None else 0
             category_id = resolve_category_id(self._db, category, subcategory)
-            params: list[Any] = [
-                split_id,
-                transaction_id,
-                amount,
-                category,
-                subcategory,
-                category_id,
-                note,
-                next_ord,
-                actor,
-            ]
-            self._db.conn.execute(
-                """
-                INSERT INTO app.transaction_splits
-                    (split_id, transaction_id, amount, category, subcategory,
-                     category_id, note, ord, created_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                params,
-            )
-            self._audit.record_audit_event(
-                action="split.add",
-                target=(*_AUDIT_TARGET_SPLITS, transaction_id),
-                before=None,
-                # ``Decimal`` is not JSON-serializable by default; render as a
-                # string so the audit row round-trips faithfully.
-                after={
-                    "split_id": split_id,
-                    "amount": str(amount),
-                    "category": category,
-                },
+            self._splits_repo.insert(
+                split_id=split_id,
+                transaction_id=transaction_id,
+                amount=amount,
+                category=category,
+                subcategory=subcategory,
+                category_id=category_id,
+                note=note,
+                ord=next_ord,
                 actor=actor,
+                in_outer_txn=True,
             )
             self._db.commit()
         except Exception:
@@ -1044,76 +895,19 @@ class TransactionService:
 
         Raises ``LookupError`` if ``split_id`` is unknown.
         """
-        self._db.begin()
-        try:
-            existing = self._db.conn.execute(
-                """
-                SELECT transaction_id, amount, category
-                  FROM app.transaction_splits
-                 WHERE split_id = ?
-                """,
-                [split_id],
-            ).fetchone()
-            if existing is None:
-                raise LookupError(f"split_id={split_id} not found")
-            txn_id, amount, category = existing[0], existing[1], existing[2]
-            self._db.conn.execute(
-                "DELETE FROM app.transaction_splits WHERE split_id = ?",
-                [split_id],
-            )
-            self._audit.record_audit_event(
-                action="split.remove",
-                target=(*_AUDIT_TARGET_SPLITS, txn_id),
-                before={
-                    "split_id": split_id,
-                    "amount": str(amount),
-                    "category": category,
-                },
-                after=None,
-                actor=actor,
-            )
-            self._db.commit()
-        except Exception:
-            self._db.rollback()
-            raise
+        self._splits_repo.delete(split_id=split_id, actor=actor)
         logger.info(f"split.remove split_id={split_id} actor={actor}")
 
     def clear_splits(self, transaction_id: str, *, actor: str) -> None:
-        """Delete all splits for a transaction; emit one ``split.clear`` event.
+        """Delete all splits for a transaction; emit one ``split.remove`` per row.
 
-        No-op (no audit event, no SQL) when the parent has no splits.
+        Per-row capture (DN3) keeps each split individually undoable. No-op (no
+        audit event, no SQL) when the parent has no splits.
         """
-        self._db.begin()
-        try:
-            count_row = self._db.conn.execute(
-                """
-                SELECT COUNT(*)
-                  FROM app.transaction_splits
-                 WHERE transaction_id = ?
-                """,
-                [transaction_id],
-            ).fetchone()
-            count = int(count_row[0]) if count_row is not None else 0
-            if count == 0:
-                self._db.commit()
-                return
-            self._db.conn.execute(
-                "DELETE FROM app.transaction_splits WHERE transaction_id = ?",
-                [transaction_id],
-            )
-            self._audit.record_audit_event(
-                action="split.clear",
-                target=(*_AUDIT_TARGET_SPLITS, transaction_id),
-                before={"split_count": count},
-                after=None,
-                actor=actor,
-            )
-            self._db.commit()
-        except Exception:
-            self._db.rollback()
-            raise
+        events = self._splits_repo.clear(transaction_id=transaction_id, actor=actor)
         logger.info(
-            f"split.clear transaction_id={transaction_id} count={count} actor={actor}"
+            f"split.clear transaction_id={transaction_id} "
+            f"count={len(events)} actor={actor}"
         )
 
     def set_splits(
@@ -1146,62 +940,26 @@ class TransactionService:
             })
         self._db.begin()
         try:
-            count_row = self._db.conn.execute(
-                """
-                SELECT COUNT(*)
-                  FROM app.transaction_splits
-                 WHERE transaction_id = ?
-                """,
-                [transaction_id],
-            ).fetchone()
-            count = int(count_row[0]) if count_row is not None else 0
-            if count > 0:
-                self._db.conn.execute(
-                    "DELETE FROM app.transaction_splits WHERE transaction_id = ?",
-                    [transaction_id],
-                )
-                self._audit.record_audit_event(
-                    action="split.clear",
-                    target=(*_AUDIT_TARGET_SPLITS, transaction_id),
-                    before={"split_count": count},
-                    after=None,
-                    actor=actor,
-                )
+            self._splits_repo.clear(
+                transaction_id=transaction_id, actor=actor, in_outer_txn=True
+            )
             for ord_idx, s in enumerate(prepared):
                 split_id = uuid.uuid4().hex[:12]
                 # Resolve FK per row — each split has its own (possibly empty) category.
                 category_id = resolve_category_id(
                     self._db, s["category"], s["subcategory"]
                 )
-                self._db.conn.execute(
-                    """
-                    INSERT INTO app.transaction_splits
-                        (split_id, transaction_id, amount, category, subcategory,
-                         category_id, note, ord, created_by)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    [
-                        split_id,
-                        transaction_id,
-                        s["amount"],
-                        s["category"],
-                        s["subcategory"],
-                        category_id,
-                        s["note"],
-                        ord_idx,
-                        actor,
-                    ],
-                )
-                self._audit.record_audit_event(
-                    action="split.add",
-                    target=(*_AUDIT_TARGET_SPLITS, transaction_id),
-                    before=None,
-                    after={
-                        "split_id": split_id,
-                        "amount": str(s["amount"]),
-                        "category": s["category"],
-                    },
+                self._splits_repo.insert(
+                    split_id=split_id,
+                    transaction_id=transaction_id,
+                    amount=s["amount"],
+                    category=s["category"],
+                    subcategory=s["subcategory"],
+                    category_id=category_id,
+                    note=s["note"],
+                    ord=ord_idx,
                     actor=actor,
+                    in_outer_txn=True,
                 )
             self._db.commit()
         except Exception:

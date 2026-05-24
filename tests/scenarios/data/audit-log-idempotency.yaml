@@ -1,14 +1,14 @@
 scenario: audit-log-idempotency
 description: >
-  Replaying a fixed sequence of curation operations (add note → edit
-  note → add tag → rename tag → add split) yields the same final state
-  on the user-state tables, but the audit log row count exactly doubles
-  on the second run. Idempotent re-applications (re-adding an existing
-  tag in particular) must carry ``context_json.noop=true`` per
-  transaction-curation spec Req 30. This guards against two regressions:
-  (1) idempotency-by-suppression — silently skipping a re-apply with no
-  audit emission — and (2) audit drift — emitting a duplicate
-  state-changing event when the underlying row didn't change.
+  Replaying a fixed sequence of curation operations (edit note → add
+  tags → set splits) yields byte-identical final state on the user-state
+  tables. The audit log records only real mutations: an idempotent
+  re-apply (re-adding an existing tag) performs no row change and emits
+  no audit row (REC-PR3 DN2 — repos audit real mutations only). So the
+  second run emits fewer events than the first, by exactly the number of
+  ops that became no-ops on replay (the two tag re-adds). This guards
+  against audit drift: emitting a duplicate state-changing event when the
+  underlying row did not change.
 
 setup:
   persona: basic
