@@ -234,7 +234,7 @@ Designed but not gating launch. Listed without commitment.
 
 - **Data export** (CSV, Excel, Google Sheets) as a one-command flow. Until this ships, the data-exit path is direct SQL access to your DuckDB file.
 - **Privacy tiers + consent model.** Framework spec at [`privacy-and-ai-trust.md`](specs/privacy-and-ai-trust.md).
-- **Native PDF parsing + AI-assisted file parsing.**
+- **Native PDF import.** 📐 Generic PDF → core (transaction-shaped) or queryable JSON seed; deterministic-first (`pdfplumber`) with LLM escalation and learned, replayable recipes. Spec: [`smart-import-pdf.md`](specs/smart-import-pdf.md). AI-assisted parsing for *non-PDF* file types remains unspecced.
 - **ML-powered categorization + merchant entity resolution.** Needs accumulated labeled data from real users.
 - **MCP Apps** (interactive UI inside Claude Desktop, VS Code). Revisit when client support widens.
 - **Multi-account-holder sharing.** Single-user is the v1 posture; revisit on user demand.
