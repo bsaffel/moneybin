@@ -1,11 +1,13 @@
-"""CRUD operations for app.match_decisions.
+"""Read queries for app.match_decisions.
 
-All database access uses parameterized queries via the Database class.
+All database access uses parameterized queries via the Database class. Mutations
+(insert / status update / reverse) live in
+``moneybin.repositories.match_decisions_repo.MatchDecisionsRepo`` so every write
+emits a paired ``app.audit_log`` row (Invariant 10); this module keeps the read
+projections the matcher and CLI consume.
 """
 
-import json
 import logging
-from datetime import UTC, datetime
 from typing import Any, Literal, get_args
 
 from moneybin.database import Database
@@ -44,65 +46,13 @@ _MATCH_DECISION_COLUMNS: tuple[str, ...] = (
 _MATCH_DECISION_SELECT = ", ".join(_MATCH_DECISION_COLUMNS)
 
 
-def create_match_decision(
-    db: Database,
-    *,
-    match_id: str,
-    source_transaction_id_a: str,
-    source_type_a: str,
-    source_origin_a: str,
-    source_transaction_id_b: str,
-    source_type_b: str,
-    source_origin_b: str,
-    account_id: str,
-    confidence_score: float,
-    match_signals: dict[str, Any],
-    match_tier: MatchTier | None,
-    match_status: MatchStatus,
-    decided_by: str,
-    match_reason: str | None = None,
-    match_type: MatchType = "dedup",
-    account_id_b: str | None = None,
-) -> None:
-    """Insert a new match decision."""
-    db.execute(
-        """
-        INSERT INTO app.match_decisions (
-            match_id, source_transaction_id_a, source_type_a, source_origin_a,
-            source_transaction_id_b, source_type_b, source_origin_b,
-            account_id, confidence_score, match_signals, match_type, match_tier,
-            account_id_b, match_status, match_reason, decided_by, decided_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        [
-            match_id,
-            source_transaction_id_a,
-            source_type_a,
-            source_origin_a,
-            source_transaction_id_b,
-            source_type_b,
-            source_origin_b,
-            account_id,
-            confidence_score,
-            json.dumps(match_signals),
-            match_type,
-            match_tier,
-            account_id_b,
-            match_status,
-            match_reason,
-            decided_by,
-            datetime.now(tz=UTC).isoformat(),
-        ],
-    )
-
-
 def get_active_matches(
     db: Database, match_type: str | None = None
 ) -> list[dict[str, Any]]:
     """Return accepted, non-reversed match decisions."""
     where = "WHERE match_status = 'accepted' AND reversed_at IS NULL"
     params: list[Any] = []
-    if match_type:
+    if match_type is not None:
         if match_type not in VALID_MATCH_TYPES:
             raise ValueError(f"Invalid match_type: {match_type!r}")
         where += " AND match_type = ?"
@@ -119,62 +69,85 @@ def get_active_matches(
 
 
 def get_pending_matches(
-    db: Database, match_type: str | None = None
+    db: Database, match_type: str | None = None, *, limit: int | None = None
 ) -> list[dict[str, Any]]:
     """Return pending match decisions awaiting user review.
 
     Args:
         db: Database instance.
         match_type: Filter by type ('dedup', 'transfer'), or None for all.
+        limit: Max rows (pushed to SQL ``LIMIT``), or None for all pending.
     """
     where = "WHERE match_status = 'pending' AND reversed_at IS NULL"
     params: list[Any] = []
-    if match_type:
+    if match_type is not None:
         if match_type not in VALID_MATCH_TYPES:
             raise ValueError(f"Invalid match_type: {match_type!r}")
         where += " AND match_type = ?"
         params.append(match_type)
+    limit_clause = ""
+    if limit is not None:
+        limit_clause = "LIMIT ?"
+        params.append(limit)
     rows = db.execute(
         f"""
         SELECT {_MATCH_DECISION_SELECT} FROM app.match_decisions
         {where}
         ORDER BY confidence_score DESC
-        """,  # noqa: S608 — match_type validated above
+        {limit_clause}
+        """,  # noqa: S608 — match_type validated above; limit is parameterized
         params,
     ).fetchall()
     return [dict(zip(_MATCH_DECISION_COLUMNS, row, strict=True)) for row in rows]
 
 
-def update_match_status(
-    db: Database, match_id: str, *, status: MatchStatus, decided_by: str
-) -> None:
-    """Update the status of a match decision (e.g., pending -> accepted)."""
-    db.execute(
-        """
-        UPDATE app.match_decisions
-        SET match_status = ?, decided_by = ?, decided_at = ?
-        WHERE match_id = ?
-        """,
-        [status, decided_by, datetime.now(tz=UTC).isoformat(), match_id],
-    )
-
-
-def undo_match(db: Database, match_id: str, *, reversed_by: str) -> None:
-    """Reverse a match decision. Sets reversed_at, reversed_by, and match_status."""
+def get_match_decision(db: Database, match_id: str) -> dict[str, Any] | None:
+    """Return one match decision by id, or None if absent."""
     row = db.execute(
-        "SELECT match_id FROM app.match_decisions WHERE match_id = ?",
+        f"""
+        SELECT {_MATCH_DECISION_SELECT} FROM app.match_decisions
+        WHERE match_id = ?
+        """,  # noqa: S608 — column list is a module constant, not user input
         [match_id],
     ).fetchone()
     if row is None:
-        raise ValueError(f"Match not found: {match_id}")
-    db.execute(
+        return None
+    return dict(zip(_MATCH_DECISION_COLUMNS, row, strict=True))
+
+
+def get_active_dedup_edges(
+    db: Database,
+) -> list[dict[str, str]]:
+    """Return all active (accepted + pending, non-reversed) dedup edges.
+
+    Each row carries the four fields needed to build UnionFind components:
+    ``source_type_a``, ``source_transaction_id_a``, ``source_type_b``,
+    ``source_transaction_id_b``, and ``account_id``.
+
+    Used by MatchingService.get_pending to compute component_key for pending
+    rows — the same component identity the prep fold uses for match_group_id.
+    """
+    rows = db.execute(
         """
-        UPDATE app.match_decisions
-        SET reversed_at = ?, reversed_by = ?, match_status = 'reversed'
-        WHERE match_id = ?
-        """,
-        [datetime.now(tz=UTC).isoformat(), reversed_by, match_id],
+        SELECT source_type_a, source_transaction_id_a,
+               source_type_b, source_transaction_id_b,
+               account_id
+        FROM app.match_decisions
+        WHERE match_type = 'dedup'
+          AND match_status IN ('accepted', 'pending')
+          AND reversed_at IS NULL
+        ORDER BY account_id, source_type_a, source_transaction_id_a,
+                 source_type_b, source_transaction_id_b
+        """,  # noqa: S608 — no user-supplied values; all literals
+    ).fetchall()
+    cols = (
+        "source_type_a",
+        "source_transaction_id_a",
+        "source_type_b",
+        "source_transaction_id_b",
+        "account_id",
     )
+    return [dict(zip(cols, row, strict=True)) for row in rows]
 
 
 def get_rejected_pairs(
@@ -208,10 +181,15 @@ def get_rejected_pairs(
 def get_match_log(
     db: Database, *, limit: int = 50, match_type: str | None = None
 ) -> list[dict[str, Any]]:
-    """Return recent match decisions for display."""
-    where = "WHERE 1=1"
+    """Return recent match *decisions* for display.
+
+    Excludes ``pending`` rows: a pending proposal is not yet a decision, and its
+    ``decided_at`` holds the proposal time, not a decision time. The pending
+    queue is read via :func:`get_pending_matches`.
+    """
+    where = "WHERE match_status != 'pending'"
     params: list[Any] = []
-    if match_type:
+    if match_type is not None:
         if match_type not in VALID_MATCH_TYPES:
             raise ValueError(f"Invalid match_type: {match_type!r}")
         where += " AND match_type = ?"

@@ -21,14 +21,14 @@ CLI serves three peer consumers, not just one:
 2. **Shell scripts and pipelines** — `--output json` + `jq`, exit codes, stdout/stderr separation.
 3. **AI agents** — Claude Code, Codex CLI, Gemini CLI, and similar agents drive CLI commands directly as a peer pathway to MCP. They pipe and chain commands the way humans use shells, and parse JSON output the way scripts do.
 
-**The CLI is a first-class agent surface, not a fallback for users without MCP.** When MoneyBin offers a capability via MCP, it ships with a CLI equivalent (per `mcp-server.md` principle 5) — and that CLI is designed for both humans and agents from the start.
+**The CLI is a first-class agent surface, not a fallback for users without MCP.** When MoneyBin offers a capability via MCP, it ships with a CLI equivalent (per `mcp.md` principle 5) — and that CLI is designed for both humans and agents from the start.
 
 What this means in practice:
 
 - Data primitives (export commands, file-based inputs, stdin/stdout JSON) are designed once and serve all three consumers.
 - Redaction contracts apply identically across CLI and MCP — never assume CLI users are "trusted enough to skip redaction."
 - Every interactive prompt must have a flag equivalent (see Non-Interactive Parity below) — agents cannot navigate prompts.
-- `--output json` returns the same envelope shape MCP returns (see `mcp-server.md` Response Envelope).
+- `--output json` returns the same envelope shape MCP returns (see `mcp.md` Response Envelope).
 
 When designing a new command, ask: "Could an agent drive this end-to-end without a human?" If not, redesign — that's a flag-equivalence gap or a JSON-output gap, not an acceptable limitation.
 
@@ -137,6 +137,8 @@ Every command that **reads but does not mutate** state MUST accept:
 - `--json-fields` — comma-separated field projection for `--output json` (e.g. `--json-fields id,date,amount`). Only applies when `--output json` is active; silently ignored otherwise. Added progressively as each read-only command is extended — declare as `json_fields: str | None = json_fields_option` and pass to `render_or_json(json_fields=json_fields)`. Commands that implement it MUST enumerate available field names in their `--help` text (e.g. `"Available fields: id, date, amount, description, category, account_id"`).
 
 `db query` extends `--output` to `text|json|csv|markdown|box` since DuckDB's CLI supports all five natively.
+
+**Operator-bypass banner on direct-DB commands.** `db query`, `db shell`, and `db ui` are direct database access with no privacy middleware — CRITICAL-tier fields (account/routing numbers) are NOT masked. Each command emits a banner on stderr at invocation and includes the banner text in its `--help` output, directing operators to `moneybin sql query` for the privacy-safe MCP-backed path. Agents should use the `sql_query` MCP tool or `moneybin sql query` CLI command, not `moneybin db query`, when privacy enforcement is required.
 
 This makes every read command pipeable into `jq`, scripts, and AI agents. Audit-tested by `tests/moneybin/test_cli/test_cli_output_quiet.py`.
 

@@ -17,6 +17,8 @@ def test_run_delegates_to_transaction_matcher() -> None:
         svc = MatchingService(db)
         result = svc.run()
     matcher_cls.assert_called_once()
+    # actor forwards to the matcher (defaults to the 'system' surface).
+    assert matcher_cls.call_args.kwargs.get("actor") == "system"
     matcher_cls.return_value.run.assert_called_once()
     assert result is fake_result
 
@@ -47,20 +49,29 @@ def test_uses_default_settings_when_omitted() -> None:
     ssp.assert_called_once_with(db, "MATCHING_SETTINGS")
 
 
-def test_undo_delegates_to_undo_match() -> None:
-    """MatchingService.undo() should delegate to persistence.undo_match()."""
+def test_undo_delegates_to_match_decisions_repo() -> None:
+    """MatchingService.undo() should delegate to MatchDecisionsRepo.reverse()."""
     db = MagicMock()
-    with patch("moneybin.services.matching_service.undo_match") as fn:
-        MatchingService(db).undo("match-123", reversed_by="user")
-    fn.assert_called_once_with(db, "match-123", reversed_by="user")
+    with patch(
+        "moneybin.repositories.match_decisions_repo.MatchDecisionsRepo"
+    ) as repo_cls:
+        MatchingService(db).undo("match-123", reversed_by="user", actor="cli")
+    repo_cls.assert_called_once_with(db)
+    repo_cls.return_value.reverse.assert_called_once_with(
+        "match-123", reversed_by="user", actor="cli"
+    )
 
 
-def test_undo_default_reversed_by_is_user() -> None:
-    """reversed_by defaults to 'user' when omitted."""
+def test_undo_default_reversed_by_and_actor() -> None:
+    """reversed_by defaults to 'user'; actor defaults to the 'system' surface."""
     db = MagicMock()
-    with patch("moneybin.services.matching_service.undo_match") as fn:
+    with patch(
+        "moneybin.repositories.match_decisions_repo.MatchDecisionsRepo"
+    ) as repo_cls:
         MatchingService(db).undo("match-123")
-    fn.assert_called_once_with(db, "match-123", reversed_by="user")
+    repo_cls.return_value.reverse.assert_called_once_with(
+        "match-123", reversed_by="user", actor="system"
+    )
 
 
 def test_get_log_delegates_to_get_match_log() -> None:

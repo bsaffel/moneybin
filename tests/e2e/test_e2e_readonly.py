@@ -188,6 +188,25 @@ class TestDBReadOnlyCommands:
         result = run_cli("db", "query", "SELECT 1 AS ok", env=e2e_profile)
         result.assert_success()
 
+    def test_sql_query(self, e2e_profile: dict[str, str]) -> None:
+        # Privacy-safe ad-hoc SQL exercises the full data path (read-only gate
+        # → lineage → execute → redact). A literal SELECT is data-independent,
+        # so it works on a fresh profile where core.* isn't yet materialized.
+        result = run_cli("sql", "query", "SELECT 1 AS ok", env=e2e_profile)
+        result.assert_success()
+
+    def test_sql_query_rejects_nonallowed_schema(
+        self, e2e_profile: dict[str, str]
+    ) -> None:
+        # The schema gate refuses raw.* before execution — exit non-zero.
+        result = run_cli(
+            "sql",
+            "query",
+            "SELECT account_id FROM raw.ofx_transactions",
+            env=e2e_profile,
+        )
+        assert result.exit_code != 0
+
     def test_db_key(self, e2e_profile: dict[str, str]) -> None:
         result = run_cli("db", "key", "show", env=e2e_profile)
         result.assert_success()
@@ -244,6 +263,17 @@ class TestDBReadOnlyCommands:
 
     def test_categorize_rules_list(self, e2e_profile: dict[str, str]) -> None:
         result = run_cli("transactions", "categorize", "rules", "list", env=e2e_profile)
+        result.assert_success()
+
+    # ── privacy (read paths) ─────────────────────────────────────────────
+
+    def test_privacy_status(self, e2e_profile: dict[str, str]) -> None:
+        # status opens the DB read-only (get_database(read_only=True)).
+        result = run_cli("privacy", "status", env=e2e_profile)
+        result.assert_success()
+
+    def test_privacy_log(self, e2e_profile: dict[str, str]) -> None:
+        result = run_cli("privacy", "log", env=e2e_profile)
         result.assert_success()
 
     # ── matches ─────────────────────────────────────────────────────────

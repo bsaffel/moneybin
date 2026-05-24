@@ -66,7 +66,7 @@ def accounts_balance_show(
             )
 
     render_or_json(
-        build_envelope(data=result, sensitivity="low"),
+        build_envelope(data=result),
         output,
         render_fn=_render_text,
         cli_actor="accounts_balance_show",
@@ -100,7 +100,7 @@ def accounts_balance_history(
             )
 
     render_or_json(
-        build_envelope(data=result, sensitivity="low"),
+        build_envelope(data=result),
         output,
         render_fn=_render_text,
         cli_actor="accounts_balance_history",
@@ -126,6 +126,7 @@ def accounts_balance_assert(
                 assertion_date=parsed_date,
                 balance=parsed_amount,
                 notes=notes,
+                actor="cli",
             )
     typer.echo(
         f"✅ Asserted balance for {account_id} on {parsed_date}: {result.assertion.balance}",
@@ -147,7 +148,7 @@ def accounts_balance_list(
             result = BalanceService(db).list_assertions(account)
     if output == OutputFormat.JSON:
         render_or_json(
-            build_envelope(data=result, sensitivity="low"),
+            build_envelope(data=result),
             output,
             cli_actor="accounts_balance_list",
         )
@@ -169,7 +170,7 @@ def accounts_balance_assertion_delete(
     with handle_cli_errors():
         with get_database() as db:
             parsed_date = _date.fromisoformat(assertion_date)
-            BalanceService(db).delete_assertion(account_id, parsed_date)
+            BalanceService(db).delete_assertion(account_id, parsed_date, actor="cli")
     typer.echo(
         f"✅ Deleted balance assertion for {account_id} on {parsed_date}",
         err=True,
@@ -196,7 +197,7 @@ def accounts_balance_reconcile(
             )
     if output == OutputFormat.JSON:
         render_or_json(
-            build_envelope(data=result, sensitivity="low"),
+            build_envelope(data=result),
             output,
             cli_actor="accounts_balance_reconcile",
         )

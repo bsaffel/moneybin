@@ -8,6 +8,7 @@ the MCP wrapper plumbing — coercion, envelope construction, registration.
 
 from __future__ import annotations
 
+import re
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -306,3 +307,19 @@ class TestSystemAudit:
         events: list[dict[str, Any]] = env["data"]["events"]
         assert len(events) >= 1
         assert all(str(e["action"]).startswith("tag.") for e in events)
+
+    @pytest.mark.unit
+    async def test_events_expose_operation_id(self, mcp_db: Path) -> None:
+        # MCP surface must carry operation_id like the CLI to_dict path — one
+        # MCP call's writes share one op_<uuid4_hex> (REC-PR1 parity).
+        _seed_transaction("TXN_AUDIT_OP")
+        await transactions_tags_set(transaction_id="TXN_AUDIT_OP", tags=["beta"])
+
+        env = (
+            await system_audit(filters={"action_pattern": "tag.%"}, limit=50)
+        ).to_dict()
+        events: list[dict[str, Any]] = env["data"]["events"]
+        assert len(events) >= 1
+        assert all(
+            re.fullmatch(r"op_[0-9a-f]{32}", str(e["operation_id"])) for e in events
+        )

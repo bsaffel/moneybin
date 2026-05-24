@@ -9,12 +9,12 @@ Track non-financial physical assets (real estate, vehicles, valuables) with peri
 
 ## Background
 
-Net worth is incomplete without physical assets. The [net worth spec](net-worth.md) provides balance tracking for financial accounts (checking, savings, credit cards, loans), but a house, car, or piece of jewelry has no account, no transactions, and no institution. Its value comes from periodic appraisals or estimates, not from summing debits and credits.
+Net worth is incomplete without physical assets. The [net worth spec](reports-net-worth.md) provides balance tracking for financial accounts (checking, savings, credit cards, loans), but a house, car, or piece of jewelry has no account, no transactions, and no institution. Its value comes from periodic appraisals or estimates, not from summing debits and credits.
 
 The dividing line between assets and investments: **if the value comes from a market ticker, it's an investment. If it comes from an appraisal or estimate, it's an asset.** Gold ETFs, crypto, and brokerage holdings belong in the future `investment-tracking.md` spec. Houses, cars, and jewelry belong here.
 
 Related specs and docs:
-- [`net-worth.md`](net-worth.md) — balance tracking and `reports.net_worth`; this spec extends it to include physical assets
+- [`reports-net-worth.md`](reports-net-worth.md) — balance tracking and `reports.net_worth`; this spec extends it to include physical assets
 - [`moneybin-cli.md`](moneybin-cli.md) v2 — assets are a **top-level command group** (`moneybin assets …`), parallel to `accounts`. The full asset workflow (registration, valuation, liability linking, staleness) is owned by this spec. Net worth contribution flows through `reports.net_worth`, surfaced via `reports networth`. CLI examples below already use the v2 path.
 - [`privacy-data-protection.md`](privacy-data-protection.md) — asset data encrypted at rest via `Database` class
 - [`database-migration.md`](database-migration.md) — migration infrastructure for new tables
@@ -153,7 +153,7 @@ Only produces rows between the first valuation and either `disposal_date` (for d
 
 ### Extending `reports.net_worth`
 
-The existing net worth view (defined in [`net-worth.md`](net-worth.md)) is extended to include asset valuations:
+The existing net worth view (defined in [`reports-net-worth.md`](reports-net-worth.md)) is extended to include asset valuations:
 
 ```sql
 MODEL (
@@ -397,7 +397,7 @@ Deferred to v2, same as balance assertion write tools in the net worth spec. The
 
 ## Dependencies
 
-- [`net-worth.md`](net-worth.md) — `reports.net_worth` view is extended; this spec cannot ship before or independently of net worth
+- [`reports-net-worth.md`](reports-net-worth.md) — `reports.net_worth` view is extended; this spec cannot ship before or independently of net worth
 - [`database-migration.md`](database-migration.md) — new tables (`app.assets`, `app.asset_valuations`) require migration infrastructure
 - [`privacy-data-protection.md`](privacy-data-protection.md) — asset data is sensitive; encrypted at rest via `Database` class
 - [`moneybin-cli.md`](moneybin-cli.md) — `assets` namespace defined by the CLI structure spec

@@ -35,6 +35,18 @@ key_app = typer.Typer(
 app.add_typer(key_app, name="key")
 logger = logging.getLogger(__name__)
 
+# Shown in --help and emitted to stderr on every invocation of the three
+# direct-DB commands (shell, ui, query). These commands bypass the MCP
+# privacy middleware entirely — account numbers and other CRITICAL-tier
+# fields are NOT masked. The agent-mediated path (`moneybin sql query`)
+# applies SQL lineage + CRITICAL masking before returning results.
+_DIRECT_DB_BANNER = (
+    "⚠️  Direct DB access — no privacy middleware applies.\n"
+    "   Account numbers and sensitive fields are NOT masked here.\n"
+    "   For agent-mediated access with privacy enforcement, use:\n"
+    '     moneybin sql query "<your SQL>"'
+)
+
 
 @contextmanager
 def _load_encryption_key() -> Generator[str, None, None]:
@@ -263,7 +275,14 @@ def db_shell(
         help="Path to DuckDB database file (default: profile config)",
     ),
 ) -> None:
-    """Open an interactive DuckDB SQL shell with encrypted database attached."""
+    """Open an interactive DuckDB SQL shell with encrypted database attached.
+
+    WARNING: Direct DB access — no privacy middleware applies.
+    Account numbers and sensitive fields are NOT masked here.
+    For agent-mediated access with privacy enforcement, use:
+    moneybin sql query "<your SQL>"
+    """
+    typer.echo(_DIRECT_DB_BANNER, err=True)
     from moneybin.config import get_settings
 
     _run_duckdb_cli(database or get_settings().database.path)
@@ -278,7 +297,14 @@ def db_ui(
         help="Path to DuckDB database file (default: profile config)",
     ),
 ) -> None:
-    """Open DuckDB web UI with encrypted database auto-attached."""
+    """Open DuckDB web UI with encrypted database auto-attached.
+
+    WARNING: Direct DB access — no privacy middleware applies.
+    Account numbers and sensitive fields are NOT masked here.
+    For agent-mediated access with privacy enforcement, use:
+    moneybin sql query "<your SQL>"
+    """
+    typer.echo(_DIRECT_DB_BANNER, err=True)
     from moneybin.config import get_settings
 
     _run_duckdb_cli(
@@ -313,7 +339,14 @@ def db_query(
         typer.Option("-q", "--quiet", help="Suppress informational output"),
     ] = False,
 ) -> None:
-    """Execute a SQL query against the encrypted DuckDB database."""
+    """Execute a SQL query against the encrypted DuckDB database.
+
+    WARNING: Direct DB access — no privacy middleware applies.
+    Account numbers and sensitive fields are NOT masked here.
+    For agent-mediated access with privacy enforcement, use:
+    moneybin sql query "<your SQL>"
+    """
+    typer.echo(_DIRECT_DB_BANNER, err=True)
     from moneybin.config import get_settings
 
     output_flag = {

@@ -13,12 +13,17 @@ from typing import Any
 from moneybin.config import MatchingSettings
 from moneybin.database import Database
 from moneybin.matching import UNIONED_TABLE
-from moneybin.matching.assignment import assign_greedy
+from moneybin.matching.assignment import (
+    NodeKey,
+    assign_components,
+    assign_greedy,
+    connected_components,
+)
 from moneybin.matching.persistence import (
     MatchStatus,
     MatchTier,
     MatchType,
-    create_match_decision,
+    get_active_dedup_edges,
     get_rejected_pairs,
 )
 from moneybin.matching.scoring import (
@@ -80,9 +85,9 @@ class MatchResult:
 
 @dataclass
 class _DedupDecisions:
-    """Both projections derived from a single active-dedup-decisions query."""
+    """Projections derived from a single active-dedup-decisions query."""
 
-    matched_ids: set[tuple[str, str]]
+    active_edges: list[tuple[NodeKey, NodeKey]]
     secondary_ids: set[tuple[str, str, str]]
 
 
@@ -95,11 +100,27 @@ class TransactionMatcher:
         settings: MatchingSettings,
         *,
         table: str = UNIONED_TABLE,
+        actor: str = "system",
     ) -> None:
-        """Initialize the matcher with a database connection, settings, and source table."""
+        """Initialize the matcher with a database connection, settings, and source table.
+
+        ``actor`` is the audit actor for the match decisions this run writes
+        (``"system"`` for automated runs; surfaces pass ``"cli"``/``"mcp"``).
+        Every decision is also ``decided_by="auto"`` — the matcher proposes, the
+        user disposes.
+        """
+        # Deferred import: engine is loaded via services.__init__ →
+        # matching_service → engine, and the repo's base → services.audit_service
+        # chain re-enters that path; a module-top import here would cycle.
+        from moneybin.repositories.match_decisions_repo import (  # noqa: PLC0415
+            MatchDecisionsRepo,
+        )
+
         self._db = db
         self._settings = settings
         self._table = table
+        self._actor = actor
+        self._decisions = MatchDecisionsRepo(db)
 
     def run(self, *, auto_accept_transfers: bool = False) -> MatchResult:
         """Run Tier 2b then Tier 3 matching.
@@ -112,42 +133,44 @@ class TransactionMatcher:
         result = MatchResult()
         rejected = get_rejected_pairs(self._db)
 
-        # Fetch pre-existing dedup decisions before tier 2b so the candidate
-        # functions can exclude already-matched pairs. The candidate functions
-        # filter excluded_ids in Python (not SQL), so this call must precede any
-        # tier that uses already_matched. A second call after tiers picks up
-        # decisions created in this run for the secondary-ids computation.
-        already_matched = self._fetch_active_dedup_decisions().matched_ids
+        # Both dedup tiers feed one growing union-find seeded from existing active
+        # edges, instead of excluding earlier-tier rows. A row matched in Tier 2b
+        # can still gain a Tier-3 cross-source edge when it connects a new
+        # component, so a 3rd+ copy is no longer left edge-less. The candidate
+        # functions pass excluded_ids=None — union-find, not row-exclusion, is now
+        # what prevents redundant edges within a component.
+        seed = self._fetch_active_dedup_decisions()
+        component_edges: list[tuple[NodeKey, NodeKey]] = list(seed.active_edges)
 
         # Tier 2b: within-source overlap (high-confidence only)
-        tier_2b_matched = self._run_tier(
+        tier_2b_edges = self._run_tier(
             tier="2b",
-            candidates_fn=lambda excluded: get_candidates_within_source(
+            candidates_fn=lambda: get_candidates_within_source(
                 self._db,
                 table=self._table,
                 date_window_days=self._settings.date_window_days,
-                excluded_ids=excluded,
+                excluded_ids=None,
                 rejected_pairs=rejected,
             ),
-            excluded_ids=already_matched,
+            seed_edges=component_edges,
             result=result,
         )
-        already_matched.update(tier_2b_matched)
+        component_edges.extend(tier_2b_edges)
 
         # Tier 3: cross-source
-        tier_3_matched = self._run_tier(
+        tier_3_edges = self._run_tier(
             tier="3",
-            candidates_fn=lambda excluded: get_candidates_cross_source(
+            candidates_fn=lambda: get_candidates_cross_source(
                 self._db,
                 table=self._table,
                 date_window_days=self._settings.date_window_days,
-                excluded_ids=excluded,
+                excluded_ids=None,
                 rejected_pairs=rejected,
             ),
-            excluded_ids=already_matched,
+            seed_edges=component_edges,
             result=result,
         )
-        already_matched.update(tier_3_matched)
+        component_edges.extend(tier_3_edges)
 
         # Tier 4: transfer detection (runs after dedup).
         # Exclude transactions in active transfers AND the non-primary side of
@@ -189,10 +212,9 @@ class TransactionMatcher:
         status: MatchStatus,
         decided_by: str,
     ) -> None:
-        """Write one dedup match decision to the database."""
+        """Write one dedup match decision to the database (audited)."""
         match_id = uuid.uuid4().hex[:12]
-        create_match_decision(
-            self._db,
+        self._decisions.insert(
             match_id=match_id,
             source_transaction_id_a=pair.source_transaction_id_a,
             source_type_a=pair.source_type_a,
@@ -213,25 +235,29 @@ class TransactionMatcher:
                 f"Amount match, {pair.date_distance_days}d apart, "
                 f"desc similarity {pair.description_similarity:.2f}"
             ),
+            actor=self._actor,
         )
 
     def _run_tier(
         self,
         *,
         tier: MatchTier,
-        candidates_fn: Callable[[set[tuple[str, str]]], list[CandidatePair]],
-        excluded_ids: set[tuple[str, str]],
+        candidates_fn: Callable[[], list[CandidatePair]],
+        seed_edges: list[tuple[NodeKey, NodeKey]],
         result: MatchResult,
-    ) -> set[tuple[str, str]]:
-        """Run blocking -> scoring -> assignment -> persist for one tier."""
-        candidates: list[CandidatePair] = candidates_fn(excluded_ids)
+    ) -> list[tuple[NodeKey, NodeKey]]:
+        """Run blocking -> scoring -> assignment -> persist for one tier.
+
+        Returns the newly-added component edges as (node_a, node_b) NodeKey pairs.
+        """
+        candidates: list[CandidatePair] = candidates_fn()
         DEDUP_PAIRS_SCORED.inc(len(candidates))
 
         if not candidates:
-            return set()
+            return []
 
-        assigned = assign_greedy(candidates)
-        newly_matched: set[tuple[str, str]] = set()
+        assigned = assign_components(candidates, seed_edges=seed_edges)
+        newly_added: list[tuple[NodeKey, NodeKey]] = []
         tier_merged = 0
         tier_pending = 0
 
@@ -239,6 +265,12 @@ class TransactionMatcher:
             DEDUP_MATCH_CONFIDENCE.observe(pair.confidence_score)
 
             classification = self._classify_pair(pair, tier)
+            # A sub-threshold edge that joined two components is dropped here and
+            # NOT appended to newly_added. This is safe: assign_components sorts
+            # descending by confidence, so once a sub-threshold edge appears every
+            # remaining candidate is also sub-threshold and would be dropped too —
+            # a dropped union can never suppress a persistable edge. newly_added
+            # therefore stays consistent with what is persisted.
             if classification is None:
                 continue
             status, decided_by = classification
@@ -253,50 +285,53 @@ class TransactionMatcher:
                 DEDUP_REVIEW_PENDING.inc()
 
             self._persist_dedup_match(pair, tier, status, decided_by)
-            newly_matched.add((pair.source_transaction_id_a, pair.account_id))
-            newly_matched.add((pair.source_transaction_id_b, pair.account_id))
+            newly_added.append((
+                (pair.source_type_a, pair.source_transaction_id_a, pair.account_id),
+                (pair.source_type_b, pair.source_transaction_id_b, pair.account_id),
+            ))
 
         if tier_merged or tier_pending:
             logger.info(
                 f"Tier {tier}: {tier_merged} auto-merged, {tier_pending} pending review"
             )
 
-        return newly_matched
+        return newly_added
 
     def _fetch_active_dedup_decisions(self) -> _DedupDecisions:
-        """Query active/pending dedup decisions and derive both exclusion sets.
+        """Derive both projections from the active+pending dedup edge set.
 
-        Returns matched_ids (both sides of every pair) and secondary_ids (the
-        lower-priority side of each pair, used to prevent duplicated transfer
-        proposals for deduped source rows).
+        Returns active_edges (one (node_a, node_b) full-triple pair per decision,
+        used to seed the union-find so new copies attach to existing components)
+        and secondary_ids (all non-primary component members, excluded from
+        transfer detection so deduped source rows don't form duplicate transfer
+        proposals).
         """
-        rows = self._db.execute(
-            """
-            SELECT source_transaction_id_a, source_type_a,
-                   source_transaction_id_b, source_type_b,
-                   account_id
-            FROM app.match_decisions
-            WHERE match_status IN ('accepted', 'pending')
-              AND reversed_at IS NULL
-              AND match_type = 'dedup'
-            """
-        ).fetchall()
         priority = self._settings.source_priority
         max_pri = len(priority)
         priority_index = {src: i for i, src in enumerate(priority)}
-        matched: set[tuple[str, str]] = set()
+        edges: list[tuple[NodeKey, NodeKey]] = [
+            (
+                (e["source_type_a"], e["source_transaction_id_a"], e["account_id"]),
+                (e["source_type_b"], e["source_transaction_id_b"], e["account_id"]),
+            )
+            for e in get_active_dedup_edges(self._db)
+        ]
+
+        # Exclude every non-primary member of each component from transfer
+        # matching — not just the lower-priority side of each individual edge.
+        # Pairwise exclusion misses members that are the higher-priority side of
+        # their own edge but are still non-primary within the broader component
+        # (e.g. a "V" topology: manual–ofx and parquet–ofx share one component;
+        # pairwise keeps parquet eligible because parquet > ofx, but manual is
+        # primary).
         secondary: set[tuple[str, str, str]] = set()
-        for row in rows:
-            stid_a, st_a, stid_b, st_b, acct = row
-            matched.add((stid_a, acct))
-            matched.add((stid_b, acct))
-            pri_a = priority_index.get(st_a, max_pri)
-            pri_b = priority_index.get(st_b, max_pri)
-            if pri_a <= pri_b:
-                secondary.add((stid_b, st_b, acct))
-            else:
-                secondary.add((stid_a, st_a, acct))
-        return _DedupDecisions(matched_ids=matched, secondary_ids=secondary)
+        for members in connected_components(edges):
+            # node is (source_type, source_transaction_id, account_id)
+            primary = min(members, key=lambda n: priority_index.get(n[0], max_pri))
+            for n in members:
+                if n != primary:
+                    secondary.add((n[1], n[0], n[2]))  # (stid, source_type, account_id)
+        return _DedupDecisions(active_edges=edges, secondary_ids=secondary)
 
     def _get_transfer_matched_ids(self) -> set[tuple[str, str, str]]:
         """Get (source_transaction_id, source_type, account_id) in active/pending transfers.
@@ -358,8 +393,7 @@ class TransactionMatcher:
                 continue
 
             match_id = uuid.uuid4().hex[:12]
-            create_match_decision(
-                self._db,
+            self._decisions.insert(
                 match_id=match_id,
                 source_transaction_id_a=pair.source_transaction_id_a,
                 source_type_a=pair.source_type_a,
@@ -382,6 +416,7 @@ class TransactionMatcher:
                     f"Transfer: {pair.account_id_a[:8]} -> {pair.account_id_b[:8]}, "
                     f"{pair.date_distance_days}d apart"
                 ),
+                actor=self._actor,
             )
 
             if auto_accept:

@@ -92,6 +92,7 @@ def render_or_json(
     render_fn: Callable[[ResponseEnvelope[Any]], None] | None = None,
     json_fields: str | None = None,
     cli_actor: str | None = None,
+    classes_returned: list[str] | None = None,
 ) -> None:
     """Render a response envelope as text or JSON.
 
@@ -114,6 +115,11 @@ def render_or_json(
     Silently skipped when ``data`` is not a list.
     Leading/trailing whitespace around each field name is stripped; empty
     segments (e.g. from ``"id,,amount"``) are silently ignored.
+
+    ``classes_returned`` overrides the audit event's data classes. Provide it
+    for dynamic-classification commands (``sql query``) whose classes come from
+    SQL lineage rather than the payload type; for typed payloads leave it
+    ``None`` and the classes are derived from the payload's annotations.
     """
     if output == OutputFormat.TEXT:
         if render_fn is not None:
@@ -167,10 +173,17 @@ def render_or_json(
         envelope = dataclasses.replace(envelope, data=filtered)  # pyright: ignore[reportUnknownArgumentType]
 
     if cli_actor is not None:
-        classes_returned = [
-            c.value
-            for c in sorted(extract_data_classes(original_data_type))  # pyright: ignore[reportUnknownArgumentType]
-        ]
+        # Dynamic-classification commands (sql query) resolve classes via SQL
+        # lineage, not the static payload type, and pass them explicitly — a
+        # bare list[dict] payload carries no Annotated metadata to derive from.
+        event_classes = (
+            classes_returned
+            if classes_returned is not None
+            else [
+                c.value
+                for c in sorted(extract_data_classes(original_data_type))  # pyright: ignore[reportUnknownArgumentType]
+            ]
+        )
         # envelope.summary.sensitivity is the derived value (stamped above) for
         # typed payloads, or the command's declared value for bare list/dict
         # payloads — either way it's the authoritative tier for the audit log.
@@ -178,7 +191,7 @@ def render_or_json(
             build_tool_call_event(
                 actor=f"cli.{cli_actor}",
                 sensitivity=envelope.summary.sensitivity,
-                classes_returned=classes_returned,
+                classes_returned=event_classes,
                 row_count=envelope.summary.returned_count,
             )
         )

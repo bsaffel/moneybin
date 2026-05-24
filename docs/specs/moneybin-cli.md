@@ -29,7 +29,7 @@ Related specs and docs:
 - [`sync-overview.md`](sync-overview.md) — `sync` subcommands
 - [`matching-same-record-dedup.md`](matching-same-record-dedup.md) / [`matching-transfer-detection.md`](matching-transfer-detection.md) — `matches` commands
 - [`categorization-auto-rules.md`](categorization-auto-rules.md) — `categorize auto-*` commands
-- [`net-worth.md`](net-worth.md) — `accounts balance` / `accounts networth` commands (v2)
+- [`reports-net-worth.md`](reports-net-worth.md) — `accounts balance` / `accounts networth` commands (v2)
 - [`observability.md`](observability.md) — `logs` and `stats` commands
 - [`database-migration.md`](database-migration.md) — `db migrate` commands
 - [`mcp-architecture.md`](mcp-architecture.md) / [`moneybin-mcp.md`](moneybin-mcp.md) — MCP tool/prompt enumeration
@@ -178,7 +178,7 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |   [--clear-holder-category] [--clear-currency] [--clear-credit-limit]
 |   |   [--clear-display-name] [--yes]
 |   +-- resolve <query> [--limit N] -- Fuzzy resolve free-text reference to ranked candidates
-|   +-- balance                    -- Per-account balance workflow (net-worth.md)
+|   +-- balance                    -- Per-account balance workflow (reports-net-worth.md)
 |   |   +-- show [--account ID] [--as-of DATE]
 |   |   +-- assert <account_id> <date> <amount> [--notes] [--yes]
 |   |   +-- list [--account ID]
@@ -198,12 +198,19 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- review                     -- Unified review queue (matches + categorize)
 |   |     [--type matches|categorize|all]   Default all; walks matches first then categorize
 |   |     [--status]                        Counts only, no interactive loop
-|   |     [--confirm <id>]                  Non-interactive: confirm one (auto-detects type by ID)
-|   |     [--reject <id>]                   Non-interactive: reject one
-|   |     [--confirm-all]                   Non-interactive: confirm all in scope
+|   |     [--confirm <id>]                  Non-interactive: confirm one match or categorize item by ID
+|   |     [--reject <id>]                   Non-interactive: reject one match by ID
+|   |     [--confirm-all]                   Non-interactive: confirm all items in scope
 |   |     [--limit N]                       Cap items per session
+|   |   Note: --confirm/--reject/--confirm-all are fully implemented for --type matches.
+|   |         --type categorize review is not yet wired (stub); categorize items use
+|   |         transactions categorize commit instead.
 |   +-- matches                    -- Transfer detection + dedup workflow (no review — see transactions review)
+|   |   +-- list [--type dedup|transfer] [--limit N] [-o json|text]
+|   |   |         Pending proposals grouped by component_key (N-way dedup clusters appear
+|   |   |         as one block each). --output json returns rows incl. component_key.
 |   |   +-- run [--skip-transform] [--auto-accept-transfers]
+|   |   +-- set <match_id> --status accepted|rejected  -- Accept or reject one pending match
 |   |   +-- history [--type dedup|transfer] [--limit N]
 |   |   +-- undo <match_id> [--yes]
 |   |   +-- backfill [--skip-transform] [--auto-accept-transfers]
@@ -262,8 +269,26 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- doctor                     -- Run pipeline integrity checks (--full: whole-table app.* audit-coverage scan)
 |   +-- audit                      -- Privacy / access audit utilities
 |
-+-- privacy                        -- Privacy utilities (redaction testing)
++-- privacy                        -- Privacy utilities (consent ledger + redaction testing)
 |   +-- redact                     -- Test the project redaction pipeline on a value
+|   +-- grant <category>           -- Grant consent for an AI feature category
+|   |     [--backend NAME]           Override the configured backend for this grant
+|   |     [--mode persistent|one-time]  Consent duration (default: persistent)
+|   |     [--output json]
+|   |     [--yes]                    Non-interactive mode
+|   +-- revoke <category>          -- Revoke a previously granted consent
+|   |     [--backend NAME]           Scope revocation to a specific backend
+|   |     [--output json]
+|   |     [--yes]
+|   +-- revoke-all                 -- Revoke all active consent grants (nuclear option)
+|   |     [--output json]
+|   |     [--yes]
+|   +-- status                     -- Show active consent grants, configured backend, and consent_policy
+|   |     [--output json]
+|   +-- log                        -- Query recent privacy-log events (consent grants/revokes + tool calls)
+|         [--last N]                 Number of recent events to show (default: 50)
+|         [--actor NAME]             Filter to a specific originating command or tool
+|         [--output json]
 |
 +-- synthetic                      -- Generate and manage synthetic financial data for testing
 |   +-- generate
@@ -283,11 +308,18 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 +-- stats                          -- Lifetime metric aggregates
 |       [--since <duration>] [--metric <family>]
 |
++-- sql                            -- Privacy-safe ad-hoc SQL (CLI↔MCP parity: sql_query)
+|   +-- query <sql>                -- Read-only SQL over core/app; CRITICAL columns
+|         [--output text|json]        masked via sqlglot lineage (****<last4>). The
+|         [--json-fields a,b]         privacy-safe counterpart to `db query`.
+|
 +-- db
 |   +-- init [--passphrase]        -- Create encrypted DB (power user)
-|   +-- shell                      -- Interactive DuckDB shell
-|   +-- ui                         -- DuckDB web UI
-|   +-- query <sql> [--output text|json|csv|markdown|box]
+|   +-- shell                      -- Interactive DuckDB shell (raw; no masking)
+|   +-- ui                         -- DuckDB web UI (raw; no masking)
+|   +-- query <sql> [--output text|json|csv|markdown|box]  -- Raw direct-DB SQL,
+|   |                                 NO masking (operator); use `sql query` for
+|   |                                 the privacy-safe path
 |   +-- info                       -- Show DB path, size, schema summary
 |   +-- backup                     -- Snapshot encrypted database to a backup file
 |   +-- restore                    -- Restore encrypted database from a backup file
@@ -361,13 +393,14 @@ Data out:       export
 Pipeline:       refresh (post-load orchestration: match -> transform -> categorize)
 Mutation:       budget (target management; vs-actual report lives under reports/budget)
 Operational:    logs, stats
+Ad-hoc query:   sql (privacy-safe SQL; raw operator access is db query/shell/ui)
 Infrastructure: profile, db, mcp, transform
 Extensibility:  extension, packages (planned, extension-contracts.md); plus dynamic per-package subgroups via entry-points
 ```
 
 ### Top-level command count
 
-In-tree groups (19): `profile`, `import`, `sync`, `accounts`, `reports`, `transactions`, `categories`, `merchants`, `privacy`, `budget`, `system`, `refresh`, `transform`, `synthetic`, `stats`, `export`, `mcp`, `db`, `logs`.
+In-tree groups (20): `profile`, `import`, `sync`, `accounts`, `reports`, `transactions`, `categories`, `merchants`, `privacy`, `budget`, `system`, `refresh`, `transform`, `synthetic`, `stats`, `sql`, `export`, `mcp`, `db`, `logs`.
 
 Planned operator groups (2, pending [`extension-contracts.md`](extension-contracts.md)): `extension`, `packages`.
 
@@ -401,6 +434,7 @@ The same hierarchy expresses across CLI, MCP, and (future) HTTP. Each protocol e
 | Assert a balance | `accounts balance assert ...` | `accounts_balance_assert` | `POST /accounts/{id}/balances` |
 | Balance history | `accounts balance history` | `accounts_balance_history` | `GET /accounts/{id}/balances/history` |
 | Net worth now | `reports networth` | `reports_networth` | `GET /reports/networth` |
+| Pending matches | `transactions matches pending` | `transactions_matches_pending` | `GET /transactions/matches/pending` |
 | Match history | `transactions matches history` | `transactions_matches_history` | `GET /transactions/matches` |
 | Undo a match | `transactions matches undo <id>` | `transactions_matches_undo` | `POST /transactions/matches/{id}/undo` |
 | Spending report | `reports spending` | `reports_spending` | `GET /reports/spending` |
@@ -736,7 +770,7 @@ Reserve the namespace. Users see the command in `--help` but get a clear message
 |---|---|
 | `sync` subcommands | `sync-overview.md` |
 | `matches` group | `matching-same-record-dedup.md`, `matching-transfer-detection.md` |
-| `track balance` / `track networth` | `net-worth.md` |
+| `track balance` / `track networth` | `reports-net-worth.md` |
 | `track budget` | `budget-tracking.md` |
 | `track recurring` | Future spec |
 | `track investments` | Future spec (gated on `investment-tracking.md`) |
@@ -752,8 +786,8 @@ These commands are fully implemented when their owning spec is implemented. The 
 |---|---|---|
 | `matches run/review/log/undo/backfill` | `matching-same-record-dedup.md`, `matching-transfer-detection.md` | Implementation lands with matching feature |
 | `categorize auto-review/auto-confirm/auto-stats/auto-rules` | `categorization-auto-rules.md` | Implementation lands with auto-rules feature |
-| `track balance show/assert/list/delete/reconcile/history` | `net-worth.md` | Updated from original top-level `balance`/`reconciliation` placement |
-| `track networth show/history` | `net-worth.md` | Updated from original top-level `networth` placement |
+| `track balance show/assert/list/delete/reconcile/history` | `reports-net-worth.md` | Updated from original top-level `balance`/`reconciliation` placement |
+| `track networth show/history` | `reports-net-worth.md` | Updated from original top-level `networth` placement |
 | `track budget *` | `budget-tracking.md` | CLI TBD when spec matures |
 | `track recurring *` | Future spec | Recurring transaction detection |
 | `track investments *` | Future spec | Gated on `investment-tracking.md` |
@@ -769,11 +803,11 @@ These existing specs define CLI commands that need updates to reflect v2's taxon
 
 | Spec | CLI change needed (v2) | MCP change needed (v2) |
 |---|---|---|
-| `net-worth.md` | `track balance` → `accounts balance`. `track networth` → `reports networth` (cross-domain rollup, accounts + assets). `reconciliation show` → `accounts balance reconcile`. | `get_balances` → `accounts_balances`, etc. `get_net_worth` → `reports_networth`. |
+| `reports-net-worth.md` | `track balance` → `accounts balance`. `track networth` → `reports networth` (cross-domain rollup, accounts + assets). `reconciliation show` → `accounts balance reconcile`. | `get_balances` → `accounts_balances`, etc. `get_net_worth` → `reports_networth`. |
 | `asset-tracking.md` | CLI namespace: top-level `assets` group (parallel to `accounts`). Net worth contribution flows through `reports.net_worth` consumed by `reports networth`. | Asset MCP tools take `assets_*` prefix (path-prefix-verb-suffix per v2). |
-| `account-management.md` (planned) | Owns the `accounts` namespace entity ops (`list`, `get`, `set`, `resolve`). Settings updates (display name, include/exclude, archive/unarchive) fold into `accounts set` flags. Balance subcommands stay nested per `net-worth.md`. | Owns `accounts`, `accounts_get`, `accounts_set` (folds display_name / include / archive), `accounts_resolve`. |
+| `account-management.md` (planned) | Owns the `accounts` namespace entity ops (`list`, `get`, `set`, `resolve`). Settings updates (display name, include/exclude, archive/unarchive) fold into `accounts set` flags. Balance subcommands stay nested per `reports-net-worth.md`. | Owns `accounts`, `accounts_get`, `accounts_set` (folds display_name / include / archive), `accounts_resolve`. |
 | `matching-same-record-dedup.md` / `matching-transfer-detection.md` | `matches *` → `transactions matches *` | Match-related tools take `transactions_matches_*` prefix |
-| `categorization-overview.md` / `categorization-auto-rules.md` / `categorize-bulk.md` | `categorize *` workflow → `transactions categorize *`. Pull category-taxonomy and merchant-mapping commands to top-level `categories *` and `merchants *` groups | Categorize workflow tools take `transactions_categorize_*` prefix; category and merchant CRUD become `categories_*` / `merchants_*` top-level |
+| `categorization-overview.md` / `categorization-auto-rules.md` / `categorization-bulk.md` | `categorize *` workflow → `transactions categorize *`. Pull category-taxonomy and merchant-mapping commands to top-level `categories *` and `merchants *` groups | Categorize workflow tools take `transactions_categorize_*` prefix; category and merchant CRUD become `categories_*` / `merchants_*` top-level |
 | `budget-tracking.md` | `track budget *` → `budget *`; budget-vs-actual report goes under `reports budget` | When MCP tools are added, follow new naming |
 | `moneybin-mcp.md` | n/a | Adopt path-prefix-verb-suffix convention; enumerate all existing tool renames |
 | `observability.md` | No structural change. Verify command signatures match. | n/a |

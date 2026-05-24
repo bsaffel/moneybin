@@ -75,7 +75,7 @@ async def test_formerly_extended_tools_visible_at_connect() -> None:
     assert not missing, f"Expected tools missing from connect-time surface: {missing}"
 
     # Stub-gated tools must NOT appear (sibling guard to the stub-gate rule
-    # in ``.claude/rules/mcp-server.md``).
+    # in ``.claude/rules/mcp.md``).
     stub_gated = {"budget_set"}
     leaked = stub_gated & names
     assert not leaked, (
@@ -90,7 +90,7 @@ async def test_every_tool_name_matches_anthropic_openai_pattern() -> None:
     Anthropic and OpenAI clients reject tool definitions whose names don't
     match this regex (FastMCP/MCP SDK itself does not enforce it, so a bad
     name boots fine and only fails at the frontend on connect). See
-    ``.claude/rules/mcp-server.md`` — "we use the portable subset."
+    ``.claude/rules/mcp.md`` — "we use the portable subset."
     """
     from moneybin.mcp.server import mcp
 

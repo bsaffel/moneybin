@@ -30,6 +30,12 @@ _ROTATED_PREFIX = "privacy.log."
 _ROTATED_SUFFIX = ".jsonl"
 _LOCK = threading.Lock()
 
+# Upper bound on a single read_privacy_events call. A read scans JSONL files
+# line-by-line into memory; cap here (one enforcement point for both the CLI
+# --last flag and the MCP last param) so an unbounded request can't pull every
+# rotated log into a Python list.
+MAX_LOG_ROWS = 1000
+
 
 def _resolve_privacy_log_dir() -> Path:
     """Return the directory the privacy log lives in.
@@ -104,6 +110,31 @@ def build_tool_call_event(
         "sensitivity": sensitivity,
         "classes_returned": classes_returned,
         "row_count": row_count,
+    }
+
+
+def build_consent_event(
+    *,
+    actor: str,
+    action: str,
+    feature_category: str,
+    backend: str,
+    consent_mode: str | None = None,
+) -> dict[str, Any]:
+    """Construct a consent grant/revoke event for the privacy log.
+
+    ``action`` is ``"consent.grant"`` or ``"consent.revoke"``. Carries
+    only metadata (category, backend, mode) — never the grant prompt text
+    or any financial data. ``consent_mode`` is None for revoke events (the
+    mode belonged to the grant being removed); it serializes to JSON null.
+    """
+    return {
+        "ts": datetime.now(UTC).isoformat(),
+        "actor": actor,
+        "action": action,
+        "feature_category": feature_category,
+        "backend": backend,
+        "consent_mode": consent_mode,
     }
 
 
@@ -193,6 +224,7 @@ def read_privacy_events(
     # otherwise return the first matching row (1 >= 0). Short-circuit here.
     if max_rows <= 0:
         return []
+    max_rows = min(max_rows, MAX_LOG_ROWS)
     log_dir = _resolve_privacy_log_dir()
     if not log_dir.exists():
         return []

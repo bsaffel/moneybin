@@ -18,6 +18,7 @@ from typing import Any
 
 from moneybin.database import Database
 from moneybin.metrics.registry import audit_events_emitted_total
+from moneybin.services.mutation_context import current_operation_id
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,7 @@ class AuditEvent:
     before_value: dict[str, Any] | None
     after_value: dict[str, Any] | None
     parent_audit_id: str | None
+    operation_id: str
     context_json: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -56,6 +58,7 @@ class AuditEvent:
             "before_value": self.before_value,
             "after_value": self.after_value,
             "parent_audit_id": self.parent_audit_id,
+            "operation_id": self.operation_id,
             "context_json": self.context_json,
         }
 
@@ -85,13 +88,18 @@ class AuditService:
         # threshold for full UUIDs over short app entity lifetimes. Internal
         # id; readability is not a constraint here.
         audit_id = uuid.uuid4().hex
+        # Group key for this MCP/CLI call, read from the ambient MutationContext
+        # set at the surface seam. Outside any context (a bare repo call) the
+        # getter mints a fresh op_<uuid4_hex> so a lone mutation is its own
+        # operation — operation_id is NOT NULL by design.
+        operation_id = current_operation_id()
         self._db.conn.execute(
             """
             INSERT INTO app.audit_log (
                 audit_id, actor, action,
                 target_schema, target_table, target_id,
-                before_value, after_value, parent_audit_id, context_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                before_value, after_value, parent_audit_id, operation_id, context_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 audit_id,
@@ -103,6 +111,7 @@ class AuditService:
                 json.dumps(before) if before is not None else None,
                 json.dumps(after) if after is not None else None,
                 parent_audit_id,
+                operation_id,
                 json.dumps(context) if context is not None else None,
             ],
         )
@@ -119,6 +128,7 @@ class AuditService:
             before_value=before,
             after_value=after,
             parent_audit_id=parent_audit_id,
+            operation_id=operation_id,
             context_json=context,
         )
 
@@ -160,7 +170,8 @@ class AuditService:
             f"""
             SELECT audit_id, occurred_at, actor, action,
                    target_schema, target_table, target_id,
-                   before_value, after_value, parent_audit_id, context_json
+                   before_value, after_value, parent_audit_id,
+                   operation_id, context_json
               FROM app.audit_log
               {where}
               ORDER BY occurred_at DESC
@@ -176,7 +187,8 @@ class AuditService:
             """
             SELECT audit_id, occurred_at, actor, action,
                    target_schema, target_table, target_id,
-                   before_value, after_value, parent_audit_id, context_json
+                   before_value, after_value, parent_audit_id,
+                   operation_id, context_json
               FROM app.audit_log
              WHERE audit_id = ? OR parent_audit_id = ?
              ORDER BY occurred_at ASC, audit_id ASC
@@ -198,5 +210,6 @@ class AuditService:
             before_value=json.loads(row[7]) if row[7] is not None else None,
             after_value=json.loads(row[8]) if row[8] is not None else None,
             parent_audit_id=row[9],
-            context_json=json.loads(row[10]) if row[10] is not None else None,
+            operation_id=row[10],
+            context_json=json.loads(row[11]) if row[11] is not None else None,
         )

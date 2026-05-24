@@ -195,6 +195,7 @@ def register_core_tools() -> None:
     from moneybin.mcp.tools.import_inbox import register_inbox_tools
     from moneybin.mcp.tools.import_tools import register_import_tools
     from moneybin.mcp.tools.merchants import register_merchants_tools
+    from moneybin.mcp.tools.privacy import register_privacy_tools
     from moneybin.mcp.tools.refresh import register_refresh_tools
     from moneybin.mcp.tools.reports import register_reports_tools
     from moneybin.mcp.tools.sql import register_sql_tools
@@ -211,7 +212,7 @@ def register_core_tools() -> None:
     # ``budget-tracking.md`` is ``draft`` (today's ``budget_set`` is a partial
     # slice of the planned set/status/delete + rollovers feature). Transform
     # tools are CLI-accessible operator territory (category 2 per
-    # mcp-server.md). Per ``.claude/rules/mcp-server.md`` "Surface change
+    # mcp.md). Per ``.claude/rules/mcp.md`` "Surface change
     # discipline" they re-register when their backing spec reaches
     # ``in-progress`` or ``implemented``. The tool implementation files
     # (``tools/budget.py``, ``tools/transform.py``) stay in place as building
@@ -234,6 +235,7 @@ def register_core_tools() -> None:
     register_sync_tools(mcp)
     register_sync_prompts(mcp)
     register_gsheet_tools(mcp)
+    register_privacy_tools(mcp)
     register_refresh_tools(mcp)
     register_sql_tools(mcp)
 

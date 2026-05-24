@@ -302,6 +302,7 @@ class SystemAuditEventPayload:
     before_value: Annotated[Any, DataClass.TXN_AMOUNT]
     after_value: Annotated[Any, DataClass.TXN_AMOUNT]
     parent_audit_id: Annotated[str | None, DataClass.RECORD_ID]
+    operation_id: Annotated[str, DataClass.RECORD_ID]
     context_json: Annotated[Any, DataClass.DESCRIPTION]
 
 

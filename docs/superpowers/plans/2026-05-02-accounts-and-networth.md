@@ -10,14 +10,14 @@
 
 **Reference specs:**
 - [`docs/specs/account-management.md`](../../specs/account-management.md) (status: ready)
-- [`docs/specs/net-worth.md`](../../specs/net-worth.md) (status: ready)
-- [`docs/specs/net-worth.md` §Coordination](../../specs/net-worth.md#coordination-with-account-managementmd) — artifact ownership across the two specs
+- [`docs/specs/reports-net-worth.md`](../../specs/reports-net-worth.md) (status: ready)
+- [`docs/specs/reports-net-worth.md` §Coordination](../../specs/reports-net-worth.md#coordination-with-account-managementmd) — artifact ownership across the two specs
 
 **Related rules** (loaded automatically by path scope; reviewed up front so the plan matches them):
 - `.claude/rules/database.md` — DuckDB/SQLMesh patterns, column comments, decimal types
 - `.claude/rules/security.md` — parameterized SQL, input validation, PII in logs
 - `.claude/rules/cli.md` — Typer patterns, `handle_cli_errors`, output flags, soft-validation UX
-- `.claude/rules/mcp-server.md` — sensitivity tiers, response envelope, tool registration
+- `.claude/rules/mcp.md` — sensitivity tiers, response envelope, tool registration
 - `.claude/rules/testing.md` — test layers, query-count assertions, scenario expectations
 - `.claude/rules/identifiers.md` — UUID4 truncated to 12 hex for entity IDs
 - `.claude/rules/shipping.md` — README updates, roadmap icon flips, `/simplify` pre-push
@@ -73,7 +73,7 @@
 | `docs/specs/mcp-tool-surface.md` | Modify | Add the new `accounts_*` write tools and `accounts_summary`. |
 | `docs/specs/INDEX.md` | Modify | Flip both specs to `in-progress` at start, `implemented` at end. |
 | `docs/specs/account-management.md` | Modify | Status `ready` → `in-progress` → `implemented`. |
-| `docs/specs/net-worth.md` | Modify | Same. |
+| `docs/specs/reports-net-worth.md` | Modify | Same. |
 | `README.md` | Modify | Flip roadmap icons; add "What Works Today" content for accounts + net worth + balance tracking. |
 
 ---
@@ -84,7 +84,7 @@ Starts the work and makes the in-flight status visible to anyone reading the rep
 
 ### Task 0.1: Mark both specs in-progress
 
-**Files:** Modify `docs/specs/account-management.md`, `docs/specs/net-worth.md`, `docs/specs/INDEX.md`.
+**Files:** Modify `docs/specs/account-management.md`, `docs/specs/reports-net-worth.md`, `docs/specs/INDEX.md`.
 
 - [ ] **Step 0.1.1: Flip statuses**
 
@@ -95,7 +95,7 @@ In `docs/specs/INDEX.md`, change both rows to status `in-progress`.
 - [ ] **Step 0.1.2: Commit**
 
 ```bash
-git add docs/specs/account-management.md docs/specs/net-worth.md docs/specs/INDEX.md
+git add docs/specs/account-management.md docs/specs/reports-net-worth.md docs/specs/INDEX.md
 git commit -m "Mark accounts + net-worth specs in-progress"
 ```
 
@@ -1552,9 +1552,9 @@ Replace `src/moneybin/cli/commands/accounts.py` contents:
 Owns:
   - Entity ops (list/show/rename/include/archive/unarchive/set) — this spec
   - Balance subcommands (balance show/history/assert/list/delete/reconcile) —
-    contributed by net-worth.md, also live in this module
+    contributed by reports-net-worth.md, also live in this module
 
-Per-spec ownership: see docs/specs/account-management.md and docs/specs/net-worth.md.
+Per-spec ownership: see docs/specs/account-management.md and docs/specs/reports-net-worth.md.
 """
 
 from __future__ import annotations
@@ -2775,7 +2775,7 @@ Each command: parse args → call `BalanceService` → render via `render_or_jso
 ```python
 """Top-level reports group: cross-domain analytical views.
 
-Created by net-worth.md. Future report specs (spending, cashflow, tax, budget
+Created by reports-net-worth.md. Future report specs (spending, cashflow, tax, budget
 vs actual) add subcommands to this group per cli-restructure.md v2.
 """
 
@@ -2910,7 +2910,7 @@ Write tools (entity, all medium):
   - accounts_unarchive
   - accounts_settings_update
 
-Read tools (balance, contributed by net-worth.md):
+Read tools (balance, contributed by reports-net-worth.md):
   - accounts_balance_list (medium)
   - accounts_balance_history (medium)
   - accounts_balance_reconcile (medium)
@@ -3206,7 +3206,7 @@ gh pr create --title "Accounts namespace + Net Worth (Level 1 closeout)" --body 
 
 Bundled implementation of:
 - docs/specs/account-management.md
-- docs/specs/net-worth.md
+- docs/specs/reports-net-worth.md
 
 ## Test plan
 - [ ] make check test passes

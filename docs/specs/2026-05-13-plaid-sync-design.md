@@ -16,7 +16,7 @@ Key inputs:
 1. Current Plaid documentation (Plaid Hosted Link, `SESSION_FINISHED` webhook)
 2. Provider-agnostic API design vetted across Plaid, SimpleFIN, MX, Teller, TrueLayer
 3. ADR-010 writer-coordination constraints (per-call short-lived `Database` connections)
-4. Project rules: `.claude/rules/security.md`, `cli.md`, `mcp-server.md`, `database.md`, `data-extraction.md`, `identifiers.md`
+4. Project rules: `.claude/rules/security.md`, `cli.md`, `mcp.md`, `database.md`, `data-extraction.md`, `identifiers.md`
 5. A re-read of the existing CLI/MCP stubs (`src/moneybin/cli/commands/sync.py`, `src/moneybin/mcp/tools/sync.py`)
 
 ---
@@ -328,7 +328,7 @@ class ConnectResult(BaseModel):
 
 **File:** `src/moneybin/services/sync_service.py`
 
-Business logic and orchestration. The `mcp-server.md` architecture rule applies: CLI and MCP are thin wrappers; the service does the work.
+Business logic and orchestration. The `mcp.md` architecture rule applies: CLI and MCP are thin wrappers; the service does the work.
 
 ### State source: server, not local
 

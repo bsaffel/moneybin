@@ -81,6 +81,11 @@ _HELP_COMMANDS: list[list[str]] = [
     ["transactions", "categorize", "commit-from-file"],
     ["privacy"],
     ["privacy", "redact"],
+    ["privacy", "grant"],
+    ["privacy", "revoke"],
+    ["privacy", "revoke-all"],
+    ["privacy", "status"],
+    ["privacy", "log"],
     ["categories"],
     ["merchants"],
     ["assets"],
@@ -119,6 +124,8 @@ _HELP_COMMANDS: list[list[str]] = [
     ["reports", "merchants"],
     ["reports", "large-transactions"],
     ["reports", "balance-drift"],
+    ["sql"],
+    ["sql", "query"],
     ["export"],
 ]
 

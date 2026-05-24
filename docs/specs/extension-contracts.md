@@ -35,7 +35,7 @@ This spec closes that gap pre-launch. The contracts described here are designed 
 
 - [`.claude/rules/surface-design.md`](../../.claude/rules/surface-design.md) — operation shapes, verb vocabulary; extensions inherit
 - [`.claude/rules/design-principles.md`](../../.claude/rules/design-principles.md) — durable path selection; pluggability decision invokes this protocol
-- [`.claude/rules/mcp-server.md`](../../.claude/rules/mcp-server.md) — surface change discipline; extensions register only when their backing spec reaches `in-progress`/`implemented`
+- [`.claude/rules/mcp.md`](../../.claude/rules/mcp.md) — surface change discipline; extensions register only when their backing spec reaches `in-progress`/`implemented`
 - [`.claude/rules/identifiers.md`](../../.claude/rules/identifiers.md) — ID hygiene; extensions follow
 
 ## Architecture: three extension types

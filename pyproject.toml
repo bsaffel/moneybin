@@ -173,6 +173,16 @@ server = [
     # plaid-python already in main dependencies
 ]
 
+[tool.uv]
+constraint-dependencies = [
+    # click 8.4 made click.ParamType generic; typer 0.25.1's type stubs still
+    # reference ParamType without a type arg, so pyright infers ParamType[Unknown]
+    # and flags every typer.Option/Argument call (reportUnknownMemberType). typer
+    # accepts click>=8.2.1 at runtime, so this only holds back the type-stub
+    # regression. Drop once typer ships click-8.4-compatible stubs.
+    "click<8.4",
+]
+
 [tool.ruff]
 # Documentation: https://docs.astral.sh/ruff/configuration/
 target-version = "py312"

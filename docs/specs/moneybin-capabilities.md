@@ -32,7 +32,7 @@ catalog is expected to land at ~30–60 capabilities once populated.
 - Each row is one capability.
 - Each surface column shows the **registered name** reaching this
   capability on that surface, OR an **exemption citation** linking back
-  to `.claude/rules/mcp-server.md` "When CLI-only is justified."
+  to `.claude/rules/mcp.md` "When CLI-only is justified."
 - The **Status** column indicates:
   - `live` — reachable today on every non-exempt surface.
   - `pending-build (<surface>)` — capability is real but the named
@@ -92,6 +92,16 @@ not-yet-built.
 | 29| Disconnect a Google Sheet (soft or purge)                        | `gsheet_disconnect` *(`purge=True` permanent)* | `gsheet disconnect` *(`--purge`, `--yes`)* | —          | live                  |
 | 30| Link a bank via mediated provider (Plaid)                        | `sync_link` *(`institution` for re-auth)* | `sync link` *(formerly `sync connect`)*  | —          | live                  |
 | 31| Poll an in-flight bank-link session                              | `sync_link_status` *(`session_id`)* | `sync link-status` *(formerly `sync connect-status`)* | —          | live                  |
+| 32| Grant consent for an AI feature category                         | `privacy_consent_grant` *(`category`, `backend?`, `mode`)* | `privacy grant` *(`--backend`, `--mode`, `--yes`)* | —     | live                  |
+| 33| Revoke a previously granted consent                              | `privacy_consent_revoke` *(`category`, `backend?`)* | `privacy revoke` *(`--backend`, `--yes`)* | —          | live                  |
+| 34| Revoke all active consent grants                                 | — *(bulk revoke; use `privacy_consent_revoke` per category)* | `privacy revoke-all` *(`--yes`)* | —             | live (CLI-only)       |
+| 35| View current consent state and configured backend                | `privacy_status`                    | `privacy status` *(`--output json`)*               | —          | live                  |
+| 36| Query recent privacy-log events (consent + tool calls)           | `privacy_log` *(`last?`, `actor?`)* | `privacy log` *(`--last`, `--actor`, `--output json`)* | —       | live                  |
+| 37| List pending transaction match proposals awaiting a decision     | `transactions_matches_pending` *(`match_type?`, `limit?`)* — each row includes `component_key` for N-way cluster grouping | `transactions matches pending` *(grouped by component_key)* / `transactions review --type matches --status` *(counts)* / `transactions review --type matches` *(interactive queue)* | — | live |
+| 38| Accept or reject one pending match proposal                      | `transactions_matches_set` *(`match_id`, `status: accepted\|rejected`)* | `transactions matches set <match_id> --status accepted\|rejected` | — | live |
+| 39| Run the matching engine and propose new pending decisions         | `transactions_matches_run` *(operator alternative to `refresh_run(steps=["match"])`)* | `transactions matches run` | — | live |
+| 40| View recent match decisions (accepted and rejected)              | `transactions_matches_history` *(`limit?`, `match_type?`)* | `transactions matches history` *(`--type`, `--limit`)* | — | live |
+| 41| Execute a read-only SQL query over core/app with CRITICAL columns masked via lineage | `sql_query` *(`query`)* | `sql query <sql>` *(`--output text\|json`)* | — | live |
 
 *(Bootstrap rows only; full table populates incrementally as
 follow-up work closes the parity backlog. A prior row covering
@@ -100,15 +110,27 @@ when client-driven progressive disclosure was retired (see
 [`mcp-architecture.md`](mcp-architecture.md) §3); the current
 rows 12–13 are unrelated and were added 2026-05-17 with the
 rules-CLI parity work. Row 17 added 2026-05-19: transform_* de-registered
-from MCP (PR #185) — operator territory per mcp-server.md category 2.
+from MCP (PR #185) — operator territory per mcp.md category 2.
 `sync_schedule_set/show/remove` stubs removed from MCP (PR #185) — were
 not-implemented placeholders with no backing spec. Rows 23–29 added
 2026-05-21 with the connect-gsheet PR; rows 30–31 capture the
-`sync_connect` → `sync_link` rename co-shipped in the same PR.)*
+`sync_connect` → `sync_link` rename co-shipped in the same PR.
+Rows 32–36 added 2026-05-22 with the consent ledger PR; row 34 is
+CLI-only because `revoke-all` is a bulk convenience with no MCP
+equivalent — use `privacy_consent_revoke` per category from MCP.
+Rows 37–40 added 2026-05-22 with the matches accept/reject PR: four
+`transactions_matches_*` MCP tools registered; `transactions matches set`
+CLI command and non-interactive `transactions review --type matches
+--confirm/--reject/--confirm-all` flags wired.
+Row 41 added 2026-05-23 with the SQL lineage PR: `sql_query` (MCP) and
+`moneybin sql query` (CLI) both mask CRITICAL columns via sqlglot lineage
+through the shared `execute_sql_query` primitive — full MCP↔CLI parity.
+`moneybin db query`/`db shell`/`db ui` remain raw operator access (cat 2 —
+no privacy middleware) and emit a banner pointing at `moneybin sql query`.)*
 
 ## Exemption categories
 
-Defined in [`.claude/rules/mcp-server.md`](../../.claude/rules/mcp-server.md)
+Defined in [`.claude/rules/mcp.md`](../../.claude/rules/mcp.md)
 "When CLI-only is justified":
 
 | # | Category                  | Short description                                                           | Status            |
@@ -144,10 +166,10 @@ When a PR adds, renames, or removes a tool or command:
    actually does — reviewer responsibility, not author judgment.
 4. **If exempting a surface,** cite the category by number and ensure
    the citation is consistent with
-   [`.claude/rules/mcp-server.md`](../../.claude/rules/mcp-server.md).
+   [`.claude/rules/mcp.md`](../../.claude/rules/mcp.md).
 
 PR review enforces 1 and 2; the surface-change-discipline rule in
-`.claude/rules/mcp-server.md` cites this contract.
+`.claude/rules/mcp.md` cites this contract.
 
 ## What this spec is NOT
 
@@ -166,4 +188,4 @@ PR review enforces 1 and 2; the surface-change-discipline rule in
 - [`moneybin-cli.md`](moneybin-cli.md) — CLI command taxonomy and conventions.
 - [`mcp-architecture.md`](mcp-architecture.md) — Design-level MCP architecture (not surface-level).
 - [`architecture-shared-primitives.md`](architecture-shared-primitives.md) — Cross-protocol symmetry contract.
-- [`.claude/rules/mcp-server.md`](../../.claude/rules/mcp-server.md) — Surface change discipline and CLI-only justifications.
+- [`.claude/rules/mcp.md`](../../.claude/rules/mcp.md) — Surface change discipline and CLI-only justifications.

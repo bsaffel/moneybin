@@ -13,9 +13,8 @@ from moneybin.matching.engine import TransactionMatcher
 from moneybin.matching.persistence import (
     get_active_matches,
     get_pending_matches,
-    undo_match,
-    update_match_status,
 )
+from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
 
 
 @pytest.fixture()
@@ -175,8 +174,8 @@ class TestTransferPipeline:
         pending = get_pending_matches(db, match_type="transfer")
         assert len(pending) == 1
 
-        update_match_status(
-            db, pending[0]["match_id"], status="accepted", decided_by="user"
+        MatchDecisionsRepo(db).update_status(
+            pending[0]["match_id"], status="accepted", decided_by="user", actor="cli"
         )
 
         active = get_active_matches(db, match_type="transfer")
@@ -193,17 +192,18 @@ class TestTransferPipeline:
         matcher.run()
 
         pending = get_pending_matches(db, match_type="transfer")
-        update_match_status(
-            db,
+        repo = MatchDecisionsRepo(db)
+        repo.update_status(
             pending[0]["match_id"],
             status="accepted",
             decided_by="user",
+            actor="cli",
         )
 
         active = get_active_matches(db, match_type="transfer")
         assert len(active) == 1
 
-        undo_match(db, active[0]["match_id"], reversed_by="user")
+        repo.reverse(active[0]["match_id"], reversed_by="user", actor="cli")
         active_after = get_active_matches(db, match_type="transfer")
         assert len(active_after) == 0
 

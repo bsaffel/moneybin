@@ -54,6 +54,36 @@ def _create_legacy_ai_audit_log(db: Database) -> None:
     )
 
 
+def _reset_audit_log_to_v007_shape(db: Database) -> None:
+    """Rebuild app.audit_log without operation_id (its V007-era 10-column shape).
+
+    V007 predates operation_id by 16 migrations, so its ai_audit_log retire
+    INSERT cannot populate that column. The live schema file now ships
+    operation_id NOT NULL, which the db fixture's init_schemas applied — so the
+    retire path must be exercised against the shape it historically ran against.
+    In production the retire path is unreachable anyway (no migration ever
+    created app.ai_audit_log); operation_id is added later by V023.
+    """
+    db.execute("DROP TABLE app.audit_log")
+    db.execute(
+        """
+        CREATE TABLE app.audit_log (
+            audit_id        VARCHAR PRIMARY KEY,
+            occurred_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            actor           VARCHAR NOT NULL,
+            action          VARCHAR NOT NULL,
+            target_schema   VARCHAR,
+            target_table    VARCHAR,
+            target_id       VARCHAR,
+            before_value    JSON,
+            after_value     JSON,
+            parent_audit_id VARCHAR,
+            context_json    JSON
+        )
+        """
+    )
+
+
 class TestV007Migration:
     """V007 migration: notes backfill, ai_audit_log retirement, new tables created."""
 
@@ -161,6 +191,7 @@ class TestV007Migration:
                 True,
             ),
         ]
+        _reset_audit_log_to_v007_shape(db)
         for row in legacy_ai_rows:
             db.execute(
                 """
@@ -235,6 +266,7 @@ class TestV007Migration:
                 [transaction_id, note, created_at],
             )
         _create_legacy_ai_audit_log(db)
+        _reset_audit_log_to_v007_shape(db)
         idem_ai_rows = [
             (
                 "ai_idem_1",

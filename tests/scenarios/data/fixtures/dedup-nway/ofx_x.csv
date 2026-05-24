@@ -1,0 +1,3 @@
+source_transaction_id,date,amount,payee,transaction_type
+OFX_X,2024-04-01,-50.00,WIDGET STORE,DEBIT
+OFX_Z,2024-04-30,-30.00,GROCERY MART,DEBIT

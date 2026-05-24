@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock, patch
+
 import pytest
 from fastmcp import FastMCP
 
+from moneybin.database import get_database
 from moneybin.mcp.tools.transactions import (
     register_transactions_tools,
+    transactions_matches_pending,
+    transactions_matches_run,
     transactions_review,
 )
 
@@ -43,6 +48,22 @@ async def test_review_status_actions_non_empty(mcp_db: object) -> None:
 
 
 @pytest.mark.unit
+@patch("moneybin.mcp.tools.transactions.get_database")
+@patch("moneybin.services.matching_service.MatchingService.run")
+async def test_matches_run_threads_mcp_actor(
+    mock_run: MagicMock, mock_get_db: MagicMock
+) -> None:
+    """transactions_matches_run audits its writes as actor="mcp", not "system"."""
+    from moneybin.matching.engine import MatchResult
+
+    mock_run.return_value = MatchResult(auto_merged=2, pending_review=1)
+
+    await transactions_matches_run()
+
+    mock_run.assert_called_once_with(actor="mcp")
+
+
+@pytest.mark.unit
 async def test_register_includes_review_status() -> None:
     """register_transactions_tools registers transactions_review."""
     srv = FastMCP("test")
@@ -50,3 +71,119 @@ async def test_register_includes_review_status() -> None:
     names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
     assert "transactions_review" in names
     assert "transactions_recurring_list" not in names
+
+
+@pytest.mark.unit
+async def test_matches_pending_component_key_present(mcp_db: object) -> None:
+    """Each pending dedup row carries a component_key field."""
+    # Seed two edges forming a 3-copy cluster and one unrelated edge
+    import json
+    from datetime import UTC, datetime
+
+    with get_database() as db:
+        for match_id, stid_a, stype_a, stid_b, stype_b, acct in [
+            ("mc_ab", "t1", "csv", "t2", "ofx", "ACC001"),
+            ("mc_bc", "t2", "ofx", "t3", "tiller", "ACC001"),
+            ("mc_zz", "x1", "csv", "x2", "ofx", "ACC002"),
+        ]:
+            db.execute(
+                """
+                INSERT INTO app.match_decisions (
+                    match_id, source_transaction_id_a, source_type_a,
+                    source_origin_a, source_transaction_id_b, source_type_b,
+                    source_origin_b, account_id, confidence_score, match_signals,
+                    match_type, match_tier, account_id_b, match_status,
+                    match_reason, decided_by, decided_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,  # noqa: S608  # test input, not executing SQL
+                [
+                    match_id,
+                    stid_a,
+                    stype_a,
+                    "origin_a",
+                    stid_b,
+                    stype_b,
+                    "origin_b",
+                    acct,
+                    0.9,
+                    json.dumps({}),
+                    "dedup",
+                    "3",
+                    None,
+                    "pending",
+                    None,
+                    "matcher",
+                    datetime.now(tz=UTC).isoformat(),
+                ],
+            )
+
+    result = (await transactions_matches_pending(match_type="dedup")).to_dict()
+    matches = result["data"]["matches"]
+    keys = {m["match_id"]: m["component_key"] for m in matches}
+
+    # All rows carry component_key
+    assert all("component_key" in m for m in matches)
+    # Same cluster shares one key
+    assert keys["mc_ab"] == keys["mc_bc"]
+    # Different account is its own cluster
+    assert keys["mc_zz"] != keys["mc_ab"]
+
+
+@pytest.mark.unit
+async def test_matches_pending_reports_dedup_group_count(mcp_db: object) -> None:
+    """The payload carries the distinct-dedup-component count (not an action string)."""
+    result = (await transactions_matches_pending()).to_dict()
+    # Empty queue → zero groups; the field is structured payload data.
+    assert result["data"]["n_dedup_groups"] == 0
+
+
+@pytest.mark.unit
+async def test_matches_pending_dedup_group_count_zero_for_transfer_scope(
+    mcp_db: object,
+) -> None:
+    """n_dedup_groups must honour the match_type filter, not the full queue.
+
+    A transfer-scoped call returns transfer rows; reporting the whole dedup
+    queue's group count alongside them would be a self-contradictory payload.
+    """
+    import json
+    from datetime import UTC, datetime
+
+    with get_database() as db:
+        db.execute(
+            """
+            INSERT INTO app.match_decisions (
+                match_id, source_transaction_id_a, source_type_a,
+                source_origin_a, source_transaction_id_b, source_type_b,
+                source_origin_b, account_id, confidence_score, match_signals,
+                match_type, match_tier, account_id_b, match_status,
+                match_reason, decided_by, decided_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,  # noqa: S608  # test input, not executing SQL
+            [
+                "td_ab",
+                "t1",
+                "csv",
+                "origin_a",
+                "t2",
+                "ofx",
+                "origin_b",
+                "ACC001",
+                0.9,
+                json.dumps({}),
+                "dedup",
+                "3",
+                None,
+                "pending",
+                None,
+                "matcher",
+                datetime.now(tz=UTC).isoformat(),
+            ],
+        )
+
+    # Dedup scope sees the one pending component...
+    dedup = (await transactions_matches_pending(match_type="dedup")).to_dict()
+    assert dedup["data"]["n_dedup_groups"] == 1
+    # ...transfer scope sees none (no dedup rows in scope).
+    transfer = (await transactions_matches_pending(match_type="transfer")).to_dict()
+    assert transfer["data"]["n_dedup_groups"] == 0

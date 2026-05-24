@@ -6,7 +6,7 @@ owns transactional integrity and audit emission. The MCP wrapper only
 projects service results into JSON-safe dicts and the standard
 ``{summary, data, actions}`` envelope.
 
-Sensitivity tiers (per ``.claude/rules/mcp-server.md``):
+Sensitivity tiers (per ``.claude/rules/mcp.md``):
 
 - Mutations against transaction-keyed state (notes, tags, splits, manual
   entries) and ``import_labels_set`` are tagged ``medium`` because the
@@ -265,8 +265,8 @@ def import_labels_set(
 ) -> ResponseEnvelope[ImportLabelsSetPayload]:
     """Declarative target-state for an import's labels.
 
-    Computes the add/remove diff against the prior labels and emits one
-    ``import_label.add`` / ``import_label.remove`` per changed entry.
+    Replaces the import's label set and emits one full-row ``import.set`` audit
+    row (Invariant 10) capturing the complete before/after labels.
     """
     with get_database() as db:
         final = ImportService(db).set_labels(import_id, labels, actor="mcp")
@@ -311,6 +311,7 @@ def system_audit(
                     before_value=e.before_value,
                     after_value=e.after_value,
                     parent_audit_id=e.parent_audit_id,
+                    operation_id=e.operation_id,
                     context_json=e.context_json,
                 )
                 for e in events
@@ -392,8 +393,8 @@ def register_curation_tools(mcp: FastMCP) -> None:
         import_labels_set,
         "import_labels_set",
         "Declarative target-state: replace an import's labels; "
-        "emits per-label add/remove audit events. Writes app.imports.labels; "
-        "revert by calling again with the prior label list (diff captured in app.audit_log).",
+        "emits one full-row import.set audit event. Writes app.imports.labels; "
+        "revert by calling again with the prior label list (before/after captured in app.audit_log).",
     )
     register(
         mcp,

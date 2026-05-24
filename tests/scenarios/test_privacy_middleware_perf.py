@@ -42,6 +42,13 @@ import pytest
 
 from moneybin.database import get_database
 from moneybin.errors import DatabaseKeyError
+from moneybin.privacy.redaction import redact_records
+from moneybin.privacy.sql_lineage import (
+    expand_star,
+    get_current_schema_snapshot,
+    parse_cached,
+    resolve_output_classes,
+)
 from moneybin.services.account_service import AccountService
 from moneybin.services.budget_service import BudgetService
 from moneybin.services.networth_service import NetworthService
@@ -151,4 +158,67 @@ def test_privacy_middleware_within_budget() -> None:
     assert total_pct <= TOTAL_REGRESSION_PCT, (
         f"Total p50 wall-clock regressed by {total_pct:+.1f}% "
         f"(cap {TOTAL_REGRESSION_PCT}%); per-flow deltas: {deltas}"
+    )
+
+
+# Representative agent query: mixes a CRITICAL column (masked) with HIGH/LOW/
+# MEDIUM columns (passthrough), so the lineage flow exercises resolution +
+# redaction, not just parsing.
+_LINEAGE_PERF_SQL = (
+    "SELECT account_id, amount, category, transaction_date "
+    "FROM core.fct_transactions LIMIT 100"
+)
+
+
+@pytest.mark.perf
+def test_sql_query_lineage_overhead_within_budget() -> None:
+    """The sqlglot lineage + redaction PR 4 adds to sql_query stays under budget.
+
+    sql_query has no pre-privacy baseline entry — before PR 4 it did no
+    classification at all. So instead of a delta-vs-baseline, this measures the
+    overhead PR 4 introduced *directly*: the same query run two ways — raw fetch
+    (what sql_query did before) vs. the full lineage path (snapshot + parse +
+    expand + resolve + redact_records, what it does now). The overhead is the
+    difference, judged against the project's standard per-flow caps. The budget
+    is independently derived (the PR's own contract: lineage adds ≤ P50_BUDGET_MS
+    p50), not a paste of observed numbers.
+    """
+    if not _persona_db_available():
+        pytest.skip(
+            "perf lineage test requires a populated persona DB; set "
+            "MONEYBIN_HOME + MONEYBIN_PROFILE and run "
+            "`moneybin synthetic generate family --seed 8229 --years 3 "
+            "&& moneybin transform apply` first"
+        )
+
+    def _raw() -> object:
+        with get_database(read_only=True) as db:
+            result = db.execute(_LINEAGE_PERF_SQL)
+            columns = [d[0] for d in result.description]
+            rows = result.fetchall()
+        return [dict(zip(columns, r, strict=False)) for r in rows]
+
+    def _with_lineage() -> object:
+        with get_database(read_only=True) as db:
+            snapshot = get_current_schema_snapshot(db)
+            tree = expand_star(parse_cached(_LINEAGE_PERF_SQL), snapshot)
+            output_classes = resolve_output_classes(tree, snapshot, _LINEAGE_PERF_SQL)
+            result = db.execute(_LINEAGE_PERF_SQL)
+            columns = [d[0] for d in result.description]
+            rows = result.fetchall()
+        records = [dict(zip(columns, r, strict=False)) for r in rows]
+        return redact_records(records, output_classes)
+
+    raw = measure_flow("sql_query_raw", _raw, iterations=ITERATIONS)
+    lineage = measure_flow("sql_query_lineage", _with_lineage, iterations=ITERATIONS)
+    overhead_p50 = lineage.p50_ms - raw.p50_ms
+    overhead_p99 = lineage.p99_ms - raw.p99_ms
+
+    assert overhead_p50 <= P50_BUDGET_MS, (
+        f"sql_query lineage overhead p50 {overhead_p50:+.2f}ms exceeds cap "
+        f"{P50_BUDGET_MS}ms (raw {raw.p50_ms:.2f}ms, lineage {lineage.p50_ms:.2f}ms)"
+    )
+    assert overhead_p99 <= P99_BUDGET_MS, (
+        f"sql_query lineage overhead p99 {overhead_p99:+.2f}ms exceeds cap "
+        f"{P99_BUDGET_MS}ms (raw {raw.p99_ms:.2f}ms, lineage {lineage.p99_ms:.2f}ms)"
     )

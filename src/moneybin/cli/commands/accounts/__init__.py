@@ -269,7 +269,11 @@ def accounts_set(
                 Decimal(credit_limit) if credit_limit is not None else None,
                 clear_credit_limit,
             )
-            _, warnings = AccountService(db).settings_update(account_id, **diff)  # type: ignore[arg-type]  # dynamic settings_update kwargs
+            _, warnings = AccountService(db).settings_update(
+                account_id,
+                actor="cli",
+                **diff,  # type: ignore[arg-type]  # dynamic settings_update kwargs
+            )
     for w in warnings:
         typer.echo(f"⚠️  {w.get('message', w)}", err=True)
     cascade_note = " (also excluded from net worth)" if is_archived is True else ""

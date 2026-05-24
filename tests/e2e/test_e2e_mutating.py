@@ -20,7 +20,9 @@ from tests.e2e.conftest import (
     base_env,
     make_workflow_env,
     make_workflow_env_fast,
+    match_status,
     run_cli,
+    seed_pending_match,
 )
 
 pytestmark = pytest.mark.e2e
@@ -431,21 +433,100 @@ class TestMatchesMutating:
         # May exit non-zero if no transforms have been run — no Python crash is the bar
         assert "Traceback (most recent call last)" not in result.output
 
-    def test_matches_review_confirm_all(
+    def test_matches_set_accepts_pending_match(
         self, _mutating_profile_template: Path, tmp_path: Path
     ) -> None:
-        """Unified review with --type matches --confirm-all (v2 replacement for `matches review --accept-all`).
-
-        STUB PLACEHOLDER: --confirm-all currently routes to _not_implemented()
-        and exits 0 without mutating the match queue. This test only guards
-        that the stub does not crash. Replace with a behavioral assertion
-        (e.g., pending matches consumed, decisions recorded) once the
-        non-interactive review loop lands. See moneybin-cli.md (review
-        collapse — non-interactive flags pending).
-        """
+        """`transactions matches set --status accepted` updates a pending match."""
         env = make_workflow_env_fast(
-            tmp_path, "matchreview", _mutating_profile_template
+            tmp_path, "matchset-acc", _mutating_profile_template
         )
+        match_id = "e2e_cli_set_acc001"
+        seed_pending_match(env, match_id)
+
+        result = run_cli(
+            "transactions",
+            "matches",
+            "set",
+            match_id,
+            "--status",
+            "accepted",
+            env=env,
+        )
+        result.assert_success()
+        assert match_status(env, match_id) == "accepted"
+
+    def test_matches_set_rejects_pending_match(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """`transactions matches set --status rejected` updates a pending match."""
+        env = make_workflow_env_fast(
+            tmp_path, "matchset-rej", _mutating_profile_template
+        )
+        match_id = "e2e_cli_set_rej001"
+        seed_pending_match(env, match_id)
+
+        result = run_cli(
+            "transactions",
+            "matches",
+            "set",
+            match_id,
+            "--status",
+            "rejected",
+            env=env,
+        )
+        result.assert_success()
+        assert match_status(env, match_id) == "rejected"
+
+    def test_matches_set_invalid_status_is_usage_error(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """An invalid --status value is a usage error (exit 2), not a runtime error."""
+        env = make_workflow_env_fast(
+            tmp_path, "matchset-bad", _mutating_profile_template
+        )
+        result = run_cli(
+            "transactions",
+            "matches",
+            "set",
+            "any_id",
+            "--status",
+            "bogus",
+            env=env,
+        )
+        assert result.exit_code == 2
+
+    def test_review_type_matches_reject_id(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """`review --type matches --reject <id>` rejects a seeded pending match."""
+        env = make_workflow_env_fast(tmp_path, "review-rej", _mutating_profile_template)
+        match_id = "e2e_cli_rev_rej001"
+        seed_pending_match(env, match_id)
+
+        result = run_cli(
+            "transactions",
+            "review",
+            "--type",
+            "matches",
+            "--reject",
+            match_id,
+            env=env,
+        )
+        result.assert_success()
+        assert match_status(env, match_id) == "rejected"
+
+    def test_review_type_matches_confirm_all(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """`review --type matches --confirm-all` accepts all seeded pending matches."""
+        env = make_workflow_env_fast(
+            tmp_path, "review-confirm-all", _mutating_profile_template
+        )
+        match_id_a = "e2e_cli_all_acc001"
+        match_id_b = "e2e_cli_all_acc002"
+        seed_pending_match(env, match_id_a)
+        seed_pending_match(env, match_id_b)
+
         result = run_cli(
             "transactions",
             "review",
@@ -455,6 +536,73 @@ class TestMatchesMutating:
             env=env,
         )
         result.assert_success()
+        assert match_status(env, match_id_a) == "accepted"
+        assert match_status(env, match_id_b) == "accepted"
+
+    def test_review_type_all_with_flag_is_usage_error(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """Non-interactive flags require --type matches; --type all errors (no silent partial run)."""
+        env = make_workflow_env_fast(
+            tmp_path, "review-all-guard", _mutating_profile_template
+        )
+        match_id = "e2e_cli_all_guard001"
+        seed_pending_match(env, match_id)
+
+        result = run_cli(
+            "transactions", "review", "--type", "all", "--confirm-all", env=env
+        )
+        assert result.exit_code == 2
+        # The pending match must be untouched — no partial execution.
+        assert match_status(env, match_id) == "pending"
+
+    def test_review_confirm_all_with_reject_is_usage_error(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """--confirm-all combined with --reject is ambiguous → exit 2, queue untouched."""
+        env = make_workflow_env_fast(
+            tmp_path, "review-combo-guard", _mutating_profile_template
+        )
+        match_id = "e2e_cli_combo_guard001"
+        seed_pending_match(env, match_id)
+
+        result = run_cli(
+            "transactions",
+            "review",
+            "--type",
+            "matches",
+            "--confirm-all",
+            "--reject",
+            match_id,
+            env=env,
+        )
+        assert result.exit_code == 2
+        assert match_status(env, match_id) == "pending"
+
+    def test_review_confirm_and_reject_same_id_is_usage_error(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """--confirm X --reject X is contradictory → exit 2 before any commit."""
+        env = make_workflow_env_fast(
+            tmp_path, "review-same-id-guard", _mutating_profile_template
+        )
+        match_id = "e2e_cli_same_id_guard001"
+        seed_pending_match(env, match_id)
+
+        result = run_cli(
+            "transactions",
+            "review",
+            "--type",
+            "matches",
+            "--confirm",
+            match_id,
+            "--reject",
+            match_id,
+            env=env,
+        )
+        assert result.exit_code == 2
+        # Guard must fire before the accept commits — queue untouched.
+        assert match_status(env, match_id) == "pending"
 
     def test_matches_backfill(
         self, _mutating_profile_template: Path, tmp_path: Path
@@ -1144,3 +1292,43 @@ class TestCategorizeRulesDeleteCLI:
         assert result.exit_code != 0
         assert "Traceback (most recent call last)" not in result.stderr
         assert "Rule does-not-exist not found" in result.stderr
+
+
+class TestPrivacyConsent:
+    """Consent ledger CLI commands (grant / revoke / revoke-all)."""
+
+    def test_privacy_grant_status_log_revoke_cycle(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """Full lifecycle over a real subprocess + encrypted DB."""
+        env = make_workflow_env_fast(tmp_path, "privcycle", _mutating_profile_template)
+        env["MONEYBIN_AI__DEFAULT_BACKEND"] = "anthropic"
+
+        run_cli(
+            "privacy", "grant", "mcp-data-sharing", "--yes", env=env
+        ).assert_success()
+
+        status = run_cli("privacy", "status", "--output", "json", env=env)
+        status.assert_success()
+        assert "mcp-data-sharing" in status.stdout
+
+        log = run_cli("privacy", "log", env=env)
+        log.assert_success()
+        assert "consent.grant" in log.stdout
+
+        run_cli(
+            "privacy", "revoke", "mcp-data-sharing", "--yes", env=env
+        ).assert_success()
+
+    def test_privacy_revoke_all(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        env = make_workflow_env_fast(tmp_path, "privrevall", _mutating_profile_template)
+        env["MONEYBIN_AI__DEFAULT_BACKEND"] = "anthropic"
+        run_cli(
+            "privacy", "grant", "mcp-data-sharing", "--yes", env=env
+        ).assert_success()
+        run_cli(
+            "privacy", "grant", "ml-categorization", "--yes", env=env
+        ).assert_success()
+        run_cli("privacy", "revoke-all", "--yes", env=env).assert_success()

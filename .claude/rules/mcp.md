@@ -29,7 +29,7 @@ MCP Tools / CLI  →  Privacy Middleware  →  Service Layer  →  DuckDB
 2. **Privacy by architecture.** Every tool declares a sensitivity tier (`low`, `medium`, `high`). The middleware enforces consent and redaction automatically.
 3. **Batch-first, composable.** Each tool is called once per turn with a complete result. Collection operations accept lists, not single items.
 4. **AI-ergonomic.** Tool names, descriptions, and parameter schemas are designed for LLM tool selection.
-5. **CLI symmetry.** Every MCP tool has a CLI equivalent via the same service layer. `--output json` on any CLI command returns the same response envelope. **The CLI is a first-class agent surface, not just a human surface** — Claude Code, Codex CLI, Gemini CLI, and similar agents drive CLI commands directly as a peer pathway to MCP. When designing data-flow primitives (JSON I/O, stdin/stdout, redaction contracts), assume both human and agent consumers; agents pipe and chain commands the way humans use shells. See `cli.md` for stdout/stderr conventions, scripting flags, and `--output json`.
+5. **CLI symmetry.** Every MCP tool has a CLI equivalent via the same service layer; `--output json` returns the same response envelope. The CLI is a first-class agent surface (a peer pathway to MCP), so design data-flow primitives (JSON I/O, stdin/stdout, redaction) for both human and agent consumers. See `cli.md`.
 
 ## Tool Taxonomy
 
@@ -48,7 +48,7 @@ Tools use underscore-joined names: `domain_action_or_view`. The MCP spec / SEP-9
 | `privacy.*` | Consent status, grants, revocations, audit log |
 | `overview.*` | Cross-domain summaries, system info |
 
-Naming: **noun = query** (`spending_summary`), **verb = action** (`categorize_apply`). No CRUD naming.
+Naming: **noun = query** (`accounts_summary`), **verb = action** (`transactions_categorize_commit`). No CRUD naming.
 
 **Tool disclosure: full surface, taxonomy-led.** Every registered tool is visible at connect. Orientation lives in the FastMCP `instructions` field (see below) and in prefix-grouped tool names with sharp descriptions — not in a runtime discovery tool. Each new tool's description, parameter schema, and namespace placement must justify itself against the full-surface bar. See `mcp-architecture.md` §3 for rationale.
 
@@ -88,7 +88,7 @@ Default: every operation is MCP-exposed. CLI-only status requires a justified ex
 
 1. **Secret material through the LLM context window.** Tools that accept or display passphrases, encryption keys, or key-derivation material (`db_init`, `db_unlock`, `db_key_rotate`, `db_key_show`, `db_key_export`, `db_key_import`, `db_key_verify`, `sync_key_rotate`). Routing those through an LLM-mediated channel is a security model violation, not a capability gap.
 2. **Hands-on operator territory.** Bootstrapping, recovery, and developer-tooling operations that require physical operator presence. The MCP server cannot even start when the database is locked, so exposing lifecycle tools to MCP would be meaningless. Covers:
-   - **Database lifecycle:** `db_init`, `db_lock`, `db_ps`, `db_kill`, `db_shell`, `db_ui`, `db_migrate_apply`, `db_migrate_status`, `db_backup`, `db_restore`, `db_info`, `db_query` (raw SQL access; agent path is `sql_query`).
+   - **Database lifecycle:** `db_init`, `db_lock`, `db_ps`, `db_kill`, `db_shell`, `db_ui`, `db_migrate_apply`, `db_migrate_status`, `db_backup`, `db_restore`, `db_info`, `db_query` (raw SQL access; agent path is `sql_query`). Note: `db_query`, `db_shell`, and `db_ui` emit an operator-bypass banner (stderr) and include it in their `--help` text warning that no privacy middleware applies — account numbers and other CRITICAL-tier fields are NOT masked. The MCP `sql_query` tool is the privacy-safe agent path for ad-hoc SQL.
    - **Server lifecycle:** `mcp_serve`, `mcp_install`, `mcp_config_path`, `mcp_list_tools`, `mcp_list_prompts` (operator introspection of the local MCP surface).
    - **Profile + identity:** `profile_*`.
    - **Developer tooling:** `logs`, `stats`, `synthetic_generate`, `synthetic_reset`, `transform_seed`, `transform_restate`.
@@ -142,8 +142,6 @@ Reviewers verify both updates AND that the capability's user-language descriptio
 - Removed tools/commands require both spec updates AND a CHANGELOG.md `Removed` entry under `Unreleased`.
 - Renamed tools/commands require updating every reference in the surface-specific spec, updating the relevant row in the capabilities map, plus tests, plus a `Changed` entry in the CHANGELOG.
 - Exempting a surface (e.g., CLI-only by secret-material policy) requires citing the category by number from "When CLI-only is justified" above; the citation must match the exemption-category index in the capabilities map.
-
-This rule replaces the proposed automated drift test (see `moneybin-mcp.md` §18). Automated enforcement was rejected because a fixture-based test detects code-vs-fixture drift but not code-vs-spec drift, and a spec-parsing test is fragile to spec restructuring. Revisit this decision if PR review proves insufficient.
 
 ## Description requirements
 

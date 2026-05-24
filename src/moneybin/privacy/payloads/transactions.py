@@ -226,3 +226,87 @@ class SplitRemovePayload:
     split_id: Annotated[str, DataClass.RECORD_ID]
     transaction_id: Annotated[str, DataClass.RECORD_ID]
     residual: Annotated[str, DataClass.TXN_AMOUNT]
+
+
+# ---------------------------------------------------------------------------
+# transactions_matches_pending / transactions_matches_set
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class MatchPendingRow:
+    """One pending pair decision (transactions_matches_pending result).
+
+    app.match_decisions carries no description/amount columns — only IDs,
+    source types, and a confidence score — so this row is low-sensitivity.
+    For full pair context (both transactions side by side), use the CLI
+    `moneybin transactions review --type matches` queue.
+
+    ``component_key`` groups edges that belong to the same N-way dedup
+    cluster. All pending edges sharing a cluster have the same
+    ``component_key``; transfer rows use their own ``match_id`` as the key.
+    """
+
+    match_id: Annotated[str, DataClass.RECORD_ID]
+    match_type: Annotated[str, DataClass.TXN_TYPE]
+    match_tier: Annotated[str | None, DataClass.TXN_TYPE]
+    confidence_score: Annotated[float, DataClass.AGGREGATE]
+    source_type_a: Annotated[str, DataClass.TXN_TYPE]
+    source_transaction_id_a: Annotated[str, DataClass.RECORD_ID]
+    source_type_b: Annotated[str, DataClass.TXN_TYPE]
+    source_transaction_id_b: Annotated[str, DataClass.RECORD_ID]
+    match_status: Annotated[str, DataClass.TXN_TYPE]
+    component_key: Annotated[str, DataClass.RECORD_ID]
+
+
+@dataclass(frozen=True, slots=True)
+class MatchesPendingPayload:
+    """Payload for transactions_matches_pending."""
+
+    matches: list[MatchPendingRow]
+    # Distinct dedup components across the FULL pending dedup queue (not just the
+    # returned page) within the caller's match_type scope — lets the agent gauge
+    # the true N-way cluster total even when the queue is paginated. Rows sharing
+    # a component_key (within `matches`) are copies of one transaction.
+    n_dedup_groups: int
+
+
+@dataclass(frozen=True, slots=True)
+class MatchSetPayload:
+    """Payload for transactions_matches_set — the decision's new state."""
+
+    match_id: Annotated[str, DataClass.RECORD_ID]
+    match_status: Annotated[str, DataClass.TXN_TYPE]
+
+
+# ---------------------------------------------------------------------------
+# transactions_matches_history / transactions_matches_run
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class MatchHistoryRow:
+    """One past match decision (transactions_matches_history result)."""
+
+    match_id: Annotated[str, DataClass.RECORD_ID]
+    match_type: Annotated[str, DataClass.TXN_TYPE]
+    match_status: Annotated[str, DataClass.TXN_TYPE]
+    confidence_score: Annotated[float, DataClass.AGGREGATE]
+    decided_by: Annotated[str, DataClass.TXN_TYPE]
+    decided_at: Annotated[str | None, DataClass.TIMESTAMP_OBSERVABILITY]
+
+
+@dataclass(frozen=True, slots=True)
+class MatchesHistoryPayload:
+    """Payload for transactions_matches_history."""
+
+    matches: list[MatchHistoryRow]
+
+
+@dataclass(frozen=True, slots=True)
+class MatchRunPayload:
+    """Payload for transactions_matches_run — counts from the matcher run."""
+
+    auto_merged: Annotated[int, DataClass.AGGREGATE]
+    pending_review: Annotated[int, DataClass.AGGREGATE]
+    pending_transfers: Annotated[int, DataClass.AGGREGATE]

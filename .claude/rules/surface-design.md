@@ -1,3 +1,8 @@
+---
+description: "Cross-surface operation-shape taxonomy, verb vocabulary, audience layering (MCP / CLI / REST). Consult before adding, renaming, or restructuring a tool, command, or endpoint."
+paths: ["src/moneybin/mcp/**", "src/moneybin/cli/**", "src/moneybin/services/**", "docs/specs/moneybin-mcp.md", "docs/specs/moneybin-cli.md", "docs/specs/moneybin-capabilities.md", "docs/specs/mcp-architecture.md"]
+---
+
 # Surface Design: Tools, Commands, and APIs
 
 Cross-surface pattern for MoneyBin's three agent/user surfaces — MCP tools, CLI commands, and (future) REST endpoints. Invoke whenever adding, renaming, or restructuring an entry on any of those surfaces.
@@ -67,7 +72,7 @@ Batch tools with per-item error handling (`transactions_create`, `merchants_crea
 - **Form:** separate tools per strategy.
 - **NOT shape 4** when strategies share inputs and outputs and differ only in quality-of-service (latency, determinism, cost, privacy contract enforced by middleware). Those collapse into one tool with a methods parameter.
 
-**Sharpening note (verify against actual code).** "Different strategies for the same goal" is suspicious framing — check whether the strategies *really* have the same I/O. If one takes `(filter_params)` and returns `[redacted_rows]` while another takes `[explicit_categorizations]` and returns `applied_count`, those are not strategies of one operation — they are different operations that happen to live in the same domain. Categorize was initially framed as a methods-collapse case in the 2026-05-16 brainstorm; verifying against `transactions_categorize_commit` (the LLM-decided commit) / `_assist` (the redacted read) showed they fail this test (different inputs, different outputs, different read/write semantics). The engine-driven cascade *does* collapse — `transactions_categorize_run(methods=["rules","merchants"])` is the polymorphic tool that handles both engines under one shape. When in doubt, read the function signatures before classifying.
+**Sharpening note (verify against actual code).** "Different strategies for the same goal" is suspicious framing — check whether the strategies *really* have the same I/O. If one takes `(filter_params)` and returns `[redacted_rows]` while another takes `[explicit_categorizations]` and returns `applied_count`, those are not strategies of one operation — they are different operations that happen to live in the same domain. The engine-driven cascade *does* collapse — `transactions_categorize_run(methods=["rules","merchants"])` is the polymorphic tool that handles both engines under one shape. When in doubt, read the function signatures before classifying.
 
 Shape 4 is narrower than it first appears. Many "different strategies" cases are really one operation with a parameter — but many others are entirely different operations that just share a domain prefix.
 
@@ -122,23 +127,16 @@ Coherence requires that when a verb appears, it means the same thing everywhere.
 
 Plus domain-specific discrete verbs (`_rename`, `_archive`, `_revert`) — use these when the verb carries domain meaning the generic verbs would erase.
 
-**`_link` vs `_connect` — the semantic split.** Both verbs establish a persistent relationship with an external data source, but they describe *different trust and mediation models*:
-
-- **`_link`** is owed to Plaid's branded "Link" product. Use when (a) a third-party financial-data aggregator stands between MoneyBin and the user's actual financial institution, (b) credentials are held server-side and ephemeral, and (c) the client never speaks the underlying institution's API directly. This is the `sync-*` family.
-- **`_connect`** is for direct OAuth (or URL-based binding) to data the user themselves owns. The client speaks the provider's API directly; tokens live in the local `SecretStore`; no server mediation. This is the `connect-*` family.
-
-Never use them interchangeably. Never use `_connect` for a financial-aggregator integration (it loses the Plaid Link mental model users rely on). Never use `_link` for user-controlled storage (the "session" framing misrepresents what's happening — there's no real session, just a binding).
-
-The verb predicts the trust model. Agents and users should never need a qualifier to know which is which.
+**`_link` vs `_connect`.** `_link` = mediated provider (a third-party aggregator stands between MoneyBin and the institution; server holds ephemeral tokens; the client never speaks the institution's API directly; the `sync-*` family). `_connect` = user-controlled storage (direct OAuth or URL binding; the client speaks the provider's API directly; tokens live in the local `SecretStore`; the `connect-*` family). Never interchangeable — the verb predicts the trust model.
 
 **Verbs to avoid:**
 
-- `_apply` — retired. Refresh-domain "apply transforms" now routes to `refresh_run` (PR #165). Strategy-execution "apply rules" now routes to `transactions_categorize_run(methods=["rules"])`. The previous LLM-categorize-commit caller (`transactions_categorize_apply`) has been renamed to `transactions_categorize_commit`. Zero current callers; do not reintroduce.
-- `_toggle` — too narrow (binary flip). Use `_set` with a typed field: `categories_set(category_id, is_active=...)` instead of `categories_toggle`.
-- `_update` — synonym of `_set` in this codebase. The rename pass picked `_set` (`accounts_settings_update` → `accounts_set`); follow that precedent.
+- `_apply` — use `_run` / `_refresh` (refresh domain) or `transactions_categorize_run(methods=["rules"])` (strategy execution). Do not reintroduce.
+- `_toggle` — too narrow (binary flip). Use `_set` with a typed field: `categories_set(category_id, is_active=...)`.
+- `_update` — synonym of `_set` in this codebase; use `_set`.
 - `_list` suffix on read tools — drop it (noun-only).
 - `manage_*` with action-polymorphism — rejected absolutely (see Polymorphism below).
-- `_connect` for mediated financial providers — retired. The Plaid-style flow is `_link` (see verb table). The previous `sync_connect` was renamed to `sync_link` co-shipping with `connect-gsheet.md` to lock the verb-split semantics before launch. Zero current `_connect` callers in `sync-*`; do not reintroduce.
+- `_connect` for mediated financial providers — use `_link` (see verb table). Do not reintroduce.
 
 **Pluralization:** match the noun. Collection writes use plural even when operating on one element (`_rules_create`, `_rules_delete`). Singular `_rule_delete` is wrong even when deleting one rule.
 
@@ -169,13 +167,13 @@ MoneyBin's surface mixes three audiences:
 |---|---|---|
 | **User-intent** | `reports_spending`, `accounts_summary`, `transactions_search` | Surfaced prominently in the `instructions` field, in user-facing tools' `actions[]` hints, and in docs |
 | **Mid-CRUD** | `transactions_tags_set`, `budget_set`, `categories_set` | Surfaced as the agent's hands — referenced by user-intent tools' `actions[]` and in workflow examples |
-| **Operator territory** | `transform_apply`, `sql_query`, `system_doctor`, `system_audit` | Visible but deprioritized: description prose calls out the operator audience; not promoted in `instructions` enumeration; reached via specific `actions[]` hints when relevant |
+| **Operator territory** | `sql_query`, `system_doctor`, `system_audit` | Visible but deprioritized: description prose calls out the operator audience; not promoted in `instructions` enumeration; reached via specific `actions[]` hints when relevant |
 
-**Per `docs/specs/mcp-architecture.md` §3 ("Tool disclosure: full surface, taxonomy-led"):** the full registered tool surface is visible at connect — client-driven progressive disclosure was retired 2026-05-17. Audience positioning happens through three levers MoneyBin controls end-to-end: the FastMCP `instructions` field, prefix-grouped tool names with sharp descriptions, and surface discipline (tools register only when their backing spec reaches `in-progress`/`implemented`, per `mcp-server.md` "Surface change discipline"). The `@mcp_tool(domain=...)` markers stay as dormant metadata for a future first-party client that can implement schema injection in the style of Claude Code's `tool_search`.
+**Per `docs/specs/mcp-architecture.md` §3 ("Tool disclosure: full surface, taxonomy-led"):** the full registered tool surface is visible at connect — client-driven progressive disclosure was retired. Audience positioning happens through three levers MoneyBin controls end-to-end: the FastMCP `instructions` field, prefix-grouped tool names with sharp descriptions, and surface discipline (tools register only when their backing spec reaches `in-progress`/`implemented`, per `mcp.md` "Surface change discipline"). The `@mcp_tool(domain=...)` markers stay as dormant metadata for a future first-party client that can implement schema injection in the style of Claude Code's `tool_search`.
 
 **Test:** if a tool's primary caller is a human operator (or a power-user agent explicitly inspecting internals), the tool's description should say so, it should NOT be cited in user-facing tools' `actions[]` hints, and it should NOT appear in the `instructions` field's top-level enumeration. If the primary caller is an agent helping a user with their finances, the opposite — surface it prominently across those three levers.
 
-**Umbrella pattern:** when an operator-territory tool also serves a user-relevant capability, an umbrella tool exposes the capability at the user-intent layer. Example: `refresh_run` is the always-visible umbrella over the refresh pipeline (match + transform + categorize); `transform_apply` and friends remain registered for operators but are not promoted in user-facing `actions[]` or in `instructions`. Both layers stay visible — the difference is positioning, not gating.
+**Umbrella pattern:** when an operator-territory operation also serves a user-relevant capability, an umbrella tool exposes the capability at the user-intent layer. Example: `refresh_run` is the always-visible umbrella over the refresh pipeline (match + transform + categorize); the constituent operator operations (e.g. the CLI-only `moneybin transform apply`) are positioned for operators, not promoted in user-facing `actions[]` or in `instructions`. Both layers stay visible — the difference is positioning, not gating.
 
 ## Surface implications
 
@@ -191,7 +189,7 @@ Everything else transfers directly:
 
 - Operation shapes — same five.
 - Verb vocabulary — same table, expressed as subcommands (`<group> set`, `<group> create`, `<group> delete`, `<group> run`).
-- CLI symmetry — every MCP tool has a CLI command via the same service layer (`mcp-server.md` line 28). The same shape choice surfaces in both.
+- CLI symmetry — every MCP tool has a CLI command via the same service layer (`mcp.md`, CLI symmetry principle). The same shape choice surfaces in both.
 
 ### REST API (future, M3D+)
 
@@ -210,7 +208,7 @@ Audience layering uses separate base paths: `/api/v1/...` for user-intent + mid-
 
 ## Coherence and pre-launch posture
 
-Pre-launch (per `design-principles.md`), iterate the surface aggressively to find the right shape. The coherence rule applies: if a tool's name or form contradicts the taxonomy, refactor rather than introduce a parallel pattern.
+The coherence rule applies (per `design-principles.md`): if a tool's name or form contradicts the taxonomy, refactor rather than introduce a parallel pattern.
 
 Defended exceptions are legitimate but must be **documented in the tool's MCP description** with a one-line "why" — the agent never reads this file. Example: `accounts_balance_assert` is shape 1b but keeps the name because "assertion" carries domain meaning beyond a generic upsert; the description should say so.
 
@@ -225,6 +223,7 @@ Defended exceptions are legitimate but must be **documented in the tool's MCP de
 - Duplicate tools where one is strictly richer (`transactions_recurring_list` vs `reports_recurring`).
 - Operator-territory tools promoted in `instructions` or in user-intent tools' `actions[]` hints alongside user-intent tools (full surface stays visible, but positioning matters — see Audience layering).
 - New entity-mutation tools when `<entity>_set` already covers the field.
+- `_many` / `_batch` suffix variants — the canonical mutation tool accepts a list/scope from the start.
 
 ## Applying this rule
 

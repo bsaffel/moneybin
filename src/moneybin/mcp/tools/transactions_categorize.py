@@ -244,7 +244,9 @@ def transactions_categorize_rules_create(
     """
     validated, parse_errors = validate_rule_items(rules)
     with get_database() as db:
-        result = CategorizationService(db).create_rules(validated, reapply=reapply)
+        result = CategorizationService(db).create_rules(
+            validated, reapply=reapply, actor="mcp"
+        )
     result.merge_parse_errors(parse_errors)
     return build_envelope(
         data=result.to_payload(),
@@ -273,7 +275,7 @@ def transactions_categorize_rules_delete(
     """
     with get_database() as db:
         deactivated = CategorizationService(db).deactivate_rule(
-            rule_id, reapply=reapply
+            rule_id, reapply=reapply, actor="mcp"
         )
     if not deactivated:
         raise UserError(f"Rule {rule_id} not found", code="RULE_NOT_FOUND")
@@ -316,7 +318,11 @@ def transactions_categorize_auto_accept(
         reject: Proposal IDs to reject and dismiss.
     """
     with get_database() as db:
-        result = AutoRuleService(db).accept(accept=accept or [], reject=reject or [])
+        result = AutoRuleService(db).accept(
+            accept=accept or [],
+            reject=reject or [],
+            actor="mcp",
+        )
     return auto_accept_envelope(result)
 
 

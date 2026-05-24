@@ -108,6 +108,15 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "official_name": DataClass.INSTITUTION,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
     },
+    ("app", "ai_consent_grants"): {
+        "grant_id": DataClass.RECORD_ID,
+        "feature_category": DataClass.CATEGORY,
+        "backend": DataClass.INSTITUTION,
+        "consent_mode": DataClass.TXN_TYPE,
+        "granted_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "revoked_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "grant_prompt": DataClass.DESCRIPTION,
+    },
     ("app", "audit_log"): {
         "action": DataClass.TXN_TYPE,
         "actor": DataClass.TXN_TYPE,
@@ -116,6 +125,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "before_value": DataClass.TXN_AMOUNT,
         "context_json": DataClass.DESCRIPTION,
         "occurred_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "operation_id": DataClass.RECORD_ID,
         "parent_audit_id": DataClass.RECORD_ID,
         "target_id": DataClass.RECORD_ID,
         "target_schema": DataClass.RECORD_ID,
