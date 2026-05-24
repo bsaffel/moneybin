@@ -57,6 +57,8 @@ cd moneybin
 make setup
 ```
 
+The first command you run sets up your profile automatically — one encrypted database that's yours, under `~/.moneybin/`. Everything you import lands there.
+
 Bring in your data — import a file, drain the watched-folder inbox, or sync a Plaid-connected bank:
 
 ```bash
