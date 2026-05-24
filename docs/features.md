@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-05-17 -->
+<!-- Last reviewed: 2026-05-24 -->
 # What Works Today
 
 What MoneyBin can do today. Each capability links to its guide; the [roadmap](roadmap.md) covers what's planned and the [CHANGELOG](../CHANGELOG.md) carries the dated record.
@@ -59,7 +59,7 @@ All on the `app.*` layer; zero changes to the upstream pipeline. (No dedicated g
 
 ## Reports
 
-Curated `reports.*` SQLMesh views back both the CLI and MCP surfaces. Same query, same envelope on both. Reports accept date-range filters (`--from` / `--to` on time-windowed reports like `cashflow` and `spending`, `--as-of` for snapshots like `networth`, plus `--account` and `--category` where they apply); grains vary per report. -> [CLI reference](guides/cli-reference.md) · [MCP server guide](guides/mcp-server.md)
+Curated `reports.*` SQLMesh views back both the CLI and MCP surfaces. Same query, same envelope on both. Reports accept date-range filters (`--from-month` / `--to-month` on time-windowed reports like `cashflow` and `spending`, `--as-of` for snapshots like `networth`, plus `--account` and `--category` where they apply); grains vary per report. -> [CLI reference](guides/cli-reference.md) · [MCP server guide](guides/mcp-server.md)
 
 - **`reports.net_worth`** — Cross-account total with period-over-period change.
 - **`reports.cash_flow`** — Income vs spending by month.

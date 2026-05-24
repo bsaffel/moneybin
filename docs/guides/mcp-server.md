@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-05-17 -->
+<!-- Last reviewed: 2026-05-24 -->
 # MCP Server
 
 MoneyBin's MCP server is what lets you ask an AI assistant questions like *"Where did I overspend last month?"* and have it run the multi-step pipeline that answers them — import the latest file, refresh derived tables, fetch the right report, then summarize. The agent picks the tools, chains them via action hints embedded in every response, and discovers parameter schemas at runtime. The same surface is reachable from the CLI for parity; this guide is about the chat-driven path.
@@ -145,7 +145,7 @@ Per-tool input schemas are not in this guide on purpose; the `--help`-equivalent
 | `accounts.*` | Inspect, resolve, and manage accounts and balances | `accounts`, `accounts_get`, `accounts_summary`, `accounts_set`, `accounts_resolve`, `accounts_balances`, `accounts_balance_history`, `accounts_balance_reconcile`, `accounts_balance_assertions`, `accounts_balance_assert`, `accounts_balance_assertion_delete` |
 | `transactions.*` (read + curate) | Search transactions; manage notes, tags, splits, manual entry | `transactions_get`, `transactions_review`, `transactions_create`, `transactions_notes_add`, `transactions_notes_edit`, `transactions_notes_delete`, `transactions_tags_set`, `transactions_tags_rename`, `transactions_splits_set` |
 | `transactions.categorize.*` | Categorization engine: rules, merchants, LLM-assist | `transactions_categorize_pending`, `transactions_categorize_assist`, `transactions_categorize_commit`, `transactions_categorize_run`, `transactions_categorize_rules`, `transactions_categorize_rules_create`, `transactions_categorize_rules_delete`, `transactions_categorize_stats`, `transactions_categorize_auto_review`, `transactions_categorize_auto_accept`, `transactions_categorize_auto_stats` |
-| `reports.*` | Curated analytical views (one per report) | `reports_networth`, `reports_networth_history`, `reports_spending`, `reports_cashflow`, `reports_recurring`, `reports_merchants`, `reports_uncategorized`, `reports_large_transactions`, `reports_balance_drift`, `reports_budget` |
+| `reports.*` | Curated analytical views (one per report) | `reports_networth`, `reports_networth_history`, `reports_spending`, `reports_cashflow`, `reports_recurring`, `reports_merchants`, `reports_uncategorized`, `reports_large_transactions`, `reports_balance_drift` |
 | `categories.*` | Category taxonomy management | `categories`, `categories_create`, `categories_set`, `categories_delete` |
 | `merchants.*` | Merchant name mappings | `merchants`, `merchants_create` |
 | `import.*` | File import + inbox drain + revert | `import_files`, `import_preview`, `import_status`, `import_revert`, `import_formats`, `import_inbox_sync`, `import_inbox_pending`, `import_labels_set` |
