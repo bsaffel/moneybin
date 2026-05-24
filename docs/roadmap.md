@@ -235,6 +235,7 @@ Designed but not gating launch. Listed without commitment.
 - **Data export** (CSV, Excel, Google Sheets) as a one-command flow. Until this ships, the data-exit path is direct SQL access to your DuckDB file.
 - **Privacy tiers + consent model.** Framework spec at [`privacy-and-ai-trust.md`](specs/privacy-and-ai-trust.md).
 - **Native PDF parsing + AI-assisted file parsing.**
+- **Confirm-the-columns trust layer** (📐 designed). One unified confidence contract and one `import_preview`→`import_confirm` flow across tabular, gsheet, and PDF: new layouts confirm once, confirmed layouts reuse silently, recovery (revert / re-map) is one step away. See [`smart-import-confirmation.md`](specs/smart-import-confirmation.md).
 - **ML-powered categorization + merchant entity resolution.** Needs accumulated labeled data from real users.
 - **MCP Apps** (interactive UI inside Claude Desktop, VS Code). Revisit when client support widens.
 - **Multi-account-holder sharing.** Single-user is the v1 posture; revisit on user demand.
