@@ -58,9 +58,9 @@ The only genuinely new code is **PDF → rows extraction + the routing decision.
 7. **Recipe authoring on first contact.** For an unseen layout, the bridge proposes (a) a declarative extraction recipe (anchors, row delimiters, field order, date format, sign convention), (b) a field mapping, and (c) a routing decision (`transactions` | `seed`). The recipe is human-readable text-structural rules, not pixel geometry.
 7a. **Statement-metadata capture.** The recipe also captures statement metadata distinct from the transaction rows — the account identifier, statement period, and opening/closing balances (from the header/summary box). These are signal, not noise: they drive account resolution (Requirement 10a) and supply the balances reconciliation checks against (Requirement 9). Captured values are per-import and transient (used for resolution and reconciliation, not persisted as new state); surfacing closing balances as balance assertions is a future extension (Out of Scope).
 8. **User vetting before persistence.** The proposed recipe + mapping + routing are surfaced for confirmation (CLI interactive / MCP `import_confirm`). On confirm, persist to `app.pdf_formats`. Auto-save by default; `--no-save-format` to skip.
-9. **Replay guard — reconciliation is the primary validator.** Before a replayed extraction loads, it must pass **balance reconciliation**: the extracted rows tie to the statement's stated opening/closing balance and totals (`sum(credits) − sum(debits) == closing − opening`) — the strongest correctness signal a financial document offers, and the backstop for signal/noise separation (see *Signal vs. noise* under Architecture). Secondary checks: confidence score, row-count sanity, sign-convention. Any failure — typically a subtotal counted as a transaction or a dropped row — re-escalates to the bridge and refreshes the recipe; unbalanced data never loads silently. Documents that expose no stated totals fall back to confidence + row-count and are flagged `unreconciled`.
+9. **Reconciliation gate — the primary validator, on every transaction load.** Before **any** extraction is routed to transactions — first-seen deterministic, replayed, or bridge-authored — it must pass **balance reconciliation**: the extracted rows tie to the statement's stated opening/closing balance and totals (`sum(credits) − sum(debits) == closing − opening`) — the strongest correctness signal a financial document offers, and the backstop for signal/noise separation (see *Signal vs. noise* under Architecture). Secondary checks: confidence score, row-count sanity, sign-convention. Any failure — typically a subtotal counted as a transaction or a dropped row — blocks the silent load: a replayed recipe re-escalates to the bridge and refreshes; a first-seen deterministic extraction escalates to the bridge, or, with no bridge present, is offered as a seed (Requirement 5) rather than loaded unbalanced. Documents that expose no stated totals fall back to confidence + row-count and are flagged `unreconciled`. The gate applies to the transactions route only — seeds carry no schema contract to reconcile.
 
-9a. **Recipe versioning.** A recipe refresh — triggered by the replay guard (Requirement 9) or a manual edit — creates a new **version**, never a silent overwrite. `app.pdf_formats.version` increments; the change is audited via `PdfFormatsRepo` (Invariant 10) and is reversible to a prior version through the audit-log undo (Invariant 11, per `data-recovery-contract.md`). Undo of a bad refresh restores the previous recipe version. History lives in the audit log — no separate version table.
+9a. **Recipe versioning.** A recipe refresh — triggered by the reconciliation gate (Requirement 9) or a manual edit — creates a new **version**, never a silent overwrite. `app.pdf_formats.version` increments; the change is audited via `PdfFormatsRepo` (Invariant 10) and is reversible to a prior version through the audit-log undo (Invariant 11, per `data-recovery-contract.md`). Undo of a bad refresh restores the previous recipe version. History lives in the audit log — no separate version table.
 
 9b. **Bounded recipe execution (security).** The recipe executor runs bridge-authored patterns against untrusted document text, so a pathological or hostile pattern — catastrophic-backtracking regex, or a crafted PDF that triggers ReDoS on a benign one — must not hang import. Two bounds, both required: **(a) static, at recipe-save** — reject any pattern exceeding a max length (config `pdf.recipe.max_pattern_len`, default 200 chars) or containing nested unbounded quantifiers (e.g. `(a+)+`), via inspection of the compiled pattern; **(b) dynamic, at execution** — run each pattern under a hard wall-clock timeout (config `pdf.recipe.pattern_timeout_ms`, default 100 ms) enforced with the `regex` module's `timeout=` parameter (`re` has none), failing the row to re-escalation rather than hanging. Metric: pattern length + quantifier-nesting depth (static) and per-pattern wall-clock (dynamic); values are named config constants. Prefer simple anchor/delimiter patterns over arbitrary regex. Finance + AI = zero trust budget (`AGENTS.md`).
 
@@ -160,7 +160,7 @@ flowchart TD
     B -- yes --> C[Deterministic: pdfplumber/camelot -> IR]
     B -- no scan --> BR
     C --> F{Fingerprint in app.pdf_formats?}
-    F -- match --> R[Replay saved recipe deterministically]
+    F -- match --> R[Replay saved recipe]
     F -- no match --> S{Confidence >= threshold?}
     S -- yes --> ROUTE
     S -- low --> BR[Bridge: driving agent extracts -> proposes recipe + mapping + routing]
@@ -168,11 +168,11 @@ flowchart TD
     NOTICE --> VET[User vets recipe + mapping + routing]
     VET --> SAVE[(Save app.pdf_formats)]
     SAVE --> ROUTE
-    R --> GUARD{Replay guard: confidence / reconcile}
-    GUARD -- pass --> ROUTE
-    GUARD -- fail --> BR
+    R --> ROUTE
     ROUTE{Routing}
-    ROUTE -- transactions --> T[raw.tabular_transactions source_type=pdf -> matching/categorization/reports]
+    ROUTE -- transactions --> GUARD{Reconciliation gate: balances / confidence / row-count}
+    GUARD -- pass --> T[raw.tabular_transactions source_type=pdf -> matching/categorization/reports]
+    GUARD -- fail --> BR
     ROUTE -- seed --> SEED[raw.pdf_seeds JSON + raw.pdf_alias view -> SQL/MCP]
 ```
 
