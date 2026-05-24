@@ -357,7 +357,20 @@ A report contributor writes one `@report`-decorated runner. The framework intros
 Worked example — the shipped `cashflow` runner (`src/moneybin/reports/definitions/cash_flow.py`):
 
 ```python
-@report(name="cashflow", view=REPORTS_CASH_FLOW)
+@report(
+    name="cashflow",
+    view=REPORTS_CASH_FLOW,
+    classes={  # declared output-column privacy contract (ADR-013)
+        "year_month": DataClass.TXN_DATE,
+        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+        "account_name": DataClass.USER_NOTE,
+        "category": DataClass.CATEGORY,
+        "inflow": DataClass.TXN_AMOUNT,
+        "outflow": DataClass.TXN_AMOUNT,
+        "net": DataClass.TXN_AMOUNT,
+        "txn_count": DataClass.AGGREGATE,
+    },
+)
 def cash_flow(
     db: Database,
     *,
@@ -399,7 +412,9 @@ From the `ReportSpec`, the framework generates:
 - **MCP tool** — `reports_cashflow(from_month: str | None = None, to_month: str | None = None, by: str = "account-and-category") -> ResponseEnvelope` (`src/moneybin/reports/_framework/mcp_register.py`). The tool name is `reports_<name>`.
 - **CLI command** — `moneybin reports cashflow [--from-month ...] [--to-month ...] [--by ...]` (`src/moneybin/reports/_framework/cli_register.py`). The command name is `<name>` with underscores rendered as hyphens.
 
-At call time the framework executes the runner's `ReportQuery`, classifies each output column via **SQL lineage on the view body** (a per-view derived `column → DataClass` map, cached by view + schema version in `src/moneybin/reports/_framework/classify.py`), masks CRITICAL columns through the shared `redact_records` path — the **same redaction bottleneck `sql_query` uses**, with no new redaction path and no change to the `CLASSIFICATION` registry/snapshot — and builds the standard response envelope (`src/moneybin/reports/_framework/execute.py`). Both surfaces build identical envelopes via the shared `ReportResult`.
+At call time the framework executes the runner's `ReportQuery`, classifies each output column from the report's **declared `classes` map** (`src/moneybin/reports/_framework/classify.py`; an undeclared column fails closed), masks CRITICAL columns through the shared `redact_records` path — the **same redaction bottleneck `sql_query` uses** — and builds the standard response envelope (`src/moneybin/reports/_framework/execute.py`). Both surfaces build identical envelopes via the shared `ReportResult`.
+
+Report column classification is **declared, not lineage-derived** ([ADR-013](../decisions/013-report-classification-declared.md)). SQLMesh deploys each report view as a `SELECT * FROM <internal physical table>` pointer, so lineage on the deployed view body classifies the pointer (not the logic) and would leak; and provenance ≠ sensitivity for derived columns (a z-score of an amount is `AGGREGATE`, not `TXN_AMOUNT`). Reports are a fixed, first-party surface known at design time, so each declares its `column → DataClass` map on `@report` — on the same footing as the `CLASSIFICATION` registry that declares `core`/`app` base truth. A scenario test (`tests/scenarios/test_reports_classification.py`) asserts the declared map covers the real built view's columns and that `account_id` stays CRITICAL. (`sql_query` keeps using lineage — its correct home: an arbitrary agent query reading `core`/`app` directly.)
 
 The six in-tree view-backed reports — `cashflow`, `spending`, `recurring`, `merchants`, `large_transactions`, `balance_drift` — ship through this framework as `@report` runners in `src/moneybin/reports/definitions/`. They are wired via an explicit `ALL_REPORTS` list in `src/moneybin/reports/definitions/__init__.py`; packages contribute reports through the same `@report` decorator and the `discover_reports` scanner. `reports_networth` / `reports_networth_history` stay hand-written (`NetworthService`-backed, not single-view reads) — a documented exception, not part of `ALL_REPORTS`. `reports_budget` was removed (it synthesized from `BudgetService` rather than a `reports.*` view; it returns through the framework once M3C ships a `reports.budget` view).
 
@@ -581,7 +596,7 @@ Same tier names; different evidence by extension type. Each row in the tables be
 
 | Tier | Requirement |
 |---|---|
-| **Bronze** | View compiles; `@report` runner introspects cleanly (docstring summary + at least one `Examples:` entry; first param `db`, rest keyword-only); auto-generated tool registers |
+| **Bronze** | View compiles; `@report` runner introspects cleanly (docstring summary + at least one `Examples:` entry; first param `db`, rest keyword-only); auto-generated tool registers; **declares a complete `classes` column→DataClass map** covering every column the view exposes (the privacy contract — [ADR-013](../decisions/013-report-classification-declared.md); an undeclared column fails closed, and the real-views classification test enforces completeness) |
 | **Silver** | Fixture-based tests verifying view shape; example queries in the runner's `Examples:` section; runner docstring `Args:` describes every parameter's semantics and the summary states the question(s) the report answers (2-3 sample invocations) |
 | **Gold** | Signed-publisher tied; performance benchmark documented (e.g., "<2s against 100k transactions"); `docs/guides/reports/<name>.md` user guide covers when-to-use, parameter combinations, sample output, MCP/CLI usage examples |
 | **Platinum** | Regression fixtures spanning at least one schema version; explicit schema-drift handling; documentation extended with cross-references to related reports, anti-patterns, composition examples, forward-compatible with future UI / MCP App component slot |
@@ -739,7 +754,7 @@ Items required to make the contracts in this spec describable cleanly. These lan
 | Build entry-points-based package discovery + registration | Framework scans `moneybin.packages` entry points; loads each manifest; calls `register()` | ~2-3 days |
 | Build prefix-discipline validator | Registration-time check that SQL writes match declared prefix | ~1-2 days |
 | Build Quality Scale tier validator | Mechanical checks for each tier's evidence (scenario tests, regression fixtures, etc.) | ~3-4 days |
-| Auto-generate registration trinity from `@report` runners | Signature + Google-docstring introspection → `ReportSpec`; dynamic FastMCP/Typer registration; per-view lineage classification | ~3-5 days |
+| Auto-generate registration trinity from `@report` runners | Signature + Google-docstring introspection → `ReportSpec`; dynamic FastMCP/Typer registration; declared per-report column classification (ADR-013) | ~3-5 days |
 | Build scaffolder templates for all three types | Jinja templates encoding Platinum-quality scaffolds | ~2-3 days |
 | Build `moneybin extension validate` CLI + MCP tool | Wraps the registration validator as a callable command | ~1-2 days |
 | Build four Claude Code skills | Skills invoking the scaffolder and validator | ~3-4 days |

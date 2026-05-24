@@ -63,7 +63,7 @@ class ReportSpec:
     ``classes`` is the report's **declared** column→DataClass map — the privacy
     contract. It is declared, not derived: SQLMesh deploys each report view as a
     ``SELECT * FROM <internal physical table>`` pointer, so lineage on the view
-    body can't classify it (see ADR-011). ``redaction`` masks output columns by
+    body can't classify it (see ADR-013). ``redaction`` masks output columns by
     this map; any column absent from it fails closed (see ``classify``).
     """
 
@@ -108,7 +108,7 @@ def report(
             privacy contract. Must cover every column the view exposes; an
             undeclared column fails closed at redaction time. Declared (not
             lineage-derived) because the deployed SQLMesh view is a
-            ``SELECT *`` pointer lineage can't classify (ADR-011).
+            ``SELECT *`` pointer lineage can't classify (ADR-013).
         domain: Optional MCP namespace tag.
     """
     # Imported lazily to avoid a contract<->introspect import cycle.

@@ -1,4 +1,4 @@
-"""Tests for declared-map column classification (ADR-011: declared, not derived)."""
+"""Tests for declared-map column classification (ADR-013: declared, not derived)."""
 
 from __future__ import annotations
 

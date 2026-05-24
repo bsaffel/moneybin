@@ -15,7 +15,7 @@ from moneybin.tables import REPORTS_CASH_FLOW
     classes={
         "year_month": DataClass.TXN_DATE,
         "account_id": DataClass.ACCOUNT_IDENTIFIER,
-        "account_name": DataClass.INSTITUTION,
+        "account_name": DataClass.USER_NOTE,
         "category": DataClass.CATEGORY,
         "inflow": DataClass.TXN_AMOUNT,
         "outflow": DataClass.TXN_AMOUNT,

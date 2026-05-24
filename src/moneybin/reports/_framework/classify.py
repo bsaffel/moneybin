@@ -5,7 +5,7 @@ contract); this module maps a query's actual result columns onto it. We declare
 rather than derive because SQLMesh deploys each ``reports.*`` view as a
 ``SELECT * FROM <internal physical table>`` pointer — lineage on the view body
 classifies the pointer, not the logic, and falls through to passthrough (a PII
-leak). See ADR-011. Declared classes reuse the one redaction path
+leak). See ADR-013. Declared classes reuse the one redaction path
 (``redact_records``) the SQL surface already uses.
 """
 

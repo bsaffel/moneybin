@@ -78,7 +78,7 @@ def run_report(
     truncated = len(rows) > max_rows
     records = [dict(zip(columns, r, strict=False)) for r in rows[:max_rows]]
 
-    # Classify output columns from the report's DECLARED classes map (ADR-011),
+    # Classify output columns from the report's DECLARED classes map (ADR-013),
     # then mask via the shared redaction path. An undeclared column fails closed.
     col_classes = classify_columns(spec, columns)
     redacted = redact_records(records, col_classes, consent=None)

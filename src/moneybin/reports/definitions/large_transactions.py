@@ -15,7 +15,7 @@ from moneybin.tables import REPORTS_LARGE_TRANSACTIONS
     classes={
         "transaction_id": DataClass.RECORD_ID,
         "account_id": DataClass.ACCOUNT_IDENTIFIER,
-        "account_name": DataClass.INSTITUTION,
+        "account_name": DataClass.USER_NOTE,
         "txn_date": DataClass.TXN_DATE,
         "amount": DataClass.TXN_AMOUNT,
         "description": DataClass.DESCRIPTION,

@@ -238,6 +238,6 @@ def test_build_spec_accepts_custom_table_ref() -> None:
 
 
 def test_build_spec_rejects_empty_classes() -> None:
-    # Every report must declare its column privacy contract (ADR-011).
+    # Every report must declare its column privacy contract (ADR-013).
     with pytest.raises(ValueError, match="classes"):
         build_spec(_sample, name="sample", view=REPORTS_MERCHANT_ACTIVITY, classes={})

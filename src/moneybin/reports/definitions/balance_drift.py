@@ -15,7 +15,7 @@ from moneybin.tables import REPORTS_BALANCE_DRIFT
     view=REPORTS_BALANCE_DRIFT,
     classes={
         "account_id": DataClass.ACCOUNT_IDENTIFIER,
-        "account_name": DataClass.INSTITUTION,
+        "account_name": DataClass.USER_NOTE,
         "assertion_date": DataClass.TXN_DATE,
         "asserted_balance": DataClass.BALANCE,
         "computed_balance": DataClass.BALANCE,

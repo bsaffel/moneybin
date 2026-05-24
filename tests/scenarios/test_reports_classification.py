@@ -1,6 +1,6 @@
 """Report classification contract, against the REAL SQLMesh-built views.
 
-ADR-011: a report declares its output-column→DataClass map on ``@report`` and
+ADR-013: a report declares its output-column→DataClass map on ``@report`` and
 redaction masks by that map. SQLMesh deploys each ``reports.*`` view as a
 ``SELECT * FROM <internal physical table>`` pointer, so lineage on the view body
 can't classify it — declared classes are the contract. This scenario builds the
