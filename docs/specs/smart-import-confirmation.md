@@ -163,8 +163,8 @@ Tier = Literal["high", "medium", "low"]
 class Confidence:
     score: float                  # normalized [0, 1]
     tier: Tier                    # derived via shared bands
-    flagged: list[str]            # weakly-matched fields (eyeball these)
-    missing_required: list[str]   # required dest fields not resolved
+    flagged: tuple[str, ...]          # weakly-matched fields (eyeball these)
+    missing_required: tuple[str, ...] # required dest fields not resolved
 
 def tier_for(score: float, *, t_high: float, t_med: float) -> Tier: ...
 ```
@@ -187,7 +187,6 @@ def resolve_or_confirm(
     *,
     confidence: Confidence,
     proposed: ProposedMapping | BridgePayload,
-    is_known_layout: bool,         # channel does its own signature/fingerprint/connection lookup
     signal: Accept | Override | None,
     self_accept_enabled: bool,     # calibration gate (Req 12)
     actor_kind: Literal["human", "agent"],
@@ -199,7 +198,7 @@ flowchart TD
     A[import entry: files / connect / pdf dispatch] --> B{is_known_layout?}
     B -- yes --> G{replay / validation guard}
     G -- pass --> LOAD[load: tabular_transactions or seed]
-    G -- fail --> CR
+    G -- "validation failed" --> RC
     B -- no --> RC[resolve_or_confirm]
     RC --> D{signal present?}
     D -- "accept / mapping" --> V{validate + tier allows?}
@@ -213,11 +212,20 @@ flowchart TD
     LOAD --> REC[actions: undo / re-map]
 ```
 
-- `is_known_layout` is computed per channel (tabular: header-signature match against
-  saved formats; PDF: `app.pdf_formats` fingerprint; gsheet: an existing connection),
-  keeping the primitive channel-agnostic.
+- The known-layout lookup is the **channel's** job (tabular: header-signature match
+  against saved formats; PDF: `app.pdf_formats` fingerprint; gsheet: an existing
+  connection). A recognized, valid layout loads silently *without* calling
+  `resolve_or_confirm`; the primitive is invoked only when a confirm decision is needed
+  — an unknown layout, or a known layout whose validation guard failed (Req 9). It
+  therefore takes no `is_known_layout` flag.
+- The validation-failure re-entry differs by channel in the `ConfirmationRequired` it
+  produces: PDF re-escalates to the bridge (per `smart-import-pdf.md`); tabular surfaces
+  the proposed mapping + the failing signal. Same diagram node, channel-specific payload.
 - `Resolved` carries the final mapping + saved-format reference; `ConfirmationRequired`
   carries the proposed mapping/bridge payload, `Confidence`, and samples.
+- `ProposedMapping`, `BridgePayload`, `Accept`, `Override`, `Resolved`, and
+  `ConfirmationRequired` are defined at implementation; their shapes follow the payloads
+  described above (this is a design spec, not the type module).
 
 ## Surface Design
 
@@ -307,14 +315,22 @@ extractor, and tabular/gsheet adopt them in this spec's work.
 - `src/moneybin/metrics/registry.py` — the metrics above.
 
 ### Cross-spec amendments
-- **`smart-import-pdf.md` (#221)** — replace its self-contained `import_confirm` /
-  confidence prose with a reference to this spec as the contract owner; its bridge
-  payload remains PDF-specific.
+
+**Done in this PR:**
+- **`smart-import-pdf.md` (#221)** — points at this spec as the owner of the confidence
+  contract + `import_confirm` signature + `resolve_or_confirm` primitive (Companions +
+  Surface Design + MCP Interface), and corrects its prior "specified in
+  `smart-import-tabular.md`" attribution. Its bridge payload remains PDF-specific.
+
+**Deferred to the implementation PR:**
 - **`smart-import-overview.md`** — mark the deferred `import_confirm` / "no silent
   failure" items as owned here.
 - **`smart-import-tabular.md`** — note the present-for-confirmation half is realized
   here; `medium` now gates.
-- **`connect-gsheet.md`** — note the confidence policy is aligned to the shared bands.
+- **`connect-gsheet.md`** — note (a) the confidence policy is aligned to the shared
+  bands, and (b) `--column-mapping` changes from whole-map replacement to
+  **partial-merge** (fields not supplied fall back to the detected mapping) — a behavior
+  change to a shipped (`implemented`) surface, so it also needs a CHANGELOG `Changed` entry.
 - **`moneybin-mcp.md` + `moneybin-cli.md` + `moneybin-capabilities.md`** — register
   `import_confirm` and the `import_files` confirmation-required state (per the
   surface-change-discipline rule).
