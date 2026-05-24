@@ -75,7 +75,7 @@ The goal is that someone reading the docs gets an accurate picture of what Money
 
 ## When a Milestone Closes
 
-When all sub-milestones in a tier close (e.g., M2A + M2B + M2C all ship → M2 closes; M3A through M3E all close → launch):
+When all sub-milestones in a tier close (e.g., M2A + M2B + M2C + M2D + M2E all ship → M2 closes; M3A through M3E all close → launch):
 
 1. Move the `Unreleased` block in `CHANGELOG.md` into a new dated section: `## [M2A] — YYYY-MM-DD`. Reset `Unreleased` to a placeholder like `(no changes since M2A)`.
 2. Update `docs/roadmap.md` milestone status row.
