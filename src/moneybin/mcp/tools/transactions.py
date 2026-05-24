@@ -197,8 +197,15 @@ def transactions_matches_pending(
         svc = MatchingService(db)
         rows = svc.get_pending(match_type=match_type, limit=limit)
         total = svc.count_pending(match_type=match_type)
+        # Count groups over the FULL pending queue (not just this page) so the
+        # agent sees the true N-way cluster total even when has_more is true.
+        # Pass the caller's filter through so the count matches the returned rows
+        # (a transfer-scoped call reports 0 dedup groups, not the whole queue).
+        n_dedup_groups = svc.count_pending_dedup_groups(match_type=match_type)
+
     return build_envelope(
         data=MatchesPendingPayload(
+            n_dedup_groups=n_dedup_groups,
             matches=[
                 MatchPendingRow(
                     match_id=r["match_id"],
@@ -210,13 +217,16 @@ def transactions_matches_pending(
                     source_type_b=r["source_type_b"],
                     source_transaction_id_b=r["source_transaction_id_b"],
                     match_status=r["match_status"],
+                    component_key=r["component_key"],
                 )
                 for r in rows
-            ]
+            ],
         ),
         total_count=total,
         actions=[
             "Use transactions_matches_set to accept or reject one match by match_id",
+            "Group rows by component_key to review all edges of one N-way dedup "
+            "cluster together",
             "For full pair context (both transactions side by side), use the CLI "
             "`moneybin transactions review --type matches` queue",
         ],

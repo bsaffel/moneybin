@@ -32,6 +32,7 @@ from .commands import (
     profile,
     refresh,
     reports,
+    sql,
     stats,
     sync,
     synthetic,
@@ -167,6 +168,11 @@ app.add_typer(
     help="Generate and manage synthetic financial data for testing",
 )
 app.command(name="stats", help="Show lifetime metric aggregates")(stats.stats_command)
+app.add_typer(
+    sql.app,
+    name="sql",
+    help="Privacy-safe ad-hoc SQL (lineage classification + CRITICAL masking)",
+)
 app.add_typer(export_app, name="export", help="Export data to external formats")
 app.add_typer(
     mcp.app,

@@ -628,9 +628,9 @@ List match proposals awaiting a decision.
 
 - **Sensitivity:** `low` — returns pair IDs and confidence scores; no transaction amounts, descriptions, or PII.
 - **Unique parameters:** `match_type: str?` (`dedup` or `transfer`; omit for all pending), `limit: int?` (default 50, applied as SQL `LIMIT`).
-- **Behavior:** Returns array of `{match_id, match_type, match_tier, confidence_score, source_type_a, source_transaction_id_a, source_type_b, source_transaction_id_b, match_status}` for proposals whose status is `pending`. No amounts/descriptions — call `transactions_get` on a source id for those. Use `transactions_matches_set` to accept or reject individual proposals.
+- **Behavior:** Returns array of `{match_id, match_type, match_tier, confidence_score, source_type_a, source_transaction_id_a, source_type_b, source_transaction_id_b, match_status, component_key}` for proposals whose status is `pending`. No amounts/descriptions — call `transactions_get` on a source id for those. Use `transactions_matches_set` to accept or reject individual proposals. `component_key` groups all edges that belong to the same N-way dedup cluster (MIN packed member key per component, matching `match_group_id` semantics in the prep fold); transfer rows use their own `match_id` as the key. The `actions[]` summary hint reports `N pending dedup edges across M groups`.
 - **Service:** `MatchingService.get_pending()`
-- **CLI:** `moneybin transactions review --type matches` (orientation + interactive queue); `moneybin transactions review --type matches --status` (counts only)
+- **CLI:** `moneybin transactions matches pending` (grouped pending display); `moneybin transactions review --type matches` (orientation + interactive queue); `moneybin transactions review --type matches --status` (counts only)
 - **read_only:** true
 
 #### `transactions_matches_set`
@@ -1194,12 +1194,12 @@ Run the post-load refresh pipeline: cross-source matching, SQLMesh apply, determ
 
 ### `sql_query`
 
-Execute an arbitrary read-only SQL query against DuckDB.
+Execute a read-only SQL query against the `core` and `app` schemas.
 
-- **Sensitivity:** `medium` — can return any row-level data from core tables.
-- **Unique parameters:** `sql: str` (required).
-- **Behavior:** Validates query is read-only (SELECT, WITH, DESCRIBE, SHOW, PRAGMA, EXPLAIN). Blocks file-access functions (`read_csv`, `read_parquet`, etc.) and URL literals. Results capped at `MAX_ROWS` and `MAX_CHARS`. Returns results in the standard response envelope with column names as field keys. Degraded response rejects the query with a consent instruction — arbitrary SQL can't be meaningfully degraded to aggregates.
-- **CLI:** `moneybin db query "SELECT ..." [-o text|json|csv|markdown|box]`
+- **Sensitivity:** per-call — derived from the query's output columns via sqlglot lineage. CRITICAL if any output column is `ACCOUNT_IDENTIFIER`, `INSTITUTION_ACCOUNT_NUMBER`, or `ROUTING_NUMBER`; otherwise the max tier across classified output columns. Metadata statements are `low`.
+- **Unique parameters:** `query: str` (required).
+- **Behavior:** Validates query is read-only (SELECT, WITH, DESCRIBE, SHOW, PRAGMA, EXPLAIN). Blocks file-access functions (`read_csv`, `read_parquet`, etc.) and URL literals. **Data queries may reference only the `core` and `app` schemas** — the schemas the privacy registry classifies, so masking is sound; a query touching any other schema (`raw`/`prep`/`reports`/`meta`) is refused with `sql_schema_not_allowed` (use the `reports_*` tools for curated views). `DESCRIBE`/`SHOW`/`PRAGMA`/`EXPLAIN` return schema/plan text, not row data, and execute directly as low-sensitivity metadata (no lineage). Each data-query output column is resolved to its `DataClass` via sqlglot lineage against the live `core.*`/`app.*` schema snapshot — including across all branches of a `UNION`; CRITICAL-tier columns (account and routing numbers) are masked using the same rules as the typed tools (`****<last4>` for account numbers, `*****` for routing numbers). HIGH/MEDIUM/LOW columns (amounts, descriptions, dates) pass through in the clear — same behavior as `transactions_get` and other typed tools. Results are capped at `MAX_ROWS`; when truncated, `summary.has_more` is true and `summary.total_count` exceeds `returned_count`. Returns the standard response envelope with per-query `summary.sensitivity`; `summary.classes_returned` lists the resolved `DataClass` values for audit. For the privacy-safe agent path, prefer this tool over direct `moneybin db query` CLI access (which has no privacy middleware).
+- **CLI:** `moneybin db query "SELECT ..." [-o text|json|csv|markdown|box]` — direct DB access, no privacy middleware; see operator-bypass banner in that command's help.
 
 ### `sql_schema`
 
@@ -1207,7 +1207,7 @@ Return the curated database schema for ad-hoc SQL composition. Equivalent to rea
 
 - **Sensitivity:** `low` — schema metadata, no row data.
 - **Unique parameters:** `table: str | None`. `None` (default) returns the compact catalog (table names + purposes + column counts). A full name like `'core.fct_transactions'` returns columns, comments, and example queries for that one table. `'*'` returns the full ~50KB schema document.
-- **Behavior:** Unknown `table` returns a `UserError(code='unknown_table')` with the available-tables list as a hint.
+- **Behavior:** Unknown `table` returns a `UserError(code='sql_unknown_table')` with the available-tables list as a hint.
 - **CLI:** No direct CLI parity — the MCP tool wraps the same data the `moneybin://schema` resource exposes. CLI users get the schema via `moneybin db query "SELECT ..."` (or `\d`-style introspection via DuckDB's `information_schema`). A future `moneybin db schema` subcommand could mirror the MCP shape; tracked as a follow-up.
 
 ---

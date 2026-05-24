@@ -206,6 +206,9 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |         --type categorize review is not yet wired (stub); categorize items use
 |   |         transactions categorize commit instead.
 |   +-- matches                    -- Transfer detection + dedup workflow (no review — see transactions review)
+|   |   +-- list [--type dedup|transfer] [--limit N] [-o json|text]
+|   |   |         Pending proposals grouped by component_key (N-way dedup clusters appear
+|   |   |         as one block each). --output json returns rows incl. component_key.
 |   |   +-- run [--skip-transform] [--auto-accept-transfers]
 |   |   +-- set <match_id> --status accepted|rejected  -- Accept or reject one pending match
 |   |   +-- history [--type dedup|transfer] [--limit N]
@@ -305,11 +308,18 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 +-- stats                          -- Lifetime metric aggregates
 |       [--since <duration>] [--metric <family>]
 |
++-- sql                            -- Privacy-safe ad-hoc SQL (CLI↔MCP parity: sql_query)
+|   +-- query <sql>                -- Read-only SQL over core/app; CRITICAL columns
+|         [--output text|json]        masked via sqlglot lineage (****<last4>). The
+|         [--json-fields a,b]         privacy-safe counterpart to `db query`.
+|
 +-- db
 |   +-- init [--passphrase]        -- Create encrypted DB (power user)
-|   +-- shell                      -- Interactive DuckDB shell
-|   +-- ui                         -- DuckDB web UI
-|   +-- query <sql> [--output text|json|csv|markdown|box]
+|   +-- shell                      -- Interactive DuckDB shell (raw; no masking)
+|   +-- ui                         -- DuckDB web UI (raw; no masking)
+|   +-- query <sql> [--output text|json|csv|markdown|box]  -- Raw direct-DB SQL,
+|   |                                 NO masking (operator); use `sql query` for
+|   |                                 the privacy-safe path
 |   +-- info                       -- Show DB path, size, schema summary
 |   +-- backup                     -- Snapshot encrypted database to a backup file
 |   +-- restore                    -- Restore encrypted database from a backup file
@@ -383,13 +393,14 @@ Data out:       export
 Pipeline:       refresh (post-load orchestration: match -> transform -> categorize)
 Mutation:       budget (target management; vs-actual report lives under reports/budget)
 Operational:    logs, stats
+Ad-hoc query:   sql (privacy-safe SQL; raw operator access is db query/shell/ui)
 Infrastructure: profile, db, mcp, transform
 Extensibility:  extension, packages (planned, extension-contracts.md); plus dynamic per-package subgroups via entry-points
 ```
 
 ### Top-level command count
 
-In-tree groups (19): `profile`, `import`, `sync`, `accounts`, `reports`, `transactions`, `categories`, `merchants`, `privacy`, `budget`, `system`, `refresh`, `transform`, `synthetic`, `stats`, `export`, `mcp`, `db`, `logs`.
+In-tree groups (20): `profile`, `import`, `sync`, `accounts`, `reports`, `transactions`, `categories`, `merchants`, `privacy`, `budget`, `system`, `refresh`, `transform`, `synthetic`, `stats`, `sql`, `export`, `mcp`, `db`, `logs`.
 
 Planned operator groups (2, pending [`extension-contracts.md`](extension-contracts.md)): `extension`, `packages`.
 
@@ -423,6 +434,7 @@ The same hierarchy expresses across CLI, MCP, and (future) HTTP. Each protocol e
 | Assert a balance | `accounts balance assert ...` | `accounts_balance_assert` | `POST /accounts/{id}/balances` |
 | Balance history | `accounts balance history` | `accounts_balance_history` | `GET /accounts/{id}/balances/history` |
 | Net worth now | `reports networth` | `reports_networth` | `GET /reports/networth` |
+| Pending matches | `transactions matches pending` | `transactions_matches_pending` | `GET /transactions/matches/pending` |
 | Match history | `transactions matches history` | `transactions_matches_history` | `GET /transactions/matches` |
 | Undo a match | `transactions matches undo <id>` | `transactions_matches_undo` | `POST /transactions/matches/{id}/undo` |
 | Spending report | `reports spending` | `reports_spending` | `GET /reports/spending` |

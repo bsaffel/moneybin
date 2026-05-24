@@ -2,7 +2,7 @@
 """SQL namespace tools — direct read-only SQL queries.
 
 Tools:
-    - sql_query — Execute a read-only SQL query (medium sensitivity)
+    - sql_query — Execute a read-only SQL query with per-column privacy classification
     - sql_schema — Return the curated schema doc (low sensitivity)
 """
 
@@ -12,11 +12,13 @@ from typing import Any
 
 from fastmcp import FastMCP
 
+from moneybin import error_codes
 from moneybin.database import get_database
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.privacy import get_max_rows, validate_read_only_query
+from moneybin.mcp.privacy import get_max_rows, tier_to_sensitivity
+from moneybin.privacy.sql_query import execute_sql_query
 from moneybin.protocol.envelope import (
     ResponseEnvelope,
     build_envelope,
@@ -25,53 +27,45 @@ from moneybin.protocol.envelope import (
 from moneybin.services.schema_catalog import build_schema_doc
 
 
-@mcp_tool(
-    unclassified=True
-)  # DEPRECATED: unclassified=True — PR 4 wires sqlglot lineage
+@mcp_tool(dynamic_classification=True)
 def sql_query(query: str) -> ResponseEnvelope[Any]:
-    """Execute a read-only SQL query against the database.
+    """Execute a read-only SQL query against the core and app schemas.
 
-    Only SELECT, WITH, DESCRIBE, SHOW, PRAGMA, and EXPLAIN queries
-    are allowed. Write operations and file-access functions are blocked.
+    Only SELECT, WITH, DESCRIBE, SHOW, PRAGMA, and EXPLAIN queries are allowed.
+    Writes and file-access functions are blocked. Data queries may reference
+    only the ``core`` and ``app`` schemas (use the reports_* tools for curated
+    report views); other schemas are refused.
 
-    Use this for ad-hoc analysis not covered by other tools. Results
-    are limited to the configured maximum row count.
+    Amounts use the accounting convention: negative = expense, positive = income.
+    Currency is named in summary.display_currency.
 
-    For schema, columns, and example queries, read resource
-    `moneybin://schema` before composing non-trivial queries.
+    Privacy: each output column is resolved to its data class via SQL lineage
+    (sqlglot). CRITICAL columns (account/routing numbers) are ALWAYS masked
+    (****<last4>) — exactly as the typed account tools mask them — so raw SQL
+    is not a bypass around privacy enforcement. Other tiers (amounts, descriptions,
+    dates) are returned in the clear, matching the typed tools' current behavior.
 
-    Note: privacy redaction is not applied to ``sql_query`` results — the
-    payload shape is decided by the caller's query, so the static-type-driven
-    redaction the rest of the surface uses cannot kick in. Avoid selecting
-    CRITICAL-tier columns directly (``account_id``, ``routing_number``,
-    ``last_four``); prefer the dedicated tools that mask those values. PR 4
-    replaces this opt-out with sqlglot column-lineage redaction.
+    Results are capped; when truncated, summary.has_more is true and total_count
+    exceeds returned_count. For schema, columns, and example queries, read
+    resource `moneybin://schema` before composing non-trivial queries.
 
     Args:
         query: The SQL query to execute.
     """
-    error = validate_read_only_query(query)
-    if error:
-        return build_envelope(
-            data={"error": error},
-            sensitivity="low",
-        )
-
-    # Security: This tool intentionally executes user-provided SQL.
-    # Parameterized queries are not applicable here — the entire query
-    # is user input. Safety relies on validate_read_only_query() above,
-    # which blocks write operations, file-access functions, and URL schemes.
+    # execute_sql_query raises UserError (with an SQL_* code) on rejected,
+    # unparseable, out-of-scope, unknown-table, or failed queries; the
+    # @mcp_tool decorator converts that to a low-sensitivity error envelope.
     with get_database(read_only=True) as db:
-        result = db.execute(query)
-        columns = [desc[0] for desc in result.description]
-        rows = result.fetchmany(get_max_rows())
-    records = [dict(zip(columns, row, strict=False)) for row in rows]
-    return build_envelope(data=records, sensitivity="medium")
+        result = execute_sql_query(db, query, max_rows=get_max_rows())
+    return build_envelope(
+        data=result.records,
+        sensitivity=tier_to_sensitivity(result.tier).value,
+        total_count=result.total_count,
+        classes_returned=result.classes_returned,
+    )
 
 
-@mcp_tool(
-    unclassified=True
-)  # DEPRECATED: unclassified=True — PR 4 wires sqlglot lineage
+@mcp_tool(dynamic_classification=True)
 def sql_schema(table: str | None = None) -> ResponseEnvelope[Any]:
     """Return the curated database schema for ad-hoc SQL composition.
 
@@ -114,6 +108,7 @@ def sql_schema(table: str | None = None) -> ResponseEnvelope[Any]:
                 "beyond_the_interface": doc.get("beyond_the_interface"),
             },
             sensitivity="low",
+            classes_returned=["aggregate"],
             actions=[
                 "Pass table='<schema.name>' (e.g. 'core.fct_transactions') to "
                 "fetch columns, comments, and example queries for one table.",
@@ -122,7 +117,9 @@ def sql_schema(table: str | None = None) -> ResponseEnvelope[Any]:
         )
 
     if table == "*":
-        return build_envelope(data=doc, sensitivity="low")
+        return build_envelope(
+            data=doc, sensitivity="low", classes_returned=["aggregate"]
+        )
 
     matches = [t for t in tables if t["name"] == table]
     if not matches:
@@ -131,7 +128,7 @@ def sql_schema(table: str | None = None) -> ResponseEnvelope[Any]:
         return build_error_envelope(
             error=UserError(
                 f"Unknown table: {table}",
-                code="unknown_table",
+                code=error_codes.SQL_UNKNOWN_TABLE,
                 hint=f"Available tables: {known}",
                 details={"available_tables": available},
             ),
@@ -146,6 +143,7 @@ def sql_schema(table: str | None = None) -> ResponseEnvelope[Any]:
             "tables": matches,
         },
         sensitivity="low",
+        classes_returned=["aggregate"],
     )
 
 
@@ -157,6 +155,11 @@ def register_sql_tools(mcp: FastMCP) -> None:
         "sql_query",
         "Execute a read-only SQL query against the database. "
         "Supports SELECT, WITH, DESCRIBE, SHOW, PRAGMA, EXPLAIN. "
+        "Each output column is classified via SQL lineage; CRITICAL columns "
+        "(account/routing numbers) are ALWAYS masked (****<last4>), exactly like "
+        "the typed tools — raw SQL is not a privacy bypass. "
+        "Amounts use the accounting convention (negative=expense, positive=income); "
+        "currency is in summary.display_currency. "
         "Call sql_schema (or read resource moneybin://schema) for tables, "
         "columns, and example queries.",
     )

@@ -97,13 +97,14 @@ not-yet-built.
 | 34| Revoke all active consent grants                                 | — *(bulk revoke; use `privacy_consent_revoke` per category)* | `privacy revoke-all` *(`--yes`)* | —             | live (CLI-only)       |
 | 35| View current consent state and configured backend                | `privacy_status`                    | `privacy status` *(`--output json`)*               | —          | live                  |
 | 36| Query recent privacy-log events (consent + tool calls)           | `privacy_log` *(`last?`, `actor?`)* | `privacy log` *(`--last`, `--actor`, `--output json`)* | —       | live                  |
-| 37| List pending transaction match proposals awaiting a decision     | `transactions_matches_pending` *(`match_type?`, `limit?`)* | `transactions review --type matches --status` *(counts)* / `transactions review --type matches` *(interactive queue)* | — | live |
+| 37| List pending transaction match proposals awaiting a decision     | `transactions_matches_pending` *(`match_type?`, `limit?`)* — each row includes `component_key` for N-way cluster grouping | `transactions matches pending` *(grouped by component_key)* / `transactions review --type matches --status` *(counts)* / `transactions review --type matches` *(interactive queue)* | — | live |
 | 38| Accept or reject one pending match proposal                      | `transactions_matches_set` *(`match_id`, `status: accepted\|rejected`)* | `transactions matches set <match_id> --status accepted\|rejected` | — | live |
 | 39| Run the matching engine and propose new pending decisions         | `transactions_matches_run` *(operator alternative to `refresh_run(steps=["match"])`)* | `transactions matches run` | — | live |
 | 40| View recent match decisions (accepted and rejected)              | `transactions_matches_history` *(`limit?`, `match_type?`)* | `transactions matches history` *(`--type`, `--limit`)* | — | live |
-| 41| Reverse one audited operation as a unit (undo)                   | `system_audit_undo` *(`operation_id`)* | `system audit undo <operation_id>`                 | —          | live                  |
-| 42| List recent audited operations with undoability                  | `system_audit_history` *(`domain?`, `since?`, `actor?`, `limit?`, `include_undone?`)* | `system audit history` *(`--domain`, `--since`, `--actor`, `--limit`, `--include-undone`)* | — | live |
-| 43| Inspect full before/after for one operation before undoing        | `system_audit_get` *(`operation_id`)* | `system audit get <operation_id>`                  | —          | live                  |
+| 41| Execute a read-only SQL query over core/app with CRITICAL columns masked via lineage | `sql_query` *(`query`)* | `sql query <sql>` *(`--output text\|json`)* | — | live |
+| 42| Reverse one audited operation as a unit (undo)                   | `system_audit_undo` *(`operation_id`)* | `system audit undo <operation_id>`                 | —          | live                  |
+| 43| List recent audited operations with undoability                  | `system_audit_history` *(`domain?`, `since?`, `actor?`, `limit?`, `include_undone?`)* | `system audit history` *(`--domain`, `--since`, `--actor`, `--limit`, `--include-undone`)* | — | live |
+| 44| Inspect full before/after for one operation before undoing        | `system_audit_get` *(`operation_id`)* | `system audit get <operation_id>`                  | —          | live                  |
 
 *(Bootstrap rows only; full table populates incrementally as
 follow-up work closes the parity backlog. A prior row covering
@@ -123,7 +124,12 @@ equivalent — use `privacy_consent_revoke` per category from MCP.
 Rows 37–40 added 2026-05-22 with the matches accept/reject PR: four
 `transactions_matches_*` MCP tools registered; `transactions matches set`
 CLI command and non-interactive `transactions review --type matches
---confirm/--reject/--confirm-all` flags wired.)*
+--confirm/--reject/--confirm-all` flags wired.
+Row 41 added 2026-05-23 with the SQL lineage PR: `sql_query` (MCP) and
+`moneybin sql query` (CLI) both mask CRITICAL columns via sqlglot lineage
+through the shared `execute_sql_query` primitive — full MCP↔CLI parity.
+`moneybin db query`/`db shell`/`db ui` remain raw operator access (cat 2 —
+no privacy middleware) and emit a banner pointing at `moneybin sql query`.)*
 
 ## Exemption categories
 

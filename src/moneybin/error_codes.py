@@ -113,3 +113,13 @@ SYNC_ERROR = "sync_error"
 # Like sync_, this is a taxonomy-completeness prefix, not a recovery code.
 
 GSHEET_ERROR = "gsheet_error"
+
+
+# ---------------------------------------------------------------------------
+# SQL — ad-hoc read-only query surface (sql_query / sql_schema)
+# ---------------------------------------------------------------------------
+
+SQL_INVALID_QUERY = "sql_invalid_query"
+SQL_QUERY_ERROR = "sql_query_error"
+SQL_SCHEMA_NOT_ALLOWED = "sql_schema_not_allowed"
+SQL_UNKNOWN_TABLE = "sql_unknown_table"

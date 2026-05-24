@@ -1,7 +1,7 @@
 # Feature: Privacy Data Classification
 
 ## Status
-implemented (PR 2 — middleware)
+implemented (PR 2 — middleware; PR 3 — consent ledger; PR 4 — SQL lineage)
 
 ## Goal
 Establish a typed, source-of-truth registry that maps every column in
@@ -317,14 +317,79 @@ verified-local detection and CRITICAL-unmask path remain deferred.
 
 ## Out of Scope
 - `Annotated[..., DataClass.X]` propagation on service return types (PR 2).
-- Redaction engine (`redact_typed`, `redact_polars_frame`) (PR 2).
+- Redaction engine (`redact_typed`, `redact_records`) (PR 2 / PR 4).
 - `privacy.log` JSONL writer (PR 2).
-- sqlglot lineage on `sql_query` (PR 4).
+- sqlglot lineage on `sql_query` (PR 4 — shipped; see "SQL surface lineage" section below).
 - Presidio integration for unstructured-text scrubbing (deferred).
 - MCP elicitation fallback when consent is missing (deferred).
 - Per-tool consent granularity (schema supports, UX deferred).
 - `ConsentSet` enrichment on the redaction path (deferred — enforcement gate).
 - Per-class HIGH/MEDIUM transforms beyond always-on CRITICAL masking (deferred).
+
+## SQL surface lineage (PR 4)
+
+The `sql_query` MCP tool accepts arbitrary read-only SQL, so its output columns have no static type annotations — the shape is determined by the caller's query. PR 4 closes the raw-SQL masking bypass by resolving each output column to a `DataClass` via sqlglot lineage, then applying the same `_TRANSFORMS` table that `redact_typed` uses.
+
+### Approach
+
+`src/moneybin/privacy/sql_lineage.py` implements the resolution pipeline:
+
+1. **Parse** — `parse_cached(sql)` normalizes whitespace and parses the query under the DuckDB dialect via sqlglot. The LRU-cached parsed expression is reused for repeated identical queries.
+2. **Schema snapshot** — `get_current_schema_snapshot(db)` queries `information_schema.columns` for all `core.*` and `app.*` columns and wraps them in a sqlglot `MappingSchema`. The snapshot is cached keyed on `MAX(version)` from `app.schema_migrations` — it rebuilds only after a migration.
+3. **Star expansion and qualification** — `expand_star(tree, snapshot)` calls sqlglot's `qualify()` optimizer to resolve `SELECT *` / `t.*` into explicit column lists and annotate every `Column` node with its source table and schema.
+4. **Output-class resolution** — `resolve_output_classes(tree, snapshot)` iterates the `SELECT` projection and maps each output column to a `DataClass`:
+
+| Projection form | Resolved class |
+|---|---|
+| Direct column or alias | Source column's registered class |
+| `COUNT(*)`, `COUNT(col)`, `COUNT(DISTINCT col)` | `AGGREGATE` (LOW) — counts destroy individual values |
+| `SUM`, `AVG`, `STDDEV`, `VARIANCE` over `col` | Source column's class — numerically derived from individuals |
+| `MIN`, `MAX`, `FIRST`, `LAST`, `ANY_VALUE` over `col` | Source column's class — surfaces an individual value |
+| Multi-column expression (`CONCAT`, `+`, `\|\|`) | `max(tier)` over all referenced columns; highest-tier class |
+| Literal-only (`'hi'`, `1`) | `AGGREGATE` (LOW) |
+| Unresolvable | Conservative fallback (see below) |
+
+5. **Query tier** — `derive_query_tier(output_classes)` takes the max `Tier` across all output columns.
+
+### Conservative fallback
+
+When `resolve_output_classes` cannot resolve a projection (unresolvable alias, correlated subquery residual, or column absent from the snapshot), it falls back to the **max tier** over all input columns reachable via `collect_input_columns`. If no input column resolves, the fallback is `AGGREGATE` (LOW). This means the resolver over-redacts rather than leaks — an unresolvable query touching CRITICAL input columns is treated as CRITICAL output.
+
+A `WARNING` log line records every fallback so operators can identify queries the resolver doesn't fully handle.
+
+### Schema snapshot caching
+
+The snapshot cache key is the migration version integer from `SELECT MAX(version) FROM app.schema_migrations`. The cache is an LRU with capacity 4 (covers profiles with distinct schema generations in the same process). After a migration the version increments, the next call rebuilds the snapshot from `information_schema.columns`, and the new snapshot replaces the prior one for that version.
+
+### `redact_records` — shared masking bottleneck
+
+`src/moneybin/privacy/redaction.py` exports `redact_records(records, output_classes, consent=None)` as the dynamic-SQL counterpart to `redact_typed`. Both share `_TRANSFORMS`:
+
+- `redact_typed` walks `Annotated[T, DataClass.X]` field metadata on typed payloads.
+- `redact_records` accepts an explicit `{column_name: DataClass}` map from the lineage resolver and applies `_TRANSFORMS` to each row's values by column name.
+
+Because both functions share the same `_TRANSFORMS` table, a change to how CRITICAL columns are masked (e.g., adding a HIGH/MEDIUM transform) automatically applies to both the typed surface and `sql_query`.
+
+### Scope note (honest)
+
+**This PR is redaction-only.** Specifically:
+
+- CRITICAL-tier columns (`ACCOUNT_IDENTIFIER`, `INSTITUTION_ACCOUNT_NUMBER`, `ROUTING_NUMBER`) are **always masked** in `sql_query` results, exactly as the typed tools mask them (account number → `****<last4>`, routing number → `*****`).
+- HIGH/MEDIUM/LOW columns (amounts, descriptions, dates, categories) **pass through in the clear**, matching the current behavior of `transactions_search` and other typed tools.
+- There is **no consent gate** on `sql_query`. The consent enforcement gate is deferred project-wide. When the gate un-defers, `sql_query` will inherit it automatically because it routes column → class → `_TRANSFORMS`, the same path the typed surface uses.
+- There are **no degraded/refusal responses**. Those were explicitly dropped from the PR 4 scope.
+
+Coverage boundary: lineage resolution covers columns from `core.*` and `app.*` schemas (the classified schemas per `CLASSIFICATION`). Queries that read only from `raw.*` or `prep.*` are not lineage-classified — those columns are absent from the snapshot — so the conservative fallback applies. If the unresolved input columns also fall outside `core.*`/`app.*`, the fallback is `AGGREGATE` (LOW), not a masking error.
+
+### `sql_query` per-call classification mode
+
+The `@mcp_tool` decorator gained a `dynamic_classification=True` mode (replacing the retired `unclassified=True` flag) for tools whose output column classification varies per call. In this mode:
+
+- The decorator does **not** stamp a static sensitivity value on the envelope — it trusts the tool's per-call `summary.sensitivity`.
+- The decorator does **not** run `redact_typed` (the tool already applied `redact_records`).
+- The privacy log event reads `env.classes_returned` and `env.summary.sensitivity` from the per-call envelope instead of the static closure values.
+
+Both `sql_query` and `sql_schema` use `dynamic_classification=True`. `sql_schema` returns only schema metadata (no financial data) and sets `sensitivity="low"` / `classes_returned=["aggregate"]`.
 
 ## Performance validation (PR 2)
 

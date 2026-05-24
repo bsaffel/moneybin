@@ -55,6 +55,7 @@ Single source of truth for spec status. Update this table when a spec's status c
 | [Overview](matching-overview.md) | Umbrella | implemented | Cross-source dedup, transfer detection, golden-record merge rules; core as gold analytics layer. Both v1 pillars shipped (PRs #43, #46, #47). |
 | [Same-Record Dedup](matching-same-record-dedup.md) | Feature | implemented | Cross-source dedup + golden-record merge rules (pillars A+C); shared matching engine, `prep.int_transactions__matched`/`__merged`, `meta.fct_transaction_provenance`, `app.match_decisions`, `moneybin transactions matches run/history/undo/backfill` CLI plus `moneybin transactions review --type matches` |
 | [Transfer Detection](matching-transfer-detection.md) | Feature | implemented | Transfer pair detection across accounts (pillar B); shared matching engine (Tier 4), `core.bridge_transfers`, always-review v1, 4-signal scoring |
+| [N-Way Dedup](matching-nway-dedup.md) | Feature | implemented | Merge 3+ copies of the same transaction (enhances `matching-same-record-dedup.md`, supersedes its 1:1 assignment requirement). Union-find spanning-forest matcher, recursive-CTE prep fold, weakest-link (MIN) group confidence, component-grouped review UX, group-aware `dedup_reconciliation`. Pairwise schema unchanged; groups derived downstream. |
 
 ## Categorization
 
@@ -73,7 +74,7 @@ Single source of truth for spec status. Update this table when a spec's status c
 | Spec | Type | Status | Summary |
 |---|---|---|---|
 | [Privacy & AI Trust](privacy-and-ai-trust.md) | Framework | ready | AI data flow tiers, consent model, provider profiles, redaction engine, audit log |
-| [Data Classification](privacy-data-classification.md) | Feature | implemented | `DataClass` registry + PR 2 middleware (introspection, redaction, privacy.log, generic `ResponseEnvelope[T]`, decorator derive-from-return-type, CLI parity). PR 3 shipped as the consent ledger (`app.ai_consent_grants` + CLI/MCP grant/revoke/status/log + paired audit; enforcement gate deferred). PR 4 (SQL lineage) tracked separately. |
+| [Data Classification](privacy-data-classification.md) | Feature | implemented | `DataClass` registry + PR 2 middleware (introspection, redaction, privacy.log, generic `ResponseEnvelope[T]`, decorator derive-from-return-type, CLI parity). PR 3 shipped the consent ledger (`app.ai_consent_grants` + CLI/MCP grant/revoke/status/log + paired audit; enforcement gate deferred). PR 4 shipped SQL lineage: `sql_query` now resolves each output column's `DataClass` via sqlglot and masks CRITICAL columns (account/routing numbers) — same rules as the typed tools. Consent gate still deferred project-wide. |
 | [Data Protection](privacy-data-protection.md) | Feature | implemented | DuckDB encryption at rest (AES-256-GCM), `Database` connection factory, key management, file permissions, PII log sanitization |
 | [Privacy & Security Roadmap](privacy-security-roadmap.md) | Roadmap | — | Three-tier data custody model overview |
 

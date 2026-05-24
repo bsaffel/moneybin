@@ -53,9 +53,9 @@ class TestMCPToolDecorator:
 
     @pytest.mark.unit
     def test_decorator_sets_sensitivity_attribute(self) -> None:
-        """unclassified=True tools default to HIGH sensitivity."""
+        """dynamic_classification=True tools default to HIGH sensitivity."""
 
-        @mcp_tool(unclassified=True)
+        @mcp_tool(dynamic_classification=True)
         def my_tool() -> ResponseEnvelope[Any]:  # type: ignore[return]
             ...
 
@@ -63,7 +63,7 @@ class TestMCPToolDecorator:
 
     @pytest.mark.unit
     def test_decorator_preserves_function_name(self) -> None:
-        @mcp_tool(unclassified=True)
+        @mcp_tool(dynamic_classification=True)
         def reports_spending_summary() -> ResponseEnvelope[Any]:  # type: ignore[return]
             ...
 
@@ -72,7 +72,7 @@ class TestMCPToolDecorator:
     @pytest.mark.unit
     async def test_decorator_calls_log_tool_call(self) -> None:
 
-        @mcp_tool(unclassified=True)
+        @mcp_tool(dynamic_classification=True)
         def my_tool() -> ResponseEnvelope[Any]:
             return ResponseEnvelope(
                 summary=SummaryMeta(total_count=0, returned_count=0),
@@ -84,13 +84,13 @@ class TestMCPToolDecorator:
             mock_log.assert_called_once()
             args = mock_log.call_args[0]
             assert args[0] == "my_tool"
-            assert args[1] == Sensitivity.HIGH  # unclassified=True → HIGH
+            assert args[1] == Sensitivity.HIGH  # dynamic_classification=True → HIGH
 
     @pytest.mark.unit
     def test_decorator_supports_domain(self) -> None:
         """The mcp_tool decorator carries the domain string as an attribute."""
 
-        @mcp_tool(unclassified=True, domain="categorize")
+        @mcp_tool(dynamic_classification=True, domain="categorize")
         def example_tool() -> ResponseEnvelope[Any]:  # type: ignore[return]
             ...
 
@@ -100,7 +100,7 @@ class TestMCPToolDecorator:
     def test_decorator_default_domain_is_none(self) -> None:
         """Tools without an explicit domain are core tools (always visible)."""
 
-        @mcp_tool(unclassified=True)
+        @mcp_tool(dynamic_classification=True)
         def example_tool() -> ResponseEnvelope[Any]:  # type: ignore[return]
             ...
 
@@ -110,7 +110,7 @@ class TestMCPToolDecorator:
     async def test_decorator_returns_response_envelope(self) -> None:
         """When a tool returns a ResponseEnvelope, the decorator returns it directly."""
 
-        @mcp_tool(unclassified=True)
+        @mcp_tool(dynamic_classification=True)
         def my_tool() -> ResponseEnvelope[Any]:
             return ResponseEnvelope(
                 summary=SummaryMeta(total_count=1, returned_count=1),
@@ -127,7 +127,7 @@ class TestMCPToolDecorator:
         """Tools that return non-ResponseEnvelope raise TypeError."""
         import pytest
 
-        @mcp_tool(unclassified=True)
+        @mcp_tool(dynamic_classification=True)
         def my_tool() -> str:  # type: ignore[return]
             return "plain string result"  # type: ignore[return-value]
 
@@ -139,7 +139,7 @@ class TestMCPToolDecorator:
 def test_mcp_tool_default_annotations() -> None:
     """Defaults: read_only=True, destructive=False, idempotent=True, open_world=False."""
 
-    @mcp_tool(unclassified=True)
+    @mcp_tool(dynamic_classification=True)
     def example() -> ResponseEnvelope[Any]:  # type: ignore[return]
         ...
 
@@ -252,7 +252,7 @@ def test_mcp_tool_explicit_annotations() -> None:
     """Explicit kwargs override defaults."""
 
     @mcp_tool(
-        unclassified=True,
+        dynamic_classification=True,
         read_only=False,
         destructive=True,
         idempotent=False,
@@ -273,7 +273,7 @@ async def test_max_items_under_cap_passes() -> None:
     from moneybin.mcp.decorator import mcp_tool
     from moneybin.protocol.envelope import build_envelope
 
-    @mcp_tool(unclassified=True, max_items=10)
+    @mcp_tool(dynamic_classification=True, max_items=10)
     def fn(items: list[str]) -> ResponseEnvelope[Any]:
         return build_envelope(data={"count": len(items)})
 
@@ -288,7 +288,7 @@ async def test_max_items_over_cap_returns_error() -> None:
     from moneybin.mcp.decorator import mcp_tool
     from moneybin.protocol.envelope import build_envelope
 
-    @mcp_tool(unclassified=True, max_items=2)
+    @mcp_tool(dynamic_classification=True, max_items=2)
     def fn(items: list[str]) -> ResponseEnvelope[Any]:
         return build_envelope(data={"count": len(items)})
 
@@ -307,7 +307,7 @@ async def test_max_items_empty_list_passes() -> None:
     from moneybin.mcp.decorator import mcp_tool
     from moneybin.protocol.envelope import build_envelope
 
-    @mcp_tool(unclassified=True, max_items=2)
+    @mcp_tool(dynamic_classification=True, max_items=2)
     def fn(items: list[str]) -> ResponseEnvelope[Any]:
         return build_envelope(data={"count": len(items)})
 
@@ -321,7 +321,7 @@ async def test_max_items_disabled_with_none() -> None:
     from moneybin.mcp.decorator import mcp_tool
     from moneybin.protocol.envelope import build_envelope
 
-    @mcp_tool(unclassified=True, max_items=None)
+    @mcp_tool(dynamic_classification=True, max_items=None)
     def fn(items: list[str]) -> ResponseEnvelope[Any]:
         return build_envelope(data={"count": len(items)})
 
@@ -338,7 +338,7 @@ async def test_max_items_default_inherits_settings(
     from moneybin.mcp.decorator import mcp_tool
     from moneybin.protocol.envelope import build_envelope
 
-    @mcp_tool(unclassified=True)
+    @mcp_tool(dynamic_classification=True)
     def fn(items: list[str]) -> ResponseEnvelope[Any]:
         return build_envelope(data={"count": len(items)})
 
@@ -358,7 +358,7 @@ async def test_max_items_multiple_list_params_each_capped() -> None:
     from moneybin.mcp.decorator import mcp_tool
     from moneybin.protocol.envelope import build_envelope
 
-    @mcp_tool(unclassified=True, max_items=2)
+    @mcp_tool(dynamic_classification=True, max_items=2)
     def fn(accept: list[str], reject: list[str]) -> ResponseEnvelope[Any]:
         return build_envelope(data={"a": len(accept), "r": len(reject)})
 
@@ -378,7 +378,7 @@ async def test_register_emits_tool_annotations() -> None:
     from moneybin.protocol.envelope import build_envelope
 
     @mcp_tool(
-        unclassified=True,
+        dynamic_classification=True,
         read_only=False,
         destructive=True,
         idempotent=False,
