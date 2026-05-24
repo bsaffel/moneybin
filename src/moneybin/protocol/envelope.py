@@ -147,6 +147,10 @@ class ResponseEnvelope[T]:
     error: UserError | None = None
     next_cursor: str | None = None
     recovery_actions: list[RecoveryAction] | None = None
+    # Internal observability only: per-call DataClass names for dynamic-SQL tools,
+    # read by the @mcp_tool decorator to log accurate classes_returned.
+    # NOT part of the wire contract — never emitted by to_dict().
+    classes_returned: list[str] | None = field(default=None, repr=False)
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to a plain dict suitable for JSON serialization.
@@ -236,6 +240,7 @@ def build_envelope(
     degraded: bool = False,
     degraded_reason: str | None = None,
     recovery_actions: list[RecoveryAction] | None = None,
+    classes_returned: list[str] | None = None,
 ) -> ResponseEnvelope[Any]:
     """Build a ResponseEnvelope with computed metadata.
 
@@ -266,6 +271,10 @@ def build_envelope(
             partial-success failure (e.g. a best-effort step that crashed).
             The navigational ``actions`` field stays distinct — it answers
             "what next", not "how to fix what broke".
+        classes_returned: Internal observability only — DataClass value strings
+            for dynamic-SQL tools that self-classify per call (``dynamic_classification``
+            mode). Read by the ``@mcp_tool`` decorator for privacy audit logging.
+            NOT serialized to the wire: ``to_dict()`` never emits this field.
 
     Returns:
         A fully populated ResponseEnvelope.
@@ -305,6 +314,7 @@ def build_envelope(
         actions=actions or [],
         next_cursor=next_cursor,
         recovery_actions=recovery_actions,
+        classes_returned=classes_returned,
     )
 
 

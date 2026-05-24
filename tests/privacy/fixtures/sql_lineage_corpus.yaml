@@ -1,0 +1,402 @@
+# SQL lineage resolver corpus: ≥50 entries covering all edge-case categories.
+#
+# Each entry is verified against the real resolver output. Do NOT change
+# expected_* values to match incorrect resolver output — if a case breaks,
+# investigate the resolver. "conservative fallback" entries are noted with
+# "falls back to max input tier" in the description.
+#
+# DataClass values (StrEnum): aggregate, account_identifier, routing_number,
+# institution_account_number, balance, txn_amount, income_amount, merchant_name,
+# description, user_note, txn_date, category, institution, currency, txn_type,
+# record_id, timestamp_observability
+#
+# Tier names: low, medium, high, critical
+
+# ---------------------------------------------------------------------------
+# Direct columns — fct_transactions
+# ---------------------------------------------------------------------------
+
+- description: direct amount column resolves to HIGH txn_amount
+  sql: SELECT amount FROM core.fct_transactions
+  expected_output_classes: {amount: txn_amount}
+  expected_query_tier: high
+
+- description: amount_absolute resolves same tier as amount
+  sql: SELECT amount_absolute FROM core.fct_transactions
+  expected_output_classes: {amount_absolute: txn_amount}
+  expected_query_tier: high
+
+- description: merchant_name is MEDIUM
+  sql: SELECT merchant_name FROM core.fct_transactions
+  expected_output_classes: {merchant_name: merchant_name}
+  expected_query_tier: medium
+
+- description: description column is MEDIUM
+  sql: SELECT description FROM core.fct_transactions
+  expected_output_classes: {description: description}
+  expected_query_tier: medium
+
+- description: transaction_date is MEDIUM txn_date
+  sql: SELECT transaction_date FROM core.fct_transactions
+  expected_output_classes: {transaction_date: txn_date}
+  expected_query_tier: medium
+
+- description: transaction_year is MEDIUM txn_date (date component)
+  sql: SELECT transaction_year FROM core.fct_transactions
+  expected_output_classes: {transaction_year: txn_date}
+  expected_query_tier: medium
+
+- description: category is LOW
+  sql: SELECT category FROM core.fct_transactions
+  expected_output_classes: {category: category}
+  expected_query_tier: low
+
+- description: subcategory is also LOW category class
+  sql: SELECT subcategory FROM core.fct_transactions
+  expected_output_classes: {subcategory: category}
+  expected_query_tier: low
+
+- description: source_type is LOW txn_type
+  sql: SELECT source_type FROM core.fct_transactions
+  expected_output_classes: {source_type: txn_type}
+  expected_query_tier: low
+
+- description: currency_code is LOW currency
+  sql: SELECT currency_code FROM core.fct_transactions
+  expected_output_classes: {currency_code: currency}
+  expected_query_tier: low
+
+- description: transaction_id is LOW record_id
+  sql: SELECT transaction_id FROM core.fct_transactions
+  expected_output_classes: {transaction_id: record_id}
+  expected_query_tier: low
+
+- description: is_transfer is LOW txn_type
+  sql: SELECT is_transfer FROM core.fct_transactions
+  expected_output_classes: {is_transfer: txn_type}
+  expected_query_tier: low
+
+- description: categorized_by is LOW txn_type
+  sql: SELECT categorized_by FROM core.fct_transactions
+  expected_output_classes: {categorized_by: txn_type}
+  expected_query_tier: low
+
+- description: payment_channel is LOW txn_type
+  sql: SELECT payment_channel FROM core.fct_transactions
+  expected_output_classes: {payment_channel: txn_type}
+  expected_query_tier: low
+
+- description: account_id on fct_transactions is CRITICAL
+  sql: SELECT account_id FROM core.fct_transactions
+  expected_output_classes: {account_id: account_identifier}
+  expected_query_tier: critical
+
+# ---------------------------------------------------------------------------
+# Direct columns — dim_accounts
+# ---------------------------------------------------------------------------
+
+- description: account_id on dim_accounts is CRITICAL
+  sql: SELECT account_id FROM core.dim_accounts
+  expected_output_classes: {account_id: account_identifier}
+  expected_query_tier: critical
+
+- description: last_four is CRITICAL institution_account_number
+  sql: SELECT last_four FROM core.dim_accounts
+  expected_output_classes: {last_four: institution_account_number}
+  expected_query_tier: critical
+
+- description: routing_number is CRITICAL
+  sql: SELECT routing_number FROM core.dim_accounts
+  expected_output_classes: {routing_number: routing_number}
+  expected_query_tier: critical
+
+- description: credit_limit resolves to HIGH balance (no balance col on dim_accounts)
+  sql: SELECT credit_limit FROM core.dim_accounts
+  expected_output_classes: {credit_limit: balance}
+  expected_query_tier: high
+
+- description: institution_name is LOW institution
+  sql: SELECT institution_name FROM core.dim_accounts
+  expected_output_classes: {institution_name: institution}
+  expected_query_tier: low
+
+- description: account_type from dim_accounts is LOW txn_type
+  sql: SELECT account_type FROM core.dim_accounts
+  expected_output_classes: {account_type: txn_type}
+  expected_query_tier: low
+
+# ---------------------------------------------------------------------------
+# Direct columns — fct_balances
+# ---------------------------------------------------------------------------
+
+- description: balance from fct_balances is HIGH
+  sql: SELECT balance FROM core.fct_balances
+  expected_output_classes: {balance: balance}
+  expected_query_tier: high
+
+- description: balance_date from fct_balances is MEDIUM txn_date
+  sql: SELECT balance_date FROM core.fct_balances
+  expected_output_classes: {balance_date: txn_date}
+  expected_query_tier: medium
+
+- description: account_id + balance from fct_balances escalates to CRITICAL
+  sql: SELECT account_id, balance FROM core.fct_balances
+  expected_output_classes: {account_id: account_identifier, balance: balance}
+  expected_query_tier: critical
+
+# ---------------------------------------------------------------------------
+# Aggregates — COUNT (collapses to LOW)
+# ---------------------------------------------------------------------------
+
+- description: COUNT(*) collapses to LOW aggregate
+  sql: SELECT COUNT(*) AS n FROM core.fct_transactions
+  expected_output_classes: {n: aggregate}
+  expected_query_tier: low
+
+- description: COUNT(DISTINCT account_id) collapses to aggregate even over CRITICAL col
+  sql: SELECT COUNT(DISTINCT account_id) AS n FROM core.dim_accounts
+  expected_output_classes: {n: aggregate}
+  expected_query_tier: low
+
+- description: COUNT(DISTINCT category) also aggregate
+  sql: SELECT COUNT(DISTINCT category) AS n_cats FROM core.fct_transactions
+  expected_output_classes: {n_cats: aggregate}
+  expected_query_tier: low
+
+- description: COUNT(*) without alias uses sqlglot-generated name _col_0
+  sql: SELECT COUNT(*) FROM core.fct_transactions
+  expected_output_classes: {_col_0: aggregate}
+  expected_query_tier: low
+
+# ---------------------------------------------------------------------------
+# Aggregates — SUM/AVG/MIN/MAX (preserves source class)
+# ---------------------------------------------------------------------------
+
+- description: SUM(amount) preserves HIGH txn_amount
+  sql: SELECT SUM(amount) AS spend FROM core.fct_transactions
+  expected_output_classes: {spend: txn_amount}
+  expected_query_tier: high
+
+- description: SUM(amount) without alias uses sqlglot-generated name
+  sql: SELECT SUM(amount) FROM core.fct_transactions
+  expected_output_classes: {_col_0: txn_amount}
+  expected_query_tier: high
+
+- description: AVG(amount) preserves HIGH txn_amount
+  sql: SELECT AVG(amount) AS avg_spend FROM core.fct_transactions
+  expected_output_classes: {avg_spend: txn_amount}
+  expected_query_tier: high
+
+- description: MIN(transaction_date) preserves MEDIUM txn_date
+  sql: SELECT MIN(transaction_date) AS earliest FROM core.fct_transactions
+  expected_output_classes: {earliest: txn_date}
+  expected_query_tier: medium
+
+- description: MAX(transaction_date) preserves MEDIUM txn_date
+  sql: SELECT MAX(transaction_date) AS latest FROM core.fct_transactions
+  expected_output_classes: {latest: txn_date}
+  expected_query_tier: medium
+
+- description: MIN(account_id) preserves CRITICAL — surfaces individual value
+  sql: SELECT MIN(account_id) AS m FROM core.dim_accounts
+  expected_output_classes: {m: account_identifier}
+  expected_query_tier: critical
+
+# ---------------------------------------------------------------------------
+# Aliases
+# ---------------------------------------------------------------------------
+
+- description: alias rename amount AS total preserves class
+  sql: SELECT amount AS total FROM core.fct_transactions
+  expected_output_classes: {total: txn_amount}
+  expected_query_tier: high
+
+- description: alias rename category AS cat
+  sql: SELECT category AS cat FROM core.fct_transactions
+  expected_output_classes: {cat: category}
+  expected_query_tier: low
+
+- description: SUM with alias retains source class
+  sql: SELECT SUM(amount) AS monthly_spend FROM core.fct_transactions
+  expected_output_classes: {monthly_spend: txn_amount}
+  expected_query_tier: high
+
+# ---------------------------------------------------------------------------
+# Multi-column expressions
+# ---------------------------------------------------------------------------
+
+- description: CONCAT(merchant_name, description) takes max MEDIUM tier
+  sql: SELECT CONCAT(merchant_name, ' - ', description) AS d FROM core.fct_transactions
+  expected_output_classes: {d: merchant_name}
+  expected_query_tier: medium
+
+- description: amount+0 preserves HIGH txn_amount
+  sql: SELECT amount + 0 AS amount FROM core.fct_transactions
+  expected_output_classes: {amount: txn_amount}
+  expected_query_tier: high
+
+- description: ABS(amount) preserves HIGH txn_amount
+  sql: SELECT ABS(amount) AS abs_amount FROM core.fct_transactions
+  expected_output_classes: {abs_amount: txn_amount}
+  expected_query_tier: high
+
+- description: CAST(amount AS INTEGER) preserves HIGH txn_amount
+  sql: SELECT CAST(amount AS INTEGER) AS amount_int FROM core.fct_transactions
+  expected_output_classes: {amount_int: txn_amount}
+  expected_query_tier: high
+
+- description: COALESCE(description, merchant_name) takes max MEDIUM (description wins tie)
+  sql: SELECT COALESCE(description, merchant_name) AS name FROM core.fct_transactions
+  expected_output_classes: {name: description}
+  expected_query_tier: medium
+
+- description: CASE WHEN on category column yields LOW category class
+  sql: SELECT CASE WHEN category = 'Food' THEN 'food' ELSE 'other' END AS cat FROM core.fct_transactions
+  expected_output_classes: {cat: category}
+  expected_query_tier: low
+
+# ---------------------------------------------------------------------------
+# Literals
+# ---------------------------------------------------------------------------
+
+- description: string literal is LOW aggregate (no column lineage)
+  sql: SELECT 'hi' AS greeting
+  expected_output_classes: {greeting: aggregate}
+  expected_query_tier: low
+
+- description: integer literal is LOW aggregate
+  sql: SELECT 42 AS x
+  expected_output_classes: {x: aggregate}
+  expected_query_tier: low
+
+- description: NULL literal is LOW aggregate
+  sql: SELECT NULL AS x
+  expected_output_classes: {x: aggregate}
+  expected_query_tier: low
+
+# ---------------------------------------------------------------------------
+# Joins
+# ---------------------------------------------------------------------------
+
+- description: join amount (HIGH) and account_type (LOW) escalates to HIGH
+  sql: SELECT t.amount, a.account_type FROM core.fct_transactions t JOIN core.dim_accounts a ON t.account_id = a.account_id
+  expected_output_classes: {amount: txn_amount, account_type: txn_type}
+  expected_query_tier: high
+
+- description: join amount (HIGH) and routing_number (CRITICAL) escalates to CRITICAL
+  sql: SELECT t.amount, a.routing_number FROM core.fct_transactions t JOIN core.dim_accounts a ON t.account_id = a.account_id
+  expected_output_classes: {amount: txn_amount, routing_number: routing_number}
+  expected_query_tier: critical
+
+- description: join balance (HIGH) and description (MEDIUM) escalates to HIGH
+  sql: SELECT b.balance, t.description FROM core.fct_balances b JOIN core.fct_transactions t ON b.account_id = t.account_id
+  expected_output_classes: {balance: balance, description: description}
+  expected_query_tier: high
+
+# ---------------------------------------------------------------------------
+# CTEs — falls back to max input tier when outer column can't be resolved
+# ---------------------------------------------------------------------------
+
+- description: CTE with SUM(amount) falls back to max input tier HIGH (txn_amount) for both outputs
+  sql: WITH spend AS (SELECT category, SUM(amount) AS s FROM core.fct_transactions GROUP BY 1) SELECT * FROM spend
+  expected_output_classes: {category: txn_amount, s: txn_amount}
+  expected_query_tier: high
+
+- description: CTE pass-through of account_id falls back to CRITICAL (max input tier includes account_id)
+  sql: WITH t AS (SELECT account_id, amount FROM core.fct_transactions) SELECT account_id FROM t
+  expected_output_classes: {account_id: account_identifier}
+  expected_query_tier: critical
+
+# ---------------------------------------------------------------------------
+# Subqueries — falls back to max input tier when outer col can't be resolved
+# ---------------------------------------------------------------------------
+
+- description: subquery with COUNT(*) falls back; input is only category (LOW) so aggregate (LOW) wins
+  sql: SELECT * FROM (SELECT category, COUNT(*) AS n FROM core.fct_transactions GROUP BY 1) sub WHERE n > 5
+  expected_output_classes: {category: aggregate, n: aggregate}
+  expected_query_tier: low
+
+- description: subquery pure aggregate falls back to aggregate (LOW inputs only)
+  sql: SELECT n FROM (SELECT COUNT(*) AS n FROM core.fct_transactions) sub
+  expected_output_classes: {n: aggregate}
+  expected_query_tier: low
+
+# ---------------------------------------------------------------------------
+# Window functions
+# ---------------------------------------------------------------------------
+
+- description: window SUM(amount) OVER preserves txn_amount class
+  sql: SELECT category, amount, SUM(amount) OVER (PARTITION BY category) AS cat_total FROM core.fct_transactions
+  expected_output_classes: {category: category, amount: txn_amount, cat_total: txn_amount}
+  expected_query_tier: high
+
+# ---------------------------------------------------------------------------
+# Star expansion
+# ---------------------------------------------------------------------------
+
+- description: SELECT * FROM dim_accounts expands to CRITICAL (contains account_id etc.)
+  sql: SELECT * FROM core.dim_accounts
+  expected_output_classes: {holder_category: txn_type, routing_number: routing_number, account_id: account_identifier, account_subtype: txn_type, updated_at: timestamp_observability, source_type: txn_type, iso_currency_code: currency, official_name: institution, include_in_net_worth: txn_type, source_file: record_id, loaded_at: timestamp_observability, institution_fid: institution, archived: txn_type, last_four: institution_account_number, account_type: txn_type, institution_name: institution, extracted_at: timestamp_observability, display_name: user_note, credit_limit: balance}
+  expected_query_tier: critical
+
+# ---------------------------------------------------------------------------
+# UNION ALL
+# ---------------------------------------------------------------------------
+
+- description: UNION ALL amount with literal 0 preserves txn_amount from first branch
+  sql: SELECT amount FROM core.fct_transactions UNION ALL SELECT CAST(0 AS DECIMAL(18,2)) AS amount
+  expected_output_classes: {amount: txn_amount}
+  expected_query_tier: high
+
+# ---------------------------------------------------------------------------
+# WHERE / GROUP BY / HAVING / ORDER BY — classified cols not in output
+# ---------------------------------------------------------------------------
+
+- description: WHERE on CRITICAL col does not affect output class (only amount in SELECT)
+  sql: SELECT amount FROM core.fct_transactions WHERE account_id = 'x'
+  expected_output_classes: {amount: txn_amount}
+  expected_query_tier: high
+
+- description: ORDER BY MEDIUM col does not affect output class (only category in SELECT)
+  sql: SELECT category FROM core.fct_transactions ORDER BY transaction_date
+  expected_output_classes: {category: category}
+  expected_query_tier: low
+
+- description: GROUP BY and HAVING with category and SUM amount
+  sql: SELECT category, SUM(amount) AS total FROM core.fct_transactions GROUP BY category HAVING SUM(amount) > 100
+  expected_output_classes: {category: category, total: txn_amount}
+  expected_query_tier: high
+
+# ---------------------------------------------------------------------------
+# Multiple tables — dim_merchants, dim_categories
+# ---------------------------------------------------------------------------
+
+- description: dim_merchants canonical_name is MEDIUM merchant_name
+  sql: SELECT canonical_name FROM core.dim_merchants
+  expected_output_classes: {canonical_name: merchant_name}
+  expected_query_tier: medium
+
+- description: dim_merchants merchant_id (record_id) + canonical_name (merchant_name) + category (category)
+  sql: SELECT merchant_id, canonical_name, category FROM core.dim_merchants
+  expected_output_classes: {merchant_id: record_id, canonical_name: merchant_name, category: category}
+  expected_query_tier: medium
+
+- description: dim_categories category and category_id are both LOW
+  sql: SELECT category, category_id FROM core.dim_categories
+  expected_output_classes: {category: category, category_id: category}
+  expected_query_tier: low
+
+- description: last_four and routing_number are both CRITICAL
+  sql: SELECT last_four, routing_number FROM core.dim_accounts
+  expected_output_classes: {last_four: institution_account_number, routing_number: routing_number}
+  expected_query_tier: critical
+
+- description: institution_name and institution_fid are both LOW institution
+  sql: SELECT institution_name, institution_fid FROM core.dim_accounts
+  expected_output_classes: {institution_name: institution, institution_fid: institution}
+  expected_query_tier: low
+
+- description: fct_balances_daily account_id (CRITICAL) + balance (HIGH) escalates to CRITICAL
+  sql: SELECT account_id, balance FROM core.fct_balances_daily
+  expected_output_classes: {account_id: account_identifier, balance: balance}
+  expected_query_tier: critical

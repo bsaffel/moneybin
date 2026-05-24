@@ -124,6 +124,8 @@ _HELP_COMMANDS: list[list[str]] = [
     ["reports", "merchants"],
     ["reports", "large-transactions"],
     ["reports", "balance-drift"],
+    ["sql"],
+    ["sql", "query"],
     ["export"],
 ]
 

@@ -101,6 +101,7 @@ not-yet-built.
 | 38| Accept or reject one pending match proposal                      | `transactions_matches_set` *(`match_id`, `status: accepted\|rejected`)* | `transactions matches set <match_id> --status accepted\|rejected` | — | live |
 | 39| Run the matching engine and propose new pending decisions         | `transactions_matches_run` *(operator alternative to `refresh_run(steps=["match"])`)* | `transactions matches run` | — | live |
 | 40| View recent match decisions (accepted and rejected)              | `transactions_matches_history` *(`limit?`, `match_type?`)* | `transactions matches history` *(`--type`, `--limit`)* | — | live |
+| 41| Execute a read-only SQL query over core/app with CRITICAL columns masked via lineage | `sql_query` *(`query`)* | `sql query <sql>` *(`--output text\|json`)* | — | live |
 
 *(Bootstrap rows only; full table populates incrementally as
 follow-up work closes the parity backlog. A prior row covering
@@ -120,7 +121,12 @@ equivalent — use `privacy_consent_revoke` per category from MCP.
 Rows 37–40 added 2026-05-22 with the matches accept/reject PR: four
 `transactions_matches_*` MCP tools registered; `transactions matches set`
 CLI command and non-interactive `transactions review --type matches
---confirm/--reject/--confirm-all` flags wired.)*
+--confirm/--reject/--confirm-all` flags wired.
+Row 41 added 2026-05-23 with the SQL lineage PR: `sql_query` (MCP) and
+`moneybin sql query` (CLI) both mask CRITICAL columns via sqlglot lineage
+through the shared `execute_sql_query` primitive — full MCP↔CLI parity.
+`moneybin db query`/`db shell`/`db ui` remain raw operator access (cat 2 —
+no privacy middleware) and emit a banner pointing at `moneybin sql query`.)*
 
 ## Exemption categories
 
