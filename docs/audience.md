@@ -132,4 +132,4 @@ If any of these is a hard requirement, MoneyBin isn't the right answer. The comp
 
 ---
 
-If any of the "already a good fit" personas described you, the rest of the docs will feel like home — start with [What Works Today](features.md) or the [wider competitor comparison](comparison.md).
+If any of the "already a good fit" personas described you, the rest of the docs will feel like home — start with [What Works Today](features.md) or [Where MoneyBin Fits](comparison.md).

@@ -98,7 +98,7 @@ moneybin sql query "SELECT category, SUM(amount) FROM core.fct_transactions GROU
 
 **Planned:** investment & cost-basis tracking, multi-currency, budgets, a web UI dashboard, and an opt-in hosted tier — same code you can self-host.
 
-→ [What works today](docs/features.md) · [Roadmap](docs/roadmap.md) · [How MoneyBin compares](docs/comparison.md)
+→ [What works today](docs/features.md) · [Roadmap](docs/roadmap.md) · [Where MoneyBin fits](docs/comparison.md)
 
 ## Is it for you?
 
@@ -112,7 +112,7 @@ MoneyBin's lane is narrow on purpose: your data stays on your machine, AI assist
 - [Architecture](docs/architecture.md) — guarantees, diagram, read/write contract
 - [Threat Model](docs/guides/threat-model.md) — what encryption protects against, and what it doesn't
 - [MCP Server](docs/guides/mcp-server.md) — tool catalog, response envelope, redaction
-- [How MoneyBin Compares](docs/comparison.md) — head-to-head with other tools
+- [Where MoneyBin Fits](docs/comparison.md) — the lane it's built for, and who to use instead
 - [Audience](docs/audience.md) — who MoneyBin is for, today and at launch
 - [Licensing](docs/licensing.md) — why AGPL, what it does and doesn't mean
 - [Spec Index](docs/specs/INDEX.md) · [Decision Records](docs/decisions/) · [Changelog](CHANGELOG.md) · [Security Policy](SECURITY.md)

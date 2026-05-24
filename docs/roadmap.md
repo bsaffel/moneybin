@@ -1,7 +1,7 @@
 <!-- Last reviewed: 2026-05-24 -->
 # Roadmap
 
-Pre-v1 roadmap. Each milestone is a coherent slice of work, not a calendar date — we don't commit dates pre-v1. Statuses below reflect what's merged to `main` today; the dated record of individual changes lives in [`CHANGELOG.md`](../CHANGELOG.md). For "is this for me?" see [`audience.md`](audience.md); for head-to-head fit, [`comparison.md`](comparison.md); for shipped capability detail, [`features.md`](features.md).
+Pre-v1 roadmap. Each milestone is a coherent slice of work, not a calendar date — we don't commit dates pre-v1. Statuses below reflect what's merged to `main` today; the dated record of individual changes lives in [`CHANGELOG.md`](../CHANGELOG.md). For "is this for me?" see [`audience.md`](audience.md); for where MoneyBin fits and who to use instead, [`comparison.md`](comparison.md); for shipped capability detail, [`features.md`](features.md).
 
 **Maturity signal.** MoneyBin is pre-v1 and pre-launch. File-based usage (CSV/OFX/QFX/QBO import, categorization, net-worth, MCP query) has shipped through M2A and is in daily use by the author. Plaid sync (M3A) has shipped its first phase but has not yet been used against a Production-approved Plaid account by anyone other than the author.
 
