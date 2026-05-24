@@ -410,11 +410,14 @@ moneybin investments lots [--account <id|name>] [--security <ticker|name>] \
 
 ```
 moneybin investments lots select <disposal_txn_id> --lot <lot_id>:<quantity> [--lot <lot_id>:<quantity> ...] [--yes]
+moneybin investments lots select <disposal_txn_id> --clear [--yes]
 ```
 - Sets the **full** specific-identification selection for the disposal in
   `app.lot_selections` — a declarative state-set (Shape 1a): the listed `(lot,
   quantity)` pairs **replace** any prior selection for that disposal (delete by
   omission), identical in semantics to the `investments_lots_select` MCP tool.
+  `--clear` submits the empty set, removing all overrides for the disposal and
+  reverting it to FIFO (the CLI equivalent of the MCP tool's empty `selections=[]`).
   Unselected remainder falls back to FIFO. (Both surfaces are declarative-set here —
   there is no additive variant, to keep CLI and MCP outcomes identical.)
 
@@ -513,7 +516,8 @@ events; resolves securities, reports unresolved refs in `warnings`.
 catalog entry, including its `cost_basis_method` per-security override.
 
 **`investments_lots_select`** — Shape 1a (collection state-set). Set the full set of
-`(lot_id, quantity)` selections for one disposal (delete by omission).
+`(lot_id, quantity)` selections for one disposal (delete by omission); an empty
+`selections=[]` clears all overrides and reverts the disposal to FIFO.
 
 The **per-account default** cost-basis method is a field on `accounts_set`
 (`default_cost_basis_method`), not a separate tool — same reasoning as the CLI.
