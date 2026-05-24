@@ -99,6 +99,31 @@ def test_build_spec_arg_continuation_line_is_not_parsed_as_new_param() -> None:
     assert by_name["fmt"].help == "Output date format. default: today when omitted."
 
 
+def test_build_spec_description_includes_body_prose_not_args() -> None:
+    # The MCP tool description is spec.description; for amount-bearing reports it
+    # MUST carry the sign-convention paragraph (mcp.md). Description = all prose
+    # before Args:, so the body reaches the agent while the Args block (which
+    # names the non-passable `db`) does not.
+    def runner(db: Database, *, top: int = 10) -> ReportQuery:
+        """Spending rollup by category.
+
+        Amounts use the accounting convention (negative = expense, positive =
+        income) in the currency named by summary.display_currency.
+
+        Args:
+            db: Open read-only database connection.
+            top: Maximum rows to return.
+        """
+        return ReportQuery("SELECT 1", [])
+
+    spec = build_spec(runner, name="r", view=REPORTS_MERCHANT_ACTIVITY)
+    assert spec.description.startswith("Spending rollup by category.")
+    assert "accounting convention" in spec.description
+    assert "summary.display_currency" in spec.description
+    assert "Args:" not in spec.description
+    assert "Open read-only database connection" not in spec.description
+
+
 def test_build_spec_reads_examples() -> None:
     spec = build_spec(_sample, name="sample", view=REPORTS_MERCHANT_ACTIVITY)
     assert spec.examples == (

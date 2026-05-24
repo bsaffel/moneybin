@@ -90,12 +90,22 @@ def _parse_docstring(doc: str) -> tuple[str, dict[str, str], tuple[str, ...]]:
     """Split a Google-style docstring into (summary, arg_help, examples)."""
     lines = doc.splitlines()
 
-    summary_parts: list[str] = []
+    # Description = all prose before the first section header (Args:/Examples:).
+    # Keeping the body paragraphs (sign convention, currency) is required for
+    # amount-bearing reports per mcp.md — they become the agent-visible tool
+    # description. The Args block is excluded so the non-passable `db` param
+    # never reaches the agent. Wrapped lines collapse within a paragraph; blank
+    # lines separate paragraphs.
+    desc_lines: list[str] = []
     idx = 0
-    while idx < len(lines) and lines[idx].strip():
-        summary_parts.append(lines[idx].strip())
+    while idx < len(lines) and not _HEADER.match(lines[idx].strip()):
+        desc_lines.append(lines[idx])
         idx += 1
-    summary = " ".join(summary_parts).strip()
+    paragraphs = [
+        " ".join(line.strip() for line in para.splitlines() if line.strip())
+        for para in "\n".join(desc_lines).split("\n\n")
+    ]
+    summary = "\n\n".join(p for p in paragraphs if p).strip()
 
     arg_help: dict[str, str] = {}
     examples: list[str] = []

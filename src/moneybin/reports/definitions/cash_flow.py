@@ -39,11 +39,11 @@ def cash_flow(
 
     select_cols = "year_month"
     group_cols = "year_month"
-    if "account" in by:
+    if by in ("account", "account-and-category"):
         # account_id keeps rows distinct when two accounts share a display_name.
         select_cols += ", account_id, account_name"
         group_cols += ", account_id, account_name"
-    if "category" in by:
+    if by in ("category", "account-and-category"):
         select_cols += ", category"
         group_cols += ", category"
 
