@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from unittest.mock import MagicMock, patch
 
 from fastmcp import Client, FastMCP
 
+from moneybin import error_codes
 from moneybin.database import Database
+from moneybin.mcp.decorator import mcp_tool
 from moneybin.mcp.privacy import tier_to_sensitivity
 from moneybin.privacy.taxonomy import DataClass, Tier
 from moneybin.reports._framework.contract import ReportQuery
@@ -76,6 +79,28 @@ def test_make_tool_fn_builds_envelope_from_result() -> None:
     assert sorted(env.classes_returned or []) == ["account_identifier", "aggregate"]
     # params forwarded to run_report
     assert mock_run.call_args.kwargs["top"] == 5
+
+
+def test_generated_tool_value_error_yields_error_envelope() -> None:
+    # A runner ValueError must surface as an INFRA_INVALID_INPUT error envelope
+    # through the @mcp_tool decorator chain. One test covers the error path for
+    # every generated report tool (they share make_tool_fn + the decorator).
+    decorated = mcp_tool(dynamic_classification=True, domain="cashflow")(
+        make_tool_fn(_spec())
+    )
+    with (
+        patch("moneybin.reports._framework.mcp_register.get_database", MagicMock()),
+        patch(
+            "moneybin.reports._framework.mcp_register.run_report",
+            side_effect=ValueError("Unknown compare: bogus"),
+        ),
+        # The audit sink is a filesystem dependency; stub it so this stays a unit test.
+        patch("moneybin.mcp.decorator.write_privacy_event"),
+    ):
+        env = asyncio.run(decorated(top=5))
+
+    assert env.error is not None
+    assert env.error.code == error_codes.INFRA_INVALID_INPUT
 
 
 async def test_register_report_mcp_registers_tool() -> None:

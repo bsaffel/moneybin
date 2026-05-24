@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 from moneybin.database import Database
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.classify import (
@@ -41,7 +43,44 @@ def test_classify_columns_fails_closed_on_unknown_column(reports_db: Database) -
     assert mapped["mystery"] == DataClass.ACCOUNT_IDENTIFIER
 
 
+def test_classify_columns_fails_closed_when_view_map_empty(
+    reports_db: Database,
+) -> None:
+    # When lineage yields nothing (e.g. a view body sqlglot can't parse),
+    # every column must fall back to a masking CRITICAL-tier class — not the
+    # lowest tier — so nothing leaks in the clear.
+    with patch(
+        "moneybin.reports._framework.classify.derive_view_classes",
+        return_value={},
+    ):
+        mapped = classify_columns(reports_db, _VIEW, ["account_id", "amount"])
+    assert mapped == {
+        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+        "amount": DataClass.ACCOUNT_IDENTIFIER,
+    }
+    assert all(c.tier is DataClass.ACCOUNT_IDENTIFIER.tier for c in mapped.values())
+
+
 def test_derive_view_classes_is_cached(reports_db: Database) -> None:
     first = derive_view_classes(reports_db, _VIEW)
     second = derive_view_classes(reports_db, _VIEW)
     assert first == second
+
+
+def test_derive_view_classes_invalidates_on_body_change(
+    reports_db: Database,
+) -> None:
+    # CREATE OR REPLACE VIEW does not bump the migration version, so the cache
+    # must key on the view body itself or it serves stale classifications until
+    # restart — a masking miss if the rebuilt view exposes new sensitive columns.
+    first = derive_view_classes(reports_db, _VIEW)
+    assert "amount" in first
+
+    reports_db.execute(
+        """
+        CREATE OR REPLACE VIEW reports.test_summary AS
+        SELECT account_id FROM core.fct_transactions GROUP BY account_id
+        """
+    )
+    second = derive_view_classes(reports_db, _VIEW)
+    assert second == {"account_id": DataClass.ACCOUNT_IDENTIFIER}

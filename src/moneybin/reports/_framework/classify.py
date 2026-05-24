@@ -11,7 +11,7 @@ report's actual result columns onto it by name. This keeps the hand-authored
 
 from __future__ import annotations
 
-import threading
+import hashlib
 
 from sqlglot import exp
 
@@ -26,10 +26,19 @@ from moneybin.privacy.sql_lineage import (
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.tables import TableRef
 
-# Keyed on (view, schema version) so a migration that changes the view's shape
-# invalidates the entry; resolve_output_classes is otherwise pure per view.
-_CACHE: dict[tuple[str, int], dict[str, DataClass]] = {}
-_LOCK = threading.Lock()
+# Keyed on (view, schema version, view-body hash). The body hash is load-bearing:
+# `CREATE OR REPLACE VIEW` (a SQLMesh transform rebuild) changes a reports.* view
+# in place without bumping the migration version, so a version-only key would
+# serve stale column classifications until restart — a masking miss if the
+# rebuilt view exposes newly sensitive columns. resolve_output_classes is
+# otherwise pure per (view body, snapshot).
+_CACHE: dict[tuple[str, int, str], dict[str, DataClass]] = {}
+
+# Fail-closed fallback when lineage yields no classes at all (see
+# classify_columns). DataClass has no CRITICAL member — CRITICAL is a Tier;
+# ACCOUNT_IDENTIFIER is the Tier.CRITICAL class that redact_records actually
+# masks, and is what the non-empty fallback resolves to in practice.
+_FAIL_CLOSED = DataClass.ACCOUNT_IDENTIFIER
 
 
 def _view_body(db: Database, view: TableRef) -> str:
@@ -45,12 +54,14 @@ def _view_body(db: Database, view: TableRef) -> str:
 def derive_view_classes(db: Database, view: TableRef) -> dict[str, DataClass]:
     """Map each output column of ``view`` to its DataClass via body lineage."""
     snapshot = get_current_schema_snapshot(db)
-    key = (view.full_name, snapshot.version)
+    body = _view_body(db, view)
+    body_hash = hashlib.md5(body.encode(), usedforsecurity=False).hexdigest()
+    key = (view.full_name, snapshot.version, body_hash)
     cached = _CACHE.get(key)
     if cached is not None:
         return cached
 
-    tree = parse_cached(_view_body(db, view))
+    tree = parse_cached(body)
     # duckdb_views().sql is the full ``CREATE VIEW ... AS <query>`` — unwrap it.
     if isinstance(tree, exp.Create):
         inner = tree.expression
@@ -60,8 +71,7 @@ def derive_view_classes(db: Database, view: TableRef) -> dict[str, DataClass]:
     qtree = expand_star(tree, snapshot)
     classes = resolve_output_classes(qtree, snapshot, view.full_name)
 
-    with _LOCK:
-        _CACHE[key] = classes
+    _CACHE[key] = classes
     return classes
 
 
@@ -72,12 +82,13 @@ def classify_columns(
 
     A column absent from the view's derived map (e.g. a runner-introduced
     expression) falls back to the highest tier present, mirroring
-    ``execute_sql_query`` — over-redact rather than leak.
+    ``execute_sql_query`` — over-redact rather than leak. When the map is empty
+    (lineage parsed nothing), fall back to ``_FAIL_CLOSED`` so nothing leaks.
     """
     view_classes = derive_view_classes(db, view)
     fallback = (
         max(view_classes.values(), key=lambda c: c.tier)
         if view_classes
-        else DataClass.AGGREGATE
+        else _FAIL_CLOSED
     )
     return {col: view_classes.get(col, fallback) for col in columns}

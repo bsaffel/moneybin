@@ -44,10 +44,10 @@ def balance_drift(
     """  # noqa: S608  # TableRef interpolation
     params: list[object] = []
     if account:
+        sql += " AND account_id = ?"
         # Bind the filter to the resolved account_id (free-text → id at the
         # boundary; raises on ambiguity) per the identifiers rule.
         params.append(AccountService(db).resolve_strict(account))
-        sql += " AND account_id = ?"
     if status != "all":
         sql += " AND status = ?"
         params.append(status)
@@ -55,4 +55,9 @@ def balance_drift(
         sql += " AND assertion_date >= ?"
         params.append(since)
     sql += " ORDER BY drift_abs DESC"
-    return ReportQuery(sql, params)
+
+    actions = [
+        "Filter to one account with account='<name or id>'",
+        "Narrow to flagged rows with status='drift' (also: warning, clean, no-data)",
+    ]
+    return ReportQuery(sql, params, actions=actions)

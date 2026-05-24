@@ -68,6 +68,8 @@ def build_cli_command(spec: ReportSpec) -> Callable[..., None]:
         from moneybin.reports._framework.execute import run_report
 
         output: OutputFormat = kwargs.pop("output")
+        # quiet has nothing to silence here: the text renderer emits only the
+        # results table (no status chatter) and JSON output ignores it.
         kwargs.pop("quiet", None)
         with handle_cli_errors(cli_actor=spec.mcp_tool_name):
             try:
