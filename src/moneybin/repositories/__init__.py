@@ -23,6 +23,10 @@ def concrete_repo_classes() -> list[type[BaseRepo]]:
     elsewhere). The single source of truth for "all repos" — the undo dispatch
     registry and the metadata/coverage tests all derive from it, so a new repo is
     discoverable everywhere the moment it is defined.
+
+    Repos MUST be **direct** subclasses of ``BaseRepo``: ``__subclasses__()`` does
+    not walk further descendants, so a concrete repo behind an intermediate
+    abstract base would be silently invisible here (and to undo dispatch).
     """
     for mod in pkgutil.iter_modules(__path__):
         if mod.name != "base":

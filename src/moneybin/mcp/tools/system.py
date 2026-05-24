@@ -362,6 +362,22 @@ def system_audit_get(operation_id: str) -> ResponseEnvelope[SystemAuditGetPayloa
 
     with get_database(read_only=True) as db:
         detail = UndoService(db).get(operation_id)
+    if detail.can_undo:
+        hint = f"Reverse with system_audit_undo(operation_id='{operation_id}')"
+    elif detail.undo_blocked_by:
+        hint = (
+            f"Blocked by later operations — undo those first: {detail.undo_blocked_by}"
+        )
+    elif detail.unresolvable:
+        hint = (
+            "Cannot be undone — this operation touched data outside the undoable "
+            "app.* surface (e.g. a raw import); re-apply manually."
+        )
+    else:
+        hint = (
+            "Cannot be undone as-is — it was already reversed or changed no "
+            "reversible rows."
+        )
     return build_envelope(
         data=SystemAuditGetPayload(
             operation_id=detail.operation_id,
@@ -385,17 +401,7 @@ def system_audit_get(operation_id: str) -> ResponseEnvelope[SystemAuditGetPayloa
             can_undo=detail.can_undo,
             undo_blocked_by=detail.undo_blocked_by,
         ),
-        actions=[
-            f"Reverse with system_audit_undo(operation_id='{operation_id}')"
-            if detail.can_undo
-            else (
-                "Blocked by later operations — undo those first: "
-                f"{detail.undo_blocked_by}"
-                if detail.undo_blocked_by
-                else "Cannot be undone — this operation touched data outside the "
-                "undoable app.* surface (e.g. a raw import); re-apply manually."
-            ),
-        ],
+        actions=[hint],
     )
 
 

@@ -181,6 +181,27 @@ class TestUndo:
         tags = db.execute("SELECT COUNT(*) FROM app.transaction_tags").fetchone()
         assert tags == (0,)
 
+    def test_all_noop_rows_refuse(self, db: Database) -> None:
+        # An operation whose every row is a no-op (before == after, e.g. a legacy
+        # idempotent tag.add) reverses nothing. Refuse rather than mint a phantom
+        # undo_operation_id that carries no audit rows.
+        same = json.dumps({"transaction_id": "txn_1", "tag": "trip"})
+        db.execute(
+            "INSERT INTO app.audit_log "
+            "(audit_id, actor, action, target_schema, target_table, target_id, "
+            " before_value, after_value, operation_id) "
+            "VALUES ('noop1','cli','tag.add','app','transaction_tags','txn_1', "
+            " ?, ?, 'op_noop')",
+            [same, same],
+        )
+        with pytest.raises(UserError) as exc:
+            UndoService(db).undo("op_noop", actor="cli")
+        assert exc.value.code == error_codes.RECOVERY_NO_PATH
+        undo_rows = db.execute(
+            "SELECT COUNT(*) FROM app.audit_log WHERE is_undo = TRUE"
+        ).fetchone()
+        assert undo_rows == (0,)  # no phantom undo operation written
+
     def test_partial_update_before_refuses(self, db: Database) -> None:
         # A legacy note.edit captured a partial before_value (note_id/text only).
         # The UPDATE-restore branch would silently partial-restore (leaving
@@ -351,6 +372,21 @@ class TestGet:
         with pytest.raises(UserError) as exc:
             UndoService(db).get("op_missing")
         assert exc.value.code == error_codes.UNDO_OPERATION_NOT_FOUND
+
+    def test_marker_only_not_undoable(self, db: Database) -> None:
+        # A marker-only operation (tag.rename matching zero rows) is refused by
+        # undo(); get() must agree (can_undo=False), not advertise an undo that
+        # would immediately fail.
+        with operation() as op:
+            AuditService(db).record_audit_event(
+                action="tag.rename",
+                target=("app", "transaction_tags", None),
+                before={"old_tag": "ghost"},
+                after={"new_tag": "x", "row_count": 0},
+                actor="cli",
+            )
+        detail = UndoService(db).get(op)
+        assert detail.can_undo is False
 
 
 if __name__ == "__main__":

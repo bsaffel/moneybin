@@ -72,6 +72,10 @@ class OperationDetail:
     events: list[AuditEvent]
     can_undo: bool
     undo_blocked_by: list[str] | None
+    unresolvable: list[str] | None
+    """``schema.table`` of any row outside the undoable surface — distinguishes a
+    raw-targeted refusal from a marker-only / already-undone one for the surface
+    hint. Not part of the MCP payload; consumed only when building the action."""
 
 
 @dataclass(frozen=True)
@@ -213,6 +217,17 @@ class UndoService:
             except BaseException:
                 self._db.rollback()
                 raise
+        if not undone:
+            # Every row event was a no-op (before == after) — e.g. legacy
+            # idempotent tag.add rows. Nothing was reversed; the fresh undo_op
+            # carries no audit rows, so returning it would be a phantom success.
+            # (Complement of the marker-only guard above, by the other filter.)
+            audit_undo_total.labels(outcome="no_path").inc()
+            raise UserError(
+                f"Operation {operation_id!r} has no net effect to reverse "
+                "(all captured rows show before == after).",
+                code=error_codes.RECOVERY_NO_PATH,
+            )
         tables = sorted({e.target_table for e in undone if e.target_table})
         audit_undo_total.labels(outcome="success").inc()
         audit_undo_rows_reversed_total.inc(len(undone))
@@ -298,6 +313,7 @@ class UndoService:
             events=events,
             can_undo=u.can_undo,
             undo_blocked_by=u.blockers or None,
+            unresolvable=u.unresolvable or None,
         )
 
     def _summarize(
@@ -371,9 +387,23 @@ class UndoService:
             liveness = self._build_undo_liveness()
         undone_by = liveness.live_undo_of(operation_id)
         blockers = self._cascade_blockers(operation_id, liveness)
-        unresolvable = self._unresolvable_tables(operation_id)
+        targets = self._row_targets(operation_id)
+        unresolvable = sorted(
+            f"{schema}.{table}"
+            for schema, table in targets
+            if not is_registered(schema, table)
+        )
+        # A marker-only operation (every event target_id NULL, e.g. a tag.rename
+        # that matched zero rows) has no row to reverse — undo() refuses it, so
+        # can_undo must be False here too or get()/history() would disagree.
+        marker_only = not targets
         return _Undoability(
-            can_undo=undone_by is None and not blockers and not unresolvable,
+            can_undo=(
+                undone_by is None
+                and not blockers
+                and not unresolvable
+                and not marker_only
+            ),
             blockers=blockers,
             undone_by=undone_by,
             unresolvable=unresolvable,
@@ -395,22 +425,20 @@ class UndoService:
             children.setdefault(str(undone_op), []).append(str(undo_op))
         return _UndoLiveness(children)
 
-    def _unresolvable_tables(self, operation_id: str) -> list[str]:
-        """``schema.table`` of any mutated row no repo owns (sorted, deduped).
+    def _row_targets(self, operation_id: str) -> list[tuple[str, str]]:
+        """Distinct ``(target_schema, target_table)`` of this op's row mutations.
 
-        Queries the distinct targets directly rather than loading and JSON-decoding
-        every row's full before/after payload just to derive this set.
+        Only rows with a non-null ``target_id`` — marker rows carry no row
+        mutation. One query backs both the unresolvable-table check and the
+        marker-only check (empty result), instead of loading and JSON-decoding
+        every row's full before/after payload.
         """
         rows = self._db.conn.execute(
             "SELECT DISTINCT target_schema, target_table FROM app.audit_log "
             "WHERE operation_id = ? AND target_id IS NOT NULL",
             [operation_id],
         ).fetchall()
-        return sorted(
-            f"{schema}.{table}"
-            for schema, table in rows
-            if not is_registered(str(schema or ""), str(table or ""))
-        )
+        return [(str(schema or ""), str(table or "")) for schema, table in rows]
 
     def _cascade_blockers(
         self, operation_id: str, liveness: _UndoLiveness

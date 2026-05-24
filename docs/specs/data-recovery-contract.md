@@ -430,11 +430,16 @@ Deviations from the design as written, with rationale:
   rejects a `before` missing NOT NULL columns, and the UPDATE-restore path rejects
   a `before` less complete than `after` (which would silently restore only the
   captured columns) — covering legacy partial `note.delete` / `note.edit` rows.
-- **Marker-only operations are refused.** An operation whose audit rows are *all*
-  markers (`target_id IS NULL`) — e.g. a `tag.rename` matching zero transactions,
-  whose parent marker is emitted unconditionally — has nothing to reverse and is
-  refused with `recovery_no_path`, rather than minting an `undo_operation_id` that
-  carries no audit rows and so isn't itself queryable or undoable.
+- **Operations with nothing to reverse are refused.** Two filters guard the same
+  "no phantom undo id" invariant: an operation whose audit rows are *all* markers
+  (`target_id IS NULL`, e.g. a `tag.rename` matching zero transactions, whose
+  parent marker is emitted unconditionally), and an operation whose every row is a
+  net no-op (`before == after`, e.g. a legacy idempotent `tag.add`). Either way
+  `undo` raises `recovery_no_path` rather than minting an `undo_operation_id` with
+  no audit rows (which wouldn't be queryable or undoable). For the marker-only
+  case `_undoability` also reports `can_undo=False`, so `system_audit_get` /
+  `_history` agree with `undo`'s refusal instead of advertising an undo that would
+  immediately fail.
 - **`recovery_no_path` for raw-targeted operations.** An operation that touched a
   table outside the undoable `app.*` surface (e.g. `manual.create` →
   `raw.manual_transactions`) is refused with `recovery_no_path` rather than

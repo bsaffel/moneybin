@@ -264,6 +264,29 @@ async def test_audit_get_hint_distinguishes_unresolvable(mcp_db: object) -> None
 
 
 @pytest.mark.unit
+async def test_audit_get_hint_for_marker_only(mcp_db: object) -> None:
+    from moneybin.database import get_database
+    from moneybin.mcp.tools.system import system_audit_get
+    from moneybin.services.audit_service import AuditService
+    from moneybin.services.mutation_context import operation
+
+    with get_database() as db, operation() as op:
+        AuditService(db).record_audit_event(
+            action="tag.rename",
+            target=("app", "transaction_tags", None),
+            before={"old_tag": "ghost"},
+            after={"new_tag": "x", "row_count": 0},
+            actor="cli",
+        )
+    parsed = (await system_audit_get(op)).to_dict()
+    assert parsed["data"]["can_undo"] is False
+    hint = " ".join(parsed["actions"]).lower()
+    # Marker-only: not the raw-import "re-apply" message; says nothing to reverse.
+    assert "re-apply" not in hint
+    assert "reversible" in hint or "already reversed" in hint
+
+
+@pytest.mark.unit
 async def test_register_undo_tools() -> None:
     srv = FastMCP("test")
     register_system_tools(srv)
