@@ -267,7 +267,7 @@ Reads `reports.spending_trend` (SQLMesh view). Returns `(columns, rows)` over a 
 **CLI command**
 
 ```
-moneybin reports spending [--from YYYY-MM] [--to YYYY-MM] [--category SLUG] [--compare yoy|mom|trailing] [-o text|json] [-q]
+moneybin reports spending [--from-month YYYY-MM] [--to-month YYYY-MM] [--category SLUG] [--compare yoy|mom|trailing] [-o text|json] [-q]
 ```
 
 Default output is a table with the comparison columns; `--output json` returns the response envelope.
@@ -435,7 +435,7 @@ The CLI accepts a JSON file via `--input PATH` or stdin (`-`); batch data doesn'
 - **Sensitivity:** `low`
 - **Parameters:** `from_month`, `to_month`, optional account / category filters per the shipped signature.
 - **Behavior:** Reads `reports.cash_flow` (SQLMesh view). Returns `{year_month, account_id, account_name, category, inflow, outflow, net, txn_count}` rows. Transfers are excluded (intra-portfolio movement, not cash flow); archived accounts are excluded.
-- **CLI:** `moneybin reports cashflow [--from YYYY-MM] [--to YYYY-MM] [--by account|category|account-and-category]`.
+- **CLI:** `moneybin reports cashflow [--from-month YYYY-MM] [--to-month YYYY-MM] [--by account|category|account-and-category]`.
 
 > Income breakdown is reached by filtering `inflow > 0` and grouping by `category` or by `description` via `reports_merchants` (§12).
 
@@ -972,6 +972,15 @@ Create or update a monthly budget for a category.
 
 ### `reports_budget`
 
+**Status: de-registered / removed (2026-05-23).** The tool was removed because it
+synthesized its result from `BudgetService` rather than reading a `reports.*`
+view, violating the `reports_*` = reads-a-view convention now enforced by the
+report framework (§12, §17d). It **re-registers automatically through the report
+framework** once M3C ships a `reports.budget` view — at which point a `@report`
+runner generates the tool, CLI command, and `TableRef` from the view's structured
+comment block (no hand-written tool). The budget-vs-actual design intent below is
+retained as the target shape for that view.
+
 Budget vs actual spending comparison for a month.
 
 - **Sensitivity:** `low` — returns aggregates (budget target, total spent, remaining).
@@ -981,6 +990,11 @@ Budget vs actual spending comparison for a month.
 - **CLI:** `moneybin reports budget status [--month YYYY-MM]`
 
 ### `reports_budget_summary`
+
+**Status: de-registered / removed (2026-05-23)** — same rationale as `reports_budget`
+above (synthesized from `BudgetService`, not a `reports.*` view). Re-registers via
+the report framework when M3C ships the backing `reports.budget` view. Design intent
+below is retained as the target trend shape.
 
 Budget performance over multiple months — trend view.
 
@@ -1096,7 +1110,19 @@ Validate an extension manifest (Analysis Package or standalone Report) against t
 - **Service:** `ExtensionValidatorService.validate(path) -> ValidationReport` (planned).
 - **CLI:** `moneybin extension validate PATH` (per CLI↔MCP parity).
 
-> Note: a unified `reports_health` snapshot tool is **planned, not registered**. Today the agent composes the same view from `reports_networth` + `reports_spending` + `reports_cashflow` + `reports_budget`. Re-evaluate as a dedicated tool when agent-experience reports show the composition friction outweighs the surface cost.
+> Note: a unified `reports_health` snapshot tool is **planned, not registered** (its CLI stub was removed 2026-05-23). Today the agent composes the same view from `reports_networth` + `reports_spending` + `reports_cashflow`. Re-evaluate as a dedicated tool when agent-experience reports show the composition friction outweighs the surface cost.
+
+> **Implementation note (report framework, 2026-05-23):** The six view-backed
+> reports — `reports_cashflow`, `reports_spending`, `reports_recurring`,
+> `reports_merchants`, `reports_large_transactions`, `reports_balance_drift` —
+> are no longer hand-written service wrappers. They are generated from `@report`
+> runners in `moneybin.reports.definitions` and registered via
+> `register_reports_mcp` (see §17d and [`extension-contracts.md`](extension-contracts.md)
+> §"Report contract"). **Tool names, parameters, sensitivity tiers, and response
+> envelopes are unchanged** — only the implementation moved from `ReportsService`
+> methods to the framework. `reports_networth` / `reports_networth_history` stay
+> hand-written (they are `NetworthService`-backed, not single `reports.*` view
+> reads — a documented exception).
 
 ### `reports_recurring`
 
@@ -1194,7 +1220,7 @@ Four goal-oriented workflow templates. Each defines the goal, relevant tools, gu
 
 **Parameters:** `month: str?` (YYYY-MM, defaults to current month).
 
-**Relevant tools:** `reports_spending` (with `category` filter for drill-down), `reports_cashflow`, `reports_budget`, `reports_recurring`, `reports_merchants`, `reports_networth`
+**Relevant tools:** `reports_spending` (with `category` filter for drill-down), `reports_cashflow`, `reports_recurring`, `reports_merchants`, `reports_networth`
 
 **Guardrails:**
 
@@ -1361,7 +1387,7 @@ Tools that depend on unbuilt subsystems are documented in the catalog with depen
 | **Smart Import (Pillar F) + Privacy** | Not written | `import_ai_preview`, `import_ai_parse` |
 | **Corrections table schema** | Not written | `transactions_correct` |
 | **Annotations table schema** | Not written | `transactions_annotate` |
-| **Budget tracking spec** | Draft | `reports_budget_summary` rollover behavior; `budget_set` (de-registered 2026-05-17 — re-register when spec reaches `in-progress`) |
+| **Budget tracking spec** | Draft | `reports_budget` / `reports_budget_summary` (read tools removed 2026-05-23 — re-register via the report framework when M3C ships a `reports.budget` view; `reports_budget_summary` rollover behavior pending the spec); `budget_set` (de-registered 2026-05-17 — re-register when spec reaches `in-progress`) |
 | **Tax spec (none yet)** | Not written | `tax_w2`, `tax_deductions`, `tax_prep` prompt — **removed entirely** 2026-05-19; W-2 extraction pipeline cut; tax data ingestion to be re-designed from scratch when a new tax spec is written |
 | **[Extension contracts](extension-contracts.md)** | Draft | `extension_validate` (manifest + capability + prefix + Quality-Scale validator); `<pkg>_*` tools from Analysis Packages (e.g., `assets_*`, `us_tax_*` at M3E); standalone-Report auto-registered `reports_*` tools |
 

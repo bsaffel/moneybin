@@ -252,17 +252,22 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- create <pattern> <canonical_name> [--default-category]
 |
 +-- reports                        -- Cross-domain analytical and aggregation views (read-only)
+|   |   # The six view-backed reports below (cashflow, spending, recurring,
+|   |   # merchants, large-transactions, balance-drift) are framework-generated
+|   |   # from `@report` runners in src/moneybin/reports/definitions/. Command
+|   |   # names and result shapes are unchanged; each flag is auto-derived from
+|   |   # the runner's parameter name (e.g. `from_month` -> `--from-month`), and
+|   |   # every generated command also carries `--output` / `--quiet`. `networth`
+|   |   # and `networth-history` stay hand-written.
 |   +-- networth                   -- Cross-domain net worth aggregation (accounts + assets) [--as-of DATE]
 |   +-- networth-history           -- Net worth time series [--from DATE] [--to DATE]
-|   +-- cashflow                   -- Inflow / outflow over a window
-|   +-- spending                   -- Spending by category
-|   +-- recurring                  -- Recurring transactions (replaces removed `transactions_recurring_list` per #163)
-|   +-- merchants                  -- Top merchants by spend
+|   +-- cashflow                   -- Inflow / outflow over a window [--from-month YYYY-MM] [--to-month YYYY-MM] [--by]
+|   +-- spending                   -- Spending by category [--from-month YYYY-MM] [--to-month YYYY-MM] [--category] [--compare]
+|   +-- recurring                  -- Recurring transactions [--min-confidence] [--status] [--cadence] (replaces removed `transactions_recurring_list` per #163)
+|   +-- merchants                  -- Top merchants by spend [--top] [--sort]
 |   +-- uncategorized              -- Uncategorized transactions roll-up
-|   +-- large-transactions         -- Outlier amounts
-|   +-- balance-drift              -- Reconciliation drift across accounts
-|   +-- budget                     -- (future spec) Budget vs actual report
-|   +-- health                     -- (future spec) Cross-domain financial health snapshot
+|   +-- large-transactions         -- Outlier amounts [--top] [--anomaly]
+|   +-- balance-drift              -- Reconciliation drift across accounts [--account] [--status] [--since]
 |
 +-- system                         -- System / data status meta-view
 |   +-- status                     -- What data exists, freshness, pending review queues
@@ -385,13 +390,13 @@ Naming follows [`extension-contracts.md`](extension-contracts.md) §"Naming and 
 ```
 Entity groups:  accounts (+ balance), transactions (+ matches, categorize, notes, tags, splits), assets
 Reference data: categories, merchants (taxonomies that transactions reference)
-Reports:        reports (networth, networth-history, spending, cashflow, recurring, merchants, uncategorized, large-transactions, balance-drift; budget + health stubbed)
+Reports:        reports (networth, networth-history, spending, cashflow, recurring, merchants, uncategorized, large-transactions, balance-drift; budget read command de-registered pending the reports.budget view)
 System:         system (status, doctor, audit)
 Privacy:        privacy (redaction testing); synthetic (testing data generation)
 Data in:        import, sync
 Data out:       export
 Pipeline:       refresh (post-load orchestration: match -> transform -> categorize)
-Mutation:       budget (target management; vs-actual report lives under reports/budget)
+Mutation:       budget (target management; the vs-actual `reports budget` read command is de-registered pending the reports.budget view)
 Operational:    logs, stats
 Ad-hoc query:   sql (privacy-safe SQL; raw operator access is db query/shell/ui)
 Infrastructure: profile, db, mcp, transform
@@ -639,7 +644,7 @@ This is a hard cut. No aliases, no deprecation period. v1 paths break in the sam
 | `track balance history` | `accounts balance history` | |
 | `track networth show` | `reports networth` | Cross-domain rollup (accounts + assets) — moved out of `accounts` to honor that it aggregates more than accounts |
 | `track networth history` | `reports networth-history` | |
-| `track budget *` | `budget *` | Top-level (mutation); reports → `reports budget` |
+| `track budget *` | `budget *` | Top-level (mutation). The budget-vs-actual read command (`reports budget`) is de-registered pending the `reports.budget` view (M3C); it returns when the view ships. |
 | `track recurring *` | `transactions recurring *` | Pattern detection on transactions |
 | `track investments *` | `accounts investments *` | Holdings as account-typed entity |
 | `matches *` | `transactions matches *` | Workflow on transactions |
@@ -808,7 +813,7 @@ These existing specs define CLI commands that need updates to reflect v2's taxon
 | `account-management.md` (planned) | Owns the `accounts` namespace entity ops (`list`, `get`, `set`, `resolve`). Settings updates (display name, include/exclude, archive/unarchive) fold into `accounts set` flags. Balance subcommands stay nested per `reports-net-worth.md`. | Owns `accounts`, `accounts_get`, `accounts_set` (folds display_name / include / archive), `accounts_resolve`. |
 | `matching-same-record-dedup.md` / `matching-transfer-detection.md` | `matches *` → `transactions matches *` | Match-related tools take `transactions_matches_*` prefix |
 | `categorization-overview.md` / `categorization-auto-rules.md` / `categorization-bulk.md` | `categorize *` workflow → `transactions categorize *`. Pull category-taxonomy and merchant-mapping commands to top-level `categories *` and `merchants *` groups | Categorize workflow tools take `transactions_categorize_*` prefix; category and merchant CRUD become `categories_*` / `merchants_*` top-level |
-| `budget-tracking.md` | `track budget *` → `budget *`; budget-vs-actual report goes under `reports budget` | When MCP tools are added, follow new naming |
+| `budget-tracking.md` | `track budget *` → `budget *`; the budget-vs-actual read command (`reports budget`) is de-registered pending the `reports.budget` view (M3C) and returns when the view ships | When MCP tools are added, follow new naming |
 | `moneybin-mcp.md` | n/a | Adopt path-prefix-verb-suffix convention; enumerate all existing tool renames |
 | `observability.md` | No structural change. Verify command signatures match. | n/a |
 | `privacy-data-protection.md` | `db lock`/`unlock`/`rotate-key` already match. | n/a |
@@ -882,6 +887,7 @@ These were identified during design and should be added to the spec index:
 
 | Date | Version | Summary |
 |---|---|---|
+| 2026-05-23 | v2 audit | Report auto-generation shipped: the six view-backed report commands (`cashflow`, `spending`, `recurring`, `merchants`, `large-transactions`, `balance-drift`) are now framework-generated from `@report` runners in `src/moneybin/reports/definitions/` (names + result shapes unchanged; flags auto-derive from runner param names, plus `--output`/`--quiet`). `cashflow`/`spending` bespoke `--from`/`--to` became `--from-month`/`--to-month`. `reports budget` (BudgetService-synthesized, no backing view) and `reports health` (unimplemented stub) were removed; `reports budget` returns when the `reports.budget` view lands. `networth`/`networth-history` stay hand-written. |
 | 2026-05-17 | v2 audit | Refreshed command tree to match shipped implementation. Notable shipped PRs reflected: #159 (noun-only read names), #163 (`reports recurring` replaces removed `transactions_recurring_list`), #164 (`accounts set` absorbs rename/include/archive/unarchive), #166 (`categories delete --force`), #167 (`categorize rules create + delete` parity), #171 (`categorize commit` rename + `categorize run` umbrella + `categorize assist`), #173 (`refresh` umbrella, `transform apply` operator-only). Renamed CLI commands documented: `accounts balance delete` → `accounts balance assertion-delete`; `db rotate-key` → `db key rotate`; `sync rotate-key` → `sync key rotate`; `import file` → `import files`; `matches log` → `matches history`. New top-level groups not previously enumerated: `privacy`, `synthetic`; new sub-groups: `transactions {notes, tags, splits, create, audit}`, `import {history, revert, preview, formats, inbox, labels}`, `db {info, backup, restore, key {show, rotate, export, import, verify}}`, `system {doctor, audit}`. Auto-rule workflow uses `accept` (not `confirm`) and adds `rules`. |
 | 2026-05-02 | v2 | Dissolved `track`; introduced entity groups (`accounts`, `transactions`); added `reports` group; unified taxonomy across CLI / MCP / future HTTP; renamed MCP tools to path-prefix-verb-suffix convention. Hard cut, no aliases. |
 | 2026-04-20 (orig) | v1 | Initial restructure: profile system, dissolved `config`/`data`, top-level `matches`/`categorize`/`track`. Implemented. |

@@ -37,7 +37,7 @@ This spec is the inaugurating implementation of that convention. It exercises th
 ### Related specs
 
 - [`architecture-shared-primitives.md`](architecture-shared-primitives.md) — gate spec; defines the `reports.*` schema, layer rules, and the `core.agg_net_worth → reports.net_worth` cascading edit. **Carries one small follow-up amendment in this spec** (rename `reports.networth` → `reports.net_worth`); see [Migrations](#migrations).
-- [`moneybin-cli.md`](moneybin-cli.md) — v2 reports CLI namespace (`reports networth`, `reports spending`, `reports cashflow`, `reports budget`, `reports health`). This spec adds five more subcommands (`reports recurring`, `reports merchants`, `reports uncategorized`, `reports large-transactions`, `reports balance-drift`).
+- [`moneybin-cli.md`](moneybin-cli.md) — v2 reports CLI namespace (`reports networth`, `reports spending`, `reports cashflow`). This spec adds four more subcommands (`reports recurring`, `reports merchants`, `reports large-transactions`, `reports balance-drift`). The `uncategorized_queue` view ships, but no `reports uncategorized` command is exposed — agents reach the curation queue via `transactions_categorize_pending`.
 - [`moneybin-mcp.md`](moneybin-mcp.md) — v2 `reports_*` MCP tools mirror the CLI 1:1.
 - [`mcp-sql-discoverability.md`](mcp-sql-discoverability.md) — `moneybin://schema` resource. **Extended** by this spec to include the `reports` schema with `audience: "interface"`.
 - [`reports-net-worth.md`](reports-net-worth.md) — owner of the existing `core.agg_net_worth` model, which this spec migrates. The two `NetworthService` SQL references are updated as part of the migration (no behavior change).
@@ -57,6 +57,17 @@ This spec is the inaugurating implementation of that convention. It exercises th
 | Bundle `core.dim_categories` and `core.dim_merchants` migrations | Today `app.categories` and `app.merchants` are Python-built views exposed directly to consumers, violating the `architecture-shared-primitives.md` rule that consumers read only `core.*`/`reports.*`. The recipe library is already touching the `core/` SQLMesh layer, `TableRef`, and the schema-discoverability surface — bundling now avoids reopening the same surface twice. | §Migrations |
 
 ## Architectural Pattern
+
+> **Surface-layer note (report auto-generation):** the `reports.*` SQLMesh
+> views are unchanged. The CLI/MCP surface that exposes them is now
+> **framework-generated** — the six view-backed reports (`cashflow`,
+> `spending`, `recurring`, `merchants`, `large-transactions`, `balance-drift`)
+> are declared as `@report` runners in `src/moneybin/reports/definitions/`
+> and registered via `register_reports_cli` / `register_reports_mcp` from
+> `ALL_REPORTS`. Names and result shapes are unchanged. `networth` /
+> `networth-history` stay hand-written (NetworthService-backed, not single
+> `reports.*` view reads) — a documented exception. `uncategorized_queue` is
+> not registered as a report runner (see [CLI Interface](#cli-interface)).
 
 The `reports.*` schema is a **read-only presentation layer** (`architecture-shared-primitives.md` §Data Layer). Every model is a SQLMesh view (`kind VIEW`) reading exclusively from `core.*` and (where applicable) `app.*` joined into `core.dim_*` resolved views. **No `reports.*` model writes to `app.*`, no service writes to `reports.*`, no consumer reads from `prep.*` or `raw.*` directly.**
 
@@ -118,7 +129,7 @@ MCP: `reports_networth` (point-in-time), `reports_networth_history` (time series
 | `net` | `DECIMAL(18,2)` | inflow + outflow |
 | `txn_count` | `INTEGER` | Number of non-transfer transactions in this cell |
 
-CLI: `moneybin reports cashflow [--from MONTH] [--to MONTH] [--by account|category|account-and-category]`.
+CLI: `moneybin reports cashflow [--from-month MONTH] [--to-month MONTH] [--by account|category|account-and-category]`.
 MCP: `reports_cashflow`. Tier 1.
 
 ### `reports.spending_trend`
@@ -147,7 +158,7 @@ MCP: `reports_cashflow`. Tier 1.
 | `yoy_pct` | `DECIMAL(8,4)` | yoy_delta / prev_year_spend; NULL if prev_year_spend = 0 |
 | `trailing_3mo_avg` | `DECIMAL(18,2)` | Rolling 3-month average ending this month, same category |
 
-CLI: `moneybin reports spending [--from MONTH] [--to MONTH] [--category SLUG] [--compare yoy|mom|trailing]`.
+CLI: `moneybin reports spending [--from-month MONTH] [--to-month MONTH] [--category SLUG] [--compare yoy|mom|trailing]`.
 MCP: `reports_spending`. Tier 1.
 
 ### `reports.recurring_subscriptions`
@@ -233,10 +244,9 @@ MCP: `reports_recurring`. Tier 1.
 | `source_type` | `VARCHAR` | Source system that contributed this transaction |
 | `source_id` | `VARCHAR` | Provenance reference within the source system |
 
-CLI default sort: `ORDER BY priority_score DESC`. The view does not bake the sort in — SQL/MCP consumers can re-rank by recency, by amount, by account, etc.
+Default sort: `ORDER BY priority_score DESC`. The view does not bake the sort in — SQL consumers can re-rank by recency, by amount, by account, etc.
 
-CLI: `moneybin reports uncategorized [--min-amount DECIMAL] [--account NAME] [--limit N]`.
-MCP: `reports_uncategorized`. Tier 1.
+**Surface:** the `uncategorized_queue` view exists but is **not** exposed as a CLI command or MCP tool — it is not registered as a `@report` runner. Agents reach the curation queue via `transactions_categorize_pending` instead, so no `reports uncategorized` / `reports_uncategorized` surface ships. The view remains queryable via `sql_query` / `moneybin sql query` and is consumed by the categorization surface.
 
 ### `reports.merchant_activity`
 
@@ -379,11 +389,11 @@ sqlmesh/models/core/
 - `docs/specs/architecture-shared-primitives.md` — small text amendment per [Migration 1](#1-amendment-to-architecture-shared-primitivesmd).
 
 **CLI:**
-- Extend `src/moneybin/cli/commands/reports/` with subcommands for the five new reports (`recurring`, `merchants`, `uncategorized`, `large_transactions`, `balance_drift`). Existing `networth`, `cashflow`, `spending` subcommands either already exist or get wired up to the new views.
+- The view-backed subcommands (`cashflow`, `spending`, `recurring`, `merchants`, `large-transactions`, `balance-drift`) are framework-generated from `@report` runners in `src/moneybin/reports/definitions/` and registered by `register_reports_cli(ALL_REPORTS, app)` in `src/moneybin/cli/commands/reports/__init__.py`. `networth` / `networth-history` stay hand-written. (`uncategorized_queue` is not a registered runner — no `reports uncategorized` command.)
 - The existing `categories list` and `merchants list` CLI commands are unaffected because they go through services that already use `TableRef.CATEGORIES`/`MERCHANTS`. After migration, those services read from `core.dim_*`.
 
 **MCP:**
-- Extend `src/moneybin/mcp/tools/reports_*.py` with the five new tools. The existing `networth` tool's source query updates to read from `reports.net_worth`.
+- The view-backed tools register via `register_reports_mcp(ALL_REPORTS, mcp)` in `src/moneybin/mcp/tools/reports.py`; the hand-written `reports_networth` / `reports_networth_history` tools read from `reports.net_worth` (via NetworthService). (No `reports_uncategorized` tool — see CLI note above.)
 
 **Tests:**
 - Per-model SQLMesh audits (see [Testing Strategy](#testing-strategy)).
@@ -431,20 +441,21 @@ These are part of the spec's success criteria — without curated example querie
 
 ## CLI Interface
 
-Extends `moneybin-cli.md` v2's `reports` namespace. Five new subcommands added; three existing subcommands (`networth`, `cashflow`, `spending`) backed by the new/migrated views.
+Extends `moneybin-cli.md` v2's `reports` namespace. Four new subcommands added; three existing subcommands (`networth`, `cashflow`, `spending`) backed by the new/migrated views. The six view-backed subcommands (`cashflow`, `spending`, `recurring`, `merchants`, `large-transactions`, `balance-drift`) are framework-generated from `@report` runners; `networth` / `networth-history` are hand-written. Flag names on the framework-generated commands derive from the runner's parameter names (e.g. `from_month` → `--from-month`).
 
 ```
 moneybin reports
-+-- networth [--as-of DATE]                          (existing — now backed by reports.net_worth)
-+-- networth-history [--from DATE] [--to DATE] [--interval daily|weekly|monthly]
-+-- cashflow [--from MONTH] [--to MONTH] [--by account|category|account-and-category]
-+-- spending [--from MONTH] [--to MONTH] [--category SLUG] [--compare yoy|mom|trailing]
++-- networth [--as-of DATE]                          (hand-written — backed by reports.net_worth)
++-- networth-history [--from DATE] [--to DATE] [--interval daily|weekly|monthly]   (hand-written)
++-- cashflow [--from-month MONTH] [--to-month MONTH] [--by account|category|account-and-category]
++-- spending [--from-month MONTH] [--to-month MONTH] [--category SLUG] [--compare yoy|mom|trailing]
 +-- recurring [--min-confidence FLOAT] [--status active|inactive|all] [--cadence ...]
 +-- merchants [--top N] [--sort spend|count|recent]
-+-- uncategorized [--min-amount DECIMAL] [--account NAME] [--limit N]
 +-- large-transactions [--top N] [--anomaly account|category|none]
 +-- balance-drift [--account NAME] [--status drift|warning|clean|no-data] [--since DATE]
 ```
+
+The `uncategorized_queue` view ships but no `reports uncategorized` command is registered — agents use `transactions_categorize_pending` for the curation queue (see [`reports.uncategorized_queue`](#reportsuncategorized_queue)). `reports budget` and the `reports health` stub were also removed: budget is synthesized from `BudgetService` rather than a `reports.*` view and returns through the framework once M3C ships a `reports.budget` view; `health` had no backing spec.
 
 All commands support `--output json` per `moneybin-cli.md`. JSON output uses `ResponseEnvelope` shape per `architecture-shared-primitives.md` §MCP/CLI/SQL Symmetry.
 
@@ -452,21 +463,22 @@ CLI function naming follows the noun-only convention for read projections (`repo
 
 ## MCP Interface
 
-Mirrors CLI 1:1. Eight new or updated tools, all Tier 1 (Account-Level):
+Mirrors CLI 1:1. Eight tools, all Tier 1 (Account-Level). The six view-backed tools are framework-generated from `@report` runners (via `register_reports_mcp`); `reports_networth` / `reports_networth_history` are hand-written (NetworthService-backed).
 
 | Tool | Sensitivity | Purpose |
 |---|---|---|
-| `reports_networth` | Tier 1 | Point-in-time net worth (existing tool, repointed source) |
-| `reports_networth_history` | Tier 1 | Net worth history |
+| `reports_networth` | Tier 1 | Point-in-time net worth (hand-written, NetworthService-backed) |
+| `reports_networth_history` | Tier 1 | Net worth history (hand-written) |
 | `reports_cashflow` | Tier 1 | Monthly cash flow |
 | `reports_spending` | Tier 1 | Spending trend with deltas |
 | `reports_recurring` | Tier 1 | Recurring subscription candidates |
 | `reports_merchants` | Tier 1 | Merchant activity |
-| `reports_uncategorized` | Tier 1 | Uncategorized queue |
 | `reports_large_transactions` | Tier 1 | Large transactions |
 | `reports_balance_drift` | Tier 1 | Balance reconciliation drift |
 
-Tier 1 rationale (per `mcp-architecture.md`): these expose aggregate financial state, category breakdowns, and merchant-level totals. They never expose raw account numbers, full descriptions of one-off purchases without aggregation, or PII-bearing fields. The `uncategorized_queue` and `large_transactions` views surface individual `description` columns — these are still Tier 1 because the data is the user's own, exposed to consumers the user has explicitly granted MCP access to. Tier 2 (Transaction-Level) is reserved for tools that expose full unaggregated transaction reads (e.g., `transactions_review` for the review queue surface).
+`reports_uncategorized` is **not** registered — the `uncategorized_queue` view is reached through the categorization surface (`transactions_categorize_pending`), not a standalone report tool. `reports_budget` was also removed: budget synthesizes from `BudgetService` rather than a `reports.*` view and returns through the framework once M3C ships a `reports.budget` view.
+
+Tier 1 rationale (per `mcp-architecture.md`): these expose aggregate financial state, category breakdowns, and merchant-level totals. They never expose raw account numbers, full descriptions of one-off purchases without aggregation, or PII-bearing fields. The `large_transactions` view surfaces individual `description` columns — still Tier 1 because the data is the user's own, exposed to consumers the user has explicitly granted MCP access to. Tier 2 (Transaction-Level) is reserved for tools that expose full unaggregated transaction reads (e.g., `transactions_review` for the review queue surface).
 
 All tools return `ResponseEnvelope` with `data`, `summary`, and `display_currency` fields (per `architecture-shared-primitives.md` §MCP/CLI/SQL Symmetry).
 
@@ -599,7 +611,7 @@ Scenario fixtures use the YAML format owned by `testing-scenario-comprehensive.m
 
 ### 3. CLI/MCP smoke tests
 
-Per `testing-e2e.md`, add subprocess-based smoke tests for the five new CLI commands and update the three existing ones to verify they return `ResponseEnvelope`-shaped JSON with a non-empty `data` array on the standard fixture.
+Per `testing-e2e.md`, add subprocess-based smoke tests for the four new CLI commands and update the three existing ones to verify they return `ResponseEnvelope`-shaped JSON with a non-empty `data` array on the standard fixture.
 
 For MCP, add per-tool unit tests under `tests/moneybin/mcp/test_tools/` asserting:
 

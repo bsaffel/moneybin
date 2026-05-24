@@ -283,23 +283,35 @@ Packages writing to another package's prefix is not permitted — the writes-cap
 
 ### What a Report is
 
-A Report is the simplest extension: one SQLMesh view file with structured comments, plus the registration trinity (TableRef constant, MCP tool, CLI command) which the framework auto-generates from the view.
+A Report is a single decorated **Python runner** over a `reports.*` view. The runner is the report's whole definition — it validates parameters, resolves free-text inputs to ids, and builds a parameterized read-only `SELECT`, returning a `ReportQuery`. The framework introspects the runner's signature and Google-style docstring into a `ReportSpec` and auto-generates the registration trinity (MCP tool, CLI command, `TableRef` wiring) from that one definition.
 
-A Report has no Python services, no schema writes beyond its own view, no external API calls, no secrets. Read-only by construction.
+```python
+@report(name="cashflow", view=REPORTS_CASH_FLOW)
+def cash_flow(db, *, from_month=None, to_month=None, by="account-and-category") -> ReportQuery:
+    """Google-style docstring: summary + Args + Examples."""
+    ...validate params, resolve free-text→id, build SQL...
+    return ReportQuery(sql, params, actions=[...], period=...)
+```
+
+A Report has no separate service class, no schema writes beyond its own view, no external API calls, no secrets. Read-only by construction — the runner *is* the report's service layer.
+
+There is no SQL-comment grammar and no central `ReportsService`: the runner owns parameter validation, free-text→id resolution, and SQL construction directly.
 
 ### Two scenarios
 
-**Scenario A — Embedded report (inside an analysis package):** The package contributes reports under its prefix:
+A report always pairs a `reports.*` view (its SQL definition) with a `@report` runner (its parameter/SQL surface). The two scenarios differ only in who owns the view and where the runner lives.
+
+**Scenario A — Embedded report (inside an analysis package):** The package contributes the view under its prefix and a runner module that decorates it:
 
 ```
-src/moneybin/packages/assets/models/reports/
-├── assets_summary.sql               → reports.assets_summary, `assets_summary` MCP tool
-└── assets_net_worth_contribution.sql → reports.assets_net_worth_contribution view, tool
+src/moneybin/packages/assets/
+├── models/reports/assets_summary.sql   → reports.assets_summary view
+└── reports/assets_summary.py           → @report(name="assets_summary", view=REPORTS_ASSETS_SUMMARY)
 ```
 
-No separate manifest — the package's `moneybin_package.yaml` already declares the capability (`writes: [reports.assets_*]`). The report inherits the package's prefix and Quality Scale.
+The package's `register()` calls `discover_reports(<reports module>)` and feeds the runners to the same `register_reports` path core uses — no separate manifest. The report inherits the package's prefix and Quality Scale.
 
-**Scenario B — Standalone report extension:** A contributor adds a single report — either in-tree (PR against MoneyBin Core) or as an installable PyPI package (`moneybin-report-<name>`).
+**Scenario B — Standalone report extension:** A contributor adds a single report — either in-tree (PR against MoneyBin Core) or as an installable PyPI package (`moneybin-report-<name>`). The view ships as a SQLMesh model; the runner is a `@report`-decorated module.
 
 Minimal manifest for the standalone case:
 
@@ -325,7 +337,7 @@ capabilities:
   secrets: []
 ```
 
-The `type: report` flag changes framework validation: a Report extension contributes exactly one view in `reports.*`, may NOT include `services/`, `models/{raw,core,app,prep}/`, or `schema/` subdirectories, and gets its MCP tool name auto-derived (`reports_<name>` for standalone).
+The `type: report` flag changes framework validation: a Report extension contributes exactly one view in `reports.*` plus its `@report` runner, may NOT include other `services/`, `models/{raw,core,app,prep}/`, or `schema/` subdirectories, and gets its MCP tool name auto-derived (`reports_<name>` for standalone). The runner's `view=` must resolve to that one `reports.*` view.
 
 ### Naming conventions
 
@@ -340,49 +352,63 @@ The `reports_*` prefix belongs to core's cross-entity space and to standalone co
 
 ### Auto-generation of the registration trinity
 
-A report contributor writes one SQL file with structured comments. The framework auto-generates the `TableRef` constant, `ReportsService` method, MCP tool, and CLI command from the view's metadata.
+A report contributor writes one `@report`-decorated runner. The framework introspects the runner's **signature** (parameter names, resolved types, defaults) and its **Google-style docstring** (summary, `Args:`, `Examples:`) into a `ReportSpec`, then generates the MCP tool, CLI command, and `TableRef` wiring from that single definition.
 
-Structured comment format:
+Worked example — the shipped `cashflow` runner (`src/moneybin/reports/definitions/cash_flow.py`):
 
-```sql
-/*
-@name seasonal_spending
-@description Seasonal spending breakdown by category and year
-@param year INTEGER optional default=null "Filter to specific year (null = all years)"
-@param categories TEXT[] optional default=null "Filter to specific categories"
-@example reports_seasonal_spending(year=2025)
-@example reports_seasonal_spending(categories=["Groceries", "Dining"])
-*/
-SELECT
-  date_trunc('quarter', t.posted_at) AS quarter,
-  c.name AS category,
-  SUM(t.amount) AS total_spent,
-  COUNT(*) AS transaction_count
-FROM core.fct_transactions t
-JOIN core.dim_categories c ON c.category_id = t.category_id
-WHERE (@year IS NULL OR EXTRACT(YEAR FROM t.posted_at) = @year)
-  AND (@categories IS NULL OR c.name = ANY(@categories))
-GROUP BY 1, 2
-ORDER BY 1 DESC, 3 DESC
-;
+```python
+@report(name="cashflow", view=REPORTS_CASH_FLOW)
+def cash_flow(
+    db: Database,
+    *,
+    from_month: str | None = None,
+    to_month: str | None = None,
+    by: str = "account-and-category",
+) -> ReportQuery:
+    """Monthly cash flow rollup: inflow/outflow/net per account x category.
+
+    Defaults to the last 12 calendar months when both bounds are omitted.
+    Amounts use the accounting convention (negative = expense, positive =
+    income) in the currency named by summary.display_currency.
+
+    Args:
+        db: Open read-only database connection.
+        from_month: Lower bound (inclusive) as 'YYYY-MM'.
+        to_month: Upper bound (inclusive) as 'YYYY-MM'.
+        by: account | category | account-and-category — how to group.
+
+    Examples:
+        reports_cashflow(by="category", from_month="2024-01")
+        reports_cashflow(by="account")
+    """
+    if by not in CASHFLOW_GROUPINGS:
+        raise ValueError(f"Unknown by: {by}")
+    ...  # build parameterized SELECT
+    return ReportQuery(sql, params, actions=[...], period=period)
 ```
 
-The framework generates:
+How the parts map (introspection rules, `src/moneybin/reports/_framework/introspect.py`):
 
-- `TableRef` constant: `REPORTS_SEASONAL_SPENDING = TableRef("reports", "seasonal_spending", audience="interface")`
-- `ReportsService` method that runs the SELECT with parameter binding
-- MCP tool: `reports_seasonal_spending(year: int | None = None, categories: list[str] | None = None) -> ResponseEnvelope`
-- CLI command: `moneybin reports seasonal-spending [--year YEAR] [--categories CATS]`
-- `moneybin://schema` resource entry
+- The first parameter must be named `db`; every other parameter must be keyword-only (declared after a bare `*`). That shape is what lets each param map 1:1 onto an MCP-tool argument and a Typer `--flag`.
+- The **docstring summary** becomes the tool/command description; each **`Args:`** entry becomes that parameter's help string; each **`Examples:`** line is captured on `ReportSpec.examples` as a usage hint. (Runtime next-step hints in the response envelope come from the runner's own `ReportQuery.actions`, which the runner sets per call — distinct from the static docstring examples.)
+- Each parameter's resolved type and default flow into both surfaces. The runner raises `ValueError` for invalid enum values; the CLI registrar converts that to a clean `typer.BadParameter` exit.
 
-Existing in-tree reports migrate to the structured-comment shape as part of pre-launch surgical work (purely mechanical reformatting of existing inline column comments).
+From the `ReportSpec`, the framework generates:
+
+- **`TableRef` wiring** — the runner declares `view=REPORTS_CASH_FLOW` (a `TableRef` constant); the spec carries it for execution and schema lineage.
+- **MCP tool** — `reports_cashflow(from_month: str | None = None, to_month: str | None = None, by: str = "account-and-category") -> ResponseEnvelope` (`src/moneybin/reports/_framework/mcp_register.py`). The tool name is `reports_<name>`.
+- **CLI command** — `moneybin reports cashflow [--from-month ...] [--to-month ...] [--by ...]` (`src/moneybin/reports/_framework/cli_register.py`). The command name is `<name>` with underscores rendered as hyphens.
+
+At call time the framework executes the runner's `ReportQuery`, classifies each output column via **SQL lineage on the view body** (a per-view derived `column → DataClass` map, cached by view + schema version in `src/moneybin/reports/_framework/classify.py`), masks CRITICAL columns through the shared `redact_records` path — the **same redaction bottleneck `sql_query` uses**, with no new redaction path and no change to the `CLASSIFICATION` registry/snapshot — and builds the standard response envelope (`src/moneybin/reports/_framework/execute.py`). Both surfaces build identical envelopes via the shared `ReportResult`.
+
+The six in-tree view-backed reports — `cashflow`, `spending`, `recurring`, `merchants`, `large_transactions`, `balance_drift` — ship through this framework as `@report` runners in `src/moneybin/reports/definitions/`. They are wired via an explicit `ALL_REPORTS` list in `src/moneybin/reports/definitions/__init__.py`; packages contribute reports through the same `@report` decorator and the `discover_reports` scanner. `reports_networth` / `reports_networth_history` stay hand-written (`NetworthService`-backed, not single-view reads) — a documented exception, not part of `ALL_REPORTS`. `reports_budget` was removed (it synthesized from `BudgetService` rather than a `reports.*` view; it returns through the framework once M3C ships a `reports.budget` view).
 
 ### Documentation requirements
 
 Reports ship with documentation per the Quality Scale tiers (see [§Type-specific requirements](#type-specific-requirements)):
 
-- **Bronze** — structured comments include `@description` and `@example` blocks (auto-generated tool description).
-- **Silver** — inline doc block describes the question(s) the report answers, parameter semantics, 2-3 sample invocations.
+- **Bronze** — the runner's docstring has a summary line and at least one `Examples:` entry (the summary becomes the auto-generated tool description; examples become usage hints).
+- **Silver** — the docstring `Args:` section documents every parameter's semantics; the summary describes the question(s) the report answers; 2-3 `Examples:` invocations.
 - **Gold** — `docs/guides/reports/<name>.md` user guide covering when-to-use, parameter combinations, sample output, MCP/CLI usage examples.
 - **Platinum** — documentation includes cross-references to related reports, anti-patterns, composition examples ("this report feeds the FIRE projection package's net-worth-trajectory input"), and the doc structure is forward-compatible with a future UI / MCP App component slot.
 
@@ -555,8 +581,8 @@ Same tier names; different evidence by extension type. Each row in the tables be
 
 | Tier | Requirement |
 |---|---|
-| **Bronze** | View compiles; structured comments parseable (including `@description` and `@example`); auto-generated tool registers |
-| **Silver** | Fixture-based tests verifying view shape; example queries documented in the manifest; per-report inline doc block describing the question(s) the report answers, parameter semantics, 2-3 sample invocations |
+| **Bronze** | View compiles; `@report` runner introspects cleanly (docstring summary + at least one `Examples:` entry; first param `db`, rest keyword-only); auto-generated tool registers |
+| **Silver** | Fixture-based tests verifying view shape; example queries in the runner's `Examples:` section; runner docstring `Args:` describes every parameter's semantics and the summary states the question(s) the report answers (2-3 sample invocations) |
 | **Gold** | Signed-publisher tied; performance benchmark documented (e.g., "<2s against 100k transactions"); `docs/guides/reports/<name>.md` user guide covers when-to-use, parameter combinations, sample output, MCP/CLI usage examples |
 | **Platinum** | Regression fixtures spanning at least one schema version; explicit schema-drift handling; documentation extended with cross-references to related reports, anti-patterns, composition examples, forward-compatible with future UI / MCP App component slot |
 
@@ -629,7 +655,7 @@ Shipped with the MoneyBin Claude Code plugin (the launch distribution unit). Whe
 
 | Skill | Drives |
 |---|---|
-| `/moneybin-create-report` | Single-report contribution — drafts a SQL view with structured comments, validates, installs to `sqlmesh/models/reports/` (in-tree PR) or `~/.moneybin/reports/` (local-only) |
+| `/moneybin-create-report` | Single-report contribution — drafts a `reports.*` SQL view plus its `@report` runner module (Google-style docstring + keyword-only params), validates, installs to `sqlmesh/models/reports/` + `src/moneybin/reports/definitions/` (in-tree PR) or `~/.moneybin/reports/` (local-only) |
 | `/moneybin-create-package` | Full analysis package scaffold — generates `src/moneybin/packages/<name>/` with manifest, models, tools, services, tests, README |
 | `/moneybin-extend-package` | Adds to an existing package — drafts a new report/tool/model respecting prefix discipline and capability declarations |
 | `/moneybin-draft-provider` | In-tree provider PR scaffold — generates `src/moneybin/extractors/<name>/` from API docs URL or sample data file, opens a draft PR |
@@ -667,7 +693,8 @@ Skills fill versioned templates rather than generating code from scratch. Templa
 ```
 src/moneybin/scaffolders/templates/
 ├── report/
-│   └── view.sql.j2                  # Jinja with @-block structured comments
+│   ├── view.sql.j2                  # the reports.* SQLMesh view
+│   └── runner.py.j2                 # @report runner (Google docstring + keyword-only params)
 ├── package/
 │   ├── moneybin_package.yaml.j2
 │   ├── __init__.py.j2
@@ -712,14 +739,14 @@ Items required to make the contracts in this spec describable cleanly. These lan
 | Build entry-points-based package discovery + registration | Framework scans `moneybin.packages` entry points; loads each manifest; calls `register()` | ~2-3 days |
 | Build prefix-discipline validator | Registration-time check that SQL writes match declared prefix | ~1-2 days |
 | Build Quality Scale tier validator | Mechanical checks for each tier's evidence (scenario tests, regression fixtures, etc.) | ~3-4 days |
-| Auto-generate registration trinity from structured comments | Parser + dynamic FastMCP/Typer registration | ~3-5 days |
+| Auto-generate registration trinity from `@report` runners | Signature + Google-docstring introspection → `ReportSpec`; dynamic FastMCP/Typer registration; per-view lineage classification | ~3-5 days |
 | Build scaffolder templates for all three types | Jinja templates encoding Platinum-quality scaffolds | ~2-3 days |
 | Build `moneybin extension validate` CLI + MCP tool | Wraps the registration validator as a callable command | ~1-2 days |
 | Build four Claude Code skills | Skills invoking the scaffolder and validator | ~3-4 days |
 | Implement `assets` package at Platinum | Full package with scenario tests, regression fixtures, observability, signed release | ~1-2 weeks |
 | Implement `us_tax` package at Platinum | Same | ~1-2 weeks |
 | Platinum-ify existing providers (OFX, Plaid, tabular) | Add scenario tests, regression fixtures, schema-drift detection, code-owner declarations | ~3-5 days per provider |
-| Platinum-ify existing reports | Migrate to structured-comment shape; add fixture-based tests; write `docs/guides/reports/<name>.md` user guides | ~1-2 days per report |
+| Platinum-ify existing reports | Migrate to `@report` runner shape; add fixture-based tests; write `docs/guides/reports/<name>.md` user guides | ~1-2 days per report |
 | Resolve audit B-tier reports items | Unregister `reports_budget` (gated on M3C); remove `reports_health` CLI stub; update `merchant_id` spec drift in `reports-recipe-library.md` | ~½ day |
 
 Total estimate: ~8-12 weeks of agent-coordinated effort with parallelization. The implementation plan that follows this spec (via `/writing-plans`) decomposes into ordered work units.
