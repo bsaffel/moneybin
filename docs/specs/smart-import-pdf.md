@@ -49,12 +49,12 @@ The only genuinely new code is **PDF → rows extraction + the routing decision.
 1. **Deterministic rung (default, zero egress).** Native-text PDFs are extracted with `pdfplumber` (and optionally `camelot` for ruled tables) into the IR, then to rows. No network, no LLM, no notice.
 2. **Confidence-gated escalation.** Every extraction yields a confidence score (`0.7·required_field_completeness + 0.3·important_field_completeness`, carried forward from W-2). Below threshold (default 0.7) the rung escalates to the bridge; above, it proceeds. Thresholds are config, not hardcoded.
 3. **Bridge rung (escalation).** When the deterministic rung can't crack a layout — or the PDF is a scan with no text layer — MoneyBin emits the document (extracted text and/or page image) plus an extraction request for the **driving agent** to fulfill, and applies the agent's returned recipe + rows back. No MoneyBin-initiated LLM call; the agent is the model. Surfaced to the user and audit-logged (Requirement 14).
-4. **Scanned/image PDFs (vision via the bridge).** A PDF with no extractable text layer skips the deterministic rung and goes straight to the bridge, whose agent reads the page image (vision). No `pytesseract`, no vision backend in MoneyBin.
-5. **No-agent degradation.** When no bridge is present (a bare CLI invocation with no driving agent), the deterministic rung still serves native-text PDFs; anything it can't crack is offered as a raw-text **seed** rather than failing. Cloud/local in-process backends that would close this gap are deferred (Out of Scope).
+4. **Scanned/image PDFs (vision via the bridge).** A PDF with no extractable text layer skips the deterministic rung and goes straight to the bridge, whose agent reads the page image (vision). No `pytesseract`, no vision backend in MoneyBin. When no bridge is present, a scan falls to Requirement 5's explicit unsupported outcome — there is no text to seed.
+5. **No-agent degradation.** When no bridge is present (a bare CLI invocation with no driving agent): native-text PDFs still extract on the deterministic rung, and a native-text PDF the rung can't *structure* is offered as a raw-text **seed** rather than failing. A **scanned PDF (no text layer) has nothing to seed and no bridge to read it** — it returns an explicit "needs a vision-capable backend (agent/bridge)" unsupported outcome, never a silent failure. Cloud/local in-process backends that would close this gap are deferred (Out of Scope).
 
 ### Recognition & learning
 
-6. **Layout fingerprint match.** On import, compute a layout fingerprint and look it up in `app.pdf_formats`. A match replays the saved recipe deterministically — **no bridge** — regardless of which rung originally authored it.
+6. **Layout fingerprint match.** On import, compute a layout fingerprint and look it up in `app.pdf_formats`. A match on a **text/table** front-end replays the saved recipe deterministically — **no bridge**. A match on a **`vision`** front-end (scanned layout) re-runs through the bridge — vision IR carries no cheap deterministic replay (see Open Question 3).
 7. **Recipe authoring on first contact.** For an unseen layout, the bridge proposes (a) a declarative extraction recipe (anchors, row delimiters, field order, date format, sign convention), (b) a field mapping, and (c) a routing decision (`transactions` | `seed`). The recipe is human-readable text-structural rules, not pixel geometry.
 7a. **Statement-metadata capture.** The recipe also captures statement metadata distinct from the transaction rows — the account identifier, statement period, and opening/closing balances (from the header/summary box). These are signal, not noise: they drive account resolution (Requirement 10a) and supply the balances reconciliation checks against (Requirement 9). Captured values are per-import and transient (used for resolution and reconciliation, not persisted as new state); surfacing closing balances as balance assertions is a future extension (Out of Scope).
 8. **User vetting before persistence.** The proposed recipe + mapping + routing are surfaced for confirmation (CLI interactive / MCP `import_confirm`). On confirm, persist to `app.pdf_formats`. Auto-save by default; `--no-save-format` to skip.
@@ -62,7 +62,7 @@ The only genuinely new code is **PDF → rows extraction + the routing decision.
 
 9a. **Recipe versioning.** A recipe refresh — triggered by the replay guard (Requirement 9) or a manual edit — creates a new **version**, never a silent overwrite. `app.pdf_formats.version` increments; the change is audited via `PdfFormatsRepo` (Invariant 10) and is reversible to a prior version through the audit-log undo (Invariant 11, per `data-recovery-contract.md`). Undo of a bad refresh restores the previous recipe version. History lives in the audit log — no separate version table.
 
-9b. **Bounded recipe execution (security).** The recipe executor runs bridge-authored patterns against untrusted document text, so a pathological or hostile pattern — catastrophic-backtracking regex, or a crafted PDF that triggers ReDoS on a benign one — must not hang import. Bound execution: per-pattern timeout + complexity cap, reject recipes exceeding limits, and prefer simple anchor/delimiter patterns over arbitrary regex. Finance + AI = zero trust budget (`AGENTS.md`).
+9b. **Bounded recipe execution (security).** The recipe executor runs bridge-authored patterns against untrusted document text, so a pathological or hostile pattern — catastrophic-backtracking regex, or a crafted PDF that triggers ReDoS on a benign one — must not hang import. Two bounds, both required: **(a) static, at recipe-save** — reject any pattern exceeding a max length (config `pdf.recipe.max_pattern_len`, default 200 chars) or containing nested unbounded quantifiers (e.g. `(a+)+`), via inspection of the compiled pattern; **(b) dynamic, at execution** — run each pattern under a hard wall-clock timeout (config `pdf.recipe.pattern_timeout_ms`, default 100 ms) enforced with the `regex` module's `timeout=` parameter (`re` has none), failing the row to re-escalation rather than hanging. Metric: pattern length + quantifier-nesting depth (static) and per-pattern wall-clock (dynamic); values are named config constants. Prefer simple anchor/delimiter patterns over arbitrary regex. Finance + AI = zero trust budget (`AGENTS.md`).
 
 ### Routing — the two outcomes
 
@@ -94,7 +94,9 @@ Pure-JSON storage (we don't know the schema); the auto-generated per-alias view 
 /* Row-level storage for the PDF seed (catch-all) path. JSON column holds the
    extracted row verbatim; per-alias auto-generated views in raw.pdf_<alias>
    project JSON paths into typed columns for ergonomic SQL. Identity is a
-   content hash so re-importing the same statement is a no-op (idempotent). */
+   content hash so re-importing the same statement under the same alias is a
+   no-op (idempotent within an alias; PK is (alias, row_hash) — the same
+   document under a different alias is a distinct seed source by design). */
 CREATE TABLE IF NOT EXISTS raw.pdf_seeds (
     alias VARCHAR NOT NULL,        -- Logical seed source; becomes view name raw.pdf_<alias>
     row_hash VARCHAR NOT NULL,     -- Content hash of the row (pdf_ prefix); stable identity for dedup
@@ -205,7 +207,7 @@ Per `observability.md` and `src/moneybin/metrics/registry.py`, instrument the im
 
 ## Surface Design
 
-Per `.claude/rules/surface-design.md`, PDF import introduces **no new operation shapes or verbs** — it extends the existing `import_*` family (already classified in the taxonomy). The propose → vet → commit exchange maps onto the existing `import_preview` → `import_confirm` (preview-then-commit) shape; seed querying is the existing `sql_query` read shape; learned-format listing is the existing `import_formats` shape. The single net-new surface element is the **bridge payload** carried inside `import_preview`'s response and `import_confirm`'s input — a data-shape addition within an existing tool, not a new operation. This coherence (no parallel import surface) is a primary reason PDF is fused into the `import` family rather than given its own command group.
+Per `.claude/rules/surface-design.md`, PDF import stays within the existing `import_*` family but **adds one new tool — `import_confirm`** — for the propose→commit step. `import_preview`, `import_files`, and `import_formats` already exist; **`import_confirm` does not** (today's registered import tools are `import_files`, `import_preview`, `import_status`, `import_revert`, `import_formats`, `import_inbox_sync`, `import_inbox_pending`, `import_labels_set`). `import_confirm` is the terminal **`_commit`** of a propose→review→commit workflow ("finalize externally-decided proposals" — the same shape as `transactions_categorize_commit`), so it adds no new *operation shape* (its name should reconcile against the `_commit` verb at implementation — cf. `transactions_categorize_commit`). The bridge payload is a data-shape addition to `import_preview`'s response and `import_confirm`'s input. Because this **adds a tool and changes `import_preview`'s contract** (see MCP Interface), the implementation PR carries the surface-change obligations (`mcp.md`): update both `moneybin-mcp.md` and `moneybin-capabilities.md`. PDF still introduces no new command *group* — it's fused into `import`, not a parallel surface.
 
 ## Implementation Plan
 
@@ -220,7 +222,7 @@ Per `.claude/rules/surface-design.md`, PDF import introduces **no new operation 
 - `src/moneybin/repositories/pdf_formats_repo.py` — audited `app.pdf_formats` mutations (Invariant 10) + recipe versioning (bump `version`, history via audit log, Req 9a).
 - `src/moneybin/sql/seed_view.py` (or similar shared home) — `generate_seed_view_sql` **lifted** from `connectors/gsheet/view_generator.py` so both gsheet and PDF use one implementation.
 - `src/moneybin/sql/schema/raw_pdf_seeds.sql`, `src/moneybin/sql/schema/app_pdf_formats.sql` — DDL.
-- The next sequential migration (`V0NN__add_pdf_tables`, number assigned at implementation; latest is V020) — additive table creation for existing DBs. Fresh DBs get the schema files above via `init_schemas`.
+- The next sequential migration (`V0NN__add_pdf_tables`) — additive table creation for existing DBs. **Assign the number at implementation** by checking `src/moneybin/sql/migrations/` for the current latest (V023 at time of writing → V024) to avoid a collision. Fresh DBs get the schema files above via `init_schemas`.
 - Tests under `tests/moneybin/test_extractors/test_pdf/` (+ fixtures) and a scenario.
 
 ### Files to Modify
@@ -229,10 +231,11 @@ Per `.claude/rules/surface-design.md`, PDF import introduces **no new operation 
 - `src/moneybin/connectors/gsheet/view_generator.py` — re-export / import the lifted `generate_seed_view_sql` from the shared module (no behavior change for gsheet).
 - `src/moneybin/services/import_service.py` — dispatch `.pdf` to `PDFExtractor`; wire routing → tabular load or seed store; resolve the captured account id via the existing account-matching (Req 10a).
 - `src/moneybin/services/inbox_service.py` — accept `.pdf`; non-interactive drains that need the bridge route to `failed/` with a "needs extraction" sidecar.
-- `src/moneybin/mcp/tools/import_tools.py` — `import_preview`/`import_confirm` carry the PDF bridge payload (request out, vetted recipe + rows in).
+- `src/moneybin/mcp/tools/import_tools.py` — extend `import_preview` for the PDF bridge payload (request out) **and add the new `import_confirm` tool** (vetted recipe + rows in).
+- `docs/specs/moneybin-mcp.md` + `docs/specs/moneybin-capabilities.md` — register the new `import_confirm` tool and the `import_preview` PDF-branch contract change (sensitivity `low`→`medium`, escalation response shape, audit side-effect), per `mcp.md` surface-change discipline.
 - `moneybin://schema` provider — surface `raw.pdf_<alias>` views with a `pdf-seed` marker.
 - `src/moneybin/sql/schema/raw_import_log.sql` + `.claude/rules/database.md` — append `pdf` to the `source_type` value-list comments.
-- `docs/specs/privacy-and-ai-trust.md` — resolve line-167 for PDF; replace the parsing "redacted preview" with the bridge-transparency model (Requirements 14–16).
+- `docs/specs/privacy-and-ai-trust.md` — resolve its deferred line-167 question for PDF; replace the parsing "redacted preview" promise with the bridge-transparency model (Requirements 14–16). **Lands with the implementation that introduces the egress path (Phase 3/4), not in this spec-design PR** — until then the two specs are transiently inconsistent on the parsing-redaction promise; this spec is the authority, and `privacy-and-ai-trust.md` catches up when the code ships.
 
 ### Key Decisions
 
@@ -253,13 +256,13 @@ Vetting is interactive on a TTY (show the proposed recipe + sample rows + routin
 
 ## MCP Interface
 
-Reuses the existing import tools (`import_files`, `import_preview`, `import_confirm`, `import_formats`) — no new tool names:
+Reuses the existing `import_files`, `import_preview`, and `import_formats` tools, and **adds one new tool — `import_confirm`** (not currently registered; see Surface Design):
 
-- `import_preview` on a PDF returns the extraction outcome and, when escalation is needed, the **bridge payload**: the IR (or page image) + a structured request for the agent to propose recipe / mapping / routing.
-- `import_confirm` accepts the vetted recipe + rows → saves `app.pdf_formats` → loads (to core or seed).
+- `import_preview` on a PDF returns the extraction outcome and, when escalation is needed, the **bridge payload**: the IR (or page image) + a structured request for the agent to propose recipe / mapping / routing. This **changes `import_preview`'s contract for the PDF branch**: sensitivity rises from `low` (structural metadata today) to **`medium`** (row-level content in the payload); the escalation response shape differs from the current tabular preview; and Req 14's audit-log write means it is **no longer side-effect-free**.
+- `import_confirm` (**new tool**, `read_only=False`) accepts the vetted recipe + rows → saves `app.pdf_formats` (audited, reversible via Invariant 11) → loads (to core or seed).
 - Seed views are discoverable through `moneybin://schema`; query via `sql_query`.
 
-Sensitivity tiers, response envelope, and error shapes follow `mcp.md` / `moneybin-mcp.md` unchanged.
+The new tool **and** the `import_preview` contract change trigger the surface-change discipline (`mcp.md`): the implementation PR updates `moneybin-mcp.md` (tool definitions + sensitivity tiers) and `moneybin-capabilities.md` (new capability row). Response envelope and error shapes otherwise follow `moneybin-mcp.md`.
 
 ## Testing Strategy
 
