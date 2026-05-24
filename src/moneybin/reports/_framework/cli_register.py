@@ -91,6 +91,10 @@ def build_cli_command(spec: ReportSpec) -> Callable[..., None]:
                 output,
                 render_fn=_render_text,
                 cli_actor=spec.mcp_tool_name,
+                # Bare-list payload + lineage-derived classes: pass them
+                # explicitly so the privacy.log audit event records the real
+                # data classes instead of an empty set (same as `sql query`).
+                classes_returned=result.classes_returned,
             )
 
     _impl.__name__ = spec.name

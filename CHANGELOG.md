@@ -14,8 +14,11 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
 - **Report CLI flags auto-derive from parameter names.** With reports now
   generated from runner signatures, multi-word flags follow the parameter name:
   `moneybin reports cashflow`/`spending` use `--from-month` / `--to-month`
-  (replacing the bespoke `--from` / `--to`). Tool/command names and result
-  shapes are unchanged.
+  (replacing the bespoke `--from` / `--to`). Tool/command names are unchanged.
+  The `data` payload for the six view-backed reports is now a bare array of
+  result rows (the standard envelope shape) instead of the previous typed
+  `{rows: [...]}` wrapper — a pre-launch normalization; no other tool exposed
+  report rows.
 - **Pending-match output now groups copies of the same transaction by component.**
   `transactions_matches_pending` (MCP) and `moneybin transactions matches pending` (CLI)
   enrich each pending dedup row with a `component_key` — the lexicographic MIN packed
@@ -42,7 +45,8 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   via SQL lineage on the view body → masks CRITICAL columns → builds the
   envelope. The six view-backed reports (cashflow, spending, recurring,
   merchants, large-transactions, balance-drift) now run through it; their
-  behavior is unchanged. Packages contribute reports the same way.
+  query logic and results are unchanged (the `data` envelope shape is
+  normalized — see Changed). Packages contribute reports the same way.
 - **`sql_query` MCP tool resolves each output column's data class via SQL lineage.**
   sqlglot parses the query, expands `*` against a migration-version-keyed schema
   snapshot, and maps every output column to the `DataClass` it derives from in

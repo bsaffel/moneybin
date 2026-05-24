@@ -99,6 +99,29 @@ def test_cli_command_json_output_emits_envelope() -> None:
     assert payload["summary"]["sensitivity"] == "critical"
 
 
+def test_cli_command_passes_classes_returned_to_audit() -> None:
+    # Bare-list payload + lineage-derived classes: classes_returned must reach
+    # render_or_json so the privacy.log audit event records the real data
+    # classes instead of an empty set (the `sql query` contract).
+    app = _multi_command_app()
+    with (
+        patch("moneybin.reports._framework.cli_register.get_database", MagicMock()),
+        patch(
+            "moneybin.reports._framework.execute.run_report",
+            return_value=_result(),
+        ),
+        patch("moneybin.reports._framework.cli_register.render_or_json") as mock_render,
+    ):
+        result = _runner_cli.invoke(
+            app, ["balance-drift", "--top", "5", "--output", "json"]
+        )
+    assert result.exit_code == 0, result.output
+    assert mock_render.call_args.kwargs["classes_returned"] == [
+        "account_identifier",
+        "aggregate",
+    ]
+
+
 def test_cli_command_surfaces_value_error_as_bad_parameter() -> None:
     app = _multi_command_app()
     with (
