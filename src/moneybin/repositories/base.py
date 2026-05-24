@@ -283,6 +283,10 @@ class BaseRepo:
                 self._insert_row(before)
             elif before is not None and after is not None:
                 self._require_capture(after, self.pk_columns, event)
+                # before must be as complete as after, or the restore silently
+                # writes only the captured columns and leaves the rest at their
+                # current (post-mutation) values.
+                self._require_capture(before, after.keys(), event)
                 self._restore_row(before=before, locate=after)
             return self._emit_audit(
                 action=f"{event.action}.undo",

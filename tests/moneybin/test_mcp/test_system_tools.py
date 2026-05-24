@@ -224,6 +224,46 @@ async def test_audit_get_not_found_returns_error_envelope(mcp_db: object) -> Non
 
 
 @pytest.mark.unit
+async def test_audit_history_entry_carries_recovery_actions(mcp_db: object) -> None:
+    from moneybin.mcp.tools.system import system_audit_history
+
+    op1 = _make_tag_op("a")
+    op2 = _make_tag_op("b")  # blocks op1
+    parsed = (await system_audit_history()).to_dict()
+    entry = next(o for o in parsed["data"]["operations"] if o["operation_id"] == op1)
+    # Blocked op1's pre-built recovery_actions point the agent straight at undoing
+    # op2 — the structured action the service computed, not just the raw id.
+    actions = entry["recovery_actions"]
+    assert actions
+    assert actions[0]["tool"] == "system_audit_undo"
+    assert actions[0]["arguments"]["operation_id"] == op2
+
+
+@pytest.mark.unit
+async def test_audit_get_hint_distinguishes_unresolvable(mcp_db: object) -> None:
+    from moneybin.database import get_database
+    from moneybin.mcp.tools.system import system_audit_get
+    from moneybin.services.audit_service import AuditService
+    from moneybin.services.mutation_context import operation
+
+    with get_database() as db, operation() as op:
+        AuditService(db).record_audit_event(
+            action="manual.create",
+            target=("raw", "manual_transactions", "imp_1"),
+            before=None,
+            after={"row_count": 2},
+            actor="cli",
+        )
+    parsed = (await system_audit_get(op)).to_dict()
+    assert parsed["data"]["can_undo"] is False
+    assert parsed["data"]["undo_blocked_by"] is None
+    hint = " ".join(parsed["actions"]).lower()
+    # The dead-end "see undo_blocked_by" (which is null here) must be gone.
+    assert "undo_blocked_by" not in hint
+    assert "outside" in hint or "re-apply" in hint
+
+
+@pytest.mark.unit
 async def test_register_undo_tools() -> None:
     srv = FastMCP("test")
     register_system_tools(srv)

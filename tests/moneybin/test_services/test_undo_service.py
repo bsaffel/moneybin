@@ -148,6 +148,62 @@ class TestUndo:
         replayed = [json.loads(r[0])["tag"] for r in undo_rows]
         assert replayed == ["a3", "a2", "a1"]
 
+    def test_marker_only_operation_refuses(self, db: Database) -> None:
+        # A tag.rename matching zero transactions audits only the parent marker
+        # (target_id=None) — no row mutations. Undo must refuse, not return a
+        # phantom undo_operation_id that has no audit rows and can't be queried.
+        with operation() as op:
+            AuditService(db).record_audit_event(
+                action="tag.rename",
+                target=("app", "transaction_tags", None),
+                before={"old_tag": "ghost"},
+                after={"new_tag": "x", "row_count": 0},
+                actor="cli",
+            )
+        with pytest.raises(UserError) as exc:
+            UndoService(db).undo(op, actor="cli")
+        assert exc.value.code == error_codes.RECOVERY_NO_PATH
+
+    def test_cascade_ignores_same_table_different_schema(self, db: Database) -> None:
+        # A later forward op on a same-named table in a DIFFERENT schema must not
+        # block: the blocker join keys on (schema, table, id), like
+        # _unresolvable_tables — not table+id alone.
+        op = _tag_op(db, "a")  # app.transaction_tags / txn_1
+        with operation():
+            AuditService(db).record_audit_event(
+                action="manual.create",
+                target=("raw", "transaction_tags", "txn_1"),
+                before=None,
+                after={"x": 1},
+                actor="cli",
+            )
+        UndoService(db).undo(op, actor="cli")  # raw-schema row is not a blocker
+        tags = db.execute("SELECT COUNT(*) FROM app.transaction_tags").fetchone()
+        assert tags == (0,)
+
+    def test_partial_update_before_refuses(self, db: Database) -> None:
+        # A legacy note.edit captured a partial before_value (note_id/text only).
+        # The UPDATE-restore branch would silently partial-restore (leaving
+        # transaction_id/author/created_at at current values); it must refuse.
+        full_after = {
+            "note_id": "n1",
+            "transaction_id": "txn_1",
+            "text": "new",
+            "author": "cli",
+            "created_at": "2026-05-24 00:00:00",
+        }
+        db.execute(
+            "INSERT INTO app.audit_log "
+            "(audit_id, actor, action, target_schema, target_table, target_id, "
+            " before_value, after_value, operation_id) "
+            "VALUES ('legacy_upd','cli','note.edit','app','transaction_notes','n1', "
+            " ?, ?, 'op_legacy_upd')",
+            [json.dumps({"note_id": "n1", "text": "old"}), json.dumps(full_after)],
+        )
+        with pytest.raises(UserError) as exc:
+            UndoService(db).undo("op_legacy_upd", actor="cli")
+        assert exc.value.code == error_codes.RECOVERY_NO_PATH
+
     def test_partial_legacy_row_refuses_with_recovery_no_path(
         self, db: Database
     ) -> None:

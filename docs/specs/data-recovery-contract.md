@@ -418,14 +418,23 @@ Deviations from the design as written, with rationale:
   chain's net liveness, not whether an undo was *ever* recorded — a one-shot
   "ever undone" check both traps the user out of re-undoing a round-tripped op and
   lets undo silently clobber a round-tripped blocker. Without this, the documented
-  walk (undo the blocker, then the original) could never resolve.
+  walk (undo the blocker, then the original) could never resolve. The blocker join
+  keys on `(target_schema, target_table, target_id)` (matching
+  `_unresolvable_tables`), so a same-named table in another schema is never a
+  false-positive blocker.
 - **Deterministic, reversible replay order + partial-capture guard.** Rows replay
   in the exact reverse of write order (`events_for_operation` tiebreaks on the
   monotonic `rowid`, never the random `audit_id`), so a future parent-then-child
-  insert undoes child-first. An audit row predating full-row capture (Req 4) — a
-  legacy partial `note.delete`/`note.edit` missing NOT NULL columns or its primary
-  key — is refused with `recovery_no_path` rather than crashing on a raw DuckDB
-  `NOT NULL` / `KeyError`.
+  insert undoes child-first. An audit row predating full-row capture (Req 4) is
+  refused with `recovery_no_path` rather than mis-applying: the re-INSERT path
+  rejects a `before` missing NOT NULL columns, and the UPDATE-restore path rejects
+  a `before` less complete than `after` (which would silently restore only the
+  captured columns) — covering legacy partial `note.delete` / `note.edit` rows.
+- **Marker-only operations are refused.** An operation whose audit rows are *all*
+  markers (`target_id IS NULL`) — e.g. a `tag.rename` matching zero transactions,
+  whose parent marker is emitted unconditionally — has nothing to reverse and is
+  refused with `recovery_no_path`, rather than minting an `undo_operation_id` that
+  carries no audit rows and so isn't itself queryable or undoable.
 - **`recovery_no_path` for raw-targeted operations.** An operation that touched a
   table outside the undoable `app.*` surface (e.g. `manual.create` →
   `raw.manual_transactions`) is refused with `recovery_no_path` rather than
@@ -434,7 +443,9 @@ Deviations from the design as written, with rationale:
 - **`history` summarizes by action verb.** The operation context records
   `operation_id` and `actor` but not the originating tool name/arguments, so
   history entries carry `actions[]` (distinct verbs) rather than the spec's
-  `tool`/`arguments` fields, plus structured `can_undo` / `undo_blocked_by`.
+  `tool`/`arguments` fields, plus structured `can_undo` / `undo_blocked_by` and
+  the pre-built `recovery_actions[]` (the `system_audit_undo` call for the entry's
+  state — the same structured shape the error envelope carries).
   `include_undone` toggles visibility of the undo operations themselves
   (`is_undo=TRUE`).
 - **`transactions matches undo` not migrated.** Re-pointing that command at

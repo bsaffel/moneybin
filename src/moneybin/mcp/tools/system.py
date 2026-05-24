@@ -11,6 +11,7 @@ from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.privacy.payloads.system import (
     InvariantResultPayload,
+    RecoveryActionPayload,
     SchemaDriftTable,
     SystemAuditEventPayload,
     SystemAuditGetPayload,
@@ -325,6 +326,16 @@ def system_audit_history(
                     undoes_operation_id=o.undoes_operation_id,
                     can_undo=o.can_undo,
                     undo_blocked_by=o.undo_blocked_by,
+                    recovery_actions=[
+                        RecoveryActionPayload(
+                            tool=ra.tool,
+                            arguments=ra.arguments,
+                            rationale=ra.rationale,
+                            confidence=ra.confidence,
+                            idempotent=ra.idempotent,
+                        )
+                        for ra in o.recovery_actions
+                    ],
                 )
                 for o in operations
             ]
@@ -377,7 +388,13 @@ def system_audit_get(operation_id: str) -> ResponseEnvelope[SystemAuditGetPayloa
         actions=[
             f"Reverse with system_audit_undo(operation_id='{operation_id}')"
             if detail.can_undo
-            else "This operation cannot be undone as-is — see undo_blocked_by",
+            else (
+                "Blocked by later operations — undo those first: "
+                f"{detail.undo_blocked_by}"
+                if detail.undo_blocked_by
+                else "Cannot be undone — this operation touched data outside the "
+                "undoable app.* surface (e.g. a raw import); re-apply manually."
+            ),
         ],
     )
 

@@ -105,6 +105,10 @@ class _UndoLiveness:
         cached = self._memo.get(operation_id)
         if cached is not None:
             return cached
+        # Pre-seed False before recursing so a (theoretically impossible, since the
+        # audit log is append-only and an undo always references an earlier op)
+        # cycle can't recurse forever.
+        self._memo[operation_id] = False
         result = any(
             not self.is_undone(child) for child in self._children.get(operation_id, [])
         )
@@ -183,6 +187,17 @@ class UndoService:
         # None, e.g. the tag.rename parent) carry no single-row mutation, so they
         # are skipped — only the per-row children are inverted.
         row_events = [e for e in events if e.target_id is not None]
+        if not row_events:
+            # All events are markers (target_id None) — e.g. a tag.rename that
+            # matched zero rows. There is nothing to reverse; minting an undo op
+            # here would return an id with no audit rows (not itself queryable or
+            # undoable), so refuse instead.
+            audit_undo_total.labels(outcome="no_path").inc()
+            raise UserError(
+                f"Operation {operation_id!r} has no reversible row mutations "
+                "(only marker events) — nothing to undo.",
+                code=error_codes.RECOVERY_NO_PATH,
+            )
         with operation() as undo_op:
             self._db.begin()
             try:
@@ -420,7 +435,7 @@ class UndoService:
         rows = self._db.conn.execute(
             """
             WITH op_rows AS (
-                SELECT target_table, target_id, rowid
+                SELECT target_schema, target_table, target_id, rowid
                   FROM app.audit_log
                  WHERE operation_id = ?
             ),
@@ -428,10 +443,11 @@ class UndoService:
             SELECT a.operation_id, MAX(a.rowid) AS latest
               FROM app.audit_log a
               JOIN (
-                  SELECT DISTINCT target_table, target_id
+                  SELECT DISTINCT target_schema, target_table, target_id
                     FROM op_rows WHERE target_id IS NOT NULL
               ) t
-                ON a.target_table = t.target_table
+                ON a.target_schema = t.target_schema
+               AND a.target_table = t.target_table
                AND a.target_id = t.target_id
              WHERE a.operation_id <> ?
                AND a.rowid > (SELECT r FROM boundary)

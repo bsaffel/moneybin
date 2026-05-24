@@ -334,12 +334,35 @@ class SystemAuditUndoPayload:
 
 
 @dataclass(frozen=True, slots=True)
+class RecoveryActionPayload:
+    """A structured next-step action mirroring :class:`moneybin.errors.RecoveryAction`.
+
+    Lets a read surface carry the same pre-built ``tool(**arguments)`` the error
+    envelope carries — all low-sensitivity (a tool name, ids, and prose), so it
+    never raises the enclosing payload's tier.
+    """
+
+    tool: Annotated[str, DataClass.RECORD_ID]
+    arguments: Annotated[dict[str, Any], DataClass.RECORD_ID]
+    rationale: Annotated[str, DataClass.DESCRIPTION]
+    # AGGREGATE (not TXN_TYPE) only to match the name-based privacy registry, which
+    # already classifies the `confidence` column (match-proposal score). This field
+    # is the action-confidence literal ("certain"/"suggested") — a different concept
+    # sharing the name — but both classes are Tier.LOW, so the wire key stays
+    # `confidence` (consistent with the error envelope's recovery_actions).
+    confidence: Annotated[str, DataClass.AGGREGATE]
+    idempotent: Annotated[bool, DataClass.TXN_TYPE]
+
+
+@dataclass(frozen=True, slots=True)
 class SystemAuditHistoryEntryPayload:
     """One operation in ``system_audit_history``, grouped by ``operation_id``.
 
     Undoability is expressed structurally via ``can_undo`` + ``undo_blocked_by``
-    (the blocker operation ids the agent must undo first); no financial values
-    appear, so the entry derives Tier.LOW.
+    (the blocker operation ids the agent must undo first); ``recovery_actions``
+    carries the pre-built undo call(s) for this operation's state (undo it, undo
+    the blockers, or undo the undo). No financial values appear, so the entry
+    derives Tier.LOW.
     """
 
     operation_id: Annotated[str, DataClass.RECORD_ID]
@@ -352,6 +375,7 @@ class SystemAuditHistoryEntryPayload:
     undoes_operation_id: Annotated[str | None, DataClass.RECORD_ID]
     can_undo: Annotated[bool, DataClass.TXN_TYPE]
     undo_blocked_by: Annotated[list[str] | None, DataClass.RECORD_ID]
+    recovery_actions: list[RecoveryActionPayload]
 
 
 @dataclass(frozen=True, slots=True)
