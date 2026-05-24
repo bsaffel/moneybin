@@ -388,6 +388,96 @@ tools ship here — those are PR 3.
 - Undo emission: each undo writes a new audit row per affected entity with `is_undo=TRUE`, `undoes_operation_id=<original>`, and a fresh `operation_id` of its own. The returned summary includes that new operation_id so the undo itself is queryable and undoable.
 - Tests: round-trip per Invariant 10 protected table; cascade-blocked scenario; double-undo (`undo_already_undone`); `undo_operation_not_found`.
 
+#### PR 3 — as implemented (deviations from the design above)
+
+Shipped on `feat/data-recovery-undo`. Status stays `in-progress` (PR 4+ remain).
+Deviations from the design as written, with rationale:
+
+- **notes/tags/splits repo-ified first.** The inverse is synthesized generically
+  from each audit row's full before/after image, which requires every audited
+  `app.*` table to have a repo. `transaction_notes`, `transaction_tags`, and
+  `transaction_splits` previously mutated via raw SQL in `TransactionService`;
+  they now flow through `TransactionNotesRepo` / `TransactionTagsRepo` /
+  `TransactionSplitsRepo`. Audit shape changes that fell out of this: full-row
+  capture (not partial diffs); no `noop` audit rows for idempotent tag re-adds;
+  `split.clear` emits one `split.remove` per row so each split is individually
+  reversible.
+- **One generic reverser, no per-repo overrides.** `BaseRepo.undo_event` keys its
+  WHERE clause on `pk_columns` and binds JSON/array columns natively (DuckDB
+  accepts `dict`/`list`), so `match_decisions` (JSON `match_signals`) needs no
+  override. The earlier sketch of a `MatchDecisionsRepo.undo_event` delegating to
+  the domain `reverse()` was dropped — it would mis-handle undo-of-insert and
+  undo-of-status-change and re-trigger the double-reverse timestamp bug; the
+  generic row-restore is strictly more correct.
+- **Cascade excludes currently-reversed work (net liveness).** A later operation
+  blocks only if it is a *live forward* mutation: undo rows (`is_undo=TRUE`) never
+  block, and a forward op blocks only while its effect is *currently* live.
+  "Currently" is net parity over the undo chain — an op that was undone and then
+  had that undo itself reversed (a round-trip) is live again and blocks once more;
+  likewise an op stays undoable after such a round-trip. Correctness is the
+  chain's net liveness, not whether an undo was *ever* recorded — a one-shot
+  "ever undone" check both traps the user out of re-undoing a round-tripped op and
+  lets undo silently clobber a round-tripped blocker. Without this, the documented
+  walk (undo the blocker, then the original) could never resolve. The blocker join
+  keys on `(target_schema, target_table, target_id)` (matching the row-target
+  query), so a same-named table in another schema is never a false-positive
+  blocker.
+- **Row-grain cascade: `target_id` is the mutated row's PK, not its parent.** The
+  notes/tags/splits repos emit `target_id` = the entity's own key (`note_id`,
+  `split_id`, `transaction_id:tag`), not the parent `transaction_id`. Cascade
+  blocking is therefore scoped to the specific row: two independent annotations on
+  the same transaction (e.g. two tags, or a note plus a split) no longer
+  false-positive-block each other's undo — only a later mutation of the *same* row
+  blocks. (Consequence: filtering the audit log by `target_id = <transaction_id>`
+  returns only transaction-level mutations, not its child notes/tags/splits, which
+  now carry their own row ids.) An undo's own audit row keys on the row the inverse
+  *leaves behind* (`BaseRepo._row_target_id` of the restored/affected row), not the
+  reversed event's `target_id` — so a PK-changing undo (tag-rename restore lands on
+  the old key) is cascade-scoped to the actually-present row, not the pre-undo key.
+- **Read-only audit reads degrade on a pre-V024 schema.** `get_database(read_only=True)`
+  skips migrations, so a V023 `audit_log` lacks `is_undo`/`undoes_operation_id`.
+  `AuditService` probes for the columns once and substitutes
+  `FALSE AS is_undo, NULL AS undoes_operation_id` when absent, so the existing
+  read tools (`system audit list/show`, `transactions audit`) keep working on an
+  upgraded-but-not-yet-write-opened profile instead of erroring on a missing column.
+- **Deterministic, reversible replay order + partial-capture guard.** Rows replay
+  in the exact reverse of write order (`events_for_operation` tiebreaks on the
+  monotonic `rowid`, never the random `audit_id`), so a future parent-then-child
+  insert undoes child-first. An audit row predating full-row capture (Req 4) is
+  refused with `recovery_no_path` rather than mis-applying: the re-INSERT path
+  rejects a `before` missing NOT NULL columns, and the UPDATE-restore path rejects
+  a `before` less complete than `after` (which would silently restore only the
+  captured columns) — covering legacy partial `note.delete` / `note.edit` rows.
+- **Operations with nothing to reverse are refused.** Two filters guard the same
+  "no phantom undo id" invariant: an operation whose audit rows are *all* markers
+  (`target_id IS NULL`, e.g. a `tag.rename` matching zero transactions, whose
+  parent marker is emitted unconditionally), and an operation whose every row is a
+  net no-op (`before == after`, e.g. a legacy idempotent `tag.add`). Either way
+  `undo` raises `recovery_no_path` rather than minting an `undo_operation_id` with
+  no audit rows (which wouldn't be queryable or undoable). For both cases
+  `_undoability` reports `can_undo=False` (it gates on "has at least one row with
+  `target_id` set and `before_value` distinct from `after_value`"), so
+  `system_audit_get` / `_history` agree with `undo`'s refusal instead of
+  advertising an undo that would immediately fail.
+- **`recovery_no_path` for raw-targeted operations.** An operation that touched a
+  table outside the undoable `app.*` surface (e.g. `manual.create` →
+  `raw.manual_transactions`) is refused with `recovery_no_path` rather than
+  crashing; the recovery is re-import, per the "Undoing `import_revert`" deferred
+  note below.
+- **`history` summarizes by action verb.** The operation context records
+  `operation_id` and `actor` but not the originating tool name/arguments, so
+  history entries carry `actions[]` (distinct verbs) rather than the spec's
+  `tool`/`arguments` fields, plus structured `can_undo` / `undo_blocked_by` and
+  the pre-built `recovery_actions[]` (the `system_audit_undo` call for the entry's
+  state — the same structured shape the error envelope carries).
+  `include_undone` toggles visibility of the undo operations themselves
+  (`is_undo=TRUE`).
+- **`transactions matches undo` not migrated.** Re-pointing that command at
+  `system_audit_undo` stays PR 5 work (it keys on `match_id`, not `operation_id`).
+- **Service-level integration coverage** lives in `test_undo_service.py` (real DB,
+  real repos, no mocks) plus the surface E2E in `test_e2e_transaction_curation.py`,
+  rather than separate `tests/integration/test_audit_undo*.py` files.
+
 ### PR 4 — Doctor recipe registry + recipes for existing audits
 
 - `src/moneybin/audits/recipes/__init__.py`, `registry.py`, plus one Python module per existing audit (per Req 7).

@@ -43,7 +43,8 @@ class CategorizationRulesRepo(BaseRepo):
 
     repository = "categorization_rules"
 
-    _AUDIT_TARGET = (CATEGORIZATION_RULES.schema, CATEGORIZATION_RULES.name)
+    table_ref = CATEGORIZATION_RULES
+    pk_columns = ("rule_id",)
 
     def _fetch_row(self, rule_id: str) -> dict[str, Any] | None:
         return self._fetch_one(
@@ -99,7 +100,7 @@ class CategorizationRulesRepo(BaseRepo):
             after = self._fetch_row(rule_id)
             return self._emit_audit(
                 action="categorization_rule.insert",
-                target=(*self._AUDIT_TARGET, rule_id),
+                target=(*self._audit_target, rule_id),
                 before=None,
                 after=self._serialize_for_audit(after),
                 actor=actor,
@@ -140,7 +141,7 @@ class CategorizationRulesRepo(BaseRepo):
             after = self._fetch_row(rule_id)
             return self._emit_audit(
                 action="categorization_rule.deactivate",
-                target=(*self._AUDIT_TARGET, rule_id),
+                target=(*self._audit_target, rule_id),
                 before=self._serialize_for_audit(before),
                 after=self._serialize_for_audit(after),
                 actor=actor,

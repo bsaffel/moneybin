@@ -40,7 +40,8 @@ class UserMerchantsRepo(BaseRepo):
 
     repository = "user_merchants"
 
-    _AUDIT_TARGET = (USER_MERCHANTS.schema, USER_MERCHANTS.name)
+    table_ref = USER_MERCHANTS
+    pk_columns = ("merchant_id",)
 
     def _fetch_row(self, merchant_id: str) -> dict[str, Any] | None:
         return self._fetch_one(
@@ -92,7 +93,7 @@ class UserMerchantsRepo(BaseRepo):
             after = self._fetch_row(merchant_id)
             return self._emit_audit(
                 action="user_merchant.insert",
-                target=(*self._AUDIT_TARGET, merchant_id),
+                target=(*self._audit_target, merchant_id),
                 before=None,
                 after=self._serialize_for_audit(after),
                 actor=actor,
@@ -134,7 +135,7 @@ class UserMerchantsRepo(BaseRepo):
             after = self._fetch_row(merchant_id)
             return self._emit_audit(
                 action="user_merchant.append_exemplar",
-                target=(*self._AUDIT_TARGET, merchant_id),
+                target=(*self._audit_target, merchant_id),
                 before=self._serialize_for_audit(before),
                 after=self._serialize_for_audit(after),
                 actor=actor,

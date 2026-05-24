@@ -279,6 +279,18 @@ app_mutation_audit_emitted_total = Counter(
     ["repository", "action"],
 )
 
+audit_undo_total = Counter(
+    "moneybin_audit_undo_total",
+    "system_audit_undo invocations by outcome (success, not_found, "
+    "already_undone, cascade_blocked, no_path). One increment per undo attempt.",
+    ["outcome"],
+)
+
+audit_undo_rows_reversed_total = Counter(
+    "moneybin_audit_undo_rows_reversed_total",
+    "Audit rows inverted by successful undos (markers and no-ops excluded).",
+)
+
 # ── Sync (moneybin-server pull/connect lifecycle) ────────────────────────────
 
 SYNC_PULL_DURATION_SECONDS = Histogram(

@@ -11,7 +11,13 @@ from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.privacy.payloads.system import (
     InvariantResultPayload,
+    RecoveryActionPayload,
     SchemaDriftTable,
+    SystemAuditEventPayload,
+    SystemAuditGetPayload,
+    SystemAuditHistoryEntryPayload,
+    SystemAuditHistoryPayload,
+    SystemAuditUndoPayload,
     SystemDoctorPayload,
     SystemStatusAccountsInfo,
     SystemStatusCategorizationInfo,
@@ -237,6 +243,170 @@ def system_doctor(full: bool = False) -> ResponseEnvelope[SystemDoctorPayload]:
     )
 
 
+@mcp_tool(read_only=False)
+def system_audit_undo(operation_id: str) -> ResponseEnvelope[SystemAuditUndoPayload]:
+    """Reverse every app.* mutation in one operation as a unit, keyed on operation_id.
+
+    The undo *consumer* for any audited annotation/correction (notes, tags,
+    splits, categories, budgets, rules, merchants, match decisions). Synthesizes
+    each row's inverse from its audit before/after image and writes new audit
+    rows under a fresh operation id — so this undo is itself undoable (its
+    ``undo_operation_id`` is returned).
+
+    Block-don't-cascade: if a *later* operation modified the same rows, this
+    refuses with ``undo_cascade_blocked`` and lists the blocker operation ids in
+    ``recovery_actions`` (newest first) — undo those first, then retry. Other
+    refusals: ``undo_operation_not_found``, ``undo_already_undone``, and
+    ``recovery_no_path`` (the operation touched a table outside the undoable
+    app.* surface, e.g. a manual import — re-import to recover instead).
+
+    Writes app.audit_log plus the reversed app.* rows; revert this undo by
+    calling system_audit_undo again on the returned undo_operation_id.
+    """
+    from moneybin.database import get_database
+    from moneybin.services.undo_service import UndoService
+
+    with get_database() as db:
+        result = UndoService(db).undo(operation_id, actor="mcp")
+    return build_envelope(
+        data=SystemAuditUndoPayload(
+            undo_operation_id=result.undo_operation_id,
+            undone_operation_id=result.undone_operation_id,
+            reversed_row_count=result.reversed_row_count,
+            tables=result.tables,
+        ),
+        actions=[
+            "Undo this undo with "
+            f"system_audit_undo(operation_id='{result.undo_operation_id}')",
+        ],
+    )
+
+
+@mcp_tool()
+def system_audit_history(
+    domain: str | None = None,
+    since: str | None = None,
+    actor: str | None = None,
+    limit: int = 50,
+    include_undone: bool = False,
+) -> ResponseEnvelope[SystemAuditHistoryPayload]:
+    """List recent audited operations, newest first — the "I changed my mind" surface.
+
+    Pull-discovery companion to system_audit_undo: enumerate operations even when
+    no error preceded the regret. Each entry carries ``can_undo`` and, when
+    blocked, ``undo_blocked_by`` (the operation ids to undo first). Operator
+    territory — for reviewing and reversing recent agent changes.
+
+    ``domain`` filters to an action family (e.g. ``"tag"`` → any tag.* row).
+    ``include_undone`` adds the undo operations themselves; by default they are
+    hidden and the originals they reversed appear with ``can_undo=False``.
+    """
+    from moneybin.database import get_database
+    from moneybin.services.undo_service import UndoService
+
+    with get_database(read_only=True) as db:
+        operations = UndoService(db).history(
+            domain=domain,
+            since=since,
+            actor=actor,
+            limit=limit,
+            include_undone=include_undone,
+        )
+    return build_envelope(
+        data=SystemAuditHistoryPayload(
+            operations=[
+                SystemAuditHistoryEntryPayload(
+                    operation_id=o.operation_id,
+                    occurred_at=o.occurred_at,
+                    actor=o.actor,
+                    actions=o.actions,
+                    tables=o.tables,
+                    row_count=o.row_count,
+                    is_undo=o.is_undo,
+                    undoes_operation_id=o.undoes_operation_id,
+                    can_undo=o.can_undo,
+                    undo_blocked_by=o.undo_blocked_by,
+                    recovery_actions=[
+                        RecoveryActionPayload(
+                            tool=ra.tool,
+                            arguments=ra.arguments,
+                            rationale=ra.rationale,
+                            confidence=ra.confidence,
+                            idempotent=ra.idempotent,
+                        )
+                        for ra in o.recovery_actions
+                    ],
+                )
+                for o in operations
+            ]
+        ),
+        actions=[
+            "Inspect before/after with system_audit_get(operation_id=...) "
+            "before undoing",
+            "Reverse an operation with system_audit_undo(operation_id=...)",
+        ],
+    )
+
+
+@mcp_tool()
+def system_audit_get(operation_id: str) -> ResponseEnvelope[SystemAuditGetPayload]:
+    """Full before/after for every row of one operation — inspect before undoing.
+
+    Lets the agent pre-check exactly what system_audit_undo would change.
+    ``before_value`` / ``after_value`` can carry financial amounts (high
+    sensitivity). ``can_undo`` / ``undo_blocked_by`` mirror the undoability the
+    undo tool would enforce. Raises ``undo_operation_not_found`` for a bad id.
+    """
+    from moneybin.database import get_database
+    from moneybin.services.undo_service import UndoService
+
+    with get_database(read_only=True) as db:
+        detail = UndoService(db).get(operation_id)
+    if detail.can_undo:
+        hint = f"Reverse with system_audit_undo(operation_id='{operation_id}')"
+    elif detail.undo_blocked_by:
+        hint = (
+            f"Blocked by later operations — undo those first: {detail.undo_blocked_by}"
+        )
+    elif detail.unresolvable:
+        hint = (
+            "Cannot be undone — this operation touched data outside the undoable "
+            "app.* surface (e.g. a raw import); re-apply manually."
+        )
+    else:
+        hint = (
+            "Cannot be undone as-is — it was already reversed or changed no "
+            "reversible rows."
+        )
+    return build_envelope(
+        data=SystemAuditGetPayload(
+            operation_id=detail.operation_id,
+            events=[
+                SystemAuditEventPayload(
+                    audit_id=e.audit_id,
+                    occurred_at=e.occurred_at,
+                    actor=e.actor,
+                    action=e.action,
+                    target_schema=e.target_schema,
+                    target_table=e.target_table,
+                    target_id=e.target_id,
+                    before_value=e.before_value,
+                    after_value=e.after_value,
+                    parent_audit_id=e.parent_audit_id,
+                    operation_id=e.operation_id,
+                    context_json=e.context_json,
+                    is_undo=e.is_undo,
+                    undoes_operation_id=e.undoes_operation_id,
+                )
+                for e in detail.events
+            ],
+            can_undo=detail.can_undo,
+            undo_blocked_by=detail.undo_blocked_by,
+        ),
+        actions=[hint],
+    )
+
+
 def register_system_tools(mcp: FastMCP) -> None:
     """Register all system namespace tools with the FastMCP server."""
     register(
@@ -254,4 +424,29 @@ def register_system_tools(mcp: FastMCP) -> None:
         "Run pipeline integrity checks across all SQLMesh named audits. "
         "Returns pass/fail/warn per invariant plus transaction count. "
         "May write SQLMesh state tables on first call. Call before relying on analytical results to confirm the pipeline is self-consistent.",
+    )
+    register(
+        mcp,
+        system_audit_undo,
+        "system_audit_undo",
+        "Reverse every app.* mutation in one operation as a unit, keyed on operation_id. "
+        "Synthesizes each row's inverse from its audit before/after image; writes new audit rows under a fresh operation_id, so the undo is itself undoable (returned as undo_operation_id). "
+        "Block-don't-cascade: if a later operation modified the same rows it refuses with undo_cascade_blocked and lists the blockers (newest first) in recovery_actions — undo those first. "
+        "Other refusals: undo_operation_not_found, undo_already_undone, recovery_no_path (op touched a table outside the undoable app.* surface). "
+        "Writes app.audit_log + the reversed app.* rows; revert by calling system_audit_undo on the returned undo_operation_id.",
+    )
+    register(
+        mcp,
+        system_audit_history,
+        "system_audit_history",
+        "List recent audited operations, newest first — the pull surface for reversing a change when no error preceded the regret. "
+        "Each entry carries can_undo and, when blocked, undo_blocked_by (operation ids to undo first). Operator territory. "
+        "domain filters to an action family (e.g. 'tag'); include_undone adds the undo operations themselves (hidden by default).",
+    )
+    register(
+        mcp,
+        system_audit_get,
+        "system_audit_get",
+        "Full before/after for every row of one operation — inspect exactly what system_audit_undo would change before running it. "
+        "before_value/after_value can carry financial amounts (high sensitivity). Raises undo_operation_not_found for a bad operation_id.",
     )

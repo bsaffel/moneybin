@@ -140,3 +140,79 @@ class TestQueryHelpers:
         chain = audit_service.chain_for(parent.audit_id)
         assert len(chain) == 3
         assert chain[0].audit_id == parent.audit_id
+
+
+class TestPreV024Compatibility:
+    """Audit reads tolerate a pre-V024 schema (read-only skips migrations)."""
+
+    def test_list_events_without_undo_columns(self, db: Database) -> None:
+        # Simulate a V023 DB opened read-only (migrations skipped): the undo
+        # columns don't exist yet. Existing read tools must still work, defaulting
+        # is_undo to False, rather than failing with a missing-column error.
+        db.execute(
+            "INSERT INTO app.audit_log "
+            "(audit_id, actor, action, target_schema, target_table, target_id, "
+            " after_value, operation_id) "
+            "VALUES ('a','cli','note.add','app','transaction_notes','n1', "
+            " '{}', 'op_pre')",
+        )
+        # DuckDB refuses DROP COLUMN while indexes depend on the table, so drop
+        # the audit_log indexes first to reach the pre-V024 (no undo columns) shape.
+        idx = db.execute(
+            "SELECT index_name FROM duckdb_indexes() "
+            "WHERE schema_name = 'app' AND table_name = 'audit_log'"
+        ).fetchall()
+        for (name,) in idx:
+            db.execute(f"DROP INDEX app.{name}")  # noqa: S608  # catalog name, test-only
+        db.execute("ALTER TABLE app.audit_log DROP COLUMN undoes_operation_id")
+        db.execute("ALTER TABLE app.audit_log DROP COLUMN is_undo")
+        events = AuditService(db).list_events()
+        assert len(events) == 1
+        assert events[0].is_undo is False
+        assert events[0].undoes_operation_id is None
+
+
+class TestEventsForTransaction:
+    """events_for_transaction finds a transaction's events despite row-grain ids."""
+
+    def test_includes_child_rows_by_captured_transaction_id(self, db: Database) -> None:
+        # Row-grain target_id keys a note/tag row by its own PK, not the parent
+        # transaction — so the per-transaction view must match the transaction_id
+        # captured in the row image, not just target_id.
+        from moneybin.repositories.transaction_notes_repo import TransactionNotesRepo
+        from moneybin.repositories.transaction_tags_repo import TransactionTagsRepo
+        from moneybin.services.mutation_context import operation
+
+        with operation():
+            TransactionNotesRepo(db).add(
+                transaction_id="txnA", note_id="nA", text="x", actor="cli"
+            )
+            TransactionTagsRepo(db).add(transaction_id="txnA", tag="food", actor="cli")
+        with operation():
+            TransactionNotesRepo(db).add(
+                transaction_id="txnB", note_id="nB", text="y", actor="cli"
+            )
+        events = AuditService(db).events_for_transaction("txnA")
+        assert {e.action for e in events} == {"note.add", "tag.add"}  # txnB excluded
+
+
+class TestEventOrdering:
+    """events_for_operation replays in write (rowid) order, not random audit_id."""
+
+    def test_orders_by_rowid_not_random_audit_id(self, db: Database) -> None:
+        # Every row in one operation shares occurred_at (DuckDB CURRENT_TIMESTAMP is
+        # transaction-stable), so the ORDER BY tiebreaker alone decides replay order.
+        # audit_id is a random uuid4 — using it as the tiebreaker scrambles the
+        # order. Insert with audit_ids that sort opposite to write order and assert
+        # we get write (rowid) order back, which the undo consumer reverses.
+        ts = "2026-05-24 00:00:00"
+        for audit_id, target in (("zc", "t1"), ("zb", "t2"), ("za", "t3")):
+            db.execute(
+                "INSERT INTO app.audit_log "
+                "(audit_id, occurred_at, actor, action, target_schema, "
+                " target_table, target_id, operation_id) "
+                "VALUES (?, ?, 'cli', 'tag.add', 'app', 'transaction_tags', ?, ?)",
+                [audit_id, ts, target, "op_order"],
+            )
+        events = AuditService(db).events_for_operation("op_order")
+        assert [e.target_id for e in events] == ["t1", "t2", "t3"]

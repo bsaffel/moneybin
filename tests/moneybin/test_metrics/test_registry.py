@@ -58,3 +58,16 @@ class TestMetricDefinitions:
         from moneybin.metrics.registry import DB_QUERY_DURATION_SECONDS
 
         assert isinstance(DB_QUERY_DURATION_SECONDS, Histogram)
+
+    @pytest.mark.unit
+    def test_audit_undo_total_is_counter_with_outcome_label(self) -> None:
+        from moneybin.metrics.registry import audit_undo_total
+
+        assert isinstance(audit_undo_total, Counter)
+        assert "outcome" in audit_undo_total._labelnames  # type: ignore[reportPrivateUsage,reportUnknownMemberType] — testing prometheus internals
+
+    @pytest.mark.unit
+    def test_audit_undo_rows_reversed_total_is_counter(self) -> None:
+        from moneybin.metrics.registry import audit_undo_rows_reversed_total
+
+        assert isinstance(audit_undo_rows_reversed_total, Counter)

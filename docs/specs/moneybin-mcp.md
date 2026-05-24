@@ -1083,6 +1083,42 @@ Pipeline integrity check — confirms the data pipeline is self-consistent befor
 - **Service:** `DoctorService.run_all(verbose=False, full=False) -> DoctorReport`
 - **CLI:** `moneybin system doctor [--verbose] [--full] [--output json]`
 
+### `system_audit_undo` / `system_audit_history` / `system_audit_get` — audit-log undo consumer
+
+The undo consumer for any audited `app.*` mutation (REC-PR3 / Invariant 10 Phase 2). The read-only `system_audit` event-list tool stays in the curation module; these three undo-domain tools live in `mcp/tools/system.py` and share the `system_audit_*` prefix. All operator territory — positioned for reviewing and reversing recent agent changes, not promoted in the `instructions` enumeration. **Service class:** `UndoService`.
+
+#### `system_audit_undo`
+
+Reverse every `app.*` mutation in one operation as a unit, keyed on `operation_id`.
+
+- **Sensitivity:** `low` — the response carries only ids, a row count, and table names; no financial values. (The operation still mutates `app.*` — see Mutation surface.)
+- **Unique parameters:** `operation_id: str` (required).
+- **Behavior:** Loads every audit row for the operation and synthesizes each row's inverse from its full before/after image (insert→delete, update→restore-before, delete→reinsert). Writes new audit rows with `is_undo=TRUE`, `undoes_operation_id=<original>`, and a fresh `operation_id` of its own, returned as `undo_operation_id` so the undo is itself undoable. Marker rows (`target_id IS NULL`, e.g. the `tag.rename` parent) are skipped; only the per-row children are reversed (an operation with *only* marker rows — e.g. a `tag.rename` that matched zero transactions — has nothing to reverse and is refused with `recovery_no_path` rather than returning an undo id that doesn't exist). **Block, don't cascade:** if a later live operation modified the same `(target_table, target_id)`, it refuses with `undo_cascade_blocked` and lists blocker operation ids in `recovery_actions` (newest first). Other refusals: `undo_operation_not_found`, `undo_already_undone` (suggests undoing the undo), and `recovery_no_path` (the operation touched a table outside the undoable `app.*` surface, e.g. `raw.manual_transactions` from manual entry — re-import to recover).
+- **Mutation surface:** writes `app.audit_log` plus the reversed `app.*` rows. Revert by calling `system_audit_undo` again on the returned `undo_operation_id`.
+- **Annotations:** `read_only=False`, `destructive=False`, `idempotent=False` (a second undo of the same op raises `undo_already_undone`).
+- **Service:** `UndoService.undo(operation_id, actor) -> UndoResult`
+- **CLI:** `moneybin system audit undo <operation_id>`
+
+#### `system_audit_history`
+
+List recent audited operations grouped by `operation_id`, newest first — the pull surface for reversing a change when no error preceded the regret.
+
+- **Sensitivity:** `low` — operation ids, actor, action verbs, table names, counts, and undoability flags; no financial values.
+- **Unique parameters:** `domain: str?` (action-family filter, e.g. `"tag"` → any `tag.*` row), `since: str?` (ISO timestamp lower bound), `actor: str?`, `limit: int = 50`, `include_undone: bool = False`.
+- **Behavior:** Each entry carries `{operation_id, occurred_at, actor, actions[], tables[], row_count, is_undo, undoes_operation_id, can_undo, undo_blocked_by, recovery_actions[]}`. `can_undo` is false when the operation was already undone, is cascade-blocked (`undo_blocked_by` lists the blockers to undo first), or touched a non-undoable table. `recovery_actions[]` carries the pre-built `system_audit_undo` call(s) for the entry's state (undo it, undo the blockers, or undo the undo) — the same structured shape the error envelope uses, so an agent reading history executes the action directly instead of re-deriving it from the raw ids. By default the undo operations themselves (`is_undo=TRUE`) are hidden; `include_undone=True` shows them, and the originals they reversed always appear with `can_undo=False`. (The operation context records `operation_id`/`actor` but not the originating tool name/arguments, so entries summarize by action verb rather than the spec's `tool`/`arguments` fields.)
+- **Service:** `UndoService.history(...) -> list[OperationSummary]`
+- **CLI:** `moneybin system audit history [--domain X] [--since TS] [--actor A] [--limit N] [--include-undone]`
+
+#### `system_audit_get`
+
+Full before/after for every row of one operation — inspect exactly what an undo would change before running it.
+
+- **Sensitivity:** `high` — `before_value`/`after_value` can carry financial amounts (`TXN_AMOUNT`), same tier as `system_audit`.
+- **Unique parameters:** `operation_id: str` (required).
+- **Behavior:** Returns `{operation_id, events[], can_undo, undo_blocked_by}` where each event is the full audit row (the `system_audit` event shape). Raises `undo_operation_not_found` for an unknown id.
+- **Service:** `UndoService.get(operation_id) -> OperationDetail`
+- **CLI:** `moneybin system audit get <operation_id>`
+
 ### `extension_validate`
 
 **Status:** planned. Backing spec [`extension-contracts.md`](extension-contracts.md) is `draft` — the tool is documented here for design alignment but NOT registered on the MCP surface until the spec reaches `in-progress` and the validator lands. See §17c dependency tracker.

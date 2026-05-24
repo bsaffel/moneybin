@@ -46,7 +46,8 @@ class BalanceAssertionsRepo(BaseRepo):
 
     repository = "balance_assertions"
 
-    _AUDIT_TARGET = (BALANCE_ASSERTIONS.schema, BALANCE_ASSERTIONS.name)
+    table_ref = BALANCE_ASSERTIONS
+    pk_columns = ("account_id", "assertion_date")
 
     def _fetch_row(
         self, account_id: str, assertion_date: date
@@ -102,7 +103,7 @@ class BalanceAssertionsRepo(BaseRepo):
             after = self._fetch_row(account_id, assertion_date)
             return self._emit_audit(
                 action="balance_assertion.set",
-                target=(*self._AUDIT_TARGET, _target_id(account_id, assertion_date)),
+                target=(*self._audit_target, _target_id(account_id, assertion_date)),
                 before=self._serialize_for_audit(before),
                 after=self._serialize_for_audit(after),
                 actor=actor,
@@ -130,7 +131,7 @@ class BalanceAssertionsRepo(BaseRepo):
             )
             return self._emit_audit(
                 action="balance_assertion.delete",
-                target=(*self._AUDIT_TARGET, _target_id(account_id, assertion_date)),
+                target=(*self._audit_target, _target_id(account_id, assertion_date)),
                 before=self._serialize_for_audit(before),
                 after=None,
                 actor=actor,

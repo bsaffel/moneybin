@@ -102,6 +102,9 @@ not-yet-built.
 | 39| Run the matching engine and propose new pending decisions         | `transactions_matches_run` *(operator alternative to `refresh_run(steps=["match"])`)* | `transactions matches run` | — | live |
 | 40| View recent match decisions (accepted and rejected)              | `transactions_matches_history` *(`limit?`, `match_type?`)* | `transactions matches history` *(`--type`, `--limit`)* | — | live |
 | 41| Execute a read-only SQL query over core/app with CRITICAL columns masked via lineage | `sql_query` *(`query`)* | `sql query <sql>` *(`--output text\|json`)* | — | live |
+| 42| Reverse one audited operation as a unit (undo)                   | `system_audit_undo` *(`operation_id`)* | `system audit undo <operation_id>`                 | —          | live                  |
+| 43| List recent audited operations with undoability                  | `system_audit_history` *(`domain?`, `since?`, `actor?`, `limit?`, `include_undone?`)* | `system audit history` *(`--domain`, `--since`, `--actor`, `--limit`, `--include-undone`)* | — | live |
+| 44| Inspect full before/after for one operation before undoing        | `system_audit_get` *(`operation_id`)* | `system audit get <operation_id>`                  | —          | live                  |
 
 *(Bootstrap rows only; full table populates incrementally as
 follow-up work closes the parity backlog. A prior row covering

@@ -40,7 +40,8 @@ class BudgetsRepo(BaseRepo):
 
     repository = "budgets"
 
-    _AUDIT_TARGET = (BUDGETS.schema, BUDGETS.name)
+    table_ref = BUDGETS
+    pk_columns = ("budget_id",)
 
     def _fetch_row(self, budget_id: str) -> dict[str, Any] | None:
         return self._fetch_one(BUDGETS, _BUDGETS_COLUMNS, "budget_id", budget_id)
@@ -70,7 +71,7 @@ class BudgetsRepo(BaseRepo):
             after = self._fetch_row(budget_id)
             return self._emit_audit(
                 action="budget.set",
-                target=(*self._AUDIT_TARGET, budget_id),
+                target=(*self._audit_target, budget_id),
                 before=None,
                 after=self._serialize_for_audit(after),
                 actor=actor,
@@ -112,7 +113,7 @@ class BudgetsRepo(BaseRepo):
             after = self._fetch_row(budget_id)
             return self._emit_audit(
                 action="budget.set",
-                target=(*self._AUDIT_TARGET, budget_id),
+                target=(*self._audit_target, budget_id),
                 before=self._serialize_for_audit(before),
                 after=self._serialize_for_audit(after),
                 actor=actor,

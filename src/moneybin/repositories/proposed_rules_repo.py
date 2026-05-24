@@ -63,7 +63,8 @@ class ProposedRulesRepo(BaseRepo):
 
     repository = "proposed_rules"
 
-    _AUDIT_TARGET = (PROPOSED_RULES.schema, PROPOSED_RULES.name)
+    table_ref = PROPOSED_RULES
+    pk_columns = ("proposed_rule_id",)
 
     def _fetch_row(self, proposed_rule_id: str) -> dict[str, Any] | None:
         return self._fetch_one(
@@ -116,7 +117,7 @@ class ProposedRulesRepo(BaseRepo):
             after = self._fetch_row(proposed_rule_id)
             return self._emit_audit(
                 action="proposed_rule.insert",
-                target=(*self._AUDIT_TARGET, proposed_rule_id),
+                target=(*self._audit_target, proposed_rule_id),
                 before=None,
                 after=self._serialize_for_audit(after),
                 actor=actor,
@@ -160,7 +161,7 @@ class ProposedRulesRepo(BaseRepo):
             after = self._fetch_row(proposed_rule_id)
             return self._emit_audit(
                 action="proposed_rule.reinforce",
-                target=(*self._AUDIT_TARGET, proposed_rule_id),
+                target=(*self._audit_target, proposed_rule_id),
                 before=self._serialize_for_audit(before),
                 after=self._serialize_for_audit(after),
                 actor=actor,
@@ -221,7 +222,7 @@ class ProposedRulesRepo(BaseRepo):
             after = self._fetch_row(proposed_rule_id)
             return self._emit_audit(
                 action="proposed_rule.approve",
-                target=(*self._AUDIT_TARGET, proposed_rule_id),
+                target=(*self._audit_target, proposed_rule_id),
                 before=self._serialize_for_audit(before),
                 after=self._serialize_for_audit(after),
                 actor=actor,
@@ -290,7 +291,7 @@ class ProposedRulesRepo(BaseRepo):
             after = self._fetch_row(proposed_rule_id)
             return self._emit_audit(
                 action=action,
-                target=(*self._AUDIT_TARGET, proposed_rule_id),
+                target=(*self._audit_target, proposed_rule_id),
                 before=self._serialize_for_audit(before),
                 after=self._serialize_for_audit(after),
                 actor=actor,

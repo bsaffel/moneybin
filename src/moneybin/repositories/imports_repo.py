@@ -33,7 +33,8 @@ class ImportsRepo(BaseRepo):
 
     repository = "imports"
 
-    _AUDIT_TARGET = (IMPORTS.schema, IMPORTS.name)
+    table_ref = IMPORTS
+    pk_columns = ("import_id",)
 
     def _fetch_row(self, import_id: str) -> dict[str, Any] | None:
         return self._fetch_one(IMPORTS, _IMPORTS_COLUMNS, "import_id", import_id)
@@ -70,7 +71,7 @@ class ImportsRepo(BaseRepo):
             after = self._fetch_row(import_id)
             return self._emit_audit(
                 action="import.set",
-                target=(*self._AUDIT_TARGET, import_id),
+                target=(*self._audit_target, import_id),
                 before=self._serialize_for_audit(before),
                 after=self._serialize_for_audit(after),
                 actor=actor,
