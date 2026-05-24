@@ -197,7 +197,7 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- list                       -- List ledger events
 |   +-- holdings                   -- Current positions (cost basis; market value when price feeds land)
 |   +-- lots [--open|--all]        -- Tax lots with remaining quantity + basis
-|   |   +-- select <disposal_id> --lot <lot_id> --quantity N   -- Specific-ID override
+|   |   +-- select <disposal_id> --lot <lot_id>:<qty> [--lot ...]  -- Replace lot selection (declarative set; multi-lot)
 |   +-- gains                      -- Realized gain/loss (the 1099-B surface)
 |   +-- securities                 -- Security catalog
 |       +-- list / add / set       -- Manage catalog (set carries --method per-security override)
