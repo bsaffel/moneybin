@@ -12,8 +12,8 @@ Two additive columns:
 
 DuckDB rejects ``ADD COLUMN ... NOT NULL`` outright ("Adding columns with
 constraints not yet supported") and rejects ``ALTER COLUMN ... SET NOT NULL``
-while any non-constraint index exists (DependencyException) — audit_log carries
-seven. So is_undo follows V023's proven path: ADD nullable-with-DEFAULT (the
+while any non-constraint index exists (DependencyException) — and audit_log
+carries several. So is_undo follows V023's proven path: ADD nullable-with-DEFAULT (the
 DEFAULT backfills existing rows to FALSE) → interim COMMIT → drop the explicit
 indexes → SET NOT NULL → restore them from catalog DDL. The dance is duplicated
 from V023 rather than shared: a migration is a frozen historical artifact, so a

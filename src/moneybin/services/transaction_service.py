@@ -618,12 +618,12 @@ class TransactionService:
     def add_tags(
         self, transaction_id: str, tags: list[str], *, actor: str
     ) -> list[str]:
-        """Apply tags to a transaction; emit one ``tag.add`` event per tag.
+        """Apply tags to a transaction; emit one ``tag.add`` event per new tag.
 
-        Idempotent: re-adding an existing tag emits a ``tag.add`` event with
-        ``context_json={"noop": True}`` and no row change. All tag patterns
-        are validated up front so a bad tag never half-mutates state.
-        Returns the list of tags that were actually inserted (excludes no-ops).
+        Idempotent: re-adding an existing tag is skipped silently — no row change
+        and no audit row (DN2: no ``noop`` audit noise). All tag patterns are
+        validated up front so a bad tag never half-mutates state. Returns the
+        list of tags that were actually inserted (excludes the skipped ones).
         """
         for t in tags:
             validate_slug(t)
@@ -658,11 +658,11 @@ class TransactionService:
     def remove_tags(
         self, transaction_id: str, tags: list[str], *, actor: str
     ) -> list[str]:
-        """Remove tags from a transaction; emit one ``tag.remove`` per tag.
+        """Remove tags from a transaction; emit one ``tag.remove`` per removed tag.
 
-        Idempotent: removing an absent tag emits a ``tag.remove`` event with
-        ``context_json={"noop": True}`` and no row change. Returns the list
-        of tags that were actually deleted.
+        Idempotent: removing an absent tag is skipped silently — no row change
+        and no audit row (DN2). Returns the list of tags that were actually
+        deleted.
         """
         removed: list[str] = []
         self._db.begin()
@@ -899,9 +899,10 @@ class TransactionService:
         logger.info(f"split.remove split_id={split_id} actor={actor}")
 
     def clear_splits(self, transaction_id: str, *, actor: str) -> None:
-        """Delete all splits for a transaction; emit one ``split.clear`` event.
+        """Delete all splits for a transaction; emit one ``split.remove`` per row.
 
-        No-op (no audit event, no SQL) when the parent has no splits.
+        Per-row capture (DN3) keeps each split individually undoable. No-op (no
+        audit event, no SQL) when the parent has no splits.
         """
         events = self._splits_repo.clear(transaction_id=transaction_id, actor=actor)
         logger.info(
