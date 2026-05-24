@@ -73,6 +73,30 @@ class AuditService:
     def __init__(self, db: Database) -> None:
         """Bind the service to an open Database connection."""
         self._db = db
+        self._has_undo_columns: bool | None = None
+
+    def _undo_columns_sql(self) -> str:
+        """SELECT fragment for the V024 undo columns, degrading on a pre-V024 schema.
+
+        ``get_database(read_only=True)`` skips migrations, so a V023 ``audit_log``
+        (not yet opened in write mode) lacks ``is_undo`` / ``undoes_operation_id``.
+        Substituting literal defaults keeps the existing read tools working —
+        pre-V024 rows have no undo data — instead of failing every audit SELECT
+        with a missing-column error. Column positions are preserved so
+        ``_row_to_event`` (indices 12/13) is unaffected. Probed once and cached.
+        """
+        if self._has_undo_columns is None:
+            row = self._db.conn.execute(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_schema = 'app' AND table_name = 'audit_log' "
+                "AND column_name = 'is_undo'"
+            ).fetchone()
+            self._has_undo_columns = row is not None
+        return (
+            "is_undo, undoes_operation_id"
+            if self._has_undo_columns
+            else "FALSE AS is_undo, NULL AS undoes_operation_id"
+        )
 
     def record_audit_event(
         self,
@@ -186,12 +210,12 @@ class AuditService:
             SELECT audit_id, occurred_at, actor, action,
                    target_schema, target_table, target_id,
                    before_value, after_value, parent_audit_id,
-                   operation_id, context_json, is_undo, undoes_operation_id
+                   operation_id, context_json, {self._undo_columns_sql()}
               FROM app.audit_log
               {where}
               ORDER BY occurred_at DESC
               LIMIT ?
-            """,
+            """,  # noqa: S608  # undo-columns fragment is a controlled literal
             params,
         ).fetchall()
         return [self._row_to_event(r) for r in rows]
@@ -208,18 +232,18 @@ class AuditService:
         image (child mutations), keeping the per-transaction audit view complete.
         """
         rows = self._db.conn.execute(
-            """
+            f"""
             SELECT audit_id, occurred_at, actor, action,
                    target_schema, target_table, target_id,
                    before_value, after_value, parent_audit_id,
-                   operation_id, context_json, is_undo, undoes_operation_id
+                   operation_id, context_json, {self._undo_columns_sql()}
               FROM app.audit_log
              WHERE target_id = ?
                 OR json_extract_string(before_value, '$.transaction_id') = ?
                 OR json_extract_string(after_value, '$.transaction_id') = ?
              ORDER BY occurred_at DESC, rowid DESC
              LIMIT ?
-            """,
+            """,  # noqa: S608  # undo-columns fragment is a controlled literal
             [transaction_id, transaction_id, transaction_id, limit],
         ).fetchall()
         return [self._row_to_event(r) for r in rows]
@@ -238,15 +262,15 @@ class AuditService:
         ``UndoService._cascade_blockers`` relies on.
         """
         rows = self._db.conn.execute(
-            """
+            f"""
             SELECT audit_id, occurred_at, actor, action,
                    target_schema, target_table, target_id,
                    before_value, after_value, parent_audit_id,
-                   operation_id, context_json, is_undo, undoes_operation_id
+                   operation_id, context_json, {self._undo_columns_sql()}
               FROM app.audit_log
              WHERE operation_id = ?
              ORDER BY occurred_at ASC, rowid ASC
-            """,
+            """,  # noqa: S608  # undo-columns fragment is a controlled literal
             [operation_id],
         ).fetchall()
         return [self._row_to_event(r) for r in rows]
@@ -254,15 +278,15 @@ class AuditService:
     def chain_for(self, audit_id: str) -> list[AuditEvent]:
         """Return the parent event plus all events whose ``parent_audit_id`` matches."""
         rows = self._db.conn.execute(
-            """
+            f"""
             SELECT audit_id, occurred_at, actor, action,
                    target_schema, target_table, target_id,
                    before_value, after_value, parent_audit_id,
-                   operation_id, context_json, is_undo, undoes_operation_id
+                   operation_id, context_json, {self._undo_columns_sql()}
               FROM app.audit_log
              WHERE audit_id = ? OR parent_audit_id = ?
              ORDER BY occurred_at ASC, audit_id ASC
-            """,
+            """,  # noqa: S608  # undo-columns fragment is a controlled literal
             [audit_id, audit_id],
         ).fetchall()
         return [self._row_to_event(r) for r in rows]

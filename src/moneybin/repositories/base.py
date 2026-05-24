@@ -21,7 +21,7 @@ from __future__ import annotations
 from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from decimal import Decimal
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 from sqlglot import exp
 
@@ -288,12 +288,17 @@ class BaseRepo:
                 # current (post-mutation) values.
                 self._require_capture(before, after.keys(), event)
                 self._restore_row(before=before, locate=after)
+            # Target the row the inverse actually leaves behind, not event.target_id:
+            # a PK-changing undo (tag rename restore) lands on the *before* key, so
+            # reusing the post-mutation key would mis-scope cascade blocking. One of
+            # before/after is always set here — the both-None case returned early.
+            result_row = cast("dict[str, Any]", before if before is not None else after)
             return self._emit_audit(
                 action=f"{event.action}.undo",
                 target=(
                     event.target_schema,
                     event.target_table,
-                    event.target_id,
+                    self._row_target_id(result_row),
                 ),
                 before=after,
                 after=before,
@@ -334,6 +339,17 @@ class BaseRepo:
                 "— not reversible.",
                 code=error_codes.RECOVERY_NO_PATH,
             )
+
+    def _row_target_id(self, row: dict[str, Any]) -> str:
+        """The audit ``target_id`` for ``row`` — the row's own identity (row-grain).
+
+        Default: the single primary-key column. Repos with a composite key
+        override to flatten it to one string. This MUST mirror the value the
+        repo's forward mutations pass as ``target_id`` so undo rows and forward
+        rows scope to the same row (e.g. tag rename undo must land on the
+        pre-rename key, not the post-rename one).
+        """
+        return str(row[self.pk_columns[0]])
 
     def _pk_where(self, row: dict[str, Any]) -> tuple[str, list[Any]]:
         """Build a ``col = ? AND …`` clause + params from ``pk_columns``."""

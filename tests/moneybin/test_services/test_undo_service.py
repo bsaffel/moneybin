@@ -319,6 +319,37 @@ class TestUndo:
             UndoService(db).undo(op, actor="cli")
         assert exc.value.code == error_codes.RECOVERY_NO_PATH
 
+    def test_undo_of_rename_targets_restored_key(self, db: Database) -> None:
+        # A tag rename's undo restores the OLD composite key; the undo audit row's
+        # target_id must be that restored key (txn_1:old), not the post-rename key
+        # (txn_1:new), so cascade blocking scopes to the actually-restored row.
+        tags = TransactionTagsRepo(db)
+        with operation():
+            tags.add(transaction_id="txn_1", tag="old", actor="cli")
+        with operation() as rename_op:
+            parent = AuditService(db).record_audit_event(
+                action="tag.rename",
+                target=("app", "transaction_tags", None),
+                before={"old_tag": "old"},
+                after={"new_tag": "new", "row_count": 1},
+                actor="cli",
+            )
+            tags.rename_row(
+                transaction_id="txn_1",
+                old_tag="old",
+                new_tag="new",
+                actor="cli",
+                parent_audit_id=parent.audit_id,
+                in_outer_txn=False,
+            )
+        undo = UndoService(db).undo(rename_op, actor="cli")
+        rows = db.execute(
+            "SELECT target_id FROM app.audit_log WHERE operation_id = ? "
+            "AND is_undo = TRUE AND target_id IS NOT NULL",
+            [undo.undo_operation_id],
+        ).fetchall()
+        assert rows == [("txn_1:old",)]
+
     def test_rename_parent_marker_is_skipped(self, db: Database) -> None:
         # A cross-row tag.rename parent (target_id=None) is a marker, not a row
         # mutation — undo reverses only the per-row children.

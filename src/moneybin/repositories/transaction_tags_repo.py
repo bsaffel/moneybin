@@ -35,6 +35,15 @@ class TransactionTagsRepo(BaseRepo):
     table_ref = TRANSACTION_TAGS
     pk_columns = ("transaction_id", "tag")
 
+    def _row_target_id(self, row: dict[str, Any]) -> str:
+        """Composite ``target_id`` for a tag row: ``transaction_id:tag``.
+
+        Mirrors the forward mutations' ``f"{transaction_id}:{tag}"`` so undo rows
+        scope to the same row — critical for rename, where the undo lands on the
+        old tag key.
+        """
+        return f"{row['transaction_id']}:{row['tag']}"
+
     def _fetch_tag(self, transaction_id: str, tag: str) -> dict[str, Any] | None:
         """Read one (transaction_id, tag) row as a full dict, or ``None``.
 

@@ -142,6 +142,36 @@ class TestQueryHelpers:
         assert chain[0].audit_id == parent.audit_id
 
 
+class TestPreV024Compatibility:
+    """Audit reads tolerate a pre-V024 schema (read-only skips migrations)."""
+
+    def test_list_events_without_undo_columns(self, db: Database) -> None:
+        # Simulate a V023 DB opened read-only (migrations skipped): the undo
+        # columns don't exist yet. Existing read tools must still work, defaulting
+        # is_undo to False, rather than failing with a missing-column error.
+        db.execute(
+            "INSERT INTO app.audit_log "
+            "(audit_id, actor, action, target_schema, target_table, target_id, "
+            " after_value, operation_id) "
+            "VALUES ('a','cli','note.add','app','transaction_notes','n1', "
+            " '{}', 'op_pre')",
+        )
+        # DuckDB refuses DROP COLUMN while indexes depend on the table, so drop
+        # the audit_log indexes first to reach the pre-V024 (no undo columns) shape.
+        idx = db.execute(
+            "SELECT index_name FROM duckdb_indexes() "
+            "WHERE schema_name = 'app' AND table_name = 'audit_log'"
+        ).fetchall()
+        for (name,) in idx:
+            db.execute(f"DROP INDEX app.{name}")  # noqa: S608  # catalog name, test-only
+        db.execute("ALTER TABLE app.audit_log DROP COLUMN undoes_operation_id")
+        db.execute("ALTER TABLE app.audit_log DROP COLUMN is_undo")
+        events = AuditService(db).list_events()
+        assert len(events) == 1
+        assert events[0].is_undo is False
+        assert events[0].undoes_operation_id is None
+
+
 class TestEventsForTransaction:
     """events_for_transaction finds a transaction's events despite row-grain ids."""
 

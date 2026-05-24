@@ -430,7 +430,16 @@ Deviations from the design as written, with rationale:
   false-positive-block each other's undo — only a later mutation of the *same* row
   blocks. (Consequence: filtering the audit log by `target_id = <transaction_id>`
   returns only transaction-level mutations, not its child notes/tags/splits, which
-  now carry their own row ids.)
+  now carry their own row ids.) An undo's own audit row keys on the row the inverse
+  *leaves behind* (`BaseRepo._row_target_id` of the restored/affected row), not the
+  reversed event's `target_id` — so a PK-changing undo (tag-rename restore lands on
+  the old key) is cascade-scoped to the actually-present row, not the pre-undo key.
+- **Read-only audit reads degrade on a pre-V024 schema.** `get_database(read_only=True)`
+  skips migrations, so a V023 `audit_log` lacks `is_undo`/`undoes_operation_id`.
+  `AuditService` probes for the columns once and substitutes
+  `FALSE AS is_undo, NULL AS undoes_operation_id` when absent, so the existing
+  read tools (`system audit list/show`, `transactions audit`) keep working on an
+  upgraded-but-not-yet-write-opened profile instead of erroring on a missing column.
 - **Deterministic, reversible replay order + partial-capture guard.** Rows replay
   in the exact reverse of write order (`events_for_operation` tiebreaks on the
   monotonic `rowid`, never the random `audit_id`), so a future parent-then-child
