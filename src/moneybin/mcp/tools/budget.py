@@ -45,7 +45,6 @@ def budget_set(
     return build_envelope(
         data=result.to_payload(),
         actions=[
-            "Use reports_budget to see spending vs budget",
             "Use reports_spending for category breakdown",
         ],
     )

@@ -5,8 +5,9 @@ Cross-domain analytical views (read-only). The view-backed reports
 are generated from ``@report`` runners in ``moneybin.reports.definitions`` and
 registered via ``register_reports_mcp``. ``networth`` / ``networth_history``
 are NetworthService-backed (not single reports.* view reads) and stay
-hand-written — a documented exception. ``budget`` is hand-written pending a
-``reports.budget`` view.
+hand-written — a documented exception. (``reports_budget`` was removed: it
+synthesized from ``BudgetService`` rather than a ``reports.*`` view; it returns
+through the framework once M3C ships a ``reports.budget`` view.)
 """
 
 from __future__ import annotations
@@ -18,7 +19,6 @@ from fastmcp import FastMCP
 from moneybin.database import get_database
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.privacy.payloads.budget import BudgetStatusPayload
 from moneybin.privacy.payloads.networth import (
     NetWorthHistoryPayload,
     NetWorthSnapshotPayload,
@@ -26,7 +26,6 @@ from moneybin.privacy.payloads.networth import (
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.reports._framework.registry import register_reports_mcp
 from moneybin.reports.definitions import ALL_REPORTS
-from moneybin.services.budget_service import BudgetService
 from moneybin.services.networth_service import NetworthService
 
 
@@ -87,33 +86,11 @@ def reports_networth_history(
     )
 
 
-@mcp_tool(domain="budget")
-def reports_budget(month: str | None = None) -> ResponseEnvelope[BudgetStatusPayload]:
-    """Get budget vs actual spending comparison for a month.
-
-    Shows each budgeted category with its target, actual spending,
-    remaining amount, and status (OK / WARNING / OVER).
-
-    Args:
-        month: Month to check (YYYY-MM). Defaults to current month.
-    """
-    with get_database(read_only=True) as db:
-        payload = BudgetService(db).status(month=month)
-    return build_envelope(
-        data=payload,
-        period=payload.month,
-        actions=[
-            "Use `moneybin budget set` (CLI) to adjust a budget target",
-            "Use reports_spending for detailed category breakdown",
-        ],
-    )
-
-
 def register_reports_tools(mcp: FastMCP) -> None:
     """Register all reports namespace tools with the FastMCP server.
 
     The view-backed reports register from ``ALL_REPORTS`` via the framework;
-    the NetworthService-backed and budget tools register by hand.
+    the NetworthService-backed tools register by hand.
     """
     register(
         mcp,
@@ -127,15 +104,6 @@ def register_reports_tools(mcp: FastMCP) -> None:
         reports_networth_history,
         "reports_networth_history",
         "Net worth time series with period-over-period change (daily/weekly/monthly). "
-        "Amounts are in the currency named by `summary.display_currency`.",
-    )
-    register(
-        mcp,
-        reports_budget,
-        "reports_budget",
-        "Get budget vs actual spending comparison for a month. "
-        "Shows target, spent, remaining, and status for each category. "
-        "Amounts use the accounting convention: negative = expense, positive = income; transfers exempt. "
         "Amounts are in the currency named by `summary.display_currency`.",
     )
     register_reports_mcp(ALL_REPORTS, mcp)
