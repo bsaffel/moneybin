@@ -79,6 +79,26 @@ def test_build_spec_excludes_db_and_reads_params() -> None:
     assert by_name["by"].default == "account"
 
 
+def test_build_spec_arg_continuation_line_is_not_parsed_as_new_param() -> None:
+    # A continuation line shaped like "word: text" must append to the current
+    # param's help, not start a phantom entry that truncates it. The deeper
+    # indent (not the colon) is what distinguishes a continuation from an entry.
+    def runner(db: Database, *, fmt: str = "iso") -> ReportQuery:
+        """Summary.
+
+        Args:
+            db: Open read-only database connection.
+            fmt: Output date format.
+                default: today when omitted.
+        """
+        return ReportQuery("SELECT 1", [])
+
+    spec = build_spec(runner, name="cont", view=REPORTS_MERCHANT_ACTIVITY)
+    by_name = {p.name: p for p in spec.params}
+    assert set(by_name) == {"fmt"}
+    assert by_name["fmt"].help == "Output date format. default: today when omitted."
+
+
 def test_build_spec_reads_examples() -> None:
     spec = build_spec(_sample, name="sample", view=REPORTS_MERCHANT_ACTIVITY)
     assert spec.examples == (

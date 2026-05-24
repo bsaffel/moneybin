@@ -109,6 +109,15 @@ async def test_register_report_mcp_registers_tool() -> None:
     async with Client(mcp) as client:
         tools = {t.name: t for t in await client.list_tools()}
     assert "reports_summary" in tools
-    schema = tools["reports_summary"].inputSchema
+    tool = tools["reports_summary"]
+    schema = tool.inputSchema
     assert set(schema["properties"]) == {"month", "top"}
-    assert "Per-account summary." in (tools["reports_summary"].description or "")
+    description = tool.description or ""
+    assert "Per-account summary." in description
+    # The tool description is summary-only: db is not a passable param, so the
+    # Args dump (which names it) must not leak into the agent-facing description.
+    assert "Open read-only database connection" not in description
+    assert "Args:" not in description
+    # Per-param help still reaches the schema (FastMCP derives it from __doc__).
+    assert schema["properties"]["month"].get("description")
+    assert schema["properties"]["top"].get("description")

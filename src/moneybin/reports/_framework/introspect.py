@@ -101,6 +101,10 @@ def _parse_docstring(doc: str) -> tuple[str, dict[str, str], tuple[str, ...]]:
     examples: list[str] = []
     section: str | None = None
     current: str | None = None
+    # Indent of the first Args entry. A line indented deeper than this is a
+    # continuation of the current entry, even when it is shaped like "word:
+    # text" (e.g. "default: today") — the indent, not the colon, marks an entry.
+    arg_indent: int | None = None
     for line in lines[idx:]:
         stripped = line.strip()
         header = _HEADER.match(stripped)
@@ -117,10 +121,16 @@ def _parse_docstring(doc: str) -> tuple[str, dict[str, str], tuple[str, ...]]:
             current = None
             continue
         if section == "args":
-            entry = _ARG_ENTRY.match(stripped)
+            indent = len(line) - len(line.lstrip())
+            is_continuation = current is not None and (
+                arg_indent is not None and indent > arg_indent
+            )
+            entry = None if is_continuation else _ARG_ENTRY.match(stripped)
             if entry:
                 current = cast("str", entry.group(1))  # \w+ always yields a str
                 arg_help[current] = entry.group(2).strip()
+                if arg_indent is None:
+                    arg_indent = indent
             elif current is not None:
                 arg_help[current] = f"{arg_help[current]} {stripped}".strip()
         elif section == "examples":

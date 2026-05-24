@@ -60,5 +60,8 @@ def register_report_mcp(spec: ReportSpec, mcp: FastMCP) -> None:
     """Register ``spec`` as a ``reports_<name>`` FastMCP tool."""
     fn = make_tool_fn(spec)
     decorated = mcp_tool(dynamic_classification=True, domain=spec.domain)(fn)
-    description = inspect.getdoc(spec.runner) or spec.description
-    register(mcp, decorated, spec.mcp_tool_name, description)
+    # Summary only — the full docstring's Args block names `db`, which is not a
+    # passable param (it is stripped from the signature), so dumping it into the
+    # agent-facing description invites a rejected call. Per-param help still
+    # reaches the schema via _impl.__doc__ (FastMCP parses it from there).
+    register(mcp, decorated, spec.mcp_tool_name, spec.description)
