@@ -542,7 +542,7 @@ Verify against the current `raw_import_log.sql` schema at implementation time. P
 | `pyproject.toml` | Add `google-api-python-client`, `google-auth-oauthlib`, `google-auth` deps |
 | `docs/specs/INDEX.md` | Add new "Connect (Live External Sources)" section + this spec entry |
 | `docs/specs/smart-import-tabular.md` | Note that `source_type='gsheet'` participates via this spec |
-| `docs/roadmap.md` | Add 📐 row to M3F (new milestone) |
+| `docs/roadmap.md` | Add row to M2E (Smart Import & Connect) |
 | `CHANGELOG.md` | Add `Added` bullet under `Unreleased` when implementation lands |
 | `docs/features.md` | Add "Google Sheets live sync" capability |
 | `docs/guides/data-import.md` | Cross-reference the new connect-gsheet guide |
@@ -931,16 +931,13 @@ None new. OAuth flow uses the user's default browser (already required by the mo
 
 ## Roadmap placement
 
-**M3F** (new milestone). Slots alongside:
+**M2E — Smart Import & Connect** (pre-launch). This spec is the **Connect** thread of M2E; drop-any-PDF import and the shared import-confirmation contract are the **Smart Import** threads. Slots in the M2 series alongside:
 
-- M3A — Plaid sync (shipped)
-- M3B — investments
-- M3C — multi-currency + budgets
-- M3D — Web UI + Streamable HTTP
-- M3E — hosted launch
-- **M3F — Connect: live tabular sources** (this spec, plus future siblings)
+- M2C — Install & Onboarding
+- M2D — Recovery & Trust
+- **M2E — Smart Import & Connect** (this spec, plus drop-any-PDF import and import confirmation)
 
-Independent of M3A: no moneybin-server dependency. Could ship before or after the other M3 sub-milestones; placement after M3A is conservative since M3A establishes service-layer patterns this spec relies on (sync_models, SyncClient credential storage patterns).
+Future Connect siblings (Airtable, Smartsheet, Notion) are post-launch. Independent of M3A: no moneybin-server dependency.
 
 ---
 
@@ -952,5 +949,5 @@ Independent of M3A: no moneybin-server dependency. Could ship before or after th
 4. `system_status` returns a `gsheet` block in both empty and `needs_attention` cases.
 5. `refresh_run` default steps include `"gsheet"`; per-step results include per-connection PullResults.
 6. A user can run the documented connect → pull → reports loop on a real Google Sheet (manual verification gate before declaring `implemented`).
-7. Documentation updates land: `docs/guides/connect-gsheet.md`, `docs/features.md` row, CHANGELOG `Added` bullet, roadmap M3F row, `INDEX.md` row in the new "Connect (Live External Sources)" section.
+7. Documentation updates land: `docs/guides/connect-gsheet.md`, `docs/features.md` row, CHANGELOG `Added` bullet, roadmap M2E row, `INDEX.md` row in the new "Connect (Live External Sources)" section.
 8. `make check test` clean.

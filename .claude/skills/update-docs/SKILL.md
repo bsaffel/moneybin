@@ -138,7 +138,7 @@ subagent verbatim. They keep accidentally regrowing:
   - `CHANGELOG.md` (sections are tagged by milestone)
   - `docs/specs/`, `docs/decisions/` (internal — out of scope anyway)
 
-  When used in the exception files, the naming is fixed: `M0`, `M1`, `M2A`, `M2B`, `M2C`, `M3A` (Plaid), `M3B` (investments), `M3C` (multi-currency + budgets), `M3D` (Web UI + Streamable HTTP), `M3E` (hosted launch). Don't invent new ones.
+  When used in the exception files, the canonical milestone set is **whatever `docs/roadmap.md`'s milestone-overview table lists** — that table is the single source of truth (per `.claude/rules/shipping.md`), so this rule can't go stale as milestones are added. As of this writing that's `M0`, `M1`, `M2A`–`M2E`, `M3A`–`M3E`, plus `Post-launch`; treat the live roadmap table as authoritative if it has moved on. Don't introduce a code that isn't in the roadmap table, and don't strip one that is — if a doc and the roadmap disagree, the roadmap wins.
 
   **Post-v1:** this rule relaxes. Semantic versions (`v1.2`, `v2.0`) become meaningful to readers and can appear in user-facing prose ("new in v1.2"). Revisit this rule once v1 ships.
 

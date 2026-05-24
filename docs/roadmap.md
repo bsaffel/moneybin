@@ -28,12 +28,12 @@ Each milestone has a one-line gloss for what it means to a user. Details below.
 | **M2B** | Architecture Reference — internal contract every later feature inherits. User impact: stability. | ✅ shipped |
 | **M2C** | Install & Onboarding — `brew install moneybin` works; an evaluator gets to a first answer unaided. | 🚧 in flight |
 | **M2D** | Recovery & Trust — every data failure is fixable through tools (never SQL surgery), and every edit is reversible. | 🚧 in flight |
+| **M2E** | Smart Import & Connect — Google Sheets live sync, drop-any-PDF import, and one shared confirm step across every channel. | 🚧 in flight (gsheet shipped) |
 | **M3A** | Plaid sync — connect your bank by login instead of CSV download. | 🚧 in flight (Phase 1) |
 | **M3B** | Investments / cost basis — holdings, lots, gain/loss tied to a real 1099-B. | 🗓️ planned |
 | **M3C** | Multi-currency + budgets — non-USD support and monthly budgets with rollovers. | 🗓️ planned |
 | **M3D** | Web UI — the dashboard you'll actually look at, plus remote MCP for ChatGPT web/mobile. | 🗓️ planned |
 | **M3E** | Hosted launch (v1) — opt-in cloud tier; reference packages (`assets`, `us_tax`) ship Platinum-quality. | 🗓️ planned |
-| **M3F** | Connect: live tabular sources — Google Sheets today; Airtable, Smartsheet, Notion planned. | ✅ shipped (gsheet) |
 | Post-launch | Anything after M3E. Listed without commitment. | 🗓️ planned |
 
 **A note on extensibility.** The contributor surface — adding reports, analysis packages, and providers — is a stated differentiator, built on the premise that people (and the agents they drive) will extend MoneyBin to track money their own way. The contract is specified in [`extension-contracts.md`](specs/extension-contracts.md). The package framework core has shipped, and report auto-generation — a single `@report` runner that generates the CLI command, MCP tool, and column masking — is in flight (🚧), so packages and agents add reports onto both surfaces through one definition. Two reference packages ship at v1: `assets` (real estate, vehicles, valuables) and `us_tax` (locale-specific tax helpers built on top of M3B investments). Both at Platinum quality; both serve as worked examples for community packages post-launch.
@@ -50,6 +50,7 @@ The single best place to read this roadmap: every in-flight or planned milestone
 |---|---|
 | M2C | `brew install moneybin && moneybin demo` works on a clean Mac with a clean `moneybin system doctor` output; the Web UI prototype runs at `moneybin ui` and lets a user review AI-categorization proposals end-to-end; the README quickstart + Claude Desktop guide carry a new user from zero to a first MCP answer. |
 | M2D | Every documented failure mode returns structured `recovery_actions`; the doctor recipe registry and the refresh-time self-heal safelist are in place; no recovery path requires raw SQL. |
+| M2E | Google Sheets sync, drop-any-PDF import, and the shared import-confirm flow all ship; nothing lands unconfirmed on first contact across tabular, Sheets, and PDF, and a confirmed layout replays silently. |
 | M3A | Plaid Production is approved and a first user syncs from a real bank. |
 | M3B | Investment cost-basis numbers tie to at least one broker's official 1099-B for a full tax year. |
 | M3C | A non-USD user can import multi-currency transactions, see home-currency equivalents, and FX gain/loss on a deliberate round-trip ties to a bank-statement-derived expectation within $0.01. |
@@ -166,6 +167,20 @@ Every data failure is fixable through tools, never SQL surgery — and every edi
 
 ---
 
+## M2E — Smart Import & Connect 🚧 in flight (gsheet shipped)
+
+Expanding what MoneyBin can ingest, pre-launch. Two threads: **Connect** — user-controlled live data sources via direct OAuth, distinct from `sync` (which mediates third-party financial providers through moneybin-server); the client speaks the provider's API directly and tokens live in the local `SecretStore` — and **Smart Import** — turning more file types into trustworthy rows. One shared confirmation contract governs every channel.
+
+| Area | Status | Notes |
+|---|---|---|
+| Google Sheets connector | ✅ | Two adapters: `transactions` (Tiller-style → matching/categorization pipeline) and `seed` (catch-all → JSON storage + auto-generated typed views). OAuth via Google's "Desktop app" PKCE flow; no shared client secret. Soft-delete preserves audit history; per-connection drift detection refuses pulls on structural change until `gsheet reconnect`. See [`connect-gsheet.md`](specs/connect-gsheet.md). |
+| Drop-any-PDF import | 🚧 | Generic PDF ingestion: native-text statements extract locally and free via `pdfplumber`; harder layouts escalate to the AI agent already driving MoneyBin; a learned recipe replays for free thereafter. Transaction-shaped rows route to `core`; everything else lands as queryable JSON seeds. Spec ready ([`smart-import-pdf.md`](specs/smart-import-pdf.md)); first phase underway. |
+| Import confirmation & confidence | 🚧 | One trust step shared by every smart-import channel (tabular, Sheets, PDF): nothing lands unconfirmed on first contact, a confirmed layout replays silently, and a wrong guess is one obvious step to recover (`import_confirm`). Draft spec. |
+
+Independent of M3A — no moneybin-server dependency. The Connect family grows post-launch with Airtable, Smartsheet, and Notion siblings under the same connection-lifecycle pattern; AI-assisted parsing of *non-PDF* file types also stays post-launch.
+
+---
+
 ## M3A — Plaid sync 🚧 in flight (Phase 1 shipped)
 
 Bank-login connection in place of monthly CSV exports. **Phase 1** (shipped) = cash and credit-card accounts. **Phase 2** = investment accounts, which overlaps with M3B.
@@ -238,29 +253,14 @@ Pricing is not committed pre-launch. The local CLI + MCP stack will remain fully
 
 ---
 
-## M3F — Connect: live tabular sources ✅ shipped (gsheet)
-
-User-controlled live data sources connected via direct OAuth — distinct from `sync` (which mediates third-party financial providers through moneybin-server). The client speaks the provider's API directly; tokens live in the local `SecretStore`; no server mediation.
-
-| Area | Status | Notes |
-|---|---|---|
-| Google Sheets connector | ✅ | Two adapters: `transactions` (Tiller-style → matching/categorization pipeline) and `seed` (catch-all → JSON storage + auto-generated typed views). OAuth via Google's "Desktop app" PKCE flow; no shared client secret. Soft-delete preserves audit history; per-connection drift detection refuses pulls on structural change until `gsheet reconnect`. See [`connect-gsheet.md`](specs/connect-gsheet.md). |
-| Airtable connector | 🗓️ | Sibling under the same connection-lifecycle pattern. |
-| Smartsheet connector | 🗓️ | |
-| Notion connector | 🗓️ | |
-
-Independent of M3A — no moneybin-server dependency. Can ship before or after the other M3 sub-milestones.
-
----
-
 ## Post-launch / Beyond v1
 
 Designed but not gating launch. Listed without commitment.
 
 - **Data export** (CSV, Excel, Google Sheets) as a one-command flow. Until this ships, the data-exit path is direct SQL access to your DuckDB file.
 - **Privacy tiers + consent model.** Framework spec at [`privacy-and-ai-trust.md`](specs/privacy-and-ai-trust.md).
-- **Drop-any-PDF import (🚧 in flight).** Generic PDF ingestion: native-text statements extract locally and free via `pdfplumber`, harder layouts escalate to the AI agent already driving MoneyBin, and a learned recipe replays for free thereafter. Transaction-shaped rows route to `core`; everything else lands as queryable JSON seeds. Spec ready ([`smart-import-pdf.md`](specs/smart-import-pdf.md)); first phase underway. Full surface remains gated behind the launch milestones. AI-assisted parsing of *non-PDF* file types stays post-launch.
-- **Import confirmation & confidence (🚧 in flight).** One trust step shared by every smart-import channel (tabular, Sheets, PDF): nothing lands unconfirmed on first contact, a confirmed layout replays silently, and a wrong guess is one obvious step to recover (`import_confirm`). Draft spec; ships alongside the PDF work.
+- **Connect: more live sources** — Airtable, Smartsheet, and Notion connectors under the same connection-lifecycle pattern as Google Sheets (which ships in M2E).
+- **AI-assisted parsing of non-PDF file types** — the smart-import bridge (shipped first for PDF in M2E) applied to other formats.
 - **ML-powered categorization + merchant entity resolution.** Needs accumulated labeled data from real users.
 - **MCP Apps** (interactive UI inside Claude Desktop, VS Code). Revisit when client support widens.
 - **Multi-account-holder sharing.** Single-user is the v1 posture; revisit on user demand.
