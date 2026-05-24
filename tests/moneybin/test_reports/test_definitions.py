@@ -56,6 +56,20 @@ def test_cashflow_by_category_groups_by_category(db: Database) -> None:
     assert "account_id" not in rows[0]  # not grouped → column omitted entirely
 
 
+def test_cashflow_default_groups_by_account_and_category(db: Database) -> None:
+    # The default by="account-and-category" fires BOTH grouping branches; the
+    # GROUP BY must carry account_id AND category, keeping (account, category)
+    # pairs distinct rather than collapsing them.
+    _install_cash_flow_view(db)
+    rows = _rows(db, cash_flow, from_month="2026-01", to_month="2026-12")
+    assert "account_id" in rows[0] and "category" in rows[0]
+    assert {(r["account_id"], r["category"]) for r in rows} == {
+        ("A1", "Food"),
+        ("A1", "Travel"),
+        ("A2", "Food"),
+    }
+
+
 def test_cashflow_defaults_to_12_month_window() -> None:
     rq = cash_flow(None)  # type: ignore[arg-type]  # runner builds pure SQL, ignores db
     assert rq.period is not None

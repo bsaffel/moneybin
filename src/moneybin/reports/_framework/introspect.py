@@ -21,8 +21,31 @@ from moneybin.reports._framework.contract import (
 
 # A docstring section header like "Args:" / "Examples:" (no further text).
 _HEADER = re.compile(r"^(\w+):$")
+# Known Google-docstring section names. Header detection is gated on this set so
+# a bare "<word>:" prose line that is NOT a real section (e.g. "Options:") is
+# treated as prose, not a boundary — otherwise it would truncate the description
+# and drop the prose (and potentially the Args block) after it.
+_KNOWN_SECTIONS = frozenset({
+    "args",
+    "arguments",
+    "examples",
+    "returns",
+    "raises",
+    "yields",
+    "notes",
+    "attributes",
+})
 # An "name: help" or "name (type): help" Args entry.
 _ARG_ENTRY = re.compile(r"^(\w+)\s*(?:\([^)]*\))?\s*:\s*(.*)$")
+
+
+def _section_tag(stripped: str) -> str | None:
+    """Lowercased section name if ``stripped`` is a known Google header, else None."""
+    match = _HEADER.match(stripped)
+    if match is None:
+        return None
+    tag = match.group(1).lower()
+    return tag if tag in _KNOWN_SECTIONS else None
 
 
 def build_spec(
@@ -98,7 +121,7 @@ def _parse_docstring(doc: str) -> tuple[str, dict[str, str], tuple[str, ...]]:
     # lines separate paragraphs.
     desc_lines: list[str] = []
     idx = 0
-    while idx < len(lines) and not _HEADER.match(lines[idx].strip()):
+    while idx < len(lines) and _section_tag(lines[idx].strip()) is None:
         desc_lines.append(lines[idx])
         idx += 1
     paragraphs = [
@@ -117,15 +140,15 @@ def _parse_docstring(doc: str) -> tuple[str, dict[str, str], tuple[str, ...]]:
     arg_indent: int | None = None
     for line in lines[idx:]:
         stripped = line.strip()
-        header = _HEADER.match(stripped)
-        if header:
-            tag = header.group(1).lower()
+        tag = _section_tag(stripped)
+        if tag is not None:
             section = (
                 "args"
                 if tag in ("args", "arguments")
                 else ("examples" if tag == "examples" else None)
             )
             current = None
+            arg_indent = None  # each section's Args entries set their own baseline
             continue
         if not stripped:
             current = None

@@ -12,11 +12,13 @@ report's actual result columns onto it by name. This keeps the hand-authored
 from __future__ import annotations
 
 import hashlib
+import logging
 
 from sqlglot import exp
 
 from moneybin.database import Database
 from moneybin.privacy.sql_lineage import (
+    SqlParseError,
     SqlSchemaError,
     expand_star,
     get_current_schema_snapshot,
@@ -25,6 +27,8 @@ from moneybin.privacy.sql_lineage import (
 )
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.tables import TableRef
+
+logger = logging.getLogger(__name__)
 
 # Keyed on (view, schema version, view-body hash). The body hash is load-bearing:
 # `CREATE OR REPLACE VIEW` (a SQLMesh transform rebuild) changes a reports.* view
@@ -61,15 +65,26 @@ def derive_view_classes(db: Database, view: TableRef) -> dict[str, DataClass]:
     if cached is not None:
         return cached
 
-    tree = parse_cached(body)
-    # duckdb_views().sql is the full ``CREATE VIEW ... AS <query>`` — unwrap it.
-    if isinstance(tree, exp.Create):
-        inner = tree.expression
-        if inner is None:
-            raise SqlSchemaError(f"View {view.full_name} has no query body")
-        tree = inner
-    qtree = expand_star(tree, snapshot)
-    classes = resolve_output_classes(qtree, snapshot, view.full_name)
+    try:
+        tree = parse_cached(body)
+        # duckdb_views().sql is the full ``CREATE VIEW ... AS <query>`` — unwrap it.
+        if isinstance(tree, exp.Create):
+            inner = tree.expression
+            if inner is None:
+                raise SqlSchemaError(f"View {view.full_name} has no query body")
+            tree = inner
+        qtree = expand_star(tree, snapshot)
+        classes = resolve_output_classes(qtree, snapshot, view.full_name)
+    except (SqlParseError, SqlSchemaError):
+        # sqlglot can't parse/resolve a view DuckDB accepts: fail closed with an
+        # empty map so classify_columns masks every column via _FAIL_CLOSED. The
+        # report degrades to fully-masked rather than hard-failing. (A missing
+        # view raises from _view_body above and is NOT caught — that's a real
+        # config error, not a lineage gap.) Cached so we don't re-parse each call.
+        logger.warning(
+            f"Lineage failed for {view.full_name}; failing closed (all columns masked)"
+        )
+        classes = {}
 
     _CACHE[key] = classes
     return classes
@@ -86,8 +101,11 @@ def classify_columns(
     (lineage parsed nothing), fall back to ``_FAIL_CLOSED`` so nothing leaks.
     """
     view_classes = derive_view_classes(db, view)
+    # Highest tier present, with a deterministic tie-break by class value so two
+    # classes at the same tier (e.g. ACCOUNT_IDENTIFIER vs ROUTING_NUMBER, both
+    # CRITICAL but with different masks) don't resolve by dict insertion order.
     fallback = (
-        max(view_classes.values(), key=lambda c: c.tier)
+        max(view_classes.values(), key=lambda c: (c.tier, c.value))
         if view_classes
         else _FAIL_CLOSED
     )

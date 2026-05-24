@@ -124,6 +124,29 @@ def test_build_spec_description_includes_body_prose_not_args() -> None:
     assert "Open read-only database connection" not in spec.description
 
 
+def test_build_spec_bare_word_colon_in_description_is_not_a_section_header() -> None:
+    # A bare "<word>:" line that is not a known Google section (e.g. "Options:")
+    # must not be mistaken for a section header — that would truncate the
+    # description there and drop the prose after it. Only known sections
+    # (Args/Examples/...) terminate the description.
+    def runner(db: Database, *, top: int = 10) -> ReportQuery:
+        """Spending rollup.
+
+        Options:
+        grouping is by account then category.
+
+        Args:
+            db: Open read-only database connection.
+            top: Maximum rows to return.
+        """
+        return ReportQuery("SELECT 1", [])
+
+    spec = build_spec(runner, name="r", view=REPORTS_MERCHANT_ACTIVITY)
+    assert "grouping is by account then category." in spec.description
+    by_name = {p.name: p for p in spec.params}
+    assert by_name["top"].help == "Maximum rows to return."  # Args still parsed
+
+
 def test_build_spec_reads_examples() -> None:
     spec = build_spec(_sample, name="sample", view=REPORTS_MERCHANT_ACTIVITY)
     assert spec.examples == (

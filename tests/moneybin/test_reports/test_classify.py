@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import patch
 
 from moneybin.database import Database
+from moneybin.privacy.sql_lineage import SqlSchemaError
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.classify import (
     classify_columns,
@@ -41,6 +42,25 @@ def test_classify_columns_fails_closed_on_unknown_column(reports_db: Database) -
     # never leak in the clear.
     mapped = classify_columns(reports_db, _VIEW, ["amount", "mystery"])
     assert mapped["mystery"] == DataClass.ACCOUNT_IDENTIFIER
+
+
+def test_derive_view_classes_fails_closed_on_lineage_error(
+    reports_db: Database,
+) -> None:
+    # A view DuckDB accepts but sqlglot can't parse/resolve must NOT hard-fail
+    # the report — derive returns an empty map so classify_columns falls back to
+    # _FAIL_CLOSED (mask everything) and the report still returns masked results.
+    reports_db.execute(
+        "CREATE OR REPLACE VIEW reports.unresolvable AS "
+        "SELECT account_id FROM core.fct_transactions"
+    )
+    view = TableRef("reports", "unresolvable")
+    with patch(
+        "moneybin.reports._framework.classify.resolve_output_classes",
+        side_effect=SqlSchemaError("cannot resolve"),
+    ):
+        classes = derive_view_classes(reports_db, view)
+    assert classes == {}
 
 
 def test_classify_columns_fails_closed_when_view_map_empty(
