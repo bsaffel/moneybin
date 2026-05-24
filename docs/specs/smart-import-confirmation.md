@@ -169,12 +169,14 @@ first, implementing this shared shape rather than a PDF-only one.
 # moneybin/extractors/confidence.py  (new, channel-agnostic)
 Tier = Literal["high", "medium", "low"]
 
+
 @dataclass(frozen=True)
 class Confidence:
-    score: float                  # normalized [0, 1]
-    tier: Tier                    # derived via shared bands
-    flagged: tuple[str, ...]          # weakly-matched fields (eyeball these)
-    missing_required: tuple[str, ...] # required dest fields not resolved
+    score: float  # normalized [0, 1]
+    tier: Tier  # derived via shared bands
+    flagged: tuple[str, ...]  # weakly-matched fields (eyeball these)
+    missing_required: tuple[str, ...]  # required dest fields not resolved
+
 
 def tier_for(score: float, *, t_high: float, t_med: float) -> Tier: ...
 ```
@@ -198,7 +200,7 @@ def resolve_or_confirm(
     confidence: Confidence,
     proposed: ProposedMapping | BridgePayload,
     signal: Accept | Override | None,
-    self_accept_enabled: bool,     # calibration gate (Req 12)
+    self_accept_enabled: bool,  # calibration gate (Req 12)
     actor_kind: Literal["human", "agent"],
 ) -> Resolved | ConfirmationRequired: ...
 ```
