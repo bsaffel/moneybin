@@ -1,13 +1,21 @@
-"""Auto-generate the report registration trinity from one SQL file.
+"""Runner-first report framework: one decorated runner generates every surface.
 
-A contributor writes ONE SQL file with @-block structured comments; the
-framework generates the MCP tool, CLI command, service method, and TableRef.
-See docs/specs/extension-contracts.md §"Report contract".
+A contributor writes a runner ``(db, **params) -> ReportQuery``; the framework
+introspects it into a ``ReportSpec`` and generates the MCP tool, CLI command,
+and ``TableRef`` wiring. See ``docs/specs/extension-contracts.md``
+§"Report contract".
 """
 
-from moneybin.reports._framework.spec import ParamSpec, ReportSpec
+from moneybin.reports._framework.contract import (
+    ParamSpec,
+    ReportQuery,
+    ReportSpec,
+    report,
+)
 
 __all__ = [
     "ParamSpec",
+    "ReportQuery",
     "ReportSpec",
+    "report",
 ]
