@@ -3,12 +3,30 @@
 from __future__ import annotations
 
 from moneybin.database import Database
+from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import ReportQuery, report
 from moneybin.reports.definitions._shared import RECURRING_CADENCES, RECURRING_STATUSES
 from moneybin.tables import REPORTS_RECURRING_SUBSCRIPTIONS
 
 
-@report(name="recurring", view=REPORTS_RECURRING_SUBSCRIPTIONS)
+@report(
+    name="recurring",
+    view=REPORTS_RECURRING_SUBSCRIPTIONS,
+    classes={
+        "merchant_id": DataClass.RECORD_ID,
+        "merchant_normalized": DataClass.MERCHANT_NAME,
+        "avg_amount": DataClass.TXN_AMOUNT,
+        "cadence": DataClass.TXN_TYPE,
+        "interval_days_avg": DataClass.AGGREGATE,
+        "interval_days_stddev": DataClass.AGGREGATE,
+        "occurrence_count": DataClass.AGGREGATE,
+        "first_seen": DataClass.TXN_DATE,
+        "last_seen": DataClass.TXN_DATE,
+        "status": DataClass.TXN_TYPE,
+        "annualized_cost": DataClass.TXN_AMOUNT,
+        "confidence": DataClass.AGGREGATE,
+    },
+)
 def recurring_subscriptions(
     db: Database,  # noqa: ARG001  # contract handle; this runner builds pure SQL
     *,

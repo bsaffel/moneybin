@@ -3,13 +3,29 @@
 from __future__ import annotations
 
 from moneybin.database import Database
+from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import ReportQuery, report
 from moneybin.reports.definitions._shared import DRIFT_STATUSES
 from moneybin.services.account_service import AccountService
 from moneybin.tables import REPORTS_BALANCE_DRIFT
 
 
-@report(name="balance_drift", view=REPORTS_BALANCE_DRIFT)
+@report(
+    name="balance_drift",
+    view=REPORTS_BALANCE_DRIFT,
+    classes={
+        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+        "account_name": DataClass.INSTITUTION,
+        "assertion_date": DataClass.TXN_DATE,
+        "asserted_balance": DataClass.BALANCE,
+        "computed_balance": DataClass.BALANCE,
+        "drift": DataClass.TXN_AMOUNT,
+        "drift_abs": DataClass.TXN_AMOUNT,
+        "drift_pct": DataClass.AGGREGATE,
+        "days_since_assertion": DataClass.AGGREGATE,
+        "status": DataClass.TXN_TYPE,
+    },
+)
 def balance_drift(
     db: Database,
     *,

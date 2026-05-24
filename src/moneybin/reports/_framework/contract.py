@@ -9,10 +9,11 @@ CLI command, and ``TableRef`` wiring from that single definition. See
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from moneybin.privacy.taxonomy import DataClass
 from moneybin.tables import TableRef
 
 # A runner takes an open Database plus keyword-only params and returns the
@@ -57,15 +58,20 @@ class ReportSpec:
     """Introspected metadata for one report, built from its runner.
 
     Carries everything the dynamic registrars need to build the MCP tool, CLI
-    command, and ``TableRef`` wiring without re-reading the source. The derived
-    per-column class map is computed elsewhere (``classify``) and cached there,
-    keeping this a pure, frozen description.
+    command, and ``TableRef`` wiring without re-reading the source.
+
+    ``classes`` is the report's **declared** column→DataClass map — the privacy
+    contract. It is declared, not derived: SQLMesh deploys each report view as a
+    ``SELECT * FROM <internal physical table>`` pointer, so lineage on the view
+    body can't classify it (see ADR-011). ``redaction`` masks output columns by
+    this map; any column absent from it fails closed (see ``classify``).
     """
 
     name: str
     description: str
     view: TableRef
     runner: Runner
+    classes: Mapping[str, DataClass]
     params: tuple[ParamSpec, ...] = ()
     examples: tuple[str, ...] = ()
     domain: str | None = None
@@ -82,7 +88,11 @@ class ReportSpec:
 
 
 def report(
-    *, name: str, view: TableRef, domain: str | None = None
+    *,
+    name: str,
+    view: TableRef,
+    classes: Mapping[str, DataClass],
+    domain: str | None = None,
 ) -> Callable[[Runner], Runner]:
     """Mark a runner as a report and attach its introspected :class:`ReportSpec`.
 
@@ -94,13 +104,20 @@ def report(
             ``reports_<name>`` and the CLI command is ``<name>`` with
             underscores rendered as hyphens.
         view: The ``reports.*`` ``TableRef`` the runner reads.
+        classes: The declared output-column→DataClass map — the report's
+            privacy contract. Must cover every column the view exposes; an
+            undeclared column fails closed at redaction time. Declared (not
+            lineage-derived) because the deployed SQLMesh view is a
+            ``SELECT *`` pointer lineage can't classify (ADR-011).
         domain: Optional MCP namespace tag.
     """
     # Imported lazily to avoid a contract<->introspect import cycle.
     from moneybin.reports._framework.introspect import build_spec
 
     def decorate(fn: Runner) -> Runner:
-        fn._report_spec = build_spec(fn, name=name, view=view, domain=domain)  # type: ignore[attr-defined]
+        fn._report_spec = build_spec(  # type: ignore[attr-defined]
+            fn, name=name, view=view, classes=classes, domain=domain
+        )
         return fn
 
     return decorate

@@ -3,12 +3,31 @@
 from __future__ import annotations
 
 from moneybin.database import Database
+from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import ReportQuery, report
 from moneybin.reports.definitions._shared import MERCHANTS_SORTS
 from moneybin.tables import REPORTS_MERCHANT_ACTIVITY
 
 
-@report(name="merchants", view=REPORTS_MERCHANT_ACTIVITY)
+@report(
+    name="merchants",
+    view=REPORTS_MERCHANT_ACTIVITY,
+    classes={
+        "merchant_id": DataClass.RECORD_ID,
+        "merchant_normalized": DataClass.MERCHANT_NAME,
+        "total_spend": DataClass.TXN_AMOUNT,
+        "total_inflow": DataClass.TXN_AMOUNT,
+        "total_outflow": DataClass.TXN_AMOUNT,
+        "txn_count": DataClass.AGGREGATE,
+        "avg_amount": DataClass.TXN_AMOUNT,
+        "median_amount": DataClass.TXN_AMOUNT,
+        "first_seen": DataClass.TXN_DATE,
+        "last_seen": DataClass.TXN_DATE,
+        "active_months": DataClass.AGGREGATE,
+        "top_category": DataClass.CATEGORY,
+        "account_count": DataClass.AGGREGATE,
+    },
+)
 def merchant_activity(
     db: Database,  # noqa: ARG001  # contract handle; this runner builds pure SQL
     *,

@@ -3,12 +3,30 @@
 from __future__ import annotations
 
 from moneybin.database import Database
+from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import ReportQuery, report
 from moneybin.reports.definitions._shared import LARGE_TXN_ANOMALIES
 from moneybin.tables import REPORTS_LARGE_TRANSACTIONS
 
 
-@report(name="large_transactions", view=REPORTS_LARGE_TRANSACTIONS)
+@report(
+    name="large_transactions",
+    view=REPORTS_LARGE_TRANSACTIONS,
+    classes={
+        "transaction_id": DataClass.RECORD_ID,
+        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+        "account_name": DataClass.INSTITUTION,
+        "txn_date": DataClass.TXN_DATE,
+        "amount": DataClass.TXN_AMOUNT,
+        "description": DataClass.DESCRIPTION,
+        "merchant_id": DataClass.RECORD_ID,
+        "merchant_normalized": DataClass.MERCHANT_NAME,
+        "category": DataClass.CATEGORY,
+        "amount_zscore_account": DataClass.AGGREGATE,
+        "amount_zscore_category": DataClass.AGGREGATE,
+        "is_top_100": DataClass.AGGREGATE,
+    },
+)
 def large_transactions(
     db: Database,  # noqa: ARG001  # contract handle; this runner builds pure SQL
     *,

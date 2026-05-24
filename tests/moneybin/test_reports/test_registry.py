@@ -9,6 +9,7 @@ import typer
 from fastmcp import Client, FastMCP
 
 from moneybin.database import Database
+from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import ReportQuery, report
 from moneybin.reports._framework.registry import (
     discover_reports,
@@ -18,9 +19,10 @@ from moneybin.reports._framework.registry import (
 from moneybin.tables import TableRef
 
 _VIEW = TableRef("reports", "test_summary")
+_CLASSES = {"value": DataClass.AGGREGATE}
 
 
-@report(name="alpha", view=_VIEW)
+@report(name="alpha", view=_VIEW, classes=_CLASSES)
 def _alpha(db: Database, *, top: int = 5) -> ReportQuery:
     """Alpha report.
 
@@ -31,7 +33,7 @@ def _alpha(db: Database, *, top: int = 5) -> ReportQuery:
     return ReportQuery("SELECT 1", [])
 
 
-@report(name="beta", view=_VIEW)
+@report(name="beta", view=_VIEW, classes=_CLASSES)
 def _beta(db: Database) -> ReportQuery:
     """Beta report.
 

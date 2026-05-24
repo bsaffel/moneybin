@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from moneybin.database import Database
-from moneybin.privacy.taxonomy import Tier
+from moneybin.privacy.taxonomy import DataClass, Tier
 from moneybin.reports._framework.contract import ReportQuery, ReportSpec
 from moneybin.reports._framework.execute import ReportResult, run_report
 from moneybin.reports._framework.introspect import build_spec
@@ -27,7 +27,16 @@ def _summary(db: Database, *, top: int = 50) -> ReportQuery:
 
 
 def _spec() -> ReportSpec:
-    return build_spec(_summary, name="summary", view=_VIEW)
+    return build_spec(
+        _summary,
+        name="summary",
+        view=_VIEW,
+        classes={
+            "account_id": DataClass.ACCOUNT_IDENTIFIER,
+            "amount": DataClass.TXN_AMOUNT,
+            "txn_count": DataClass.AGGREGATE,
+        },
+    )
 
 
 def test_run_report_masks_critical_and_sets_tier(reports_db: Database) -> None:

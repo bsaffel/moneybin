@@ -3,12 +3,29 @@
 from __future__ import annotations
 
 from moneybin.database import Database
+from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import ReportQuery, report
 from moneybin.reports.definitions._shared import SPENDING_COMPARES, resolve_window
 from moneybin.tables import REPORTS_SPENDING_TREND
 
 
-@report(name="spending", view=REPORTS_SPENDING_TREND)
+@report(
+    name="spending",
+    view=REPORTS_SPENDING_TREND,
+    classes={
+        "year_month": DataClass.TXN_DATE,
+        "category": DataClass.CATEGORY,
+        "total_spend": DataClass.TXN_AMOUNT,
+        "txn_count": DataClass.AGGREGATE,
+        "prev_month_spend": DataClass.TXN_AMOUNT,
+        "mom_delta": DataClass.TXN_AMOUNT,
+        "mom_pct": DataClass.AGGREGATE,
+        "prev_year_spend": DataClass.TXN_AMOUNT,
+        "yoy_delta": DataClass.TXN_AMOUNT,
+        "yoy_pct": DataClass.AGGREGATE,
+        "trailing_3mo_avg": DataClass.TXN_AMOUNT,
+    },
+)
 def spending_trend(
     db: Database,  # noqa: ARG001  # contract handle; this runner builds pure SQL
     *,

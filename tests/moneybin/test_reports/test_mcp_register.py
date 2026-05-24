@@ -37,7 +37,13 @@ def _runner(db: Database, *, month: str | None = None, top: int = 25) -> ReportQ
 
 
 def _spec():  # noqa: ANN202 — test helper
-    return build_spec(_runner, name="summary", view=_VIEW, domain="cashflow")
+    return build_spec(
+        _runner,
+        name="summary",
+        view=_VIEW,
+        classes={"account_id": DataClass.ACCOUNT_IDENTIFIER},
+        domain="cashflow",
+    )
 
 
 def test_make_tool_fn_signature_matches_params() -> None:

@@ -36,7 +36,12 @@ def _runner(db: Database, *, top: int = 25) -> ReportQuery:
 
 
 def _spec():  # noqa: ANN202 — test helper
-    return build_spec(_runner, name="balance_drift", view=_VIEW)
+    return build_spec(
+        _runner,
+        name="balance_drift",
+        view=_VIEW,
+        classes={"account_id": DataClass.ACCOUNT_IDENTIFIER},
+    )
 
 
 def _multi_command_app():  # noqa: ANN202 — test helper

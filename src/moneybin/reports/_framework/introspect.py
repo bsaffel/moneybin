@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import inspect
 import re
+from collections.abc import Mapping
 from typing import cast
 
+from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
     ParamSpec,
     ReportSpec,
@@ -49,18 +51,29 @@ def _section_tag(stripped: str) -> str | None:
 
 
 def build_spec(
-    fn: Runner, *, name: str, view: TableRef, domain: str | None = None
+    fn: Runner,
+    *,
+    name: str,
+    view: TableRef,
+    classes: Mapping[str, DataClass],
+    domain: str | None = None,
 ) -> ReportSpec:
     """Introspect ``fn`` into a :class:`ReportSpec`.
 
     Raises:
         ValueError: if the runner has no docstring, its first parameter is not
-            ``db``, or any non-``db`` parameter is not keyword-only.
+            ``db``, any non-``db`` parameter is not keyword-only, or ``classes``
+            is empty (every report must declare its column privacy contract).
     """
     if view.schema != "reports":
         raise ValueError(
             f"Report {name!r} view must be a reports.* table, got {view.full_name!r} "
             "(reports_* surfaces read from the reports schema)."
+        )
+    if not classes:
+        raise ValueError(
+            f"Report {name!r} must declare a non-empty `classes` map "
+            "(the output-column privacy contract)."
         )
 
     doc = inspect.getdoc(fn)
@@ -103,6 +116,7 @@ def build_spec(
         description=summary,
         view=view,
         runner=fn,
+        classes=dict(classes),
         params=tuple(param_specs),
         examples=examples,
         domain=domain,

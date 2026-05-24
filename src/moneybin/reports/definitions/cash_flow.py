@@ -3,12 +3,26 @@
 from __future__ import annotations
 
 from moneybin.database import Database
+from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import ReportQuery, report
 from moneybin.reports.definitions._shared import CASHFLOW_GROUPINGS, resolve_window
 from moneybin.tables import REPORTS_CASH_FLOW
 
 
-@report(name="cashflow", view=REPORTS_CASH_FLOW)
+@report(
+    name="cashflow",
+    view=REPORTS_CASH_FLOW,
+    classes={
+        "year_month": DataClass.TXN_DATE,
+        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+        "account_name": DataClass.INSTITUTION,
+        "category": DataClass.CATEGORY,
+        "inflow": DataClass.TXN_AMOUNT,
+        "outflow": DataClass.TXN_AMOUNT,
+        "net": DataClass.TXN_AMOUNT,
+        "txn_count": DataClass.AGGREGATE,
+    },
+)
 def cash_flow(
     db: Database,  # noqa: ARG001  # contract handle; this runner builds pure SQL
     *,
