@@ -116,6 +116,7 @@ Coherence requires that when a verb appears, it means the same thing everywhere.
 | `_delete` | Remove one entity by id or natural key | `budget_delete`, `categories_delete` |
 | `_run` | Execute a discrete batch/pipeline operation | `refresh_run`, `transactions_categorize_run` |
 | `_commit` | Finalize externally-decided proposals (terminal step of propose→review→commit workflows) | `transactions_categorize_commit` |
+| `_confirm` | Accept or override an interactively-presented proposal (terminal step of a propose→review→confirm workflow) | `import_confirm` |
 | `_refresh` | Rebuild derived state from raw inputs (refresh domain) | `refresh_run` (umbrella) |
 | `_pull` | Fetch new data from an established external connection (already-authenticated) | `sync_pull`, `gsheet_pull` |
 | `_link` | Establish an authenticated session with a **mediated third-party provider** (Plaid-style OAuth → server-held tokens → server-mediated API access) | `sync_link` (Plaid, future SimpleFIN/MX) |
