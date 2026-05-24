@@ -54,6 +54,12 @@ def recurring_subscriptions(
         raise ValueError(f"Unknown status: {status}")
     if cadence is not None and cadence not in RECURRING_CADENCES:
         raise ValueError(f"Unknown cadence: {cadence}")
+    # Out-of-range confidence (e.g. percentage-thinking 85.0, or 1.5) would
+    # silently return an empty set — indistinguishable from "none found".
+    if not 0.0 <= min_confidence <= 1.0:
+        raise ValueError(
+            f"min_confidence must be in [0.0, 1.0], got {min_confidence!r}"
+        )
 
     sql = f"""
         SELECT merchant_id, merchant_normalized, cadence, avg_amount,

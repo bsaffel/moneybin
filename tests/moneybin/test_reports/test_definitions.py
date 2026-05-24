@@ -94,6 +94,27 @@ def test_runner_rejects_bad_enum(runner: Runner, kwargs: dict[str, Any]) -> None
         runner(None, **kwargs)  # type: ignore[arg-type]  # validation precedes db use
 
 
+@pytest.mark.parametrize(
+    ("runner", "kwargs", "match"),
+    [
+        # numeric range guards — out-of-range silently returned empty/odd results
+        (recurring_subscriptions, {"min_confidence": 1.5}, "min_confidence"),
+        (recurring_subscriptions, {"min_confidence": -0.1}, "min_confidence"),
+        (large_transactions, {"top": 0}, "top"),
+        (merchant_activity, {"top": -5}, "top"),
+        # month/date format guards — malformed strings silently mis-windowed
+        (cash_flow, {"from_month": "2024-1"}, "YYYY-MM"),
+        (spending_trend, {"to_month": "2024/12"}, "YYYY-MM"),
+        (balance_drift, {"since": "2024/01/01"}, "since"),
+    ],
+)
+def test_runner_rejects_bad_input(
+    runner: Runner, kwargs: dict[str, Any], match: str
+) -> None:
+    with pytest.raises(ValueError, match=match):
+        runner(None, **kwargs)  # type: ignore[arg-type]  # validation precedes db use
+
+
 def _install_balance_drift(db: Database) -> None:
     db.execute("CREATE SCHEMA IF NOT EXISTS core")
     db.execute("""

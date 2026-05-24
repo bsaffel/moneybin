@@ -8,7 +8,28 @@ the MCP decorator via its own classified-error path.
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
+
+# Month bound as YYYY-MM. Enforced because the runners canonicalize with
+# substr(?, 1, 7), which would let a malformed "2024-1" through and produce
+# silently wrong lexicographic window bounds.
+_MONTH_RE = re.compile(r"^\d{4}-\d{2}$")
+# Full ISO date as YYYY-MM-DD (e.g. balance_drift's `since`).
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def validate_month(value: str, param: str) -> None:
+    """Raise ValueError if ``value`` is not a YYYY-MM month string."""
+    if not _MONTH_RE.match(value):
+        raise ValueError(f"{param} must be YYYY-MM, got {value!r}")
+
+
+def validate_date(value: str, param: str) -> None:
+    """Raise ValueError if ``value`` is not a YYYY-MM-DD date string."""
+    if not _DATE_RE.match(value):
+        raise ValueError(f"{param} must be an ISO date (YYYY-MM-DD), got {value!r}")
+
 
 CASHFLOW_GROUPINGS: tuple[str, ...] = ("account", "category", "account-and-category")
 SPENDING_COMPARES: tuple[str, ...] = ("yoy", "mom", "trailing")
@@ -65,6 +86,10 @@ def resolve_window(
     by the time-windowed runners so the defaulting and the hint string stay in
     lockstep.
     """
+    if from_month is not None:
+        validate_month(from_month, "from_month")
+    if to_month is not None:
+        validate_month(to_month, "to_month")
     defaulted = from_month is None and to_month is None
     if defaulted:
         from_month, to_month = default_window(12)

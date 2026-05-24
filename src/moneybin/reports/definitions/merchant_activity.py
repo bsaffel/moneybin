@@ -41,7 +41,8 @@ def merchant_activity(
 
     Args:
         db: Open read-only database connection.
-        top: Limit rows.
+        top: Limit rows (>= 1). On MCP the result is additionally capped at the
+            session max_rows; the CLI is uncapped.
         sort: spend | count | recent.
 
     Examples:
@@ -49,6 +50,8 @@ def merchant_activity(
     """
     if sort not in MERCHANTS_SORTS:
         raise ValueError(f"Unknown sort: {sort}")
+    if top < 1:
+        raise ValueError(f"top must be >= 1, got {top!r}")
     sql = f"""
         SELECT merchant_id, merchant_normalized, total_spend, total_inflow,
                total_outflow, txn_count, avg_amount, median_amount,

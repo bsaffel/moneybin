@@ -59,3 +59,15 @@ def test_resolve_window_one_sided_to_only_reports_period() -> None:
     assert (from_month, to_month) == (None, "2024-09")
     assert period == "through 2024-09"
     assert hint is None
+
+
+def test_resolve_window_rejects_malformed_from_month() -> None:
+    # "2024-1" (no leading zero) would slip past substr() and silently produce
+    # wrong lexicographic window bounds — reject it instead.
+    with pytest.raises(ValueError, match="YYYY-MM"):
+        resolve_window("2024-1", None)
+
+
+def test_resolve_window_rejects_malformed_to_month() -> None:
+    with pytest.raises(ValueError, match="YYYY-MM"):
+        resolve_window(None, "2024/12")

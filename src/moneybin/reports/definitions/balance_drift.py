@@ -5,7 +5,7 @@ from __future__ import annotations
 from moneybin.database import Database
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import ReportQuery, report
-from moneybin.reports.definitions._shared import DRIFT_STATUSES
+from moneybin.reports.definitions._shared import DRIFT_STATUSES, validate_date
 from moneybin.services.account_service import AccountService
 from moneybin.tables import REPORTS_BALANCE_DRIFT
 
@@ -53,6 +53,10 @@ def balance_drift(
     """
     if status not in DRIFT_STATUSES:
         raise ValueError(f"Unknown status: {status}")
+    if since is not None:
+        # since binds to assertion_date >= ?; a malformed string compares
+        # lexicographically and silently mis-filters.
+        validate_date(since, "since")
     sql = f"""
         SELECT account_id, account_name, assertion_date, asserted_balance,
                computed_balance, drift, drift_abs, drift_pct,

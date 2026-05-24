@@ -42,7 +42,8 @@ def large_transactions(
 
     Args:
         db: Open read-only database connection.
-        top: Top N by ABS(amount).
+        top: Top N by ABS(amount) (>= 1). On MCP the result is additionally
+            capped at the session max_rows; the CLI is uncapped.
         anomaly: account | category | none — filter to z>2.5 in the named scope.
 
     Examples:
@@ -50,6 +51,9 @@ def large_transactions(
     """
     if anomaly not in LARGE_TXN_ANOMALIES:
         raise ValueError(f"Unknown anomaly: {anomaly}")
+    # top < 1 would emit LIMIT 0/-1 (DuckDB treats -1 as no limit → full scan).
+    if top < 1:
+        raise ValueError(f"top must be >= 1, got {top!r}")
     sql = f"""
         SELECT transaction_id, account_id, account_name, txn_date, amount,
                description, merchant_id, merchant_normalized, category,
