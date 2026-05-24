@@ -38,6 +38,25 @@ def _tag_op(db: Database, tag: str) -> str:
     return op
 
 
+def _note_op(db: Database, note_id: str = "n1", text: str = "hi") -> str:
+    """Add note ``note_id`` to txn_1; returns its op id."""
+    with operation() as op:
+        TransactionNotesRepo(db).add(
+            transaction_id="txn_1", note_id=note_id, text=text, actor="cli"
+        )
+    return op
+
+
+def _edit_note_op(db: Database, note_id: str = "n1", text: str = "edited") -> str:
+    """Edit note ``note_id`` — a second op on the same row, so it blocks the add.
+
+    A real cascade blocker now that ``target_id`` is the entity PK (row-grain).
+    """
+    with operation() as op:
+        TransactionNotesRepo(db).edit(note_id=note_id, text=text, actor="cli")
+    return op
+
+
 class TestUndo:
     """undo(operation_id) reverses every row in the operation as a unit."""
 
@@ -72,9 +91,24 @@ class TestUndo:
             UndoService(db).undo(op, actor="cli")
         assert exc.value.code == error_codes.UNDO_ALREADY_UNDONE
 
+    def test_independent_children_same_txn_do_not_block(self, db: Database) -> None:
+        # Two notes on the same transaction are different rows — undoing the first
+        # must not be blocked by the second (row-grain cascade: target_id is the
+        # entity PK, not the parent transaction_id).
+        notes = TransactionNotesRepo(db)
+        with operation() as op1:
+            notes.add(transaction_id="txn_1", note_id="n1", text="a", actor="cli")
+        with operation():
+            notes.add(transaction_id="txn_1", note_id="n2", text="b", actor="cli")
+        UndoService(db).undo(op1, actor="cli")  # n2 is a different row — no block
+        remaining = db.execute(
+            "SELECT note_id FROM app.transaction_notes ORDER BY note_id"
+        ).fetchall()
+        assert remaining == [("n2",)]
+
     def test_cascade_blocked_lists_blocker(self, db: Database) -> None:
-        op1 = _tag_op(db, "a")
-        op2 = _tag_op(db, "b")  # same target (txn_1), later
+        op1 = _note_op(db)  # add note n1
+        op2 = _edit_note_op(db)  # edit the SAME row n1, later → blocks op1
         with pytest.raises(UserError) as exc:
             UndoService(db).undo(op1, actor="cli")
         assert exc.value.code == error_codes.UNDO_CASCADE_BLOCKED
@@ -83,12 +117,12 @@ class TestUndo:
         assert blockers == [op2]
 
     def test_cascade_resolves_after_blocker_undone(self, db: Database) -> None:
-        op1 = _tag_op(db, "a")
-        op2 = _tag_op(db, "b")
+        op1 = _note_op(db)  # add note n1
+        op2 = _edit_note_op(db)  # edit n1 (blocks op1)
         UndoService(db).undo(op2, actor="cli")  # clear the blocker first
         UndoService(db).undo(op1, actor="cli")  # now op1 undoes cleanly
-        tags = db.execute("SELECT COUNT(*) FROM app.transaction_tags").fetchone()
-        assert tags == (0,)
+        notes = db.execute("SELECT COUNT(*) FROM app.transaction_notes").fetchone()
+        assert notes == (0,)
 
     def test_can_reundo_after_round_trip(self, db: Database) -> None:
         # op -> undo -> undo-the-undo restores op's effect, so op is LIVE again and
@@ -106,8 +140,8 @@ class TestUndo:
         # (undo -> undo-the-undo) so op2's effect is LIVE again. undo(op1) must
         # still be blocked by op2 — net liveness, not "op2 was ever undone".
         # Without this, undo(op1) would silently clobber op2's live row.
-        op1 = _tag_op(db, "a")
-        op2 = _tag_op(db, "b")  # same target (txn_1), later
+        op1 = _note_op(db)  # add note n1
+        op2 = _edit_note_op(db)  # edit the SAME row n1, later → blocks op1
         undo2 = UndoService(db).undo(op2, actor="cli")  # op2 effect removed
         UndoService(db).undo(undo2.undo_operation_id, actor="cli")  # op2 effect live
         with pytest.raises(UserError) as exc:
@@ -168,11 +202,15 @@ class TestUndo:
         # A later forward op on a same-named table in a DIFFERENT schema must not
         # block: the blocker join keys on (schema, table, id), like
         # _unresolvable_tables — not table+id alone.
-        op = _tag_op(db, "a")  # app.transaction_tags / txn_1
+        op = _tag_op(db, "a")  # app.transaction_tags, target_id "txn_1:a"
         with operation():
             AuditService(db).record_audit_event(
                 action="manual.create",
-                target=("raw", "transaction_tags", "txn_1"),
+                target=(
+                    "raw",
+                    "transaction_tags",
+                    "txn_1:a",
+                ),  # same table+id, diff schema
                 before=None,
                 after={"x": 1},
                 actor="cli",
@@ -242,6 +280,29 @@ class TestUndo:
         with pytest.raises(UserError) as exc:
             UndoService(db).undo("op_legacy", actor="cli")
         assert exc.value.code == error_codes.RECOVERY_NO_PATH
+
+    def test_unresolvable_with_blocker_still_lists_blocker(self, db: Database) -> None:
+        # An op that touches BOTH a raw table (unresolvable) AND an app row a later
+        # op modified (blocker) refuses with RECOVERY_NO_PATH but must still surface
+        # the blocker in recovery_actions, not dead-end the agent.
+        with operation() as op1:
+            TransactionNotesRepo(db).add(
+                transaction_id="txn_1", note_id="n1", text="a", actor="cli"
+            )
+            AuditService(db).record_audit_event(
+                action="manual.create",
+                target=("raw", "manual_transactions", "imp_1"),
+                before=None,
+                after={"row_count": 1},
+                actor="cli",
+            )
+        op2 = _edit_note_op(db)  # edits n1 → blocker on op1's note row
+        with pytest.raises(UserError) as exc:
+            UndoService(db).undo(op1, actor="cli")
+        assert exc.value.code == error_codes.RECOVERY_NO_PATH
+        assert exc.value.recovery_actions is not None
+        blockers = [a.arguments["operation_id"] for a in exc.value.recovery_actions]
+        assert op2 in blockers
 
     def test_raw_target_is_not_undoable(self, db: Database) -> None:
         # A manual.create writes an audit row targeting raw.manual_transactions,
@@ -317,8 +378,8 @@ class TestHistory:
         assert undo.undo_operation_id in all_ids
 
     def test_blocked_operation_carries_blockers(self, db: Database) -> None:
-        op1 = _tag_op(db, "a")
-        op2 = _tag_op(db, "b")
+        op1 = _note_op(db)  # add note n1
+        op2 = _edit_note_op(db)  # edit the same row n1 → blocks op1
         summary = next(o for o in UndoService(db).history() if o.operation_id == op1)
         assert summary.can_undo is False
         assert summary.undo_blocked_by == [op2]
@@ -354,6 +415,24 @@ class TestMetrics:
         with pytest.raises(UserError):
             UndoService(db).undo("op_missing", actor="cli")
         assert self._outcome("not_found") - before == 1.0
+
+    def test_in_loop_recovery_no_path_increments_outcome(self, db: Database) -> None:
+        # A partial-capture row trips _require_capture INSIDE the reversal loop;
+        # that failure path must still record an outcome, not vanish from metrics.
+        import json
+
+        db.execute(
+            "INSERT INTO app.audit_log "
+            "(audit_id, actor, action, target_schema, target_table, target_id, "
+            " before_value, after_value, operation_id) "
+            "VALUES ('legacy_m','cli','note.delete','app','transaction_notes','n9', "
+            " ?, NULL, 'op_legacy_metric')",
+            [json.dumps({"note_id": "n9", "text": "hi", "author": "cli"})],
+        )
+        before = self._outcome("no_path")
+        with pytest.raises(UserError):
+            UndoService(db).undo("op_legacy_metric", actor="cli")
+        assert self._outcome("no_path") - before == 1.0
 
 
 class TestGet:

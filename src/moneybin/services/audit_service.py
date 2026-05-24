@@ -196,6 +196,34 @@ class AuditService:
         ).fetchall()
         return [self._row_to_event(r) for r in rows]
 
+    def events_for_transaction(
+        self, transaction_id: str, *, limit: int = 100
+    ) -> list[AuditEvent]:
+        """Return audit rows relating to one transaction, newest first.
+
+        Row-grain ``target_id`` (REC-PR3) keys a child entity's audit row by its own
+        PK (``note_id``, ``split_id``, ``transaction_id:tag``), not the parent — so
+        this matches both ``target_id`` (transaction-level mutations like
+        ``category.set``) and the ``transaction_id`` captured in the before/after row
+        image (child mutations), keeping the per-transaction audit view complete.
+        """
+        rows = self._db.conn.execute(
+            """
+            SELECT audit_id, occurred_at, actor, action,
+                   target_schema, target_table, target_id,
+                   before_value, after_value, parent_audit_id,
+                   operation_id, context_json, is_undo, undoes_operation_id
+              FROM app.audit_log
+             WHERE target_id = ?
+                OR json_extract_string(before_value, '$.transaction_id') = ?
+                OR json_extract_string(after_value, '$.transaction_id') = ?
+             ORDER BY occurred_at DESC, rowid DESC
+             LIMIT ?
+            """,
+            [transaction_id, transaction_id, transaction_id, limit],
+        ).fetchall()
+        return [self._row_to_event(r) for r in rows]
+
     def events_for_operation(self, operation_id: str) -> list[AuditEvent]:
         """Return every audit row written under one ``operation_id``, oldest first.
 

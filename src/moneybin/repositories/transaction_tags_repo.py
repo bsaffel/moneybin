@@ -76,7 +76,7 @@ class TransactionTagsRepo(BaseRepo):
             after = self._fetch_tag(transaction_id, tag)
             return self._emit_audit(
                 action="tag.add",
-                target=(*self._audit_target, transaction_id),
+                target=(*self._audit_target, f"{transaction_id}:{tag}"),
                 before=None,
                 after=self._serialize_for_audit(after),
                 actor=actor,
@@ -109,7 +109,7 @@ class TransactionTagsRepo(BaseRepo):
             )
             return self._emit_audit(
                 action="tag.remove",
-                target=(*self._audit_target, transaction_id),
+                target=(*self._audit_target, f"{transaction_id}:{tag}"),
                 before=self._serialize_for_audit(before),
                 after=None,
                 actor=actor,
@@ -146,7 +146,9 @@ class TransactionTagsRepo(BaseRepo):
             after = self._fetch_tag(transaction_id, new_tag)
             return self._emit_audit(
                 action="tag.rename_row",
-                target=(*self._audit_target, transaction_id),
+                # Row identity is the (current) renamed tag — the after-image PK
+                # the undo locates by, so cascade scoping matches the live row.
+                target=(*self._audit_target, f"{transaction_id}:{new_tag}"),
                 before=self._serialize_for_audit(before),
                 after=self._serialize_for_audit(after),
                 actor=actor,

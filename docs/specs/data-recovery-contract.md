@@ -419,9 +419,18 @@ Deviations from the design as written, with rationale:
   "ever undone" check both traps the user out of re-undoing a round-tripped op and
   lets undo silently clobber a round-tripped blocker. Without this, the documented
   walk (undo the blocker, then the original) could never resolve. The blocker join
-  keys on `(target_schema, target_table, target_id)` (matching
-  `_unresolvable_tables`), so a same-named table in another schema is never a
-  false-positive blocker.
+  keys on `(target_schema, target_table, target_id)` (matching the row-target
+  query), so a same-named table in another schema is never a false-positive
+  blocker.
+- **Row-grain cascade: `target_id` is the mutated row's PK, not its parent.** The
+  notes/tags/splits repos emit `target_id` = the entity's own key (`note_id`,
+  `split_id`, `transaction_id:tag`), not the parent `transaction_id`. Cascade
+  blocking is therefore scoped to the specific row: two independent annotations on
+  the same transaction (e.g. two tags, or a note plus a split) no longer
+  false-positive-block each other's undo — only a later mutation of the *same* row
+  blocks. (Consequence: filtering the audit log by `target_id = <transaction_id>`
+  returns only transaction-level mutations, not its child notes/tags/splits, which
+  now carry their own row ids.)
 - **Deterministic, reversible replay order + partial-capture guard.** Rows replay
   in the exact reverse of write order (`events_for_operation` tiebreaks on the
   monotonic `rowid`, never the random `audit_id`), so a future parent-then-child

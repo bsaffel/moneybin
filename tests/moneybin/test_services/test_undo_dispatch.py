@@ -30,6 +30,16 @@ def test_resolved_repo_is_bound_to_given_db(db: Database) -> None:
     assert repo._db is db  # pyright: ignore[reportPrivateUsage]
 
 
+def test_repo_for_forwards_audit_service(db: Database) -> None:
+    # UndoService injects its AuditService; repo_for must forward it so dispatch
+    # shares one instance rather than minting a fresh AuditService per row.
+    from moneybin.services.audit_service import AuditService
+
+    audit = AuditService(db)
+    repo = repo_for("app", "transaction_notes", db, audit=audit)
+    assert repo._audit is audit  # pyright: ignore[reportPrivateUsage]
+
+
 def test_registry_covers_every_concrete_repo() -> None:
     registered = set(_REGISTRY.values())
     discovered = set(concrete_repo_classes())

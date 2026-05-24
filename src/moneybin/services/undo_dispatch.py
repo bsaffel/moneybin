@@ -15,6 +15,7 @@ from __future__ import annotations
 from moneybin.database import Database
 from moneybin.repositories import concrete_repo_classes
 from moneybin.repositories.base import BaseRepo
+from moneybin.services.audit_service import AuditService
 
 
 def _build_registry() -> dict[tuple[str, str], type[BaseRepo]]:
@@ -40,14 +41,18 @@ def is_registered(schema: str, table: str) -> bool:
     return (schema, table) in _REGISTRY
 
 
-def repo_for(schema: str, table: str, db: Database) -> BaseRepo:
+def repo_for(
+    schema: str, table: str, db: Database, *, audit: AuditService | None = None
+) -> BaseRepo:
     """Return a repo instance that owns ``schema.table``, bound to ``db``.
 
-    Raises ``KeyError`` when no repo owns the table — the audit row targets a
-    table outside the undoable ``app.*`` surface (e.g. ``raw.manual_transactions``
-    from manual entry, which is out of undo scope).
+    ``audit`` is forwarded to the repo so a caller (e.g. ``UndoService``) can share
+    one ``AuditService`` across every row of an undo rather than minting a fresh
+    one per dispatch. Raises ``KeyError`` when no repo owns the table — the audit
+    row targets a table outside the undoable ``app.*`` surface (e.g.
+    ``raw.manual_transactions`` from manual entry, which is out of undo scope).
     """
     cls = _REGISTRY.get((schema, table))
     if cls is None:
         raise KeyError(f"No repo registered for {schema}.{table}")
-    return cls(db)
+    return cls(db, audit=audit)

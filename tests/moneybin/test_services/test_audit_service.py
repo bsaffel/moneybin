@@ -142,6 +142,30 @@ class TestQueryHelpers:
         assert chain[0].audit_id == parent.audit_id
 
 
+class TestEventsForTransaction:
+    """events_for_transaction finds a transaction's events despite row-grain ids."""
+
+    def test_includes_child_rows_by_captured_transaction_id(self, db: Database) -> None:
+        # Row-grain target_id keys a note/tag row by its own PK, not the parent
+        # transaction — so the per-transaction view must match the transaction_id
+        # captured in the row image, not just target_id.
+        from moneybin.repositories.transaction_notes_repo import TransactionNotesRepo
+        from moneybin.repositories.transaction_tags_repo import TransactionTagsRepo
+        from moneybin.services.mutation_context import operation
+
+        with operation():
+            TransactionNotesRepo(db).add(
+                transaction_id="txnA", note_id="nA", text="x", actor="cli"
+            )
+            TransactionTagsRepo(db).add(transaction_id="txnA", tag="food", actor="cli")
+        with operation():
+            TransactionNotesRepo(db).add(
+                transaction_id="txnB", note_id="nB", text="y", actor="cli"
+            )
+        events = AuditService(db).events_for_transaction("txnA")
+        assert {e.action for e in events} == {"note.add", "tag.add"}  # txnB excluded
+
+
 class TestEventOrdering:
     """events_for_operation replays in write (rowid) order, not random audit_id."""
 

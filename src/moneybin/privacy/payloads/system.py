@@ -304,6 +304,8 @@ class SystemAuditEventPayload:
     parent_audit_id: Annotated[str | None, DataClass.RECORD_ID]
     operation_id: Annotated[str, DataClass.RECORD_ID]
     context_json: Annotated[Any, DataClass.DESCRIPTION]
+    is_undo: Annotated[bool, DataClass.TXN_TYPE]
+    undoes_operation_id: Annotated[str | None, DataClass.RECORD_ID]
 
 
 @dataclass(frozen=True, slots=True)

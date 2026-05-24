@@ -137,6 +137,33 @@ def _make_tag_op(tag: str = "trip") -> str:
     return op
 
 
+def _make_note_op() -> str:
+    """Add note n1 to txn_1; return its op id (paired with _make_note_edit_op)."""
+    from moneybin.database import get_database
+    from moneybin.repositories.transaction_notes_repo import TransactionNotesRepo
+    from moneybin.services.mutation_context import operation
+
+    with get_database() as db, operation() as op:
+        TransactionNotesRepo(db).add(
+            transaction_id="txn_1", note_id="n1", text="hi", actor="cli"
+        )
+    return op
+
+
+def _make_note_edit_op() -> str:
+    """Edit note n1 — a second op on the SAME row, so it blocks the add's undo.
+
+    Cascade is row-grain: target_id is the entity PK.
+    """
+    from moneybin.database import get_database
+    from moneybin.repositories.transaction_notes_repo import TransactionNotesRepo
+    from moneybin.services.mutation_context import operation
+
+    with get_database() as db, operation() as op:
+        TransactionNotesRepo(db).edit(note_id="n1", text="edited", actor="cli")
+    return op
+
+
 @pytest.mark.unit
 async def test_audit_undo_reverses_operation(mcp_db: object) -> None:
     from moneybin.database import get_database
@@ -168,8 +195,8 @@ async def test_audit_undo_not_found_returns_error_envelope(mcp_db: object) -> No
 async def test_audit_undo_cascade_blocked_lists_blocker(mcp_db: object) -> None:
     from moneybin.mcp.tools.system import system_audit_undo
 
-    op1 = _make_tag_op("a")
-    op2 = _make_tag_op("b")  # same target, later → blocks op1
+    op1 = _make_note_op()  # add note n1
+    op2 = _make_note_edit_op()  # edit the same row n1, later → blocks op1
     parsed = (await system_audit_undo(op1)).to_dict()
     assert parsed["status"] == "error"
     assert parsed["error"]["code"] == "undo_cascade_blocked"
@@ -224,11 +251,26 @@ async def test_audit_get_not_found_returns_error_envelope(mcp_db: object) -> Non
 
 
 @pytest.mark.unit
+async def test_audit_get_event_carries_undo_fields(mcp_db: object) -> None:
+    from moneybin.mcp.tools.system import system_audit_get, system_audit_undo
+
+    op = _make_tag_op()
+    undo = (await system_audit_undo(op)).to_dict()
+    undo_op = undo["data"]["undo_operation_id"]
+    parsed = (await system_audit_get(undo_op)).to_dict()
+    event = parsed["data"]["events"][0]
+    # Symmetric with the history entry: structural undo signal, not a string-match
+    # on the .undo action suffix.
+    assert event["is_undo"] is True
+    assert event["undoes_operation_id"] == op
+
+
+@pytest.mark.unit
 async def test_audit_history_entry_carries_recovery_actions(mcp_db: object) -> None:
     from moneybin.mcp.tools.system import system_audit_history
 
-    op1 = _make_tag_op("a")
-    op2 = _make_tag_op("b")  # blocks op1
+    op1 = _make_note_op()  # add note n1
+    op2 = _make_note_edit_op()  # edit the same row n1 → blocks op1
     parsed = (await system_audit_history()).to_dict()
     entry = next(o for o in parsed["data"]["operations"] if o["operation_id"] == op1)
     # Blocked op1's pre-built recovery_actions point the agent straight at undoing

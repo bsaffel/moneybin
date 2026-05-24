@@ -67,7 +67,7 @@ class TransactionNotesRepo(BaseRepo):
             after = self._fetch_row(note_id)
             return self._emit_audit(
                 action="note.add",
-                target=(*self._audit_target, transaction_id),
+                target=(*self._audit_target, note_id),
                 before=None,
                 after=self._serialize_for_audit(after),
                 actor=actor,
@@ -98,7 +98,7 @@ class TransactionNotesRepo(BaseRepo):
             after = self._fetch_row(note_id)
             return self._emit_audit(
                 action="note.edit",
-                target=(*self._audit_target, before["transaction_id"]),
+                target=(*self._audit_target, note_id),
                 before=self._serialize_for_audit(before),
                 after=self._serialize_for_audit(after),
                 actor=actor,
@@ -127,7 +127,7 @@ class TransactionNotesRepo(BaseRepo):
             )
             return self._emit_audit(
                 action="note.delete",
-                target=(*self._audit_target, before["transaction_id"]),
+                target=(*self._audit_target, note_id),
                 before=self._serialize_for_audit(before),
                 after=None,
                 actor=actor,

@@ -174,6 +174,9 @@ class UndoService:
                 f"Operation {operation_id!r} touched {', '.join(u.unresolvable)}, "
                 "outside the undoable app.* surface — not reversible via undo.",
                 code=error_codes.RECOVERY_NO_PATH,
+                # Surface any blockers too: the op may be partly recoverable by
+                # undoing later ops first, so don't dead-end the agent.
+                recovery_actions=[_undo_action(b) for b in u.blockers] or None,
             )
         if u.blockers:
             audit_undo_total.labels(outcome="cascade_blocked").inc()
@@ -208,12 +211,23 @@ class UndoService:
                 undone: list[AuditEvent] = []
                 for event in reversed(row_events):
                     repo = repo_for(
-                        event.target_schema or "", event.target_table or "", self._db
+                        event.target_schema or "",
+                        event.target_table or "",
+                        self._db,
+                        audit=self._audit,
                     )
                     inverse = repo.undo_event(event, actor=actor, in_outer_txn=True)
                     if inverse is not None:
                         undone.append(inverse)
                 self._db.commit()
+            except UserError as e:
+                # _require_capture can raise RECOVERY_NO_PATH mid-loop (a legacy
+                # partial-capture row). Record the outcome like the pre-loop
+                # refusals do, rather than letting it vanish from metrics.
+                self._db.rollback()
+                if e.code == error_codes.RECOVERY_NO_PATH:
+                    audit_undo_total.labels(outcome="no_path").inc()
+                raise
             except BaseException:
                 self._db.rollback()
                 raise

@@ -142,7 +142,7 @@ class TestNotes:
         assert note.created_at  # populated from DB default
 
         events = audit_service.list_events(
-            action_pattern="note.add", target_id=sample_transaction_id
+            action_pattern="note.add", target_id=note.note_id
         )
         assert len(events) == 1
         # Full-row capture (Invariant 10 Req 4 / REC-PR3 DN1), not a partial dict.
@@ -190,7 +190,7 @@ class TestNotes:
         assert events[0].after_value is not None
         assert events[0].after_value["text"] == "v2"
         assert events[0].after_value["note_id"] == note.note_id
-        assert events[0].target_id == sample_transaction_id
+        assert events[0].target_id == note.note_id  # row-grain: entity PK
 
     @pytest.mark.unit
     def test_edit_note_missing_raises_lookup(
@@ -217,7 +217,7 @@ class TestNotes:
         assert before["note_id"] == note.note_id
         assert before["text"] == "doomed"
         assert before["author"] == "mcp"
-        assert events[0].target_id == sample_transaction_id
+        assert events[0].target_id == note.note_id  # row-grain: entity PK
         # Row is gone
         assert txn_service.list_notes(sample_transaction_id) == []
 
@@ -405,7 +405,10 @@ class TestTags:
         children = [e for e in chain if e.audit_id != result.parent_audit_id]
         assert all(e.parent_audit_id == result.parent_audit_id for e in children)
         assert all(e.action == "tag.rename_row" for e in children)
-        assert {e.target_id for e in children} == set(txns_with_shared_tag)
+        # Row-grain target_id: the renamed tag's composite PK (transaction_id:new_tag).
+        assert {e.target_id for e in children} == {
+            f"{txn}:bar" for txn in txns_with_shared_tag
+        }
 
         parent = next(e for e in chain if e.audit_id == result.parent_audit_id)
         assert parent.action == "tag.rename"
@@ -521,7 +524,7 @@ class TestSplits:
             actor="cli",
         )
         events = audit_service.list_events(
-            action_pattern="split.add", target_id=sample_transaction_id
+            action_pattern="split.add", target_id=s.split_id
         )
         assert len(events) == 1
         assert events[0].before_value is None
@@ -558,7 +561,7 @@ class TestSplits:
         assert before["split_id"] == s.split_id
         assert before["amount"] == "-10.00"
         assert before["category"] == "Coffee"
-        assert events[0].target_id == sample_transaction_id
+        assert events[0].target_id == s.split_id  # row-grain: entity PK
         assert txn_service.list_splits(sample_transaction_id) == []
 
     @pytest.mark.unit
@@ -586,9 +589,9 @@ class TestSplits:
         # DN3: clear emits one split.remove per row (no split.clear summary),
         # so each cleared split stays individually undoable.
         assert audit_service.list_events(action_pattern="split.clear") == []
-        removes = audit_service.list_events(
-            action_pattern="split.remove", target_id=sample_transaction_id
-        )
+        # Row-grain: each split.remove targets its own split_id, so filter by action
+        # (only this transaction has splits in the test).
+        removes = audit_service.list_events(action_pattern="split.remove")
         assert len(removes) == 2
         amounts = {e.before_value["amount"] for e in removes if e.before_value}
         assert amounts == {"-10.00", "-20.00"}

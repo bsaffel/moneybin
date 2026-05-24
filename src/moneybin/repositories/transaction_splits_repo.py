@@ -88,7 +88,7 @@ class TransactionSplitsRepo(BaseRepo):
             after = self._fetch_row(split_id)
             return self._emit_audit(
                 action="split.add",
-                target=(*self._audit_target, transaction_id),
+                target=(*self._audit_target, split_id),
                 before=None,
                 after=self._serialize_for_audit(after),
                 actor=actor,
@@ -117,7 +117,7 @@ class TransactionSplitsRepo(BaseRepo):
             )
             return self._emit_audit(
                 action="split.remove",
-                target=(*self._audit_target, before["transaction_id"]),
+                target=(*self._audit_target, split_id),
                 before=self._serialize_for_audit(before),
                 after=None,
                 actor=actor,

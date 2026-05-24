@@ -219,12 +219,13 @@ class TestTagsSetAndRename:
 
         # Audit log: one tag.add for 'a' (round 1), 'b' (round 1), 'c' (round 2),
         # one tag.remove for 'a' (round 2). Round 3 is a no-op.
+        # target_id is the row PK ("TXN_TAG_1:<tag>", row-grain cascade), so filter
+        # by action + the transaction prefix rather than an exact target_id match.
         with get_database() as db:
-            events = AuditService(db).list_events(
-                target_id="TXN_TAG_1", action_pattern="tag.%", limit=100
-            )
-        adds = [e for e in events if e.action == "tag.add"]
-        removes = [e for e in events if e.action == "tag.remove"]
+            events = AuditService(db).list_events(action_pattern="tag.%", limit=100)
+        for_txn = [e for e in events if (e.target_id or "").startswith("TXN_TAG_1:")]
+        adds = [e for e in for_txn if e.action == "tag.add"]
+        removes = [e for e in for_txn if e.action == "tag.remove"]
         assert {(e.after_value or {}).get("tag") for e in adds} == {"a", "b", "c"}
         assert {(e.before_value or {}).get("tag") for e in removes} == {"a"}
 

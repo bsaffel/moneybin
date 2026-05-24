@@ -1,7 +1,8 @@
-"""Convenience wrapper: list audit events targeted at one transaction.
+"""List every audit event relating to one transaction.
 
-Equivalent to ``moneybin system audit list --target-id <txn_id>`` but reads
-better when investigating a specific record.
+Matches both transaction-level mutations and the transaction's child entities
+(notes, tags, splits) — whose audit rows are keyed by their own PK (row-grain
+``target_id``) but carry the ``transaction_id`` in their captured row image.
 """
 
 from __future__ import annotations
@@ -34,7 +35,9 @@ def transactions_audit(
 
     with handle_cli_errors():
         with get_database(read_only=True) as db:
-            events = AuditService(db).list_events(target_id=transaction_id, limit=limit)
+            events = AuditService(db).events_for_transaction(
+                transaction_id, limit=limit
+            )
 
     def _render_text(_: object) -> None:
         if not events:

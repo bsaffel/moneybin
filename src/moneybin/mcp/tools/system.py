@@ -395,6 +395,8 @@ def system_audit_get(operation_id: str) -> ResponseEnvelope[SystemAuditGetPayloa
                     parent_audit_id=e.parent_audit_id,
                     operation_id=e.operation_id,
                     context_json=e.context_json,
+                    is_undo=e.is_undo,
+                    undoes_operation_id=e.undoes_operation_id,
                 )
                 for e in detail.events
             ],
