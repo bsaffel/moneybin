@@ -65,7 +65,7 @@ first, implementing this shared shape rather than a PDF-only one.
 | Decision | Reason |
 |---|---|
 | **The format is the unit of trust, not the file** | Confirmation attaches to a *layout* (header signature / layout fingerprint + mapping + conventions), confirmed once and reused silently. Confirm count scales with distinct layouts, not files — honors the umbrella's "tenth import is easier" mastery curve. gsheet (per-connection pin) and tabular/PDF (saved format) already work this way. |
-| **First encounter of a new layout always confirms** | Upholds the umbrella's "never imported but wrong." Confidence decides *who* satisfies the confirm and *how cheap* the prompt is — never *whether* a confirm step exists. |
+| **First encounter always confirms — unless a hard check *proves* the extraction** | Upholds the umbrella's "never imported but wrong." Confidence decides *who* satisfies the confirm and *how cheap* the prompt is — never *whether* a confirm step exists. **Carve-out:** a channel that can *prove* an extraction correct (today: PDF balance reconciliation, `smart-import-pdf.md` Req 8) may auto-persist without the interactive step. This is "skip on proof," distinct from the rejected "skip on high confidence" (a guess). |
 | **Confidence shapes ergonomics, not whether-to-confirm** | `high` → one-step accept; `medium` → flagged fields to eyeball; `low` → must supply the missing required fields. The engine already computes this signal; wasting it (advisory-only) was rejected. |
 | **One confidence contract across all three channels** | The headline coherence fix. Categorical `high/med/low` (tabular/gsheet) and continuous `0.7·required + 0.3·important` (PDF, ex-W-2) are unified into a normalized `score ∈ [0,1]` + derived `tier`. The score drives gating math; the tier drives ergonomics + autonomy. |
 | **Gate (`import_files`) and confirm (`import_confirm`) compose** | `import_files` stays the entry/fast-path and *detects* the gate; `import_confirm` is the data-carrying confirm step. Not either/or — the gated-establish ergonomics and the propose→confirm pair are the same workflow with two tools. Revives the originally-specced `import_confirm`. |
@@ -102,11 +102,21 @@ first, implementing this shared shape rather than a PDF-only one.
 
 ### Confirm flow (shared across channels)
 
-5. **First encounter always confirms.** When a layout is not recognized (no
-   header-signature / fingerprint / connection match), the import does **not** load
-   data. `import_files` returns `status="confirmation_required"` carrying the proposed
-   mapping (or PDF bridge payload), the `Confidence`, sample values, and `actions[]`
-   pointing at `import_confirm`.
+5. **First encounter always confirms — except when a hard correctness check proves the
+   extraction.** When a layout is not recognized (no header-signature / fingerprint /
+   connection match), the import does **not** load data: `import_files` returns
+   `status="confirmation_required"` carrying the proposed mapping (or PDF bridge
+   payload), the `Confidence`, sample values, and `actions[]` pointing at `import_confirm`.
+
+   **Carve-out (reconciles with `smart-import-pdf.md` Req 8):** a channel that can
+   *prove* the extraction correct may skip the interactive step and auto-persist. Today
+   the only such proof is PDF **balance reconciliation** — when a deterministic
+   extraction's rows tie to the statement's stated opening/closing balance, the math
+   *is* the confirmation, so no `import_confirm` call is required. This is "skip on
+   proof," **not** the rejected "skip on high confidence" (a guess). The proof covers the
+   money math (dates, amounts, balance), **not** descriptions or account assignment — so
+   the always-confirm default holds for all of tabular/gsheet and for any PDF that does
+   not reconcile.
 6. **Known layouts reuse silently.** A recognized layout loads with no prompt
    (subject to the replay/validation guard, Requirement 9).
 7. **`import_confirm` is the confirm step.** It accepts the channel-appropriate payload —
