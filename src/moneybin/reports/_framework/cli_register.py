@@ -25,7 +25,6 @@ from moneybin.database import get_database
 from moneybin.mcp.privacy import tier_to_sensitivity
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.reports._framework.contract import ReportSpec
-from moneybin.reports._framework.execute import run_report
 
 # The CLI is an operator/agent surface; result size is bounded by the runner's
 # own LIMIT params (top, etc.), so the framing cap is effectively off.
@@ -65,6 +64,10 @@ def build_cli_command(spec: ReportSpec) -> Callable[..., None]:
     """Build the Typer command callback for ``spec`` with an explicit signature."""
 
     def _impl(**kwargs: Any) -> None:
+        # Deferred so importing this module (at CLI command registration) does
+        # not pull execute → sql_lineage → sqlglot into the CLI cold-start path.
+        from moneybin.reports._framework.execute import run_report
+
         output: OutputFormat = kwargs.pop("output")
         kwargs.pop("quiet", None)
         with handle_cli_errors(cli_actor=spec.mcp_tool_name):
