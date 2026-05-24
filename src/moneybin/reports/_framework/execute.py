@@ -78,6 +78,15 @@ def run_report(
     truncated = len(rows) > max_rows
     records = [dict(zip(columns, r, strict=False)) for r in rows[:max_rows]]
 
+    # SECURITY (Option C): classification/redaction derives from spec.view, NOT
+    # the runner's executed SQL. This assumes every runner reads ONLY its declared
+    # view — a runner that selects columns from another table could return a
+    # sensitive field the view's class map doesn't cover, which then falls back to
+    # the view's max tier (not necessarily CRITICAL) and may skip masking.
+    # Unenforced today: the framework is in-tree-only (no extension runner can
+    # register) and all in-tree runners are `SELECT ... FROM {view}` by
+    # construction. The enforcement guard (runner SQL ⊆ spec.view, fail closed)
+    # lands with extension reports in Plan 4 — see private/followups.md.
     col_classes = classify_columns(db, spec.view, columns)
     redacted = redact_records(records, col_classes, consent=None)
 

@@ -9,16 +9,12 @@ hand-written.
 
 from __future__ import annotations
 
-import logging
-
 import typer
 
 from moneybin.reports._framework.registry import register_reports_cli
 from moneybin.reports.definitions import ALL_REPORTS
 
 from .networth import reports_networth, reports_networth_history
-
-logger = logging.getLogger(__name__)
 
 app = typer.Typer(
     help="Cross-domain analytical and aggregation views",
