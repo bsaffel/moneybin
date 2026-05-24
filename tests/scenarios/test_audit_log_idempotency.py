@@ -175,10 +175,12 @@ def test_audit_log_idempotency() -> None:
             "no-op audit rows must not be emitted (DN2); "
             f"found {no_noops[0] if no_noops else '?'}"
         )
+        # Row-grain target_id is the composite "transaction_id:tag", so match the
+        # delimiter-anchored prefix rather than the bare transaction_id.
         tag_adds = db.execute(
             "SELECT COUNT(*) FROM app.audit_log "
-            "WHERE action = 'tag.add' AND target_id = ?",
-            [transaction_id],
+            "WHERE action = 'tag.add' AND target_id LIKE ?",
+            [f"{transaction_id}:%"],
         ).fetchone()
         # Two distinct tags, each added once in run 1; run 2 re-adds emit nothing.
         assert tag_adds is not None and int(tag_adds[0]) == 2, (
