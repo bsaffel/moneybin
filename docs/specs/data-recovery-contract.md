@@ -445,10 +445,11 @@ Deviations from the design as written, with rationale:
   parent marker is emitted unconditionally), and an operation whose every row is a
   net no-op (`before == after`, e.g. a legacy idempotent `tag.add`). Either way
   `undo` raises `recovery_no_path` rather than minting an `undo_operation_id` with
-  no audit rows (which wouldn't be queryable or undoable). For the marker-only
-  case `_undoability` also reports `can_undo=False`, so `system_audit_get` /
-  `_history` agree with `undo`'s refusal instead of advertising an undo that would
-  immediately fail.
+  no audit rows (which wouldn't be queryable or undoable). For both cases
+  `_undoability` reports `can_undo=False` (it gates on "has at least one row with
+  `target_id` set and `before_value` distinct from `after_value`"), so
+  `system_audit_get` / `_history` agree with `undo`'s refusal instead of
+  advertising an undo that would immediately fail.
 - **`recovery_no_path` for raw-targeted operations.** An operation that touched a
   table outside the undoable `app.*` surface (e.g. `manual.create` →
   `raw.manual_transactions`) is refused with `recovery_no_path` rather than

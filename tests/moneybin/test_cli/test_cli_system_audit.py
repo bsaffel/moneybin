@@ -48,16 +48,39 @@ def test_system_audit_list_filters_by_action(runner: CliRunner, db: Database) ->
 
 
 def test_system_audit_list_filter_by_target_id(runner: CliRunner, db: Database) -> None:
-    TransactionService(db).add_note("T1", "x", actor="cli")
+    # Row-grain: a note's audit row is keyed by note_id, so --target-id filters on
+    # the entity PK (an exact-match filter), not the parent transaction_id.
+    note = TransactionService(db).add_note("T1", "x", actor="cli")
     result = runner.invoke(
         app,
-        ["system", "audit", "list", "--target-id", "T1", "--output", "json"],
+        ["system", "audit", "list", "--target-id", note.note_id, "--output", "json"],
     )
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
     assert payload["status"] == "ok"
     events = payload["data"]
-    assert all(e["target_id"] == "T1" for e in events)
+    assert events and all(e["target_id"] == note.note_id for e in events)
+
+
+def test_system_audit_history_serializes_recovery_actions(
+    runner: CliRunner, db: Database
+) -> None:
+    # OperationSummary.recovery_actions are Pydantic RecoveryAction models;
+    # dataclasses.asdict leaves them unconverted, so JSON output must serialize
+    # them explicitly. A blocked op (add then edit same note) carries one.
+    svc = TransactionService(db)
+    note = svc.add_note("T1", "v1", actor="cli")  # op1
+    svc.edit_note(note.note_id, "v2", actor="cli")  # op2 edits same row → blocks op1
+
+    result = runner.invoke(app, ["system", "audit", "history", "--output", "json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    ops = payload["data"]
+    blocked = [o for o in ops if not o["can_undo"] and o.get("recovery_actions")]
+    assert blocked, "expected a blocked op carrying recovery_actions"
+    action = blocked[0]["recovery_actions"][0]
+    assert action["tool"] == "system_audit_undo"
+    assert "operation_id" in action["arguments"]
 
 
 def test_system_audit_show_returns_chain(runner: CliRunner, db: Database) -> None:

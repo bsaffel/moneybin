@@ -407,21 +407,38 @@ class UndoService:
             for schema, table in targets
             if not is_registered(schema, table)
         )
-        # A marker-only operation (every event target_id NULL, e.g. a tag.rename
-        # that matched zero rows) has no row to reverse — undo() refuses it, so
-        # can_undo must be False here too or get()/history() would disagree.
-        marker_only = not targets
+        # An operation with nothing to reverse — only marker rows (target_id NULL,
+        # e.g. a tag.rename matching zero rows) or only no-ops (before == after,
+        # e.g. legacy idempotent tag re-adds) — is refused by undo(), so can_undo
+        # must be False here too or get()/history() would disagree.
+        has_reversible_row = self._has_reversible_row(operation_id)
         return _Undoability(
             can_undo=(
                 undone_by is None
                 and not blockers
                 and not unresolvable
-                and not marker_only
+                and has_reversible_row
             ),
             blockers=blockers,
             undone_by=undone_by,
             unresolvable=unresolvable,
         )
+
+    def _has_reversible_row(self, operation_id: str) -> bool:
+        """Whether the operation has at least one row that actually changed state.
+
+        A row is reversible only if it mutated something (``target_id`` set and
+        ``before_value`` distinct from ``after_value``). Markers and no-ops fail
+        both clauses — the same two conditions ``undo()`` filters on before it
+        refuses with ``recovery_no_path``.
+        """
+        row = self._db.conn.execute(
+            "SELECT 1 FROM app.audit_log "
+            "WHERE operation_id = ? AND target_id IS NOT NULL "
+            "AND before_value IS DISTINCT FROM after_value LIMIT 1",
+            [operation_id],
+        ).fetchone()
+        return row is not None
 
     def _build_undo_liveness(self) -> _UndoLiveness:
         """Load every undo edge once and index it for net-liveness queries.

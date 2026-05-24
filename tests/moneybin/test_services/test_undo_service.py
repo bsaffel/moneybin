@@ -377,6 +377,20 @@ class TestHistory:
         all_ids = [o.operation_id for o in UndoService(db).history(include_undone=True)]
         assert undo.undo_operation_id in all_ids
 
+    def test_filters_by_actor(self, db: Database) -> None:
+        _tag_op(db, "a")  # actor="cli"
+        with operation():
+            TransactionTagsRepo(db).add(transaction_id="txn_1", tag="b", actor="mcp")
+        cli_ops = UndoService(db).history(actor="cli")
+        mcp_ops = UndoService(db).history(actor="mcp")
+        assert cli_ops and all(o.actor == "cli" for o in cli_ops)
+        assert mcp_ops and all(o.actor == "mcp" for o in mcp_ops)
+
+    def test_filters_by_since(self, db: Database) -> None:
+        _tag_op(db, "a")
+        assert UndoService(db).history(since="2999-01-01") == []  # future → none
+        assert UndoService(db).history(since="2000-01-01")  # past → all
+
     def test_blocked_operation_carries_blockers(self, db: Database) -> None:
         op1 = _note_op(db)  # add note n1
         op2 = _edit_note_op(db)  # edit the same row n1 → blocks op1
@@ -451,6 +465,20 @@ class TestGet:
         with pytest.raises(UserError) as exc:
             UndoService(db).get("op_missing")
         assert exc.value.code == error_codes.UNDO_OPERATION_NOT_FOUND
+
+    def test_all_noop_not_undoable(self, db: Database) -> None:
+        # An all-noop operation (every row before==after) is refused by undo();
+        # get() must agree (can_undo=False), not advertise an undo that fails.
+        same = json.dumps({"transaction_id": "txn_1", "tag": "trip"})
+        db.execute(
+            "INSERT INTO app.audit_log "
+            "(audit_id, actor, action, target_schema, target_table, target_id, "
+            " before_value, after_value, operation_id) "
+            "VALUES ('noopg','cli','tag.add','app','transaction_tags','txn_1:trip', "
+            " ?, ?, 'op_noopg')",
+            [same, same],
+        )
+        assert UndoService(db).get("op_noopg").can_undo is False
 
     def test_marker_only_not_undoable(self, db: Database) -> None:
         # A marker-only operation (tag.rename matching zero rows) is refused by
