@@ -93,6 +93,13 @@ Related specs:
 
 ## Data Model
 
+> **Precision convention.** Quantity, price, and per-unit-cost columns use
+> `DECIMAL(28,10)` rather than `architecture-shared-primitives.md` Layer Rule 6's
+> `DECIMAL(18,8)`. This is a deliberate, domain-driven deviation: crypto positions
+> need full fractional-unit precision (sub-satoshi quantities, sub-cent token prices),
+> which the fiat-oriented `18,8` default truncates. Money *amounts* (`amount`, `fees`,
+> `cost_basis*`) keep the standard `DECIMAL(18,2)`.
+
 ### New table: `app.securities`
 
 Manually-maintained security catalog. Managed via CLI (`investments securities add/set`).
@@ -286,7 +293,7 @@ Columns:
   security_id       VARCHAR          -- FK to core.dim_securities (grain)
   quantity          DECIMAL(28,10)   -- Total open units (Σ remaining_quantity)
   cost_basis        DECIMAL(18,2)    -- Total open basis (Σ cost_basis_remaining)
-  average_cost      DECIMAL(28,10)   -- cost_basis / quantity (display convenience)
+  average_cost      DECIMAL(28,10)   -- cost_basis / quantity; (28,10) not Rule-6 (18,8) on purpose — crypto fractional-unit precision propagates through the ratio
   currency          VARCHAR          -- Denominating currency
   updated_at        TIMESTAMP        -- Row freshness
 ```
@@ -300,6 +307,14 @@ Columns:
 All three methods are computations over `core.fct_investment_lots`. The engine walks
 the ledger per (account, security) in trade-date order, opening lots on acquisitions
 and consuming them on disposals.
+
+> **The method set is intentionally closed to the three v1 methods.** The
+> `cost_basis_method` `CHECK` (on `app.securities` and `app.account_settings`) allows
+> only `fifo`, `specific`, `average` on purpose — electing a method the engine does not
+> implement would silently miscompute basis, so the constraint is a guard, not an
+> oversight. HIFO/LIFO (listed as future methods in `investments-overview.md`) are added
+> by widening the `CHECK` when their engine paths ship — a lightweight `app.*` migration,
+> the same deliberate trade-off as `security_type`.
 
 ### Short-term / long-term split (shared across all methods)
 

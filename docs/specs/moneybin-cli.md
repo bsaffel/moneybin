@@ -732,7 +732,7 @@ Restructure-only. Move and rename existing commands to the new tree; rename MCP 
 | Pull `categorize merchants *` and `categorize create-merchants` → top-level `merchants` group | Promote to entity group |
 | Move `track budget` → `budget` (top-level, still stub) | Rename + flatten |
 | Move `track recurring` → `transactions recurring` (still stub) | Reparent |
-| Move `track investments` → `accounts investments` (still stub) | Reparent |
+| Add top-level `investments` group (placeholder; workflows owned by `investments-data-model.md`); supersedes the `accounts investments` stub | New CLI module |
 | Dissolve `track` group | Delete CLI module |
 | Add `reports` group with stubbed subcommands (`spending`, `cashflow`, `budget`) | New CLI module, all stubs |
 | Rename MCP tools to path-prefix-verb-suffix convention | Update tool registry, regenerate client configs via `mcp install` |
