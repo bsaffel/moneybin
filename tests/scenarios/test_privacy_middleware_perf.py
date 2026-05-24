@@ -113,7 +113,7 @@ def test_privacy_middleware_within_budget() -> None:
         with get_database(read_only=True) as db:
             return AccountService(db).list_accounts()
 
-    def _reports_budget() -> object:
+    def _budget_status_service() -> object:
         with get_database(read_only=True) as db:
             return BudgetService(db).status()
 
@@ -127,7 +127,7 @@ def test_privacy_middleware_within_budget() -> None:
         "transactions_get": _transactions_get,
         "reports_spending": _reports_spending,
         "accounts": _accounts,
-        "reports_budget": _reports_budget,
+        "budget_status_service": _budget_status_service,
         "reports_networth_history": _reports_networth_history,
     }
 
