@@ -1,0 +1,44 @@
+"""reports_large_transactions — top-N transactions with z-score anomaly lens."""
+
+from __future__ import annotations
+
+from moneybin.database import Database
+from moneybin.reports._framework.contract import ReportQuery, report
+from moneybin.reports.definitions._shared import LARGE_TXN_ANOMALIES
+from moneybin.tables import REPORTS_LARGE_TRANSACTIONS
+
+
+@report(name="large_transactions", view=REPORTS_LARGE_TRANSACTIONS)
+def large_transactions(
+    db: Database,  # noqa: ARG001  # contract handle; this runner builds pure SQL
+    *,
+    top: int = 25,
+    anomaly: str = "none",
+) -> ReportQuery:
+    """Top transactions by absolute amount with per-account/category z-scores.
+
+    Amounts use the accounting convention (negative = expense, positive =
+    income) in the currency named by summary.display_currency.
+
+    Args:
+        db: Open read-only database connection.
+        top: Top N by ABS(amount).
+        anomaly: account | category | none — filter to z>2.5 in the named scope.
+
+    Examples:
+        reports_large_transactions(top=50, anomaly="account")
+    """
+    if anomaly not in LARGE_TXN_ANOMALIES:
+        raise ValueError(f"Unknown anomaly: {anomaly}")
+    sql = f"""
+        SELECT transaction_id, account_id, account_name, txn_date, amount,
+               description, merchant_id, merchant_normalized, category,
+               amount_zscore_account, amount_zscore_category, is_top_100
+        FROM {REPORTS_LARGE_TRANSACTIONS.full_name}
+    """  # noqa: S608  # TableRef interpolation
+    if anomaly == "account":
+        sql += " WHERE amount_zscore_account > 2.5"
+    elif anomaly == "category":
+        sql += " WHERE amount_zscore_category > 2.5"
+    sql += " ORDER BY ABS(amount) DESC LIMIT ?"
+    return ReportQuery(sql, [top])

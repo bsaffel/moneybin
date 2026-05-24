@@ -9,7 +9,7 @@ than live lineage on a user query.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from moneybin.database import Database
@@ -34,6 +34,8 @@ class ReportResult:
     tier: Tier
     total_count: int
     truncated: bool
+    actions: list[str] = field(default_factory=list)
+    period: str | None = None
 
     @property
     def classes_returned(self) -> list[str]:
@@ -70,4 +72,6 @@ def run_report(
         # least one more row" without paying for an exact COUNT(*).
         total_count=max_rows + 1 if truncated else len(records),
         truncated=truncated,
+        actions=list(rq.actions),
+        period=rq.period,
     )

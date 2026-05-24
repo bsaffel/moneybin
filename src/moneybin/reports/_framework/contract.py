@@ -23,10 +23,17 @@ Runner = Callable[..., "ReportQuery"]
 
 @dataclass(frozen=True, slots=True)
 class ReportQuery:
-    """A parameterized read-only SELECT that a report runner returns."""
+    """A parameterized read-only SELECT that a report runner returns.
+
+    ``actions`` and ``period`` let the runner declare its own envelope
+    enrichment — next-step hints and the human-readable window — since those
+    are report-specific and the runner is the report's single definition.
+    """
 
     sql: str
     params: Sequence[object] = ()
+    actions: Sequence[str] = ()
+    period: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

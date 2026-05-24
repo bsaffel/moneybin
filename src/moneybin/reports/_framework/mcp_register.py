@@ -49,6 +49,8 @@ def make_tool_fn(spec: ReportSpec) -> Callable[..., ResponseEnvelope[Any]]:
             sensitivity=tier_to_sensitivity(result.tier).value,
             total_count=result.total_count,
             classes_returned=result.classes_returned,
+            actions=result.actions or None,
+            period=result.period,
         )
 
     _impl.__name__ = spec.mcp_tool_name

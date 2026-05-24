@@ -88,6 +88,8 @@ def build_cli_command(spec: ReportSpec) -> Callable[..., None]:
                     sensitivity=tier_to_sensitivity(result.tier).value,
                     total_count=result.total_count,
                     classes_returned=result.classes_returned,
+                    actions=result.actions or None,
+                    period=result.period,
                 ),
                 output,
                 render_fn=_render_text,
