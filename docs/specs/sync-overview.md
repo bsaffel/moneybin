@@ -726,7 +726,7 @@ Phase 1 of this spec maps to **M3A — Plaid Transactions sync** in [`docs/roadm
 
 | Provider | Child spec | Status | Notes |
 |---|---|---|---|
-| Plaid | [`sync-plaid.md`](sync-plaid.md) | Draft | First provider. Transactions product only (v1). Investments/Liabilities are future child specs gated on `investments-overview.md`. |
+| Plaid | [`sync-plaid.md`](sync-plaid.md) | Draft | First provider. Transactions product only (v1). Investments/Liabilities are future child specs gated on `investments-data-model.md`. |
 | SimpleFIN | `sync-simplefin.md` | Planned | Alternative aggregator used by Actual Budget. Lower coverage but no per-institution fees. |
 | MX | `sync-mx.md` | Planned | Enterprise-grade aggregator. Potential alternative to Plaid for hosted tier. |
 

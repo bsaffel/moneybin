@@ -42,7 +42,9 @@ Related specs:
    stable surrogate `security_id` (truncated UUID4). Ticker, CUSIP, ISIN, FIGI, and
    `coingecko_id` are nullable *attributes*, never the key.
 2. **Five security types for v1:** `equity`, `etf`, `mutual_fund`, `bond`, `crypto`,
-   plus `other`. Extensible by adding values without migration.
+   plus `other`. New types are added by extending the `CHECK` constraint (a
+   lightweight migration via `database-migration.md`); the `other` escape hatch
+   absorbs unanticipated instruments without one.
 3. **Identity resolution chain.** Free-text or partial security references resolve to
    a `security_id` via CUSIP/ISIN → ticker+exchange → name fuzzy, mirroring the
    institution-resolution chain in `smart-import-financial.md`. v1 resolves against
@@ -327,6 +329,14 @@ The ST/LT split still walks lots oldest-first (only the basis is averaged). Vali
 to `mutual_fund` / `etf` security types. This is the one genuinely distinct
 computation; it adds a single derived path, not a parallel system.
 
+**`core.fct_realized_gains` grain under average cost.** There is no lot-specific
+basis when pooling, but the table keeps its uniform (disposal × consumed lot) grain:
+lots are still traversed oldest-first to assign each slice's holding period, and each
+resulting row carries the **pooled average** basis rather than the lot's actual cost.
+`lot_id` records the lot that supplied the holding-period attribution, not a
+lot-specific cost. This reconciles with broker 1099-Bs, which report one blended-basis
+figure per disposal, split into short- and long-term portions.
+
 ### Mirror, don't enforce (v1)
 
 The engine reproduces the elected method to match broker output. It does **not**
@@ -384,9 +394,14 @@ moneybin investments lots [--account <id|name>] [--security <ticker|name>] \
 - Lots with remaining quantity and basis. Default: open lots only.
 
 ```
-moneybin investments lots select <disposal_txn_id> --lot <lot_id> --quantity N [--yes]
+moneybin investments lots select <disposal_txn_id> --lot <lot_id>:<quantity> [--lot <lot_id>:<quantity> ...] [--yes]
 ```
-- Records a specific-identification override in `app.lot_selections`.
+- Sets the **full** specific-identification selection for the disposal in
+  `app.lot_selections` — a declarative state-set (Shape 1a): the listed `(lot,
+  quantity)` pairs **replace** any prior selection for that disposal (delete by
+  omission), identical in semantics to the `investments_lots_select` MCP tool.
+  Unselected remainder falls back to FIFO. (Both surfaces are declarative-set here —
+  there is no additive variant, to keep CLI and MCP outcomes identical.)
 
 ### Gains
 
@@ -399,10 +414,17 @@ moneybin investments gains [--account <id|name>] [--security <ticker|name>] \
 ### Cost-basis method election (no dedicated verb)
 
 The method is a *field*, not its own operation (per `surface-design.md`):
-- **Per-account default** → `moneybin accounts set <id> --default-cost-basis-method fifo|specific|average`
-  (the unified `accounts set` partial-update entry point from `account-management.md`).
+- **Per-account default** → `moneybin accounts set <id> --default-cost-basis-method fifo|specific|average`.
 - **Per-security override** → `moneybin investments securities set <id> --method fifo|specific|average`
   (`average` validates to fund/ETF security types).
+
+> **Surface extension to `account-management.md`.** The `--default-cost-basis-method`
+> flag on `accounts set`, the matching `default_cost_basis_method` parameter on the
+> `accounts_set` MCP tool, and the `app.account_settings.default_cost_basis_method`
+> column (the ALTER above) are all **added by this spec** — `account-management.md`
+> (status `implemented`) does not yet carry them. Implementing this spec updates the
+> accounts command, the `accounts_set` tool, and the `account-management.md` surface
+> tables accordingly.
 
 ### Securities catalog
 
@@ -580,10 +602,13 @@ Standard envelope from [`mcp-architecture.md`](mcp-architecture.md), e.g. for
 
 ### Files to Modify
 
-- `src/moneybin/cli/main.py` — register the `investments` group
+- `src/moneybin/cli/main.py` — register the top-level `investments` group
+- `src/moneybin/cli/commands/accounts/investments.py` — **remove** the placeholder stub (relocated to the top-level group)
+- `src/moneybin/cli/commands/accounts/*` + `src/moneybin/mcp/tools/accounts*` — add `--default-cost-basis-method` flag to `accounts set` and the matching `accounts_set` parameter
 - `src/moneybin/sql/schema.py` — register new DDL + the `app.account_settings` ALTER
 - `src/moneybin/tables.py` — add table constants (`DIM_SECURITIES`, `FCT_INVESTMENT_TRANSACTIONS`, `FCT_INVESTMENT_LOTS`, `FCT_REALIZED_GAINS`, `DIM_HOLDINGS`)
 - `src/moneybin/metrics/registry.py` — instrumentation for ingestion + cost-basis runs (per `observability.md`)
+- `docs/specs/account-management.md` — document the `accounts set` / `accounts_set` cost-basis-method extension + the new `app.account_settings` column
 - `docs/specs/INDEX.md`, `docs/roadmap.md` — status + milestone rows
 
 ### Key Decisions

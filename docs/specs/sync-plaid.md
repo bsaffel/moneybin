@@ -532,7 +532,7 @@ These fixtures should be generated deterministically (seeded) and stored as gold
 
 | Exclusion | Reason |
 |---|---|
-| Plaid Investments product | Gated on `investments-overview.md`. Future child spec: `sync-plaid-investments.md`. |
+| Plaid Investments product | Gated on `investments-data-model.md` (needs the ledger/securities/holdings contracts). Future child spec: `sync-plaid-investments.md`. |
 | Plaid Liabilities product | Future child spec. |
 | E2E encryption of sync payloads | Designed in `sync-overview.md`. Implementation gated on moneybin-server Phase 5. |
 | Webhook-based real-time sync | Polling is sufficient for MVP. Server would need webhook receiver infrastructure. |
