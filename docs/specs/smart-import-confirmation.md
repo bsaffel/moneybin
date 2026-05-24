@@ -1,7 +1,7 @@
 # Feature: Smart Import — Confirmation & Confidence Contract
 
 > Last updated: 2026-05-24 — initial draft from brainstorm.
-> Companions: [`smart-import-overview.md`](smart-import-overview.md) (umbrella; this spec realizes the deferred `import_confirm` tool and the "no silent failure" success criterion), [`smart-import-tabular.md`](smart-import-tabular.md) (column-mapping engine `map_columns`; this spec adds the confirm gate the tabular Goal already promised), [`smart-import-pdf.md`](smart-import-pdf.md) (PDF extraction + bridge; **consumes this spec's contract** instead of re-deriving `import_confirm`), [`connect-gsheet.md`](connect-gsheet.md) (gsheet connect/reconnect confidence gates; aligned to the shared bands here), [`surface-design.md`](../../.claude/rules/surface-design.md) (operation-shape taxonomy; the `_commit` verb), [`moneybin-mcp.md`](moneybin-mcp.md) / [`moneybin-cli.md`](moneybin-cli.md) (surface specs), [`moneybin-capabilities.md`](moneybin-capabilities.md) (capability map), [`data-recovery-contract.md`](data-recovery-contract.md) (audit-log undo, the recovery counterweight).
+> Companions: [`smart-import-overview.md`](smart-import-overview.md) (umbrella; this spec realizes the deferred `import_confirm` tool and the "no silent failure" success criterion), [`smart-import-tabular.md`](smart-import-tabular.md) (column-mapping engine `map_columns`; this spec adds the confirm gate the tabular Goal already promised), [`smart-import-pdf.md`](smart-import-pdf.md) (PDF extraction + bridge; **consumes this spec's contract** instead of re-deriving `import_confirm`), [`connect-gsheet.md`](connect-gsheet.md) (gsheet connect/reconnect confidence gates; aligned to the shared bands here), [`surface-design.md`](../../.claude/rules/surface-design.md) (operation-shape taxonomy; the `_confirm` verb), [`moneybin-mcp.md`](moneybin-mcp.md) / [`moneybin-cli.md`](moneybin-cli.md) (surface specs), [`moneybin-capabilities.md`](moneybin-capabilities.md) (capability map), [`data-recovery-contract.md`](data-recovery-contract.md) (audit-log undo, the recovery counterweight).
 
 ## Status
 <!-- draft | ready | in-progress | implemented -->
@@ -30,7 +30,7 @@ first, implementing this shared shape rather than a PDF-only one.
 ## Background
 
 - [`smart-import-overview.md`](smart-import-overview.md) — the umbrella already named
-  an `import_confirm` MCP tool and a propose→review→commit wizard as v1 surface
+  an `import_confirm` MCP tool and a propose→review→confirm wizard as v1 surface
   (Resolved questions, "MCP Apps wizard timing"), and lists "No silent failures" /
   "Graceful degradation" as success criteria. Both were deferred when the magic-first
   flow shipped. This spec realizes them.
@@ -42,17 +42,19 @@ first, implementing this shared shape rather than a PDF-only one.
 - [`smart-import-pdf.md`](smart-import-pdf.md) — `ready`, ships first. It assumes
   `import_preview` → `import_confirm` and "matching the tabular confirm flow," and its
   **bridge rung** has the driving agent hand back a recipe + extracted rows — a genuine
-  data-carrying commit that cannot collapse into a flag. That requirement is what makes
-  `import_confirm` (a `_commit`-shaped tool) the right cross-channel primitive, not a
-  tabular-only convenience.
+  data-carrying confirmation that cannot collapse into a flag. That requirement is what
+  makes `import_confirm` (a `_confirm`-shaped tool) the right cross-channel primitive,
+  not a tabular-only convenience.
 - [`connect-gsheet.md`](connect-gsheet.md) — already the most evolved confirm story:
   `connect` detects, gates on confidence (`--yes` / `--column-mapping`), pins a
   per-connection mapping, and refuses on drift. It keeps its `connect`/`reconnect`
   lifecycle verbs; only its confidence policy aligns to the shared bands here.
-- [`surface-design.md`](../../.claude/rules/surface-design.md) — the `_commit` verb is
-  defined for "finalize externally-decided proposals (terminal step of
-  propose→review→commit workflows)," e.g. `transactions_categorize_commit`.
-  `import_confirm` is the same shape.
+- [`surface-design.md`](../../.claude/rules/surface-design.md) — the `_confirm` verb
+  (added in #221) is defined for "accept or override an interactively-presented proposal
+  (terminal step of a propose→review→confirm workflow)," with `import_confirm` as its
+  example. Distinct from `_commit` (finalize externally-decided proposals, e.g.
+  `transactions_categorize_commit`): with `_confirm`, MoneyBin proposes the mapping and
+  the caller accepts or overrides it — we propose, they ratify.
 - [`data-recovery-contract.md`](data-recovery-contract.md) — the audit-log undo
   consumer (`system_audit_undo` / `history` / `get`) makes every audited `app.*`
   mutation reversible. Format saves and PDF recipe versions route through it; this is
@@ -66,9 +68,9 @@ first, implementing this shared shape rather than a PDF-only one.
 | **First encounter of a new layout always confirms** | Upholds the umbrella's "never imported but wrong." Confidence decides *who* satisfies the confirm and *how cheap* the prompt is — never *whether* a confirm step exists. |
 | **Confidence shapes ergonomics, not whether-to-confirm** | `high` → one-step accept; `medium` → flagged fields to eyeball; `low` → must supply the missing required fields. The engine already computes this signal; wasting it (advisory-only) was rejected. |
 | **One confidence contract across all three channels** | The headline coherence fix. Categorical `high/med/low` (tabular/gsheet) and continuous `0.7·required + 0.3·important` (PDF, ex-W-2) are unified into a normalized `score ∈ [0,1]` + derived `tier`. The score drives gating math; the tier drives ergonomics + autonomy. |
-| **Gate (`import_files`) and commit (`import_confirm`) compose** | `import_files` stays the entry/fast-path and *detects* the gate; `import_confirm` is the data-carrying commit. Not either/or — the gated-establish ergonomics and the propose→commit pair are the same workflow with two tools. Revives the originally-specced `import_confirm`. |
+| **Gate (`import_files`) and confirm (`import_confirm`) compose** | `import_files` stays the entry/fast-path and *detects* the gate; `import_confirm` is the data-carrying confirm step. Not either/or — the gated-establish ergonomics and the propose→confirm pair are the same workflow with two tools. Revives the originally-specced `import_confirm`. |
 | **gsheet keeps `connect`/`reconnect`** | They are `_connect`-family lifecycle verbs (establish a live binding), distinct from `import_*` (one-shot file). Coherence is the shared confidence contract + `resolve_or_confirm` primitive underneath, not identical tool names (functional parity, per project convention). |
-| **Generous autonomy paid for by visible recovery** | Tiered agent autonomy (self-accept `high`) is the target, but ships **gated behind calibration** — we don't trust "high = auto-accept" until measured. The counterweight is recovery made obvious: every new-format commit surfaces undo + re-map as `actions[]`. |
+| **Generous autonomy paid for by visible recovery** | Tiered agent autonomy (self-accept `high`) is the target, but ships **gated behind calibration** — we don't trust "high = auto-accept" until measured. The counterweight is recovery made obvious: every confirmed new-format import surfaces undo + re-map as `actions[]`. |
 | **`medium` gates on every channel** | Tabular's current "wave through with a log warning" is the odd one out and becomes a gate, matching gsheet. A behavior change to a shipped surface, justified by coherence. |
 | **Override is partial-merge, not whole-map** | A correction supplies only the fields it changes, merged over the detected mapping. Unifies tabular's per-field `--override` with gsheet's whole-map `--column-mapping` (coherence fix for gsheet). |
 
@@ -107,10 +109,10 @@ first, implementing this shared shape rather than a PDF-only one.
    pointing at `import_confirm`.
 6. **Known layouts reuse silently.** A recognized layout loads with no prompt
    (subject to the replay/validation guard, Requirement 9).
-7. **`import_confirm` is the commit.** It accepts the channel-appropriate payload —
+7. **`import_confirm` is the confirm step.** It accepts the channel-appropriate payload —
    `mapping={…}` / `accept=true` for tabular/gsheet, `recipe={…}, rows=[…]` for the PDF
-   bridge — validates it, saves the format, and loads. It is the terminal `_commit` step
-   of the propose→review→commit workflow.
+   bridge — validates it, saves the format, and loads. It is the terminal `_confirm` step
+   of the propose→review→confirm workflow.
 8. **Override is partial-merge.** A supplied `mapping` overrides only the named
    destination fields; unspecified fields fall back to the detected mapping. Validation
    (reusing gsheet's `_validate_*_column_mapping`, generalized) rejects a mapping missing
@@ -131,7 +133,7 @@ first, implementing this shared shape rather than a PDF-only one.
     path always shows a prompt on first encounter regardless of tier (the prompt is just
     one keystroke at `high`). "Always confirm" means a confirm *step* always exists; the
     tier + calibration decide who satisfies it.
-11. **Recovery is a first-class, surfaced step.** Every committed new-format import
+11. **Recovery is a first-class, surfaced step.** Every confirmed new-format import
     returns `actions[]` with the concrete recovery paths: undo the data load
     (`import_revert <import_id>`), undo the format save / PDF recipe-version bump
     (`system_audit_undo <operation_id>` per `data-recovery-contract.md`), and **re-map**
@@ -227,7 +229,7 @@ shapes or verbs.** The confirm flow is the existing `import_*` family plus the r
 |---|---|---|
 | `import_files(paths, …)` | Shape 3 (discrete event) | Entry + fast-path. Known layout → load. Unknown → `confirmation_required` (no data loaded) with `actions[]` → `import_confirm`. |
 | `import_preview(file)` | Shape 5 (read-projection) | Read-only inspect: proposed mapping, `Confidence`, samples, unmapped columns. For PDF, also emits the bridge payload (IR / page image + extraction request). |
-| `import_confirm(file, mapping?/accept?/recipe?/rows?, save_format=true)` | Shape 3, `_commit` | Finalize an externally-decided proposal: validate → save format → load. The single net-new surface element is the channel-varying payload. |
+| `import_confirm(file, mapping?/accept?/recipe?/rows?, save_format=true)` | Shape 3, `_confirm` | Accept or override the proposed mapping/recipe: validate → save format → load. The single net-new surface element is the channel-varying payload. |
 | `import_formats(type?)` | Shape 5 | List learned formats (tabular + pdf). |
 | `gsheet_connect` / `gsheet_reconnect` | `_connect` lifecycle | Keep their inline `--yes` / `--column-mapping`; share the confidence bands + `resolve_or_confirm` primitive underneath. |
 
@@ -238,7 +240,7 @@ flagged fields and prompts `[Y / edit / n]` (tier shapes the default: `high` →
 `--confirm` / `--mapping field=col,…` (non-interactive parity per `cli.md`).
 
 **MCP (agent).** `import_files` returns the `confirmation_required` envelope; the agent
-inspects (optionally `import_preview`), then calls `import_confirm`. After commit,
+inspects (optionally `import_preview`), then calls `import_confirm`. After confirming,
 `actions[]` carries the undo + re-map hints (Requirement 11). Sensitivity tiers and
 envelope shape per `mcp.md` — the proposed mapping and samples are row-shaped
 (`medium`), counts/tiers are `low`.
@@ -316,8 +318,10 @@ extractor, and tabular/gsheet adopt them in this spec's work.
 - **`moneybin-mcp.md` + `moneybin-cli.md` + `moneybin-capabilities.md`** — register
   `import_confirm` and the `import_files` confirmation-required state (per the
   surface-change-discipline rule).
-- **`.claude/rules/surface-design.md`** — record the gated-establish + `_commit` pairing
-  as the canonical confirm shape.
+- **`.claude/rules/surface-design.md`** — the `_confirm` verb is already in place (#221);
+  record the gated-establish (`import_files`) + `_confirm` (`import_confirm`) pairing as
+  the canonical confirm shape, and resolve the standing `confirm`-vs-`_commit` overlap
+  in favor of `_confirm` for system-proposed-then-ratified flows.
 
 ## Testing Strategy
 
@@ -328,9 +332,9 @@ extractor, and tabular/gsheet adopt them in this spec's work.
   asserts the chosen `T_high` meets the precision bar and that `self_accept_high`
   defaults off until it does.
 - **Channel integration:** tabular `medium` now gates (regression — was a wave-through);
-  gsheet medium/low behavior unchanged under the shared bands; PDF bridge commit via
+  gsheet medium/low behavior unchanged under the shared bands; PDF bridge confirm via
   `import_confirm` persists the format and loads (faked agent response, no real LLM).
-- **Recovery:** committed import → `import_revert` removes rows; `system_audit_undo`
+- **Recovery:** confirmed import → `import_revert` removes rows; `system_audit_undo`
   reverses the format save; re-map via second `import_confirm` re-pins cleanly.
 - **CLI/MCP parity:** the `confirmation_required` envelope is identical shape on both
   surfaces; `--confirm` / `--mapping` reproduce the interactive accept/override.
@@ -338,7 +342,7 @@ extractor, and tabular/gsheet adopt them in this spec's work.
 ## Out of Scope
 
 - **Interactive MCP wizard (MCP Apps).** Phase 2 per the overview; v1 is the tool-level
-  propose→commit exchange.
+  propose→confirm exchange.
 - **Per-field confidence in the contract.** v1 confidence is per-detection (one score +
   flagged-field list), not a score per column. Revisit if calibration needs it.
 - **Persisting confidence at save time** — deferred additive column (see Data Model).
