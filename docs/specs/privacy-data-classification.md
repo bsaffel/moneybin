@@ -381,6 +381,12 @@ Because both functions share the same `_TRANSFORMS` table, a change to how CRITI
 
 Coverage boundary: lineage resolution covers columns from `core.*` and `app.*` schemas (the classified schemas per `CLASSIFICATION`). Queries that read only from `raw.*` or `prep.*` are not lineage-classified — those columns are absent from the snapshot — so the conservative fallback applies. If the unresolved input columns also fall outside `core.*`/`app.*`, the fallback is `AGGREGATE` (LOW), not a masking error.
 
+### `reports.*` classification via the report framework
+
+`reports.*` views were previously out of scope here — neither registered in `CLASSIFICATION` nor reachable through `sql_query`. The report auto-generation framework now classifies the **report surface** without changing either: `src/moneybin/reports/_framework/classify.py` derives each view's `{column: DataClass}` map by running the *same* `resolve_output_classes` lineage on the view's defining SQL body (which reads `core.*`/`app.*`), caches it per `(view, schema version)`, then masks via the shared `redact_records` path. This is the "Option C" design — classify at the report-framework boundary by derivation, not by registering `reports.*` columns into `CLASSIFICATION`.
+
+Two boundaries hold unchanged: the hand-authored `CLASSIFICATION` registry, the schema snapshot, and `sql_query`'s allowed schemas are untouched — `sql_query` still resolves only `core.*`/`app.*` and **cannot** query `reports.*`. The report framework is the only consumer of `reports.*` view classification.
+
 ### `sql_query` per-call classification mode
 
 The `@mcp_tool` decorator gained a `dynamic_classification=True` mode (replacing the retired `unclassified=True` flag) for tools whose output column classification varies per call. In this mode:
@@ -427,7 +433,7 @@ post-middleware assertion at `tests/scenarios/test_privacy_middleware_perf.py`.
 | `transactions_get` | `TransactionService.get(limit=100)` | medium | ~100-row list |
 | `reports_spending` | `SpendingService.by_category()` | low | aggregate |
 | `accounts` | `AccountService.list_accounts()` | medium | ~4-row list (CRITICAL fields) |
-| `reports_budget` | `BudgetService.status()` | low | aggregate + per-budget rows |
+| `reports_budget` (removed) | `BudgetService.status()` | low | aggregate + per-budget rows — tool removed (synthesized from `BudgetService`, not a `reports.*` view); re-registers via the report framework when M3C ships a `reports.budget` view |
 | `reports_networth_history` | `NetworthService.history()` | medium | time-series |
 
 Concrete numbers are populated by Phase 9 after the post-middleware run.

@@ -520,8 +520,8 @@ The `transactions_categorize_commit` MCP tool has CLI parity via `moneybin trans
 ### What symmetry does NOT mean
 
 - **Not identical UX.** The CLI uses tables, progress bars, and icons. MCP returns structured data. Same data, different presentation.
-- **Not identical invocation.** `moneybin reports spending --from 2025-01` vs `reports_spending(from_month="2025-01")`. The CLI uses Typer's conventions (short `--from`/`--to`); MCP uses tool-call conventions (full `from_month`/`to_month` keys).
-- **Not a generated surface.** The CLI is hand-crafted for human ergonomics. It's not auto-generated from MCP tool schemas. Both surfaces are independently authored but share the service layer.
+- **Not identical invocation.** `moneybin reports spending --from-month 2025-01` vs `reports_spending(from_month="2025-01")`. The CLI uses kebab-case flag names (`--from-month`); MCP uses the underscored parameter keys (`from_month`).
+- **Mostly hand-crafted, with a generated exception.** The CLI is hand-crafted for human ergonomics and is not auto-generated from MCP tool schemas; most surfaces are independently authored over a shared service layer. The exception is the view-backed `reports_*`: both the MCP tool and the CLI command are generated from one `@report` runner (see `extension-contracts.md`), so for those the two surfaces share a single definition rather than parallel hand-authored adapters.
 
 ### CLI command structure
 

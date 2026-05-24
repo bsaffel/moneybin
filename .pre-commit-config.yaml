@@ -12,7 +12,12 @@ repos:
         name: ruff format
         entry: .venv/bin/ruff
         language: system
-        types: [python]
+        # python + markdown: with `preview = true` ruff formats Python code
+        # blocks inside .md too, and CI runs `ruff format --check .` over both.
+        # A python-only scope here let an unformatted markdown code block slip
+        # past pre-commit and fail CI. (`ruff check` is a no-op on .md, so the
+        # check hook above stays python-only.)
+        types_or: [python, markdown]
         args: [format]
         require_serial: false
 

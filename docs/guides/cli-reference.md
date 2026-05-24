@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-05-17 -->
+<!-- Last reviewed: 2026-05-24 -->
 # CLI Reference
 
 MoneyBin's CLI covers everything its MCP server does. Read commands return text or JSON with `--output json`; every interactive prompt has a flag equivalent so scripts and agents can drive the same commands. Parity is **functional, not nominal** — the same outcomes are reachable on both surfaces, but tool names don't always map 1:1 (e.g., `moneybin transactions list` reaches the MCP tool `transactions_get`). See [`mcp-server.md`](mcp-server.md) for the MCP catalog.
@@ -22,7 +22,7 @@ These flags appear on commands across every group. They are not repeated in the 
 
 ### Date and duration formats
 
-- **Date arguments** (`--from`, `--to`, `--as-of`, `--date`) are ISO 8601 `YYYY-MM-DD`. Month-grain commands like `reports cashflow` document `YYYY-MM-01` in their `--help`.
+- **Date arguments** (`--from`, `--to`, `--as-of`, `--date`) are ISO 8601 `YYYY-MM-DD`. Month-grain commands like `reports cashflow` use `--from-month`/`--to-month` and document `YYYY-MM-01` in their `--help`.
 - **Duration shortcuts** (`7d`, `24h`, `5m`) are accepted on `logs` (`--since`, `--until`) and `stats` (`--since`). They are **not** accepted on report or sync date filters — use absolute dates there.
 - Timestamps in JSON output are ISO 8601; dates are `YYYY-MM-DD` strings (not epoch seconds).
 
@@ -114,7 +114,7 @@ The CLI has a few task-shaped overlaps; this section disambiguates the common on
 **"Review my transactions" — three candidates, pick by intent:**
 
 - **`transactions list`** — filtered scanning ("show me April groceries"). Supports `--account-id`, `--from`/`--to`, `--category`, `--uncategorized`, `--limit`. Returns raw rows; no workflow.
-- **`reports uncategorized`** — specifically hunting uncategorized rows for a categorization pass. Adds amount, age, and a `--min-amount` filter.
+- **`transactions categorize pending`** — specifically hunting uncategorized rows for a categorization pass. Supports `--sort {date,impact}`, `--min-amount`, and `--account`.
 - **`transactions review`** — the interactive curator queue: pending dedup/transfer matches plus uncategorized rows in one stream. Use `--type {matches,categorize,all}` and `--confirm`/`--reject` to drive it from a script.
 
 **"Refresh / transform / categorize run — which?"**
@@ -364,15 +364,12 @@ Cross-domain analytical views. All commands support `--output json` and return t
 |---|---|---|
 | `reports networth` | Current net worth snapshot. | `--as-of`, `--account` |
 | `reports networth-history` | Net worth over time with period-over-period change. | `--from`, `--to`, `--interval {daily,weekly,monthly}` |
-| `reports cashflow` | Income vs spending by period. | `--from`, `--to` (both `YYYY-MM-01`) |
-| `reports spending` | Spending trend by category. | `--from`, `--to`, `--category`, `--top` |
-| `reports recurring` | Detected recurring subscriptions with confidence and annualized cost. | `--status {active,cancelled,all}`, `--limit` |
-| `reports merchants` | Merchant activity rollup. | `--from`, `--to`, `--limit` |
-| `reports uncategorized` | Uncategorized queue with amount and age. | `--limit`, `--min-amount` |
-| `reports large-transactions` | Large transactions by amount threshold. | `--min-amount`, `--from`, `--to` |
-| `reports balance-drift` | Where computed balance diverges from asserted balance. | `--account-id`, `--threshold` |
-| `reports budget` 🚧 | Budget vs actual (stub). | — |
-| `reports health` 🚧 | Cross-domain financial health snapshot (stub). | `--months` |
+| `reports cashflow` | Income vs spending by period. | `--from-month`, `--to-month` (both `YYYY-MM`), `--by {account,category,account-and-category}` |
+| `reports spending` | Spending trend by category. | `--from-month`, `--to-month`, `--category`, `--compare {yoy,mom,trailing}` |
+| `reports recurring` | Detected recurring subscriptions with confidence and annualized cost. | `--min-confidence`, `--status {active,inactive,all}`, `--cadence {weekly,biweekly,monthly,quarterly,yearly,irregular}` |
+| `reports merchants` | Merchant activity rollup. | `--top`, `--sort {spend,count,recent}` |
+| `reports large-transactions` | Large transactions, optionally anomaly-filtered. | `--top`, `--anomaly {none,account,category}` |
+| `reports balance-drift` | Where computed balance diverges from asserted balance. | `--account`, `--status {drift,warning,clean,no-data,all}`, `--since` |
 
 **Related guides:** [`reports.md`](reports.md).
 
@@ -477,7 +474,7 @@ Whole-pipeline scenarios live under `tests/scenarios/` and are driven via `make 
 moneybin sync pull                          # latest from connected banks
 moneybin import files ~/Downloads/*.ofx     # any OFX files you downloaded
 moneybin refresh                            # run the post-load pipeline
-moneybin reports uncategorized              # see what's still uncategorized
+moneybin transactions categorize pending    # see what's still uncategorized
 # ... categorize via transactions review or transactions categorize rules ...
 moneybin reports networth                   # this month's net worth
 moneybin reports cashflow                   # this month's income vs spending
@@ -499,9 +496,9 @@ moneybin reports networth
 ### Year-end / tax-prep
 
 ```bash
-moneybin reports cashflow --from 2026-01-01 --to 2026-12-01
-moneybin reports merchants --from 2026-01-01 --to 2026-12-31
-moneybin reports spending --from 2026-01-01 --to 2026-12-31 --top 20
+moneybin reports cashflow --from-month 2026-01-01 --to-month 2026-12-01
+moneybin reports merchants --top 20 --sort spend
+moneybin reports spending --from-month 2026-01-01 --to-month 2026-12-01 --compare yoy
 ```
 
 The `tax` group is reserved for future automated form-data extraction; for now, the reports above plus a `db query` against `core.fct_transactions` cover most tax-prep needs.
@@ -533,7 +530,7 @@ moneybin transactions categorize assist --limit 50 --output json \
 ### Find large uncategorized transactions for review
 
 ```bash
-moneybin reports uncategorized --output json \
+moneybin transactions categorize pending --output json \
   | jq '.data[] | select((.amount | tonumber | fabs) > 100)'
 ```
 

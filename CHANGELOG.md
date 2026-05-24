@@ -11,6 +11,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 M2 closing out and M3 underway. M2A curator state shipped (transaction notes, tags, splits, manual entry, audit log). M2B architecture reference shipped (`architecture-shared-primitives.md`; writer-coordination contract via short-lived per-call connections). M2C brand surface advancing: `moneybin system doctor` integrity command, `reports.*` recipe library (eight curated views), and the `transform_*` MCP toolset closing the agent ingest loop. M3A Plaid Transactions sync shipped (Phase 1). Doc surface tightened for the personas reachable today; MCP surface hardened with protocol-standard annotations, `accounts_resolve`, list-parameter cap, structured error envelopes, and shell completion. Categorization correctness pass: memo-aware matcher, exemplar accumulation, source-precedence enforcement, auto-fan-out after apply; seed merchant catalogs retired in favor of user-driven and LLM-assist-driven merchant creation.
 
 ### Changed
+- **Report CLI flags auto-derive from parameter names.** With reports now
+  generated from runner signatures, multi-word flags follow the parameter name:
+  `moneybin reports cashflow`/`spending` use `--from-month` / `--to-month`
+  (replacing the bespoke `--from` / `--to`). Tool/command names are unchanged.
+  The `data` payload for the six view-backed reports is now a bare array of
+  result rows (the standard envelope shape) instead of the previous typed
+  `{rows: [...]}` wrapper — a pre-launch normalization; no other tool exposed
+  report rows.
 - **Pending-match output now groups copies of the same transaction by component.**
   `transactions_matches_pending` (MCP) and `moneybin transactions matches pending` (CLI)
   enrich each pending dedup row with a `component_key` — the lexicographic MIN packed
@@ -19,7 +27,26 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   into one display block per cluster. Transfer rows are ungrouped (`component_key =
   match_id`). The `actions[]` summary hint reports the edge-to-group ratio.
 
+### Removed
+- **`reports_budget` MCP tool and `reports budget` CLI command.** They
+  synthesized from `BudgetService` rather than reading a `reports.*` view,
+  violating the `reports_*` = reads-a-view convention; they return through the
+  report framework once a `reports.budget` view ships (M3C). `BudgetService`
+  and the `budget_*` mutation tools are unaffected.
+- **`reports health` CLI stub** — an unimplemented placeholder with no backing
+  spec.
+
 ### Added
+- **Report auto-generation framework — one runner generates every surface.**
+  A report is now a single decorated runner (`@report`) that returns a
+  parameterized query against its `reports.*` view; the framework introspects
+  its signature and docstring to generate the MCP tool, CLI command, and
+  `TableRef` wiring, and at call time executes → classifies each output column
+  via the report's declared `classes` map (ADR-013) → masks CRITICAL columns →
+  builds the envelope. The six view-backed reports (cashflow, spending,
+  recurring, merchants, large-transactions, balance-drift) now run through it;
+  their query logic and results are unchanged (the `data` envelope shape is
+  normalized — see Changed). Packages contribute reports the same way.
 - **Audit-log undo consumer.** `system_audit_undo`, `system_audit_history`, and
   `system_audit_get` MCP tools (plus `moneybin system audit undo|history|get`
   CLI parity) make any audited `app.*` mutation reversible as a unit keyed on
