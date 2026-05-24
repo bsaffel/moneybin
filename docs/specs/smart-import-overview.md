@@ -39,7 +39,7 @@ Smart Import decomposes into six independent subsystems. Each has its own child 
 | **C.** Structured PDF import | Native-text PDFs via `pdfplumber`/`camelot`. Targets statements and brokerage reports. | No | `smart-import-pdf.md` |
 | **D.** ML-powered categorization | Local scikit-learn (TF-IDF + SVM) trained on the user's own `transaction_categories`. High-confidence → auto-apply; medium → suggest; low → defer. | No | Owned by [`categorization-overview.md`](categorization-overview.md) |
 | **E.** Auto-rule generation | Hook `categorize_transaction()` / `categorize_items()` to synthesize rules and merchant mappings from user edits and high-confidence ML picks. | No | Owned by [`categorization-overview.md`](categorization-overview.md) |
-| **F.** AI-assisted parsing | LLM fallback for files A/B/C can't crack. Extracts structured data from document content. | **Yes — consent-gated** | `smart-import-ai-parsing.md`, gated by `docs/specs/privacy-and-ai-trust.md` |
+| **F.** AI-assisted parsing | LLM fallback for files A/B can't crack. (PDF/C escalation is owned by the bridge inside [`smart-import-pdf.md`](smart-import-pdf.md), not Pillar F.) Extracts structured data from document content. | **Yes — consent-gated** | `smart-import-ai-parsing.md`, gated by `docs/specs/privacy-and-ai-trust.md` |
 
 All six pillars share one architectural property: they operate at or above the extractor layer. The `raw` / `prep` / `core` pipeline is unchanged. Every pillar's output is normalized to the canonical raw schema before anything hits DuckDB.
 
@@ -93,7 +93,7 @@ Already referenced throughout this doc. Constrains pillar F. Foundational alongs
 
 **Consent-gated cloud, per-file prompt with redacted preview.**
 
-Every local path (A, B, C, D, E) has zero external traffic. On a fresh install with no AI backend configured, Smart Import can still import files the heuristics can handle and never makes a network call.
+Every local path (A, B, C, D, E) has zero external traffic. On a fresh install with no AI backend configured, Smart Import can still import files the heuristics can handle and never makes a network call. (PDF/C's deterministic rung is local; a layout it can't crack escalates to the *driving agent* — see the PDF exception below.)
 
 When Smart Import invokes AI-assisted parsing (pillar F), the user sees — before any data leaves the machine — a confirmation showing:
 
@@ -104,6 +104,8 @@ When Smart Import invokes AI-assisted parsing (pillar F), the user sees — befo
 The user confirms, declines, or switches backend per file. No persistent "trust this source forever" mode in v1 — the consent spec may introduce one later with explicit revocation.
 
 Detailed rules — redaction fields, supported backends, audit log schema, consent revocation, local-LLM support — live in `docs/specs/privacy-and-ai-trust.md`. That spec is written *before* pillar F is built.
+
+> **PDF exception (pillar C).** Structured PDF import escalates to the *driving agent* (the bridge), not a configured AI backend, and uses **honest egress** — the document content is the payload; there is no redacted-preview step (the values are exactly what's being extracted). See [`smart-import-pdf.md`](smart-import-pdf.md) § Privacy & egress. The redacted-preview model above governs pillar F's configured-backend path.
 
 ## Build order & rationale
 
