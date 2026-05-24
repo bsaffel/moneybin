@@ -86,7 +86,7 @@ def test_cli_command_json_output_emits_envelope() -> None:
     with (
         patch("moneybin.reports._framework.cli_register.get_database", MagicMock()),
         patch(
-            "moneybin.reports._framework.cli_register.run_report",
+            "moneybin.reports._framework.execute.run_report",
             return_value=_result(),
         ),
     ):
@@ -104,7 +104,7 @@ def test_cli_command_surfaces_value_error_as_bad_parameter() -> None:
     with (
         patch("moneybin.reports._framework.cli_register.get_database", MagicMock()),
         patch(
-            "moneybin.reports._framework.cli_register.run_report",
+            "moneybin.reports._framework.execute.run_report",
             side_effect=ValueError("Unknown status: bogus"),
         ),
     ):
