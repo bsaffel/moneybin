@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from types import ModuleType
+from typing import cast
 
 import typer
 from fastmcp import FastMCP
@@ -55,5 +56,5 @@ def discover_reports(module: ModuleType) -> list[Runner]:
     for obj in vars(module).values():
         if callable(obj) and hasattr(obj, "_report_spec") and id(obj) not in seen:
             seen.add(id(obj))
-            runners.append(obj)
+            runners.append(cast("Runner", obj))
     return runners
