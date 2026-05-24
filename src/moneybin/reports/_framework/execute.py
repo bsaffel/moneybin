@@ -13,9 +13,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from moneybin.database import Database
+from moneybin.mcp.privacy import tier_to_sensitivity
 from moneybin.privacy.redaction import redact_records
 from moneybin.privacy.sql_lineage import derive_query_tier
 from moneybin.privacy.taxonomy import DataClass, Tier
+from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.reports._framework.classify import classify_columns
 from moneybin.reports._framework.contract import ReportSpec
 
@@ -43,6 +45,22 @@ class ReportResult:
         if not self.output_classes:
             return ["aggregate"]
         return sorted({c.value for c in self.output_classes.values()})
+
+    def to_envelope(self) -> ResponseEnvelope[Any]:
+        """Build the standard response envelope from this result.
+
+        The ReportResult→envelope mapping is identical for both surfaces (only
+        what each does with the envelope differs), so it lives here next to the
+        fields it reads.
+        """
+        return build_envelope(
+            data=self.records,
+            sensitivity=tier_to_sensitivity(self.tier).value,
+            total_count=self.total_count,
+            classes_returned=self.classes_returned,
+            actions=self.actions or None,
+            period=self.period,
+        )
 
 
 def run_report(

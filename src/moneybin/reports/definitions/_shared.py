@@ -29,6 +29,12 @@ LARGE_TXN_ANOMALIES: tuple[str, ...] = ("none", "account", "category")
 DRIFT_STATUSES: tuple[str, ...] = ("drift", "warning", "clean", "no-data", "all")
 
 
+_WIDEN_WINDOW_HINT = (
+    "Showing the last 12 months — pass from_month='YYYY-MM' and/or "
+    "to_month='YYYY-MM' to widen or shift the window."
+)
+
+
 def default_window(months: int = 12) -> tuple[str, str]:
     """Return (from_month, to_month) as YYYY-MM strings for the last N months.
 
@@ -45,3 +51,21 @@ def default_window(months: int = 12) -> tuple[str, str]:
         year -= 1
     start = end.replace(year=year, month=month)
     return start.strftime("%Y-%m"), end.strftime("%Y-%m")
+
+
+def resolve_window(
+    from_month: str | None, to_month: str | None
+) -> tuple[str | None, str | None, str | None, str | None]:
+    """Default to the last 12 months when both bounds are omitted.
+
+    Returns ``(from_month, to_month, period, hint)`` — ``period`` is the
+    human-readable window for the envelope, and ``hint`` is the "widen the
+    window" actions note when the window was defaulted (else ``None``). Shared
+    by the time-windowed runners so the defaulting and the hint string stay in
+    lockstep.
+    """
+    defaulted = from_month is None and to_month is None
+    if defaulted:
+        from_month, to_month = default_window(12)
+    period = f"{from_month} to {to_month}" if from_month and to_month else None
+    return from_month, to_month, period, (_WIDEN_WINDOW_HINT if defaulted else None)

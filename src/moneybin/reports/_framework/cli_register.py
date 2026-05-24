@@ -22,8 +22,7 @@ from moneybin.cli.output import (
 )
 from moneybin.cli.utils import handle_cli_errors, render_rich_table
 from moneybin.database import get_database
-from moneybin.mcp.privacy import tier_to_sensitivity
-from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.protocol.envelope import ResponseEnvelope
 from moneybin.reports._framework.contract import ReportSpec
 
 # The CLI is an operator/agent surface; result size is bounded by the runner's
@@ -86,14 +85,7 @@ def build_cli_command(spec: ReportSpec) -> Callable[..., None]:
                     render_rich_table(result.columns, rows)
 
             render_or_json(
-                build_envelope(
-                    data=result.records,
-                    sensitivity=tier_to_sensitivity(result.tier).value,
-                    total_count=result.total_count,
-                    classes_returned=result.classes_returned,
-                    actions=result.actions or None,
-                    period=result.period,
-                ),
+                result.to_envelope(),
                 output,
                 render_fn=_render_text,
                 cli_actor=spec.mcp_tool_name,

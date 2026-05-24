@@ -19,8 +19,8 @@ from fastmcp import FastMCP
 from moneybin.database import get_database
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.privacy import get_max_rows, tier_to_sensitivity
-from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.mcp.privacy import get_max_rows
+from moneybin.protocol.envelope import ResponseEnvelope
 from moneybin.reports._framework.contract import ReportSpec
 from moneybin.reports._framework.execute import run_report
 
@@ -43,15 +43,7 @@ def make_tool_fn(spec: ReportSpec) -> Callable[..., ResponseEnvelope[Any]]:
 
     def _impl(**params: Any) -> ResponseEnvelope[Any]:
         with get_database(read_only=True) as db:
-            result = run_report(spec, db, max_rows=get_max_rows(), **params)
-        return build_envelope(
-            data=result.records,
-            sensitivity=tier_to_sensitivity(result.tier).value,
-            total_count=result.total_count,
-            classes_returned=result.classes_returned,
-            actions=result.actions or None,
-            period=result.period,
-        )
+            return run_report(spec, db, max_rows=get_max_rows(), **params).to_envelope()
 
     _impl.__name__ = spec.mcp_tool_name
     _impl.__qualname__ = spec.mcp_tool_name

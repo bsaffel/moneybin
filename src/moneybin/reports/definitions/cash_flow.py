@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from moneybin.database import Database
 from moneybin.reports._framework.contract import ReportQuery, report
-from moneybin.reports.definitions._shared import CASHFLOW_GROUPINGS, default_window
+from moneybin.reports.definitions._shared import CASHFLOW_GROUPINGS, resolve_window
 from moneybin.tables import REPORTS_CASH_FLOW
 
 
@@ -35,9 +35,7 @@ def cash_flow(
     """
     if by not in CASHFLOW_GROUPINGS:
         raise ValueError(f"Unknown by: {by}")
-    defaulted = from_month is None and to_month is None
-    if defaulted:
-        from_month, to_month = default_window(12)
+    from_month, to_month, period, hint = resolve_window(from_month, to_month)
 
     select_cols = "year_month"
     group_cols = "year_month"
@@ -71,11 +69,6 @@ def cash_flow(
         "Switch `by` to 'account', 'category', or 'account-and-category' to regroup",
         "Use reports_spending for outflow-only trend with MoM/YoY deltas",
     ]
-    if defaulted:
-        actions.insert(
-            0,
-            "Showing the last 12 months — pass from_month='YYYY-MM' and/or "
-            "to_month='YYYY-MM' to widen or shift the window.",
-        )
-    period = f"{from_month} to {to_month}" if from_month and to_month else None
+    if hint:
+        actions.insert(0, hint)
     return ReportQuery(sql, params, actions=actions, period=period)
