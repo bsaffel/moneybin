@@ -7,7 +7,7 @@ What MoneyBin can do today. Each capability links to its guide; the [roadmap](ro
 
 ## Data ingestion
 
-- **Smart tabular import** — CSV, TSV, Excel, Parquet, and Feather through one pipeline. Heuristic column detection, three-tier confidence model, multi-account support, and first-class migration profiles for Tiller, Mint, YNAB, and Maybe. -> [Data import guide](guides/data-import.md)
+- **Smart tabular import** — CSV, TSV, Excel, Parquet, and Feather through one pipeline. Heuristic column detection, three-tier confidence model, multi-account support, and first-class migration profiles for Tiller, Mint, and YNAB (other tools' exports import via the generic detector). -> [Data import guide](guides/data-import.md)
 - **OFX / QFX / QBO import** — Same `import_log` infrastructure as tabular: re-import detection, `--force` override, institution-name auto-resolution, and batch revert via `moneybin import revert <id>`. OFX descriptions are HTML-entity-decoded at import. -> [Data import guide](guides/data-import.md)
 - **Plaid bank sync** — Connect accounts through Plaid Hosted Link via moneybin-server (the Plaid integration backend you can self-host, or use the hosted instance of). Cursor-based incremental sync by default; `--force` for full re-fetch. Plaid data lands alongside OFX and CSV in the same canonical tables. Cash and credit-card accounts flow through the canonical pipeline today; investment, loan, mortgage, and HSA accounts get loaded if Plaid exposes them, but the holdings, cost-basis, and balance-sheet surfaces those account types deserve land with the investments milestone. -> [CLI reference](guides/cli-reference.md)
 - **Google Sheets sync** — Connect a Google Sheet as a live tabular source via direct OAuth (no shared client secret). Two adapters: `transactions` (Tiller-style ledgers participate in the full matching and categorization pipeline) and `seed` (any other sheet lands in `raw.gsheet_seeds` as JSON plus an auto-generated typed view, queryable via SQL and MCP). Every `moneybin refresh` re-pulls the latest sheet state; soft-delete preserves audit history; per-connection drift detection refuses pulls on structural change until you reconnect. -> [Google Sheets guide](guides/connect-gsheet.md)
@@ -60,9 +60,9 @@ All on the `app.*` layer; zero changes to the upstream pipeline. (No dedicated g
 
 ## Reports
 
-Curated `reports.*` SQLMesh views back both the CLI and MCP surfaces. Same query, same envelope on both. Reports accept date-range filters (`--from-month` / `--to-month` on time-windowed reports like `cashflow` and `spending`, `--as-of` for snapshots like `networth`, plus `--account` and `--category` where they apply); grains vary per report. -> [CLI reference](guides/cli-reference.md) · [MCP server guide](guides/mcp-server.md)
+Curated `reports.*` SQLMesh views back both the CLI and MCP surfaces. Same query, same envelope on both. Reports accept date-range filters (`--from` / `--to` on time-windowed reports like `cashflow` and `spending`, `--as-of` for snapshots like `networth`, plus `--account` and `--category` where they apply); grains vary per report. -> [CLI reference](guides/cli-reference.md) · [MCP server guide](guides/mcp-server.md)
 
-Each report is one declarative runner (`@report`) that returns a parameterized query against its view; the framework derives the CLI command, the MCP tool, the parameter flags, and per-column masking from that single definition. New reports — including ones contributed by analysis packages or scaffolded by an agent — wire onto both surfaces the same way. See [Extensibility](#extensibility).
+Each report is backed by a curated view and exposed identically on the CLI and MCP. A declarative **report framework** — one `@report` runner per report, from which the CLI command, MCP tool, parameter flags, and column masking are all derived — is in flight; it's what will let analysis packages and agents add new reports onto both surfaces from a single definition. See [Extensibility](#extensibility).
 
 - **`reports.net_worth`** — Cross-account total with period-over-period change.
 - **`reports.cash_flow`** — Income vs spending by month.
@@ -111,7 +111,7 @@ Each report is one declarative runner (`@report`) that returns a parameterized q
 
 MoneyBin is built on the assumption that you'll want to track your money your way — and that an AI agent is a first-class way to make that happen. The schema, the reports, and the import pipeline are stable contracts an agent can read and build against, so you (or Claude Code, or Cursor) can scaffold a custom report, importer, or tracker on top of your own data.
 
-- **Declarative reports (today)** — A report is one `@report` runner; the framework generates the CLI command, MCP tool, parameter flags, and column masking from it. The eight built-in reports run through this path, and a new report you (or a package) add wires onto both surfaces the same way. The agent driving MoneyBin has everything it needs — the schema resource, the runner contract, and SQL access — to write a new one.
+- **Declarative reports (in flight)** — Today's eight reports are hand-wired on the CLI and MCP. A report framework collapses that into one `@report` runner per report — from which the CLI command, MCP tool, parameter flags, and column masking are generated — so adding a report (yours, a package's, or one an agent scaffolds) becomes a single-definition task. Once it lands, the agent driving MoneyBin has everything it needs — the schema resource, the runner contract, and SQL access — to write a new one.
 - **The extension contract (in flight)** — A contributor-facing surface for adding your own **reports**, **analysis packages**, and **data providers**, with a Quality Scale (Bronze → Platinum). Designed in [`extension-contracts.md`](specs/extension-contracts.md); v1 ships two reference packages (`assets`, `us_tax`) at Platinum quality as worked examples.
 
 ## What's planned

@@ -14,7 +14,7 @@ The table is 8 columns wide rather than 7 because Firefly III is the most-deploy
 | Plain-text / VCS-friendly storage | ❌⁽³⁾ | ❌ | ❌ | ❌ | ❌ Postgres | ❌ MySQL/Postgres | ✅ git-diffable | ❌ |
 | Encrypted at rest by default | ✅ AES-256-GCM | ❌ | 🟡 server-side | 🟡 server-side | ❌⁽³⁾ | ❌ | ❌⁽³⁾ | 🟡 Actual E2E sync⁽⁶⁾ |
 | AI / MCP-native | ✅ first-party | ❌ | 🟡 community MCP | ❌ in-app only | ❌ | ❌ | ❌ | ❌ |
-| Agent-buildable extension contract⁽⁹⁾ | ✅ reports / packages / providers | 🟡 Sheets scripting | 🟡 public API | ❌ | 🟡 fork | 🟡 REST API | ✅ Python plugins | 🟡 Actual API |
+| Agent-buildable extension contract⁽⁹⁾ | 🟡 reports / packages / providers (in flight) | 🟡 Sheets scripting | 🟡 public API | ❌ | 🟡 fork | 🟡 REST API | ✅ Python plugins | 🟡 Actual API |
 | Direct SQL query access | ✅ DuckDB | ❌ | ❌ | ❌ | 🟡 Postgres | 🟡 MySQL/Postgres | ✅ BQL / hledger-query | 🟡 Actual SQLite⁽⁷⁾ |
 | Automated categorization | ✅ rules + LLM-assist | 🟡 manual + AutoCat | ✅ rules | ✅ rules + ML | ✅ rules | ✅ rules | ✅ smart_importer / --auto | ✅ rules |
 | Bank-direct sync | 🟡 Plaid | ❌ manual import | ✅ Plaid | ✅ Plaid | ✅ Plaid/SimpleFIN | ✅ SimpleFIN/Nordigen | ❌ | 🟡 YNAB only |
@@ -45,7 +45,7 @@ The table is 8 columns wide rather than 7 because Firefly III is the most-deploy
 
 ⁽⁸⁾ **Self-host posture** rolls up containerization, headless / cron-friendly operation, reverse-proxy ergonomics, and outbound network posture into one cell. ✅ = published container image with Compose example and no required external calls; 🟡 = scriptable but no first-party container, or some required egress; ❌ = not designed to be self-hosted. MoneyBin today is a Python CLI suitable for cron and headless use, but ships no container image and has no daemon mode — a self-host guide is on the roadmap.
 
-⁽⁹⁾ **Agent-buildable extension contract** measures whether there's a *stable, documented surface for adding your own reports, analyses, and data sources* that an AI agent can target — not merely "it's open source, fork it." ✅ = a first-class contract for new reports/providers (MoneyBin's `@report` runners + extension contract; Beancount's Python plugin system). 🟡 = an API or scripting layer you can build against but no purpose-built extension contract (Sheets scripting, a public REST API, or modify-the-source). ❌ = closed, no supported extension path. MoneyBin's contract is designed so the agent you already drive can scaffold an extension against the schema and runner shape; the broader package/provider contract is in flight.
+⁽⁹⁾ **Agent-buildable extension contract** measures whether there's a *stable, documented surface for adding your own reports, analyses, and data sources* that an AI agent can target — not merely "it's open source, fork it." ✅ = a first-class contract for new reports/providers that ships today (e.g. Beancount's Python plugin system). 🟡 = an API or scripting layer you can build against but no purpose-built extension contract yet (Sheets scripting, a public REST API, modify-the-source). ❌ = closed, no supported extension path. MoneyBin is 🟡 because its contract — a declarative `@report` runner plus the broader package/provider surface — is designed so the agent you already drive can scaffold an extension against the schema and runner shape, but it is **in flight, not shipped**.
 
 ## Where MoneyBin is not the best fit
 

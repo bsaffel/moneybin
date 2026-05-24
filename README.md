@@ -28,11 +28,11 @@ As easy as Mint was. As powerful as the tools data engineers actually use. Ask y
 
 - **Query it like a data engineer.** Underneath the chat is a real analytics warehouse — [DuckDB](https://duckdb.org) plus [SQLMesh](https://sqlmesh.com), the framework that compiles and versions SQL pipelines. Every number traces from a canonical table back through a model to your original file. When the AI gives you an answer, ask it to *show you the SQL*. → [SQL access](docs/guides/sql-access.md)
 
-- **Built to be extended — by you and your agents.** MoneyBin assumes you'll want to track *your* money *your* way. The schema, the reports, and the import pipeline are stable contracts an agent can build against — so you (or Claude Code, or Cursor) can vibe-code a new report, a custom importer, or a whole tracker on top of your own data. Reports, analysis packages, and data providers are first-class extension points. MoneyBin wants to be the first tool your agent reaches for. → [Extension contract](docs/specs/extension-contracts.md)
+- **Built to be extended — by you and your agents.** MoneyBin assumes you'll want to track *your* money *your* way. The schema and the import pipeline are stable contracts an agent can build against today — and a first-class extension contract for reports, analysis packages, and data providers is taking shape now, so you (or Claude Code, or Cursor) can vibe-code a new report, a custom importer, or a whole tracker on top of your own data. MoneyBin wants to be the first tool your agent reaches for. → [Extension contract](docs/specs/extension-contracts.md)
 
 - **You own it, end to end.** Local-first by default — one encrypted DuckDB file per profile under `~/.moneybin/`, AES-256-GCM at rest. No vendor account required, no data resale, no lock-in. The same code powers an optional hosted tier; switching deployments is moving one file. → [Architecture](docs/architecture.md) · [Threat model](docs/guides/threat-model.md)
 
-- **Your history comes with you.** Import from bank files (CSV/OFX/QFX/QBO/Excel), sync from Plaid, or connect a live Google Sheet — your categories migrate with you and auto-rules learn from them. Cross-source dedup means re-importing overlapping months never double-counts. → [Data import](docs/guides/data-import.md)
+- **Your history comes with you.** Import from bank files (CSV/OFX/QFX/QBO/Excel/Parquet), sync from Plaid, or connect a live Google Sheet — your categories migrate with you and auto-rules learn from them. Cross-source dedup means re-importing overlapping months never double-counts. → [Data import](docs/guides/data-import.md)
 
 ## How it works
 
@@ -48,6 +48,8 @@ graph LR
 ## Quick Start
 
 > **Today's install is for developers.** A `brew install` path is in flight. Until then, `git clone` + [uv](https://docs.astral.sh/uv/) is the path. Not comfortable with a CLI checkout? [Bookmark the project](https://github.com/bsaffel/moneybin) and check back.
+>
+> **Platform:** macOS is the primary target; Linux works via PyPI; Windows is untested. MoneyBin runs on demand — no daemon, no container, no open network ports (the MCP server speaks stdio).
 
 ```bash
 git clone https://github.com/bsaffel/moneybin.git
@@ -64,7 +66,7 @@ moneybin import inbox                              # drain ~/Documents/MoneyBin/
 moneybin sync pull                                 # Plaid sync (cash + credit-card accounts)
 ```
 
-> **Coming from another tool?** Tiller, Mint, YNAB, and Maybe have first-class migration profiles; Lunch Money, Copilot, and Monarch export CSV that the generic importer reads. Beancount and GnuCash users can drop OFX/QFX exports through the same command. → [Data import guide](docs/guides/data-import.md)
+> **Coming from another tool?** Tiller, Mint, and YNAB have first-class migration profiles; Lunch Money, Copilot, Monarch, and Maybe export CSV that the generic importer reads. Beancount and GnuCash users can drop OFX/QFX exports through the same command. → [Data import guide](docs/guides/data-import.md)
 
 Wire MoneyBin into your AI client and ask in natural language:
 

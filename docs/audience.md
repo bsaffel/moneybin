@@ -25,7 +25,7 @@ These are the people MoneyBin already serves well in what's shipped now. Install
 - Auto-rule learning watches your category edits and proposes rules; by the third or fourth import, the LLM is barely involved.
 
 **Migration paths from other tools:**
-- **Tiller, Mint, YNAB, Maybe** — first-class migration profiles, column detection handles their export shapes directly.
+- **Tiller, Mint, YNAB** — first-class migration profiles, column detection handles their export shapes directly.
 - **Lunch Money, Copilot, Monarch** — no first-class migration profile yet. Export to CSV and the generic tabular importer will read it, but expect to set column mappings the first time. No automated history pull from the vendor's API.
 - **Beancount / hledger** — no direct ledger importer; export postings to CSV and import that. Round-tripping back to Beancount syntax isn't supported.
 - **Bank OFX/QFX/QBO** — full first-class import alongside tabular.
@@ -44,7 +44,7 @@ These are the people MoneyBin already serves well in what's shipped now. Install
 - A wide MCP surface across accounts, transactions, reports, categories, merchants, system, sync, and transform — installable via `moneybin mcp install --client claude-code` (nine clients supported).
 - Every MCP tool has a CLI twin with `--output json` parity; the CLI is a first-class agent surface, not an afterthought.
 - The agent answers with SQL it wrote against canonical fact and dimension tables — and you can read that SQL and verify it.
-- It's built to be *extended* by the agent, not just queried by it. The schema, the report-runner contract, and the import pipeline are stable surfaces an agent can build against — so "vibe-code a custom report / importer / tracker on top of my own financial data" is the intended workflow, not a hack. MoneyBin wants to be the first tool your agent reaches for. (The full contributor extension contract is in flight; declarative reports work today.)
+- It's built to be *extended* by the agent, not just queried by it. The schema and the import pipeline are stable surfaces an agent can build against today; a declarative report-runner contract and the broader extension contract (reports, packages, providers) are in flight. Together they make "vibe-code a custom report / importer / tracker on top of my own financial data" the intended workflow, not a hack — MoneyBin wants to be the first tool your agent reaches for.
 
 **What's still rough:** Today's MCP transport requires the AI client and MoneyBin to run on the same machine. Remote-client support (so ChatGPT web or a hosted assistant can reach a MoneyBin running elsewhere) is planned.
 
