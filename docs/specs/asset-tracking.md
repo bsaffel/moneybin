@@ -11,7 +11,7 @@ Track non-financial physical assets (real estate, vehicles, valuables) with peri
 
 Net worth is incomplete without physical assets. The [net worth spec](reports-net-worth.md) provides balance tracking for financial accounts (checking, savings, credit cards, loans), but a house, car, or piece of jewelry has no account, no transactions, and no institution. Its value comes from periodic appraisals or estimates, not from summing debits and credits.
 
-The dividing line between assets and investments: **if the value comes from a market ticker, it's an investment. If it comes from an appraisal or estimate, it's an asset.** Gold ETFs, crypto, and brokerage holdings belong in the future `investment-tracking.md` spec. Houses, cars, and jewelry belong here.
+The dividing line between assets and investments: **if the value comes from a market ticker, it's an investment. If it comes from an appraisal or estimate, it's an asset.** Gold ETFs, crypto, and brokerage holdings belong in the `investments-overview.md` initiative. Houses, cars, and jewelry belong here.
 
 Related specs and docs:
 - [`reports-net-worth.md`](reports-net-worth.md) — balance tracking and `reports.net_worth`; this spec extends it to include physical assets
@@ -405,7 +405,7 @@ Deferred to v2, same as balance assertion write tools in the net worth spec. The
 
 ## Out of Scope
 
-- **Investment holdings** — brokerage accounts, 401k, IRA, crypto, commodities (gold/silver). Market-priced instruments belong in `investment-tracking.md`. The dividing line: if the value comes from a market ticker, it's an investment; if from an appraisal or estimate, it's an asset.
+- **Investment holdings** — brokerage accounts, 401k, IRA, crypto, commodities (gold/silver). Market-priced instruments belong in `investments-overview.md`. The dividing line: if the value comes from a market ticker, it's an investment; if from an appraisal or estimate, it's an asset.
 - **Automated valuation integrations** — Zillow, KBB, and similar APIs. The data model supports them (raw → prep → core pipeline), but no provider is built in v1. Adding one is a separate child spec.
 - **Asset depreciation schedules** — automatic depreciation calculations (straight-line, declining balance). Users can model this via periodic valuations.
 - **Insurance tracking** — policy details, coverage amounts, premium costs. Related but separate domain.

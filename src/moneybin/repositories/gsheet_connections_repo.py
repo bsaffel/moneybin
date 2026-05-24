@@ -102,10 +102,8 @@ class GSheetConnectionsRepo(BaseRepo):
 
     repository = "gsheet_connections"
 
-    # Audit target tuple shared across every mutation: (target_schema,
-    # target_table). Each method appends the row's connection_id to form the
-    # 3-tuple expected by AuditService.record_audit_event(target=...).
-    _AUDIT_TARGET = (GSHEET_CONNECTIONS.schema, GSHEET_CONNECTIONS.name)
+    table_ref = GSHEET_CONNECTIONS
+    pk_columns = ("connection_id",)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -183,7 +181,7 @@ class GSheetConnectionsRepo(BaseRepo):
             after = self._fetch_full_row(connection_id)
             self._emit_audit(
                 action="gsheet_connection.insert",
-                target=(*self._AUDIT_TARGET, connection_id),
+                target=(*self._audit_target, connection_id),
                 before=None,
                 after=self._serialize_for_audit(after),
                 actor=actor,
@@ -220,7 +218,7 @@ class GSheetConnectionsRepo(BaseRepo):
             after = self._fetch_full_row(connection_id)
             self._emit_audit(
                 action="gsheet_connection.update_status",
-                target=(*self._AUDIT_TARGET, connection_id),
+                target=(*self._audit_target, connection_id),
                 before=self._serialize_for_audit(before),
                 after=self._serialize_for_audit(after),
                 actor=actor,
@@ -278,7 +276,7 @@ class GSheetConnectionsRepo(BaseRepo):
             after = self._fetch_full_row(connection_id)
             self._emit_audit(
                 action="gsheet_connection.update_after_pull",
-                target=(*self._AUDIT_TARGET, connection_id),
+                target=(*self._audit_target, connection_id),
                 before=self._serialize_for_audit(before),
                 after=self._serialize_for_audit(after),
                 actor=actor,
@@ -339,7 +337,7 @@ class GSheetConnectionsRepo(BaseRepo):
             after = self._fetch_full_row(connection_id)
             self._emit_audit(
                 action="gsheet_connection.reconnect",
-                target=(*self._AUDIT_TARGET, connection_id),
+                target=(*self._audit_target, connection_id),
                 before=self._serialize_for_audit(before),
                 after=self._serialize_for_audit(after),
                 actor=actor,
@@ -389,7 +387,7 @@ class GSheetConnectionsRepo(BaseRepo):
             )
             self._emit_audit(
                 action="gsheet_connection.delete",
-                target=(*self._AUDIT_TARGET, connection_id),
+                target=(*self._audit_target, connection_id),
                 before=self._serialize_for_audit(before),
                 after=None,
                 actor=actor,

@@ -41,7 +41,8 @@ class UserCategoriesRepo(BaseRepo):
 
     repository = "user_categories"
 
-    _AUDIT_TARGET = (USER_CATEGORIES.schema, USER_CATEGORIES.name)
+    table_ref = USER_CATEGORIES
+    pk_columns = ("category_id",)
 
     def _fetch_row(self, category_id: str) -> dict[str, Any] | None:
         return self._fetch_one(
@@ -73,7 +74,7 @@ class UserCategoriesRepo(BaseRepo):
             after = self._fetch_row(category_id)
             return self._emit_audit(
                 action="user_category.insert",
-                target=(*self._AUDIT_TARGET, category_id),
+                target=(*self._audit_target, category_id),
                 before=None,
                 after=self._serialize_for_audit(after),
                 actor=actor,
@@ -103,7 +104,7 @@ class UserCategoriesRepo(BaseRepo):
             after = self._fetch_row(category_id)
             return self._emit_audit(
                 action="user_category.update_active",
-                target=(*self._AUDIT_TARGET, category_id),
+                target=(*self._audit_target, category_id),
                 before=self._serialize_for_audit(before),
                 after=self._serialize_for_audit(after),
                 actor=actor,
@@ -129,7 +130,7 @@ class UserCategoriesRepo(BaseRepo):
             )
             return self._emit_audit(
                 action="user_category.delete",
-                target=(*self._AUDIT_TARGET, category_id),
+                target=(*self._audit_target, category_id),
                 before=self._serialize_for_audit(before),
                 after=None,
                 actor=actor,
@@ -147,7 +148,8 @@ class CategoryOverridesRepo(BaseRepo):
 
     repository = "category_overrides"
 
-    _AUDIT_TARGET = (CATEGORY_OVERRIDES.schema, CATEGORY_OVERRIDES.name)
+    table_ref = CATEGORY_OVERRIDES
+    pk_columns = ("category_id",)
 
     def _fetch_row(self, category_id: str) -> dict[str, Any] | None:
         return self._fetch_one(
@@ -180,7 +182,7 @@ class CategoryOverridesRepo(BaseRepo):
             after = self._fetch_row(category_id)
             return self._emit_audit(
                 action="category_override.set_active",
-                target=(*self._AUDIT_TARGET, category_id),
+                target=(*self._audit_target, category_id),
                 before=self._serialize_for_audit(before),
                 after=self._serialize_for_audit(after),
                 actor=actor,

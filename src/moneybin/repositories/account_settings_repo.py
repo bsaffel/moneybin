@@ -35,7 +35,8 @@ class AccountSettingsRepo(BaseRepo):
 
     repository = "account_settings"
 
-    _AUDIT_TARGET = (ACCOUNT_SETTINGS.schema, ACCOUNT_SETTINGS.name)
+    table_ref = ACCOUNT_SETTINGS
+    pk_columns = ("account_id",)
 
     def _fetch_row(self, account_id: str) -> dict[str, Any] | None:
         return self._fetch_one(
@@ -103,7 +104,7 @@ class AccountSettingsRepo(BaseRepo):
             after = self._fetch_row(account_id)
             return self._emit_audit(
                 action="account_settings.set",
-                target=(*self._AUDIT_TARGET, account_id),
+                target=(*self._audit_target, account_id),
                 before=self._serialize_for_audit(before),
                 after=self._serialize_for_audit(after),
                 actor=actor,
@@ -130,7 +131,7 @@ class AccountSettingsRepo(BaseRepo):
             )
             return self._emit_audit(
                 action="account_settings.delete",
-                target=(*self._AUDIT_TARGET, account_id),
+                target=(*self._audit_target, account_id),
                 before=self._serialize_for_audit(before),
                 after=None,
                 actor=actor,

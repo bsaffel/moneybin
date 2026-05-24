@@ -103,7 +103,7 @@ Un-merge restores the previously separate gold rows and their individual provena
 Explicitly deferred. Revisit per pillar as the initiative matures.
 
 - **Cross-currency transfer detection** — requires FX conversion + fuzzy amount matching with FX tolerance. Deferred to the multi-currency initiative.
-- **Same-record dedup for investment lots/holdings** — depends on investment-tracking spec. Reserved for later.
+- **Same-record dedup for investment lots/holdings** — depends on `investments-data-model.md`. Reserved for later.
 - **Same-record dedup for accounts** — `dim_accounts` already handles this via `account_id` partitioning. If fuzzy account matching is needed later, it's a small spec of its own.
 - **Merchant normalization** — different concern (attribute normalization, not record identity). Owned by `core.dim_merchants` (thin view over `app.user_merchants`) / categorization pipeline.
 - **Categorization** — happens after matching. Separate spec.

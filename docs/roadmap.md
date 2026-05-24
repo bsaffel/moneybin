@@ -163,10 +163,11 @@ The largest competitive moat. M3B does not ship until cost-basis output ties to 
 
 | Area | Status | Notes |
 |---|---|---|
-| Holdings, FIFO lots, realized/unrealized gain/loss | 🗓️ | |
-| Short-term / long-term classification | 🗓️ | |
-| Yahoo + CoinGecko price feeds | 🗓️ | |
-| Plaid Investments product wiring | 🗓️ | Gated on this milestone. |
+| Securities, ledger, lots, realized gain/loss, holdings (cost basis) | 📐 | [`investments-data-model.md`](specs/investments-data-model.md) — foundation child (Pillars A+B) |
+| Short-term / long-term classification | 📐 | Foundation child; oldest-first per-lot under every method |
+| Unrealized gain/loss + Yahoo/CoinGecko price feeds | 🗓️ | Pillar C — `investments-price-feeds.md` (planned) |
+| Holdings in net worth | 🗓️ | Pillar D — `investments-net-worth.md` (planned) |
+| Plaid Investments product wiring | 🗓️ | Gated on the foundation contracts. |
 
 ---
 

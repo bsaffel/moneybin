@@ -142,14 +142,17 @@ class TestNotes:
         assert note.created_at  # populated from DB default
 
         events = audit_service.list_events(
-            action_pattern="note.add", target_id=sample_transaction_id
+            action_pattern="note.add", target_id=note.note_id
         )
         assert len(events) == 1
-        assert events[0].after_value == {
-            "note_id": note.note_id,
-            "text": "checked statement",
-            "author": "cli",
-        }
+        # Full-row capture (Invariant 10 Req 4 / REC-PR3 DN1), not a partial dict.
+        after = events[0].after_value
+        assert after is not None
+        assert after["note_id"] == note.note_id
+        assert after["transaction_id"] == sample_transaction_id
+        assert after["text"] == "checked statement"
+        assert after["author"] == "cli"
+        assert "created_at" in after
         assert events[0].before_value is None
         assert events[0].target_table == "transaction_notes"
         assert events[0].target_schema == "app"
@@ -181,9 +184,13 @@ class TestNotes:
         assert edited.note_id == note.note_id
         events = audit_service.list_events(action_pattern="note.edit")
         assert len(events) == 1
-        assert events[0].before_value == {"text": "v1"}
-        assert events[0].after_value == {"text": "v2"}
-        assert events[0].target_id == sample_transaction_id
+        # Full-row before/after (DN1) — not just the changed {text}.
+        assert events[0].before_value is not None
+        assert events[0].before_value["text"] == "v1"
+        assert events[0].after_value is not None
+        assert events[0].after_value["text"] == "v2"
+        assert events[0].after_value["note_id"] == note.note_id
+        assert events[0].target_id == note.note_id  # row-grain: entity PK
 
     @pytest.mark.unit
     def test_edit_note_missing_raises_lookup(
@@ -204,12 +211,13 @@ class TestNotes:
         events = audit_service.list_events(action_pattern="note.delete")
         assert len(events) == 1
         assert events[0].after_value is None
-        assert events[0].before_value == {
-            "note_id": note.note_id,
-            "text": "doomed",
-            "author": "mcp",
-        }
-        assert events[0].target_id == sample_transaction_id
+        # Full prior row captured (DN1).
+        before = events[0].before_value
+        assert before is not None
+        assert before["note_id"] == note.note_id
+        assert before["text"] == "doomed"
+        assert before["author"] == "mcp"
+        assert events[0].target_id == note.note_id  # row-grain: entity PK
         # Row is gone
         assert txn_service.list_notes(sample_transaction_id) == []
 
@@ -309,23 +317,25 @@ class TestTags:
         ]
 
     @pytest.mark.unit
-    def test_add_tags_idempotent_marks_audit_noop(
+    def test_add_tags_idempotent_emits_no_audit_for_noop(
         self,
         txn_service: TransactionService,
         audit_service: AuditService,
         sample_transaction_id: str,
     ) -> None:
-        txn_service.add_tags(sample_transaction_id, ["foo"], actor="cli")
-        txn_service.add_tags(sample_transaction_id, ["foo"], actor="cli")
+        added1 = txn_service.add_tags(sample_transaction_id, ["foo"], actor="cli")
+        added2 = txn_service.add_tags(sample_transaction_id, ["foo"], actor="cli")
+        assert added1 == ["foo"]
+        assert added2 == []  # re-add is a no-op
         events = audit_service.list_events(action_pattern="tag.add")
-        noops = [e for e in events if e.context_json and e.context_json.get("noop")]
-        assert len(noops) == 1
-        # The non-noop add still recorded a normal tag.add event
-        normals = [e for e in events if not e.context_json]
-        assert len(normals) == 1
+        # Exactly one real tag.add; re-adding emits NO audit row (DN2).
+        assert len(events) == 1
+        assert events[0].before_value is None
+        assert events[0].after_value is not None
+        assert events[0].after_value["tag"] == "foo"
 
     @pytest.mark.unit
-    def test_remove_tags_absent_marks_audit_noop(
+    def test_remove_tags_absent_emits_no_audit(
         self,
         txn_service: TransactionService,
         audit_service: AuditService,
@@ -335,9 +345,8 @@ class TestTags:
             sample_transaction_id, ["never-applied"], actor="cli"
         )
         assert removed == []
-        events = audit_service.list_events(action_pattern="tag.remove")
-        assert len(events) == 1
-        assert events[0].context_json == {"noop": True}
+        # Removing an absent tag is a no-op and emits NO audit row (DN2).
+        assert audit_service.list_events(action_pattern="tag.remove") == []
 
     @pytest.mark.unit
     def test_set_tags_diff_only_writes_delta(
@@ -396,7 +405,10 @@ class TestTags:
         children = [e for e in chain if e.audit_id != result.parent_audit_id]
         assert all(e.parent_audit_id == result.parent_audit_id for e in children)
         assert all(e.action == "tag.rename_row" for e in children)
-        assert {e.target_id for e in children} == set(txns_with_shared_tag)
+        # Row-grain target_id: the renamed tag's composite PK (transaction_id:new_tag).
+        assert {e.target_id for e in children} == {
+            f"{txn}:bar" for txn in txns_with_shared_tag
+        }
 
         parent = next(e for e in chain if e.audit_id == result.parent_audit_id)
         assert parent.action == "tag.rename"
@@ -512,15 +524,17 @@ class TestSplits:
             actor="cli",
         )
         events = audit_service.list_events(
-            action_pattern="split.add", target_id=sample_transaction_id
+            action_pattern="split.add", target_id=s.split_id
         )
         assert len(events) == 1
         assert events[0].before_value is None
-        assert events[0].after_value == {
-            "split_id": s.split_id,
-            "amount": "-25.50",
-            "category": "Coffee",
-        }
+        # Full-row capture (DN1); amount serialized to str.
+        after = events[0].after_value
+        assert after is not None
+        assert after["split_id"] == s.split_id
+        assert after["amount"] == "-25.50"
+        assert after["category"] == "Coffee"
+        assert "created_at" in after
         assert events[0].target_table == "transaction_splits"
         assert events[0].target_schema == "app"
 
@@ -541,12 +555,13 @@ class TestSplits:
         events = audit_service.list_events(action_pattern="split.remove")
         assert len(events) == 1
         assert events[0].after_value is None
-        assert events[0].before_value == {
-            "split_id": s.split_id,
-            "amount": "-10.00",
-            "category": "Coffee",
-        }
-        assert events[0].target_id == sample_transaction_id
+        # Full prior row captured (DN1).
+        before = events[0].before_value
+        assert before is not None
+        assert before["split_id"] == s.split_id
+        assert before["amount"] == "-10.00"
+        assert before["category"] == "Coffee"
+        assert events[0].target_id == s.split_id  # row-grain: entity PK
         assert txn_service.list_splits(sample_transaction_id) == []
 
     @pytest.mark.unit
@@ -557,7 +572,7 @@ class TestSplits:
             txn_service.remove_split("doesnotexist", actor="cli")
 
     @pytest.mark.unit
-    def test_clear_splits_removes_all_and_emits_one_event(
+    def test_clear_splits_removes_all_and_emits_per_row_remove(
         self,
         txn_service: TransactionService,
         audit_service: AuditService,
@@ -571,11 +586,15 @@ class TestSplits:
         )
         txn_service.clear_splits(sample_transaction_id, actor="cli")
         assert txn_service.list_splits(sample_transaction_id) == []
-        events = audit_service.list_events(action_pattern="split.clear")
-        assert len(events) == 1
-        assert events[0].before_value == {"split_count": 2}
-        assert events[0].after_value is None
-        assert events[0].target_id == sample_transaction_id
+        # DN3: clear emits one split.remove per row (no split.clear summary),
+        # so each cleared split stays individually undoable.
+        assert audit_service.list_events(action_pattern="split.clear") == []
+        # Row-grain: each split.remove targets its own split_id, so filter by action
+        # (only this transaction has splits in the test).
+        removes = audit_service.list_events(action_pattern="split.remove")
+        assert len(removes) == 2
+        amounts = {e.before_value["amount"] for e in removes if e.before_value}
+        assert amounts == {"-10.00", "-20.00"}
 
     @pytest.mark.unit
     def test_clear_splits_noop_when_empty(
@@ -585,8 +604,8 @@ class TestSplits:
         sample_transaction_id: str,
     ) -> None:
         txn_service.clear_splits(sample_transaction_id, actor="cli")
-        events = audit_service.list_events(action_pattern="split.clear")
-        assert events == []
+        # Nothing to clear → no audit rows at all (DN3: no split.clear, no rows).
+        assert audit_service.list_events(action_pattern="split.remove") == []
 
     @pytest.mark.unit
     def test_set_splits_replaces_all_atomically(

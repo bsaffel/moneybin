@@ -70,6 +70,13 @@ Single source of truth for spec status. Update this table when a spec's status c
 | `categorization-ml.md` | Feature | planned | Pillar D: local ML-powered categorization |
 | `merchant-entity-resolution.md` | Feature | planned | Evolve merchants from pattern-to-category cache to first-class entities; multi-pattern matching, automated discovery, query-time resolution |
 
+## Investments
+
+| Spec | Type | Status | Summary |
+|---|---|---|---|
+| [Overview](investments-overview.md) | Umbrella | draft | Milestone M3B keystone. Four pillars: (A) investment data model, (B) cost-basis & gain/loss engine, (C) price feeds & valuation, (D) net-worth integration. A+B ship first and reach the "ties to a real 1099-B" bar **without** a price feed (realized gain/loss is ledger-derived). Fixes the contracts ~6 gated specs wait on (Plaid Investments sync, portfolio/holdings reports, investment matching/transfers, investment OFX, holdings-in-net-worth). Asset/investment dividing line: market ticker → investment. |
+| [Investment Data Model & Cost-Basis Engine](investments-data-model.md) | Feature | draft | Foundation child (Pillars A+B). `core.dim_securities` (surrogate `security_id` + resolution chain), `core.fct_investment_transactions` ledger (closed `type` taxonomy), derived `core.fct_investment_lots` / `core.fct_realized_gains` / `core.dim_holdings` (Invariant 8). FIFO + specific-ID + average-cost as elections over one lot grain; manual entry via `raw.investment_transactions`; top-level `investments` CLI/MCP group. Mirrors the broker's method (no IRS-policy enforcement); `currency` column lands now, FX deferred to M3C. Moves the lot-selection override home from `app.us_tax_*` to core `app.lot_selections`. |
+
 ## Privacy & Security
 
 | Spec | Type | Status | Summary |
@@ -96,7 +103,7 @@ Single source of truth for spec status. Update this table when a spec's status c
 | [Overview](sync-overview.md) | Umbrella | in-progress | Provider-agnostic sync framework: interaction model, SyncClient, CLI/MCP surface, E2E encryption design, provider contract. Phase 1 shipped via `sync-plaid.md`; Phase 2 scheduling unstarted; Phases 3-4 (E2E + post-quantum) remain design sketches. Supersedes archived `sync-client-integration` spec. |
 | [Plaid Provider](sync-plaid.md) | Feature | implemented | First sync provider: Plaid Transactions. Raw schemas, staging views, core integration, Plaid Hosted Link flow, error codes. M3A Phase 1 shipped. |
 | `sync-simplefin.md` | Feature | planned | SimpleFIN aggregator provider (alternative to Plaid). **Deferred 2026-05-16** (internal roadmap review): no implementation work until M3A produces 30 days of real Plaid data from a real user — provider-ladder elaboration ahead of real user evidence is speculative. Spec may be drafted earlier; engineering work waits for the gate. |
-| `sync-plaid-investments.md` | Feature | planned | Plaid Investments product (gated on `investment-tracking.md`) |
+| `sync-plaid-investments.md` | Feature | planned | Plaid Investments product (gated on `investments-data-model.md`) |
 
 ## Connect (Live External Sources)
 

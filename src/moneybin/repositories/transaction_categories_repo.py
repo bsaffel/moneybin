@@ -43,7 +43,8 @@ class TransactionCategoriesRepo(BaseRepo):
 
     repository = "transaction_categories"
 
-    _AUDIT_TARGET = (TRANSACTION_CATEGORIES.schema, TRANSACTION_CATEGORIES.name)
+    table_ref = TRANSACTION_CATEGORIES
+    pk_columns = ("transaction_id",)
 
     def _fetch_row(self, transaction_id: str) -> dict[str, Any] | None:
         return self._fetch_one(
@@ -92,7 +93,7 @@ class TransactionCategoriesRepo(BaseRepo):
             after = self._fetch_row(transaction_id)
             return self._emit_audit(
                 action="category.set",
-                target=(*self._AUDIT_TARGET, transaction_id),
+                target=(*self._audit_target, transaction_id),
                 before=self._serialize_for_audit(before),
                 after=self._serialize_for_audit(after),
                 actor=actor,
@@ -176,7 +177,7 @@ class TransactionCategoriesRepo(BaseRepo):
             after = self._fetch_row(transaction_id)
             return self._emit_audit(
                 action="category.set",
-                target=(*self._AUDIT_TARGET, transaction_id),
+                target=(*self._audit_target, transaction_id),
                 before=self._serialize_for_audit(before),
                 after=self._serialize_for_audit(after),
                 actor=actor,
@@ -203,7 +204,7 @@ class TransactionCategoriesRepo(BaseRepo):
             )
             return self._emit_audit(
                 action="category.clear",
-                target=(*self._AUDIT_TARGET, transaction_id),
+                target=(*self._audit_target, transaction_id),
                 before=self._serialize_for_audit(before),
                 after=None,
                 actor=actor,
@@ -246,7 +247,7 @@ class TransactionCategoriesRepo(BaseRepo):
                 events.append(
                     self._emit_audit(
                         action="category.clear",
-                        target=(*self._AUDIT_TARGET, str(before["transaction_id"])),
+                        target=(*self._audit_target, str(before["transaction_id"])),
                         before=self._serialize_for_audit(before),
                         after=None,
                         actor=actor,

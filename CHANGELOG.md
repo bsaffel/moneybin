@@ -20,6 +20,18 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   match_id`). The `actions[]` summary hint reports the edge-to-group ratio.
 
 ### Added
+- **Audit-log undo consumer.** `system_audit_undo`, `system_audit_history`, and
+  `system_audit_get` MCP tools (plus `moneybin system audit undo|history|get`
+  CLI parity) make any audited `app.*` mutation reversible as a unit keyed on
+  `operation_id`. Each row's inverse is synthesized from its full audit
+  before/after image and routed back through the `*Repo` layer; the undo is
+  itself audited (`is_undo`/`undoes_operation_id`) and undoable. Block-don't-
+  cascade: when a later operation modified the same rows, undo refuses with
+  `undo_cascade_blocked` and returns the blocker operations to walk explicitly,
+  rather than silently reversing unrelated later work. Notes, tags, and splits
+  mutations are now routed through dedicated repos so every annotation is
+  undoable. See
+  [`docs/specs/data-recovery-contract.md`](docs/specs/data-recovery-contract.md).
 - **`sql_query` MCP tool resolves each output column's data class via SQL lineage.**
   sqlglot parses the query, expands `*` against a migration-version-keyed schema
   snapshot, and maps every output column to the `DataClass` it derives from in

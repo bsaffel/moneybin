@@ -47,7 +47,8 @@ class ConsentRepo(BaseRepo):
 
     repository = "ai_consent_grants"
 
-    _AUDIT_TARGET = (AI_CONSENT_GRANTS.schema, AI_CONSENT_GRANTS.name)
+    table_ref = AI_CONSENT_GRANTS
+    pk_columns = ("grant_id",)
 
     def _fetch_row(self, grant_id: str) -> dict[str, Any] | None:
         return self._fetch_one(AI_CONSENT_GRANTS, _COLUMNS, "grant_id", grant_id)
@@ -117,7 +118,7 @@ class ConsentRepo(BaseRepo):
             # after=null audit row or bumps the audit metric before rollback.
             self._emit_audit(
                 action="consent.grant",
-                target=(*self._AUDIT_TARGET, grant_id),
+                target=(*self._audit_target, grant_id),
                 before=None,
                 after=self._serialize_for_audit(after),
                 actor=actor,
@@ -150,7 +151,7 @@ class ConsentRepo(BaseRepo):
                 raise RuntimeError(f"grant_id={grant_id!r} not found after revoke")
             self._emit_audit(
                 action="consent.revoke",
-                target=(*self._AUDIT_TARGET, grant_id),
+                target=(*self._audit_target, grant_id),
                 before=self._serialize_for_audit(existing),
                 after=self._serialize_for_audit(after),
                 actor=actor,
@@ -187,7 +188,7 @@ class ConsentRepo(BaseRepo):
                     )
                 self._emit_audit(
                     action="consent.revoke",
-                    target=(*self._AUDIT_TARGET, grant.grant_id),
+                    target=(*self._audit_target, grant.grant_id),
                     before=self._serialize_for_audit(before),
                     after=self._serialize_for_audit(after),
                     actor=actor,

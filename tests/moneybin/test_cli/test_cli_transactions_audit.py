@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Generator
 from pathlib import Path
+from typing import Any
 
 import pytest
 from typer.testing import CliRunner
@@ -41,11 +42,15 @@ def test_transactions_audit_lists_events_for_txn(
     assert result.exit_code == 0, result.output
     payload = json.loads(result.stdout)
     assert payload["status"] == "ok"
-    events = payload["data"]
+    events: list[dict[str, Any]] = payload["data"]
     actions = {e["action"] for e in events}
     assert "note.add" in actions
     assert "tag.add" in actions
-    assert all(e["target_id"] == "T1" for e in events)
+    # Row-grain: target_id is the entity PK (note_id / "T1:food"), but every event
+    # relates to T1 via its captured row image.
+    for e in events:
+        row: dict[str, Any] = e.get("after_value") or e.get("before_value") or {}
+        assert row.get("transaction_id") == "T1"
 
 
 def test_transactions_audit_empty_returns_empty_list(
