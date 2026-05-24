@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-05-17 -->
+<!-- Last reviewed: 2026-05-24 -->
 # How MoneyBin Compares
 
 Choosing a personal-finance platform is a high-switching-cost decision: your data, your categorization history, the habits you build around the UI. This page is the honest comparison we'd write for ourselves. ✅ = yes, ❌ = no, 🟡 = partial, planned, or requires configuration.
@@ -14,6 +14,7 @@ The table is 8 columns wide rather than 7 because Firefly III is the most-deploy
 | Plain-text / VCS-friendly storage | ❌⁽³⁾ | ❌ | ❌ | ❌ | ❌ Postgres | ❌ MySQL/Postgres | ✅ git-diffable | ❌ |
 | Encrypted at rest by default | ✅ AES-256-GCM | ❌ | 🟡 server-side | 🟡 server-side | ❌⁽³⁾ | ❌ | ❌⁽³⁾ | 🟡 Actual E2E sync⁽⁶⁾ |
 | AI / MCP-native | ✅ first-party | ❌ | 🟡 community MCP | ❌ in-app only | ❌ | ❌ | ❌ | ❌ |
+| Agent-buildable extension contract⁽⁹⁾ | ✅ reports / packages / providers | 🟡 Sheets scripting | 🟡 public API | ❌ | 🟡 fork | 🟡 REST API | ✅ Python plugins | 🟡 Actual API |
 | Direct SQL query access | ✅ DuckDB | ❌ | ❌ | ❌ | 🟡 Postgres | 🟡 MySQL/Postgres | ✅ BQL / hledger-query | 🟡 Actual SQLite⁽⁷⁾ |
 | Automated categorization | ✅ rules + LLM-assist | 🟡 manual + AutoCat | ✅ rules | ✅ rules + ML | ✅ rules | ✅ rules | ✅ smart_importer / --auto | ✅ rules |
 | Bank-direct sync | 🟡 Plaid | ❌ manual import | ✅ Plaid | ✅ Plaid | ✅ Plaid/SimpleFIN | ✅ SimpleFIN/Nordigen | ❌ | 🟡 YNAB only |
@@ -43,6 +44,8 @@ The table is 8 columns wide rather than 7 because Firefly III is the most-deploy
 ⁽⁷⁾ **Actual's SQLite is app-managed.** The schema is internal to Actual and changes between releases; querying it works for read-only analysis but is not a stable contract the way DuckDB or Postgres access is.
 
 ⁽⁸⁾ **Self-host posture** rolls up containerization, headless / cron-friendly operation, reverse-proxy ergonomics, and outbound network posture into one cell. ✅ = published container image with Compose example and no required external calls; 🟡 = scriptable but no first-party container, or some required egress; ❌ = not designed to be self-hosted. MoneyBin today is a Python CLI suitable for cron and headless use, but ships no container image and has no daemon mode — a self-host guide is on the roadmap.
+
+⁽⁹⁾ **Agent-buildable extension contract** measures whether there's a *stable, documented surface for adding your own reports, analyses, and data sources* that an AI agent can target — not merely "it's open source, fork it." ✅ = a first-class contract for new reports/providers (MoneyBin's `@report` runners + extension contract; Beancount's Python plugin system). 🟡 = an API or scripting layer you can build against but no purpose-built extension contract (Sheets scripting, a public REST API, or modify-the-source). ❌ = closed, no supported extension path. MoneyBin's contract is designed so the agent you already drive can scaffold an extension against the schema and runner shape; the broader package/provider contract is in flight.
 
 ## Where MoneyBin is not the best fit
 

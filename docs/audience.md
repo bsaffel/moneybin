@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-05-17 -->
+<!-- Last reviewed: 2026-05-24 -->
 # Who MoneyBin Is For
 
 MoneyBin is built for a specific set of people. This page tells you whether you're one of them — honestly, including who you should use instead if you're not.
@@ -38,12 +38,13 @@ These are the people MoneyBin already serves well in what's shipped now. Install
 
 **Stack:** Claude Code or Cursor as the daily driver, comfortable curating a `~/.claude/` config, already pipes work through MCP servers. Wants their financial data inside that loop without trusting a hosted vendor with it.
 
-**Job to be done:** Ask "what did I spend on AWS last quarter?" inside the same chat window where they write code. Get back a real answer with SQL behind it, not a hosted vendor's summary.
+**Job to be done:** Ask "what did I spend on AWS last quarter?" inside the same chat window where they write code. Get back a real answer with SQL behind it, not a hosted vendor's summary — and when the built-in answer isn't enough, have the agent *build* the missing piece.
 
 **Why MoneyBin fits today:**
 - A wide MCP surface across accounts, transactions, reports, categories, merchants, system, sync, and transform — installable via `moneybin mcp install --client claude-code` (nine clients supported).
 - Every MCP tool has a CLI twin with `--output json` parity; the CLI is a first-class agent surface, not an afterthought.
 - The agent answers with SQL it wrote against canonical fact and dimension tables — and you can read that SQL and verify it.
+- It's built to be *extended* by the agent, not just queried by it. The schema, the report-runner contract, and the import pipeline are stable surfaces an agent can build against — so "vibe-code a custom report / importer / tracker on top of my own financial data" is the intended workflow, not a hack. MoneyBin wants to be the first tool your agent reaches for. (The full contributor extension contract is in flight; declarative reports work today.)
 
 **What's still rough:** Today's MCP transport requires the AI client and MoneyBin to run on the same machine. Remote-client support (so ChatGPT web or a hosted assistant can reach a MoneyBin running elsewhere) is planned.
 
