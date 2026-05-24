@@ -125,6 +125,11 @@ def test_build_spec_requires_keyword_only_params() -> None:
         build_spec(positional, name="pos", view=REPORTS_MERCHANT_ACTIVITY)
 
 
+def test_build_spec_rejects_non_reports_view() -> None:
+    with pytest.raises(ValueError, match="reports"):
+        build_spec(_sample, name="bad", view=TableRef("core", "fct_transactions"))
+
+
 def test_build_spec_accepts_custom_table_ref() -> None:
     view = TableRef("reports", "sample")
     spec = build_spec(_sample, name="sample", view=view, domain="merchants")

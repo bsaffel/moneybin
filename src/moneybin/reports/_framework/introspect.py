@@ -34,6 +34,12 @@ def build_spec(
         ValueError: if the runner has no docstring, its first parameter is not
             ``db``, or any non-``db`` parameter is not keyword-only.
     """
+    if view.schema != "reports":
+        raise ValueError(
+            f"Report {name!r} view must be a reports.* table, got {view.full_name!r} "
+            "(reports_* surfaces read from the reports schema)."
+        )
+
     doc = inspect.getdoc(fn)
     if not doc:
         raise ValueError(f"Report runner {fn.__name__!r} needs a docstring.")
