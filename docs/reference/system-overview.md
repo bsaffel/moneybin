@@ -169,7 +169,7 @@ The DuckDB file is the durable artifact — back it up like any other file. The 
 - **DuckDB is single-writer per file.** Two `moneybin` processes writing to the same profile concurrently will conflict — one waits or fails. Multiple read-only attaches to the same file work concurrently.
 - **Per-machine, not per-cluster.** The encrypted DB file can be replicated across machines via Syncthing / iCloud / etc., but concurrent writes from two machines are not supported. Treat the file as owned by one host at a time.
 - **Two simultaneous CLI invocations against different profiles** are fully isolated — different files, different connections, different keychain entries.
-- **MCP sessions hold the write lock for their duration.** A long-running MCP session and a concurrent `moneybin import files ...` against the same profile will serialize.
+- **The write lock is per-operation, not per-session.** An MCP server takes the exclusive write lock only for the duration of each write tool call (read calls run concurrently and hold no write lock), so a long-running MCP session and a concurrent `moneybin import files ...` against the same profile contend only when both write at once — the later writer retries briefly before failing.
 
 ## Identity and auth
 

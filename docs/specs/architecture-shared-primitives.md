@@ -104,18 +104,18 @@ When adding a table, add a `TableRef` constant in the same change. Without one, 
 
 ## Connection Lifecycle
 
-`Database` (`src/moneybin/database.py`) is the sole connection factory. It wraps DuckDB, owns encryption, runs initialization and migrations, and manages the singleton lifecycle.
+`Database` (`src/moneybin/database.py`) is the sole connection factory. It wraps DuckDB, owns encryption, runs initialization and migrations on write-mode opens, and is created fresh on every `get_database()` call — there is no singleton.
 
-### Single read-write process per profile
+### Short-lived, purpose-declared connections
 
-DuckDB allows one read-write connection per file. MoneyBin enforces this with a module-level singleton (`_database_instance`) returned by `get_database()`. Within one OS process, every caller shares one `Database`, one DuckDB connection, one writer.
+Per [ADR-010](../decisions/010-writer-coordination.md) (settled in [§(a)](#a-writer-coordination--settled-by-adr-010) below), every caller acquires a connection, does its work, and releases it via the context manager. `get_database(read_only=True)` attaches DuckDB with the `READ_ONLY` flag, skips `init_schemas()` / `refresh_views()` (~14 ms), and **coexists across any number of processes**. `get_database()` (write mode) is exclusive (~79 ms) and retries on lock contention with exponential backoff up to `max_wait` (default 5 s) before raising `DatabaseLockError`.
 
 **Concurrency consequences (honest list):**
 
-- **MCP tool timeouts (`docs/specs/mcp-tool-timeouts.md`) exist *because* of the lock.** A hung tool would otherwise wedge the writer for every other client. The 30s cap interrupts the active statement and force-resets the connection so the lock drops. This is a bulkhead, not a long-term concurrency story.
-- **The `db ps` / `db kill` CLI exist *because* of the lock** — explicit lock-management surface for users.
-- **Cross-process write contention is not supported.** Two processes both opening `Database()` against the same `.duckdb` file race for the file's write lock. Today this only happens accidentally (e.g., a stuck CLI plus an MCP server). M2 features that would intentionally introduce a second writer (out-of-process Plaid background sync, multi-process FastAPI) are deferred until a real trigger appears — see [Open question (a)](#a-when-does-an-out-of-process-writer-become-unavoidable).
-- **Read-only attach is not yet implemented but is the obvious extension.** A separate-process read-only consumer (e.g., a `streamlit run` dashboard that opens its own `Database()`) currently fails because the encrypted `ATTACH` defaults to read-write. Adding a `read_only=True` option that emits `ATTACH ... (TYPE DUCKDB, ENCRYPTION_KEY '...', READ_ONLY)` would let multiple readers coexist with one writer. Land this when the first separate-process read-only surface needs it — `moneybin ui`-style in-process surfaces don't need it.
+- **Reads scale; writes serialize.** Any number of read-only connections coexist across processes. Write connections are exclusive — a second writer retries until the first releases the per-operation lock and then succeeds, or raises `DatabaseLockError` once `max_wait` is exhausted (e.g., a `transform apply` that runs longer than the retry window).
+- **MCP tool timeouts (`docs/specs/mcp-tool-timeouts.md`) bound a stuck write.** A hung write tool would otherwise hold the exclusive lock past the retry window of every concurrent writer. The 30s cap interrupts the active statement and force-closes the connection so the lock drops. A bulkhead, not a long-term concurrency story.
+- **The `db ps` / `db kill` CLI exist for lock visibility** — they identify and clear a process holding the file when a long write blocks other writers.
+- **Cross-process contention is supported, not prevented.** Two processes opening write connections against the same `.duckdb` file serialize via the retry; readers never block. Higher-frequency multi-writer scenarios (the IPC socket-server upgrade path named in ADR-010) are deferred until a real trigger appears — see [§(a)](#a-writer-coordination--settled-by-adr-010).
 
 ### Initialization sequence
 
@@ -139,7 +139,7 @@ When the MCP decorator fires its 30s timeout, it calls `interrupt_and_reset_data
 
 1. Calls `_conn.interrupt()` (best-effort; some statement types ignore it).
 2. Calls `_conn.close()` to guarantee the lock drops.
-3. Clears the `_database_instance` singleton so the next `get_database()` opens a fresh connection.
+3. Releases the process-global `_active_write_conn` slot (cleared by `close()`) so a surviving thread can't reuse the dead connection. There is no singleton to reset — connections are per-call, so the next `get_database()` opens a fresh one regardless.
 
 Surviving sync-tool threads (cancelled by `asyncio.timeout()` but still running on the OS thread) will see the closed connection on their next operation and raise. That exception surfaces via the thread pool's unhandled-exception path (stderr), not the MCP envelope. Occasional stderr noise after a timeout is expected; forcing termination would require cooperative cancellation in tool bodies and is out of scope.
 

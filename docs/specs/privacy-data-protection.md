@@ -311,9 +311,11 @@ class DatabaseConfig(BaseModel):
 - **Auto-key as default:** Covers the two biggest threats (device theft, cloud sync)
   with zero friction. Passphrase mode is opt-in for users who want shared-machine
   protection.
-- **Single r/w connection:** Eliminates read/write coordination complexity. Lock
-  contention between multiple MoneyBin processes is handled by existing CLI tooling.
-  Users who need concurrent read access use separate test environments.
+- **Short-lived per-operation connections:** Each `get_database()` call opens its
+  own connection and releases it on exit (per [ADR-010](../decisions/010-writer-coordination.md)).
+  Read-only opens coexist across processes; write opens are exclusive and serialize
+  via retry-with-backoff. Concurrent read access needs no special setup; lock
+  visibility and management is via the `db ps` / `db kill` CLI.
 - **`Database` class, not module-level function:** The multi-step initialization
   sequence (key → connect → attach → migrate → init) needs a single owner. A bare
   `get_connection()` function would scatter the recipe across entry points.
