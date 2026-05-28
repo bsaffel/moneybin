@@ -1,21 +1,20 @@
-"""Reports top-level command group — cross-domain read-only views."""
+"""Reports top-level command group — cross-domain read-only views.
+
+The view-backed reports (cashflow, spending, recurring, merchants,
+large-transactions, balance-drift) are generated from ``@report`` runners in
+``moneybin.reports.definitions`` and registered via ``register_reports_cli``.
+``networth`` / ``networth-history`` are NetworthService-backed and stay
+hand-written.
+"""
 
 from __future__ import annotations
 
-import logging
-
 import typer
 
-from ..stubs import _not_implemented
-from .balance_drift import reports_balance_drift
-from .cashflow import reports_cashflow
-from .large_transactions import reports_large_transactions
-from .merchants import reports_merchants
-from .networth import reports_networth, reports_networth_history
-from .recurring import reports_recurring
-from .spending import reports_spending
+from moneybin.reports._framework.registry import register_reports_cli
+from moneybin.reports.definitions import ALL_REPORTS
 
-logger = logging.getLogger(__name__)
+from .networth import reports_networth, reports_networth_history
 
 app = typer.Typer(
     help="Cross-domain analytical and aggregation views",
@@ -24,21 +23,4 @@ app = typer.Typer(
 
 app.command("networth")(reports_networth)
 app.command("networth-history")(reports_networth_history)
-app.command("cashflow")(reports_cashflow)
-app.command("spending")(reports_spending)
-app.command("recurring")(reports_recurring)
-app.command("merchants")(reports_merchants)
-app.command("large-transactions")(reports_large_transactions)
-app.command("balance-drift")(reports_balance_drift)
-
-
-@app.command("budget")
-def reports_budget() -> None:
-    """Budget vs actual report."""
-    _not_implemented("budget-tracking.md")
-
-
-@app.command("health")
-def reports_health(months: int = typer.Option(1, "--months")) -> None:
-    """Cross-domain financial health snapshot."""
-    _not_implemented("reports-net-worth.md")
+register_reports_cli(ALL_REPORTS, app)

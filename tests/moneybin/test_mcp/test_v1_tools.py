@@ -13,90 +13,16 @@ from pathlib import Path
 
 import pytest
 
-from moneybin import error_codes
 from moneybin.database import Database, get_database
-from moneybin.mcp.tools.reports import (
-    reports_balance_drift,
-    reports_recurring,
-)
 from moneybin.mcp.tools.transactions_categorize import (
     transactions_categorize_pending,
 )
-from moneybin.protocol.envelope import ResponseEnvelope
 
 pytestmark = pytest.mark.usefixtures("mcp_db")
 
 
 def _create_reports_schema(db: Database) -> None:
     db.conn.execute("CREATE SCHEMA IF NOT EXISTS reports")
-
-
-class TestReportsRecurringGet:
-    """Stubs reports.recurring_subscriptions and exercises filters."""
-
-    @staticmethod
-    def _install_view() -> None:
-        with get_database() as db:
-            _create_reports_schema(db)
-            db.conn.execute("""
-                CREATE OR REPLACE VIEW reports.recurring_subscriptions AS
-                SELECT
-                    CAST(NULL AS VARCHAR) AS merchant_id,
-                    'Netflix' AS merchant_normalized,
-                    'monthly' AS cadence,
-                    CAST(15.99 AS DOUBLE) AS avg_amount,
-                    CAST(12 AS BIGINT) AS occurrence_count,
-                    DATE '2025-01-15' AS first_seen,
-                    DATE '2026-04-15' AS last_seen,
-                    'active' AS status,
-                    CAST(191.88 AS DOUBLE) AS annualized_cost,
-                    CAST(0.95 AS DOUBLE) AS confidence
-                UNION ALL SELECT
-                    NULL, 'OldGym', 'monthly', 50.0, 6, DATE '2024-01-01',
-                    DATE '2024-06-01', 'inactive', 600.0, 0.8
-                UNION ALL SELECT
-                    NULL, 'WeakSignal', 'irregular', 7.0, 3, DATE '2025-12-01',
-                    DATE '2026-04-01', 'active', 21.0, 0.3
-            """)  # noqa: S608  # test input, not executing dynamic SQL
-
-    @pytest.mark.unit
-    async def test_default_filters_active_high_confidence(self, mcp_db: Path) -> None:
-        self._install_view()
-        result = await reports_recurring()
-        assert isinstance(result, ResponseEnvelope)
-        parsed = result.to_dict()
-        # RecurringSubscriptionRow has TXN_AMOUNT → Tier.HIGH per privacy taxonomy.
-        assert parsed["summary"]["sensitivity"] == "high"
-        merchants = {row["merchant_normalized"] for row in parsed["data"]["rows"]}
-        # Default min_confidence=0.5, status='active' → drops OldGym (inactive)
-        # and WeakSignal (confidence=0.3).
-        assert merchants == {"Netflix"}
-
-    @pytest.mark.unit
-    async def test_status_all_keeps_inactive(self, mcp_db: Path) -> None:
-        self._install_view()
-        parsed = (await reports_recurring(status="all")).to_dict()
-        merchants = {row["merchant_normalized"] for row in parsed["data"]["rows"]}
-        # min_confidence=0.5 still drops WeakSignal but keeps OldGym (inactive).
-        assert merchants == {"Netflix", "OldGym"}
-
-    @pytest.mark.unit
-    async def test_unknown_status_returns_error_envelope(self, mcp_db: object) -> None:
-        # ValueError raised inside the tool is classified by the @mcp_tool
-        # decorator as a UserError(infra_invalid_input) and surfaced as an error
-        # envelope rather than re-raised. Reports are read paths, so the
-        # prefix-neutral infra_ code is correct (not mutation_).
-        result = await reports_recurring(status="bogus")
-        parsed = result.to_dict()
-        assert parsed["error"]["code"] == error_codes.INFRA_INVALID_INPUT
-        assert "Unknown status" in parsed["error"]["message"]
-
-    @pytest.mark.unit
-    async def test_unknown_cadence_returns_error_envelope(self, mcp_db: object) -> None:
-        result = await reports_recurring(cadence="hourly")
-        parsed = result.to_dict()
-        assert parsed["error"]["code"] == error_codes.INFRA_INVALID_INPUT
-        assert "Unknown cadence" in parsed["error"]["message"]
 
 
 class TestCategorizePendingGet:
@@ -261,83 +187,3 @@ class TestCategorizePendingGet:
         assert len(parsed["data"]["transactions"]) == 1
         # Highest impact wins.
         assert parsed["data"]["transactions"][0]["transaction_id"] == "T2"
-
-
-class TestReportsBalanceDriftGet:
-    """Stubs reports.balance_drift and exercises filters."""
-
-    @staticmethod
-    def _install_view() -> None:
-        with get_database() as db:
-            _create_reports_schema(db)
-            db.conn.execute("""
-                CREATE OR REPLACE VIEW reports.balance_drift AS
-                SELECT
-                    'ACC001' AS account_id,
-                    'Test Bank Checking' AS account_name,
-                    DATE '2026-04-01' AS assertion_date,
-                    CAST(1000.00 AS DECIMAL(18,2)) AS asserted_balance,
-                    CAST(990.00 AS DECIMAL(18,2)) AS computed_balance,
-                    CAST(10.00 AS DECIMAL(18,2)) AS drift,
-                    CAST(10.00 AS DECIMAL(18,2)) AS drift_abs,
-                    CAST(0.01 AS DOUBLE) AS drift_pct,
-                    10 AS days_since_assertion,
-                    'drift' AS status
-                UNION ALL SELECT
-                    'ACC002', 'Other Bank Savings',
-                    DATE '2026-04-15', 5000.00, 4999.50,
-                    0.50, 0.50, 0.0001, 5,
-                    'clean'
-                UNION ALL SELECT
-                    'ACC001', 'Test Bank Checking',
-                    DATE '2025-12-01', 800.00, NULL,
-                    NULL, 0.00, NULL, 130,
-                    'no-data'
-            """)  # noqa: S608  # test input, not executing dynamic SQL
-
-    @pytest.mark.unit
-    async def test_default_returns_all_statuses(self, mcp_db: Path) -> None:
-        self._install_view()
-        parsed = (await reports_balance_drift()).to_dict()
-        # BalanceDriftPayload has account_id: ACCOUNT_IDENTIFIER → Tier.CRITICAL
-        assert parsed["summary"]["sensitivity"] == "critical"
-        # Sorted by drift_abs DESC.
-        statuses = [row["status"] for row in parsed["data"]["rows"]]
-        assert statuses == ["drift", "clean", "no-data"]
-
-    @pytest.mark.unit
-    async def test_status_filter_drift_only(self, mcp_db: Path) -> None:
-        self._install_view()
-        parsed = (await reports_balance_drift(status="drift")).to_dict()
-        statuses = [row["status"] for row in parsed["data"]["rows"]]
-        assert statuses == ["drift"]
-
-    @pytest.mark.unit
-    async def test_since_filter(self, mcp_db: Path) -> None:
-        self._install_view()
-        parsed = (await reports_balance_drift(since="2026-01-01")).to_dict()
-        # The 2025-12-01 row should be excluded.
-        assert all(
-            row["assertion_date"].isoformat() >= "2026-01-01"
-            for row in parsed["data"]["rows"]
-        )
-        assert len(parsed["data"]["rows"]) == 2
-
-    @pytest.mark.unit
-    async def test_account_filter(self, mcp_db: Path) -> None:
-        # Filter via canonical account_id; the resolver binds the
-        # resolved id to the SQL WHERE clause (not the stub view's
-        # free-text account_name).
-        self._install_view()
-        parsed = (await reports_balance_drift(account="ACC002")).to_dict()
-        account_ids = [row["account_id"] for row in parsed["data"]["rows"]]
-        # account_id is ACCOUNT_IDENTIFIER → redacted to last-4 chars by middleware
-        assert account_ids == ["****C002"]
-
-    @pytest.mark.unit
-    async def test_unknown_status_returns_error_envelope(self, mcp_db: object) -> None:
-        # Read path → ValueError classified to INFRA_INVALID_INPUT, not MUTATION_*.
-        result = await reports_balance_drift(status="bogus")
-        parsed = result.to_dict()
-        assert parsed["error"]["code"] == error_codes.INFRA_INVALID_INPUT
-        assert "Unknown status" in parsed["error"]["message"]

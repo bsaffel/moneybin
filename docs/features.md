@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-05-17 -->
+<!-- Last reviewed: 2026-05-24 -->
 # What Works Today
 
 What MoneyBin can do today. Each capability links to its guide; the [roadmap](roadmap.md) covers what's planned and the [CHANGELOG](../CHANGELOG.md) carries the dated record.
@@ -7,7 +7,7 @@ What MoneyBin can do today. Each capability links to its guide; the [roadmap](ro
 
 ## Data ingestion
 
-- **Smart tabular import** — CSV, TSV, Excel, Parquet, and Feather through one pipeline. Heuristic column detection, three-tier confidence model, multi-account support, and first-class migration profiles for Tiller, Mint, YNAB, and Maybe. -> [Data import guide](guides/data-import.md)
+- **Smart tabular import** — CSV, TSV, Excel, Parquet, and Feather through one pipeline. Heuristic column detection, three-tier confidence model, multi-account support, and first-class migration profiles for Tiller, Mint, and YNAB (other tools' exports import via the generic detector). -> [Data import guide](guides/data-import.md)
 - **OFX / QFX / QBO import** — Same `import_log` infrastructure as tabular: re-import detection, `--force` override, institution-name auto-resolution, and batch revert via `moneybin import revert <id>`. OFX descriptions are HTML-entity-decoded at import. -> [Data import guide](guides/data-import.md)
 - **Plaid bank sync** — Connect accounts through Plaid Hosted Link via moneybin-server (the Plaid integration backend you can self-host, or use the hosted instance of). Cursor-based incremental sync by default; `--force` for full re-fetch. Plaid data lands alongside OFX and CSV in the same canonical tables. Cash and credit-card accounts flow through the canonical pipeline today; investment, loan, mortgage, and HSA accounts get loaded if Plaid exposes them, but the holdings, cost-basis, and balance-sheet surfaces those account types deserve land with the investments milestone. -> [CLI reference](guides/cli-reference.md)
 - **Google Sheets sync** — Connect a Google Sheet as a live tabular source via direct OAuth (no shared client secret). Two adapters: `transactions` (Tiller-style ledgers participate in the full matching and categorization pipeline) and `seed` (any other sheet lands in `raw.gsheet_seeds` as JSON plus an auto-generated typed view, queryable via SQL and MCP). Every `moneybin refresh` re-pulls the latest sheet state; soft-delete preserves audit history; per-connection drift detection refuses pulls on structural change until you reconnect. -> [Google Sheets guide](guides/connect-gsheet.md)
@@ -27,8 +27,8 @@ What MoneyBin can do today. Each capability links to its guide; the [roadmap](ro
 ## Transformations and refresh
 
 - **Layered SQLMesh pipeline** — `raw` → `prep` (staging) → `core` (canonical facts / dimensions / bridges). Plus `app.*` for user-managed state and `reports.*` for curated views. Consumers (CLI, MCP, SQL clients) read from `core.*` and `reports.*`; `prep` is internal. -> [Data pipeline guide](guides/data-pipeline.md)
-- **Cross-source dedup** — SHA-256 content hashes with golden-record merge across CSV, OFX, and Plaid. Config-driven source priority. -> [Data pipeline guide](guides/data-pipeline.md)
-- **Transfer detection** — Cross-account matching with a four-signal scoring engine (date distance, keyword, roundness, pair frequency); produces `core.bridge_transfers` and `is_transfer` / `transfer_pair_id` on `fct_transactions`. -> [Data pipeline guide](guides/data-pipeline.md)
+- **Cross-source dedup** — SHA-256 content hashes with golden-record merge across CSV, OFX, and Plaid. Config-driven source priority. Three or more copies of the same transaction collapse to one record even when duplicates span sources *and* overlapping files (N-way collapse via a union-find spanning forest). -> [Data pipeline guide](guides/data-pipeline.md)
+- **Transfer detection** — Cross-account matching with a two-signal scoring engine (date distance, keyword); produces `core.bridge_transfers` and `is_transfer` / `transfer_pair_id` on `fct_transactions`. -> [Data pipeline guide](guides/data-pipeline.md)
 - **Refresh umbrella** — `moneybin refresh` (CLI) and `refresh_run` (MCP) are the single entry point for matching → SQLMesh apply → categorization. Pass `--step` (CLI) or `steps=[...]` (MCP) to scope sub-operations. `sync pull` and `import files` invoke refresh automatically unless `--no-refresh`. -> [Data pipeline guide](guides/data-pipeline.md)
 - **Reliable under load** — Timeouts, write coordination, and schema-drift recovery are handled automatically; see [architecture](architecture.md) if you want the mechanics.
 
@@ -48,7 +48,8 @@ What MoneyBin can do today. Each capability links to its guide; the [roadmap](ro
 - **Tags** — Multi-tag table with rename semantics.
 - **Splits via annotation** — Annotation-based splits today; first-class split rows planned (see [roadmap](roadmap.md)).
 - **Import-batch labels** — Group imported rows under a human label.
-- **Edit-history audit log** — Per-row history of curation edits.
+- **Edit-history audit log** — Per-row history of every curation edit.
+- **Reversible edits** — Every protected `app.*` mutation (notes, tags, splits, categories, rules, account settings) is audit-paired and undoable as a unit keyed on `operation_id`. `moneybin system audit undo|history|get` (and `system_audit_undo` / `system_audit_history` / `system_audit_get` on MCP) reverse a change from its full before/after image; the undo is itself audited and undoable. Undo refuses (rather than silently cascading) when a later operation touched the same rows. -> [CLI reference](guides/cli-reference.md)
 
 All on the `app.*` layer; zero changes to the upstream pipeline. (No dedicated guide yet — see [CLI reference](guides/cli-reference.md) and [MCP server guide](guides/mcp-server.md).)
 
@@ -59,7 +60,9 @@ All on the `app.*` layer; zero changes to the upstream pipeline. (No dedicated g
 
 ## Reports
 
-Curated `reports.*` SQLMesh views back both the CLI and MCP surfaces. Same query, same envelope on both. Reports accept date-range filters (`--from` / `--to` on time-windowed reports like `cashflow` and `spending`, `--as-of` for snapshots like `networth`, plus `--account` and `--category` where they apply); grains vary per report. -> [CLI reference](guides/cli-reference.md) · [MCP server guide](guides/mcp-server.md)
+Curated `reports.*` SQLMesh views back both the CLI and MCP surfaces. Same query, same envelope on both. Reports accept date-range filters (`--from-month` / `--to-month` on time-windowed reports like `cashflow` and `spending`, `--as-of` for snapshots like `networth`, plus `--account` and `--category` where they apply); grains vary per report. -> [CLI reference](guides/cli-reference.md) · [MCP server guide](guides/mcp-server.md)
+
+Each report is backed by a curated view and exposed identically on the CLI and MCP. A declarative **report framework** — one `@report` runner per report, from which the CLI command, MCP tool, parameter flags, and column masking are all derived — is in flight; it's what will let analysis packages and agents add new reports onto both surfaces from a single definition. See [Extensibility](#extensibility).
 
 - **`reports.net_worth`** — Cross-account total with period-over-period change.
 - **`reports.cash_flow`** — Income vs spending by month.
@@ -104,6 +107,13 @@ Curated `reports.*` SQLMesh views back both the CLI and MCP surfaces. Same query
 - **Prometheus-style metrics** — Per-operation counters and durations, persisted to DuckDB. `moneybin stats`. -> [Observability guide](guides/observability.md)
 - **`moneybin system doctor`** — Read-only pipeline integrity check (FK integrity, sign convention, transfer balance, staging coverage, categorization coverage). Exits 0 on pass / warn, 1 on fail. `--verbose` for affected IDs, `--output json` for agents. Registered as the `system_doctor` MCP tool. -> [CLI reference](guides/cli-reference.md)
 
+## Extensibility
+
+MoneyBin is built on the assumption that you'll want to track your money your way — and that an AI agent is a first-class way to make that happen. The schema, the reports, and the import pipeline are stable contracts an agent can read and build against, so you (or Claude Code, or Cursor) can scaffold a custom report, importer, or tracker on top of your own data.
+
+- **Declarative reports (in flight)** — Today's eight reports are hand-wired on the CLI and MCP. A report framework collapses that into one `@report` runner per report — from which the CLI command, MCP tool, parameter flags, and column masking are generated — so adding a report (yours, a package's, or one an agent scaffolds) becomes a single-definition task. Once it lands, the agent driving MoneyBin has everything it needs — the schema resource, the runner contract, and SQL access — to write a new one.
+- **The extension contract (in flight)** — A contributor-facing surface for adding your own **reports**, **analysis packages**, and **data providers**, with a Quality Scale (Bronze → Platinum). Designed in [`extension-contracts.md`](specs/extension-contracts.md); v1 ships two reference packages (`assets`, `us_tax`) at Platinum quality as worked examples.
+
 ## What's planned
 
 These are visible gaps a migrant or agent author will notice. See [Roadmap](roadmap.md) for the full milestone view.
@@ -114,7 +124,9 @@ These are visible gaps a migrant or agent author will notice. See [Roadmap](road
 - **Multi-currency** — FX gain/loss and non-USD accounts. Planned.
 - **Web UI dashboard** — Local web UI plus Streamable HTTP MCP transport (so remote clients like ChatGPT web can reach MoneyBin). Planned.
 - **Hosted tier** — Same code, hosted. Planned.
-- **Extension contract** — Add your own reports, analysis packages, and providers. Designed in [`extension-contracts.md`](specs/extension-contracts.md); ships at v1 with two reference packages (`assets`, `us_tax`) at Platinum quality.
+- **Drop-any-PDF import** — AI-assisted extraction of bank-statement PDFs: native-text statements extract locally and free, harder layouts escalate to the AI agent you're already driving MoneyBin with, and a learned recipe replays for free next time. Transaction-shaped rows route to `core`; everything else lands as queryable JSON seeds. In flight — spec ready, first phase underway. See [`smart-import-pdf.md`](specs/smart-import-pdf.md).
+- **Import confirmation & confidence** — One trust step across every import channel (tabular, Sheets, PDF): nothing lands unconfirmed on first contact, a confirmed layout replays silently, and recovery from a wrong guess is one step away (`import_confirm`). In flight.
+- **Extension contract** — The contributor-facing surface for reports, analysis packages, and providers (see [Extensibility](#extensibility)). In flight; ships at v1 with two reference packages at Platinum quality.
 - **Reference package: `assets`** — Real estate, vehicles, and valuables. First reference package; demonstrates the package contract.
 - **Reference package: `us_tax`** — Locale-specific tax reporting helpers (realized gain/loss summaries, cost-basis snapshots). Built on top of investment tracking; not Schedule D generation.
 - **First-class split rows** — Today splits are annotations on the parent row; first-class split lines arrive with the curation polish work. Planned.

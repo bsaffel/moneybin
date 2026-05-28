@@ -6,9 +6,9 @@
     "p95_ms": 18.5375,
     "p99_ms": 19.009375
   },
-  "reports_budget": {
+  "budget_status_service": {
     "iterations": 30,
-    "name": "reports_budget",
+    "name": "budget_status_service",
     "p50_ms": 57.702771,
     "p95_ms": 58.81175,
     "p99_ms": 58.902375

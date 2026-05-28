@@ -49,10 +49,12 @@ from moneybin.privacy.sql_lineage import (
     parse_cached,
     resolve_output_classes,
 )
+from moneybin.reports._framework.execute import run_report
+from moneybin.reports._framework.registry import spec_of
+from moneybin.reports.definitions.spending_trend import spending_trend
 from moneybin.services.account_service import AccountService
 from moneybin.services.budget_service import BudgetService
 from moneybin.services.networth_service import NetworthService
-from moneybin.services.reports_service import ReportsService
 from moneybin.services.transaction_service import TransactionService
 from tests.scenarios._perf_runner import measure_flow, read_baseline
 
@@ -105,13 +107,13 @@ def test_privacy_middleware_within_budget() -> None:
 
     def _reports_spending() -> object:
         with get_database(read_only=True) as db:
-            return ReportsService(db).spending_trend()
+            return run_report(spec_of(spending_trend), db, max_rows=1000)
 
     def _accounts() -> object:
         with get_database(read_only=True) as db:
             return AccountService(db).list_accounts()
 
-    def _reports_budget() -> object:
+    def _budget_status_service() -> object:
         with get_database(read_only=True) as db:
             return BudgetService(db).status()
 
@@ -125,7 +127,7 @@ def test_privacy_middleware_within_budget() -> None:
         "transactions_get": _transactions_get,
         "reports_spending": _reports_spending,
         "accounts": _accounts,
-        "reports_budget": _reports_budget,
+        "budget_status_service": _budget_status_service,
         "reports_networth_history": _reports_networth_history,
     }
 

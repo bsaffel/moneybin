@@ -1,0 +1,100 @@
+"""Run a report: execute the runner's query, classify, redact, summarize.
+
+The generic execution path shared by the generated MCP tool and CLI command.
+It mirrors ``execute_sql_query`` — same ``redact_records`` /
+``derive_query_tier`` bottleneck — but the SQL comes from a report runner and
+the per-column classes come from the report's view (see ``classify``) rather
+than live lineage on a user query.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+from moneybin.database import Database
+from moneybin.mcp.privacy import tier_to_sensitivity
+from moneybin.privacy.redaction import redact_records
+from moneybin.privacy.sql_lineage import derive_query_tier
+from moneybin.privacy.taxonomy import DataClass, Tier
+from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.reports._framework.classify import classify_columns
+from moneybin.reports._framework.contract import ReportSpec
+
+
+@dataclass(frozen=True)
+class ReportResult:
+    """Redacted rows plus the envelope-relevant metadata for one report call.
+
+    Mirrors the envelope-facing fields of ``SqlQueryResult`` so the MCP and CLI
+    registrars build identical envelopes to the SQL surface.
+    """
+
+    records: list[dict[str, Any]]
+    columns: list[str]
+    output_classes: dict[str, DataClass]
+    tier: Tier
+    total_count: int
+    truncated: bool
+    actions: list[str] = field(default_factory=list)
+    period: str | None = None
+
+    @property
+    def classes_returned(self) -> list[str]:
+        """Sorted data-class values for the envelope/audit."""
+        if not self.output_classes:
+            return ["aggregate"]
+        return sorted({c.value for c in self.output_classes.values()})
+
+    def to_envelope(self) -> ResponseEnvelope[Any]:
+        """Build the standard response envelope from this result.
+
+        The ReportResult→envelope mapping is identical for both surfaces (only
+        what each does with the envelope differs), so it lives here next to the
+        fields it reads.
+        """
+        return build_envelope(
+            data=self.records,
+            sensitivity=tier_to_sensitivity(self.tier).value,
+            total_count=self.total_count,
+            classes_returned=self.classes_returned,
+            actions=self.actions or None,
+            period=self.period,
+        )
+
+
+def run_report(
+    spec: ReportSpec, db: Database, *, max_rows: int, **params: Any
+) -> ReportResult:
+    """Execute ``spec``'s runner with ``params`` and return redacted results.
+
+    Fetches one extra row to detect truncation, classifies each output column
+    via the report's view, and masks CRITICAL columns before returning.
+    """
+    rq = spec.runner(db, **params)
+    cursor = db.execute(rq.sql, list(rq.params))
+    columns = [d[0] for d in cursor.description] if cursor.description else []
+    rows = cursor.fetchmany(max_rows + 1)
+    truncated = len(rows) > max_rows
+    records = [dict(zip(columns, r, strict=False)) for r in rows[:max_rows]]
+
+    # Classify output columns from the report's DECLARED classes map (ADR-013),
+    # then mask via the shared redaction path. An undeclared column fails closed.
+    # consent=None mirrors the sibling sql_query surface (sql_query.py:280): both
+    # MCP and CLI report calls always mask CRITICAL columns — the CLI posture is
+    # intentionally identical to MCP, not a per-surface divergence.
+    col_classes = classify_columns(spec, columns)
+    redacted = redact_records(records, col_classes, consent=None)
+
+    return ReportResult(
+        records=redacted,
+        columns=columns,
+        output_classes=col_classes,
+        tier=derive_query_tier(col_classes),
+        # total_count > returned makes has_more true downstream; +1 means "at
+        # least one more row" without paying for an exact COUNT(*).
+        total_count=max_rows + 1 if truncated else len(records),
+        truncated=truncated,
+        actions=list(rq.actions),
+        period=rq.period,
+    )

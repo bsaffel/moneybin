@@ -111,7 +111,7 @@ Client-direct OAuth to user-owned data sources. Distinct from `sync` (which medi
 
 | Spec | Type | Status | Summary |
 |---|---|---|---|
-| [Google Sheets](connect-gsheet.md) | Feature | implemented | Live tabular sync from Google Sheets: OAuth user-flow (PKCE), pre-refresh hook + explicit pull, live mirror with soft-delete, stable-key detection for edit-preserving identity, strict drift refusal per-connection. v1 ships two adapters: `transactions` (Tiller-style integrated path → matching/categorization/reports) and `seed` (catch-all escape hatch → JSON storage + auto-generated typed views queryable via SQL/MCP). New `app.gsheet_connections` + `raw.gsheet_seeds` tables; one new column (`deleted_from_source_at`) on `raw.tabular_transactions`. M3F entry. |
+| [Google Sheets](connect-gsheet.md) | Feature | implemented | Live tabular sync from Google Sheets: OAuth user-flow (PKCE), pre-refresh hook + explicit pull, live mirror with soft-delete, stable-key detection for edit-preserving identity, strict drift refusal per-connection. v1 ships two adapters: `transactions` (Tiller-style integrated path → matching/categorization/reports) and `seed` (catch-all escape hatch → JSON storage + auto-generated typed views queryable via SQL/MCP). New `app.gsheet_connections` + `raw.gsheet_seeds` tables; one new column (`deleted_from_source_at`) on `raw.tabular_transactions`. M2E entry. |
 | `connect-airtable.md` | Feature | planned | Future sibling — Airtable as a live tabular source. Shares the connection lifecycle pattern from `connect-gsheet.md`. |
 | `connect-smartsheet.md` | Feature | planned | Future sibling — Smartsheet as a live tabular source. |
 
