@@ -72,6 +72,44 @@ OFX_IMPORT_BATCHES = Counter(
     labelnames=("status",),
 )
 
+# ── Smart import confirmation ────────────────────────────────────────────────
+
+IMPORT_CONFIRMATIONS_TOTAL = Counter(
+    "moneybin_import_confirmations_total",
+    "First-encounter confirms by channel, tier, and outcome.",
+    ("channel", "tier", "outcome"),
+)
+
+IMPORT_DETECTION_SCORE = Histogram(
+    "moneybin_import_detection_score",
+    "Distribution of normalized confidence score across all detections.",
+    buckets=(0.0, 0.5, 0.7, 0.8, 0.9, 0.95, 0.99, 1.0),
+)
+
+IMPORT_SELF_ACCEPT_TOTAL = Counter(
+    "moneybin_import_self_accept_total",
+    "Agent self-accepts at `high` (zero until calibration gate opens).",
+    ("channel",),
+)
+
+IMPORT_OVERRIDE_TOTAL = Counter(
+    "moneybin_import_override_total",
+    "Confirms that supplied a mapping override; high values flag weak detection.",
+    ("channel",),
+)
+
+IMPORT_KNOWN_FORMAT_REUSE_TOTAL = Counter(
+    "moneybin_import_known_format_reuse_total",
+    "Silent reuses of a confirmed layout (mastery-curve KPI).",
+    ("channel",),
+)
+
+IMPORT_REVALIDATION_FAILURE_TOTAL = Counter(
+    "moneybin_import_revalidation_failure_total",
+    "Known layout that failed the replay/validation guard and re-surfaced.",
+    ("channel",),
+)
+
 # ── SQLMesh transforms ───────────────────────────────────────────────────────
 
 SQLMESH_RUN_DURATION_SECONDS = Histogram(
