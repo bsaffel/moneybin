@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import pytest
+
 from moneybin.database import Database
 from moneybin.privacy.taxonomy import CLASSIFICATION
+
+pytestmark = pytest.mark.unit
 
 _TARGET_SCHEMAS = {"app", "core"}
 
@@ -13,10 +17,13 @@ def _catalog_columns(db: Database) -> set[tuple[str, str, str]]:
         """
         SELECT schema_name, table_name, column_name
         FROM duckdb_columns()
-        WHERE schema_name IN ('app', 'core')
         """
     ).fetchall()
-    return {(schema, table, column) for schema, table, column in rows}
+    return {
+        (schema, table, column)
+        for schema, table, column in rows
+        if schema in _TARGET_SCHEMAS
+    }
 
 
 def _registry_columns() -> set[tuple[str, str, str]]:

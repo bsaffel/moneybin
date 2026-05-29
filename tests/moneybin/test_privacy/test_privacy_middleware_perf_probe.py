@@ -10,6 +10,8 @@ import pytest
 from moneybin.database import DatabaseKeyError, DatabaseNotInitializedError
 from tests.scenarios import test_privacy_middleware_perf as perf
 
+pytestmark = pytest.mark.unit
+
 
 def test_persona_probe_does_not_skip_database_key_errors(
     monkeypatch: pytest.MonkeyPatch,
@@ -65,3 +67,45 @@ def test_persona_probe_skips_missing_profile(
 
     assert reason is not None
     assert "requires an active MoneyBin profile" in reason
+
+
+def test_persona_probe_skips_missing_fct_transactions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An untransformed DB with no core table is a setup skip."""
+    import duckdb
+
+    @contextmanager
+    def _raise_missing_table(*, read_only: bool) -> Generator[object, None, None]:
+        assert read_only is True
+        raise duckdb.CatalogException(
+            "Table with name fct_transactions does not exist!"
+        )
+        yield
+
+    monkeypatch.setattr(perf, "get_database", _raise_missing_table)
+
+    reason = perf._persona_db_skip_reason()  # pyright: ignore[reportPrivateUsage]
+
+    assert reason is not None
+    assert "core.fct_transactions" in reason
+
+
+def test_persona_probe_reraises_unrelated_catalog_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unexpected catalog failures are infrastructure errors, not setup skips."""
+    import duckdb
+
+    @contextmanager
+    def _raise_unrelated_catalog_error(
+        *, read_only: bool
+    ) -> Generator[object, None, None]:
+        assert read_only is True
+        raise duckdb.CatalogException("Catalog Error: unexpected schema failure")
+        yield
+
+    monkeypatch.setattr(perf, "get_database", _raise_unrelated_catalog_error)
+
+    with pytest.raises(duckdb.CatalogException, match="unexpected schema failure"):
+        perf._persona_db_skip_reason()  # pyright: ignore[reportPrivateUsage]
