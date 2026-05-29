@@ -10,7 +10,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 M2 closing out and M3 underway. M2A curator state shipped (transaction notes, tags, splits, manual entry, audit log). M2B architecture reference shipped (`architecture-shared-primitives.md`; writer-coordination contract via short-lived per-call connections). M2C brand surface advancing: `moneybin system doctor` integrity command, `reports.*` recipe library (eight curated views), and the `transform_*` MCP toolset closing the agent ingest loop. M3A Plaid Transactions sync shipped (Phase 1). Doc surface tightened for the personas reachable today; MCP surface hardened with protocol-standard annotations, `accounts_resolve`, list-parameter cap, structured error envelopes, and shell completion. Categorization correctness pass: memo-aware matcher, exemplar accumulation, source-precedence enforcement, auto-fan-out after apply; seed merchant catalogs retired in favor of user-driven and LLM-assist-driven merchant creation.
 
+### Added
+- **`import_confirm` MCP tool + `moneybin import confirm` CLI subcommand.**
+  Terminal `_confirm` step of the propose→review→confirm flow for smart tabular
+  imports. First-encounter imports surface a `confirmation_required` envelope;
+  the caller accepts (`accept=True` / `--accept`) or applies a partial-merge
+  column-mapping override (`mapping={...}` / `--mapping field=col`). `save_format`
+  (default `True`) pins the merged mapping to `app.tabular_formats` for silent reuse.
+  Revertible via `import_revert` (data rows) + `system_audit_undo` (format save).
+  See [`docs/specs/smart-import-confirmation.md`](docs/specs/smart-import-confirmation.md).
+- **Cross-channel confidence contract.** Tabular and gsheet channels share a
+  normalized `score` plus derived `tier` (`high`/`medium`/`low`) with configurable
+  bands. Defaults: `T_high=0.90`, `T_med=0.70`. Env vars:
+  `MONEYBIN_IMPORT___CONFIDENCE__T_HIGH` / `MONEYBIN_IMPORT___CONFIDENCE__T_MED`
+  (three underscores between `IMPORT` and `CONFIDENCE` due to Pydantic nested-settings alias).
+- **Tiered agent autonomy gate.** `MONEYBIN_IMPORT___SELF_ACCEPT_HIGH` (default
+  `False`). When enabled after calibration earns the precision bar, MCP agents may
+  self-accept `high`-tier first encounters. The CLI human path always prompts regardless.
+- **New `--confirm`/`--mapping` flags on `moneybin import files`.** `--confirm` /
+  `--no-confirm` accepts or declines a `confirmation_required` proposal inline;
+  `--mapping field=column` (repeatable) is a partial-merge alias of `--override`.
+  Non-TTY / `--output json` returns the `confirmation_required` envelope and exits 0.
+- **`import_files` MCP envelope now returns `confirmation_required` state** on
+  first-encounter unknown layouts, including `proposed_mapping`, `samples`, `flagged`,
+  `missing_required`, `unmapped_columns`, and `actions[]` recovery hints pointing at
+  `import_confirm`.
+- **Six new Prometheus metrics under `moneybin_import_*`:**
+  `confirmations_total{channel,tier,outcome}` (outcomes: `accepted|overridden|declined`),
+  `detection_score` histogram, `self_accept_total{channel}`, `override_total{channel}`,
+  `known_format_reuse_total{channel}`, `revalidation_failure_total{channel}`.
+
 ### Changed
+- **`medium`-confidence tabular imports now gate on confirmation** instead of waving
+  through with a sign-convention log warning. Callers receive a `confirmation_required`
+  envelope (MCP / `--output json`) or an interactive prompt (TTY CLI). Closes the
+  spec-vs-code drift `smart-import-tabular.md` already promised.
+- **`gsheet connect --column-mapping` is now partial-merge.** Only the destination
+  fields you name are overridden; unspecified fields fall back to the detected mapping.
+  Previously the flag replaced the entire mapping — a behavior change to a shipped
+  surface. Confidence bands are aligned to `ImportSettings.confidence`.
 - **Report CLI flags auto-derive from parameter names.** With reports now
   generated from runner signatures, multi-word flags follow the parameter name:
   `moneybin reports cashflow`/`spending` use `--from-month` / `--to-month`

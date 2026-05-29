@@ -105,6 +105,8 @@ not-yet-built.
 | 42| Reverse one audited operation as a unit (undo)                   | `system_audit_undo` *(`operation_id`)* | `system audit undo <operation_id>`                 | —          | live                  |
 | 43| List recent audited operations with undoability                  | `system_audit_history` *(`domain?`, `since?`, `actor?`, `limit?`, `include_undone?`)* | `system audit history` *(`--domain`, `--since`, `--actor`, `--limit`, `--include-undone`)* | — | live |
 | 44| Inspect full before/after for one operation before undoing        | `system_audit_get` *(`operation_id`)* | `system audit get <operation_id>`                  | —          | live                  |
+| 45| Import a file and handle unknown layout via confirmation flow      | `import_files` *(returns `confirmation_required` envelope on first-encounter unknown layouts; `actions[]` contains `import_confirm` hint)* | `import files PATHS... [--confirm/--no-confirm] [--mapping field=col]` *(TTY: interactive prompt; non-TTY/`--output json`: envelope + exit 0)* | —          | live                  |
+| 46| Confirm a proposed import column mapping                          | `import_confirm` *(`file_path`, `accept=True`, `mapping={...}`)* | `import confirm <file> --accept` / `--mapping field=column` | —          | live                  |
 
 *(Bootstrap rows only; full table populates incrementally as
 follow-up work closes the parity backlog. A prior row covering
@@ -129,7 +131,11 @@ Row 41 added 2026-05-23 with the SQL lineage PR: `sql_query` (MCP) and
 `moneybin sql query` (CLI) both mask CRITICAL columns via sqlglot lineage
 through the shared `execute_sql_query` primitive — full MCP↔CLI parity.
 `moneybin db query`/`db shell`/`db ui` remain raw operator access (cat 2 —
-no privacy middleware) and emit a banner pointing at `moneybin sql query`.)*
+no privacy middleware) and emit a banner pointing at `moneybin sql query`.
+Rows 45–46 added 2026-05-29 with the smart-import-confirmation PR: `import_files`
+gains a `confirmation_required` envelope state for first-encounter unknown layouts;
+`import_confirm` (MCP) and `moneybin import confirm` (CLI) are the terminal `_confirm`
+step for ratifying proposed column mappings.)*
 
 ## Exemption categories
 

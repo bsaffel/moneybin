@@ -128,6 +128,18 @@ Coherence requires that when a verb appears, it means the same thing everywhere.
 
 Plus domain-specific discrete verbs (`_rename`, `_archive`, `_revert`) — use these when the verb carries domain meaning the generic verbs would erase.
 
+**`_confirm` vs `_commit`.** These verbs are not interchangeable.
+- `_commit` — the human (or LLM agent acting as the human) has already made a decision in an external workflow (e.g., annotated a batch offline); the tool finalizes those *externally-decided* results. Example: `transactions_categorize_commit` accepts a pre-reviewed batch.
+- `_confirm` — the *system* has proposed something and waits for the caller to ratify or override; the tool is the terminal step of a propose→review→confirm loop driven by the tool's own detection engine. Example: `import_confirm` ratifies a mapping the engine detected.
+
+Use `_confirm` when the proposal originates from the system. Use `_commit` when the decision originates from the caller.
+
+**Canonical confirm pairing (`import_files` + `import_confirm`).** The propose→review→confirm pattern uses a **gated establish** tool plus a `_confirm` terminal tool:
+1. The establish tool (`import_files`) runs detection and returns a `confirmation_required` envelope (with `proposed_mapping`, `samples`, `flagged`, and `actions[]` hints) when it encounters an unknown layout instead of importing.
+2. The caller inspects the proposal (optionally via `import_preview`) and calls the `_confirm` tool (`import_confirm`) with `accept=True` or a partial `mapping={...}` override to ratify and execute.
+
+This is the canonical shape for any new system-proposed-then-ratified flow: the entry tool gates and returns the proposal; a `_confirm` tool takes the ratification. Do not introduce `_apply`, `_execute`, or action-polymorphism in this pattern.
+
 **`_link` vs `_connect`.** `_link` = mediated provider (a third-party aggregator stands between MoneyBin and the institution; server holds ephemeral tokens; the client never speaks the institution's API directly; the `sync-*` family). `_connect` = user-controlled storage (direct OAuth or URL binding; the client speaks the provider's API directly; tokens live in the local `SecretStore`; the `connect-*` family). Never interchangeable — the verb predicts the trust model.
 
 **Verbs to avoid:**
