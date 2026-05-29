@@ -7,9 +7,11 @@ from moneybin.services.import_confirmation import (
     Accept,
     BridgePayload,
     ConfirmationRequired,
+    MappingValidationError,
     Override,
     ProposedMapping,
     Resolved,
+    validate_partial_mapping,
 )
 
 
@@ -111,3 +113,91 @@ class TestBridgePayload:
     def test_carries_channel_specific_blob(self) -> None:
         bp = BridgePayload(payload={"ir": {"pages": []}, "extraction_request": "rows"})
         assert "ir" in bp.payload
+
+
+class TestValidatePartialMapping:
+    """Validate validate_partial_mapping merging and validation logic."""
+
+    def test_accepts_complete_mapping(self) -> None:
+        proposed = {"transaction_date": "Date", "amount": "Amt"}
+        override: dict[str, str] = {}
+        validate_partial_mapping(
+            proposed=proposed,
+            override=override,
+            available_columns=("Date", "Amt", "Memo"),
+            required_fields=("transaction_date", "amount"),
+        )
+
+    def test_accepts_override_filling_required(self) -> None:
+        proposed = {"transaction_date": "Date"}
+        override = {"amount": "Amt"}
+        validate_partial_mapping(
+            proposed=proposed,
+            override=override,
+            available_columns=("Date", "Amt"),
+            required_fields=("transaction_date", "amount"),
+        )
+
+    def test_rejects_missing_required_after_merge(self) -> None:
+        proposed = {"transaction_date": "Date"}
+        override: dict[str, str] = {}
+        with pytest.raises(MappingValidationError, match="missing required"):
+            validate_partial_mapping(
+                proposed=proposed,
+                override=override,
+                available_columns=("Date", "Amt"),
+                required_fields=("transaction_date", "amount"),
+            )
+
+    def test_rejects_unknown_source_column(self) -> None:
+        proposed = {"transaction_date": "Date", "amount": "Amt"}
+        override = {"description": "Notes"}
+        with pytest.raises(MappingValidationError, match="not in the source"):
+            validate_partial_mapping(
+                proposed=proposed,
+                override=override,
+                available_columns=("Date", "Amt"),
+                required_fields=("transaction_date", "amount"),
+            )
+
+    def test_override_replaces_proposed_for_named_field(self) -> None:
+        proposed = {"transaction_date": "Date", "amount": "Amt", "description": "Memo"}
+        override = {"description": "Notes"}
+        validate_partial_mapping(
+            proposed=proposed,
+            override=override,
+            available_columns=("Date", "Amt", "Memo", "Notes"),
+            required_fields=("transaction_date", "amount", "description"),
+        )
+
+    def test_per_channel_required_fields(self) -> None:
+        proposed = {"transaction_date": "Date", "amount": "Amt"}
+        override: dict[str, str] = {}
+        validate_partial_mapping(
+            proposed=proposed,
+            override=override,
+            available_columns=("Date", "Amt"),
+            required_fields=("transaction_date", "amount"),
+        )
+        with pytest.raises(MappingValidationError, match="missing required"):
+            validate_partial_mapping(
+                proposed=proposed,
+                override=override,
+                available_columns=("Date", "Amt"),
+                required_fields=("transaction_date", "amount", "description"),
+            )
+
+    def test_returns_merged_mapping(self) -> None:
+        proposed = {"transaction_date": "Date", "amount": "Amt", "description": "Memo"}
+        override = {"description": "Notes"}
+        merged = validate_partial_mapping(
+            proposed=proposed,
+            override=override,
+            available_columns=("Date", "Amt", "Memo", "Notes"),
+            required_fields=("transaction_date", "amount", "description"),
+        )
+        assert merged == {
+            "transaction_date": "Date",
+            "amount": "Amt",
+            "description": "Notes",
+        }
