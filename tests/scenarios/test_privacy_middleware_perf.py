@@ -81,8 +81,8 @@ def _persona_db_skip_reason() -> str | None:
     The runner opens the configured DB read-only and runs a cheap count
     against ``core.fct_transactions``. Missing DBs, empty DBs, and DBs
     without transformed core tables skip because the perf baseline is not
-    meaningful there. Key/open failures are not caught; those are real
-    infrastructure problems and must fail visibly.
+    meaningful there. Key/open failures and malformed profile config are
+    not caught; those are infrastructure problems and must fail visibly.
     """
     try:
         with get_database(read_only=True) as db:
@@ -94,11 +94,13 @@ def _persona_db_skip_reason() -> str | None:
             f"perf baseline test requires a populated persona DB; {_PERSONA_SETUP_HINT}"
         )
     except RuntimeError as e:
+        # Keep in sync with config.py _get_settings() when no profile is active.
         if "No profile set" not in str(e):
             raise
         return f"perf baseline test requires an active MoneyBin profile; {_PERSONA_SETUP_HINT}"
     except duckdb.CatalogException as e:
-        if "fct_transactions" not in str(e):
+        message = str(e)
+        if "fct_transactions" not in message and "Schema with name core" not in message:
             raise
         return (
             "perf baseline test requires transformed core.fct_transactions; "

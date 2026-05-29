@@ -91,6 +91,26 @@ def test_persona_probe_skips_missing_fct_transactions(
     assert "core.fct_transactions" in reason
 
 
+def test_persona_probe_skips_missing_core_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An initialized but untransformed DB is a setup skip."""
+    import duckdb
+
+    @contextmanager
+    def _raise_missing_schema(*, read_only: bool) -> Generator[object, None, None]:
+        assert read_only is True
+        raise duckdb.CatalogException("Schema with name core does not exist!")
+        yield
+
+    monkeypatch.setattr(perf, "get_database", _raise_missing_schema)
+
+    reason = perf._persona_db_skip_reason()  # pyright: ignore[reportPrivateUsage]
+
+    assert reason is not None
+    assert "core.fct_transactions" in reason
+
+
 def test_persona_probe_reraises_unrelated_catalog_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -108,4 +128,21 @@ def test_persona_probe_reraises_unrelated_catalog_errors(
     monkeypatch.setattr(perf, "get_database", _raise_unrelated_catalog_error)
 
     with pytest.raises(duckdb.CatalogException, match="unexpected schema failure"):
+        perf._persona_db_skip_reason()  # pyright: ignore[reportPrivateUsage]
+
+
+def test_persona_probe_reraises_malformed_profile_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Malformed profile config is an infrastructure error, not a setup skip."""
+
+    @contextmanager
+    def _raise_config_error(*, read_only: bool) -> Generator[object, None, None]:
+        assert read_only is True
+        raise ValueError("Configuration error for profile 'bad': invalid path")
+        yield
+
+    monkeypatch.setattr(perf, "get_database", _raise_config_error)
+
+    with pytest.raises(ValueError, match="Configuration error"):
         perf._persona_db_skip_reason()  # pyright: ignore[reportPrivateUsage]
