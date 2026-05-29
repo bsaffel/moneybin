@@ -38,10 +38,10 @@ from __future__ import annotations
 from datetime import date, timedelta
 from pathlib import Path
 
+import duckdb
 import pytest
 
-from moneybin.database import get_database
-from moneybin.errors import DatabaseKeyError
+from moneybin.database import DatabaseNotInitializedError, get_database
 from moneybin.privacy.redaction import redact_records
 from moneybin.privacy.sql_lineage import (
     expand_star,
@@ -68,36 +68,55 @@ TOTAL_REGRESSION_PCT = 20.0
 # reports_networth_history when called without dates.
 _HISTORY_FROM = date.today() - timedelta(days=365)
 _HISTORY_TO = date.today()
+_PERSONA_SETUP_HINT = (
+    "set MONEYBIN_HOME + MONEYBIN_PROFILE and run "
+    "`moneybin synthetic generate family --seed 8229 --years 3 "
+    "&& moneybin transform apply` first"
+)
 
 
-def _persona_db_available() -> bool:
-    """Probe whether a populated persona DB is reachable.
+def _persona_db_skip_reason() -> str | None:
+    """Return why the perf persona DB is absent, or ``None`` when ready.
 
     The runner opens the configured DB read-only and runs a cheap count
-    against ``core.fct_transactions``. Anything that prevents that — no
-    profile, sealed DB, empty DB, missing core tables — counts as
-    unavailable and the test skips.
+    against ``core.fct_transactions``. Missing DBs, empty DBs, and DBs
+    without transformed core tables skip because the perf baseline is not
+    meaningful there. Key/open failures are not caught; those are real
+    infrastructure problems and must fail visibly.
     """
     try:
         with get_database(read_only=True) as db:
             (count,) = db.execute(
                 "SELECT COUNT(*) FROM core.fct_transactions"
             ).fetchone() or (0,)
-            return count > 0
-    except (DatabaseKeyError, Exception):  # noqa: BLE001 — any open/query error → skip
-        return False
+    except DatabaseNotInitializedError:
+        return (
+            f"perf baseline test requires a populated persona DB; {_PERSONA_SETUP_HINT}"
+        )
+    except RuntimeError as e:
+        if "No profile set" not in str(e):
+            raise
+        return f"perf baseline test requires an active MoneyBin profile; {_PERSONA_SETUP_HINT}"
+    except duckdb.CatalogException as e:
+        if "fct_transactions" not in str(e):
+            raise
+        return (
+            "perf baseline test requires transformed core.fct_transactions; "
+            f"{_PERSONA_SETUP_HINT}"
+        )
+
+    if count <= 0:
+        return (
+            f"perf baseline test requires a populated persona DB; {_PERSONA_SETUP_HINT}"
+        )
+    return None
 
 
 @pytest.mark.perf
 def test_privacy_middleware_within_budget() -> None:
     """Re-run baseline flows post-middleware; assert deltas within budget."""
-    if not _persona_db_available():
-        pytest.skip(
-            "perf baseline test requires a populated persona DB; set "
-            "MONEYBIN_HOME + MONEYBIN_PROFILE and run "
-            "`moneybin synthetic generate family --seed 8229 --years 3 "
-            "&& moneybin transform apply` first"
-        )
+    if reason := _persona_db_skip_reason():
+        pytest.skip(reason)
 
     baseline = read_baseline(BASELINE_PATH)
 
@@ -185,13 +204,8 @@ def test_sql_query_lineage_overhead_within_budget() -> None:
     is independently derived (the PR's own contract: lineage adds ≤ P50_BUDGET_MS
     p50), not a paste of observed numbers.
     """
-    if not _persona_db_available():
-        pytest.skip(
-            "perf lineage test requires a populated persona DB; set "
-            "MONEYBIN_HOME + MONEYBIN_PROFILE and run "
-            "`moneybin synthetic generate family --seed 8229 --years 3 "
-            "&& moneybin transform apply` first"
-        )
+    if reason := _persona_db_skip_reason():
+        pytest.skip(reason)
 
     def _raw() -> object:
         with get_database(read_only=True) as db:
