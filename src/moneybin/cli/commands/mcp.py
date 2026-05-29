@@ -471,10 +471,10 @@ def _maybe_warn_auto_load(client: str, profile: str) -> None:
     For codex (CLI/Desktop/IDE) and gemini-cli, install means MoneyBin starts on
     every shell launch of that tool. Two sessions on the same profile share one
     DuckDB file: reads coexist with other reads and writes serialize via the
-    per-operation lock. A tool call can fail only when another session holds the
-    lock past the retry window (a mid-flight import or transform) — writes always,
-    and reads only when they overlap that long write. Surface this so users can
-    choose paste-only instead.
+    per-operation lock. A write-mode call fails only when another session holds a
+    conflicting lock past the retry window (a long write, or a long read holding
+    the read lock); a read-mode call fails only when it lands during a long write.
+    Surface this so users can choose paste-only instead.
     """
     if client not in _PER_INVOCATION_CLIENTS:
         return
@@ -488,8 +488,9 @@ def _maybe_warn_auto_load(client: str, profile: str) -> None:
         f"⚠️  {client} auto-loads MoneyBin on {surface}. Two concurrent "
         f"sessions on profile '{profile}' share one DuckDB file. Writes "
         "serialize and reads usually coexist; a tool call can fail only when "
-        "another session is mid-import/transform (writes always, reads only "
-        "when they overlap it). See docs/guides/mcp-clients.md."
+        "another session holds a conflicting lock past the retry window "
+        "(a long write, or a long read for write-mode calls). See "
+        "docs/guides/mcp-clients.md."
     )
 
 

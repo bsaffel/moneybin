@@ -406,7 +406,7 @@ Lifecycle, exploration, and key management on the encrypted database.
 | `db backup` | Create a timestamped encrypted backup. | `--dest <path>` |
 | `db restore <backup-path>` | Restore from a backup file. | `-y, --yes` |
 | `db ps` | List processes currently holding the database file. | — |
-| `db kill <pid>` | Kill a process holding the database. | `-y, --yes` |
+| `db kill` | Kill processes holding the database. | `-y, --yes` |
 | `db key show` | Print the encryption key to stderr (use with care). | — |
 | `db key rotate` | Re-encrypt with a new key. | `-y, --yes` |
 | `db key export <path>` | Export the key to a file (encrypted). | — |

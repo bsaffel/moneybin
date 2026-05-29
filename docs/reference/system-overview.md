@@ -166,7 +166,7 @@ The DuckDB file is the durable artifact — back it up like any other file. The 
 ## Concurrency and isolation per profile
 
 - **Profiles are isolated by file.** Each profile is its own encrypted DuckDB file, its own `logs/`, its own `backups/`, its own keychain entry (keyed by profile name), and its own `app.metrics` rows. No shared mutable state.
-- **DuckDB is single-writer per file.** Two `moneybin` processes writing to the same profile concurrently will conflict — one waits or fails. Multiple read-only attaches to the same file work concurrently.
+- **DuckDB is single-writer per file.** Two `moneybin` processes writing to the same profile concurrently will conflict — one waits or fails. Multiple read-only attaches to the same file work concurrently when no write is active; a read-only open that lands during an active write retries on the same backoff as writers.
 - **Per-machine, not per-cluster.** The encrypted DB file can be replicated across machines via Syncthing / iCloud / etc., but concurrent writes from two machines are not supported. Treat the file as owned by one host at a time.
 - **Two simultaneous CLI invocations against different profiles** are fully isolated — different files, different connections, different keychain entries.
 - **The write lock is per-operation, not per-session.** An MCP server takes the exclusive write lock only for the duration of each write tool call (read calls run concurrently and hold no write lock), so a long-running MCP session and a concurrent `moneybin import files ...` against the same profile contend only when both write at once — the later writer retries briefly before failing.

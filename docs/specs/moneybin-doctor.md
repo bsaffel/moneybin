@@ -32,7 +32,7 @@ Adding a new invariant in the future: add a `.sql` file to `sqlmesh/audits/` —
 
 ### Connection model
 
-`DoctorService` is read-only. Per ADR-010, it should use `Database(read_only=True)` when that API is implemented. Until then it uses the current `get_database()` singleton. `sqlmesh_context()` (which `DoctorService._run_sqlmesh_audits()` uses) borrows the singleton connection — the database must be open before calling.
+`DoctorService` is read-only by design. It takes a `Database` via constructor; current call sites (`mcp/tools/system.py` and `cli/commands/system/doctor.py`) still open with `get_database()` (write mode), but [ADR-010](../decisions/010-writer-coordination.md) has shipped `get_database(read_only=True)`, so flipping the call sites is a small follow-up the design unlocks. `sqlmesh_context()` (used by `DoctorService._run_sqlmesh_audits()`) accepts an explicit `db: Database` parameter — the caller passes its connection.
 
 ## Invariants
 
