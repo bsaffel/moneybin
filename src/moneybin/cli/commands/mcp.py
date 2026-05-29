@@ -489,8 +489,9 @@ def _maybe_warn_auto_load(client: str, profile: str) -> None:
         f"sessions on profile '{profile}' share one DuckDB file. Writes "
         "serialize and reads usually coexist; a tool call can fail only when "
         "another session holds a conflicting lock past the retry window "
-        "(a long write, or a long read for write-mode calls). See "
-        "docs/guides/mcp-clients.md."
+        "(a long write, or a long read for write-mode calls). To opt out of "
+        "auto-load, re-run with `mcp install --print` and paste the snippet "
+        "manually. See docs/guides/mcp-clients.md."
     )
 
 

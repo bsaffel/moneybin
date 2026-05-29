@@ -211,7 +211,7 @@ MoneyBin stores each profile's data in a single-writer DuckDB file, but each Mon
 | Pattern | Clients | Behavior |
 |---|---|---|
 | App-shared connection | Claude Desktop, ChatGPT Desktop, Cursor, VS Code, Windsurf | One server process per app instance, spawned at launch and reused across all chats. |
-| Per-invocation | Claude Code (via `make claude-mcp`), Codex CLI, Gemini CLI | One server process per CLI invocation. Each new shell session spawns a fresh server; servers coexist on the same profile and contend only on concurrent writes. |
+| Per-invocation | Claude Code (via `make claude-mcp`), Codex CLI, Gemini CLI | One server process per CLI invocation. Each new shell session spawns a fresh server; servers coexist on the same profile and contend only when operations need conflicting locks — concurrent writes, or a write racing a long-running read. |
 
 Different *profiles* never collide — each has its own DB and lock — so `MoneyBin (alice)` and `MoneyBin (bob)` can coexist in the same client without issue. Write contention only ever arises between concurrent sessions on the **same** profile.
 

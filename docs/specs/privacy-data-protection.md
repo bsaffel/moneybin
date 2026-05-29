@@ -138,8 +138,10 @@ duration of the shell session.
     - `execute(query, params)` — parameterized SQL execution
     - `sql(query)` — convenience for parameter-free queries
     - `close()` — close connection and release resources
-19. A module-level `get_database()` function provides singleton access, following the
-    `get_settings()` pattern.
+19. A module-level `get_database()` factory returns a fresh short-lived `Database`
+    per call (per [ADR-010](../decisions/010-writer-coordination.md)) — no singleton.
+    Read-only opens coexist across processes; write opens are exclusive with
+    retry-on-contention.
 20. The `Database` class does NOT own query logic, transaction boundaries, domain rules,
     or data access patterns. It is infrastructure — the schema is the API.
 21. When `MONEYBIN_NO_AUTO_UPGRADE=1` is set, the initialization sequence skips steps
@@ -269,8 +271,9 @@ class DatabaseConfig(BaseModel):
 - `src/moneybin/secrets.py` — `SecretStore` class, `SecretNotFoundError` exception.
   Sole `keyring` consumer: `get_key()`, `set_key()`, `delete_key()` for keychain
   secrets; `get_env()` for sensitive env vars.
-- `src/moneybin/database.py` — `Database` class, `get_database()` singleton,
-  `DatabaseKeyError` exception. Uses `SecretStore` for key retrieval.
+- `src/moneybin/database.py` — `Database` class, `get_database()` factory
+  (short-lived per-operation connections per ADR-010), `DatabaseKeyError`
+  exception. Uses `SecretStore` for key retrieval.
 - `src/moneybin/log_sanitizer.py` — `SanitizedLogFormatter` with PII pattern detection
 - `src/moneybin/cli/commands/db.py` — `lock`, `unlock`, `key show`, `key rotate`,
   `key export`, `key import`, `key verify` subcommands (integrated into existing
@@ -446,8 +449,9 @@ this spec — the CLI is the primary interface for infrastructure concerns.
   Mock `SecretStore` in tests.
 - **Initialization:** creates in-memory connection, attaches encrypted
   file, runs init_schemas, runs migrations.
-- **Singleton:** `get_database()` returns same instance on repeated calls. Cache
-  invalidation on profile change.
+- **Per-call connections:** `get_database()` returns a fresh `Database` each call
+  (per ADR-010); profile changes take effect on the next call without explicit
+  cache invalidation.
 - **Auto-key mode:** `db init` generates 256-bit key, stores via
   `SecretStore.set_key()`, creates encrypted database.
 - **Passphrase mode:** `db init` derives key via Argon2id, stores derived key via

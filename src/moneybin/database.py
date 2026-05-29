@@ -231,8 +231,12 @@ def _attach_encrypted(conn: "duckdb.DuckDBPyConnection", sql: str) -> None:
 class Database:
     """Encrypted DuckDB connection manager.
 
-    One long-lived read-write connection per process. The initialization
-    sequence:
+    Short-lived encrypted connection. Acquire via ``get_database()``, use,
+    and release via the context manager — there is no process-level
+    singleton (per ADR-010). Write-mode opens run the initialization
+    sequence below; read-only opens (``read_only=True``) skip steps e–h.
+
+    Initialization sequence (write mode):
         a. Retrieve encryption key via SecretStore
         b. Open in-memory DuckDB connection
         c. Attach encrypted database file
@@ -772,8 +776,12 @@ def get_database(
     Each call opens a fresh connection; callers must close it when done
     (``with get_database() as db: ...`` closes automatically).
 
-    Write connections retry on DatabaseLockError with exponential backoff
-    (start 50 ms, ×1.5, cap 500 ms) until max_wait is exhausted.
+    Both read-only and write connections retry on DatabaseLockError with
+    exponential backoff (start 50 ms, ×1.5, cap 500 ms) until max_wait is
+    exhausted — DuckDB's exclusive/shared-lock matrix means a read-only
+    open also fails (and retries) when another process holds a write lock,
+    and a write open fails (and retries) when another process holds a
+    read-only attach.
     """
     global _database_accessed, _database_written, _active_write_conn  # noqa: PLW0603
     settings = get_settings()
