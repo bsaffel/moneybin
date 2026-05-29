@@ -166,7 +166,7 @@ moneybin mcp install --client gemini-cli -y
 - **Config file:** `~/.gemini/settings.json`.
 - **Format:** JSON, under the `mcpServers` key.
 - **Restart required:** No — `gemini` reads settings on each invocation.
-- **Server lifecycle:** Per-invocation. Every `gemini` command in any terminal spawns its own MoneyBin server. Multiple `gemini` sessions on the same profile coexist — reads run concurrently and writes serialize; a write fails only if another session holds the lock past the retry window — see [Concurrency](#concurrency-which-clients-share-a-server) below.
+- **Server lifecycle:** Per-invocation. Every `gemini` command in any terminal spawns its own MoneyBin server. Multiple `gemini` sessions on the same profile coexist — reads usually coexist and writes serialize; a tool call fails only when another session holds the lock past the retry window — writes always, reads only when they overlap a long write — see [Concurrency](#concurrency-which-clients-share-a-server) below.
 - **Confirmation UI:** `gemini` prompts in the terminal before invoking tools by default. Tool annotations are not currently surfaced in the prompt text.
 
 ### Codex (CLI, Desktop app, IDE extension)
@@ -206,7 +206,7 @@ This invocation always prints the canonical snippet plus a numbered Connector-se
 
 ## Concurrency: which clients share a server
 
-MoneyBin stores each profile's data in a single-writer DuckDB file, but each MoneyBin process opens **short-lived, per-operation connections** rather than holding the file open for its whole lifetime. As a result, **multiple MoneyBin processes (MCP servers and CLI commands) can run against the same profile at once:** reads attach in shared mode and run concurrently; writes take the exclusive lock one at a time, retrying briefly (up to 5 s) when another writer holds it. A write fails only when a long operation — a large import or a transform — holds the lock past that retry window, and only that one operation fails, not the whole session.
+MoneyBin stores each profile's data in a single-writer DuckDB file, but each MoneyBin process opens **short-lived, per-operation connections** rather than holding the file open for its whole lifetime. As a result, **multiple MoneyBin processes (MCP servers and CLI commands) can run against the same profile at once:** reads attach in shared mode and coexist with other reads; writes take the exclusive lock one at a time, retrying briefly (up to 5 s) when another writer holds it. A read-only open that races an active write retries on the same backoff. A call fails only when a long operation — a large import or a transform — holds the lock past that retry window: any concurrent write fails, plus any read that lands during the long write. Only that one operation fails, not the whole session.
 
 | Pattern | Clients | Behavior |
 |---|---|---|
@@ -218,7 +218,7 @@ Different *profiles* never collide — each has its own DB and lock — so `Mone
 Practical guidance:
 
 - **One app-based client per profile is still simplest.** Two app instances on the same profile both run fine, but their writes serialize — a write issued while the other instance is mid-import or mid-transform can wait and then fail with a lock-timeout error.
-- **Concurrent writes serialize.** Running a MoneyBin CLI write command (`moneybin import`, `moneybin transform apply`, etc.) while a desktop client is writing to the same profile can make one of them wait or time out. Read commands (`moneybin transactions`, `moneybin reports`, etc.) are safe to run anytime.
+- **Concurrent writes serialize.** Running a MoneyBin CLI write command (`moneybin import`, `moneybin transform apply`, etc.) while a desktop client is writing to the same profile can make one of them wait or time out. Read commands (`moneybin transactions`, `moneybin reports`, etc.) rarely contend with writes; if a read fails with a lock error, a long write in progress is the cause.
 - **CLI clients (codex, gemini-cli) auto-load on every invocation.** Installing into them means every `codex` or `gemini` command in any terminal will try to spawn the MoneyBin server. For occasional use, prefer `mcp install --print` and paste the snippet manually only when you want it. Claude Code is the deliberate exception — `make claude-mcp` makes it explicit per-session.
 
 ## Verifying the connection
@@ -311,7 +311,7 @@ What does not work today: running `moneybin mcp serve` as a systemd unit or Dock
 
 **Tools error with "no profile" or similar.** The install snippet embeds whichever profile was active when you ran `mcp install`. To change it, re-run with `--profile <name>` (see [Switching profiles](#switching-profiles)).
 
-**"Database is locked" (server fails to start, or a tool call errors).** Another process is holding the *write* lock on the same profile past the ~5 s retry window — almost always a long write in progress: (a) a `moneybin transform apply` or large `import` running in another terminal; (b) a desktop client mid-import or mid-transform on the same profile; (c) a stuck process that never released the lock. Read tools and read commands are unaffected. Run `moneybin db ps` to see who holds the file and `moneybin db kill <pid>` to clear a stuck writer, or switch profiles.
+**"Database is locked" (server fails to start, or a tool call errors).** Another process is holding the *write* lock on the same profile past the ~5 s retry window — almost always a long write in progress: (a) a `moneybin transform apply` or large `import` running in another terminal; (b) a desktop client mid-import or mid-transform on the same profile; (c) a stuck process that never released the lock. Read tools and read commands are usually unaffected; if a read also fails with a lock error, the same long write is the cause. Run `moneybin db ps` to see who holds the file and `moneybin db kill <pid>` to clear a stuck writer, or switch profiles.
 
 **"Cannot parse existing config" on install.** The target file has invalid JSON or TOML. Fix the syntax in your editor and re-run, or use the `<name>.bak` recovery path in [Uninstall and reset](#uninstall-and-reset).
 
