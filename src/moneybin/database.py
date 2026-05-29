@@ -287,6 +287,12 @@ class Database:
         self._closed = False
         self._read_only = read_only
 
+        if read_only and not db_path.exists():
+            raise DatabaseNotInitializedError(
+                f"Database not found at {db_path}.\n"
+                f"Run 'moneybin db init' to initialize it first."
+            )
+
         store = secret_store or SecretStore()
 
         global _cached_encryption_key  # noqa: PLW0603
@@ -304,11 +310,6 @@ class Database:
             _cached_encryption_key = encryption_key
 
         if read_only:
-            if not db_path.exists():
-                raise DatabaseNotInitializedError(
-                    f"Database not found at {db_path}.\n"
-                    f"Run 'moneybin db init' to initialize it first."
-                )
             self._conn = duckdb.connect()
             _attach_encrypted(
                 self._conn, build_attach_sql(db_path, encryption_key, read_only=True)

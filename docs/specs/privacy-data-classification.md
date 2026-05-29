@@ -65,11 +65,12 @@ from context. The full registry lives in
 `src/moneybin/privacy/taxonomy.py`; this table only covers the entries
 that required a call.
 
-The audit was conducted by static enumeration of `sqlmesh/models/core/`
-and `src/moneybin/sql/schema/app_*.sql` — the keychain was unavailable
-in the sandbox, so a live `duckdb_columns()` enumeration could not be
-performed. Migrations through V013 were reviewed and do not add columns
-beyond what the schema files declare.
+The audit was initially conducted by static enumeration of
+`sqlmesh/models/core/` and `src/moneybin/sql/schema/app_*.sql`. CI now
+enforces the live catalog contract through
+`tests/moneybin/test_privacy/test_classification_registry_coverage.py`,
+which opens an encrypted temporary database with a test secret store and
+compares `duckdb_columns()` against `CLASSIFICATION` in both directions.
 
 ### `_id`-suffixed columns
 

@@ -14,6 +14,7 @@ from moneybin.database import (
     Database,
     DatabaseKeyError,
     DatabaseLockError,
+    DatabaseNotInitializedError,
     get_database,
 )
 
@@ -156,6 +157,21 @@ class TestDatabaseInit:
         db_path = db_dir / "moneybin.duckdb"
         with pytest.raises(DatabaseKeyError, match="encryption key"):
             Database(db_path, secret_store=store)
+
+    def test_read_only_missing_file_does_not_consult_secret_store(
+        self, db_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Missing read-only DB reports initialization state before key lookup."""
+        import moneybin.database as db_module
+
+        monkeypatch.setattr(db_module, "_cached_encryption_key", None)
+        store = MagicMock()
+        db_path = db_dir / "missing.duckdb"
+
+        with pytest.raises(DatabaseNotInitializedError, match="Database not found"):
+            Database(db_path, read_only=True, secret_store=store)
+
+        store.get_key.assert_not_called()
 
 
 class TestDatabaseOperations:
