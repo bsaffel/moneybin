@@ -6,6 +6,7 @@ a confidence tier. This is the core intelligence of the smart importer.
 
 import logging
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import polars as pl
 
@@ -26,6 +27,9 @@ from moneybin.extractors.tabular.formats import (
 from moneybin.extractors.tabular.sign_convention import (
     infer_sign_convention,
 )
+
+if TYPE_CHECKING:
+    from moneybin.extractors.confidence import Confidence
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +83,27 @@ class MappingResult:
 
     sample_values: dict[str, list[str]] = field(default_factory=dict)
     """Sample values for each mapped field."""
+
+    score: float = 0.0
+    """Normalized confidence in [0, 1]. Bands derive the `confidence` tier."""
+
+    missing_required: tuple[str, ...] = ()
+    """Required destination fields that could not be resolved at all."""
+
+    def to_confidence(self, *, t_high: float, t_med: float) -> "Confidence":
+        """Return the channel-agnostic Confidence view of this result.
+
+        `t_high` / `t_med` typically come from `ImportSettings.confidence`;
+        passing them here lets callers respect runtime-tuned thresholds.
+        """
+        from moneybin.extractors.confidence import Confidence, tier_for
+
+        return Confidence(
+            score=self.score,
+            tier=tier_for(self.score, t_high=t_high, t_med=t_med),
+            flagged=tuple(self.flagged_fields),
+            missing_required=self.missing_required,
+        )
 
 
 def map_columns(
@@ -164,7 +189,10 @@ def map_columns(
 
     # Confidence tier
     unmapped = [c for c in df.columns if c not in claimed]
-    confidence = _assign_confidence(mapping, flagged, date_format)
+    score, missing_required = _score_mapping(mapping, flagged, date_format)
+    from moneybin.extractors.confidence import tier_for
+
+    confidence = tier_for(score, t_high=0.90, t_med=0.70)
 
     # Convert None → "" for the public sample_values (callers don't need nulls).
     sample_values: dict[str, list[str]] = {
@@ -182,6 +210,8 @@ def map_columns(
         unmapped_columns=unmapped,
         flagged_fields=flagged,
         sample_values=sample_values,
+        score=score,
+        missing_required=missing_required,
     )
 
 
@@ -253,31 +283,28 @@ def _score_column_for_field(values: list[str], field_name: str) -> float:
     return 0.0
 
 
-def _assign_confidence(
+def _score_mapping(
     mapping: dict[str, str],
     flagged: list[str],
     date_format: str | None,
-) -> ConfidenceType:
-    """Assign confidence tier based on mapping quality.
-
-    Args:
-        mapping: Current field → column mapping.
-        flagged: Fields matched via content fallback (not header).
-        date_format: Detected date format, or None if undetected.
-
-    Returns:
-        Confidence tier: "high", "medium", or "low".
-    """
+) -> tuple[float, tuple[str, ...]]:
+    """Compute a normalized confidence score + the missing-required set."""
     has_date = "transaction_date" in mapping
     has_amount = "amount" in mapping or (
         "debit_amount" in mapping and "credit_amount" in mapping
     )
     has_description = "description" in mapping
-
-    if not (has_date and has_amount and has_description):
-        return "low"
-
-    if flagged or date_format is None:
-        return "medium"
-
-    return "high"
+    missing: list[str] = []
+    if not has_date:
+        missing.append("transaction_date")
+    if not has_amount:
+        missing.append("amount")
+    if not has_description:
+        missing.append("description")
+    if missing:
+        return 0.40, tuple(missing)
+    if date_format is None:
+        return 0.75, ()
+    if flagged:
+        return 0.85, ()
+    return 1.0, ()
