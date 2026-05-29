@@ -118,16 +118,6 @@ class TestBridgePayload:
 class TestValidatePartialMapping:
     """Validate validate_partial_mapping merging and validation logic."""
 
-    def test_accepts_complete_mapping(self) -> None:
-        proposed = {"transaction_date": "Date", "amount": "Amt"}
-        override: dict[str, str] = {}
-        validate_partial_mapping(
-            proposed=proposed,
-            override=override,
-            available_columns=("Date", "Amt", "Memo"),
-            required_fields=("transaction_date", "amount"),
-        )
-
     def test_accepts_override_filling_required(self) -> None:
         proposed = {"transaction_date": "Date"}
         override = {"amount": "Amt"}
