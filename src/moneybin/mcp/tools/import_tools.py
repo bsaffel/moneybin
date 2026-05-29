@@ -481,7 +481,8 @@ def register_import_tools(mcp: FastMCP) -> None:
         "the batch; transforms run once at end-of-batch unless deferred. "
         "Writes raw.* source tables and raw.import_log; revert each import "
         "via import_revert with the returned import_id. "
-        "Amounts use accounting convention: negative=expense, positive=income.",
+        "Amounts use the accounting convention: negative=expense, "
+        "positive=income; transfers exempt.",
     )
     register(
         mcp,
@@ -522,5 +523,6 @@ def register_import_tools(mcp: FastMCP) -> None:
         "Writes raw.tabular_transactions (data load) and app.tabular_formats "
         "(when save_format=True). Data load is reversible via import_revert; "
         "format save can be undone via system_audit_undo. "
-        "Amounts use the accounting convention: negative=expense, positive=income.",
+        "Amounts use the accounting convention: negative=expense, "
+        "positive=income; transfers exempt.",
     )
