@@ -30,6 +30,7 @@ from moneybin.metrics.registry import (
 from moneybin.repositories.imports_repo import ImportsRepo
 from moneybin.services._validators import validate_slug
 from moneybin.services.audit_service import AuditService
+from moneybin.services.import_confirmation import ActorKind
 from moneybin.services.refresh import refresh as _refresh
 
 logger = logging.getLogger(__name__)
@@ -645,6 +646,8 @@ class ImportService:
         no_row_limit: bool = False,
         no_size_limit: bool = False,
         auto_accept: bool = False,
+        confirm: bool = False,
+        actor_kind: "ActorKind" = "human",
     ) -> ImportResult:
         """Import a tabular file through the five-stage pipeline.
 
@@ -664,6 +667,8 @@ class ImportService:
             no_row_limit: Override row count limit.
             no_size_limit: Override file size limit.
             auto_accept: Auto-accept the top fuzzy account match without prompting.
+            confirm: If True, acts as Accept signal to resolve_or_confirm.
+            actor_kind: 'human' (always surfaces) or 'agent' (may self-accept at high tier).
 
         Returns:
             ImportResult with summary.
@@ -757,9 +762,83 @@ class ImportService:
                 "built-in" if matched_format.name in builtin_formats else "saved"
             )
         else:
+            from moneybin.config import get_settings
+            from moneybin.metrics.registry import (
+                IMPORT_CONFIRMATIONS_TOTAL,
+                IMPORT_DETECTION_SCORE,
+                IMPORT_KNOWN_FORMAT_REUSE_TOTAL,
+                IMPORT_OVERRIDE_TOTAL,
+                IMPORT_SELF_ACCEPT_TOTAL,
+            )
+            from moneybin.services.import_confirmation import (
+                Accept,
+                ConfirmationRequired,
+                ImportConfirmationRequiredError,
+                Override,
+                ProposedMapping,
+                resolve_or_confirm,
+            )
+
             mapping_result = map_columns(df, overrides=overrides)
-            resolved = ResolvedMapping(
+            settings = get_settings()
+            bands = settings.import_.confidence
+            confidence = mapping_result.to_confidence(
+                t_high=bands.t_high, t_med=bands.t_med
+            )
+            proposed = ProposedMapping(
                 field_mapping=mapping_result.field_mapping,
+                sample_values=mapping_result.sample_values,
+                unmapped_columns=tuple(mapping_result.unmapped_columns),
+            )
+
+            signal: Accept | Override | None
+            if overrides:
+                signal = Override(mapping=overrides)
+            elif confirm:
+                signal = Accept()
+            else:
+                signal = None
+
+            outcome = resolve_or_confirm(
+                channel="tabular",
+                confidence=confidence,
+                proposed=proposed,
+                available_columns=tuple(df.columns),
+                required_fields=("transaction_date", "amount", "description"),
+                signal=signal,
+                self_accept_enabled=settings.import_.self_accept_high,
+                actor_kind=actor_kind,
+            )
+
+            IMPORT_DETECTION_SCORE.observe(confidence.score)
+
+            if isinstance(outcome, ConfirmationRequired):
+                IMPORT_CONFIRMATIONS_TOTAL.labels(
+                    channel="tabular",
+                    tier=confidence.tier,
+                    outcome="declined",
+                ).inc()
+                raise ImportConfirmationRequiredError(outcome)
+
+            # ConfirmationRequired handled above; outcome is Resolved.
+            if outcome.self_accepted:
+                IMPORT_SELF_ACCEPT_TOTAL.labels(channel="tabular").inc()
+            if isinstance(signal, Override):
+                IMPORT_OVERRIDE_TOTAL.labels(channel="tabular").inc()
+                IMPORT_CONFIRMATIONS_TOTAL.labels(
+                    channel="tabular",
+                    tier=confidence.tier,
+                    outcome="overridden",
+                ).inc()
+            else:
+                IMPORT_CONFIRMATIONS_TOTAL.labels(
+                    channel="tabular",
+                    tier=confidence.tier,
+                    outcome="accepted",
+                ).inc()
+
+            resolved = ResolvedMapping(
+                field_mapping=outcome.field_mapping,
                 date_format=mapping_result.date_format or "%Y-%m-%d",
                 sign_convention=mapping_result.sign_convention,
                 number_format=mapping_result.number_format,
@@ -775,14 +854,11 @@ class ImportService:
                     "use --sign to override if expense amounts look wrong."
                 )
 
-            if mapping_result.confidence == "low":
-                raise ValueError(
-                    f"Could not reliably detect column mapping for "
-                    f"{file_path.name}. Use --override to specify columns manually."
-                )
-
         # Record format match and detection confidence metrics
         if matched_format:
+            from moneybin.metrics.registry import IMPORT_KNOWN_FORMAT_REUSE_TOTAL
+
+            IMPORT_KNOWN_FORMAT_REUSE_TOTAL.labels(channel="tabular").inc()
             TABULAR_FORMAT_MATCHES.labels(
                 format_name=matched_format.name, format_source=format_source
             ).inc()
@@ -1000,6 +1076,8 @@ class ImportService:
         no_row_limit: bool = False,
         no_size_limit: bool = False,
         auto_accept: bool = False,
+        confirm: bool = False,
+        actor_kind: ActorKind = "human",
     ) -> ImportResult:
         """Import a financial data file into DuckDB.
 
@@ -1031,6 +1109,8 @@ class ImportService:
             no_size_limit: Override file size limit for tabular imports.
             auto_accept: Auto-accept the top fuzzy account match without prompting
                 (CLI: --yes / -y). Defaults to False.
+            confirm: Accept the proposed mapping without further prompting.
+            actor_kind: 'human' (always surfaces) or 'agent' (may self-accept at high tier).
 
         Returns:
             ImportResult with summary of what was imported.
@@ -1058,6 +1138,8 @@ class ImportService:
             no_row_limit=no_row_limit,
             no_size_limit=no_size_limit,
             auto_accept=auto_accept,
+            confirm=confirm,
+            actor_kind=actor_kind,
         )
 
         if refresh and result.file_type in ("ofx", "tabular"):
@@ -1093,6 +1175,8 @@ class ImportService:
         no_row_limit: bool = False,
         no_size_limit: bool = False,
         auto_accept: bool = False,
+        confirm: bool = False,
+        actor_kind: ActorKind = "human",
     ) -> ImportResult:
         """Extract + load one file. Does NOT run the refresh pipeline.
 
@@ -1129,6 +1213,8 @@ class ImportService:
                 no_row_limit=no_row_limit,
                 no_size_limit=no_size_limit,
                 auto_accept=auto_accept,
+                confirm=confirm,
+                actor_kind=actor_kind,
             )
         raise ValueError(f"Unsupported file type: {file_type}")
 

@@ -7,6 +7,7 @@ from moneybin.services.import_confirmation import (
     Accept,
     BridgePayload,
     ConfirmationRequired,
+    ImportConfirmationRequiredError,
     MappingValidationError,
     Override,
     ProposedMapping,
@@ -335,3 +336,14 @@ class TestResolveOrConfirm:
         )
         assert isinstance(out, ConfirmationRequired)
         assert out.reason == "validation_failure"
+
+
+def test_import_confirmation_required_error_carries_outcome() -> None:
+    c = Confidence(score=0.5, tier="low", flagged=(), missing_required=("amount",))
+    p = ProposedMapping(field_mapping={}, sample_values={}, unmapped_columns=())
+    out = ConfirmationRequired(
+        channel="tabular", confidence=c, proposed=p, reason="unknown_layout"
+    )
+    err = ImportConfirmationRequiredError(out)
+    assert err.outcome.channel == "tabular"
+    assert "requires confirmation" in str(err)

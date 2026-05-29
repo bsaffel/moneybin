@@ -10,6 +10,8 @@ Channel-specific known-layout lookup (saved tabular formats / pdf_formats
 invoked only when a confirm decision is needed.
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -94,6 +96,21 @@ class ConfirmationRequired:
     proposed: ProposedMapping | BridgePayload
     reason: ConfirmationReason
     samples: dict[str, list[str]] = field(default_factory=dict)
+
+
+class ImportConfirmationRequiredError(Exception):
+    """Raised when an import cannot proceed without explicit confirmation.
+
+    Carries the ConfirmationRequired outcome so MCP/CLI surfaces can render
+    the proposal + actions[]. The data load did NOT happen.
+    """
+
+    def __init__(self, outcome: ConfirmationRequired) -> None:
+        """Wrap a ConfirmationRequired outcome as an exception."""
+        super().__init__(
+            f"{outcome.channel} import requires confirmation: {outcome.reason}"
+        )
+        self.outcome = outcome
 
 
 class MappingValidationError(ValueError):
