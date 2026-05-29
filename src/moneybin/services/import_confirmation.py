@@ -144,3 +144,84 @@ def validate_partial_mapping(
             f"{unknown}. Available columns: {list(available_columns)}."
         )
     return merged
+
+
+def resolve_or_confirm(
+    *,
+    channel: Channel,
+    confidence: Confidence,
+    proposed: ProposedMapping,
+    available_columns: tuple[str, ...] | list[str],
+    required_fields: tuple[str, ...],
+    signal: Accept | Override | None,
+    self_accept_enabled: bool,
+    actor_kind: ActorKind,
+) -> Resolved | ConfirmationRequired:
+    """Decide whether to auto-load, self-accept, or surface for confirmation.
+
+    Invoked by a channel only when a confirm decision is needed (i.e. the
+    channel has already failed to match a known layout, or a known layout
+    failed its replay/validation guard). Channel-agnostic.
+
+    Decision order (each step short-circuits):
+
+    1. `low` tier — never auto-accept anyone. Surface.
+    2. Override signal — partial-merge + validate. Pass -> Resolved.
+       Fail -> ConfirmationRequired(reason=validation_failure).
+    3. Accept signal — Resolved with proposed mapping (validated).
+    4. No signal, actor=agent, tier=high, self_accept_enabled=True —
+       self-accept (Req 10, behind the calibration gate).
+    5. Otherwise — ConfirmationRequired(reason=unknown_layout).
+    """
+    if confidence.tier == "low":
+        return ConfirmationRequired(
+            channel=channel,
+            confidence=confidence,
+            proposed=proposed,
+            reason="unknown_layout",
+            samples=dict(proposed.sample_values),
+        )
+
+    if isinstance(signal, Override):
+        try:
+            merged = validate_partial_mapping(
+                proposed=proposed.field_mapping,
+                override=signal.mapping,
+                available_columns=available_columns,
+                required_fields=required_fields,
+            )
+        except MappingValidationError:
+            return ConfirmationRequired(
+                channel=channel,
+                confidence=confidence,
+                proposed=proposed,
+                reason="validation_failure",
+                samples=dict(proposed.sample_values),
+            )
+        return Resolved(field_mapping=merged, format_ref=None, self_accepted=False)
+
+    if isinstance(signal, Accept):
+        merged = validate_partial_mapping(
+            proposed=proposed.field_mapping,
+            override={},
+            available_columns=available_columns,
+            required_fields=required_fields,
+        )
+        return Resolved(field_mapping=merged, format_ref=None, self_accepted=False)
+
+    if actor_kind == "agent" and confidence.tier == "high" and self_accept_enabled:
+        merged = validate_partial_mapping(
+            proposed=proposed.field_mapping,
+            override={},
+            available_columns=available_columns,
+            required_fields=required_fields,
+        )
+        return Resolved(field_mapping=merged, format_ref=None, self_accepted=True)
+
+    return ConfirmationRequired(
+        channel=channel,
+        confidence=confidence,
+        proposed=proposed,
+        reason="unknown_layout",
+        samples=dict(proposed.sample_values),
+    )

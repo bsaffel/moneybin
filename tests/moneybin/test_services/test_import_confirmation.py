@@ -11,6 +11,7 @@ from moneybin.services.import_confirmation import (
     Override,
     ProposedMapping,
     Resolved,
+    resolve_or_confirm,
     validate_partial_mapping,
 )
 
@@ -191,3 +192,146 @@ class TestValidatePartialMapping:
             "amount": "Amt",
             "description": "Notes",
         }
+
+
+def _make_proposed(*, missing: tuple[str, ...] = ()) -> ProposedMapping:
+    fm = {"transaction_date": "Date", "amount": "Amt", "description": "Memo"}
+    for m in missing:
+        fm.pop(m, None)
+    return ProposedMapping(field_mapping=fm, sample_values={}, unmapped_columns=())
+
+
+class TestResolveOrConfirm:
+    """Verify the channel-agnostic confirm/resolve decision tree."""
+
+    def test_no_signal_returns_confirmation_required(self) -> None:
+        confidence = Confidence(
+            score=0.85, tier="medium", flagged=(), missing_required=()
+        )
+        out = resolve_or_confirm(
+            channel="tabular",
+            confidence=confidence,
+            proposed=_make_proposed(),
+            available_columns=("Date", "Amt", "Memo"),
+            required_fields=("transaction_date", "amount", "description"),
+            signal=None,
+            self_accept_enabled=False,
+            actor_kind="human",
+        )
+        assert isinstance(out, ConfirmationRequired)
+        assert out.reason == "unknown_layout"
+
+    def test_accept_returns_resolved(self) -> None:
+        confidence = Confidence(
+            score=0.95, tier="high", flagged=(), missing_required=()
+        )
+        out = resolve_or_confirm(
+            channel="tabular",
+            confidence=confidence,
+            proposed=_make_proposed(),
+            available_columns=("Date", "Amt", "Memo"),
+            required_fields=("transaction_date", "amount", "description"),
+            signal=Accept(),
+            self_accept_enabled=False,
+            actor_kind="human",
+        )
+        assert isinstance(out, Resolved)
+        assert out.self_accepted is False
+        assert out.field_mapping["amount"] == "Amt"
+
+    def test_low_can_never_auto_accept(self) -> None:
+        confidence = Confidence(
+            score=0.3, tier="low", flagged=(), missing_required=("description",)
+        )
+        out = resolve_or_confirm(
+            channel="tabular",
+            confidence=confidence,
+            proposed=_make_proposed(missing=("description",)),
+            available_columns=("Date", "Amt"),
+            required_fields=("transaction_date", "amount", "description"),
+            signal=Accept(),  # even an explicit Accept on low must surface
+            self_accept_enabled=True,
+            actor_kind="agent",
+        )
+        assert isinstance(out, ConfirmationRequired)
+
+    def test_agent_self_accept_high_only_when_enabled(self) -> None:
+        confidence = Confidence(
+            score=0.95, tier="high", flagged=(), missing_required=()
+        )
+        out_gated = resolve_or_confirm(
+            channel="tabular",
+            confidence=confidence,
+            proposed=_make_proposed(),
+            available_columns=("Date", "Amt", "Memo"),
+            required_fields=("transaction_date", "amount", "description"),
+            signal=None,
+            self_accept_enabled=False,
+            actor_kind="agent",
+        )
+        assert isinstance(out_gated, ConfirmationRequired)
+        out_open = resolve_or_confirm(
+            channel="tabular",
+            confidence=confidence,
+            proposed=_make_proposed(),
+            available_columns=("Date", "Amt", "Memo"),
+            required_fields=("transaction_date", "amount", "description"),
+            signal=None,
+            self_accept_enabled=True,
+            actor_kind="agent",
+        )
+        assert isinstance(out_open, Resolved)
+        assert out_open.self_accepted is True
+
+    def test_human_always_surfaces_first_encounter(self) -> None:
+        confidence = Confidence(
+            score=0.99, tier="high", flagged=(), missing_required=()
+        )
+        out = resolve_or_confirm(
+            channel="tabular",
+            confidence=confidence,
+            proposed=_make_proposed(),
+            available_columns=("Date", "Amt", "Memo"),
+            required_fields=("transaction_date", "amount", "description"),
+            signal=None,
+            self_accept_enabled=True,  # even with calibration on
+            actor_kind="human",
+        )
+        assert isinstance(out, ConfirmationRequired)
+
+    def test_override_partial_merge_resolves(self) -> None:
+        confidence = Confidence(
+            score=0.80, tier="medium", flagged=("description",), missing_required=()
+        )
+        proposed = _make_proposed()
+        out = resolve_or_confirm(
+            channel="tabular",
+            confidence=confidence,
+            proposed=proposed,
+            available_columns=("Date", "Amt", "Memo", "Notes"),
+            required_fields=("transaction_date", "amount", "description"),
+            signal=Override(mapping={"description": "Notes"}),
+            self_accept_enabled=False,
+            actor_kind="human",
+        )
+        assert isinstance(out, Resolved)
+        assert out.field_mapping["description"] == "Notes"
+        assert out.field_mapping["amount"] == "Amt"  # fell back to proposed
+
+    def test_override_invalid_resurfaces(self) -> None:
+        confidence = Confidence(
+            score=0.80, tier="medium", flagged=(), missing_required=()
+        )
+        proposed = _make_proposed()
+        out = resolve_or_confirm(
+            channel="tabular",
+            confidence=confidence,
+            proposed=proposed,
+            available_columns=("Date", "Amt", "Memo"),
+            required_fields=("transaction_date", "amount", "description"),
+            signal=Override(mapping={"description": "Nonexistent"}),
+            self_accept_enabled=False,
+            actor_kind="human",
+        )
+        assert isinstance(out, ConfirmationRequired)
+        assert out.reason == "validation_failure"
