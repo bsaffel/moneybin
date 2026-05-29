@@ -1225,6 +1225,8 @@ class ImportService:
         refresh: bool = True,
         force: bool = False,
         interactive: bool = False,
+        confirm: bool = False,
+        actor_kind: ActorKind = "human",
     ) -> BatchImportResult:
         """Import a list of files; run refresh once at end of batch.
 
@@ -1247,7 +1249,13 @@ class ImportService:
         for raw_path in paths:
             path = Path(raw_path)
             try:
-                r = self._import_one(path, force=force, interactive=interactive)
+                r = self._import_one(
+                    path,
+                    force=force,
+                    interactive=interactive,
+                    confirm=confirm,
+                    actor_kind=actor_kind,
+                )
                 rows_loaded = r.transactions
                 per_file.append(
                     PerFileResult(

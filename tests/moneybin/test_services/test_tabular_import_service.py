@@ -365,37 +365,34 @@ class TestTabularConfirmationFlow:
         self,
         mock_secret_store: MagicMock,
         tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """actor_kind='agent' + self_accept_high=True + high -> Resolved -> data loads.
+        """actor_kind='agent' + self_accept_high=True via settings + high -> data loads.
 
-        Patches resolve_or_confirm directly so we don't need to reconstruct the full
-        settings tree; the gate logic itself is tested in test_import_confirmation.py.
+        Exercises the real settings → self_accept_enabled wiring (not by patching
+        resolve_or_confirm) so a config misconfiguration would surface here.
         """
-        from moneybin.services.import_confirmation import Resolved
+        from moneybin import config as config_module
+        from moneybin.config import (
+            clear_settings_cache,
+            get_settings,
+            set_current_profile,
+        )
         from moneybin.services.import_service import ImportService
+
+        monkeypatch.setenv("MONEYBIN_IMPORT___SELF_ACCEPT_HIGH", "true")
+        clear_settings_cache()
+        monkeypatch.setattr(config_module, "_current_profile", None)
+        monkeypatch.setattr(config_module, "_current_settings", None)
+        set_current_profile("test")
+        assert get_settings().import_.self_accept_high is True
 
         db = self._make_db(mock_secret_store, tmp_path)
         try:
             high_result = _make_mapping_result(score=0.95, confidence="high")
-            resolved_outcome = Resolved(
-                field_mapping={
-                    "transaction_date": "Date",
-                    "amount": "Amount",
-                    "description": "Description",
-                },
-                format_ref=None,
-                self_accepted=True,
-            )
-
-            with (
-                patch(
-                    "moneybin.extractors.tabular.column_mapper.map_columns",
-                    return_value=high_result,
-                ),
-                patch(
-                    "moneybin.services.import_confirmation.resolve_or_confirm",
-                    return_value=resolved_outcome,
-                ),
+            with patch(
+                "moneybin.extractors.tabular.column_mapper.map_columns",
+                return_value=high_result,
             ):
                 result = ImportService(db).import_file(
                     _STANDARD_CSV,
