@@ -21,6 +21,7 @@ from typing import Any
 import polars as pl
 from sqlglot import exp
 
+from moneybin.config import get_settings
 from moneybin.connectors.gsheet.adapters import ADAPTERS
 from moneybin.connectors.gsheet.adapters.base import (
     DetectionResult,
@@ -32,7 +33,17 @@ from moneybin.connectors.gsheet.errors import GSheetError, GSheetUnreachableErro
 from moneybin.connectors.gsheet.sheets_api import SheetsAPI
 from moneybin.connectors.gsheet.url_parser import parse_sheet_url
 from moneybin.database import Database
+from moneybin.extractors.confidence import tier_for
+from moneybin.metrics.registry import (
+    IMPORT_CONFIRMATIONS_TOTAL,
+    IMPORT_DETECTION_SCORE,
+    IMPORT_OVERRIDE_TOTAL,
+)
 from moneybin.repositories.gsheet_connections_repo import GSheetConnectionsRepo
+from moneybin.services.import_confirmation import (
+    MappingValidationError,
+    validate_partial_mapping,
+)
 from moneybin.tables import GSHEET_SEEDS, TABULAR_TRANSACTIONS
 
 logger = logging.getLogger(__name__)
@@ -135,17 +146,29 @@ class GSheetConnectionService:
         adapter = ADAPTERS[target_adapter]
         detection = adapter.detect(df, account_name=req.account_name)
 
+        # Derive tier from normalized score + shared confidence bands.
+        if target_adapter == "transactions":
+            bands = get_settings().import_.confidence
+            tier = tier_for(detection.score, t_high=bands.t_high, t_med=bands.t_med)
+        else:
+            tier = detection.confidence  # seed adapter uses the categorical value
+
         # Fall-through: auto-detect → low-confidence transactions → maybe seed.
         if (
             target_adapter == "transactions"
-            and detection.confidence == "low"
+            and tier == "low"
             and req.column_mapping is None
         ):
             if req.adapter is None and req.accept_seed_fallback:
                 target_adapter = "seed"
                 adapter = ADAPTERS["seed"]
                 detection = adapter.detect(df, account_name=None)
+                tier = detection.confidence
             else:
+                IMPORT_DETECTION_SCORE.observe(detection.score)
+                IMPORT_CONFIRMATIONS_TOTAL.labels(
+                    channel="gsheet", tier=tier, outcome="declined"
+                ).inc()
                 raise LowConfidenceError(
                     "Low-confidence transactions detection. "
                     "Provide --column-mapping or retry with "
@@ -158,10 +181,14 @@ class GSheetConnectionService:
         # corrupt the initial pull.
         if (
             target_adapter == "transactions"
-            and detection.confidence == "medium"
+            and tier == "medium"
             and req.column_mapping is None
             and not req.yes
         ):
+            IMPORT_DETECTION_SCORE.observe(detection.score)
+            IMPORT_CONFIRMATIONS_TOTAL.labels(
+                channel="gsheet", tier=tier, outcome="declined"
+            ).inc()
             raise AmbiguousDetectionError(
                 "Medium-confidence transactions detection. "
                 "Re-run with --yes to accept the inferred mapping, "
@@ -204,20 +231,45 @@ class GSheetConnectionService:
 
         # For seed adapter the column_mapping field holds inferred typed_columns
         # (the raw_seed adapter reuses the field for its typed view).
-        # For transactions, a user-supplied override (req.column_mapping) wins
-        # over detection — that's the whole point of letting the user pass it.
+        # For transactions, merge the user-supplied override onto detection and
+        # validate the merged result. The override is partial: only the
+        # destination fields the user names are replaced; others fall back to
+        # the detector's proposal (partial-merge per spec Req 6).
         if target_adapter == "seed":
             column_mapping = detection.typed_columns
-        elif req.column_mapping is not None:
-            # User override: schema-validate before persisting. Without this,
-            # a missing or typo'd required dest (e.g. `amount`) creates a
-            # "healthy" connection whose pulls fail with zero rows loaded —
-            # silent ingestion failure indistinguishable from an empty sheet.
-            _validate_transactions_column_mapping(
-                user_mapping=req.column_mapping,
-                sheet_headers=list(df.columns),
-            )
-            column_mapping = req.column_mapping
+        elif target_adapter == "transactions":
+            # detection.column_mapping is source→dest; validate_partial_mapping
+            # expects dest→source for both proposed and override.
+            proposed_dest_to_src = {
+                dest: src for src, dest in detection.column_mapping.items()
+            }
+            override_dest_to_src: dict[str, str] = {}
+            if req.column_mapping:
+                override_dest_to_src = {
+                    dest: src for src, dest in req.column_mapping.items()
+                }
+            try:
+                merged_dest_to_src = validate_partial_mapping(
+                    proposed=proposed_dest_to_src,
+                    override=override_dest_to_src,
+                    available_columns=tuple(df.columns),
+                    required_fields=REQUIRED_DEST_FIELDS,
+                )
+            except MappingValidationError as e:
+                raise GSheetError(str(e)) from e
+            # Invert back to source→dest for storage.
+            column_mapping = {src: dest for dest, src in merged_dest_to_src.items()}
+            # Metrics: record score and outcome.
+            IMPORT_DETECTION_SCORE.observe(detection.score)
+            if req.column_mapping:
+                IMPORT_OVERRIDE_TOTAL.labels(channel="gsheet").inc()
+                IMPORT_CONFIRMATIONS_TOTAL.labels(
+                    channel="gsheet", tier=tier, outcome="overridden"
+                ).inc()
+            else:
+                IMPORT_CONFIRMATIONS_TOTAL.labels(
+                    channel="gsheet", tier=tier, outcome="accepted"
+                ).inc()
         else:
             column_mapping = detection.column_mapping
 
@@ -373,7 +425,17 @@ class GSheetConnectionService:
         adapter = ADAPTERS[existing["adapter"]]
         detection = adapter.detect(df, account_name=existing.get("account_name"))
 
-        if existing["adapter"] == "transactions" and detection.confidence == "low":
+        if existing["adapter"] == "transactions":
+            bands = get_settings().import_.confidence
+            tier = tier_for(detection.score, t_high=bands.t_high, t_med=bands.t_med)
+        else:
+            tier = detection.confidence
+
+        if existing["adapter"] == "transactions" and tier == "low":
+            IMPORT_DETECTION_SCORE.observe(detection.score)
+            IMPORT_CONFIRMATIONS_TOTAL.labels(
+                channel="gsheet", tier=tier, outcome="declined"
+            ).inc()
             raise LowConfidenceError(
                 "Reconnect detection returned low confidence; "
                 "the sheet structure may have changed substantially."
@@ -381,11 +443,11 @@ class GSheetConnectionService:
 
         # Symmetric to connect(): a medium-confidence remap can silently
         # re-pin the wrong mapping, so require explicit acceptance via --yes.
-        if (
-            existing["adapter"] == "transactions"
-            and detection.confidence == "medium"
-            and not yes
-        ):
+        if existing["adapter"] == "transactions" and tier == "medium" and not yes:
+            IMPORT_DETECTION_SCORE.observe(detection.score)
+            IMPORT_CONFIRMATIONS_TOTAL.labels(
+                channel="gsheet", tier=tier, outcome="declined"
+            ).inc()
             raise AmbiguousDetectionError(
                 "Reconnect detection returned medium confidence. "
                 "Re-run with --yes to accept the inferred mapping."
@@ -396,6 +458,11 @@ class GSheetConnectionService:
             if existing["adapter"] == "seed"
             else detection.column_mapping
         )
+        if existing["adapter"] == "transactions":
+            IMPORT_DETECTION_SCORE.observe(detection.score)
+            IMPORT_CONFIRMATIONS_TOTAL.labels(
+                channel="gsheet", tier=tier, outcome="accepted"
+            ).inc()
 
         self._repo.update_mapping(
             connection_id,
@@ -426,40 +493,6 @@ class GSheetConnectionService:
             initial_pull=pull.load_result,
             initial_pull_status=pull.status,
             initial_pull_error=pull.error_message,
-        )
-
-
-def _validate_transactions_column_mapping(
-    *,
-    user_mapping: dict[str, str],
-    sheet_headers: list[str],
-) -> None:
-    """Verify a user-supplied --column-mapping is schema-complete.
-
-    Mapping shape is ``{source_header: dest_field}``. Two failure modes:
-
-    1. Required dest field missing — pulls will fail every run.
-    2. Source header referenced but not present in the sheet — header
-       lookup fails at transform-time, leaks Polars error to MCP.
-
-    Raises GSheetError with a message that names the missing field /
-    unknown header so the user can fix the mapping without a stack-
-    trace dig.
-    """
-    dest_fields = set(user_mapping.values())
-    missing = [f for f in REQUIRED_DEST_FIELDS if f not in dest_fields]
-    if missing:
-        raise GSheetError(
-            f"--column-mapping is missing required dest field(s): {missing}. "
-            f"The transactions adapter needs {list(REQUIRED_DEST_FIELDS)} "
-            "to produce rows."
-        )
-    sheet_header_set = set(sheet_headers)
-    unknown_sources = [src for src in user_mapping if src not in sheet_header_set]
-    if unknown_sources:
-        raise GSheetError(
-            f"--column-mapping references header(s) not in the sheet: "
-            f"{unknown_sources}. Available headers: {sheet_headers}."
         )
 
 

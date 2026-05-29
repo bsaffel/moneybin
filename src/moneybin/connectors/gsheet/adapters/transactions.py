@@ -83,6 +83,7 @@ class TransactionsAdapter:
             skip_rows=0,
             skip_trailing_patterns=[],
             notes=[],
+            score=mapping_result.score,
         )
 
     def check_drift(
