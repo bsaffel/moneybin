@@ -432,15 +432,24 @@ def import_files_command(
                 f"Run 'moneybin import confirm {file_path_str} --accept' as a subcommand.",
             ]
             if output == OutputFormat.JSON or not sys.stdout.isatty():
-                typer.echo(
-                    json.dumps(
-                        {"data": envelope_data, "actions": confirm_actions},
-                        indent=2,
-                        default=str,
-                    )
+                # Non-TTY / --output json: emit the full ResponseEnvelope so
+                # CLI --output json matches the MCP envelope shape (same
+                # top-level status/summary/data/actions wrapper).
+                # Exit 0 so scripted consumers receive the envelope cleanly.
+                confirm_envelope = build_envelope(
+                    data=envelope_data,
+                    sensitivity="medium",
+                    actions=confirm_actions,
+                )
+                render_or_json(
+                    confirm_envelope,
+                    OutputFormat.JSON,
+                    cli_actor="import_files_command",
                 )
                 raise typer.Exit(0) from _exc
-            # Interactive human path: render a human-readable summary.
+            # Interactive human path: render a human-readable summary and exit
+            # 1 so pipelines halt cleanly (unlike the non-TTY path which exits
+            # 0 so scripted consumers can parse the envelope).
             _render_confirmation_prompt(outcome, file_path_str)
             raise typer.Exit(1) from _exc
 
@@ -569,6 +578,16 @@ def import_confirm_command(
         "--mapping",
         help="Partial-merge override (repeatable): --mapping field=column.",
     ),
+    account_id: str | None = typer.Option(
+        None,
+        "--account-id",
+        help="Account ID to associate with imported transactions.",
+    ),
+    account_name: str | None = typer.Option(
+        None,
+        "--account-name",
+        help="Account name to associate with imported transactions.",
+    ),
     save_format: bool = typer.Option(
         True,
         "--save-format/--no-save-format",
@@ -588,6 +607,7 @@ def import_confirm_command(
         moneybin import confirm ~/Downloads/statement.csv --mapping description=Memo
         moneybin import confirm ~/Downloads/statement.csv --mapping date=Date --mapping amount=Amount
         moneybin import confirm ~/Downloads/statement.csv --accept --output json
+        moneybin import confirm ~/Downloads/statement.csv --accept --account-name "Chase Checking"
     """
     from moneybin.cli.output import render_or_json  # noqa: PLC0415
     from moneybin.cli.utils import handle_cli_errors  # noqa: PLC0415
@@ -614,6 +634,8 @@ def import_confirm_command(
                 file_path=file_path,
                 confirm=accept,
                 overrides=parsed_mapping,
+                account_id=account_id,
+                account_name=account_name,
                 save_format=save_format,
                 actor_kind="human",
                 refresh=False,  # caller can run 'moneybin transform apply' separately

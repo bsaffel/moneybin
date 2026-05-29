@@ -217,6 +217,11 @@ class TestImportFilesConfirmFlow:
 
         assert result.exit_code == 0
         payload = json.loads(result.output)
+        # Top-level envelope shape must match MCP (build_envelope output).
+        assert payload["status"] == "ok"
+        assert "summary" in payload
+        assert "data" in payload
+        assert "actions" in payload
         assert payload["data"]["status"] == "confirmation_required"
         assert payload["data"]["channel"] == "tabular"
         assert "proposed_mapping" in payload["data"]
@@ -239,6 +244,11 @@ class TestImportFilesConfirmFlow:
 
         assert result.exit_code == 0
         payload = json.loads(result.output)
+        # Top-level envelope shape must match MCP (build_envelope output).
+        assert payload["status"] == "ok"
+        assert "summary" in payload
+        assert "data" in payload
+        assert "actions" in payload
         data = payload["data"]
         assert "tier" in data
         assert "score" in data
@@ -246,7 +256,6 @@ class TestImportFilesConfirmFlow:
         assert "flagged" in data
         assert "missing_required" in data
         assert "unmapped_columns" in data
-        assert "actions" in payload
 
     def test_low_tier_includes_missing_required_in_envelope(
         self,
@@ -273,6 +282,11 @@ class TestImportFilesConfirmFlow:
 
         assert result.exit_code == 0
         payload = json.loads(result.output)
+        # Top-level envelope shape must match MCP (build_envelope output).
+        assert payload["status"] == "ok"
+        assert "summary" in payload
+        assert "data" in payload
+        assert "actions" in payload
         data = payload["data"]
         assert data["status"] == "confirmation_required"
         assert (
@@ -424,7 +438,11 @@ class TestImportConfirmCommand:
 
         assert result.exit_code == 0
         payload = json.loads(result.output)
+        # Top-level envelope shape must match MCP (build_envelope output).
+        assert payload["status"] == "ok"
+        assert "summary" in payload
         assert "data" in payload
+        assert "actions" in payload
         data = payload["data"]
         assert "rows_loaded" in data
         assert "import_id" in data
