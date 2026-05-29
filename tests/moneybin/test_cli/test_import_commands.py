@@ -87,37 +87,42 @@ class TestImportFilesCommand:
     def test_import_files_success(
         self,
         runner: CliRunner,
-        mock_import_files: MagicMock,
+        mock_import_file: MagicMock,
         mock_get_database: MagicMock,
         tmp_path: Path,
     ) -> None:
-        """Single-file import with no per-file knobs uses the batch service."""
+        """Single-file import always uses import_file directly (not the batch service).
+
+        Changed from the original batch-for-no-knobs behavior: single-path
+        invocations now always call import_file so ImportConfirmationRequiredError
+        can bubble to the CLI handler.
+        """
         test_file = tmp_path / "test.ofx"
         test_file.touch()
 
         result = runner.invoke(app, ["files", str(test_file)])
         assert result.exit_code == 0, result.output
-        mock_import_files.assert_called_once_with(
-            [str(test_file)],
-            refresh=True,
-            force=False,
-            interactive=False,
-        )
+        mock_import_file.assert_called_once()
+        call_kwargs = mock_import_file.call_args.kwargs
+        assert call_kwargs["refresh"] is True
+        assert call_kwargs["force"] is False
+        assert call_kwargs["confirm"] is False
+        assert call_kwargs["actor_kind"] == "human"
 
     def test_import_files_no_refresh(
         self,
         runner: CliRunner,
-        mock_import_files: MagicMock,
+        mock_import_file: MagicMock,
         mock_get_database: MagicMock,
         tmp_path: Path,
     ) -> None:
-        """--no-refresh forwards refresh=False to the batch."""
+        """--no-refresh forwards refresh=False to import_file."""
         test_file = tmp_path / "test.ofx"
         test_file.touch()
 
         result = runner.invoke(app, ["files", str(test_file), "--no-refresh"])
         assert result.exit_code == 0, result.output
-        call_kwargs = mock_import_files.call_args.kwargs
+        call_kwargs = mock_import_file.call_args.kwargs
         assert call_kwargs["refresh"] is False
 
     def test_import_files_with_institution(
@@ -155,45 +160,41 @@ class TestImportFilesCommand:
             no_row_limit=False,
             no_size_limit=False,
             auto_accept=False,
+            confirm=False,
+            actor_kind="human",
         )
 
     def test_import_files_force_flag(
         self,
         runner: CliRunner,
-        mock_import_files: MagicMock,
+        mock_import_file: MagicMock,
         mock_get_database: MagicMock,
         tmp_path: Path,
     ) -> None:
-        """--force is forwarded to the batch service as force=True."""
+        """--force is forwarded to import_file as force=True."""
         test_file = tmp_path / "test.ofx"
         test_file.touch()
 
         result = runner.invoke(app, ["files", str(test_file), "--force"])
         assert result.exit_code == 0, result.output
-        call_kwargs = mock_import_files.call_args.kwargs
+        call_kwargs = mock_import_file.call_args.kwargs
         assert call_kwargs["force"] is True
 
     def test_force_already_imported_error(
         self,
         runner: CliRunner,
-        mock_import_files: MagicMock,
+        mock_import_file: MagicMock,
         mock_get_database: MagicMock,
         tmp_path: Path,
     ) -> None:
-        """The batch service records per-file failures; CLI still exits 0."""
+        """import_file raising ValueError surfaces as a failed-file envelope."""
         test_file = tmp_path / "test.ofx"
         test_file.touch()
-        mock_import_files.return_value = _make_batch_result(
-            status="failed",
-            source_type=None,
-            rows_loaded=0,
-            error="ValueError",
-            transforms_applied=False,
-        )
+        mock_import_file.side_effect = ValueError("already imported")
 
         result = runner.invoke(app, ["files", str(test_file)])
-        # Per-file failures don't abort the batch; exit code stays 0.
-        assert result.exit_code == 0, result.output
+        # ValueError surfaces as exit code 1 on the single-file path.
+        assert result.exit_code == 1
 
     def test_import_files_not_found(
         self,
@@ -336,7 +337,7 @@ class TestImportFilesCommand:
     def test_import_files_output_json(
         self,
         runner: CliRunner,
-        mock_import_files: MagicMock,
+        mock_import_file: MagicMock,
         mock_get_database: MagicMock,
         tmp_path: Path,
     ) -> None:
