@@ -820,7 +820,6 @@ class ImportService:
                 ).inc()
                 raise ImportConfirmationRequiredError(outcome)
 
-            # ConfirmationRequired handled above; outcome is Resolved.
             if outcome.self_accepted:
                 IMPORT_SELF_ACCEPT_TOTAL.labels(channel="tabular").inc()
             if isinstance(signal, Override):
@@ -843,7 +842,7 @@ class ImportService:
                 sign_convention=mapping_result.sign_convention,
                 number_format=mapping_result.number_format,
                 is_multi_account=mapping_result.is_multi_account,
-                confidence=mapping_result.confidence,
+                confidence=confidence.tier,
             )
             format_source = "detected"
 

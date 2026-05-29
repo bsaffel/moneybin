@@ -20,6 +20,7 @@ from moneybin.extractors.confidence import Confidence
 Channel = Literal["tabular", "gsheet", "pdf"]
 ActorKind = Literal["human", "agent"]
 ConfirmationReason = Literal["unknown_layout", "validation_failure"]
+ConfirmationOutcome = Literal["accepted", "overridden", "declined"]
 
 
 @dataclass(frozen=True)

@@ -259,7 +259,6 @@ class GSheetConnectionService:
                 raise GSheetError(str(e)) from e
             # Invert back to source→dest for storage.
             column_mapping = {src: dest for dest, src in merged_dest_to_src.items()}
-            # Metrics: record score and outcome.
             IMPORT_DETECTION_SCORE.observe(detection.score)
             if req.column_mapping:
                 IMPORT_OVERRIDE_TOTAL.labels(channel="gsheet").inc()
