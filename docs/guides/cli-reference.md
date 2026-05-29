@@ -105,7 +105,7 @@ Diagnostic output goes to stderr (fd 2). Data output goes to stdout (fd 1). Pipe
 
 `sync pull`, `refresh`, and `transform apply` can run for several seconds to minutes. Progress and status lines stream to **stderr** by default (visible interactively, hidden when redirected); `--output json` returns a single envelope at completion. There is no incremental JSON progress stream today — agents that need progress should poll `sync status` / `transform status` from a separate invocation.
 
-Concurrent invocations against the same profile contend for the database lock; cron-driven `sync pull` overlapping with an interactive session will fail fast with exit `1` rather than block. Use `db ps` to see who's holding the file and `db kill` if needed.
+Concurrent **writes** against the same profile serialize on the database lock; a cron-driven `sync pull` overlapping with an interactive write retries briefly (up to 5 s) and then exits `1` rather than blocking indefinitely. Reads rarely contend with writes — write windows are per-operation rather than per-session — but a read overlapping a long write retries on the same backoff before failing. Use `db ps` to see who's holding the file and `db kill` if needed.
 
 ## Which command for which task?
 
@@ -406,7 +406,7 @@ Lifecycle, exploration, and key management on the encrypted database.
 | `db backup` | Create a timestamped encrypted backup. | `--dest <path>` |
 | `db restore <backup-path>` | Restore from a backup file. | `-y, --yes` |
 | `db ps` | List processes currently holding the database file. | — |
-| `db kill <pid>` | Kill a process holding the database. | `-y, --yes` |
+| `db kill` | Kill processes holding the database. | `-y, --yes` |
 | `db key show` | Print the encryption key to stderr (use with care). | — |
 | `db key rotate` | Re-encrypt with a new key. | `-y, --yes` |
 | `db key export <path>` | Export the key to a file (encrypted). | — |

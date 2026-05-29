@@ -174,9 +174,9 @@ Then point the downstream tool at the Parquet file. **Never share the live encry
 
 ## Lock contention and retry
 
-DuckDB is single-writer, multi-reader. Multiple read-only connections coexist with each other and with the moneybin writer.
+DuckDB is single-writer, multi-reader. Multiple read-only connections coexist with each other; they coexist with a MoneyBin writer only between its write operations — a read-only open that lands during an active write retries on the same backoff as writers (start 50 ms, ×1.5, cap 500 ms, default 5 s budget) before raising a lock error.
 
-- **`db query` and `db shell`** open the database the same way other moneybin commands do — through the project's `Database` connection helper. On a write path, that helper retries on lock contention with exponential backoff (start 50 ms, ×1.5, cap 500 ms) until the configured wait budget expires (default 5 s). Read paths are read-only and do not contend with each other.
+- **`db query` and `db shell`** open the database the same way other moneybin commands do — through the project's `Database` connection helper. On a write path, that helper retries on lock contention with exponential backoff (start 50 ms, ×1.5, cap 500 ms) until the configured wait budget expires (default 5 s). Read paths do not contend with each other; only a concurrent active write causes a read to retry on the same backoff.
 - **External read-only attaches do not retry.** If your client races a moneybin write and DuckDB returns a lock error, your client sees it immediately. Wait a few seconds and retry — moneybin's exclusive lock windows are short (typically sub-second per imported batch).
 - **`moneybin db ps`** shows which processes have the file open; **`moneybin db kill`** sends SIGTERM. Use these if a stale process is blocking a write.
 

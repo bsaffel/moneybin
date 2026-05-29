@@ -166,7 +166,7 @@ moneybin mcp install --client gemini-cli -y
 - **Config file:** `~/.gemini/settings.json`.
 - **Format:** JSON, under the `mcpServers` key.
 - **Restart required:** No — `gemini` reads settings on each invocation.
-- **Server lifecycle:** Per-invocation. Every `gemini` command in any terminal will spawn MoneyBin and take the DB lock. If you keep two `gemini` sessions open on the same profile, the second will fail to acquire the lock — see [Concurrency](#concurrency-which-clients-share-a-server) below.
+- **Server lifecycle:** Per-invocation. Every `gemini` command in any terminal spawns its own MoneyBin server. Multiple `gemini` sessions on the same profile coexist — reads usually coexist and writes serialize. A write-mode tool call fails only when another session holds a conflicting lock past the retry window (a long write, or a long read holding the read lock); a read-mode call fails only when it lands during a long write — see [Concurrency](#concurrency-which-clients-share-a-server) below.
 - **Confirmation UI:** `gemini` prompts in the terminal before invoking tools by default. Tool annotations are not currently surfaced in the prompt text.
 
 ### Codex (CLI, Desktop app, IDE extension)
@@ -206,19 +206,19 @@ This invocation always prints the canonical snippet plus a numbered Connector-se
 
 ## Concurrency: which clients share a server
 
-MoneyBin stores each profile's data in a single-writer DuckDB file. **Only one MCP server (or any other MoneyBin process) can hold the database open against a given profile at a time.** A second connection on the same profile fails to acquire the write lock and exits.
+MoneyBin stores each profile's data in a single-writer DuckDB file, but each MoneyBin process opens **short-lived, per-operation connections** rather than holding the file open for its whole lifetime. As a result, **multiple MoneyBin processes (MCP servers and CLI commands) can run against the same profile at once:** reads attach in shared mode and coexist with other reads; writes take the exclusive lock one at a time, retrying briefly (up to 5 s) on contention. Read and write opens that cross each other retry on the same backoff in both directions. A call fails only when whichever operation holds the conflicting lock — a long write (large import or transform) or a long-running read (a slow `sql_query` or large `reports` call) — exceeds the retry window. Only that one operation fails, not the whole session.
 
 | Pattern | Clients | Behavior |
 |---|---|---|
 | App-shared connection | Claude Desktop, ChatGPT Desktop, Cursor, VS Code, Windsurf | One server process per app instance, spawned at launch and reused across all chats. |
-| Per-invocation | Claude Code (via `make claude-mcp`), Codex CLI, Gemini CLI | One server process per CLI invocation. Each new shell session spawns a fresh server and tries to claim the lock. |
+| Per-invocation | Claude Code (via `make claude-mcp`), Codex CLI, Gemini CLI | One server process per CLI invocation. Each new shell session spawns a fresh server; servers coexist on the same profile and contend only when operations need conflicting locks — concurrent writes, or a write racing a long-running read. |
 
-Different *profiles* never collide — each has its own DB and lock — so `MoneyBin (alice)` and `MoneyBin (bob)` can coexist in the same client without issue. The lock fight is only between concurrent sessions on the **same** profile.
+Different *profiles* never collide — each has its own DB and lock — so `MoneyBin (alice)` and `MoneyBin (bob)` can coexist in the same client without issue. Write contention only ever arises between concurrent sessions on the **same** profile.
 
 Practical guidance:
 
-- **Pick one app-based client per profile** as the primary MoneyBin host. Two running app instances configured against the same profile will fight over the lock; the second to start fails.
-- **Avoid running MoneyBin CLI commands** (`moneybin transactions`, `moneybin reports`, etc.) while a desktop client is using the same profile. The CLI opens its own DB connection.
+- **One app-based client per profile is still simplest.** Two app instances on the same profile both run fine, but their writes serialize — a write issued while the other instance is mid-import or mid-transform can wait and then fail with a lock-timeout error.
+- **Concurrent writes serialize.** Running a MoneyBin CLI write command (`moneybin import`, `moneybin transform apply`, etc.) while a desktop client is writing to the same profile can make one of them wait or time out. Read commands (`moneybin transactions`, `moneybin reports`, etc.) rarely contend with writes; if a read fails with a lock error, a long write in progress is the cause.
 - **CLI clients (codex, gemini-cli) auto-load on every invocation.** Installing into them means every `codex` or `gemini` command in any terminal will try to spawn the MoneyBin server. For occasional use, prefer `mcp install --print` and paste the snippet manually only when you want it. Claude Code is the deliberate exception — `make claude-mcp` makes it explicit per-session.
 
 ## Verifying the connection
@@ -311,7 +311,7 @@ What does not work today: running `moneybin mcp serve` as a systemd unit or Dock
 
 **Tools error with "no profile" or similar.** The install snippet embeds whichever profile was active when you ran `mcp install`. To change it, re-run with `--profile <name>` (see [Switching profiles](#switching-profiles)).
 
-**"Database is locked" / server exits immediately.** Another process is holding the same profile's DB. Most common: (a) a desktop client is already running with the same profile installed; (b) a `moneybin` CLI command is still running in another terminal; (c) two `codex` / `gemini` / `make claude-mcp` invocations are racing. Quit the offender or switch profiles.
+**"Database is locked" (server fails to start, or a tool call errors).** Another process is holding a conflicting lock on the same profile past the ~5 s retry window — typically a long operation in progress: (a) a `moneybin transform apply` or large `import` running in another terminal; (b) a desktop client mid-import or mid-transform on the same profile; (c) a long-running read (a slow `sql_query` or large `reports` call) holding the read lock — only blocks writers, not other readers; (d) a stuck process that never released the lock. If a read fails with a lock error, only a long write is the cause; if a write fails, either a long write or a long read can be. Run `moneybin db ps` to see who holds the file and `moneybin db kill` to clear stuck processes, or switch profiles.
 
 **"Cannot parse existing config" on install.** The target file has invalid JSON or TOML. Fix the syntax in your editor and re-run, or use the `<name>.bak` recovery path in [Uninstall and reset](#uninstall-and-reset).
 
