@@ -7,10 +7,12 @@ Tools:
     - import_status — List past import batches (low sensitivity)
     - import_revert — Undo an import batch by import_id (low sensitivity)
     - import_formats — List available tabular import formats (low sensitivity)
+    - import_confirm — Confirm or override a proposed column mapping and load the file
 """
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from fastmcp import FastMCP
@@ -20,6 +22,7 @@ from moneybin.errors import UserError
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.privacy.payloads.imports import (
+    ImportConfirmPayload,
     ImportFilesPayload,
     ImportFormatInfoPayload,
     ImportFormatRow,
@@ -34,6 +37,8 @@ from moneybin.protocol.envelope import (
     build_envelope,
     build_error_envelope,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _validate_file_path(file_path: str) -> Path:
@@ -80,13 +85,85 @@ def import_files(
         positive=income; transfers exempt. Display currency is set
         in summary.display_currency.
     """
+    from moneybin.services.import_confirmation import (
+        ImportConfirmationRequiredError,
+        ProposedMapping,
+    )
     from moneybin.services.import_service import ImportService
 
+    # Validate all paths upfront so a bad path fails before any service call.
     validated = [_validate_file_path(p) for p in paths]
-    with get_database() as db:
-        batch = ImportService(db).import_files(
-            [str(p) for p in validated], refresh=refresh, force=force
+
+    # For single-path batches, call import_file (not import_files) so
+    # ImportConfirmationRequiredError bubbles up — the batch variant catches
+    # all per-file exceptions and loses the proposal payload.
+    if len(validated) == 1:
+        try:
+            with get_database() as db:
+                one = ImportService(db).import_file(
+                    validated[0],
+                    refresh=refresh,
+                    force=force,
+                    actor_kind="agent",
+                )
+        except ImportConfirmationRequiredError as e:
+            file_path = str(validated[0])
+            proposed_mapping = (
+                e.outcome.proposed.field_mapping
+                if isinstance(e.outcome.proposed, ProposedMapping)
+                else {}
+            )
+            unmapped = (
+                list(e.outcome.proposed.unmapped_columns)
+                if isinstance(e.outcome.proposed, ProposedMapping)
+                else []
+            )
+            return build_envelope(
+                sensitivity="medium",
+                data={
+                    "status": "confirmation_required",
+                    "channel": e.outcome.channel,
+                    "tier": e.outcome.confidence.tier,
+                    "score": e.outcome.confidence.score,
+                    "reason": e.outcome.reason,
+                    "proposed_mapping": proposed_mapping,
+                    "samples": e.outcome.samples,
+                    "flagged": list(e.outcome.confidence.flagged),
+                    "missing_required": list(e.outcome.confidence.missing_required),
+                    "unmapped_columns": unmapped,
+                },
+                actions=[
+                    f"Use import_confirm(file_path='{file_path}', accept=True) to accept the proposed mapping as-is.",
+                    f"Use import_confirm(file_path='{file_path}', mapping={{'<dest_field>': '<source_column>'}}) to override specific fields.",
+                    f"Use import_preview(file_path='{file_path}') to inspect the proposal and samples in detail.",
+                ],
+            )
+        # Wrap single-file result in a BatchImportResult-like shape for uniform handling below.
+        from moneybin.services.import_service import BatchImportResult, PerFileResult
+
+        batch = BatchImportResult(
+            per_file=[
+                PerFileResult(
+                    path=str(validated[0]),
+                    status="imported",
+                    source_type=one.file_type,
+                    rows_loaded=one.transactions,
+                    import_id=one.import_id,
+                    sign_correction_suggested=one.sign_correction_suggested,
+                )
+            ],
+            transforms_applied=one.core_tables_rebuilt,
+            transforms_duration_seconds=None,
+            transforms_error=None,
         )
+    else:
+        with get_database() as db:
+            batch = ImportService(db).import_files(
+                [str(p) for p in validated],
+                refresh=refresh,
+                force=force,
+                actor_kind="agent",
+            )
 
     files = [
         ImportPerFileRow(
@@ -290,6 +367,109 @@ def import_formats() -> ResponseEnvelope[ImportFormatsPayload]:
     )
 
 
+@mcp_tool(read_only=False, idempotent=False)
+def import_confirm(
+    file_path: str,
+    *,
+    accept: bool = False,
+    mapping: dict[str, str] | None = None,
+    save_format: bool = True,
+) -> ResponseEnvelope[ImportConfirmPayload]:
+    """Confirm or override a proposed column mapping and load the file.
+
+    Terminal ``_confirm`` step of the propose -> review -> confirm workflow.
+    ``import_files`` returned ``confirmation_required`` for an unknown layout;
+    the agent inspects the proposal (optionally via ``import_preview``) and
+    calls this tool to ratify with ``accept=True`` or with a partial
+    ``mapping=`` override.
+
+    ``mapping`` is partial-merge: supply only the destination fields being
+    corrected; the rest fall back to the detected proposal. Unrecognized
+    destination fields or source columns absent from the file raise an
+    actionable error.
+
+    Mutation surface: writes to ``raw.tabular_transactions`` (data load) and
+    ``app.tabular_formats`` when ``save_format=True``. Data load is reversible
+    via ``import_revert`` with the returned ``import_id``; format save can be
+    undone via ``system_audit_undo``.
+
+    Amounts use the accounting convention: negative = expense, positive =
+    income; transfers exempt.
+
+    Args:
+        file_path: Absolute path to the file to import. Must be within the
+            user's home directory.
+        accept: Accept the proposed mapping as-is (no overrides).
+        mapping: Partial field→column override dict. Merged onto the
+            detected proposal; unspecified fields fall back.
+        save_format: Auto-save the confirmed mapping as a named format for
+            future imports. Defaults to True.
+    """
+    from moneybin.services.import_service import ImportService
+
+    path = _validate_file_path(file_path)
+
+    if not accept and not mapping:
+        raise UserError(
+            "import_confirm requires accept=True to ratify the proposed mapping, "
+            "or mapping={'<dest_field>': '<source_column>'} to override specific fields.",
+            code="confirm_requires_signal",
+        )
+
+    with get_database() as db:
+        result = ImportService(db).import_file(
+            path,
+            confirm=accept,
+            overrides=mapping,
+            save_format=save_format,
+            actor_kind="agent",
+            refresh=False,  # caller can run refresh_run separately
+        )
+
+    actions: list[str] = [
+        f"Use import_revert(import_id='{result.import_id}') to undo this import.",
+        "Use refresh_run() to rebuild derived tables and apply categorization.",
+        "Use system_status to confirm refreshed counts.",
+    ]
+    if result.sign_correction_suggested:
+        actions.insert(
+            0,
+            "Sign convention may be inverted — inspect amounts and re-import with "
+            "mapping={'amount': '<column>'} corrected if needed.",
+        )
+
+    # Re-run import_preview to get the merged mapping and sample values for the
+    # response. This is best-effort; failures don't abort the already-completed load.
+    merged_mapping: dict[str, str] = {}
+    sample_values: dict[str, list[str]] = {}
+    try:
+        from moneybin.extractors.tabular.column_mapper import map_columns
+        from moneybin.extractors.tabular.format_detector import detect_format
+        from moneybin.extractors.tabular.readers import read_file
+
+        format_info = detect_format(path)
+        read_result = read_file(path, format_info)
+        mapping_result = map_columns(read_result.df, overrides=mapping)
+        merged_mapping = dict(mapping_result.field_mapping)
+        sample_values = {k: list(v) for k, v in mapping_result.sample_values.items()}
+    except Exception:  # noqa: BLE001,S110 — preview is informational; load already succeeded
+        logger.debug(
+            "Could not build merged mapping for import_confirm response", exc_info=True
+        )
+
+    return build_envelope(
+        sensitivity="medium",
+        data=ImportConfirmPayload(
+            import_id=result.import_id,
+            rows_loaded=result.transactions,
+            merged_mapping=merged_mapping,
+            sample_values=sample_values,
+            sign_correction_suggested=result.sign_correction_suggested,
+        ),
+        actions=actions,
+    )
+
+
 def register_import_tools(mcp: FastMCP) -> None:
     """Register all import namespace tools with the FastMCP server."""
     register(
@@ -329,4 +509,18 @@ def register_import_tools(mcp: FastMCP) -> None:
         import_formats,
         "import_formats",
         "List all available tabular import formats (built-in and user-saved).",
+    )
+    register(
+        mcp,
+        import_confirm,
+        "import_confirm",
+        "Confirm or override a proposed column mapping and load the tabular file. "
+        "Terminal step of the propose->review->confirm workflow: call after "
+        "import_files returns confirmation_required. Pass accept=True to ratify "
+        "the proposal as-is, or mapping={'<dest_field>': '<source_column>'} for a "
+        "partial override (unspecified fields fall back to the detected proposal). "
+        "Writes raw.tabular_transactions (data load) and app.tabular_formats "
+        "(when save_format=True). Data load is reversible via import_revert; "
+        "format save can be undone via system_audit_undo. "
+        "Amounts use the accounting convention: negative=expense, positive=income.",
     )

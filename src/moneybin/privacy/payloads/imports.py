@@ -2,7 +2,8 @@
 
 Covers: import_files, import_preview, import_status, import_revert,
 import_formats, import_inbox_sync, import_inbox_pending,
-and import_labels_set (curation tool migrated from batch 4 stopgap).
+import_labels_set (curation tool migrated from batch 4 stopgap),
+and import_confirm.
 
 Each field carries ``Annotated[T, DataClass.X]`` metadata so the Phase 6
 middleware can derive sensitivity via ``derive_tier`` without inspecting
@@ -23,6 +24,8 @@ Tier derivation summary:
                                      failed list may contain error strings)
   - ``ImportInboxPendingPayload``  → Tier.LOW (filename/account metadata only)
   - ``ImportLabelsSetPayload``     → Tier.MEDIUM (labels = USER_NOTE)
+  - ``ImportConfirmPayload``       → Tier.MEDIUM (sample_values = DESCRIPTION —
+                                     raw file content may contain PII)
 """
 
 from __future__ import annotations
@@ -225,3 +228,25 @@ class ImportLabelsSetPayload:
 
     import_id: Annotated[str, DataClass.RECORD_ID]
     labels: Annotated[list[str], DataClass.USER_NOTE]
+
+
+# ---------------------------------------------------------------------------
+# import_confirm — confirmation outcome payload
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class ImportConfirmPayload:
+    """Payload for ``import_confirm`` — post-confirmation import result.
+
+    ``merged_mapping`` is the final field→column mapping that landed.
+    ``sample_values`` carries raw file content that may include PII
+    (merchant names, description text); annotated as DESCRIPTION (MEDIUM).
+    """
+
+    import_id: Annotated[str | None, DataClass.RECORD_ID]
+    rows_loaded: Annotated[int, DataClass.AGGREGATE]
+    merged_mapping: Annotated[dict[str, Any], DataClass.TXN_TYPE]
+    # raw file content — may contain PII → DESCRIPTION (MEDIUM)
+    sample_values: Annotated[dict[str, Any], DataClass.DESCRIPTION]
+    sign_correction_suggested: Annotated[bool, DataClass.TXN_TYPE] = False

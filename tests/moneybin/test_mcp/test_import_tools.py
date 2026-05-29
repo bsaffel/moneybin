@@ -2,14 +2,24 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 from pytest import MonkeyPatch
 
 from moneybin.errors import UserError
+from moneybin.extractors.confidence import Confidence
 from moneybin.mcp.tools.import_tools import (
     _validate_file_path,  # pyright: ignore[reportPrivateUsage]
+    import_confirm,
+    import_files,
+)
+from moneybin.services.import_confirmation import (
+    ConfirmationRequired,
+    ImportConfirmationRequiredError,
+    ProposedMapping,
 )
 
 
@@ -56,3 +66,400 @@ def test_symlink_escaping_home_raises_user_error(
         _validate_file_path(str(link))
 
     assert excinfo.value.code == "invalid_file_path"
+
+
+# ---------------------------------------------------------------------------
+# Helpers shared by the new test classes
+# ---------------------------------------------------------------------------
+
+
+def _make_confidence(
+    score: float = 0.4,
+    tier: str = "medium",
+    flagged: tuple[str, ...] = (),
+    missing_required: tuple[str, ...] = (),
+) -> Confidence:
+    return Confidence(
+        score=score,
+        tier=tier,  # type: ignore[arg-type]
+        flagged=flagged,
+        missing_required=missing_required,
+    )
+
+
+def _make_confirmation_error(
+    *,
+    tier: str = "medium",
+    score: float = 0.4,
+    field_mapping: dict[str, str] | None = None,
+    flagged: tuple[str, ...] = (),
+    missing_required: tuple[str, ...] = (),
+    reason: str = "unknown_layout",
+) -> ImportConfirmationRequiredError:
+    proposed = ProposedMapping(
+        field_mapping=field_mapping or {"transaction_date": "Date", "amount": "Amount"},
+        sample_values={"Date": ["2024-01-01"], "Amount": ["-50.00"]},
+        unmapped_columns=("Notes",),
+    )
+    outcome = ConfirmationRequired(
+        channel="tabular",
+        confidence=_make_confidence(
+            score=score, tier=tier, flagged=flagged, missing_required=missing_required
+        ),
+        proposed=proposed,
+        reason=reason,  # type: ignore[arg-type]
+        samples={"Date": ["2024-01-01"], "Amount": ["-50.00"]},
+    )
+    return ImportConfirmationRequiredError(outcome)
+
+
+@contextmanager
+def _fake_database(**_kw: object):  # type: ignore[misc]
+    yield MagicMock()
+
+
+# ---------------------------------------------------------------------------
+# TestImportFilesConfirmationRequired
+# ---------------------------------------------------------------------------
+
+
+class TestImportFilesConfirmationRequired:
+    """import_files emits confirmation_required envelope on unknown layouts."""
+
+    async def test_unknown_layout_returns_confirmation_required_envelope(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """import_files returns confirmation_required when service raises the error."""
+        csv_file = tmp_path / "statements" / "unknown.csv"
+        csv_file.parent.mkdir(parents=True)
+        csv_file.touch()
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database",
+            _fake_database,
+        )
+
+        error = _make_confirmation_error(tier="medium", score=0.4)
+        mock_service = MagicMock()
+        mock_service.import_file.side_effect = error
+
+        with patch(
+            "moneybin.services.import_service.ImportService",
+            return_value=mock_service,
+        ):
+            result = await import_files(paths=[str(csv_file)])
+
+        data = result.data
+        assert isinstance(data, dict)
+        assert data["status"] == "confirmation_required"
+        assert data["channel"] == "tabular"
+        assert data["tier"] == "medium"
+        assert "tier" in data
+        assert "score" in data
+
+    async def test_actions_list_includes_import_confirm_hint(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """actions[] includes a concrete import_confirm invocation hint."""
+        csv_file = tmp_path / "statements" / "unknown.csv"
+        csv_file.parent.mkdir(parents=True)
+        csv_file.touch()
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database",
+            _fake_database,
+        )
+
+        error = _make_confirmation_error()
+        mock_service = MagicMock()
+        mock_service.import_file.side_effect = error
+
+        with patch(
+            "moneybin.services.import_service.ImportService",
+            return_value=mock_service,
+        ):
+            result = await import_files(paths=[str(csv_file)])
+
+        joined = " ".join(result.actions or [])
+        assert "import_confirm" in joined
+        assert "accept=True" in joined
+
+    async def test_low_tier_envelope_includes_missing_required(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """Envelope data includes missing_required when detector flags them."""
+        csv_file = tmp_path / "statements" / "low.csv"
+        csv_file.parent.mkdir(parents=True)
+        csv_file.touch()
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database",
+            _fake_database,
+        )
+
+        error = _make_confirmation_error(
+            tier="low",
+            score=0.15,
+            missing_required=("description",),
+        )
+        mock_service = MagicMock()
+        mock_service.import_file.side_effect = error
+
+        with patch(
+            "moneybin.services.import_service.ImportService",
+            return_value=mock_service,
+        ):
+            result = await import_files(paths=[str(csv_file)])
+
+        data = result.data
+        assert isinstance(data, dict)
+        assert "description" in data["missing_required"]
+
+    async def test_actor_kind_agent_passed_to_service(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """import_files passes actor_kind='agent' to ImportService.import_file."""
+        csv_file = tmp_path / "statements" / "test.csv"
+        csv_file.parent.mkdir(parents=True)
+        csv_file.touch()
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database",
+            _fake_database,
+        )
+
+        mock_service = MagicMock()
+        # Simulate a successful import (no confirmation required) to see the call kwargs
+        from moneybin.services.import_service import ImportResult
+
+        mock_service.import_file.return_value = ImportResult(
+            file_path=str(csv_file),
+            file_type="tabular",
+            transactions=5,
+            import_id="abc123",
+        )
+
+        with patch(
+            "moneybin.services.import_service.ImportService",
+            return_value=mock_service,
+        ):
+            await import_files(paths=[str(csv_file)])
+
+        mock_service.import_file.assert_called_once()
+        _args, kwargs = mock_service.import_file.call_args
+        assert kwargs.get("actor_kind") == "agent"
+
+
+# ---------------------------------------------------------------------------
+# TestImportConfirmTool
+# ---------------------------------------------------------------------------
+
+
+class TestImportConfirmTool:
+    """import_confirm tool: accept, override, validation, actor_kind."""
+
+    async def test_requires_accept_or_mapping(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """Calling with neither accept=True nor mapping returns an error envelope."""
+        csv_file = tmp_path / "statements" / "test.csv"
+        csv_file.parent.mkdir(parents=True)
+        csv_file.touch()
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        # The @mcp_tool decorator converts UserError to an error envelope.
+        result = await import_confirm(file_path=str(csv_file))
+        assert result.error is not None
+        assert result.error.code == "confirm_requires_signal"
+
+    async def test_accept_loads_data(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """accept=True calls import_file with confirm=True and returns imported status."""
+        csv_file = tmp_path / "statements" / "test.csv"
+        csv_file.parent.mkdir(parents=True)
+        csv_file.touch()
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database",
+            _fake_database,
+        )
+
+        from moneybin.services.import_service import ImportResult
+
+        mock_service = MagicMock()
+        mock_service.import_file.return_value = ImportResult(
+            file_path=str(csv_file),
+            file_type="tabular",
+            transactions=10,
+            import_id="abc-123",
+        )
+
+        with patch(
+            "moneybin.services.import_service.ImportService",
+            return_value=mock_service,
+        ):
+            with patch(
+                "moneybin.extractors.tabular.format_detector.detect_format",
+                side_effect=ValueError("preview unavailable"),
+            ):
+                result = await import_confirm(file_path=str(csv_file), accept=True)
+
+        assert result.data.rows_loaded == 10
+        assert result.data.import_id == "abc-123"
+
+    async def test_mapping_override_passes_overrides_to_service(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """mapping= is forwarded as overrides= to import_file."""
+        csv_file = tmp_path / "statements" / "test.csv"
+        csv_file.parent.mkdir(parents=True)
+        csv_file.touch()
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database",
+            _fake_database,
+        )
+
+        from moneybin.services.import_service import ImportResult
+
+        mock_service = MagicMock()
+        mock_service.import_file.return_value = ImportResult(
+            file_path=str(csv_file),
+            file_type="tabular",
+            transactions=5,
+            import_id="xyz-456",
+        )
+        override = {"description": "Memo"}
+
+        with patch(
+            "moneybin.services.import_service.ImportService",
+            return_value=mock_service,
+        ):
+            with patch(
+                "moneybin.extractors.tabular.format_detector.detect_format",
+                side_effect=ValueError("preview unavailable"),
+            ):
+                await import_confirm(file_path=str(csv_file), mapping=override)
+
+        _args, kwargs = mock_service.import_file.call_args
+        assert kwargs.get("overrides") == override
+
+    async def test_passes_actor_kind_agent_to_service(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """import_confirm always passes actor_kind='agent' to ImportService."""
+        csv_file = tmp_path / "statements" / "test.csv"
+        csv_file.parent.mkdir(parents=True)
+        csv_file.touch()
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database",
+            _fake_database,
+        )
+
+        from moneybin.services.import_service import ImportResult
+
+        mock_service = MagicMock()
+        mock_service.import_file.return_value = ImportResult(
+            file_path=str(csv_file),
+            file_type="tabular",
+            transactions=3,
+            import_id="qrs-789",
+        )
+
+        with patch(
+            "moneybin.services.import_service.ImportService",
+            return_value=mock_service,
+        ):
+            with patch(
+                "moneybin.extractors.tabular.format_detector.detect_format",
+                side_effect=ValueError("preview unavailable"),
+            ):
+                await import_confirm(file_path=str(csv_file), accept=True)
+
+        _args, kwargs = mock_service.import_file.call_args
+        assert kwargs.get("actor_kind") == "agent"
+
+    async def test_save_format_default_true(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """save_format defaults to True and is forwarded to import_file."""
+        csv_file = tmp_path / "statements" / "test.csv"
+        csv_file.parent.mkdir(parents=True)
+        csv_file.touch()
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database",
+            _fake_database,
+        )
+
+        from moneybin.services.import_service import ImportResult
+
+        mock_service = MagicMock()
+        mock_service.import_file.return_value = ImportResult(
+            file_path=str(csv_file),
+            file_type="tabular",
+            transactions=2,
+            import_id="save-001",
+        )
+
+        with patch(
+            "moneybin.services.import_service.ImportService",
+            return_value=mock_service,
+        ):
+            with patch(
+                "moneybin.extractors.tabular.format_detector.detect_format",
+                side_effect=ValueError("preview unavailable"),
+            ):
+                await import_confirm(file_path=str(csv_file), accept=True)
+
+        _args, kwargs = mock_service.import_file.call_args
+        assert kwargs.get("save_format") is True
+
+    async def test_import_revert_hint_in_actions(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """actions[] includes an import_revert hint referencing the import_id."""
+        csv_file = tmp_path / "statements" / "test.csv"
+        csv_file.parent.mkdir(parents=True)
+        csv_file.touch()
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database",
+            _fake_database,
+        )
+
+        from moneybin.services.import_service import ImportResult
+
+        mock_service = MagicMock()
+        mock_service.import_file.return_value = ImportResult(
+            file_path=str(csv_file),
+            file_type="tabular",
+            transactions=1,
+            import_id="revert-001",
+        )
+
+        with patch(
+            "moneybin.services.import_service.ImportService",
+            return_value=mock_service,
+        ):
+            with patch(
+                "moneybin.extractors.tabular.format_detector.detect_format",
+                side_effect=ValueError("preview unavailable"),
+            ):
+                result = await import_confirm(file_path=str(csv_file), accept=True)
+
+        joined = " ".join(result.actions)
+        assert "import_revert" in joined
+        assert "revert-001" in joined
