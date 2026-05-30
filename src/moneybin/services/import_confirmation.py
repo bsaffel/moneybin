@@ -275,13 +275,28 @@ def resolve_or_confirm(
         return Resolved(field_mapping=merged, format_ref=None, self_accepted=False)
 
     if actor_kind == "agent" and confidence.tier == "high" and self_accept_enabled:
-        merged = validate_partial_mapping(
-            proposed=proposed.field_mapping,
-            override={},
-            available_columns=available_columns,
-            required_fields=required_fields,
-            valid_destinations=valid_destinations,
-        )
+        # Self-accept symmetric with Accept: surface validation failure
+        # as ConfirmationRequired rather than letting the exception
+        # propagate. A malformed proposal at self-accept time is a
+        # channel bug, but uniform return-type contract means callers
+        # don't branch on signal/actor combinations.
+        try:
+            merged = validate_partial_mapping(
+                proposed=proposed.field_mapping,
+                override={},
+                available_columns=available_columns,
+                required_fields=required_fields,
+                valid_destinations=valid_destinations,
+            )
+        except MappingValidationError as e:
+            return ConfirmationRequired(
+                channel=channel,
+                confidence=confidence,
+                proposed=proposed,
+                reason="validation_failure",
+                samples=dict(proposed.sample_values),
+                error_message=str(e),
+            )
         return Resolved(field_mapping=merged, format_ref=None, self_accepted=True)
 
     return ConfirmationRequired(

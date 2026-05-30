@@ -649,18 +649,39 @@ def import_confirm_command(
 
     parsed_mapping = _parse_overrides(list(mapping)) if mapping else None
 
-    with handle_cli_errors():
-        with get_database() as db:
-            result = ImportService(db).import_file(
-                file_path=file_path,
-                confirm=accept,
-                overrides=parsed_mapping,
-                account_id=account_id,
-                account_name=account_name,
-                save_format=save_format,
-                actor_kind="human",
-                refresh=False,  # caller can run 'moneybin transform apply' separately
-            )
+    from moneybin.services.import_confirmation import ImportConfirmationRequiredError
+
+    try:
+        with handle_cli_errors():
+            with get_database() as db:
+                result = ImportService(
+                    db
+                ).import_file(
+                    file_path=file_path,
+                    confirm=accept,
+                    overrides=parsed_mapping,
+                    account_id=account_id,
+                    account_name=account_name,
+                    save_format=save_format,
+                    actor_kind="human",
+                    refresh=False,  # caller can run 'moneybin transform apply' separately
+                )
+    except ImportConfirmationRequiredError as e:
+        # The confirm attempt itself can re-surface ConfirmationRequired —
+        # e.g. an override that names an unknown source column, or a
+        # low-tier proposal where the user-supplied mapping still leaves
+        # required fields missing. Render the same shape import_files
+        # uses so callers see WHY the confirm failed instead of an
+        # uncaught traceback.
+        msg = f"❌ Confirmation failed: {e.outcome.reason}" + (
+            f" — {e.outcome.error_message}" if e.outcome.error_message else ""
+        )
+        logger.error(msg)
+        logger.info(
+            "💡 Inspect the proposal with 'moneybin import preview "
+            f"{file_path}' and re-run with a corrected --mapping."
+        )
+        raise typer.Exit(1) from e
 
     if output == OutputFormat.JSON:
         data: dict[str, Any] = {

@@ -238,6 +238,7 @@ def import_files(
             import_id=r.import_id,
             error=r.error,
             sign_correction_suggested=r.sign_correction_suggested,
+            confirmation_payload=r.confirmation_payload,
         )
         for r in batch.per_file
     ]
