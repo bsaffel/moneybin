@@ -188,6 +188,7 @@ class ImportInboxSyncPayload:
 
     processed: Annotated[list[dict[str, object]], DataClass.AGGREGATE]
     failed: Annotated[list[dict[str, object]], DataClass.DESCRIPTION]
+    pending: Annotated[list[dict[str, object]], DataClass.DESCRIPTION]
     skipped: Annotated[list[dict[str, object]], DataClass.AGGREGATE]
     ignored: Annotated[list[dict[str, object]], DataClass.AGGREGATE]
     transforms_applied: Annotated[bool, DataClass.TXN_TYPE]

@@ -169,24 +169,57 @@ def import_files(
                 },
                 actions=_confirmation_actions(file_path, e.outcome),
             )
-        # Wrap single-file result in a BatchImportResult-like shape for uniform handling below.
-        from moneybin.services.import_service import BatchImportResult, PerFileResult
+        except Exception as e:  # noqa: BLE001 — surface as per-file failure
+            # Single-file path bypasses BatchImportResult's per-file catch-
+            # all, so non-confirmation exceptions (FileNotFoundError,
+            # ValueError, schema mismatches, …) would propagate as a
+            # generic MCP error envelope and lose the per-file failure
+            # shape callers expect. Synthesize the same batch-style
+            # failure record the multi-path branch produces.
+            from moneybin.services.import_service import (
+                BatchImportResult,
+                PerFileResult,
+            )
 
-        batch = BatchImportResult(
-            per_file=[
-                PerFileResult(
-                    path=str(validated[0]),
-                    status="imported",
-                    source_type=one.file_type,
-                    rows_loaded=one.transactions,
-                    import_id=one.import_id,
-                    sign_correction_suggested=one.sign_correction_suggested,
-                )
-            ],
-            transforms_applied=one.core_tables_rebuilt,
-            transforms_duration_seconds=None,
-            transforms_error=None,
-        )
+            error_type = type(e).__name__
+            logger.warning(f"Import failed for {validated[0]}: {error_type}")
+            batch = BatchImportResult(
+                per_file=[
+                    PerFileResult(
+                        path=str(validated[0]),
+                        status="failed",
+                        source_type=None,
+                        rows_loaded=0,
+                        import_id=None,
+                        error=error_type,
+                    )
+                ],
+                transforms_applied=False,
+                transforms_duration_seconds=None,
+            )
+        else:
+            # Wrap successful single-file result in BatchImportResult shape
+            # so the downstream envelope-builder doesn't branch on path count.
+            from moneybin.services.import_service import (
+                BatchImportResult,
+                PerFileResult,
+            )
+
+            batch = BatchImportResult(
+                per_file=[
+                    PerFileResult(
+                        path=str(validated[0]),
+                        status="imported",
+                        source_type=one.file_type,
+                        rows_loaded=one.transactions,
+                        import_id=one.import_id,
+                        sign_correction_suggested=one.sign_correction_suggested,
+                    )
+                ],
+                transforms_applied=one.core_tables_rebuilt,
+                transforms_duration_seconds=None,
+                transforms_error=None,
+            )
     else:
         with get_database() as db:
             batch = ImportService(db).import_files(

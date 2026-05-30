@@ -282,6 +282,17 @@ class GSheetConnectionService:
                 raise GSheetError(str(e)) from e
             # Invert back to source→dest for storage.
             column_mapping = {src: dest for dest, src in merged_dest_to_src.items()}
+            # KNOWN LIMITATION: detection.sign_convention / date_format /
+            # number_format are derived from the ORIGINAL inference over the
+            # detected amount/date columns. A user override that swaps the
+            # amount shape (single ⇄ split debit/credit) or remaps
+            # transaction_date to a different column does NOT re-run the
+            # inference. The persisted metadata may therefore be stale for
+            # the overridden source columns; subsequent pulls would apply
+            # the old sign_convention to the new amount column. Recovery is
+            # `gsheet reconnect --column-mapping … --sign …`. Proper fix
+            # requires re-running inference over the merged mapping —
+            # tracked as a follow-up rather than an inline patch here.
             IMPORT_DETECTION_SCORE.observe(detection.score)
             if req.column_mapping:
                 IMPORT_OVERRIDE_TOTAL.labels(channel="gsheet").inc()

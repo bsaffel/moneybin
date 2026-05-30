@@ -59,6 +59,13 @@ def import_inbox_sync(refresh: bool = True) -> ResponseEnvelope[ImportInboxSyncP
         sync_result = service.sync(refresh=refresh)
 
     actions: list[str] = ["Use transactions.search to view newly imported transactions"]
+    if sync_result.pending:
+        actions.insert(
+            0,
+            "Files in pending/ require confirmation — use `moneybin import confirm "
+            "<pending-path> --accept` (or `--mapping field=column`) per entry; see "
+            "the .pending.yml sidecars for the detector proposal and recovery hints",
+        )
     if sync_result.failed:
         actions.insert(
             0,
@@ -78,6 +85,7 @@ def import_inbox_sync(refresh: bool = True) -> ResponseEnvelope[ImportInboxSyncP
         data=ImportInboxSyncPayload(
             processed=sync_result.processed,
             failed=sync_result.failed,
+            pending=sync_result.pending,
             skipped=sync_result.skipped,
             ignored=sync_result.ignored,
             transforms_applied=sync_result.transforms_applied,

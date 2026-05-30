@@ -292,6 +292,18 @@ def import_files_command(
             "⚠️  Per-file flags only apply in single-file mode and will be "
             "ignored. Use one file per command for per-file overrides."
         )
+    if len(file_paths) > 1 and confirm:
+        # --confirm with multiple files would silently auto-accept every
+        # first-encounter layout in the batch sight-unseen. Each layout is a
+        # separate trust decision; refuse the batch and require per-file
+        # invocations or use `moneybin import confirm <file>` after the
+        # confirmation_required envelopes surface.
+        raise typer.BadParameter(
+            "--confirm cannot be combined with multiple files. Each first-"
+            "encounter layout requires its own confirmation. Re-run per-file "
+            "or import without --confirm to surface confirmation_required "
+            "envelopes, then ratify with `moneybin import confirm <file>`."
+        )
 
     from moneybin.database import get_database  # noqa: PLC0415 — deferred import
 
