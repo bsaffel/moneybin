@@ -389,6 +389,11 @@ def import_files_command(
                             "rows_loaded": r.rows_loaded,
                             "import_id": r.import_id,
                             **({"error": r.error} if r.error else {}),
+                            **(
+                                {"confirmation_payload": r.confirmation_payload}
+                                if r.confirmation_payload
+                                else {}
+                            ),
                         }
                         for r in batch.per_file
                     ]
@@ -940,7 +945,12 @@ def import_preview(
             for field, col in matched_format.field_mapping.items():
                 typer.echo(f"  {field} ← {col}")
         else:
-            mapping_result = map_columns(df, overrides=overrides)
+            from moneybin.config import get_settings  # noqa: PLC0415
+
+            bands = get_settings().import_.confidence
+            mapping_result = map_columns(
+                df, overrides=overrides, t_high=bands.t_high, t_med=bands.t_med
+            )
             typer.echo(f"\nDetected mapping (confidence: {mapping_result.confidence}):")
             for field, col in mapping_result.field_mapping.items():
                 typer.echo(f"  {field} ← {col}")

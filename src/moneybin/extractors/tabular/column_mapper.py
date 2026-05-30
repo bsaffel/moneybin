@@ -110,12 +110,19 @@ def map_columns(
     df: pl.DataFrame,
     *,
     overrides: dict[str, str] | None = None,
+    t_high: float = 0.90,
+    t_med: float = 0.70,
 ) -> MappingResult:
     """Map source columns to destination fields.
 
     Args:
         df: Source DataFrame from Stage 2.
         overrides: Explicit field→column overrides from user.
+        t_high: High-confidence threshold for the ``confidence`` tier label.
+            Production callers should pass ``settings.import_.confidence.t_high``
+            so the displayed tier agrees with the runtime-tuned bands the
+            confirm primitive uses. Defaults match ``ConfidenceBands`` defaults.
+        t_med: Medium-confidence threshold (same notes as ``t_high``).
 
     Returns:
         MappingResult with mapping, confidence, and metadata.
@@ -192,7 +199,7 @@ def map_columns(
     score, missing_required = _score_mapping(mapping, flagged, date_format)
     from moneybin.extractors.confidence import tier_for
 
-    confidence = tier_for(score, t_high=0.90, t_med=0.70)
+    confidence = tier_for(score, t_high=t_high, t_med=t_med)
 
     # Convert None → "" for the public sample_values (callers don't need nulls).
     sample_values: dict[str, list[str]] = {

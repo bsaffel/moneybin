@@ -284,14 +284,18 @@ def import_preview(file_path: str) -> ResponseEnvelope[ImportPreviewPayload]:
         file_path: Absolute path to the file to preview.
     """
     validated = _validate_file_path(file_path)
+    from moneybin.config import get_settings
     from moneybin.extractors.tabular.column_mapper import map_columns
     from moneybin.extractors.tabular.format_detector import detect_format
     from moneybin.extractors.tabular.readers import read_file
 
+    bands = get_settings().import_.confidence
     try:
         format_info = detect_format(validated)
         read_result = read_file(validated, format_info)
-        mapping_result = map_columns(read_result.df)
+        mapping_result = map_columns(
+            read_result.df, t_high=bands.t_high, t_med=bands.t_med
+        )
     except ValueError as e:
         raise UserError(str(e), code="preview_error") from e
 
@@ -470,6 +474,10 @@ def import_confirm(
         save_format: Auto-save the confirmed mapping as a named format for
             future imports. Defaults to True.
     """
+    from moneybin.services.import_confirmation import (
+        ImportConfirmationRequiredError,
+        ProposedMapping,
+    )
     from moneybin.services.import_service import ImportService
 
     path = _validate_file_path(file_path)
@@ -481,14 +489,48 @@ def import_confirm(
             code="confirm_requires_signal",
         )
 
-    with get_database() as db:
-        result = ImportService(db).import_file(
-            path,
-            confirm=accept,
-            overrides=mapping,
-            save_format=save_format,
-            actor_kind="agent",
-            refresh=False,  # caller can run refresh_run separately
+    try:
+        with get_database() as db:
+            result = ImportService(db).import_file(
+                path,
+                confirm=accept,
+                overrides=mapping,
+                save_format=save_format,
+                actor_kind="agent",
+                refresh=False,  # caller can run refresh_run separately
+            )
+    except ImportConfirmationRequiredError as e:
+        # An override that names an unknown source column, or an Accept against
+        # a low-tier proposal where required fields remain missing, re-surfaces
+        # ConfirmationRequired. Mirror import_files' envelope so the agent
+        # sees the validator's error_message and actions[] instead of an
+        # opaque server error.
+        proposed_mapping = (
+            e.outcome.proposed.field_mapping
+            if isinstance(e.outcome.proposed, ProposedMapping)
+            else {}
+        )
+        unmapped = (
+            list(e.outcome.proposed.unmapped_columns)
+            if isinstance(e.outcome.proposed, ProposedMapping)
+            else []
+        )
+        return build_envelope(
+            sensitivity="medium",
+            data={
+                "status": "confirmation_required",
+                "channel": e.outcome.channel,
+                "tier": e.outcome.confidence.tier,
+                "score": e.outcome.confidence.score,
+                "reason": e.outcome.reason,
+                "error_message": e.outcome.error_message,
+                "proposed_mapping": proposed_mapping,
+                "samples": e.outcome.samples,
+                "flagged": list(e.outcome.confidence.flagged),
+                "missing_required": list(e.outcome.confidence.missing_required),
+                "unmapped_columns": unmapped,
+            },
+            actions=_confirmation_actions(str(path), e.outcome),
         )
 
     actions: list[str] = [
@@ -508,13 +550,20 @@ def import_confirm(
     merged_mapping: dict[str, str] = {}
     sample_values: dict[str, list[str]] = {}
     try:
+        from moneybin.config import get_settings
         from moneybin.extractors.tabular.column_mapper import map_columns
         from moneybin.extractors.tabular.format_detector import detect_format
         from moneybin.extractors.tabular.readers import read_file
 
+        bands = get_settings().import_.confidence
         format_info = detect_format(path)
         read_result = read_file(path, format_info)
-        mapping_result = map_columns(read_result.df, overrides=mapping)
+        mapping_result = map_columns(
+            read_result.df,
+            overrides=mapping,
+            t_high=bands.t_high,
+            t_med=bands.t_med,
+        )
         merged_mapping = dict(mapping_result.field_mapping)
         sample_values = {k: list(v) for k, v in mapping_result.sample_values.items()}
     except Exception:  # noqa: BLE001,S110 — preview is informational; load already succeeded

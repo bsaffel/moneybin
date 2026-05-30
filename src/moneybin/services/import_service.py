@@ -791,9 +791,11 @@ class ImportService:
                 resolve_or_confirm,
             )
 
-            mapping_result = map_columns(df, overrides=overrides)
             settings = get_settings()
             bands = settings.import_.confidence
+            mapping_result = map_columns(
+                df, overrides=overrides, t_high=bands.t_high, t_med=bands.t_med
+            )
             confidence = mapping_result.to_confidence(
                 t_high=bands.t_high, t_med=bands.t_med
             )

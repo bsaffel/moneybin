@@ -67,7 +67,10 @@ class TransactionsAdapter:
     ) -> DetectionResult:
         """Detect the column mapping for a transactions-shaped sheet."""
         _ = account_name  # accepted for Protocol parity; unused by map_columns
-        mapping_result = map_columns(df)
+        from moneybin.config import get_settings
+
+        bands = get_settings().import_.confidence
+        mapping_result = map_columns(df, t_high=bands.t_high, t_med=bands.t_med)
         # MappingResult.field_mapping is dest_field → source_column; invert
         # to source_header → dest_field for the DetectionResult contract.
         column_mapping = {
