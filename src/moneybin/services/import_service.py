@@ -1032,7 +1032,7 @@ class ImportService:
             self._db, import_id, status=status, rows_total=rows, rows_imported=rows
         )
         PDF_IMPORT_TOTAL.labels(
-            outcome="seed" if rows else "failed", rung="deterministic"
+            outcome="seed" if rows > 0 else "failed", rung="deterministic"
         ).inc()
         PDF_SEED_ROWS_TOTAL.labels(alias=resolved_alias).inc(rows)
         result.details = {"seed_rows": rows}
