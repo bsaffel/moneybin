@@ -67,10 +67,13 @@ class TransactionsAdapter:
     ) -> DetectionResult:
         """Detect the column mapping for a transactions-shaped sheet."""
         _ = account_name  # accepted for Protocol parity; unused by map_columns
-        from moneybin.config import get_settings
-
-        bands = get_settings().import_.confidence
-        mapping_result = map_columns(df, t_high=bands.t_high, t_med=bands.t_med)
+        # MappingResult.confidence here is informational (forwarded onto
+        # DetectionResult.confidence for display). The gsheet control-flow
+        # path computes its own Confidence via to_confidence(bands) in
+        # connection_service, so we don't import settings here — that would
+        # trip the first-run wizard for CliRunner-driven tests that haven't
+        # initialized a profile.
+        mapping_result = map_columns(df)
         # MappingResult.field_mapping is dest_field → source_column; invert
         # to source_header → dest_field for the DetectionResult contract.
         column_mapping = {
