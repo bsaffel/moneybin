@@ -30,7 +30,10 @@ from moneybin.metrics.registry import (
 from moneybin.repositories.imports_repo import ImportsRepo
 from moneybin.services._validators import validate_slug
 from moneybin.services.audit_service import AuditService
-from moneybin.services.import_confirmation import ActorKind
+from moneybin.services.import_confirmation import (
+    ActorKind,
+    ImportConfirmationRequiredError,
+)
 from moneybin.services.refresh import refresh as _refresh
 
 logger = logging.getLogger(__name__)
@@ -77,16 +80,24 @@ class ImportResult:
 
 @dataclass(frozen=True)
 class PerFileResult:
-    """One file's outcome inside a batch import."""
+    """One file's outcome inside a batch import.
+
+    ``status="confirmation_required"`` is used when ``_import_one`` raised
+    ``ImportConfirmationRequiredError`` — the file's detector proposal is
+    captured in ``confirmation_payload`` so the multi-file MCP envelope
+    can list per-file pending entries with enough context for the agent
+    to invoke ``import_confirm`` on each.
+    """
 
     path: str
-    status: Literal["imported", "failed", "skipped"]
+    status: Literal["imported", "failed", "skipped", "confirmation_required"]
     source_type: str | None
     rows_loaded: int = 0
     rows_skipped: int = 0
     import_id: str | None = None
     error: str | None = None
     sign_correction_suggested: bool = False
+    confirmation_payload: dict[str, object] | None = None
     """True if running balance suggests sign inversion; amounts were NOT auto-corrected."""
 
 
@@ -1297,6 +1308,47 @@ class ImportService:
                 any_succeeded = True
                 if r.file_type in ("ofx", "tabular"):
                     any_transformable = True
+            except ImportConfirmationRequiredError as e:
+                # Distinct from generic failure: the file's detector formed
+                # a proposal (or surfaced low-tier with no proposal); the
+                # caller needs the payload to ratify or override per file.
+                from moneybin.services.import_confirmation import ProposedMapping
+
+                proposed_mapping = (
+                    e.outcome.proposed.field_mapping
+                    if isinstance(e.outcome.proposed, ProposedMapping)
+                    else {}
+                )
+                unmapped = (
+                    list(e.outcome.proposed.unmapped_columns)
+                    if isinstance(e.outcome.proposed, ProposedMapping)
+                    else []
+                )
+                logger.info(
+                    f"Import requires confirmation for {path}: "
+                    f"tier={e.outcome.confidence.tier} reason={e.outcome.reason}"
+                )
+                per_file.append(
+                    PerFileResult(
+                        path=str(path),
+                        status="confirmation_required",
+                        source_type=None,
+                        confirmation_payload={
+                            "channel": e.outcome.channel,
+                            "tier": e.outcome.confidence.tier,
+                            "score": e.outcome.confidence.score,
+                            "reason": e.outcome.reason,
+                            "error_message": e.outcome.error_message,
+                            "proposed_mapping": dict(proposed_mapping),
+                            "samples": dict(e.outcome.samples),
+                            "flagged": list(e.outcome.confidence.flagged),
+                            "missing_required": list(
+                                e.outcome.confidence.missing_required
+                            ),
+                            "unmapped_columns": unmapped,
+                        },
+                    )
+                )
             except Exception as e:  # noqa: BLE001 — per-file failure must not abort batch
                 # error_type only; raw str(e) may embed PII per extractors/ofx/extractor.py
                 error_type = type(e).__name__
