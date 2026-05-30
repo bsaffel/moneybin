@@ -889,10 +889,31 @@ class ImportService:
                     outcome="accepted",
                 ).inc()
 
+            # Coerce sign_convention based on the resolved amount shape so an
+            # override that swaps single ⇄ split doesn't carry a stale
+            # detector-derived convention into transform_dataframe (split
+            # rule against a single ``amount`` mapping rejects every row,
+            # and vice versa). Detector-derived sign for the resolved shape
+            # is preserved when the override didn't change the shape.
+            resolved_has_split = (
+                "debit_amount" in outcome.field_mapping
+                and "credit_amount" in outcome.field_mapping
+            )
+            detector_was_split = mapping_result.sign_convention == "split_debit_credit"
+            if resolved_has_split and not detector_was_split:
+                resolved_sign = "split_debit_credit"
+            elif not resolved_has_split and detector_was_split:
+                # Split → single: detector's split-only convention is no
+                # longer valid. Fall back to the default
+                # ``negative_is_expense``; callers can pass --sign to
+                # override if their export uses a different convention.
+                resolved_sign = "negative_is_expense"
+            else:
+                resolved_sign = mapping_result.sign_convention
             resolved = ResolvedMapping(
                 field_mapping=outcome.field_mapping,
                 date_format=mapping_result.date_format or "%Y-%m-%d",
-                sign_convention=mapping_result.sign_convention,
+                sign_convention=resolved_sign,
                 number_format=mapping_result.number_format,
                 is_multi_account=mapping_result.is_multi_account,
                 confidence=confidence.tier,

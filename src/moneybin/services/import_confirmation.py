@@ -165,6 +165,19 @@ def validate_partial_mapping(
                 f"{unknown_dests}. Valid destinations: {list(valid_destinations)}."
             )
     merged = {**proposed, **override}
+    # Amount shape is mutually exclusive: a row has EITHER a single
+    # ``amount`` column OR a ``debit_amount`` + ``credit_amount`` pair, never
+    # both. If the override resolves the contention, drop the losing keys
+    # so the merged mapping has a single, unambiguous shape.
+    # Otherwise transform_dataframe would silently use one shape (driven by
+    # sign_convention) and ignore the other, masking the override's intent.
+    override_has_amount = "amount" in override
+    override_has_split = "debit_amount" in override or "credit_amount" in override
+    if override_has_amount and not override_has_split:
+        merged.pop("debit_amount", None)
+        merged.pop("credit_amount", None)
+    elif override_has_split and not override_has_amount:
+        merged.pop("amount", None)
     missing = [f for f in required_fields if f not in merged]
     if missing:
         raise MappingValidationError(

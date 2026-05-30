@@ -301,9 +301,18 @@ class GSheetConnectionService:
                 and "credit_amount" in merged_dest_to_src
                 and "amount" not in merged_dest_to_src
             )
-            sign_convention_for_save = (
-                "split_debit_credit" if has_split else detection.sign_convention
-            )
+            detector_was_split = detection.sign_convention == "split_debit_credit"
+            if has_split:
+                sign_convention_for_save = "split_debit_credit"
+            elif detector_was_split:
+                # Split → single via override: detector's split-only
+                # convention is no longer valid against the resolved
+                # single-amount mapping. Fall back to the default sign;
+                # callers can pass --sign on reconnect if their export
+                # uses a different convention.
+                sign_convention_for_save = "negative_is_expense"
+            else:
+                sign_convention_for_save = detection.sign_convention
             IMPORT_DETECTION_SCORE.observe(detection.score)
             if req.column_mapping:
                 IMPORT_OVERRIDE_TOTAL.labels(channel="gsheet").inc()
