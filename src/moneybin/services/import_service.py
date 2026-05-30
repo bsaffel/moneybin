@@ -57,6 +57,13 @@ class ImportResult:
     """True if running balance suggests sign inversion; amounts were NOT auto-corrected."""
     import_id: str | None = None
     """UUID of the raw.import_log row this import created."""
+    field_mapping: dict[str, str] | None = None
+    """Authoritative destination → source column mapping the load used.
+
+    Populated for tabular imports from the resolved (matched-format or
+    confirmed) mapping. None for OFX/non-tabular paths. Callers
+    (import_confirm response, audit log) should prefer this over re-running
+    detection, which can diverge in ambiguous-header edge cases."""
 
     def summary(self) -> str:
         """Human-readable import summary."""
@@ -1082,6 +1089,7 @@ class ImportService:
         result.transactions = rows_imported
         result.details = {"transactions": rows_imported, "accounts": len(unique_ids)}
         result.sign_correction_suggested = transform_result.sign_correction_suggested
+        result.field_mapping = dict(resolved.field_mapping)
 
         if rows_imported > 0:
             result.date_range = self._query_date_range(

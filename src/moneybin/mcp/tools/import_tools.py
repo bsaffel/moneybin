@@ -575,9 +575,11 @@ def import_confirm(
             "mapping={'amount': '<column>'} corrected if needed.",
         )
 
-    # Re-run import_preview to get the merged mapping and sample values for the
-    # response. This is best-effort; failures don't abort the already-completed load.
-    merged_mapping: dict[str, str] = {}
+    # Authoritative mapping comes from ImportService — what actually loaded.
+    # sample_values are populated best-effort by re-reading the file so the
+    # agent sees the same per-column previews import_preview would emit;
+    # failure to re-read does not affect the load and is logged at debug.
+    merged_mapping: dict[str, str] = dict(result.field_mapping or {})
     sample_values: dict[str, list[str]] = {}
     try:
         from moneybin.config import get_settings
@@ -594,11 +596,11 @@ def import_confirm(
             t_high=bands.t_high,
             t_med=bands.t_med,
         )
-        merged_mapping = dict(mapping_result.field_mapping)
         sample_values = {k: list(v) for k, v in mapping_result.sample_values.items()}
-    except Exception:  # noqa: BLE001,S110 — preview is informational; load already succeeded
+    except Exception:  # noqa: BLE001,S110 — samples are informational; load already succeeded
         logger.debug(
-            "Could not build merged mapping for import_confirm response", exc_info=True
+            "Could not build sample_values for import_confirm response",
+            exc_info=True,
         )
 
     return build_envelope(

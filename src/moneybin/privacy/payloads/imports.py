@@ -247,9 +247,15 @@ class ImportLabelsSetPayload:
 class ImportConfirmPayload:
     """Payload for ``import_confirm`` — post-confirmation import result.
 
-    ``merged_mapping`` is the final field→column mapping that landed.
+    ``merged_mapping`` is the authoritative destination → source column
+    mapping the load actually used (threaded from ``ImportResult.field_mapping``
+    populated inside ``_import_tabular`` from the ``resolve_or_confirm`` outcome,
+    NOT re-derived from a post-hoc detection pass — those can diverge on
+    ambiguous headers).
     ``sample_values`` carries raw file content that may include PII
     (merchant names, description text); annotated as DESCRIPTION (MEDIUM).
+    Sample values are populated best-effort by re-reading the file post-load
+    for display; they're informational, not load-state.
     """
 
     import_id: Annotated[str | None, DataClass.RECORD_ID]
