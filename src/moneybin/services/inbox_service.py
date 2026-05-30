@@ -396,6 +396,10 @@ class InboxService:
                 str(src),
                 refresh=False,
                 account_name=account_hint if isinstance(account_hint, str) else None,
+                # Placing a file under inbox/<account-slug>/ IS the user's
+                # confirmation; the inbox sync runs unattended (cron / watcher)
+                # and has no TTY to surface confirmation_required to.
+                confirm=True,
             )
         except Exception as e:  # noqa: BLE001 — surfaced as structured failure entry
             self._handle_failure(src, rel_filename, e, year_month, result)

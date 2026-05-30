@@ -55,7 +55,7 @@ def test_boot_check_runs_self_heal_under_real_sqlmesh(
     assert fixture.exists(), f"missing fixture: {fixture}"
 
     result = ImportService(db).import_file(
-        fixture, account_name="checking", auto_accept=True
+        fixture, account_name="checking", auto_accept=True, confirm=True
     )
     assert result.core_tables_rebuilt, "transforms must run to materialize core.*"
 
