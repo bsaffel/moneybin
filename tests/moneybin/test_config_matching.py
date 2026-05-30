@@ -13,6 +13,7 @@ class TestMatchingSettings:
         assert settings.date_window_days == 3
         assert settings.source_priority == [
             "manual",
+            "gsheet",
             "plaid",
             "csv",
             "excel",

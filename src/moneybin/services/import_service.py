@@ -16,6 +16,7 @@ from typing import Any, Literal, cast
 import duckdb
 
 from moneybin.database import Database
+from moneybin.errors import UserError
 from moneybin.extractors.tabular.formats import (
     NumberFormatType,
     SignConventionType,
@@ -902,7 +903,29 @@ class ImportService:
             ).inc()
         TABULAR_DETECTION_CONFIDENCE.labels(confidence=resolved.confidence).inc()
 
-        # Apply CLI overrides — rebuild a new ResolvedMapping (frozen)
+        # Apply CLI overrides — rebuild a new ResolvedMapping (frozen).
+        # Validate at runtime: typing.cast has no runtime effect, so an
+        # invalid value like ``--sign=backwards`` would silently propagate
+        # into the transform pipeline and surface deep inside SQLMesh,
+        # leaving a dangling raw.import_log row in ``importing`` state.
+        # Guard explicitly via get_args so the failure is a clean UserError
+        # at the import boundary.
+        from typing import get_args
+
+        if sign and sign not in get_args(SignConventionType):
+            raise UserError(
+                f"Invalid sign convention: {sign!r}. "
+                f"Valid values: {list(get_args(SignConventionType))}.",
+                code="invalid_sign_convention",
+            )
+        if number_format_override and number_format_override not in get_args(
+            NumberFormatType
+        ):
+            raise UserError(
+                f"Invalid number format: {number_format_override!r}. "
+                f"Valid values: {list(get_args(NumberFormatType))}.",
+                code="invalid_number_format",
+            )
         if sign or date_format_override or number_format_override:
             resolved = dataclasses.replace(
                 resolved,

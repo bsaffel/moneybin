@@ -33,11 +33,11 @@ class TestSeedSourcePriority:
             "SELECT source_type, priority FROM app.seed_source_priority "
             "ORDER BY priority"
         ).fetchall()
-        assert len(rows) == 9
+        assert len(rows) == 10
         assert rows[0] == ("manual", 1)
-        assert rows[1] == ("plaid", 2)
-        assert rows[2] == ("csv", 3)
-        assert rows[-1] == ("ofx", 9)
+        assert rows[1] == ("gsheet", 2)
+        assert rows[2] == ("plaid", 3)
+        assert rows[-1] == ("ofx", 10)
 
     def test_replaces_on_rerun(self, db: Database) -> None:
         settings = MatchingSettings()
@@ -58,4 +58,4 @@ class TestSeedSourcePriority:
         seed_source_priority(db, settings)
         row = db.execute("SELECT COUNT(*) FROM app.seed_source_priority").fetchone()
         assert row is not None
-        assert row[0] == 9
+        assert row[0] == 10

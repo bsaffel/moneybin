@@ -324,7 +324,7 @@ class SyncConfig(BaseModel):
         default=None,
         description="MoneyBin Sync server URL (e.g., https://sync.moneybin.app)",
     )
-    api_key: str | None = Field(
+    api_key: SecretStr | None = Field(
         default=None,
         description="API key for MoneyBin Sync service (legacy - prefer OAuth)",
     )
@@ -474,6 +474,7 @@ class MatchingSettings(BaseModel):
     source_priority: list[str] = Field(
         default=[
             "manual",
+            "gsheet",
             "plaid",
             "csv",
             "excel",
