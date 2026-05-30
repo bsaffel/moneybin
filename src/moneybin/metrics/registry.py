@@ -72,6 +72,20 @@ OFX_IMPORT_BATCHES = Counter(
     labelnames=("status",),
 )
 
+PDF_IMPORT_TOTAL = Counter(
+    "moneybin_pdf_import_total",
+    "PDF imports by outcome and rung.",
+    ["outcome", "rung"],
+)
+
+# Phase 1: cardinality bounded by distinct PDF aliases per user (~dozens).
+# Revisit before multi-user hosted launch (M3E).
+PDF_SEED_ROWS_TOTAL = Counter(
+    "moneybin_pdf_seed_rows_total",
+    "Rows written to raw.pdf_seeds.",
+    ["alias"],
+)
+
 # ── SQLMesh transforms ───────────────────────────────────────────────────────
 
 SQLMESH_RUN_DURATION_SECONDS = Histogram(

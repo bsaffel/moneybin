@@ -148,6 +148,20 @@ def _display_label(file_type: str, file_path: Path) -> str:
     return file_type.upper()
 
 
+def _pdf_alias(alias: str | None, file_path: Path) -> str:
+    """Resolve the seed alias: explicit, else slugified file stem.
+
+    Must satisfy the seed-view name rule (lowercase letter start, [a-z0-9_]).
+    """
+    from moneybin.utils import slugify
+
+    candidate = alias or file_path.stem
+    slug = slugify(candidate).replace("-", "_")
+    if not slug or not slug[0].isalpha():
+        slug = f"pdf_{slug}" if slug else "pdf_import"
+    return slug
+
+
 # Unambiguous tabular extensions: extension wins, no OFX sniffing attempted.
 # (.txt / .dat are excluded because they're generic and may contain OFX content.)
 _UNAMBIGUOUS_TABULAR: frozenset[str] = frozenset({
@@ -168,7 +182,7 @@ def _detect_file_type(file_path: Path) -> str:
     """Detect file type from extension, falling back to magic-byte sniffing.
 
     Returns:
-        File type string: 'ofx' or 'tabular'.
+        File type string: 'ofx', 'pdf', or 'tabular'.
 
     Raises:
         ValueError: If the file cannot be classified.
@@ -178,6 +192,8 @@ def _detect_file_type(file_path: Path) -> str:
     suffix = file_path.suffix.lower()
     if suffix in (".ofx", ".qfx", ".qbo"):
         return "ofx"
+    if suffix == ".pdf":
+        return "pdf"
     if suffix in _UNAMBIGUOUS_TABULAR:
         return "tabular"
 
@@ -978,6 +994,54 @@ class ImportService:
 
         return result
 
+    def _import_pdf(self, file_path: Path) -> ImportResult:
+        """Import a native-text PDF as a seed (Phase 1: catch-all only)."""
+        from moneybin.extractors.pdf.extractor import PDFExtractor
+        from moneybin.extractors.pdf.seed_store import write_pdf_seed
+        from moneybin.loaders import import_log
+        from moneybin.metrics.registry import PDF_IMPORT_TOTAL, PDF_SEED_ROWS_TOTAL
+
+        canonical = file_path.resolve()
+        result = ImportResult(file_path=str(canonical), file_type="pdf")
+        resolved_alias = _pdf_alias(None, canonical)
+
+        import_id = import_log.begin_import(
+            self._db,
+            source_file=str(canonical),
+            source_type="pdf",
+            source_origin=resolved_alias,
+            account_names=[resolved_alias],
+        )
+        result.import_id = import_id
+
+        try:
+            doc = PDFExtractor().extract(canonical)
+            rows = write_pdf_seed(
+                self._db, doc, alias=resolved_alias, import_id=import_id
+            )
+        except Exception:
+            import_log.finalize_import(
+                self._db, import_id, status="failed", rows_total=0, rows_imported=0
+            )
+            PDF_IMPORT_TOTAL.labels(outcome="failed", rung="deterministic").inc()
+            raise
+
+        status = "complete" if rows > 0 else "failed"
+        import_log.finalize_import(
+            self._db, import_id, status=status, rows_total=rows, rows_imported=rows
+        )
+        PDF_IMPORT_TOTAL.labels(
+            outcome="seed" if rows else "failed", rung="deterministic"
+        ).inc()
+        PDF_SEED_ROWS_TOTAL.labels(alias=resolved_alias).inc(rows)
+        result.details = {"seed_rows": rows}
+        result.transactions = 0  # Phase 1: seed path writes no core transactions
+        logger.info(
+            f"PDF import complete: alias={resolved_alias} "
+            f"import_id={import_id[:8]}... rows={rows}"
+        )
+        return result
+
     def import_file(
         self,
         file_path: str | Path,
@@ -1130,6 +1194,8 @@ class ImportService:
                 no_size_limit=no_size_limit,
                 auto_accept=auto_accept,
             )
+        if file_type == "pdf":
+            return self._import_pdf(path)
         raise ValueError(f"Unsupported file type: {file_type}")
 
     def import_files(
