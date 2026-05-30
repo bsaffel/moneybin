@@ -799,12 +799,29 @@ class ImportService:
             else:
                 signal = None
 
+            # Required fields depend on the proposed amount shape: a single
+            # ``amount`` column OR a ``debit_amount`` + ``credit_amount``
+            # pair (both satisfy `_score_mapping`'s has_amount check). Pass
+            # the right tuple so split-debit/credit layouts pass validation.
+            proposed_keys = proposed.field_mapping.keys()
+            if "debit_amount" in proposed_keys and "credit_amount" in proposed_keys:
+                amount_required: tuple[str, ...] = (
+                    "debit_amount",
+                    "credit_amount",
+                )
+            else:
+                amount_required = ("amount",)
+            required_fields = (
+                "transaction_date",
+                *amount_required,
+                "description",
+            )
             outcome = resolve_or_confirm(
                 channel="tabular",
                 confidence=confidence,
                 proposed=proposed,
                 available_columns=tuple(df.columns),
-                required_fields=("transaction_date", "amount", "description"),
+                required_fields=required_fields,
                 signal=signal,
                 self_accept_enabled=settings.import_.self_accept_high,
                 actor_kind=actor_kind,

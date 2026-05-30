@@ -97,6 +97,7 @@ class ConfirmationRequired:
     proposed: ProposedMapping | BridgePayload
     reason: ConfirmationReason
     samples: dict[str, list[str]] = field(default_factory=dict)
+    error_message: str = ""
 
 
 class ImportConfirmationRequiredError(Exception):
@@ -124,16 +125,20 @@ def validate_partial_mapping(
     override: dict[str, str],
     available_columns: tuple[str, ...] | list[str],
     required_fields: tuple[str, ...],
+    valid_destinations: tuple[str, ...] | None = None,
 ) -> dict[str, str]:
     """Merge override onto proposed, validate, and return the merged mapping.
 
     Override is partial-merge: it overrides only the destination fields it
-    names; unspecified fields fall back to `proposed`. Two failure modes:
+    names; unspecified fields fall back to `proposed`. Three failure modes:
 
     1. After merging, a required destination field is unmapped.
     2. The merged mapping names a source column not present in the file/
        sheet (a transform-time error surfaced early as a user-fixable
        validation error).
+    3. The override names a destination field not in `valid_destinations`
+       (when supplied) — catches typos like ``--mapping descrption=Memo``
+       silently passing because `description` is already proposed.
 
     Args:
         proposed: Detector-emitted mapping (destination -> source column).
@@ -142,11 +147,23 @@ def validate_partial_mapping(
         required_fields: Destination fields that MUST appear in the merged
             mapping for this channel (tabular and gsheet differ — see the
             spec's "channel scorers feed the contract" note).
+        valid_destinations: Optional allowlist of acceptable destination
+            field names for this channel. When provided, every override
+            key must be in this set; ``None`` skips the check (back-compat
+            for callers that don't know the full schema).
 
     Returns:
         The merged mapping. Callers should pass this to the loader rather
         than recomputing it.
     """
+    if valid_destinations is not None:
+        valid_set = set(valid_destinations)
+        unknown_dests = [k for k in override if k not in valid_set]
+        if unknown_dests:
+            raise MappingValidationError(
+                f"Mapping override names unknown destination field(s): "
+                f"{unknown_dests}. Valid destinations: {list(valid_destinations)}."
+            )
     merged = {**proposed, **override}
     missing = [f for f in required_fields if f not in merged]
     if missing:
@@ -183,23 +200,23 @@ def resolve_or_confirm(
 
     Decision order (each step short-circuits):
 
-    1. `low` tier — never auto-accept anyone. Surface.
-    2. Override signal — partial-merge + validate. Pass -> Resolved.
-       Fail -> ConfirmationRequired(reason=validation_failure).
-    3. Accept signal — Resolved with proposed mapping (validated).
+    1. Override signal — partial-merge + validate the user's correction;
+       honored at every tier, INCLUDING `low`. An explicit override is the
+       spec's first-class recovery path (Req 11); short-circuiting `low`
+       before Override would block the documented `import_confirm
+       --mapping ...` recovery.
+       Pass -> Resolved. Fail -> ConfirmationRequired(reason=validation_failure)
+       (carrying the validator's message so callers see why their override
+       was rejected).
+    2. `low` tier without an Override — never auto-accept (Req 4). Even an
+       explicit Accept on `low` surfaces, because Accept ratifies the
+       detector's proposal as-is and `low` means the detector could not
+       form a complete one.
+    3. Accept signal — Resolved with the proposed mapping (validated).
     4. No signal, actor=agent, tier=high, self_accept_enabled=True —
        self-accept (Req 10, behind the calibration gate).
     5. Otherwise — ConfirmationRequired(reason=unknown_layout).
     """
-    if confidence.tier == "low":
-        return ConfirmationRequired(
-            channel=channel,
-            confidence=confidence,
-            proposed=proposed,
-            reason="unknown_layout",
-            samples=dict(proposed.sample_values),
-        )
-
     if isinstance(signal, Override):
         try:
             merged = validate_partial_mapping(
@@ -208,15 +225,25 @@ def resolve_or_confirm(
                 available_columns=available_columns,
                 required_fields=required_fields,
             )
-        except MappingValidationError:
+        except MappingValidationError as e:
             return ConfirmationRequired(
                 channel=channel,
                 confidence=confidence,
                 proposed=proposed,
                 reason="validation_failure",
                 samples=dict(proposed.sample_values),
+                error_message=str(e),
             )
         return Resolved(field_mapping=merged, format_ref=None, self_accepted=False)
+
+    if confidence.tier == "low":
+        return ConfirmationRequired(
+            channel=channel,
+            confidence=confidence,
+            proposed=proposed,
+            reason="unknown_layout",
+            samples=dict(proposed.sample_values),
+        )
 
     if isinstance(signal, Accept):
         merged = validate_partial_mapping(

@@ -249,6 +249,8 @@ class TestImportFilesCommand:
             refresh=True,
             force=False,
             interactive=False,
+            confirm=False,
+            actor_kind="human",
         )
 
     def test_import_files_variadic_paths(
@@ -291,6 +293,8 @@ class TestImportFilesCommand:
             refresh=True,
             force=False,
             interactive=False,
+            confirm=False,
+            actor_kind="human",
         )
 
     def test_import_files_multi_file_with_knobs_warns(

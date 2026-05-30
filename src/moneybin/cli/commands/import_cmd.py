@@ -256,12 +256,10 @@ def import_files_command(
     overrides = _parse_overrides(combined_override or None)
     interactive = not yes and sys.stdin.isatty()
 
-    # Any flag that ImportService.import_files() does not forward routes the
-    # single-file path through the legacy import_file() so the flag still
-    # takes effect. Behavioral flags (--yes, --no-row-limit, --no-size-limit)
-    # belong in this set even though they aren't data-shape overrides.
-    # --confirm and --mapping also force the single-file path so
-    # ImportConfirmationRequiredError can bubble to the CLI handler.
+    # Single-file mode (`len(file_paths) == 1`) always uses import_file
+    # directly so ImportConfirmationRequiredError can bubble. This variable
+    # only drives the warning at line ~289 for multi-file invocations: any
+    # per-file flag silently ignored by the batch path warrants a warning.
     has_single_file_knobs = (
         any(
             v is not None
@@ -357,6 +355,8 @@ def import_files_command(
                         refresh=refresh,
                         force=force,
                         interactive=interactive,
+                        confirm=confirm,
+                        actor_kind="human",
                     )
                     if any(r.sign_correction_suggested for r in batch.per_file):
                         typer.echo(

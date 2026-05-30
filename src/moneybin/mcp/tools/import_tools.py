@@ -54,6 +54,34 @@ def _validate_file_path(file_path: str) -> Path:
     return resolved
 
 
+def _confirmation_actions(file_path: str, outcome: object) -> list[str]:
+    """Build the actions[] hints for a confirmation_required envelope.
+
+    Omits the `accept=True` suggestion on `low`-tier proposals because
+    `resolve_or_confirm` rejects Accept on low (the detector couldn't
+    form a complete mapping); recovery requires a partial-merge
+    `mapping=...` override.
+    """
+    from moneybin.services.import_confirmation import ConfirmationRequired
+
+    actions: list[str] = []
+    if isinstance(outcome, ConfirmationRequired) and outcome.confidence.tier != "low":
+        actions.append(
+            f"Use import_confirm(file_path='{file_path}', accept=True) "
+            "to accept the proposed mapping as-is."
+        )
+    actions.append(
+        f"Use import_confirm(file_path='{file_path}', "
+        "mapping={'<dest_field>': '<source_column>'}) "
+        "to override specific fields (required on low-tier proposals)."
+    )
+    actions.append(
+        f"Use import_preview(file_path='{file_path}') "
+        "to inspect the proposal and samples in detail."
+    )
+    return actions
+
+
 @mcp_tool(read_only=False, idempotent=False)
 def import_files(
     paths: list[str], refresh: bool = True, force: bool = False
@@ -132,11 +160,7 @@ def import_files(
                     "missing_required": list(e.outcome.confidence.missing_required),
                     "unmapped_columns": unmapped,
                 },
-                actions=[
-                    f"Use import_confirm(file_path='{file_path}', accept=True) to accept the proposed mapping as-is.",
-                    f"Use import_confirm(file_path='{file_path}', mapping={{'<dest_field>': '<source_column>'}}) to override specific fields.",
-                    f"Use import_preview(file_path='{file_path}') to inspect the proposal and samples in detail.",
-                ],
+                actions=_confirmation_actions(file_path, e.outcome),
             )
         # Wrap single-file result in a BatchImportResult-like shape for uniform handling below.
         from moneybin.services.import_service import BatchImportResult, PerFileResult

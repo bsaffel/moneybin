@@ -152,6 +152,32 @@ class TestValidatePartialMapping:
                 required_fields=("transaction_date", "amount"),
             )
 
+    def test_rejects_unknown_destination_field_when_allowlisted(self) -> None:
+        """Override with a destination not in valid_destinations is rejected."""
+        with pytest.raises(MappingValidationError, match="unknown destination"):
+            validate_partial_mapping(
+                proposed={"transaction_date": "Date", "amount": "Amt"},
+                override={"flugulhorn": "Memo"},
+                available_columns=("Date", "Amt", "Memo"),
+                required_fields=("transaction_date", "amount"),
+                valid_destinations=(
+                    "transaction_date",
+                    "amount",
+                    "description",
+                ),
+            )
+
+    def test_valid_destinations_none_skips_destination_check(self) -> None:
+        """Back-compat: valid_destinations=None accepts any override key."""
+        merged = validate_partial_mapping(
+            proposed={"transaction_date": "Date", "amount": "Amt"},
+            override={"custom_field": "Memo"},
+            available_columns=("Date", "Amt", "Memo"),
+            required_fields=("transaction_date", "amount"),
+            valid_destinations=None,
+        )
+        assert merged["custom_field"] == "Memo"
+
     def test_override_replaces_proposed_for_named_field(self) -> None:
         proposed = {"transaction_date": "Date", "amount": "Amt", "description": "Memo"}
         override = {"description": "Notes"}
@@ -336,6 +362,51 @@ class TestResolveOrConfirm:
         )
         assert isinstance(out, ConfirmationRequired)
         assert out.reason == "validation_failure"
+        assert "Nonexistent" in out.error_message
+
+    def test_override_resolves_low_tier(self) -> None:
+        """Explicit override on a low-tier proposal is the documented recovery path.
+
+        Req 11 lists "re-call import_confirm with a corrected mapping" as a
+        first-class recovery action. The resolver must honor an Override
+        even when the detector returned `low`; only no-signal-and-Accept on
+        low surfaces.
+        """
+        confidence = Confidence(
+            score=0.4, tier="low", flagged=(), missing_required=("description",)
+        )
+        proposed = _make_proposed(missing=("description",))
+        out = resolve_or_confirm(
+            channel="tabular",
+            confidence=confidence,
+            proposed=proposed,
+            available_columns=("Date", "Amt", "Notes"),
+            required_fields=("transaction_date", "amount", "description"),
+            signal=Override(mapping={"description": "Notes"}),
+            self_accept_enabled=False,
+            actor_kind="human",
+        )
+        assert isinstance(out, Resolved)
+        assert out.field_mapping["description"] == "Notes"
+
+    def test_override_validation_failure_carries_error_message(self) -> None:
+        """ConfirmationRequired.error_message preserves the validator detail."""
+        confidence = Confidence(
+            score=0.80, tier="medium", flagged=(), missing_required=()
+        )
+        out = resolve_or_confirm(
+            channel="tabular",
+            confidence=confidence,
+            proposed=_make_proposed(),
+            available_columns=("Date", "Amt", "Memo"),
+            required_fields=("transaction_date", "amount", "description"),
+            signal=Override(mapping={"description": "NotInFile"}),
+            self_accept_enabled=False,
+            actor_kind="human",
+        )
+        assert isinstance(out, ConfirmationRequired)
+        assert "NotInFile" in out.error_message
+        assert "not in the source" in out.error_message
 
 
 def test_import_confirmation_required_error_carries_outcome() -> None:

@@ -18,6 +18,9 @@ from moneybin.services.import_service import (
 _FIXTURES = Path(__file__).parents[2] / "fixtures" / "tabular"
 _STANDARD_CSV = _FIXTURES / "standard.csv"  # high-confidence (Date,Description,Amount)
 _CHASE_CSV = _FIXTURES / "chase_credit.csv"  # high-confidence known format
+_CITI_CSV = (
+    _FIXTURES / "citi_credit.csv"
+)  # split debit/credit (Status,Date,Description,Debit,Credit,Member Name)
 
 
 def _make_mapping_result(
@@ -445,6 +448,46 @@ class TestTabularConfirmationFlow:
                     account_name="test",
                     refresh=False,
                     overrides={"description": "Description"},
+                )
+            assert result.import_id is not None
+        finally:
+            db.close()
+
+    def test_split_debit_credit_passes_required_fields_validation(
+        self, mock_secret_store: MagicMock, tmp_path: Path
+    ) -> None:
+        """Layouts with debit_amount + credit_amount (no single 'amount') must validate.
+
+        _score_mapping treats debit_amount + credit_amount as satisfying the
+        amount requirement (returns score=1.0), so _import_tabular must pass
+        the matching required_fields tuple to resolve_or_confirm instead of
+        the literal ('transaction_date', 'amount', 'description') — otherwise
+        the validator rejects the mapping the scorer just blessed.
+        """
+        from moneybin.services.import_service import ImportService
+
+        db = self._make_db(mock_secret_store, tmp_path)
+        try:
+            # citi_credit.csv: Status,Date,Description,Debit,Credit,Member Name
+            split_result = _make_mapping_result(
+                score=1.0,
+                confidence="high",
+                field_mapping={
+                    "transaction_date": "Date",
+                    "debit_amount": "Debit",
+                    "credit_amount": "Credit",
+                    "description": "Description",
+                },
+            )
+            with patch(
+                "moneybin.extractors.tabular.column_mapper.map_columns",
+                return_value=split_result,
+            ):
+                result = ImportService(db).import_file(
+                    _CITI_CSV,
+                    account_name="test",
+                    refresh=False,
+                    confirm=True,
                 )
             assert result.import_id is not None
         finally:
