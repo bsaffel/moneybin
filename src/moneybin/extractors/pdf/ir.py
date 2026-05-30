@@ -10,7 +10,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 
 
-@dataclass(frozen=True)
+@dataclass
 class PdfTable:
     """One extracted table on one page: a header and equal-width string rows."""
 
@@ -28,7 +28,7 @@ class PdfTable:
                 )
 
 
-@dataclass(frozen=True)
+@dataclass
 class PdfDocument:
     """Front-end-neutral extraction result."""
 

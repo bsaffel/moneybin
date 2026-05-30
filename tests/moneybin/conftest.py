@@ -316,6 +316,26 @@ def simple_statement_pdf() -> Path:
 
 
 @pytest.fixture()
+def empty_statement_pdf() -> Path:
+    """Path to the committed empty-statement fixture PDF (no table structure).
+
+    Generated via tests/moneybin/test_extractors/test_pdf/_make_fixture.py.
+    Contains header text only — pdfplumber's extract_tables() returns nothing.
+    Used to test the zero-row import path.
+    """
+    path = (
+        Path(__file__).parent
+        / "test_extractors"
+        / "test_pdf"
+        / "fixtures"
+        / "empty_statement.pdf"
+    )
+    if not path.exists():
+        pytest.skip(f"fixture missing: {path} (run _make_fixture.py)")
+    return path
+
+
+@pytest.fixture()
 def db(tmp_path: Path, mock_secret_store: MagicMock) -> Generator[Database, None, None]:
     """Provide a test Database instance with encryption.
 

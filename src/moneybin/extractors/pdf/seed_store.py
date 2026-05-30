@@ -57,16 +57,18 @@ def write_pdf_seed(
         df = pl.DataFrame(rows)
         db.ingest_dataframe(PDF_SEEDS.full_name, df, on_conflict="upsert")
 
-    typed_columns = _infer_typed_columns(list(union_keys), rows)
-    view_sql = generate_seed_view_sql(
-        source_table=PDF_SEEDS.full_name,
-        view_name=f"pdf_{alias}",
-        filter_column="alias",
-        filter_value=alias,
-        typed_columns=typed_columns,
-        carry_columns=["page", "loaded_at"],
-    )
-    db.execute(view_sql)
+        # View creation is inside `if rows:` — avoids degenerate carry-only views
+        # for zero-row imports (e.g. image-only PDFs that raised before reaching here).
+        typed_columns = _infer_typed_columns(list(union_keys), rows)
+        view_sql = generate_seed_view_sql(
+            source_table=PDF_SEEDS.full_name,
+            view_name=f"pdf_{alias}",
+            filter_column="alias",
+            filter_value=alias,
+            typed_columns=typed_columns,
+            carry_columns=["page", "loaded_at"],
+        )
+        db.execute(view_sql)
 
     logger.info(f"pdf seed: alias={alias} import_id={import_id} rows={len(rows)}")
     return len(rows)
@@ -96,7 +98,13 @@ def _infer_type(samples: list[str]) -> str:
     if not samples:
         return "VARCHAR"
     if all(_PLAIN_NUMERIC_RE.fullmatch(v) for v in samples):
-        return "DECIMAL(18,2)" if any("." in v for v in samples) else "BIGINT"
+        if any("." in v for v in samples):
+            return "DECIMAL(18,2)"
+        # DuckDB BIGINT max = 9_223_372_036_854_775_807 (19 digits incl. sign).
+        # >18 digits risks CAST overflow at query time — fall back to VARCHAR.
+        if any(len(v.lstrip("+-")) > 18 for v in samples):
+            return "VARCHAR"
+        return "BIGINT"
     if all(_DATE_RE.fullmatch(v) for v in samples):
         return "DATE"
     return "VARCHAR"

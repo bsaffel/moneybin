@@ -33,6 +33,29 @@ def test_import_pdf_is_revertible(db: Database, simple_statement_pdf: Path) -> N
     row = db.execute("SELECT COUNT(*) FROM raw.pdf_seeds").fetchone()
     assert row is not None
     assert row[0] == 0
+    # Revert must also drop the auto-generated raw.pdf_<alias> view.
+    view_exists = db.execute(
+        "SELECT COUNT(*) FROM duckdb_views() "
+        "WHERE schema_name = 'raw' AND view_name = 'pdf_simple_statement'"
+    ).fetchone()
+    assert view_exists is not None
+    assert view_exists[0] == 0, (
+        "revert should drop the auto-generated raw.pdf_<alias> view"
+    )
+
+
+@pytest.mark.integration
+def test_import_pdf_zero_rows_raises(db: Database, empty_statement_pdf: Path) -> None:
+    """Importing a text-only PDF with no tables must raise, not silently succeed."""
+    with pytest.raises(ValueError, match="No tables extracted"):
+        ImportService(db).import_file(empty_statement_pdf, refresh=False)
+    # No degenerate view should have been created during the failed import.
+    view_count = db.execute(
+        "SELECT COUNT(*) FROM duckdb_views() "
+        "WHERE schema_name = 'raw' AND view_name LIKE 'pdf_%'"
+    ).fetchone()
+    assert view_count is not None
+    assert view_count[0] == 0, "failed import must not leave orphan views"
 
 
 @pytest.mark.parametrize(

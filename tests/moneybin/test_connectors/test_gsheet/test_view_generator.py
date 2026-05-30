@@ -140,6 +140,26 @@ class TestGenerateSeedViewSql:
                 typed_columns={"Col": "INT"},
             )
 
+    def test_alias_max_56_chars_accepted(self):
+        """56-char alias is the maximum accepted (gsheet_ + 56 = 63-char view name)."""
+        alias = "a" + "b" * 55  # 1 + 55 = 56 chars total
+        sql = generate_seed_view_sql(
+            alias=alias,
+            connection_id="conn-1",
+            typed_columns={},
+        )
+        assert f"gsheet_{alias}" in sql
+
+    def test_alias_57_chars_rejected(self):
+        """57-char alias produces a 64-char view name and is now caught at wrapper."""
+        alias = "a" + "b" * 56  # 1 + 56 = 57 chars total
+        with pytest.raises(ValueError, match="must match"):
+            generate_seed_view_sql(
+                alias=alias,
+                connection_id="conn-1",
+                typed_columns={},
+            )
+
     def test_headers_normalizing_to_same_name_rejected(self):
         """Two headers that produce the same column-name alias fail at connect.
 

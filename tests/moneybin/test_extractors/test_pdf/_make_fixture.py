@@ -7,8 +7,11 @@ from pathlib import Path
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
-out = Path(__file__).parent / "fixtures" / "simple_statement.pdf"
-out.parent.mkdir(exist_ok=True)
+fixtures = Path(__file__).parent / "fixtures"
+fixtures.mkdir(exist_ok=True)
+
+# ── simple_statement.pdf ──────────────────────────────────────────────────────
+out = fixtures / "simple_statement.pdf"
 c = canvas.Canvas(str(out), pagesize=letter)
 c.setFont("Courier", 10)
 
@@ -47,3 +50,15 @@ for i, (date, desc, amount) in enumerate(rows):
 
 c.save()
 print(f"wrote {out}")  # noqa: T201  # one-shot generator script
+
+# ── empty_statement.pdf ───────────────────────────────────────────────────────
+# Header text only — no table structure that pdfplumber's extract_tables() would
+# detect. Used by test_import_pdf_zero_rows_raises to exercise the zero-row path.
+out_empty = fixtures / "empty_statement.pdf"
+c2 = canvas.Canvas(str(out_empty), pagesize=letter)
+c2.setFont("Courier", 10)
+c2.drawString(72, 720, "ACME BANK              Account Number: ****1234")
+c2.drawString(72, 704, "Statement Period: 2024-01-01 to 2024-01-31")
+c2.drawString(72, 688, "No transactions this period.")
+c2.save()
+print(f"wrote {out_empty}")  # noqa: T201  # one-shot generator script

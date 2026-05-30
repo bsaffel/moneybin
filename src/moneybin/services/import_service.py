@@ -1020,6 +1020,11 @@ class ImportService:
             rows = write_pdf_seed(
                 self._db, doc, alias=resolved_alias, import_id=import_id
             )
+            if rows == 0:
+                raise ValueError(
+                    "No tables extracted from PDF. Verify the file contains "
+                    "selectable text (image-only / scanned PDFs are not supported)."
+                )
         except Exception:
             import_log.finalize_import(
                 self._db, import_id, status="failed", rows_total=0, rows_imported=0
@@ -1027,13 +1032,11 @@ class ImportService:
             PDF_IMPORT_TOTAL.labels(outcome="failed", rung="deterministic").inc()
             raise
 
-        status = "complete" if rows > 0 else "failed"
+        # success path: rows > 0 guaranteed here
         import_log.finalize_import(
-            self._db, import_id, status=status, rows_total=rows, rows_imported=rows
+            self._db, import_id, status="complete", rows_total=rows, rows_imported=rows
         )
-        PDF_IMPORT_TOTAL.labels(
-            outcome="seed" if rows > 0 else "failed", rung="deterministic"
-        ).inc()
+        PDF_IMPORT_TOTAL.labels(outcome="seed", rung="deterministic").inc()
         PDF_SEED_ROWS_TOTAL.labels(alias=resolved_alias).inc(rows)
         result.details = {"seed_rows": rows}
         result.transactions = 0  # Phase 1: seed path writes no core transactions
@@ -1296,7 +1299,7 @@ class ImportService:
         from moneybin.tables import IMPORT_LOG  # noqa: PLC0415
 
         row = self._db.execute(
-            f"SELECT source_type, status, source_file, started_at "
+            f"SELECT source_type, status, source_file, started_at, source_origin "
             f"FROM {IMPORT_LOG.full_name} WHERE import_id = ?",
             [import_id],
         ).fetchone()
@@ -1304,7 +1307,7 @@ class ImportService:
         if row is None:
             return {"status": "not_found", "reason": f"No import with ID {import_id}"}
 
-        src_type, status, source_file, started_at = row
+        src_type, status, source_file, started_at, source_origin = row
 
         if status == "reverted":
             return {"status": "already_reverted"}
@@ -1375,6 +1378,18 @@ class ImportService:
         except Exception:
             self._db.rollback()
             raise
+
+        # Drop the auto-generated raw.pdf_<alias> view after row deletion
+        # succeeds. DDL is autocommit in DuckDB (cannot be inside the transaction),
+        # so this runs after commit. IF EXISTS guards against re-reverts or a
+        # view that was never created (zero-row import path).
+        if src_type == "pdf" and source_origin:
+            from sqlglot import exp  # noqa: PLC0415
+
+            safe_view = exp.to_identifier(f"pdf_{source_origin}", quoted=True).sql(
+                "duckdb"
+            )
+            self._db.execute(f"DROP VIEW IF EXISTS raw.{safe_view}")
 
         logger.info(
             f"Reverted import {import_id[:8]}...: {rows_to_delete} rows deleted"

@@ -58,6 +58,14 @@ def test_reimport_same_doc_is_idempotent(db: Database) -> None:
         (["nan"], "VARCHAR"),
         (["1e5"], "VARCHAR"),
         (["COFFEE"], "VARCHAR"),
+        # BIGINT overflow guard: >18 digits → VARCHAR to avoid CAST failure at query time.
+        (["1234567890123456789"], "VARCHAR"),  # 19 digits — fallback to VARCHAR
+        (["999999999999999999"], "BIGINT"),  # 18 nines — fits BIGINT
+        (["-999999999999999999"], "BIGINT"),  # negative, 18 digits without sign — fits
+        (
+            ["-1234567890123456789"],
+            "VARCHAR",
+        ),  # negative, 19 digits without sign — fallback
     ],
     ids=[
         "empty",
@@ -70,6 +78,10 @@ def test_reimport_same_doc_is_idempotent(db: Database) -> None:
         "nan_VARCHAR",
         "scientific_VARCHAR",
         "free_text_VARCHAR",
+        "19_digit_int_falls_to_VARCHAR",
+        "18_digit_int_stays_BIGINT",
+        "negative_18_digit_int_stays_BIGINT",
+        "negative_19_digit_int_falls_to_VARCHAR",
     ],
 )
 def test_infer_type_branches(samples: list[str], expected: str) -> None:
