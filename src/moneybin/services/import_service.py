@@ -148,21 +148,20 @@ def _display_label(file_type: str, file_path: Path) -> str:
     return file_type.upper()
 
 
-def _pdf_alias(alias: str | None, file_path: Path) -> str:
-    """Resolve the seed alias: explicit, else slugified file stem.
+def _pdf_alias(file_path: Path) -> str:
+    """Resolve the seed alias from the file stem.
 
-    Returns a slug used in ``raw.pdf_<alias>`` view names. The ``pdf_`` prefix
-    is added by the view-name construction, so the alias itself can start with
-    any character (including digits) — the view regex sees ``pdf_{alias}``, not
-    just ``{alias}``.
+    Returns a slug used in ``raw.pdf_<alias>`` view names. The ``pdf_``
+    prefix is added by the view-name construction, so the alias itself can
+    start with any character (including digits) — the view regex sees
+    ``pdf_{alias}``, not just ``{alias}``.
 
     Capped at 59 chars so the ``pdf_{alias}`` view name fits the shared
     builder's 63-char limit.
     """
     from moneybin.utils import slugify
 
-    candidate = alias or file_path.stem
-    slug = slugify(candidate).replace("-", "_")
+    slug = slugify(file_path.stem).replace("-", "_")
     if not slug:
         slug = "import"
     return slug[:59]
@@ -1009,7 +1008,7 @@ class ImportService:
 
         canonical = file_path.resolve()
         result = ImportResult(file_path=str(canonical), file_type="pdf")
-        resolved_alias = _pdf_alias(None, canonical)
+        resolved_alias = _pdf_alias(canonical)
 
         import_id = import_log.begin_import(
             self._db,

@@ -535,7 +535,7 @@ class Database:
         table: str,
         df: Any,
         *,
-        on_conflict: Literal["insert", "replace", "upsert"] = "insert",
+        on_conflict: Literal["insert", "replace", "upsert", "ignore"] = "insert",
     ) -> None:
         """Load a Polars (or Arrow-compatible) DataFrame into the database.
 
@@ -557,15 +557,17 @@ class Database:
                   (CREATE OR REPLACE TABLE).
                 - ``"upsert"`` — INSERT OR REPLACE; conflicting rows are deleted
                   then re-inserted (idempotent reload pattern).
+                - ``"ignore"`` — INSERT OR IGNORE; conflicting rows are silently
+                  skipped (preserves the original row and its import_id).
 
         Raises:
-            ValueError: If on_conflict is not "insert", "replace", or "upsert".
+            ValueError: If on_conflict is not a recognised value.
         """
         from sqlglot import exp
 
-        if on_conflict not in ("insert", "replace", "upsert"):
+        if on_conflict not in ("insert", "replace", "upsert", "ignore"):
             raise ValueError(
-                f"on_conflict must be 'insert', 'replace', or 'upsert', "
+                f"on_conflict must be 'insert', 'replace', 'upsert', or 'ignore', "
                 f"got {on_conflict!r}"
             )
 
@@ -588,6 +590,10 @@ class Database:
             elif on_conflict == "upsert":
                 self.conn.execute(
                     f"INSERT OR REPLACE INTO {safe_ref} BY NAME SELECT * FROM _ingest_tmp"  # noqa: S608 — sqlglot-quoted identifier from trusted caller
+                )
+            elif on_conflict == "ignore":
+                self.conn.execute(
+                    f"INSERT OR IGNORE INTO {safe_ref} BY NAME SELECT * FROM _ingest_tmp"  # noqa: S608 — sqlglot-quoted identifier from trusted caller
                 )
             else:
                 self.conn.execute(

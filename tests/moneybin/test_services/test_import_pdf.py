@@ -61,26 +61,22 @@ def test_import_pdf_zero_rows_raises(db: Database, empty_statement_pdf: Path) ->
 
 
 @pytest.mark.parametrize(
-    ("alias", "filename", "expected"),
+    ("filename", "expected"),
     [
-        ("ACME Bank", "ignored.pdf", "acme_bank"),
-        (None, "simple_statement.pdf", "simple_statement"),
-        (None, "2024_Q4.pdf", "2024_q4"),
-        (None, ".pdfrc", "pdfrc"),
-        ("Wells Fargo 2024-Q1", "ignored.pdf", "wells_fargo_2024_q1"),
-        (None, ("a" * 80) + ".pdf", "a" * 59),
+        ("simple_statement.pdf", "simple_statement"),
+        ("2024_Q4.pdf", "2024_q4"),
+        (".pdfrc", "pdfrc"),
+        (("a" * 80) + ".pdf", "a" * 59),
     ],
     ids=[
-        "explicit_alias",
         "stem_clean_letter_start",
         "stem_leading_digit_no_prefix",
         "stem_leading_dot_stripped_letter_start",
-        "explicit_alias_with_spaces_and_hyphen",
         "long_stem_truncated_to_59_chars",
     ],
 )
-def test_pdf_alias_resolves(alias: str | None, filename: str, expected: str) -> None:
-    assert _pdf_alias(alias, Path(filename)) == expected
+def test_pdf_alias_resolves(filename: str, expected: str) -> None:
+    assert _pdf_alias(Path(filename)) == expected
 
 
 @pytest.mark.integration
@@ -104,7 +100,13 @@ def test_import_pdf_cleans_orphans_on_view_failure(
 def test_revert_preserves_view_when_other_imports_remain(
     db: Database, simple_statement_pdf: Path, tmp_path: Path
 ) -> None:
-    """Reverting one PDF import should not drop the view if another import shares its alias."""
+    """Reverting one PDF import should not drop the view if another import shares its alias.
+
+    With on_conflict='ignore', import A owns all rows for identical content.
+    After revoking A the view still exists (import B's log entry is still
+    complete) but contains no rows — B never acquired ownership of any rows.
+    The key invariant is view persistence, not row count.
+    """
     # Two physical files that resolve to the same alias (same stem)
     a = tmp_path / "a" / "simple_statement.pdf"
     b = tmp_path / "b" / "simple_statement.pdf"
@@ -130,7 +132,47 @@ def test_revert_preserves_view_when_other_imports_remain(
     assert view_count[0] == 1, (
         "view should remain when another import still references the alias"
     )
-    # And the view still returns rows from the second import.
-    rows = db.execute("SELECT COUNT(*) FROM raw.pdf_simple_statement").fetchone()
-    assert rows is not None
-    assert rows[0] > 0
+
+
+@pytest.mark.integration
+def test_reimport_preserves_first_import_id_ownership(
+    db: Database, simple_statement_pdf: Path, tmp_path: Path
+) -> None:
+    """Re-importing identical content keeps rows owned by the first import_id.
+
+    Otherwise reverting the second import would orphan the first import's
+    log entry — its rows would be gone but its status stays 'complete'.
+    """
+    a = tmp_path / "a" / "simple_statement.pdf"
+    b = tmp_path / "b" / "simple_statement.pdf"
+    a.parent.mkdir()
+    b.parent.mkdir()
+    shutil.copy(simple_statement_pdf, a)
+    shutil.copy(simple_statement_pdf, b)
+
+    svc = ImportService(db)
+    result_a = svc.import_file(a, refresh=False)
+    assert result_a.import_id is not None
+    rows_after_a = db.execute(
+        "SELECT import_id FROM raw.pdf_seeds WHERE alias = 'simple_statement'"
+    ).fetchall()
+
+    result_b = svc.import_file(b, refresh=False)
+    assert result_b.import_id is not None
+    rows_after_b = db.execute(
+        "SELECT import_id FROM raw.pdf_seeds WHERE alias = 'simple_statement'"
+    ).fetchall()
+
+    # Same number of rows (no duplicates created by import B)
+    assert len(rows_after_b) == len(rows_after_a)
+    # All rows still owned by import A — ignore preserved ownership
+    for (import_id,) in rows_after_b:
+        assert import_id == result_a.import_id
+
+    # Reverting B leaves A's rows intact
+    svc.revert(result_b.import_id)
+    rows_after_revert_b = db.execute(
+        "SELECT COUNT(*) FROM raw.pdf_seeds WHERE alias = 'simple_statement'"
+    ).fetchone()
+    assert rows_after_revert_b is not None
+    assert rows_after_revert_b[0] == len(rows_after_a)

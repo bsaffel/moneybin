@@ -27,13 +27,17 @@ def write_pdf_seed(
 ) -> int:
     """Insert the document's rows as a seed and regenerate raw.pdf_<alias>.
 
-    Identity is SHA-256(alias|json(row))[:16] with a pdf_ prefix, so re-importing
-    the same file is a no-op (PRIMARY KEY (alias, row_hash) conflict → upsert).
-    Returns the number of rows written (pre-dedup row count).
+    Identity is SHA-256(alias|json(row))[:16] with a pdf_ prefix. Re-importing
+    the same content is a no-op via on_conflict='ignore' — existing rows keep
+    their original import_id so reverting a later import that contained the
+    same content doesn't remove rows the first import's log claims as complete.
+    Returns the count of rows extracted from the document (used as the
+    "newly written + already-existing" count for metrics + the zero-row gate;
+    NOT the count of new rows actually persisted, which may be lower due to
+    dedup against existing rows).
     """
     rows: list[dict[str, object]] = []
     seen: set[str] = set()
-    union_keys: dict[str, None] = {}  # ordered set of all header keys seen
     for page, cells in doc.iter_rows():
         data_json = json.dumps(cells, sort_keys=True)
         # 16 hex chars = 64 bits; see identifiers.md for scale threshold.
@@ -42,8 +46,6 @@ def write_pdf_seed(
         if row_hash in seen:
             continue  # exact-duplicate row within one doc — keep first
         seen.add(row_hash)
-        for k in cells:
-            union_keys.setdefault(k, None)
         rows.append({
             "alias": alias,
             "row_hash": row_hash,
@@ -55,11 +57,33 @@ def write_pdf_seed(
 
     if rows:
         df = pl.DataFrame(rows)
-        db.ingest_dataframe(PDF_SEEDS.full_name, df, on_conflict="upsert")
+        db.ingest_dataframe(PDF_SEEDS.full_name, df, on_conflict="ignore")
+
+        # Sample ALL rows for this alias (incl. pre-existing) so the view's
+        # column types accommodate every row, not just this import's. Same-alias
+        # re-imports with different content could otherwise break old rows on
+        # CAST at query time.
+        existing = db.execute(
+            f"SELECT data FROM {PDF_SEEDS.full_name} WHERE alias = ?",  # noqa: S608 — compile-time TableRef constant, value parameterized
+            [alias],
+        ).fetchall()
+        all_rows_for_inference: list[dict[str, object]] = [
+            {"data": str(row[0])} for row in existing
+        ]
+
+        # Re-collect union_keys across all rows (some keys may exist in
+        # pre-existing rows but not the current import).
+        full_union_keys: dict[str, None] = {}
+        for r in all_rows_for_inference:
+            cells = json.loads(str(r["data"]))
+            for k in cells:
+                full_union_keys.setdefault(k, None)
 
         # View creation is inside `if rows:` — avoids degenerate carry-only views
         # for zero-row imports (e.g. image-only PDFs that raised before reaching here).
-        typed_columns = _infer_typed_columns(list(union_keys), rows)
+        typed_columns = _infer_typed_columns(
+            list(full_union_keys), all_rows_for_inference
+        )
         view_sql = generate_seed_view_sql(
             source_table=PDF_SEEDS.full_name,
             view_name=f"pdf_{alias}",
