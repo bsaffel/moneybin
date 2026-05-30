@@ -165,6 +165,10 @@ class TestImportFilesConfirmationRequired:
         assert payload["channel"] == "tabular"
         assert payload["tier"] == "medium"
         assert "score" in payload
+        # Envelope summary.sensitivity must reflect that the response carries
+        # sample rows + proposed mapping (per moneybin-mcp.md). Pure-success
+        # batches stay at "low"; any pending file bumps the batch to "medium".
+        assert result.summary.sensitivity == "medium"
 
     async def test_actions_list_includes_import_confirm_hint(
         self, tmp_path: Path, monkeypatch: MonkeyPatch

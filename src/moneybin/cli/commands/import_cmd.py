@@ -676,7 +676,10 @@ def import_confirm_command(
 
     parsed_mapping = _parse_overrides(list(mapping)) if mapping else None
 
-    from moneybin.services.import_confirmation import ImportConfirmationRequiredError
+    from moneybin.services.import_confirmation import (
+        ImportConfirmationRequiredError,
+        ProposedMapping,
+    )
 
     try:
         with handle_cli_errors():
@@ -697,11 +700,61 @@ def import_confirm_command(
         # The confirm attempt itself can re-surface ConfirmationRequired —
         # e.g. an override that names an unknown source column, or a
         # low-tier proposal where the user-supplied mapping still leaves
-        # required fields missing. Render the same shape import_files
-        # uses so callers see WHY the confirm failed instead of an
-        # uncaught traceback.
-        msg = f"❌ Confirmation failed: {e.outcome.reason}" + (
-            f" — {e.outcome.error_message}" if e.outcome.error_message else ""
+        # required fields missing. For --output json / non-TTY callers
+        # emit the same envelope shape import_files uses so agents see
+        # a structured payload instead of an unparseable stderr message.
+        # Exit code stays 1: the confirm action did not succeed.
+        outcome = e.outcome
+        proposed_mapping_dict = (
+            outcome.proposed.field_mapping
+            if isinstance(outcome.proposed, ProposedMapping)
+            else {}
+        )
+        unmapped = (
+            list(outcome.proposed.unmapped_columns)
+            if isinstance(outcome.proposed, ProposedMapping)
+            else []
+        )
+        envelope_data: dict[str, Any] = {
+            "status": "confirmation_required",
+            "channel": outcome.channel,
+            "tier": outcome.confidence.tier,
+            "score": outcome.confidence.score,
+            "reason": outcome.reason,
+            "error_message": outcome.error_message,
+            "proposed_mapping": proposed_mapping_dict,
+            "samples": outcome.samples,
+            "flagged": list(outcome.confidence.flagged),
+            "missing_required": list(outcome.confidence.missing_required),
+            "unmapped_columns": unmapped,
+        }
+        confirm_actions: list[str] = []
+        if outcome.error_message:
+            confirm_actions.append(f"Validation failed: {outcome.error_message}")
+        confirm_actions.append(
+            "Re-run with --mapping <field>=<column> to override specific fields."
+        )
+        if outcome.confidence.tier != "low":
+            confirm_actions.append(
+                f"Re-run 'moneybin import confirm {file_path} --accept' "
+                "to accept the proposed mapping as-is."
+            )
+        confirm_actions.append(
+            f"Run 'moneybin import preview {file_path}' to inspect the proposal."
+        )
+        if output == OutputFormat.JSON or not sys.stdout.isatty():
+            envelope = build_envelope(
+                data=envelope_data,
+                sensitivity="medium",
+                actions=confirm_actions,
+            )
+            render_or_json(
+                envelope, OutputFormat.JSON, cli_actor="import_confirm_command"
+            )
+            raise typer.Exit(1) from e
+        # Interactive path: human-readable summary + exit code 1.
+        msg = f"❌ Confirmation failed: {outcome.reason}" + (
+            f" — {outcome.error_message}" if outcome.error_message else ""
         )
         logger.error(msg)
         logger.info(
@@ -716,6 +769,10 @@ def import_confirm_command(
             "rows_loaded": result.transactions,
             "file_type": result.file_type,
             "sign_correction_suggested": result.sign_correction_suggested,
+            # merged_mapping is authoritative (threaded from
+            # ImportResult.field_mapping); agents need it to verify which
+            # column mapping was actually applied without re-detecting.
+            "merged_mapping": dict(result.field_mapping or {}),
         }
         actions = [
             f"Use 'moneybin import revert {result.import_id}' to undo this import.",

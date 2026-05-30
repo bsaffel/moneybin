@@ -336,6 +336,11 @@ def import_files(
             transforms_error=batch.transforms_error,
             files=files,
         ),
+        # confirmation_required entries carry sample rows + proposed mapping
+        # (DataClass.DESCRIPTION, MEDIUM). Per moneybin-mcp.md the envelope's
+        # summary.sensitivity must reflect that — agents read summary.sensitivity
+        # to drive consent prompts, not the per-field annotations directly.
+        sensitivity="medium" if pending_files else "low",
         actions=actions,
     )
 
