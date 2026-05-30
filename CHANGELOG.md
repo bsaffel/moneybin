@@ -49,6 +49,11 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   fields you name are overridden; unspecified fields fall back to the detected mapping.
   Previously the flag replaced the entire mapping — a behavior change to a shipped
   surface. Confidence bands are aligned to `ImportSettings.confidence`.
+- **`moneybin import files <single-file>` exits 1 on per-file failure** when no
+  per-file knobs are passed. Previously the single-file path used the batch
+  soft-fail behavior and exited 0 even when the lone file failed; it now mirrors
+  the fail-loud single-file contract so scripts and agents see the failure.
+  Pre-launch behavior change — no users affected.
 - **Report CLI flags auto-derive from parameter names.** With reports now
   generated from runner signatures, multi-word flags follow the parameter name:
   `moneybin reports cashflow`/`spending` use `--from-month` / `--to-month`

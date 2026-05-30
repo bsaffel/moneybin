@@ -175,6 +175,18 @@ def validate_partial_mapping(
     override_has_debit = "debit_amount" in override
     override_has_credit = "credit_amount" in override
     override_has_split = override_has_debit or override_has_credit
+    # An override naming amount AND any split key at the same time is
+    # contradictory — amount-single and amount-split are mutually
+    # exclusive shapes. Reject up front rather than silently keeping
+    # both in merged (downstream would coerce sign_convention to split
+    # and silently drop the single amount column).
+    if override_has_amount and override_has_split:
+        raise MappingValidationError(
+            "Mapping override is contradictory: 'amount' and the split "
+            "pair ('debit_amount'/'credit_amount') are mutually exclusive — "
+            "supply 'amount' alone OR 'debit_amount'+'credit_amount' alone, "
+            "never both in the same override."
+        )
     if override_has_amount and not override_has_split:
         merged.pop("debit_amount", None)
         merged.pop("credit_amount", None)

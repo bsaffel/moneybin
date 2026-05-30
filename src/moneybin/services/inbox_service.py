@@ -54,16 +54,15 @@ _SIDECAR_MESSAGE_MAX = 200
 _MAX_FILENAME_COLLISIONS = 9999
 
 # Substring → (error_code, stage) for ValueError messages from ImportService.
+# Note: the historical "low_confidence_mapping" pattern was removed in the
+# smart-import-confirm spec — _import_tabular now raises
+# ImportConfirmationRequiredError for that case, which _sync_one intercepts
+# before _handle_failure ever runs.
 _VALUE_ERROR_PATTERNS: tuple[tuple[str, str, str], ...] = (
     (
         "Single-account files require",
         "needs_account_name",
         "resolve_account",
-    ),
-    (
-        "Could not reliably detect column mapping",
-        "low_confidence_mapping",
-        "map_columns",
     ),
     ("Unsupported file type", "unsupported_file_type", "detect_file_type"),
     ("No data rows found", "empty_file", "read_file"),
@@ -632,10 +631,6 @@ class InboxService:
             "needs_account_name": (
                 "Move the file into inbox/<account-slug>/ "
                 "(e.g., inbox/chase-checking/) and re-run sync."
-            ),
-            "low_confidence_mapping": (
-                "Use 'moneybin import files <path> --override field=column' "
-                "to map columns explicitly, then re-drop in inbox/."
             ),
             "unsupported_file_type": (
                 "Convert to OFX/QFX, CSV, TSV, XLSX, Parquet, or PDF."

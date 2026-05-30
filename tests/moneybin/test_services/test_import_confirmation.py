@@ -167,6 +167,26 @@ class TestValidatePartialMapping:
                 ),
             )
 
+    def test_rejects_override_with_amount_and_split_together(self) -> None:
+        """Override naming both amount AND the split pair is contradictory.
+
+        amount and (debit_amount, credit_amount) are mutually exclusive
+        amount-shapes — accepting both would let transform_dataframe
+        silently pick one (via sign_convention) and drop the other. The
+        validator surfaces the contradiction up front instead.
+        """
+        with pytest.raises(MappingValidationError, match="contradictory"):
+            validate_partial_mapping(
+                proposed={"transaction_date": "Date", "amount": "Amt"},
+                override={
+                    "amount": "Amount",
+                    "debit_amount": "Debit",
+                    "credit_amount": "Credit",
+                },
+                available_columns=("Date", "Amt", "Amount", "Debit", "Credit"),
+                required_fields=("transaction_date", "amount"),
+            )
+
     def test_valid_destinations_none_skips_destination_check(self) -> None:
         """Back-compat: valid_destinations=None accepts any override key."""
         merged = validate_partial_mapping(
