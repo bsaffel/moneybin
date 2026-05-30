@@ -789,7 +789,6 @@ class ImportService:
             from moneybin.metrics.registry import (
                 IMPORT_CONFIRMATIONS_TOTAL,
                 IMPORT_DETECTION_SCORE,
-                IMPORT_KNOWN_FORMAT_REUSE_TOTAL,
                 IMPORT_OVERRIDE_TOTAL,
                 IMPORT_SELF_ACCEPT_TOTAL,
             )

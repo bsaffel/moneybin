@@ -141,6 +141,13 @@ def import_files(
     if len(validated) == 1:
         transforms_error: str | None = None
         transforms_applied = False
+        # Track import_id BEFORE refresh so a hard exception from _refresh
+        # (anything other than the soft refresh_result.applied=False path)
+        # still surfaces the import_id to the failure handler — without
+        # this, the agent loses the revert handle for the orphaned raw
+        # load. The soft-failure path already preserves it via the else
+        # branch's transforms_error wiring.
+        loaded_import_id: str | None = None
         try:
             with get_database() as db:
                 one = ImportService(db).import_file(
@@ -149,6 +156,7 @@ def import_files(
                     force=force,
                     actor_kind="agent",
                 )
+                loaded_import_id = one.import_id
                 if refresh and one.file_type in ("ofx", "tabular"):
                     from moneybin.services.refresh import refresh as _refresh
 
@@ -217,6 +225,12 @@ def import_files(
             # generic MCP error envelope and lose the per-file failure
             # shape callers expect. Synthesize the same batch-style
             # failure record the multi-path branch produces.
+            #
+            # When the raw load already succeeded but a hard exception
+            # propagated from _refresh, loaded_import_id is non-None and
+            # the agent can still call import_revert on the orphaned raw
+            # rows. status stays "failed" because the user-visible operation
+            # didn't complete end-to-end.
             from moneybin.services.import_service import (
                 BatchImportResult,
                 PerFileResult,
@@ -231,7 +245,7 @@ def import_files(
                         status="failed",
                         source_type=None,
                         rows_loaded=0,
-                        import_id=None,
+                        import_id=loaded_import_id,
                         error=error_type,
                     )
                 ],

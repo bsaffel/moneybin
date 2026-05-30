@@ -172,11 +172,28 @@ def validate_partial_mapping(
     # Otherwise transform_dataframe would silently use one shape (driven by
     # sign_convention) and ignore the other, masking the override's intent.
     override_has_amount = "amount" in override
-    override_has_split = "debit_amount" in override or "credit_amount" in override
+    override_has_debit = "debit_amount" in override
+    override_has_credit = "credit_amount" in override
+    override_has_split = override_has_debit or override_has_credit
     if override_has_amount and not override_has_split:
         merged.pop("debit_amount", None)
         merged.pop("credit_amount", None)
     elif override_has_split and not override_has_amount:
+        # Switching FROM a single-amount proposal TO split via override
+        # requires BOTH halves of the pair. Catch the partial-switch case
+        # here so the user sees the actionable message — otherwise the
+        # downstream missing-required check fires "missing amount" after
+        # we drop it, which doesn't reveal the real problem.
+        if "amount" in proposed and not (override_has_debit and override_has_credit):
+            partial = "debit_amount" if override_has_debit else "credit_amount"
+            other = "credit_amount" if override_has_debit else "debit_amount"
+            raise MappingValidationError(
+                f"Override supplies only {partial!r} but the proposed "
+                f"mapping uses single-column 'amount'. Switching to split "
+                f"debit/credit requires BOTH {partial!r} and {other!r} in "
+                f"the same override (they are mutually exclusive with the "
+                f"single 'amount' field)."
+            )
         merged.pop("amount", None)
     missing = [f for f in required_fields if f not in merged]
     if missing:
