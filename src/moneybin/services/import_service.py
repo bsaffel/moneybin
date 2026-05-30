@@ -823,26 +823,42 @@ class ImportService:
             else:
                 signal = None
 
-            # Required fields depend on the merged amount shape: a single
-            # ``amount`` column OR a ``debit_amount`` + ``credit_amount``
-            # pair (both satisfy `_score_mapping`'s has_amount check). Derive
-            # from the union of proposed + override keys so a user override
-            # that swaps shapes (e.g. ``--mapping amount=Amount`` against a
-            # detector that proposed split debit/credit) still validates.
+            # Required fields depend on the EFFECTIVE amount shape after the
+            # override resolves the single/split contention. The contention
+            # rules in validate_partial_mapping are:
+            #   - override has 'amount' only → final shape is single
+            #   - override has only split keys → final shape is split
+            #   - otherwise → inherit proposed shape
+            # We pre-compute required_fields the same way so the
+            # validate_partial_mapping check downstream agrees with our
+            # derivation (otherwise a single→split override would precompute
+            # required=('amount',), validate would drop 'amount', and the
+            # check would fail with a misleading "missing amount" error).
             from moneybin.extractors.tabular.field_aliases import FIELD_ALIASES
 
-            merged_keys = set(proposed.field_mapping.keys())
-            if overrides:
-                merged_keys |= set(overrides.keys())
-            if (
-                "debit_amount" in merged_keys
-                and "credit_amount" in merged_keys
-                and "amount" not in merged_keys
-            ):
-                amount_required: tuple[str, ...] = (
-                    "debit_amount",
-                    "credit_amount",
-                )
+            override_keys = set(overrides.keys()) if overrides else set()
+            override_has_amount_only = (
+                "amount" in override_keys
+                and "debit_amount" not in override_keys
+                and "credit_amount" not in override_keys
+            )
+            override_has_split_only = (
+                "amount" not in override_keys
+                and "debit_amount" in override_keys
+                and "credit_amount" in override_keys
+            )
+            proposed_keys = set(proposed.field_mapping.keys())
+            proposed_is_split = (
+                "debit_amount" in proposed_keys
+                and "credit_amount" in proposed_keys
+                and "amount" not in proposed_keys
+            )
+            if override_has_amount_only:
+                amount_required: tuple[str, ...] = ("amount",)
+            elif override_has_split_only:
+                amount_required = ("debit_amount", "credit_amount")
+            elif proposed_is_split:
+                amount_required = ("debit_amount", "credit_amount")
             else:
                 amount_required = ("amount",)
             required_fields = (
@@ -1116,11 +1132,22 @@ class ImportService:
                 "raw.tabular_transactions", "transaction_date", file_path
             )
 
-        # Auto-save detected format for future imports
+        # Auto-save detected format for future imports.
+        # Save when EITHER the detector was high/medium confidence (it
+        # produced a complete proposal on its own) OR the user supplied an
+        # explicit Override (they ratified the resolved mapping themselves,
+        # so the resolved mapping is just as trustworthy regardless of the
+        # initial detection tier). Previously this gated only on raw
+        # detector tier, so a user calling import_confirm with a complete
+        # override on a low-tier file got their import to succeed but the
+        # --save-format flag was silently ignored.
+        user_ratified_via_override = bool(overrides)
         if (
             save_format
             and not matched_format
-            and resolved.confidence in ("high", "medium")
+            and (
+                resolved.confidence in ("high", "medium") or user_ratified_via_override
+            )
             and rows_imported > 0
         ):
             try:

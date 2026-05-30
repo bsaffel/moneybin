@@ -450,6 +450,11 @@ class InboxService:
             "moved_to": str(final.relative_to(self.root)),
             "transactions": import_result.transactions,
             "file_type": import_result.file_type,
+            # Inbox sync runs unattended (and may self-accept once
+            # calibration opens); surface the running-balance sign-flip
+            # warning so the agent / scheduler has a structured signal
+            # for files that may need re-import with --sign.
+            "sign_correction_suggested": import_result.sign_correction_suggested,
         })
         INBOX_SYNC_TOTAL.labels(outcome="processed").inc()
 

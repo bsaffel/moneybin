@@ -247,6 +247,11 @@ class ImportLabelsSetPayload:
 class ImportConfirmPayload:
     """Payload for ``import_confirm`` — post-confirmation import result.
 
+    ``status`` is always ``"imported"`` here — the discriminant mirrors the
+    ``confirmation_required`` envelope's top-level status field, so callers
+    can branch on a single discriminant regardless of whether ``import_confirm``
+    succeeded or re-surfaced ConfirmationRequired (a re-surface emits a raw
+    dict with ``status="confirmation_required"``; see ``import_tools.py``).
     ``merged_mapping`` is the authoritative destination → source column
     mapping the load actually used (threaded from ``ImportResult.field_mapping``
     populated inside ``_import_tabular`` from the ``resolve_or_confirm`` outcome,
@@ -264,3 +269,4 @@ class ImportConfirmPayload:
     # raw file content — may contain PII → DESCRIPTION (MEDIUM)
     sample_values: Annotated[dict[str, Any], DataClass.DESCRIPTION]
     sign_correction_suggested: Annotated[bool, DataClass.TXN_TYPE] = False
+    status: Annotated[str, DataClass.TXN_TYPE] = "imported"

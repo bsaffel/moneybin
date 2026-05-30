@@ -389,6 +389,12 @@ def import_files_command(
                             "source_type": r.source_type,
                             "rows_loaded": r.rows_loaded,
                             "import_id": r.import_id,
+                            # Always include sign_correction_suggested so
+                            # JSON-output agents see a structured signal that
+                            # amounts may need re-import with --sign — the TTY
+                            # path already warns to stderr; this closes the
+                            # gap for scripted callers.
+                            "sign_correction_suggested": r.sign_correction_suggested,
                             **({"error": r.error} if r.error else {}),
                             **(
                                 {"confirmation_payload": r.confirmation_payload}

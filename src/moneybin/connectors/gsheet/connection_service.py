@@ -258,18 +258,31 @@ class GSheetConnectionService:
             # satisfies the score-1.0 path without a literal ``amount``.
             from moneybin.extractors.tabular.field_aliases import FIELD_ALIASES
 
-            merged_dest_keys = set(proposed_dest_to_src.keys()) | set(
-                override_dest_to_src.keys()
+            # Pre-compute the effective amount-shape the same way
+            # validate_partial_mapping will resolve it, so the required-
+            # fields check agrees with the override-driven shape change.
+            # See _import_tabular for the equivalent tabular logic.
+            override_has_amount_only = (
+                "amount" in override_dest_to_src
+                and "debit_amount" not in override_dest_to_src
+                and "credit_amount" not in override_dest_to_src
             )
-            if (
-                "debit_amount" in merged_dest_keys
-                and "credit_amount" in merged_dest_keys
-                and "amount" not in merged_dest_keys
-            ):
-                required_for_amount: tuple[str, ...] = (
-                    "debit_amount",
-                    "credit_amount",
-                )
+            override_has_split_only = (
+                "amount" not in override_dest_to_src
+                and "debit_amount" in override_dest_to_src
+                and "credit_amount" in override_dest_to_src
+            )
+            proposed_is_split = (
+                "debit_amount" in proposed_dest_to_src
+                and "credit_amount" in proposed_dest_to_src
+                and "amount" not in proposed_dest_to_src
+            )
+            if override_has_amount_only:
+                required_for_amount: tuple[str, ...] = ("amount",)
+            elif override_has_split_only:
+                required_for_amount = ("debit_amount", "credit_amount")
+            elif proposed_is_split:
+                required_for_amount = ("debit_amount", "credit_amount")
             else:
                 required_for_amount = ("amount",)
             required_fields_dynamic = ("transaction_date", *required_for_amount)
