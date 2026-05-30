@@ -49,6 +49,7 @@ TABULAR_ACCOUNTS = TableRef("raw", "tabular_accounts")
 IMPORT_LOG = TableRef("raw", "import_log")
 MANUAL_TRANSACTIONS = TableRef("raw", "manual_transactions")
 GSHEET_SEEDS = TableRef("raw", "gsheet_seeds")
+PDF_SEEDS = TableRef("raw", "pdf_seeds")
 
 # -- App tables (application-managed data) --
 ACCOUNT_SETTINGS = TableRef("app", "account_settings", audience="interface")
