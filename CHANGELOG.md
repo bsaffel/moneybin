@@ -37,6 +37,7 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   spec.
 
 ### Added
+- **PDF import (seed path).** Native-text PDFs import via `moneybin import <file.pdf>` and the inbox; their tables land as a queryable JSON seed (`raw.pdf_seeds`) with an auto-generated typed view (`raw.pdf_<alias>`), reversible like any import. Mapping PDFs to transactions/core is a later phase.
 - **Report auto-generation framework — one runner generates every surface.**
   A report is now a single decorated runner (`@report`) that returns a
   parameterized query against its `reports.*` view; the framework introspects
