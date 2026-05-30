@@ -207,6 +207,7 @@ def import_files_command(
       - OFX/QFX/QBO: Bank and credit card statements
       - CSV/TSV/Excel: Bank transaction exports (Chase, Citi, etc.)
       - Parquet/Feather: Data warehouse exports
+      - PDF: Native-text bank statements (lands as queryable seed in raw.pdf_seeds)
 
     Per-file failures do not abort the batch. The refresh pipeline runs
     once at end of the batch by default; pass --no-refresh to defer.

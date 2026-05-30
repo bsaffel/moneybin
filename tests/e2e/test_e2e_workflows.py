@@ -136,6 +136,53 @@ class TestOFXImportPipeline:
         assert count > 0, f"Expected rows after OFX import, got {count}"
 
 
+_PDF_FIXTURE = (
+    Path(__file__).parent.parent
+    / "moneybin"
+    / "test_extractors"
+    / "test_pdf"
+    / "fixtures"
+    / "simple_statement.pdf"
+)
+
+
+class TestPDFImportPipeline:
+    """Workflow 4a: profile create → db init → import PDF → query raw.pdf_seeds."""
+
+    def test_pdf_import_lands_as_seed(
+        self, _mutating_profile_template: Path, e2e_home: Path
+    ) -> None:
+        if not _PDF_FIXTURE.exists():
+            pytest.skip(f"fixture missing: {_PDF_FIXTURE} (run _make_fixture.py)")
+
+        env = make_workflow_env_fast(e2e_home, "wf-pdf", _mutating_profile_template)
+
+        # Import PDF — no transform needed; seed lands directly in raw.pdf_seeds
+        result = run_cli(
+            "import",
+            "files",
+            str(_PDF_FIXTURE),
+            "--no-refresh",
+            env=env,
+        )
+        result.assert_success()
+
+        # Verify the seed table has rows
+        result = run_cli(
+            "db",
+            "query",
+            "SELECT COUNT(*) AS n FROM raw.pdf_seeds",
+            "--output",
+            "csv",
+            env=env,
+        )
+        result.assert_success()
+        count = int(result.stdout.strip().split("\n")[-1].strip())
+        assert count > 0, (
+            f"Expected rows in raw.pdf_seeds after PDF import, got {count}"
+        )
+
+
 class TestLockUnlockCycle:
     """Workflow 4: lock exits cleanly, unlock fails gracefully without salt.
 

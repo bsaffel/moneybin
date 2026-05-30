@@ -151,7 +151,8 @@ def _display_label(file_type: str, file_path: Path) -> str:
 def _pdf_alias(alias: str | None, file_path: Path) -> str:
     """Resolve the seed alias: explicit, else slugified file stem.
 
-    Must satisfy the seed-view name rule (lowercase letter start, [a-z0-9_]).
+    Must satisfy the seed-view name rule (lowercase letter start, [a-z0-9_],
+    max 59 chars so the f"pdf_{alias}" view name fits the 63-char limit).
     """
     from moneybin.utils import slugify
 
@@ -159,7 +160,7 @@ def _pdf_alias(alias: str | None, file_path: Path) -> str:
     slug = slugify(candidate).replace("-", "_")
     if not slug or not slug[0].isalpha():
         slug = f"pdf_{slug}" if slug else "pdf_import"
-    return slug
+    return slug[:59]
 
 
 # Unambiguous tabular extensions: extension wins, no OFX sniffing attempted.
@@ -207,7 +208,7 @@ def _detect_file_type(file_path: Path) -> str:
 
     raise ValueError(
         f"Unsupported file type: {suffix}. "
-        f"Supported: .ofx, .qfx, .qbo, .csv, .tsv, .xlsx, .parquet, .feather"
+        f"Supported: .ofx, .qfx, .qbo, .pdf, .csv, .tsv, .xlsx, .parquet, .feather"
     )
 
 

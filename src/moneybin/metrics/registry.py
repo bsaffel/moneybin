@@ -72,6 +72,8 @@ OFX_IMPORT_BATCHES = Counter(
     labelnames=("status",),
 )
 
+# Phase 1 outcomes: "seed" (success), "failed" (extraction error OR zero rows).
+# Spec also declares "declined" (recipe rejection) — added when Phase 2 ships routing.
 PDF_IMPORT_TOTAL = Counter(
     "moneybin_pdf_import_total",
     "PDF imports by outcome and rung.",

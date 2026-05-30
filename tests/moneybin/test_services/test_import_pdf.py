@@ -43,6 +43,7 @@ def test_import_pdf_is_revertible(db: Database, simple_statement_pdf: Path) -> N
         (None, "2024_Q4.pdf", "pdf_2024_q4"),
         (None, ".pdfrc", "pdfrc"),
         ("Wells Fargo 2024-Q1", "ignored.pdf", "wells_fargo_2024_q1"),
+        (None, ("a" * 80) + ".pdf", "a" * 59),
     ],
     ids=[
         "explicit_alias",
@@ -50,6 +51,7 @@ def test_import_pdf_is_revertible(db: Database, simple_statement_pdf: Path) -> N
         "stem_leading_digit_gets_pdf_prefix",
         "stem_leading_dot_stripped_letter_start",
         "explicit_alias_with_spaces_and_hyphen",
+        "long_stem_truncated_to_59_chars",
     ],
 )
 def test_pdf_alias_resolves(alias: str | None, filename: str, expected: str) -> None:

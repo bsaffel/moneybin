@@ -77,6 +77,9 @@ def _infer_typed_columns(
 ) -> dict[str, str]:
     """Infer a DuckDB type per JSON key from the written rows (numeric/date/varchar)."""
     typed: dict[str, str] = {}
+    # Phase 1 scale (dozens of rows × dozens of columns): re-parsing each row's
+    # JSON inside the key loop is O(rows × keys). Precompute parsed dicts if
+    # the p95 import latency ever regresses.
     for key in keys:
         samples: list[str] = []
         for r in rows:
