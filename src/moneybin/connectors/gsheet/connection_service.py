@@ -28,7 +28,6 @@ from moneybin.connectors.gsheet.adapters.base import (
     GSheetConnection,
     LoadResult,
 )
-from moneybin.connectors.gsheet.adapters.transactions import REQUIRED_DEST_FIELDS
 from moneybin.connectors.gsheet.errors import GSheetError, GSheetUnreachableError
 from moneybin.connectors.gsheet.sheets_api import SheetsAPI
 from moneybin.connectors.gsheet.url_parser import parse_sheet_url
@@ -248,12 +247,36 @@ class GSheetConnectionService:
                 override_dest_to_src = {
                     dest: src for src, dest in req.column_mapping.items()
                 }
+            # Required-amount shape derives from the MERGED dest set so a
+            # user override can swap a split debit/credit detection to a
+            # single ``amount`` column (or vice versa). The transactions
+            # adapter shares ``map_columns`` with tabular and can therefore
+            # produce a ``debit_amount``+``credit_amount`` proposal that
+            # satisfies the score-1.0 path without a literal ``amount``.
+            from moneybin.extractors.tabular.field_aliases import FIELD_ALIASES
+
+            merged_dest_keys = set(proposed_dest_to_src.keys()) | set(
+                override_dest_to_src.keys()
+            )
+            if (
+                "debit_amount" in merged_dest_keys
+                and "credit_amount" in merged_dest_keys
+                and "amount" not in merged_dest_keys
+            ):
+                required_for_amount: tuple[str, ...] = (
+                    "debit_amount",
+                    "credit_amount",
+                )
+            else:
+                required_for_amount = ("amount",)
+            required_fields_dynamic = ("transaction_date", *required_for_amount)
             try:
                 merged_dest_to_src = validate_partial_mapping(
                     proposed=proposed_dest_to_src,
                     override=override_dest_to_src,
                     available_columns=tuple(df.columns),
-                    required_fields=REQUIRED_DEST_FIELDS,
+                    required_fields=required_fields_dynamic,
+                    valid_destinations=tuple(FIELD_ALIASES.keys()),
                 )
             except MappingValidationError as e:
                 raise GSheetError(str(e)) from e

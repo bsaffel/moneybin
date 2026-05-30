@@ -799,12 +799,22 @@ class ImportService:
             else:
                 signal = None
 
-            # Required fields depend on the proposed amount shape: a single
+            # Required fields depend on the merged amount shape: a single
             # ``amount`` column OR a ``debit_amount`` + ``credit_amount``
-            # pair (both satisfy `_score_mapping`'s has_amount check). Pass
-            # the right tuple so split-debit/credit layouts pass validation.
-            proposed_keys = proposed.field_mapping.keys()
-            if "debit_amount" in proposed_keys and "credit_amount" in proposed_keys:
+            # pair (both satisfy `_score_mapping`'s has_amount check). Derive
+            # from the union of proposed + override keys so a user override
+            # that swaps shapes (e.g. ``--mapping amount=Amount`` against a
+            # detector that proposed split debit/credit) still validates.
+            from moneybin.extractors.tabular.field_aliases import FIELD_ALIASES
+
+            merged_keys = set(proposed.field_mapping.keys())
+            if overrides:
+                merged_keys |= set(overrides.keys())
+            if (
+                "debit_amount" in merged_keys
+                and "credit_amount" in merged_keys
+                and "amount" not in merged_keys
+            ):
                 amount_required: tuple[str, ...] = (
                     "debit_amount",
                     "credit_amount",
@@ -822,6 +832,7 @@ class ImportService:
                 proposed=proposed,
                 available_columns=tuple(df.columns),
                 required_fields=required_fields,
+                valid_destinations=tuple(FIELD_ALIASES.keys()),
                 signal=signal,
                 self_accept_enabled=settings.import_.self_accept_high,
                 actor_kind=actor_kind,

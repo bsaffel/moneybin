@@ -702,11 +702,11 @@ class InboxService:
             "unmapped_columns": list(unmapped_columns),
             "actions": [
                 (
-                    f"moneybin import confirm {moved_path.name} --accept "
+                    f"moneybin import confirm {moved_path} --accept "
                     "(accept the proposed mapping as-is)"
                 ),
                 (
-                    f"moneybin import confirm {moved_path.name} "
+                    f"moneybin import confirm {moved_path} "
                     "--mapping <dest_field>=<source_column> "
                     "(partial-merge override; repeatable)"
                 ),

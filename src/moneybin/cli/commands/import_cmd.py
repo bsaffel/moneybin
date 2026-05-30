@@ -260,6 +260,10 @@ def import_files_command(
     # directly so ImportConfirmationRequiredError can bubble. This variable
     # only drives the warning at line ~289 for multi-file invocations: any
     # per-file flag silently ignored by the batch path warrants a warning.
+    # NOTE: ``confirm`` is NOT in this set because the batch path forwards
+    # it (see svc.import_files call below). ``overrides`` IS — the batch
+    # method doesn't accept it, so multi-file + --mapping silently ignores
+    # the override.
     has_single_file_knobs = (
         any(
             v is not None
@@ -277,7 +281,6 @@ def import_files_command(
             )
         )
         or overrides is not None
-        or confirm
         or yes
         or no_row_limit
         or no_size_limit

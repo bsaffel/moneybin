@@ -191,6 +191,7 @@ def resolve_or_confirm(
     signal: Accept | Override | None,
     self_accept_enabled: bool,
     actor_kind: ActorKind,
+    valid_destinations: tuple[str, ...] | None = None,
 ) -> Resolved | ConfirmationRequired:
     """Decide whether to auto-load, self-accept, or surface for confirmation.
 
@@ -224,6 +225,7 @@ def resolve_or_confirm(
                 override=signal.mapping,
                 available_columns=available_columns,
                 required_fields=required_fields,
+                valid_destinations=valid_destinations,
             )
         except MappingValidationError as e:
             return ConfirmationRequired(
@@ -246,11 +248,18 @@ def resolve_or_confirm(
         )
 
     if isinstance(signal, Accept):
+        # Accept ratifies the detector's proposal as-is. If the proposal
+        # itself fails validation, that's a caller bug (the channel handed
+        # us a malformed mapping) — let MappingValidationError propagate;
+        # do NOT catch it like the Override branch does. The Override
+        # branch catches because the user's correction is fixable input;
+        # the proposal's invalidity is not.
         merged = validate_partial_mapping(
             proposed=proposed.field_mapping,
             override={},
             available_columns=available_columns,
             required_fields=required_fields,
+            valid_destinations=valid_destinations,
         )
         return Resolved(field_mapping=merged, format_ref=None, self_accepted=False)
 
@@ -260,6 +269,7 @@ def resolve_or_confirm(
             override={},
             available_columns=available_columns,
             required_fields=required_fields,
+            valid_destinations=valid_destinations,
         )
         return Resolved(field_mapping=merged, format_ref=None, self_accepted=True)
 
