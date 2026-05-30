@@ -422,18 +422,22 @@ def import_files_command(
                 "tier": outcome.confidence.tier,
                 "score": outcome.confidence.score,
                 "reason": outcome.reason,
+                "error_message": outcome.error_message,
                 "proposed_mapping": proposed_mapping,
                 "samples": outcome.samples,
                 "flagged": list(outcome.confidence.flagged),
                 "missing_required": list(outcome.confidence.missing_required),
                 "unmapped_columns": unmapped,
             }
-            confirm_actions = [
+            confirm_actions: list[str] = []
+            if outcome.error_message:
+                confirm_actions.append(f"Validation failed: {outcome.error_message}")
+            confirm_actions.extend([
                 "Re-run with --confirm to accept the proposed mapping as-is.",
                 "Re-run with --mapping <field>=<column> to override specific fields.",
                 f"Run 'moneybin import preview {file_path_str}' to inspect the proposal.",
                 f"Run 'moneybin import confirm {file_path_str} --accept' as a subcommand.",
-            ]
+            ])
             if output == OutputFormat.JSON or not sys.stdout.isatty():
                 # Non-TTY / --output json: emit the full ResponseEnvelope so
                 # CLI --output json matches the MCP envelope shape (same
@@ -528,6 +532,8 @@ def _render_confirmation_prompt(outcome: Any, file_path_str: str) -> None:
     typer.echo(f"\n{tier_icon}  Confirmation required ({tier} confidence)")
     typer.echo(f"   File: {file_path_str}")
     typer.echo(f"   Reason: {outcome.reason}")
+    if outcome.error_message:
+        typer.echo(f"   ❌ Validation failed: {outcome.error_message}")
 
     if isinstance(outcome.proposed, ProposedMapping):
         typer.echo("\n   Proposed column mapping:")

@@ -248,19 +248,30 @@ def resolve_or_confirm(
         )
 
     if isinstance(signal, Accept):
-        # Accept ratifies the detector's proposal as-is. If the proposal
-        # itself fails validation, that's a caller bug (the channel handed
-        # us a malformed mapping) — let MappingValidationError propagate;
-        # do NOT catch it like the Override branch does. The Override
-        # branch catches because the user's correction is fixable input;
-        # the proposal's invalidity is not.
-        merged = validate_partial_mapping(
-            proposed=proposed.field_mapping,
-            override={},
-            available_columns=available_columns,
-            required_fields=required_fields,
-            valid_destinations=valid_destinations,
-        )
+        # Accept ratifies the detector's proposal as-is. Surface validation
+        # failure as ConfirmationRequired(validation_failure) for symmetry
+        # with the Override branch — callers see a uniform result type
+        # regardless of which signal they sent. A failure here typically
+        # means the channel detector produced a malformed proposal (a
+        # caller bug), but surfacing it lets the caller render the
+        # error_message instead of seeing an unhandled exception.
+        try:
+            merged = validate_partial_mapping(
+                proposed=proposed.field_mapping,
+                override={},
+                available_columns=available_columns,
+                required_fields=required_fields,
+                valid_destinations=valid_destinations,
+            )
+        except MappingValidationError as e:
+            return ConfirmationRequired(
+                channel=channel,
+                confidence=confidence,
+                proposed=proposed,
+                reason="validation_failure",
+                samples=dict(proposed.sample_values),
+                error_message=str(e),
+            )
         return Resolved(field_mapping=merged, format_ref=None, self_accepted=False)
 
     if actor_kind == "agent" and confidence.tier == "high" and self_accept_enabled:

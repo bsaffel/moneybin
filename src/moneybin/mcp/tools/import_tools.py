@@ -65,6 +65,12 @@ def _confirmation_actions(file_path: str, outcome: object) -> list[str]:
     from moneybin.services.import_confirmation import ConfirmationRequired
 
     actions: list[str] = []
+    if isinstance(outcome, ConfirmationRequired) and outcome.error_message:
+        # Surface validation_failure detail first so the agent / human
+        # sees WHY their last attempt was rejected (which override key
+        # was unknown, which source column was missing, etc.) before
+        # the generic recovery hints.
+        actions.append(f"Validation failed: {outcome.error_message}")
     if isinstance(outcome, ConfirmationRequired) and outcome.confidence.tier != "low":
         actions.append(
             f"Use import_confirm(file_path='{file_path}', accept=True) "
@@ -154,6 +160,7 @@ def import_files(
                     "tier": e.outcome.confidence.tier,
                     "score": e.outcome.confidence.score,
                     "reason": e.outcome.reason,
+                    "error_message": e.outcome.error_message,
                     "proposed_mapping": proposed_mapping,
                     "samples": e.outcome.samples,
                     "flagged": list(e.outcome.confidence.flagged),
