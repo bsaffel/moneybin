@@ -234,6 +234,9 @@ class GSheetConnectionService:
         # validate the merged result. The override is partial: only the
         # destination fields the user names are replaced; others fall back to
         # the detector's proposal (partial-merge per spec Req 6).
+        # sign_convention_for_save is overwritten by the override path when the
+        # merged mapping is split debit/credit; defaults to detection otherwise.
+        sign_convention_for_save = detection.sign_convention
         if target_adapter == "seed":
             column_mapping = detection.typed_columns
         elif target_adapter == "transactions":
@@ -282,17 +285,25 @@ class GSheetConnectionService:
                 raise GSheetError(str(e)) from e
             # Invert back to source→dest for storage.
             column_mapping = {src: dest for dest, src in merged_dest_to_src.items()}
-            # KNOWN LIMITATION: detection.sign_convention / date_format /
-            # number_format are derived from the ORIGINAL inference over the
-            # detected amount/date columns. A user override that swaps the
-            # amount shape (single ⇄ split debit/credit) or remaps
-            # transaction_date to a different column does NOT re-run the
-            # inference. The persisted metadata may therefore be stale for
-            # the overridden source columns; subsequent pulls would apply
-            # the old sign_convention to the new amount column. Recovery is
-            # `gsheet reconnect --column-mapping … --sign …`. Proper fix
-            # requires re-running inference over the merged mapping —
-            # tracked as a follow-up rather than an inline patch here.
+            # If the merged mapping is split debit/credit (whether the user
+            # added it via override or the detection produced it), the only
+            # sign convention that makes sense is split_debit_credit — the
+            # transform rejects rows when the convention disagrees with the
+            # mapping shape. Coerce here so a `--column-mapping
+            # debit_amount=Debit credit_amount=Credit` override doesn't
+            # silently persist a stale single-amount sign convention. Date
+            # format and number format remain detector-derived; remapping
+            # the date or amount source columns to a different format
+            # without `--date-format`/`--number-format` is still a documented
+            # reconnect path.
+            has_split = (
+                "debit_amount" in merged_dest_to_src
+                and "credit_amount" in merged_dest_to_src
+                and "amount" not in merged_dest_to_src
+            )
+            sign_convention_for_save = (
+                "split_debit_credit" if has_split else detection.sign_convention
+            )
             IMPORT_DETECTION_SCORE.observe(detection.score)
             if req.column_mapping:
                 IMPORT_OVERRIDE_TOTAL.labels(channel="gsheet").inc()
@@ -318,7 +329,7 @@ class GSheetConnectionService:
             column_mapping=column_mapping,
             header_signature=detection.header_signature,
             date_format=detection.date_format,
-            sign_convention=detection.sign_convention,
+            sign_convention=sign_convention_for_save,
             number_format=detection.number_format,
             skip_rows=detection.skip_rows,
             skip_trailing_patterns=detection.skip_trailing_patterns or None,

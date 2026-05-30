@@ -423,6 +423,11 @@ class InboxService:
                 str(src),
                 refresh=False,
                 account_name=account_hint if isinstance(account_hint, str) else None,
+                # Inbox sync is an unattended background path — the caller is
+                # the scheduler/agent, not a human at a CLI. actor_kind=agent
+                # also lets self-accept (gated separately by ImportSettings)
+                # take effect for inbox-discovered files.
+                actor_kind="agent",
             )
         except ImportConfirmationRequiredError as e:
             self._handle_pending(src, rel_filename, e, year_month, result)

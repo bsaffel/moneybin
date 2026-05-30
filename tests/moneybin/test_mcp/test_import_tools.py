@@ -150,13 +150,21 @@ class TestImportFilesConfirmationRequired:
         ):
             result = await import_files(paths=[str(csv_file)])
 
+        # Uniform shape: single-file confirmation_required is one entry in
+        # data.files[] (mirrors the multi-file path) — callers branch on
+        # data.files[i].status, not on payload shape.
         data = result.data
-        assert isinstance(data, dict)
-        assert data["status"] == "confirmation_required"
-        assert data["channel"] == "tabular"
-        assert data["tier"] == "medium"
-        assert "tier" in data
-        assert "score" in data
+        from moneybin.privacy.payloads.imports import ImportFilesPayload
+
+        assert isinstance(data, ImportFilesPayload)
+        assert len(data.files) == 1
+        row = data.files[0]
+        assert row.status == "confirmation_required"
+        payload = row.confirmation_payload
+        assert payload is not None
+        assert payload["channel"] == "tabular"
+        assert payload["tier"] == "medium"
+        assert "score" in payload
 
     async def test_actions_list_includes_import_confirm_hint(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
@@ -214,9 +222,13 @@ class TestImportFilesConfirmationRequired:
         ):
             result = await import_files(paths=[str(csv_file)])
 
+        from moneybin.privacy.payloads.imports import ImportFilesPayload
+
         data = result.data
-        assert isinstance(data, dict)
-        assert "description" in data["missing_required"]
+        assert isinstance(data, ImportFilesPayload)
+        payload = data.files[0].confirmation_payload
+        assert payload is not None
+        assert "description" in payload["missing_required"]  # type: ignore[operator]
 
     async def test_actor_kind_agent_passed_to_service(
         self, tmp_path: Path, monkeypatch: MonkeyPatch

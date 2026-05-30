@@ -14,8 +14,12 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from fastmcp import FastMCP
+
+if TYPE_CHECKING:
+    from moneybin.services.import_confirmation import ConfirmationRequired
 
 from moneybin.database import get_database
 from moneybin.errors import UserError
@@ -54,7 +58,7 @@ def _validate_file_path(file_path: str) -> Path:
     return resolved
 
 
-def _confirmation_actions(file_path: str, outcome: object) -> list[str]:
+def _confirmation_actions(file_path: str, outcome: ConfirmationRequired) -> list[str]:
     """Build the actions[] hints for a confirmation_required envelope.
 
     Omits the `accept=True` suggestion on `low`-tier proposals because
@@ -62,16 +66,14 @@ def _confirmation_actions(file_path: str, outcome: object) -> list[str]:
     form a complete mapping); recovery requires a partial-merge
     `mapping=...` override.
     """
-    from moneybin.services.import_confirmation import ConfirmationRequired
-
     actions: list[str] = []
-    if isinstance(outcome, ConfirmationRequired) and outcome.error_message:
+    if outcome.error_message:
         # Surface validation_failure detail first so the agent / human
         # sees WHY their last attempt was rejected (which override key
         # was unknown, which source column was missing, etc.) before
         # the generic recovery hints.
         actions.append(f"Validation failed: {outcome.error_message}")
-    if isinstance(outcome, ConfirmationRequired) and outcome.confidence.tier != "low":
+    if outcome.confidence.tier != "low":
         actions.append(
             f"Use import_confirm(file_path='{file_path}', accept=True) "
             "to accept the proposed mapping as-is."
@@ -157,6 +159,16 @@ def import_files(
                             "SQLMesh transforms failed (no error detail)"
                         )
         except ImportConfirmationRequiredError as e:
+            # Match the multi-file path's shape: a confirmation-required
+            # outcome on a single file lands as one entry in batch.per_file
+            # with status="confirmation_required" and the proposal in
+            # confirmation_payload. Callers parse data.files[i].status
+            # regardless of path count.
+            from moneybin.services.import_service import (
+                BatchImportResult,
+                PerFileResult,
+            )
+
             file_path = str(validated[0])
             proposed_mapping = (
                 e.outcome.proposed.field_mapping
@@ -168,23 +180,36 @@ def import_files(
                 if isinstance(e.outcome.proposed, ProposedMapping)
                 else []
             )
-            return build_envelope(
-                sensitivity="medium",
-                data={
-                    "status": "confirmation_required",
-                    "channel": e.outcome.channel,
-                    "tier": e.outcome.confidence.tier,
-                    "score": e.outcome.confidence.score,
-                    "reason": e.outcome.reason,
-                    "error_message": e.outcome.error_message,
-                    "proposed_mapping": proposed_mapping,
-                    "samples": e.outcome.samples,
-                    "flagged": list(e.outcome.confidence.flagged),
-                    "missing_required": list(e.outcome.confidence.missing_required),
-                    "unmapped_columns": unmapped,
-                },
-                actions=_confirmation_actions(file_path, e.outcome),
+            confirmation_payload: dict[str, object] = {
+                "channel": e.outcome.channel,
+                "tier": e.outcome.confidence.tier,
+                "score": e.outcome.confidence.score,
+                "reason": e.outcome.reason,
+                "error_message": e.outcome.error_message,
+                "proposed_mapping": proposed_mapping,
+                "samples": e.outcome.samples,
+                "flagged": list(e.outcome.confidence.flagged),
+                "missing_required": list(e.outcome.confidence.missing_required),
+                "unmapped_columns": unmapped,
+            }
+            batch = BatchImportResult(
+                per_file=[
+                    PerFileResult(
+                        path=file_path,
+                        status="confirmation_required",
+                        source_type=None,
+                        rows_loaded=0,
+                        import_id=None,
+                        confirmation_payload=confirmation_payload,
+                    )
+                ],
+                transforms_applied=False,
+                transforms_duration_seconds=None,
             )
+            # Drop through to the shared envelope assembly below — the
+            # `actions[]` builder below picks up the per-file
+            # confirmation_payload state and surfaces the same
+            # `_confirmation_actions` hints the legacy flat envelope had.
         except Exception as e:  # noqa: BLE001 — surface as per-file failure
             # Single-file path bypasses BatchImportResult's per-file catch-
             # all, so non-confirmation exceptions (FileNotFoundError,
@@ -263,6 +288,30 @@ def import_files(
     ]
 
     actions: list[str] = []
+    # When a file lands in confirmation_required, surface the per-file
+    # accept/override hints so callers see how to re-drive the load even
+    # when only one file in the batch needs confirmation. Mirrors the
+    # tier-gated logic in _confirmation_actions; inlined here so we don't
+    # need to reconstruct a ConfirmationRequired from the payload dict.
+    pending_files = [r for r in batch.per_file if r.status == "confirmation_required"]
+    for pending in pending_files:
+        payload = pending.confirmation_payload or {}
+        raw_tier = payload.get("tier")
+        tier = raw_tier if isinstance(raw_tier, str) else "low"
+        raw_err = payload.get("error_message")
+        err_msg = raw_err if isinstance(raw_err, str) else ""
+        if err_msg:
+            actions.append(f"Validation failed: {err_msg}")
+        if tier != "low":
+            actions.append(
+                f"Use import_confirm(file_path='{pending.path}', accept=True) "
+                "to accept the proposed mapping as-is."
+            )
+        actions.append(
+            f"Use import_confirm(file_path='{pending.path}', "
+            "mapping={'<dest_field>': '<source_column>'}) to override "
+            "specific fields (required on low-tier proposals)."
+        )
     if any(r.sign_correction_suggested for r in batch.per_file):
         actions.append(
             "Sign convention may be inverted for one or more imports — "

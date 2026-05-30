@@ -83,7 +83,12 @@ IMPORT_CONFIRMATIONS_TOTAL = Counter(
 IMPORT_DETECTION_SCORE = Histogram(
     "moneybin_import_detection_score",
     "Distribution of normalized confidence score across all detections.",
-    buckets=(0.0, 0.5, 0.7, 0.8, 0.9, 0.95, 0.99, 1.0),
+    # _score_mapping in column_mapper.py emits a discrete set today:
+    # {0.40, 0.75, 0.85, 1.0}. Buckets are aligned to that distribution so
+    # the histogram's high-band buckets aren't permanently empty (which
+    # would make tuning t_high above 0.85 functionally equivalent to 0.86).
+    # If _score_mapping evolves to a continuous distribution, re-fan these.
+    buckets=(0.0, 0.4, 0.75, 0.85, 1.0),
 )
 
 IMPORT_SELF_ACCEPT_TOTAL = Counter(

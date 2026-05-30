@@ -32,6 +32,7 @@ from moneybin.extractors.tabular.formats import NumberFormatType, SignConvention
 if TYPE_CHECKING:
     from moneybin.database import Database
     from moneybin.extractors.tabular.formats import TabularFormat
+    from moneybin.services.import_confirmation import ConfirmationRequired
 
 app = typer.Typer(
     help=("Import financial files (OFX/QFX, CSV/TSV/Excel/Parquet) into MoneyBin"),
@@ -545,15 +546,20 @@ def import_files_command(
         raise typer.Exit(1)
 
 
-def _render_confirmation_prompt(outcome: Any, file_path_str: str) -> None:
+def _render_confirmation_prompt(
+    outcome: ConfirmationRequired, file_path_str: str
+) -> None:
     """Print a human-readable confirmation summary for an unknown-layout encounter.
 
     Interactive edit-flow (walking each flagged field one at a time) is deferred
     to a future task.  This v1 implementation shows the proposal and instructs
     the user to re-run with the appropriate flags.
     """
+    import shlex  # noqa: PLC0415
+
     from moneybin.services.import_confirmation import ProposedMapping  # noqa: PLC0415
 
+    quoted_path = shlex.quote(file_path_str)
     tier = outcome.confidence.tier
     tier_icon = {"high": "✅", "medium": "⚠️", "low": "❓"}.get(tier, "❓")
 
@@ -588,16 +594,21 @@ def _render_confirmation_prompt(outcome: Any, file_path_str: str) -> None:
             )
 
     typer.echo("\n   To proceed:")
-    typer.echo(f"     moneybin import files {file_path_str} --confirm")
+    # Suggested commands shlex-quoted so paths with spaces survive copy-paste.
+    # Accept hint is gated on tier — resolve_or_confirm refuses Accept at the
+    # low-tier gate, so suggesting --confirm there would loop indefinitely.
+    if tier != "low":
+        typer.echo(f"     moneybin import files {quoted_path} --confirm")
     typer.echo(
-        f"     moneybin import files {file_path_str} --mapping description=<column>"
+        f"     moneybin import files {quoted_path} --mapping description=<column>"
     )
+    if tier != "low":
+        typer.echo(
+            f"     moneybin import confirm {quoted_path} --accept   "
+            "(dedicated confirm subcommand)"
+        )
     typer.echo(
-        f"     moneybin import confirm {file_path_str} --accept   "
-        "(dedicated confirm subcommand)"
-    )
-    typer.echo(
-        f"     moneybin import preview {file_path_str}   (inspect proposal in detail)"
+        f"     moneybin import preview {quoted_path}   (inspect proposal in detail)"
     )
     typer.echo()
 

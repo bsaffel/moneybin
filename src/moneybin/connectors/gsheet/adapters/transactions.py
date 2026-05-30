@@ -62,6 +62,36 @@ _IMPORT_ID_PLACEHOLDER = "__pending__"
 REQUIRED_DEST_FIELDS = ("transaction_date", "amount")
 
 
+def _is_null_or_blank(value: object) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str) and value.strip() == "":
+        return True
+    return False
+
+
+def _split_pair_both_null_ratio(
+    df: pl.DataFrame, debit_col: str, credit_col: str
+) -> float:
+    """Fraction of rows where BOTH split-amount sources are null/blank.
+
+    A normal credit-card statement (every row in Debit, every row blank in
+    Credit) returns 0.0 — Debit fills both halves of the pair. The pair
+    drifts only when every row leaves *both* columns empty, which is the
+    only state that actually breaks transform_dataframe.
+    """
+    if df.height == 0:
+        return 0.0
+    debit_vals = df[debit_col].cast(pl.String, strict=False).to_list()
+    credit_vals = df[credit_col].cast(pl.String, strict=False).to_list()
+    both_empty = sum(
+        1
+        for d, c in zip(debit_vals, credit_vals, strict=False)
+        if _is_null_or_blank(d) and _is_null_or_blank(c)
+    )
+    return both_empty / df.height
+
+
 def required_sources_for_mapping(column_mapping: dict[str, str]) -> set[str]:
     """Source columns whose emptiness counts as drift for this mapping.
 
@@ -130,17 +160,55 @@ class TransactionsAdapter:
 
         Only the source columns required by this mapping's amount-shape gate
         drift on emptiness — a mostly-blank optional column (Description,
-        Notes) is normal and must not trigger drift_detected. A split-column
-        connection (debit_amount + credit_amount) requires both halves;
-        otherwise transform_dataframe would silently drop all rows.
+        Notes) is normal and must not trigger drift_detected.
+
+        Split-amount handling: for a debit/credit split connection,
+        transform_dataframe accepts rows where only ONE of debit_amount /
+        credit_amount has a value (a normal credit-card statement has every
+        row in Debit and zero rows in Credit). A naive per-column null
+        ratio check would mark Credit as drifted in that shape. We instead
+        pass the non-split required sources to ``detect_drift`` and run a
+        row-level ``both null`` check for the split pair; the pair drifts
+        only when every sampled row has neither debit nor credit populated.
         """
-        required_sources = required_sources_for_mapping(connection.column_mapping)
-        return detect_drift(
+        by_dest = {dest: src for src, dest in connection.column_mapping.items()}
+        non_split_required = required_sources_for_mapping(connection.column_mapping)
+        split_pair: tuple[str, str] | None = None
+        if (
+            "debit_amount" in by_dest
+            and "credit_amount" in by_dest
+            and "amount" not in by_dest
+        ):
+            split_pair = (by_dest["debit_amount"], by_dest["credit_amount"])
+            non_split_required = non_split_required - set(split_pair)
+        report = detect_drift(
             pinned_signature=connection.header_signature,
             current_headers=list(current_df.columns),
             sample_df=current_df,
-            mapped_columns=required_sources,
+            mapped_columns=non_split_required,
         )
+        if split_pair is None:
+            return report
+        debit_col, credit_col = split_pair
+        if debit_col not in current_df.columns or credit_col not in current_df.columns:
+            # detect_drift already flags missing headers from the pinned
+            # signature, so neither extending nor short-circuiting is needed.
+            return report
+        if _split_pair_both_null_ratio(current_df, debit_col, credit_col) > 0.5:
+            empties = sorted([*report.empty_mapped_columns, debit_col, credit_col])
+            reason_parts = [report.reason] if report.reason != "no drift" else []
+            reason_parts.append(
+                f"split debit/credit pair {debit_col}+{credit_col} both empty"
+            )
+            from dataclasses import replace as _replace
+
+            return _replace(
+                report,
+                is_drift=True,
+                reason="; ".join(reason_parts),
+                empty_mapped_columns=empties,
+            )
+        return report
 
     def transform(
         self,
