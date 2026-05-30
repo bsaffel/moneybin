@@ -197,16 +197,17 @@ def _detect_file_type(file_path: Path) -> str:
     suffix = file_path.suffix.lower()
     if suffix in (".ofx", ".qfx", ".qbo"):
         return "ofx"
-    if suffix == ".pdf":
-        return "pdf"
     if suffix in _UNAMBIGUOUS_TABULAR:
         return "tabular"
 
-    # Try magic-byte sniffing before falling back to remaining tabular extensions
-    # (.txt, .dat) and the unknown-extension error path.
+    # Magic-byte sniff wins over ambiguous extensions — a .pdf-named file
+    # carrying OFX content gets the clear "ofx" route instead of an opaque
+    # pdfplumber error downstream.
     if _sniff_ofx_content(file_path):
         return "ofx"
 
+    if suffix == ".pdf":
+        return "pdf"
     if suffix in TABULAR_EXTENSIONS:
         return "tabular"
 
@@ -1019,12 +1020,14 @@ class ImportService:
         )
         result.import_id = import_id
 
+        extracted = 0
+        inserted = 0
         try:
             doc = PDFExtractor().extract(canonical)
-            rows = write_pdf_seed(
+            extracted, inserted = write_pdf_seed(
                 self._db, doc, alias=resolved_alias, import_id=import_id
             )
-            if rows == 0:
+            if extracted == 0:
                 raise ValueError(
                     "No tables extracted from PDF. Verify the file contains "
                     "selectable text (image-only / scanned PDFs are not supported)."
@@ -1032,30 +1035,55 @@ class ImportService:
         except Exception:
             # Clean up any rows already written under this import_id before the failure.
             # Without this, a view-creation failure mid-import would leak orphan rows
-            # into a future successful import with the same alias.
+            # into a future successful import with the same alias. The DELETE is
+            # wrapped so a cleanup failure doesn't mask the original exception or
+            # leave the import_log stuck in 'in_progress' (the finally block below
+            # always runs finalize_import).
             from moneybin.tables import PDF_SEEDS  # noqa: PLC0415
 
-            self._db.execute(
-                f"DELETE FROM {PDF_SEEDS.full_name} WHERE import_id = ?",
-                [import_id],
-            )
-            import_log.finalize_import(
-                self._db, import_id, status="failed", rows_total=0, rows_imported=0
-            )
+            try:
+                self._db.execute(
+                    f"DELETE FROM {PDF_SEEDS.full_name} WHERE import_id = ?",
+                    [import_id],
+                )
+            except Exception:  # noqa: BLE001 — cleanup is best-effort; original error is what matters
+                logger.warning(
+                    f"PDF cleanup DELETE failed for import_id={import_id[:8]}...",
+                    exc_info=True,
+                )
+            try:
+                import_log.finalize_import(
+                    self._db,
+                    import_id,
+                    status="failed",
+                    rows_total=0,
+                    rows_imported=0,
+                )
+            except Exception:  # noqa: BLE001 — failure-path finalize is best-effort
+                logger.warning(
+                    f"PDF finalize_import(failed) raised for import_id={import_id[:8]}...",
+                    exc_info=True,
+                )
             PDF_IMPORT_TOTAL.labels(outcome="failed", rung="deterministic").inc()
             raise
 
-        # success path: rows > 0 guaranteed here
+        # success path: extracted > 0 guaranteed here. Audit log + metrics
+        # report the inserted (newly persisted) count so re-imports of
+        # already-stored content don't inflate row totals.
         import_log.finalize_import(
-            self._db, import_id, status="complete", rows_total=rows, rows_imported=rows
+            self._db,
+            import_id,
+            status="complete",
+            rows_total=extracted,
+            rows_imported=inserted,
         )
         PDF_IMPORT_TOTAL.labels(outcome="seed", rung="deterministic").inc()
-        PDF_SEED_ROWS_TOTAL.labels(alias=resolved_alias).inc(rows)
-        result.details = {"seed_rows": rows}
+        PDF_SEED_ROWS_TOTAL.labels(alias=resolved_alias).inc(inserted)
+        result.details = {"seed_rows": inserted, "seed_rows_extracted": extracted}
         result.transactions = 0  # Phase 1: seed path writes no core transactions
         logger.info(
             f"PDF import complete: alias={resolved_alias} "
-            f"import_id={import_id[:8]}... rows={rows}"
+            f"import_id={import_id[:8]}... extracted={extracted} inserted={inserted}"
         )
         return result
 

@@ -39,8 +39,12 @@ def generate_seed_view_sql(
     """
     if not _SAFE_ALIAS_RE.fullmatch(alias):
         raise ValueError(
-            f"Alias {alias!r} must match {_SAFE_ALIAS_RE.pattern} "
-            f"(lowercase letters/digits/underscores, start with letter, max 56 chars)"
+            f"Alias {alias!r} exceeds the 56-char limit or contains invalid "
+            f"characters. Required: lowercase letters/digits/underscores, "
+            f"start with a letter, ≤56 chars (was ≤63 before PR #228 — the "
+            f"limit was tightened so the generated view name "
+            f"'gsheet_<alias>' fits DuckDB's 63-char identifier limit). "
+            f"Reconnect this gsheet with a shorter alias to continue syncing."
         )
     if not _SAFE_CONN_ID_RE.fullmatch(connection_id):
         raise ValueError(f"Invalid connection_id: {connection_id!r}")

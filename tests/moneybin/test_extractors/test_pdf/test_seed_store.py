@@ -25,8 +25,9 @@ def _doc() -> PdfDocument:
 
 @pytest.mark.integration
 def test_write_seed_creates_view_and_rows(db: Database) -> None:
-    n = write_pdf_seed(db, _doc(), alias="acme", import_id="imp-1")
-    assert n == 2
+    extracted, inserted = write_pdf_seed(db, _doc(), alias="acme", import_id="imp-1")
+    assert extracted == 2
+    assert inserted == 2
     rows = db.execute(
         'SELECT "date", "description", "amount", page FROM raw.pdf_acme ORDER BY "date"'
     ).fetchall()
@@ -36,13 +37,55 @@ def test_write_seed_creates_view_and_rows(db: Database) -> None:
 
 @pytest.mark.integration
 def test_reimport_same_doc_is_idempotent(db: Database) -> None:
-    write_pdf_seed(db, _doc(), alias="acme", import_id="imp-1")
-    write_pdf_seed(db, _doc(), alias="acme", import_id="imp-2")
+    extracted_1, inserted_1 = write_pdf_seed(
+        db, _doc(), alias="acme", import_id="imp-1"
+    )
+    extracted_2, inserted_2 = write_pdf_seed(
+        db, _doc(), alias="acme", import_id="imp-2"
+    )
+    # Second import extracts the same 2 rows but inserts 0 (content hashes
+    # already present from imp-1; on_conflict='ignore' keeps the original).
+    assert extracted_1 == 2
+    assert inserted_1 == 2
+    assert extracted_2 == 2
+    assert inserted_2 == 0
     row = db.execute(
         "SELECT COUNT(*) FROM raw.pdf_seeds WHERE alias = 'acme'"
     ).fetchone()
     assert row is not None
-    assert row[0] == 2  # dedup by content hash; second import is a no-op
+    assert row[0] == 2
+
+
+@pytest.mark.integration
+def test_duplicate_rows_within_doc_are_preserved(db: Database) -> None:
+    """Two rows with identical cell values must both persist (legitimate dupes).
+
+    The pre-fix content-hash included only ``alias|json(row)``, collapsing
+    identical-cell rows even when they represented distinct transactions
+    (e.g. two same-day same-amount coffee purchases). The position-aware
+    hash basis (``alias|p<page>r<idx>|json(row)``) preserves them.
+    """
+    doc = PdfDocument(
+        source_file="dupes.pdf",
+        tables=[
+            PdfTable(
+                page=1,
+                header=["Date", "Description", "Amount"],
+                rows=[
+                    ["2024-01-02", "COFFEE", "-4.50"],
+                    ["2024-01-02", "COFFEE", "-4.50"],  # legit duplicate
+                ],
+            )
+        ],
+    )
+    extracted, inserted = write_pdf_seed(db, doc, alias="dupes", import_id="imp-1")
+    assert extracted == 2
+    assert inserted == 2
+    row = db.execute(
+        "SELECT COUNT(*) FROM raw.pdf_seeds WHERE alias = 'dupes'"
+    ).fetchone()
+    assert row is not None
+    assert row[0] == 2
 
 
 @pytest.mark.parametrize(

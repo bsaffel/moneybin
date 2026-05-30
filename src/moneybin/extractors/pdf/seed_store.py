@@ -24,28 +24,40 @@ _PLAIN_NUMERIC_RE = re.compile(r"[+-]?(\d+\.\d+|\d+)")
 
 def write_pdf_seed(
     db: Database, doc: PdfDocument, *, alias: str, import_id: str
-) -> int:
+) -> tuple[int, int]:
     """Insert the document's rows as a seed and regenerate raw.pdf_<alias>.
 
-    Identity is SHA-256(alias|json(row))[:16] with a pdf_ prefix. Re-importing
-    the same content is a no-op via on_conflict='ignore' — existing rows keep
-    their original import_id so reverting a later import that contained the
-    same content doesn't remove rows the first import's log claims as complete.
-    Returns the count of rows extracted from the document (used as the
-    "newly written + already-existing" count for metrics + the zero-row gate;
-    NOT the count of new rows actually persisted, which may be lower due to
-    dedup against existing rows).
+    Identity is SHA-256(alias|p<page>r<row_idx>|json(row))[:16] with a pdf_
+    prefix. The page+row-index component preserves legitimate duplicate-cell
+    rows (e.g. two same-day same-amount purchases) — only the *same content
+    at the same physical position* is treated as a duplicate, which keeps
+    re-imports of the same statement idempotent. Re-importing existing
+    content is a no-op via on_conflict='ignore' — existing rows keep their
+    original import_id so reverting a later import doesn't remove rows the
+    first import's log claims as complete.
+
+    Returns ``(extracted, inserted)`` where ``extracted`` is the number of
+    rows produced by extraction (drives the zero-row gate so re-imports of
+    valid content don't raise "no tables extracted") and ``inserted`` is the
+    number of new rows actually persisted (≤ extracted; the difference is
+    rows already present from a prior import). Audit log + metrics should
+    report ``inserted`` so re-imports don't inflate counts.
     """
     rows: list[dict[str, object]] = []
-    seen: set[str] = set()
+    # Per-page row index makes the hash position-aware: two rows with
+    # identical cells but different positions (legitimate duplicate
+    # transactions) get distinct hashes; the same row at the same position
+    # across re-imports gets the same hash (idempotency).
+    page_row_idx: dict[int, int] = {}
     for page, cells in doc.iter_rows():
+        idx = page_row_idx.get(page, 0)
+        page_row_idx[page] = idx + 1
         data_json = json.dumps(cells, sort_keys=True)
         # 16 hex chars = 64 bits; see identifiers.md for scale threshold.
-        digest = hashlib.sha256(f"{alias}|{data_json}".encode()).hexdigest()[:16]
+        digest = hashlib.sha256(
+            f"{alias}|p{page}r{idx}|{data_json}".encode()
+        ).hexdigest()[:16]
         row_hash = f"pdf_{digest}"
-        if row_hash in seen:
-            continue  # exact-duplicate row within one doc — keep first
-        seen.add(row_hash)
         rows.append({
             "alias": alias,
             "row_hash": row_hash,
@@ -55,9 +67,18 @@ def write_pdf_seed(
             "import_id": import_id,
         })
 
+    inserted = 0
     if rows:
         df = pl.DataFrame(rows)
         db.ingest_dataframe(PDF_SEEDS.full_name, df, on_conflict="ignore")
+        # on_conflict='ignore' keeps existing rows under their original
+        # import_id, so counting rows tagged with THIS import_id gives the
+        # number actually inserted (excluding ignored duplicates).
+        inserted_row = db.execute(
+            f"SELECT COUNT(*) FROM {PDF_SEEDS.full_name} WHERE import_id = ?",  # noqa: S608 — compile-time TableRef constant, value parameterized
+            [import_id],
+        ).fetchone()
+        inserted = int(inserted_row[0]) if inserted_row else 0
 
         # Sample ALL rows for this alias (incl. pre-existing) so the view's
         # column types accommodate every row, not just this import's. Same-alias
@@ -94,8 +115,11 @@ def write_pdf_seed(
         )
         db.execute(view_sql)
 
-    logger.info(f"pdf seed: alias={alias} import_id={import_id} rows={len(rows)}")
-    return len(rows)
+    logger.info(
+        f"pdf seed: alias={alias} import_id={import_id} "
+        f"extracted={len(rows)} inserted={inserted}"
+    )
+    return len(rows), inserted
 
 
 def _infer_typed_columns(

@@ -11,6 +11,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 M2 closing out and M3 underway. M2A curator state shipped (transaction notes, tags, splits, manual entry, audit log). M2B architecture reference shipped (`architecture-shared-primitives.md`; writer-coordination contract via short-lived per-call connections). M2C brand surface advancing: `moneybin system doctor` integrity command, `reports.*` recipe library (eight curated views), and the `transform_*` MCP toolset closing the agent ingest loop. M3A Plaid Transactions sync shipped (Phase 1). Doc surface tightened for the personas reachable today; MCP surface hardened with protocol-standard annotations, `accounts_resolve`, list-parameter cap, structured error envelopes, and shell completion. Categorization correctness pass: memo-aware matcher, exemplar accumulation, source-precedence enforcement, auto-fan-out after apply; seed merchant catalogs retired in favor of user-driven and LLM-assist-driven merchant creation.
 
 ### Changed
+- **GSheet alias limit tightened from 63 to 56 chars** (#228) so the
+  generated `gsheet_<alias>` view name fits DuckDB's 63-char identifier
+  limit. A pre-existing gsheet connection with a 57–63 char alias will
+  now raise a clear error on the next `gsheet pull` telling the user to
+  reconnect with a shorter alias. Connections with aliases ≤56 chars are
+  unaffected.
 - **Report CLI flags auto-derive from parameter names.** With reports now
   generated from runner signatures, multi-word flags follow the parameter name:
   `moneybin reports cashflow`/`spending` use `--from-month` / `--to-month`

@@ -74,7 +74,9 @@ def generate_seed_view_sql(
         header_lit = header.replace("'", "''")
         safe_col = exp.to_identifier(col_name, quoted=True).sql("duckdb")
         select_parts.append(f"CAST(data->>'{header_lit}' AS {sql_type}) AS {safe_col}")
-    select_parts.extend(carry_columns)
+    select_parts.extend(
+        exp.to_identifier(col, quoted=True).sql("duckdb") for col in carry_columns
+    )
     select_clause = ",\n    ".join(select_parts)
 
     safe_view = exp.to_identifier(view_name, quoted=True).sql("duckdb")

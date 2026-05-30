@@ -87,7 +87,7 @@ class TestGenerateSeedViewSql:
 
     def test_alias_with_numeric_start_rejected(self):
         """alias='1foo' fails validation."""
-        with pytest.raises(ValueError, match="must match"):
+        with pytest.raises(ValueError, match="56-char limit"):
             generate_seed_view_sql(
                 alias="1foo",
                 connection_id="conn-1",
@@ -96,7 +96,7 @@ class TestGenerateSeedViewSql:
 
     def test_alias_with_uppercase_rejected(self):
         """alias='Foo' (uppercase) fails validation."""
-        with pytest.raises(ValueError, match="must match"):
+        with pytest.raises(ValueError, match="56-char limit"):
             generate_seed_view_sql(
                 alias="Foo",
                 connection_id="conn-1",
@@ -153,7 +153,7 @@ class TestGenerateSeedViewSql:
     def test_alias_57_chars_rejected(self):
         """57-char alias produces a 64-char view name and is now caught at wrapper."""
         alias = "a" + "b" * 56  # 1 + 56 = 57 chars total
-        with pytest.raises(ValueError, match="must match"):
+        with pytest.raises(ValueError, match="56-char limit"):
             generate_seed_view_sql(
                 alias=alias,
                 connection_id="conn-1",

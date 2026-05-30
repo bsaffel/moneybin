@@ -41,7 +41,9 @@ logger = logging.getLogger(__name__)
 # re-validate the alias before string-interpolating it into DROP VIEW.
 # Defense-in-depth: insert path already validates via the view_generator on
 # load, but DROP VIEW happens outside the load path so we re-check here.
-_SAFE_ALIAS_RE = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
+# Limit is 56 chars (1 leading letter + 55 follow-on) so ``gsheet_<alias>``
+# never exceeds DuckDB's 63-char identifier limit.
+_SAFE_ALIAS_RE = re.compile(r"^[a-z][a-z0-9_]{0,55}$")
 
 
 class LowConfidenceError(GSheetError):

@@ -176,3 +176,87 @@ def test_reimport_preserves_first_import_id_ownership(
     ).fetchone()
     assert rows_after_revert_b is not None
     assert rows_after_revert_b[0] == len(rows_after_a)
+
+
+@pytest.mark.integration
+def test_reimport_does_not_inflate_rows_imported(
+    db: Database, simple_statement_pdf: Path, tmp_path: Path
+) -> None:
+    """Re-importing identical content must record rows_imported=0 in the audit log.
+
+    The pre-fix code passed the extracted count as both rows_total and
+    rows_imported, so a re-import of an existing statement showed
+    rows_imported=N in the audit log even though on_conflict='ignore'
+    inserted 0 new rows. Two "successful 3-row imports" implied 6 rows in
+    the DB when there were only 3.
+    """
+    a = tmp_path / "a" / "simple_statement.pdf"
+    b = tmp_path / "b" / "simple_statement.pdf"
+    a.parent.mkdir()
+    b.parent.mkdir()
+    shutil.copy(simple_statement_pdf, a)
+    shutil.copy(simple_statement_pdf, b)
+
+    svc = ImportService(db)
+    result_a = svc.import_file(a, refresh=False)
+    result_b = svc.import_file(b, refresh=False)
+    assert result_a.import_id is not None
+    assert result_b.import_id is not None
+
+    log_a = db.execute(
+        "SELECT rows_total, rows_imported FROM raw.import_log WHERE import_id = ?",
+        [result_a.import_id],
+    ).fetchone()
+    log_b = db.execute(
+        "SELECT rows_total, rows_imported FROM raw.import_log WHERE import_id = ?",
+        [result_b.import_id],
+    ).fetchone()
+    assert log_a is not None
+    assert log_b is not None
+    # A persisted all rows; B persisted none (all hashes already present).
+    assert log_a[0] == log_a[1]  # rows_total == rows_imported for first import
+    assert log_a[1] > 0
+    assert log_b[0] == log_a[1]  # rows_total still reflects extraction count
+    assert log_b[1] == 0  # rows_imported == 0 — nothing new written
+
+
+@pytest.mark.integration
+def test_cleanup_failure_still_finalizes_import_log(
+    db: Database, simple_statement_pdf: Path
+) -> None:
+    """A failing cleanup DELETE must not leave import_log stuck in 'in_progress'.
+
+    Without the finally-block guard, a DB error during the post-failure
+    DELETE would propagate and skip finalize_import, leaving the audit
+    entry permanently in 'in_progress' with no CLI recovery path.
+    """
+    svc = ImportService(db)
+    real_execute = db.execute
+    delete_attempts: list[str] = []
+
+    def flaky_execute(sql: str, *args: object, **kwargs: object) -> object:
+        if "DELETE FROM raw.pdf_seeds" in sql:
+            delete_attempts.append(sql)
+            raise RuntimeError("simulated cleanup-time DB error")
+        return real_execute(sql, *args, **kwargs)  # type: ignore[arg-type]
+
+    with patch(
+        "moneybin.extractors.pdf.seed_store.generate_seed_view_sql",
+        side_effect=ValueError("forced view-creation failure"),
+    ):
+        with patch.object(db, "execute", side_effect=flaky_execute):
+            with pytest.raises(ValueError, match="forced view-creation failure"):
+                svc.import_file(simple_statement_pdf, refresh=False)
+
+    # The original exception (ValueError) propagated, not the cleanup error.
+    assert delete_attempts, "cleanup DELETE must have been attempted"
+    # The import_log entry was finalized as 'failed' despite the cleanup error.
+    log = db.execute(
+        "SELECT status FROM raw.import_log "
+        "WHERE source_type = 'pdf' ORDER BY started_at DESC LIMIT 1"
+    ).fetchone()
+    assert log is not None
+    assert log[0] == "failed", (
+        f"expected import_log.status='failed', got {log[0]!r} "
+        "— finalize_import must run even when cleanup DELETE raises"
+    )
