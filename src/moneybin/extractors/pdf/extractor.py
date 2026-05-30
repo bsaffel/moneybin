@@ -28,8 +28,8 @@ class PDFExtractor:
 
         tables: list[PdfTable] = []
         text_lines: list[str] = []
-        page_no = 0
         with pdfplumber.open(path) as pdf:
+            page_count = len(pdf.pages)
             for page_no, page in enumerate(pdf.pages, start=1):
                 page_text = page.extract_text() or ""
                 text_lines.extend(
@@ -41,7 +41,7 @@ class PDFExtractor:
                         tables.append(parsed)
 
         logger.info(
-            f"pdf extract: file={path.name} pages={page_no} "
+            f"pdf extract: file={path.name} pages={page_count} "
             f"tables={len(tables)} text_lines={len(text_lines)}"
         )
         return PdfDocument(source_file=path.name, tables=tables, text_lines=text_lines)
@@ -59,6 +59,16 @@ def _to_table(page_no: int, raw: list[list[str | None]]) -> PdfTable | None:
     if len(cleaned) < 2:
         return None
     header = cleaned[0]
+    # Reject tables with duplicate or empty headers — dict(zip(...)) downstream
+    # silently dedupes and overwrites, causing permanent data loss. pdfplumber
+    # sometimes emits these for merged-cell or section-title rows; skip the
+    # table cleanly so the rest of the page still imports.
+    if "" in header or len(set(header)) != len(header):
+        logger.warning(
+            f"pdf extract: skipping table on page {page_no} — "
+            f"header has duplicate or empty cells: {header}"
+        )
+        return None
     width = len(header)
     rows: list[list[str]] = []
     for row in cleaned[1:]:

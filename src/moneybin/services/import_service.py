@@ -151,15 +151,20 @@ def _display_label(file_type: str, file_path: Path) -> str:
 def _pdf_alias(alias: str | None, file_path: Path) -> str:
     """Resolve the seed alias: explicit, else slugified file stem.
 
-    Must satisfy the seed-view name rule (lowercase letter start, [a-z0-9_],
-    max 59 chars so the f"pdf_{alias}" view name fits the 63-char limit).
+    Returns a slug used in ``raw.pdf_<alias>`` view names. The ``pdf_`` prefix
+    is added by the view-name construction, so the alias itself can start with
+    any character (including digits) — the view regex sees ``pdf_{alias}``, not
+    just ``{alias}``.
+
+    Capped at 59 chars so the ``pdf_{alias}`` view name fits the shared
+    builder's 63-char limit.
     """
     from moneybin.utils import slugify
 
     candidate = alias or file_path.stem
     slug = slugify(candidate).replace("-", "_")
-    if not slug or not slug[0].isalpha():
-        slug = f"pdf_{slug}" if slug else "pdf_import"
+    if not slug:
+        slug = "import"
     return slug[:59]
 
 
@@ -1026,6 +1031,15 @@ class ImportService:
                     "selectable text (image-only / scanned PDFs are not supported)."
                 )
         except Exception:
+            # Clean up any rows already written under this import_id before the failure.
+            # Without this, a view-creation failure mid-import would leak orphan rows
+            # into a future successful import with the same alias.
+            from moneybin.tables import PDF_SEEDS  # noqa: PLC0415
+
+            self._db.execute(
+                f"DELETE FROM {PDF_SEEDS.full_name} WHERE import_id = ?",
+                [import_id],
+            )
             import_log.finalize_import(
                 self._db, import_id, status="failed", rows_total=0, rows_imported=0
             )
@@ -1383,13 +1397,23 @@ class ImportService:
         # succeeds. DDL is autocommit in DuckDB (cannot be inside the transaction),
         # so this runs after commit. IF EXISTS guards against re-reverts or a
         # view that was never created (zero-row import path).
+        # Only drop the view if no other completed imports remain for this alias —
+        # reverting one import should not hide rows from sibling imports of the
+        # same source.
         if src_type == "pdf" and source_origin:
-            from sqlglot import exp  # noqa: PLC0415
+            other_row = self._db.execute(
+                f"SELECT COUNT(*) FROM {IMPORT_LOG.full_name} "
+                f"WHERE source_type = 'pdf' AND source_origin = ? "
+                f"AND status = 'complete' AND import_id != ?",
+                [source_origin, import_id],
+            ).fetchone()
+            if other_row is not None and other_row[0] == 0:
+                from sqlglot import exp  # noqa: PLC0415
 
-            safe_view = exp.to_identifier(f"pdf_{source_origin}", quoted=True).sql(
-                "duckdb"
-            )
-            self._db.execute(f"DROP VIEW IF EXISTS raw.{safe_view}")
+                safe_view = exp.to_identifier(f"pdf_{source_origin}", quoted=True).sql(
+                    "duckdb"
+                )
+                self._db.execute(f"DROP VIEW IF EXISTS raw.{safe_view}")
 
         logger.info(
             f"Reverted import {import_id[:8]}...: {rows_to_delete} rows deleted"
