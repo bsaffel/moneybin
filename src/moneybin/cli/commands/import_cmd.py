@@ -526,7 +526,15 @@ def import_files_command(
             logger.error(f"❌ {_exc}")
         raise typer.Exit(1) from _exc
 
-    envelope = build_envelope(data=data, sensitivity="low")
+    # Bump sensitivity to "medium" when any per-file entry carries a
+    # confirmation_payload — those payloads include detector samples
+    # (description / merchant cells) and must match the single-file
+    # confirmation_required envelope's medium tier so agents apply the
+    # same consent gate to batch proposals.
+    batch_sensitivity = (
+        "medium" if any(f.get("confirmation_payload") for f in files_list) else "low"
+    )
+    envelope = build_envelope(data=data, sensitivity=batch_sensitivity)
     if output == OutputFormat.JSON:
         render_or_json(envelope, output, cli_actor="import_files_command")
     elif not quiet:
@@ -776,6 +784,10 @@ def import_confirm_command(
 
     if output == OutputFormat.JSON:
         data: dict[str, Any] = {
+            # Mirror the confirmation_required envelope's top-level status
+            # field so scripted propose→review→confirm loops branch on a
+            # single discriminant (`data.status`) regardless of outcome.
+            "status": "imported",
             "import_id": result.import_id,
             "rows_loaded": result.transactions,
             "file_type": result.file_type,

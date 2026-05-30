@@ -446,6 +446,10 @@ class TestImportConfirmCommand:
         data = payload["data"]
         assert "rows_loaded" in data
         assert "import_id" in data
+        # Success branch MUST carry the same `data.status` discriminant the
+        # confirmation_required branch uses; scripted propose→review→confirm
+        # loops branch on `data.status`, not on exit code.
+        assert data["status"] == "imported"
 
     def test_confirm_accept_and_mapping_together(
         self,

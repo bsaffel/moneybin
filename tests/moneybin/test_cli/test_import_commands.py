@@ -358,6 +358,55 @@ class TestImportFilesCommand:
         assert "files" in payload["data"]
         assert payload["summary"]["sensitivity"] == "low"
 
+    def test_batch_envelope_sensitivity_medium_when_confirmation_payload_present(
+        self,
+        runner: CliRunner,
+        mock_import_files: MagicMock,
+        mock_get_database: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Batch envelope is sensitivity=medium with any confirmation_payload.
+
+        Those payloads include detector samples (description / merchant
+        cells) and must match the single-file confirmation_required
+        envelope's medium tier so agents apply the same consent gate to
+        batch proposals.
+        """
+        import json
+
+        a = tmp_path / "a.csv"
+        b = tmp_path / "b.ofx"
+        a.touch()
+        b.touch()
+        mock_import_files.return_value = BatchImportResult(
+            per_file=[
+                PerFileResult(
+                    path=str(a),
+                    status="needs_confirmation",  # type: ignore[arg-type]
+                    source_type=None,
+                    rows_loaded=0,
+                    import_id=None,
+                    confirmation_payload={
+                        "channel": "tabular",
+                        "samples": {"Memo": ["Coffee", "Lunch"]},
+                    },
+                ),
+                PerFileResult(
+                    path=str(b),
+                    status="imported",
+                    source_type="ofx",
+                    rows_loaded=1,
+                    import_id="x",
+                ),
+            ],
+            transforms_applied=True,
+            transforms_duration_seconds=None,
+        )
+        result = runner.invoke(app, ["files", str(a), str(b), "--output", "json"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["summary"]["sensitivity"] == "medium"
+
 
 class TestImportStatusCommand:
     """Test the 'import status' CLI command."""
