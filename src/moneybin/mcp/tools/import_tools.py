@@ -131,15 +131,31 @@ def import_files(
     # For single-path batches, call import_file (not import_files) so
     # ImportConfirmationRequiredError bubbles up — the batch variant catches
     # all per-file exceptions and loses the proposal payload.
+    #
+    # Refresh is run separately (not via import_file's built-in refresh) so a
+    # refresh failure after a successful raw load preserves the import_id —
+    # the agent needs it to call import_revert on the orphaned-from-core data.
+    # The multi-file path has the same structure (see ImportService.import_files).
     if len(validated) == 1:
+        transforms_error: str | None = None
+        transforms_applied = False
         try:
             with get_database() as db:
                 one = ImportService(db).import_file(
                     validated[0],
-                    refresh=refresh,
+                    refresh=False,
                     force=force,
                     actor_kind="agent",
                 )
+                if refresh and one.file_type in ("ofx", "tabular"):
+                    from moneybin.services.refresh import refresh as _refresh
+
+                    refresh_result = _refresh(db)
+                    transforms_applied = refresh_result.applied
+                    if not refresh_result.applied:
+                        transforms_error = refresh_result.error or (
+                            "SQLMesh transforms failed (no error detail)"
+                        )
         except ImportConfirmationRequiredError as e:
             file_path = str(validated[0])
             proposed_mapping = (
@@ -200,6 +216,9 @@ def import_files(
         else:
             # Wrap successful single-file result in BatchImportResult shape
             # so the downstream envelope-builder doesn't branch on path count.
+            # transforms_error is populated above when refresh ran but failed;
+            # the import_id stays attached so the agent can revert the raw
+            # load even though core wasn't refreshed.
             from moneybin.services.import_service import (
                 BatchImportResult,
                 PerFileResult,
@@ -216,9 +235,9 @@ def import_files(
                         sign_correction_suggested=one.sign_correction_suggested,
                     )
                 ],
-                transforms_applied=one.core_tables_rebuilt,
+                transforms_applied=transforms_applied,
                 transforms_duration_seconds=None,
-                transforms_error=None,
+                transforms_error=transforms_error,
             )
     else:
         with get_database() as db:
@@ -443,6 +462,8 @@ def import_confirm(
     accept: bool = False,
     mapping: dict[str, str] | None = None,
     save_format: bool = True,
+    account_id: str | None = None,
+    account_name: str | None = None,
 ) -> ResponseEnvelope[ImportConfirmPayload]:
     """Confirm or override a proposed column mapping and load the file.
 
@@ -456,6 +477,11 @@ def import_confirm(
     corrected; the rest fall back to the detected proposal. Unrecognized
     destination fields or source columns absent from the file raise an
     actionable error.
+
+    Single-account files (CSVs without an embedded account identifier) require
+    ``account_id`` or ``account_name`` so the load knows which account the
+    rows belong to. Multi-account files (e.g. exports that include an account
+    column) infer this from the data and ignore these parameters.
 
     Mutation surface: writes to ``raw.tabular_transactions`` (data load) and
     ``app.tabular_formats`` when ``save_format=True``. Data load is reversible
@@ -473,6 +499,8 @@ def import_confirm(
             detected proposal; unspecified fields fall back.
         save_format: Auto-save the confirmed mapping as a named format for
             future imports. Defaults to True.
+        account_id: Existing account id to associate single-account rows with.
+        account_name: Existing account name to look up; resolves to account_id.
     """
     from moneybin.services.import_confirmation import (
         ImportConfirmationRequiredError,
@@ -496,6 +524,8 @@ def import_confirm(
                 confirm=accept,
                 overrides=mapping,
                 save_format=save_format,
+                account_id=account_id,
+                account_name=account_name,
                 actor_kind="agent",
                 refresh=False,  # caller can run refresh_run separately
             )

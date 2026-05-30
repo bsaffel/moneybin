@@ -690,6 +690,20 @@ class InboxService:
         ``_SAMPLE_SIZE`` cap; no extra truncation is applied here.
         """
         sidecar = moved_path.with_name(moved_path.name + ".pending.yml")
+        # resolve_or_confirm refuses --accept on low-tier proposals; omit the
+        # accept hint there so the user (or agent) doesn't loop back with the
+        # same outcome. Override is always available as a recovery path.
+        actions: list[str] = []
+        if tier != "low":
+            actions.append(
+                f"moneybin import confirm {moved_path} --accept "
+                "(accept the proposed mapping as-is)"
+            )
+        actions.append(
+            f"moneybin import confirm {moved_path} "
+            "--mapping <dest_field>=<source_column> "
+            "(partial-merge override; repeatable)"
+        )
         payload: dict[str, object] = {
             "channel": channel,
             "tier": tier,
@@ -700,17 +714,7 @@ class InboxService:
             "flagged": list(flagged),
             "missing_required": list(missing_required),
             "unmapped_columns": list(unmapped_columns),
-            "actions": [
-                (
-                    f"moneybin import confirm {moved_path} --accept "
-                    "(accept the proposed mapping as-is)"
-                ),
-                (
-                    f"moneybin import confirm {moved_path} "
-                    "--mapping <dest_field>=<source_column> "
-                    "(partial-merge override; repeatable)"
-                ),
-            ],
+            "actions": actions,
         }
         sidecar.write_text(yaml.safe_dump(payload, sort_keys=False))
         sidecar.chmod(_FILE_MODE)

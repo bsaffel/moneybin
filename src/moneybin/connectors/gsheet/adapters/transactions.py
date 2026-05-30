@@ -51,7 +51,36 @@ _IMPORT_ID_PLACEHOLDER = "__pending__"
 # emptiness counts as drift. Optional columns (description, notes) are routinely
 # blank in real exports and must not pin a connection in drift_detected forever.
 # Defined here (the adapter owns the requirement); imported by connection_service.
+#
+# Amount has two shapes: a single ``amount`` column OR split
+# ``debit_amount`` + ``credit_amount`` columns. ``REQUIRED_DEST_FIELDS`` lists
+# the canonical single-column form (used at connect-time when no mapping
+# exists yet); ``required_sources_for_mapping`` resolves the actual required
+# source columns for a concrete mapping so a split-column connection isn't
+# silently approved as "all required fields present" when only one of the
+# split pair is empty.
 REQUIRED_DEST_FIELDS = ("transaction_date", "amount")
+
+
+def required_sources_for_mapping(column_mapping: dict[str, str]) -> set[str]:
+    """Source columns whose emptiness counts as drift for this mapping.
+
+    Always includes the source mapped to ``transaction_date``. For amount,
+    accepts either a single ``amount`` mapping OR the ``debit_amount`` +
+    ``credit_amount`` pair — whichever the connection was actually saved
+    with. Mapping that satisfies neither returns an empty amount set
+    (drift check still gates on transaction_date).
+    """
+    by_dest = {dest: src for src, dest in column_mapping.items()}
+    required: set[str] = set()
+    if "transaction_date" in by_dest:
+        required.add(by_dest["transaction_date"])
+    if "amount" in by_dest:
+        required.add(by_dest["amount"])
+    elif "debit_amount" in by_dest and "credit_amount" in by_dest:
+        required.add(by_dest["debit_amount"])
+        required.add(by_dest["credit_amount"])
+    return required
 
 
 class TransactionsAdapter:
@@ -99,15 +128,13 @@ class TransactionsAdapter:
     ) -> DriftReport:
         """Compare the current pull against the pinned header signature.
 
-        Only the source columns mapped to REQUIRED_DEST_FIELDS gate drift on
-        emptiness — a mostly-blank optional column (Description, Notes) is
-        normal and must not trigger drift_detected.
+        Only the source columns required by this mapping's amount-shape gate
+        drift on emptiness — a mostly-blank optional column (Description,
+        Notes) is normal and must not trigger drift_detected. A split-column
+        connection (debit_amount + credit_amount) requires both halves;
+        otherwise transform_dataframe would silently drop all rows.
         """
-        required_sources = {
-            src
-            for src, dest in connection.column_mapping.items()
-            if dest in REQUIRED_DEST_FIELDS
-        }
+        required_sources = required_sources_for_mapping(connection.column_mapping)
         return detect_drift(
             pinned_signature=connection.header_signature,
             current_headers=list(current_df.columns),

@@ -98,8 +98,12 @@ class PerFileResult:
     import_id: str | None = None
     error: str | None = None
     sign_correction_suggested: bool = False
-    confirmation_payload: dict[str, object] | None = None
     """True if running balance suggests sign inversion; amounts were NOT auto-corrected."""
+
+    confirmation_payload: dict[str, object] | None = None
+    """Populated only when status == 'confirmation_required': detector proposal
+    + samples + flagged + missing_required so the agent can call
+    ``import_confirm`` per file. None on imported/failed/skipped rows."""
 
 
 @dataclass(frozen=True)

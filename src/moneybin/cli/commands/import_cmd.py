@@ -449,12 +449,23 @@ def import_files_command(
             confirm_actions: list[str] = []
             if outcome.error_message:
                 confirm_actions.append(f"Validation failed: {outcome.error_message}")
+            # resolve_or_confirm refuses Accept on low-tier proposals (the
+            # detector couldn't form a complete one); suggesting --confirm
+            # there would just bounce back with the same outcome. Only
+            # surface the accept hint when the tier permits acceptance.
+            if outcome.confidence.tier != "low":
+                confirm_actions.append(
+                    "Re-run with --confirm to accept the proposed mapping as-is."
+                )
             confirm_actions.extend([
-                "Re-run with --confirm to accept the proposed mapping as-is.",
                 "Re-run with --mapping <field>=<column> to override specific fields.",
                 f"Run 'moneybin import preview {file_path_str}' to inspect the proposal.",
-                f"Run 'moneybin import confirm {file_path_str} --accept' as a subcommand.",
             ])
+            if outcome.confidence.tier != "low":
+                confirm_actions.append(
+                    f"Run 'moneybin import confirm {file_path_str} --accept' "
+                    "as a subcommand."
+                )
             if output == OutputFormat.JSON or not sys.stdout.isatty():
                 # Non-TTY / --output json: emit the full ResponseEnvelope so
                 # CLI --output json matches the MCP envelope shape (same
