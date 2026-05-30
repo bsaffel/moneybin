@@ -658,9 +658,16 @@ def import_confirm(
         bands = get_settings().import_.confidence
         format_info = detect_format(path)
         read_result = read_file(path, format_info)
+        # Drive the re-detection with the AUTHORITATIVE merged mapping
+        # (what actually loaded) rather than the caller's raw partial
+        # override — otherwise the re-detection picks columns by detector
+        # heuristics for any field the override didn't name, and
+        # sample_values could point at different source columns than
+        # merged_mapping for those fields. Agents comparing the two would
+        # see a misleading mismatch.
         mapping_result = map_columns(
             read_result.df,
-            overrides=mapping,
+            overrides=merged_mapping,
             t_high=bands.t_high,
             t_med=bands.t_med,
         )

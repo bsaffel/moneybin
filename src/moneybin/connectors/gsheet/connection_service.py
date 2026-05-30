@@ -530,12 +530,36 @@ class GSheetConnectionService:
                 channel="gsheet", tier=tier, outcome="accepted"
             ).inc()
 
+        # Mirror connect() — coerce sign_convention to match the resolved
+        # amount shape. reconnect() doesn't accept a --column-mapping
+        # override today, so the gap only bites if the detector itself
+        # returned a sign/shape mismatch, but the symmetry keeps both
+        # write paths trustworthy as the gsheet surface evolves.
+        if existing["adapter"] == "transactions":
+            dest_to_src_reconnect = {dest: src for src, dest in column_mapping.items()}
+            reconnect_has_split = (
+                "debit_amount" in dest_to_src_reconnect
+                and "credit_amount" in dest_to_src_reconnect
+                and "amount" not in dest_to_src_reconnect
+            )
+            reconnect_detector_was_split = (
+                detection.sign_convention == "split_debit_credit"
+            )
+            if reconnect_has_split:
+                sign_convention_to_save = "split_debit_credit"
+            elif reconnect_detector_was_split:
+                sign_convention_to_save = "negative_is_expense"
+            else:
+                sign_convention_to_save = detection.sign_convention
+        else:
+            sign_convention_to_save = detection.sign_convention
+
         self._repo.update_mapping(
             connection_id,
             column_mapping=column_mapping,
             header_signature=detection.header_signature,
             date_format=detection.date_format,
-            sign_convention=detection.sign_convention,
+            sign_convention=sign_convention_to_save,
             number_format=detection.number_format,
             skip_rows=detection.skip_rows,
             skip_trailing_patterns=detection.skip_trailing_patterns or None,

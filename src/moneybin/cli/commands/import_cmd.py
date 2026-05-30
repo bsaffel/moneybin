@@ -757,7 +757,12 @@ def import_confirm_command(
             render_or_json(
                 envelope, OutputFormat.JSON, cli_actor="import_confirm_command"
             )
-            raise typer.Exit(1) from e
+            # Exit 0 to mirror `moneybin import files` JSON-mode behavior on
+            # confirmation_required (data.status is the discriminant).
+            # Scripted propose→review→confirm loops branch on the body, not
+            # exit code — a non-zero exit would abort the loop on every
+            # partial-override iteration.
+            return
         # Interactive path: human-readable summary + exit code 1.
         msg = f"❌ Confirmation failed: {outcome.reason}" + (
             f" — {outcome.error_message}" if outcome.error_message else ""
