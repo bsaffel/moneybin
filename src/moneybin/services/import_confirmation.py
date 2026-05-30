@@ -119,6 +119,40 @@ class MappingValidationError(ValueError):
     """A merged mapping is missing required fields or names unknown columns."""
 
 
+def resolve_amount_shape(
+    *,
+    proposed_keys: set[str] | frozenset[str],
+    override_keys: set[str] | frozenset[str],
+) -> tuple[str, ...]:
+    """Resolve which amount-shape destination fields the merged mapping needs.
+
+    Amount shape is mutually exclusive: a row uses either a single ``amount``
+    column OR a ``debit_amount`` + ``credit_amount`` pair, never both. This
+    returns the winning shape after the override would merge onto the
+    proposed mapping, so callers that need to know the *post-merge*
+    required-field set (e.g., to pre-validate before ``resolve_or_confirm``)
+    do not have to re-derive it.
+
+    The branch rules MUST stay in lockstep with the merge logic in
+    ``validate_partial_mapping`` — both call this helper so a future shape
+    addition only updates one place.
+    """
+    override_has_amount = "amount" in override_keys
+    override_has_split = (
+        "debit_amount" in override_keys or "credit_amount" in override_keys
+    )
+    if override_has_amount and not override_has_split:
+        return ("amount",)
+    if override_has_split and not override_has_amount:
+        return ("debit_amount", "credit_amount")
+    proposed_is_split = (
+        "debit_amount" in proposed_keys
+        and "credit_amount" in proposed_keys
+        and "amount" not in proposed_keys
+    )
+    return ("debit_amount", "credit_amount") if proposed_is_split else ("amount",)
+
+
 def validate_partial_mapping(
     *,
     proposed: dict[str, str],
@@ -187,10 +221,7 @@ def validate_partial_mapping(
             "supply 'amount' alone OR 'debit_amount'+'credit_amount' alone, "
             "never both in the same override."
         )
-    if override_has_amount and not override_has_split:
-        merged.pop("debit_amount", None)
-        merged.pop("credit_amount", None)
-    elif override_has_split and not override_has_amount:
+    if override_has_split and not override_has_amount:
         # Switching FROM a single-amount proposal TO split via override
         # requires BOTH halves of the pair. Catch the partial-switch case
         # here so the user sees the actionable message — otherwise the
@@ -206,6 +237,14 @@ def validate_partial_mapping(
                 f"the same override (they are mutually exclusive with the "
                 f"single 'amount' field)."
             )
+    shape = resolve_amount_shape(
+        proposed_keys=set(proposed.keys()),
+        override_keys=set(override.keys()),
+    )
+    if shape == ("amount",):
+        merged.pop("debit_amount", None)
+        merged.pop("credit_amount", None)
+    else:
         merged.pop("amount", None)
     missing = [f for f in required_fields if f not in merged]
     if missing:

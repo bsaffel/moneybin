@@ -114,6 +114,11 @@ IMPORT_REVALIDATION_FAILURE_TOTAL = Counter(
     "Known layout that failed the replay/validation guard and re-surfaced.",
     ("channel",),
 )
+# Declared but not yet incremented — the matched_format path (see
+# ImportService._import_tabular) currently trusts the saved layout
+# without a structural replay check (column presence, header drift).
+# The .inc() call wires in when the replay guard lands; declaring the
+# counter now keeps dashboards/alerting stable across that change.
 
 # ── SQLMesh transforms ───────────────────────────────────────────────────────
 

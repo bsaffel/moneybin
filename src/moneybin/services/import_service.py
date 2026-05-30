@@ -824,43 +824,17 @@ class ImportService:
                 signal = None
 
             # Required fields depend on the EFFECTIVE amount shape after the
-            # override resolves the single/split contention. The contention
-            # rules in validate_partial_mapping are:
-            #   - override has 'amount' only → final shape is single
-            #   - override has only split keys → final shape is split
-            #   - otherwise → inherit proposed shape
-            # We pre-compute required_fields the same way so the
-            # validate_partial_mapping check downstream agrees with our
-            # derivation (otherwise a single→split override would precompute
-            # required=('amount',), validate would drop 'amount', and the
-            # check would fail with a misleading "missing amount" error).
+            # override resolves the single/split contention. Both this
+            # pre-compute and validate_partial_mapping's merge logic call
+            # resolve_amount_shape so a future shape addition only updates
+            # one place.
             from moneybin.extractors.tabular.field_aliases import FIELD_ALIASES
+            from moneybin.services.import_confirmation import resolve_amount_shape
 
-            override_keys = set(overrides.keys()) if overrides else set()
-            override_has_amount_only = (
-                "amount" in override_keys
-                and "debit_amount" not in override_keys
-                and "credit_amount" not in override_keys
+            amount_required = resolve_amount_shape(
+                proposed_keys=set(proposed.field_mapping.keys()),
+                override_keys=set(overrides.keys()) if overrides else set(),
             )
-            override_has_split_only = (
-                "amount" not in override_keys
-                and "debit_amount" in override_keys
-                and "credit_amount" in override_keys
-            )
-            proposed_keys = set(proposed.field_mapping.keys())
-            proposed_is_split = (
-                "debit_amount" in proposed_keys
-                and "credit_amount" in proposed_keys
-                and "amount" not in proposed_keys
-            )
-            if override_has_amount_only:
-                amount_required: tuple[str, ...] = ("amount",)
-            elif override_has_split_only:
-                amount_required = ("debit_amount", "credit_amount")
-            elif proposed_is_split:
-                amount_required = ("debit_amount", "credit_amount")
-            else:
-                amount_required = ("amount",)
             required_fields = (
                 "transaction_date",
                 *amount_required,
