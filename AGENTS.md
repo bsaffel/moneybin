@@ -177,7 +177,7 @@ Files in `.claude/rules/` auto-load via `paths:` frontmatter — path-scoped loa
 
 | Rule | Covers |
 |------|--------|
-| `design-principles.md` | Durable path selection: heuristics for "inevitable choice" decisions and the trigger list for the agent protocol |
+| `design-principles.md` | Durable path selection: heuristics for "inevitable choice" decisions, the agent-protocol trigger list, and the milestone addressing scheme (`M{phase}{letter}.{n}` — append, don't reinvent) |
 | `branching.md` | Branch prefix → PR label mapping, commit message style |
 | `sandboxing.md` | Bash invocation patterns: single commands, allowlisted pipelines, structured-output filtering, policy denials |
 | `agent-experience.md` | Required agent-experience report whenever you interact with MoneyBin's MCP server in a session |

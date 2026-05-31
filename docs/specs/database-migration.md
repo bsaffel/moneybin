@@ -28,7 +28,7 @@ fresh installs never replay a long migration history.
   data).
 - Without a migration layer, users who upgrade the package against an existing database
   can encounter silent data corruption or hard crashes.
-- Investment tracking (M3B) and multi-currency (M3C) will introduce breaking
+- Investment tracking (M1J) and multi-currency (M1K) will introduce breaking
   DDL changes that every existing database must absorb automatically.
 
 ## Architecture

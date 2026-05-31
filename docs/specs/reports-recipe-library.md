@@ -4,7 +4,7 @@
 
 - **Type:** Feature
 - **Status:** implemented
-- **Milestone:** M2C ("brand surface" cluster — recipe library + `moneybin doctor`)
+- **Milestone:** M2A ("brand surface" cluster — recipe library + `moneybin doctor`)
 
 ## Goal
 
@@ -41,7 +41,7 @@ This spec is the inaugurating implementation of that convention. It exercises th
 - [`moneybin-mcp.md`](moneybin-mcp.md) — v2 `reports_*` MCP tools mirror the CLI 1:1.
 - [`mcp-sql-discoverability.md`](mcp-sql-discoverability.md) — `moneybin://schema` resource. **Extended** by this spec to include the `reports` schema with `audience: "interface"`.
 - [`reports-net-worth.md`](reports-net-worth.md) — owner of the existing `core.agg_net_worth` model, which this spec migrates. The two `NetworthService` SQL references are updated as part of the migration (no behavior change).
-- [`transaction-curation.md`](transaction-curation.md) — sibling M2A spec that introduces `app.audit_log`, `app.transaction_tags`, etc. This spec does not depend on its tables; the doctor spec ([`moneybin-doctor.md`](moneybin-doctor.md), drafted next) will.
+- [`transaction-curation.md`](transaction-curation.md) — sibling M1E spec that introduces `app.audit_log`, `app.transaction_tags`, etc. This spec does not depend on its tables; the doctor spec ([`moneybin-doctor.md`](moneybin-doctor.md), drafted next) will.
 - [`mcp-architecture.md`](mcp-architecture.md) — sensitivity tiers. All `reports_*` tools are **Tier 1 (Account-Level)** — they expose aggregate financial state and category breakdowns, never raw PII or full transaction descriptions.
 - [`extension-contracts.md`](extension-contracts.md) — governance layer for the Report extension type. Defines the contributor-facing surface (manifest, structured-comment format, auto-generated registration trinity, Quality Scale tiers). This spec describes WHAT the v1 in-tree `reports.*` models are; `extension-contracts.md` describes HOW any report — in-tree or contributed — registers and is validated. The eight v1 models migrate to the structured-comment shape as part of `extension-contracts.md`'s pre-launch surgical work.
 
@@ -77,7 +77,7 @@ The pattern is small and uniform:
 2. **Grain.** Each model picks the widest grain its consumers can collapse from. CLI defaults aggregate or rank for the human eye; SQL/MCP consumers re-rank, pivot, or filter as needed.
 3. **Comments.** Every column carries an inline `/* */` comment per `.claude/rules/database.md` — these comments are surfaced verbatim by the `moneybin://schema` MCP resource. The model-level comment (top of the SQL file) explains the view's purpose, grain, and any heuristic it uses.
 4. **Confidence over false certainty.** Where a model is heuristic (`reports.recurring_subscriptions` is the only one in v1), it exposes a `confidence` column instead of a binary classification. Users and AI consumers can apply their own thresholds.
-5. **No cross-currency assumptions.** All amounts in v1 are in profile currency. Multi-currency rollups are owned by the future `multi-currency.md` (M3); see `architecture-shared-primitives.md` §Open Architectural Questions (b).
+5. **No cross-currency assumptions.** All amounts in v1 are in profile currency. Multi-currency rollups are owned by the future `multi-currency.md` (M1K); see `architecture-shared-primitives.md` §Open Architectural Questions (b).
 
 ## Models
 
@@ -85,7 +85,7 @@ Eight models in v1. Each section: purpose, grain, source, columns (with comments
 
 ### `reports.net_worth`
 
-**Shipped:** PR #121 (M2C entry).
+**Shipped:** PR #121 (M2A entry).
 
 **Purpose:** Daily cross-account net worth snapshot, replacing `core.agg_net_worth`. Powers `reports networth` (point-in-time) and `reports networth-history` (time series).
 
@@ -108,7 +108,7 @@ MCP: `reports_networth` (point-in-time), `reports_networth_history` (time series
 
 ### `reports.cash_flow`
 
-**Shipped:** PR #121 (M2C entry).
+**Shipped:** PR #121 (M2A entry).
 
 **Purpose:** Monthly inflow/outflow/net per account × category. Powers `reports cashflow` and any drill-down the consumer wants (by account, by category, totals).
 
@@ -134,7 +134,7 @@ MCP: `reports_cashflow`. Tier 1.
 
 ### `reports.spending_trend`
 
-**Shipped:** PR #121 (M2C entry).
+**Shipped:** PR #121 (M2A entry).
 
 **Purpose:** Monthly spending per category with month-over-month and year-over-year deltas. Subsumes the brief's `year_over_year_spending` — the wider grain supports YoY, MoM, and 3-month-trailing comparisons from a single view.
 
@@ -163,7 +163,7 @@ MCP: `reports_spending`. Tier 1.
 
 ### `reports.recurring_subscriptions`
 
-**Shipped:** PR #121 (M2C entry).
+**Shipped:** PR #121 (M2A entry).
 
 **Purpose:** Heuristic detection of likely-recurring outflow charges (subscriptions, memberships, regular bills). Surfaces candidates with a `confidence` score; does **not** auto-classify or write back to any table.
 
@@ -220,7 +220,7 @@ MCP: `reports_recurring`. Tier 1.
 
 ### `reports.uncategorized_queue`
 
-**Shipped:** PR #121 (M2C entry).
+**Shipped:** PR #121 (M2A entry).
 
 **Purpose:** Surface uncategorized transactions ranked by curator-impact (large + old first). Backs the curation workflow; complements (does not replace) the `transactions categorize` review surface.
 
@@ -250,7 +250,7 @@ Default sort: `ORDER BY priority_score DESC`. The view does not bake the sort in
 
 ### `reports.merchant_activity`
 
-**Shipped:** PR #121 (M2C entry).
+**Shipped:** PR #121 (M2A entry).
 
 **Purpose:** Per-merchant lifetime aggregations. Subsumes the brief's `top_merchants` — top-N is just `ORDER BY total_spend DESC LIMIT N` against this view. The wider grain also powers a hypothetical "merchant detail" surface without a second model.
 
@@ -280,7 +280,7 @@ MCP: `reports_merchants`. Tier 1.
 
 ### `reports.large_transactions`
 
-**Shipped:** PR #121 (M2C entry).
+**Shipped:** PR #121 (M2A entry).
 
 **Purpose:** Surface unusually large transactions, by both absolute amount and statistical outlier flags. Demo-rich; useful for catching expense anomalies and recurring-charge surprises.
 
@@ -311,7 +311,7 @@ MCP: `reports_large_transactions`. Tier 1.
 
 ### `reports.balance_drift`
 
-**Shipped:** PR #121 (M2C entry).
+**Shipped:** PR #121 (M2A entry).
 
 **Purpose:** Per-(account, assertion_date) reconciliation deltas: asserted vs computed balance. Feeds `moneybin doctor` (next spec) directly via the `status` column traffic-light.
 
@@ -636,7 +636,7 @@ If gaps are discovered during implementation, file a follow-up to `testing-synth
 
 ## Sequencing
 
-This spec ships before [`moneybin-doctor.md`](moneybin-doctor.md) (next M2C spec):
+This spec ships before [`moneybin-doctor.md`](moneybin-doctor.md) (next M0I spec):
 
 1. **PR 1 (this spec):** All eight `reports.*` views; the four migrations from §Migrations (gate-spec amendment, `core.agg_net_worth` → `reports.net_worth`, `app.categories` → `core.dim_categories`, `app.merchants` → `core.dim_merchants`); `schema.py`/`tables.py`/`seeds.py`/`schema_catalog.py` updates; the categorization-service merchant write-path fix; CLI subcommands; MCP tools; tests at all three layers.
 2. **PR 2 (doctor spec):** `moneybin system doctor` command + `system_doctor` MCP tool, reading from the existing services and from `reports.balance_drift`.
@@ -647,7 +647,7 @@ The two PRs can be reviewed in parallel once both specs are written, but PR 1 mu
 
 - **Subscription acceptance/rejection state.** The suggest-then-confirm pattern in Actual/Copilot/Monarch needs a user-state table (e.g., `app.recurring_subscriptions` with accepted/rejected/snooze states). That is a future spec — likely an extension of `transaction-curation.md` or its own `subscription-curation.md`. `reports.recurring_subscriptions` is a candidate generator only.
 - **Income recurring detection.** Mirror of `recurring_subscriptions` for inflows (paychecks, recurring deposits). Worth adding once subscription-curation lands and the patterns are validated; deferred to keep v1 focused.
-- **Multi-currency rollups.** Owned by future `multi-currency.md` (M3). All `reports.*` v1 models assume profile currency. See `architecture-shared-primitives.md` §Open Architectural Questions (b).
+- **Multi-currency rollups.** Owned by future `multi-currency.md` (M1K). All `reports.*` v1 models assume profile currency. See `architecture-shared-primitives.md` §Open Architectural Questions (b).
 - **Forecast/projection models.** "What will my net worth be in 6 months?" is a separate concern (forecasting); recipe library is descriptive analytics only.
 - **Cancellation-as-a-service workflow.** Rocket Money-style cancellation concierge is out of scope and will likely never be in scope (it's their business model, not ours).
 - **Portfolio/holdings reports.** Gated on `investments-data-model.md`. Will land as `reports.portfolio`, `reports.holdings`, etc. once the schema decisions there are made.
@@ -658,7 +658,7 @@ The two PRs can be reviewed in parallel once both specs are written, but PR 1 mu
 - **Required:** [`architecture-shared-primitives.md`](architecture-shared-primitives.md) — schema convention. **Met** (PR #118 merged).
 - **Required:** `core.fct_balances_daily`, `core.fct_transactions`, `core.dim_accounts`, `seeds.categories`, `app.balance_assertions`. **All exist** (shipped via `reports-net-worth.md`, `account-management.md`, base scaffolding).
 - **Helpful:** Synthetic data persona library with subscription patterns. **Mostly met** — may need one persona update for `reports.recurring_subscriptions` "inactive" assertion.
-- **None blocking:** This spec does not depend on `transaction-curation.md` (Wave M2A). Doctor spec will, for its curator-stats section.
+- **None blocking:** This spec does not depend on `transaction-curation.md` (Wave M1E). Doctor spec will, for its curator-stats section.
 
 ## Open Questions
 

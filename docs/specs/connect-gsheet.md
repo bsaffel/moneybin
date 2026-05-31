@@ -542,7 +542,7 @@ Verify against the current `raw_import_log.sql` schema at implementation time. P
 | `pyproject.toml` | Add `google-api-python-client`, `google-auth-oauthlib`, `google-auth` deps |
 | `docs/specs/INDEX.md` | Add new "Connect (Live External Sources)" section + this spec entry |
 | `docs/specs/smart-import-tabular.md` | Note that `source_type='gsheet'` participates via this spec |
-| `docs/roadmap.md` | Add row to M2E (Smart Import & Connect) |
+| `docs/roadmap.md` | Add 📐 row to M1F (new milestone) |
 | `CHANGELOG.md` | Add `Added` bullet under `Unreleased` when implementation lands |
 | `docs/features.md` | Add "Google Sheets live sync" capability |
 | `docs/guides/data-import.md` | Cross-reference the new connect-gsheet guide |
@@ -557,7 +557,7 @@ Verify against the current `raw_import_log.sql` schema at implementation time. P
 
 ### Key Decisions (carried forward from brainstorm)
 
-1. **OAuth user-flow with PKCE, embedded public client ID, no client secret.** Pre-launch ships in "unverified" mode; M3E launches with Google verification complete. Tokens in `SecretStore`.
+1. **OAuth user-flow with PKCE, embedded public client ID, no client secret.** Pre-launch ships in "unverified" mode; M3H launches with Google verification complete. Tokens in `SecretStore`.
 2. **Read-only OAuth scope.** `https://www.googleapis.com/auth/spreadsheets.readonly` only. Write-scope is a v2 opt-in for stable-ID write-back.
 3. **Reuse `raw.tabular_transactions`** with `source_type='gsheet'` and a single new `deleted_from_source_at` column.
 4. **Pluggable adapter Protocol**; v1 ships **two adapters** — `TransactionsAdapter` (integrated path) and `RawSeedAdapter` (catch-all escape hatch).
@@ -574,7 +574,7 @@ This spec co-ships a rename of the existing `sync-*` surface from `connect` to `
 
 **Scope.** User-facing surface only — CLI verb, MCP tool names, doc copy, error-message text. The `app.sync_connections` storage table name is unchanged ("connection" is the noun form of "link" — the records of established links).
 
-**Backwards compatibility.** Pre-launch, but `sync-plaid.md` is shipped (M3A Phase 1). Keep `sync connect` as a deprecated alias for one minor release with a deprecation warning. Remove on the next minor release. Same pattern for the MCP tool. Per `.claude/rules/design-principles.md` evolving-a-public-contract guidance.
+**Backwards compatibility.** Pre-launch, but `sync-plaid.md` is shipped (M1G Phase 1). Keep `sync connect` as a deprecated alias for one minor release with a deprecation warning. Remove on the next minor release. Same pattern for the MCP tool. Per `.claude/rules/design-principles.md` evolving-a-public-contract guidance.
 
 **Files affected by the rename** are enumerated in the Files to Modify table above. The rename lands as its own commits within the gsheet PR series (one commit for the rename, one for the alias-with-deprecation), so reviewers can read the rename diff independently.
 
@@ -699,7 +699,7 @@ Re-runs the OAuth PKCE flow. Opens a browser and listens on a 127.0.0.1 loopback
 
 All tools return the standard `ResponseEnvelope`. Drift responses populate `actions[]` with `gsheet_status` and `gsheet_reconnect` hints. Auth-expired responses populate `actions[]` with `gsheet_auth` (re-authenticate via the agent) and `moneybin gsheet auth` (CLI equivalent).
 
-`gsheet_auth` is local-MCP-only by design: it opens a browser on the same machine as the MCP server. The launch-trigger MCP server (M3E hosted) will need a redirect-URL shape; that's tracked separately and does not block launch.
+`gsheet_auth` is local-MCP-only by design: it opens a browser on the same machine as the MCP server. The launch-trigger MCP server (M3H hosted) will need a redirect-URL shape; that's tracked separately and does not block launch.
 
 ### `instructions` field updates
 
@@ -923,7 +923,7 @@ None new. OAuth flow uses the user's default browser (already required by the mo
 
 - **Tiller categories / budgets / AutoCat synchronization** — each tab gets its own adapter spec under the same `connect-gsheet-*` umbrella or as separate `connect-gsheet-categories.md`, `connect-gsheet-budgets.md`, `connect-gsheet-autocat.md`.
 - **Airtable / Smartsheet / Notion** — separate `connect-*` specs sharing this spec's connection lifecycle pattern.
-- **Hosted Google verification** — handled at M3E launch when public homepage + privacy policy are in place.
+- **Hosted Google verification** — handled at M3H launch when public homepage + privacy policy are in place.
 
 ### Not planned
 
@@ -935,13 +935,18 @@ None new. OAuth flow uses the user's default browser (already required by the mo
 
 ## Roadmap placement
 
-**M2E — Smart Import & Connect** (pre-launch). This spec is the **Connect** thread of M2E; drop-any-PDF import and the shared import-confirmation contract are the **Smart Import** threads. Slots in the M2 series alongside:
+**M1F** (new milestone). Slots alongside:
 
-- M2C — Install & Onboarding
-- M2D — Recovery & Trust
-- **M2E — Smart Import & Connect** (this spec, plus drop-any-PDF import and import confirmation)
+- M1G — Plaid sync (shipped)
+- M1J — investments
+- M1K — multi-currency
+- M2C — budgets
+- M3C — Web UI
+- M3D — remote / HTTP MCP
+- M3H — hosted launch
+- **M1F — Connect: live tabular sources** (this spec, plus future siblings)
 
-Future Connect siblings (Airtable, Smartsheet, Notion) are post-launch. Independent of M3A: no moneybin-server dependency.
+Independent of M1G: no moneybin-server dependency. Could ship before or after the other M1 sub-milestones; placement after M1G is conservative since M1G establishes service-layer patterns this spec relies on (sync_models, SyncClient credential storage patterns).
 
 ---
 
@@ -953,5 +958,5 @@ Future Connect siblings (Airtable, Smartsheet, Notion) are post-launch. Independ
 4. `system_status` returns a `gsheet` block in both empty and `needs_attention` cases.
 5. `refresh_run` default steps include `"gsheet"`; per-step results include per-connection PullResults.
 6. A user can run the documented connect → pull → reports loop on a real Google Sheet (manual verification gate before declaring `implemented`).
-7. Documentation updates land: `docs/guides/connect-gsheet.md`, `docs/features.md` row, CHANGELOG `Added` bullet, roadmap M2E row, `INDEX.md` row in the new "Connect (Live External Sources)" section.
+7. Documentation updates land: `docs/guides/connect-gsheet.md`, `docs/features.md` row, CHANGELOG `Added` bullet, roadmap M1F row, `INDEX.md` row in the new "Connect (Live External Sources)" section.
 8. `make check test` clean.

@@ -4,11 +4,11 @@
 
 - **Type:** Architecture
 - **Status:** implemented
-- **Authority:** Reference doc cited by every M2+ spec rather than re-derived. Documents what is true in the code today. The two narrowly-scoped naming changes that landed with this spec are retained for context in [Cascading edits](#cascading-edits).
+- **Authority:** Reference doc cited by every later spec rather than re-derived. Documents what is true in the code today. The two narrowly-scoped naming changes that landed with this spec are retained for context in [Cascading edits](#cascading-edits).
 
 ## Goal
 
-Twelve cross-cutting primitives have crystallized through Levels 0–1 — a connection factory, a secret store, a service-layer contract, a table registry, a response envelope, an MCP decorator and privacy middleware, observability hooks, a sanitized log formatter, an ingestion primitive, a settings model, SQLMesh layer conventions, and a scenario fixture format. Each is referenced by ≥3 callers across the codebase and is implicitly assumed by every new feature spec.
+Twelve cross-cutting primitives have crystallized through M0 — a connection factory, a secret store, a service-layer contract, a table registry, a response envelope, an MCP decorator and privacy middleware, observability hooks, a sanitized log formatter, an ingestion primitive, a settings model, SQLMesh layer conventions, and a scenario fixture format. Each is referenced by ≥3 callers across the codebase and is implicitly assumed by every new feature spec.
 
 This spec names the primitives, their invariants, and the layer conventions they live within. It does not introduce new behavior. Its job is to remove ambiguity from every subsequent spec — `transaction-curation.md`, `investments-data-model.md`, `multi-currency.md`, `sync-plaid.md` rewrite — so authors cite the contract instead of re-deriving it.
 
@@ -27,7 +27,7 @@ An internal architectural review in mid-2026 catalogued the convergence and reco
 - [`observability.md`](observability.md) — logging consolidation, metrics persistence, instrumentation API. Cited for the observability contract.
 - [`database-migration.md`](database-migration.md) — versioned migrations and rebaseline. Cited for connection lifecycle.
 - [`testing-scenario-comprehensive.md`](testing-scenario-comprehensive.md) — five-tier assertion taxonomy and bug-report recipe. Cited for scenario fixture conventions.
-- [`transaction-curation.md`](transaction-curation.md) — sibling M2A entry spec; populates `app.*` heavily and defines the curation-presentation pattern (flat `app.*` tables surfaced as nested `LIST(STRUCT(...))` columns on `core.fct_*`).
+- [`transaction-curation.md`](transaction-curation.md) — sibling M1E entry spec; populates `app.*` heavily and defines the curation-presentation pattern (flat `app.*` tables surfaced as nested `LIST(STRUCT(...))` columns on `core.fct_*`).
 - [`extension-contracts.md`](extension-contracts.md) — contributor-facing surface for reports, analysis packages, and providers. Defines the `<pkg>_*` prefix discipline that lets analysis packages contribute tables to `raw`, `prep`, `core`, `app`, and `reports` without colliding with the canonical layout.
 
 ## Architecture Invariants
@@ -400,7 +400,12 @@ The IPC socket-server pattern (first process becomes the write gateway for all o
 
 ### (b) Multi-currency interaction with `reports.*`
 
-Owned by `multi-currency.md` (M3). Open: do `reports.*` rollups carry one `display_currency` per report (per `ResponseEnvelope.summary.display_currency`, today's pattern) and FX-convert at view definition time? Or do they expose per-row `currency_original` + `amount_original` and force the consumer to choose? The architecture spec doesn't decide; it just notes that `reports.*` is a presentation layer, and presentation layers are a natural place to lock the currency.
+Owned by `multi-currency.md` (M1K). Directional contract: reports must make their
+display currency explicit via `ResponseEnvelope.summary.display_currency` and
+must preserve original-currency drilldown when source rows were converted. The
+open design question is where conversion happens — in `reports.*` view definitions
+or in a service layer over original + converted rows — but the spec may not treat
+currency as formatting-only metadata.
 
 ## Cascading Edits
 

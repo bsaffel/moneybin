@@ -32,7 +32,7 @@ ready
 
 ## Goal
 
-`app.*` holds the only non-reconstructible state in MoneyBin — user categories, merchant patterns, categorization rules, account settings, balance assertions, budgets, curation notes/tags/splits, match decisions, tabular-format profiles. A bad service mutation today can silently corrupt any of those tables: audit routing is enforced by convention, not structure, and `audit_service.record_audit_event()` is called at only a fraction of the mutation sites. The doctor has no `app.*` invariants — only pipeline ones. The hosted tier (M3D/M3E) cannot ship without per-user `app.*` integrity, and the agent-first thesis means bulk LLM-driven mutations need recoverability to be trustworthy. This spec adds **Invariant 10** to the architecture, introduces a `*Repo` layer that owns every protected `app.*` write, bakes in the data captured for a future undo surface, and enforces the contract via a lint rule and doctor checks. The undo *consumer* (CLI/MCP/UndoService) is deliberately deferred to Phase 2.
+`app.*` holds the only non-reconstructible state in MoneyBin — user categories, merchant patterns, categorization rules, account settings, balance assertions, budgets, curation notes/tags/splits, match decisions, tabular-format profiles. A bad service mutation today can silently corrupt any of those tables: audit routing is enforced by convention, not structure, and `audit_service.record_audit_event()` is called at only a fraction of the mutation sites. The doctor has no `app.*` invariants — only pipeline ones. The hosted tier (M3H) cannot ship without per-user `app.*` integrity, and the agent-first thesis means bulk LLM-driven mutations need recoverability to be trustworthy. This spec adds **Invariant 10** to the architecture, introduces a `*Repo` layer that owns every protected `app.*` write, bakes in the data captured for a future undo surface, and enforces the contract via a lint rule and doctor checks. The undo *consumer* (CLI/MCP/UndoService) is deliberately deferred to Phase 2.
 
 ## Background
 
@@ -63,7 +63,7 @@ Source: 2026-05-16 CTO architecture review §2.2 + §3 leverage point #3, re-ver
 
 **Reversibility contract baked in now.** Phase 2 (the undo *consumer*) is deferred (see [Out of Scope](#out-of-scope)), but the data captured in Phase 1 must be sufficient to support undo without re-instrumenting. Concretely: every mutation captures the **complete pre-mutation row** in `before_value` (not a diff or just the changed columns), and cascading mutations within one user action share a `parent_audit_id` pointing at the originating audit row. This is the part that's prohibitive to add later — once mutations write partial `before_value` rows, retrofitting full-state capture is a 3–4 week refactor. The forward-compat cost now is ~10% extra discipline per repository method; the retrofit cost is the bulk of Phase 2.
 
-**Phased delivery.** The undo UX (granularity, confirmation thresholds, discoverability) is best designed against real agent-usage data — building the consumer now means guessing those answers. Phase 1 ships the contract + plumbing; Phase 2 ships the consumer once a real trigger appears (agent-driven bulk mutations in M3A+ flows).
+**Phased delivery.** The undo UX (granularity, confirmation thresholds, discoverability) is best designed against real agent-usage data — building the consumer now means guessing those answers. Phase 1 ships the contract + plumbing; Phase 2 ships the consumer once a real trigger appears (agent-driven bulk mutations in M1G+ flows).
 
 ### Related specs
 
@@ -298,9 +298,9 @@ Per `.claude/rules/testing.md` test layers.
 ## Out of Scope
 
 - **Phase 2 — the undo consumer.** No `UndoService`, no `repository.revert(audit_event)`, no `moneybin undo {list,apply,session}` CLI surface, no `undo_*` MCP tools. The forward-compat data (full `before_value`, threaded `parent_audit_id`) is the entire Phase 1 contribution toward Phase 2.
-- **Cross-database / multi-tenant variants.** Phase 1 assumes the single-process, single-profile model documented in `architecture-shared-primitives.md` §Connection Lifecycle. Multi-tenant `app.*` integrity is an M3E concern and will revisit the contract then.
+- **Cross-database / multi-tenant variants.** Phase 1 assumes the single-process, single-profile model documented in `architecture-shared-primitives.md` §Connection Lifecycle. Multi-tenant `app.*` integrity is an M3H concern and will revisit the contract then.
 - **Schema migration to add `revert_of_audit_id`.** Phase 2's schema change. Phase 1 does not write the column.
-- **Performance optimization of the doctor coverage check.** A sampled scan is fine for personal-volume profiles; if a future hosted-tier per-user check needs incremental verification, that's an M3E follow-up.
+- **Performance optimization of the doctor coverage check.** A sampled scan is fine for personal-volume profiles; if a future hosted-tier per-user check needs incremental verification, that's an M3H follow-up.
 - **Retroactive audit synthesis for pre-Phase-1 rows.** Existing rows in `app.*` have no audit history. The doctor sampling window is configurable; users can set it after the migration date if they want to suppress noise.
 - **`app.transaction_notes` / `tags` / `splits` repository surface beyond a mechanical wrap.** These writes are already audited correctly via `TransactionService`. PR 12 wraps them in repos for lint-rule symmetry without changing semantics.
 - **Decorator-based audit.** Considered and rejected (see [Background](#background)).

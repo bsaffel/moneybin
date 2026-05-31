@@ -45,7 +45,7 @@ Related specs and docs:
 10. **CLI commands:** `moneybin reports networth`, `moneybin reports networth-history`, `moneybin accounts balance show`, `moneybin accounts balance history`, `moneybin accounts balance assert`, `moneybin accounts balance list`, `moneybin accounts balance assertion-delete`, `moneybin accounts balance reconcile`. The `accounts` parent group is registered by [`account-management.md`](account-management.md); this spec contributes the `balance` sub-group.
 11. **MCP tools** (per [`moneybin-mcp.md`](moneybin-mcp.md) v2): `reports_networth`, `reports_networth_history`, `accounts_balances`, `accounts_balance_history`, `accounts_balance_reconcile`, `accounts_balance_assertions`, `accounts_balance_assert` (write), `accounts_balance_assertion_delete` (write).
 12. **All commands support `--output json`** for non-interactive parity.
-13. **Cash-only v1.** Investment holdings and multi-currency conversion are future extensions (M3B and M3C respectively). Net worth v1 covers cash accounts only.
+13. **Cash-only v1.** Investment holdings and multi-currency conversion are future extensions (M1J and M1K respectively). Net worth v1 covers cash accounts only.
 
 ## Data Model
 
@@ -328,13 +328,13 @@ This lets the scenario suite (`make test-scenarios`) validate that `fct_balances
 
 ## Out of Scope
 
-- **Investment holdings in net worth** — M3B concern. Net worth v1 is cash-only. Investment tracking (`investments-overview.md`, M3B — Pillar D net-worth integration) will extend `fct_balances` with holdings valuation when it ships.
-- **Multi-currency conversion** — M3C concern. All balances assumed single-currency for v1. Multi-currency (`multi-currency.md`, M3C) will add home-currency conversion to `fct_balances_daily`.
+- **Investment holdings in net worth** — M1J concern. Net worth v1 is cash-only. Investment tracking (`investments-overview.md`, M1J — Pillar D net-worth integration) will extend `fct_balances` with holdings valuation when it ships.
+- **Multi-currency conversion** — M1K concern. All balances assumed single-currency for v1. Multi-currency (`multi-currency.md`, M1K) will add home-currency conversion to `fct_balances_daily`.
 - **Balance forecasting/projection** — "What will my net worth be in 6 months?" is a separate feature requiring trend extrapolation.
 - **Balance alerts/notifications** — "Notify me when balance drops below X" is out of scope for the data model spec.
 - **Historical balance backfill without an anchor** — If a user imports 2 years of transactions but only has balance observations from the last 3 months, we do not attempt to reconstruct balances before the first observation. Absent, not best-effort.
 - **Plaid balance sync scheduling** — The polling/scheduling mechanism for Plaid balance snapshots belongs in `sync-plaid.md`, not here. This spec consumes whatever Plaid provides.
-- **Net worth trend analysis and reporting** — Cash flow statements, trend charts, and category breakdowns belong in `net-worth-reporting.md` (M3). This spec provides the data model they consume.
+- **Net worth trend analysis and reporting** — Cash flow statements, trend charts, and category breakdowns belong in `net-worth-reporting.md` (M2). This spec provides the data model they consume.
 - **Transaction-level reconciliation** — Per-transaction cleared/reconciled markers (the legacy "verified" concept) are not yet specced. When designed, that future spec should subsume what [`transaction-curation.md`](transaction-curation.md) §Out of Scope deferred as the "verified" curator flag — one transaction-grain reconciliation surface, not two parallel markers. Cross-link to [`transaction-curation.md`](transaction-curation.md) §Out of Scope.
 
 ## Coordination with `account-management.md`

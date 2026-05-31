@@ -65,12 +65,14 @@ The goal is that someone reading the docs gets an accurate picture of what Money
 
 ## When a New Spec Is Written
 
-- Add a 📐 entry in the appropriate row of `docs/roadmap.md` (matched to the milestone the spec is gated on).
+- Give the spec an **address** — the next free increment letter under its milestone (e.g. `M2F`), per `design-principles.md` → "Milestone addressing." Don't invent a new numbering scheme.
+- Add a 📐 entry in the matching milestone row of `docs/roadmap.md`.
 - Add the spec to `docs/specs/INDEX.md` with status `draft` or `ready`.
 
 ## When a Feature Is Planned (No Spec Yet)
 
-- Add a 🗓️ entry to `docs/roadmap.md` in the post-launch section.
+- Attach it to a milestone/increment per the address scheme (`design-principles.md` → "Milestone addressing") — append the next free increment letter; don't fork a parallel sequence.
+- Add a 🗓️ entry under that milestone in `docs/roadmap.md` (or the Post-launch section if genuinely beyond M3).
 - No `INDEX.md` entry until a spec exists.
 
 ## When a Milestone Closes

@@ -113,6 +113,31 @@ This is NOT a license to gold-plate. "Elegant" and "architecturally
 pure" are not goals — they are post-hoc descriptions of code that is
 coherent and durable.
 
+## Milestone addressing — one scheme, append don't reinvent
+
+All roadmap work is tracked under a single phase-aligned address scheme.
+**Use it; never fork a parallel numbering or sequencing scheme** — we have
+migrated twice already (Level/Wave → flat M-grid → this), and each migration
+was pure churn.
+
+- **`M0`–`M3`** = the four milestones / build phases: **M0 Foundation ·
+  M1 Ingestion Core · M2 Analysis & Reports · M3 Productization &
+  Distribution**. The milestone *is* the test-functionality gate — testing
+  batches at the phase, not per-item.
+- **`M1J`** = an *increment*: a coherent capability ≈ one spec, closes on its
+  own.
+- **`M1J.2`** = a *work item*: a discrete design / PR / plan within an
+  increment.
+
+When planning, brainstorming, or writing a new spec or plan: attach the work
+to an existing increment, or **append the next free letter (new increment) or
+`.n` (new work item)** — then register it in the canonical reference,
+[`docs/roadmap.md`](../../docs/roadmap.md) (public source of truth), mirrored
+in `private/strategy/milestone-taxonomy.md` (full map + rationale). Don't mint
+a new top-level number for a sub-task, and don't add a per-increment gate. If
+the scheme genuinely can't express the work, raise it — don't invent a second
+one.
+
 ## What it does NOT mean
 
 - Not gold-plating, perfectionism, or refusing to ship.
