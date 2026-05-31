@@ -125,10 +125,10 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- preview                    -- Detect format / column mapping without writing
 |   +-- revert                     -- Undo a recent import batch by import_id
 |   +-- status                     -- End-to-end import health and diagnostics
-|   +-- formats                    -- Manage saved tabular format definitions
-|   |   +-- list
-|   |   +-- show <name>
-|   |   +-- delete <name>
+|   +-- formats                    -- Manage saved import format definitions (tabular + PDF)
+|   |   +-- list [--type tabular|pdf|all]   PDF formats listed under separate section
+|   |   +-- show <name>             Resolves across tabular and PDF namespaces
+|   |   +-- delete <name>           Tabular only (PDF formats are auto-derived)
 |   +-- inbox                      -- Drain the watched import inbox
 |   +-- labels                     -- Manage labels on imports
 |

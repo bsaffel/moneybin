@@ -107,6 +107,7 @@ not-yet-built.
 | 44| Inspect full before/after for one operation before undoing        | `system_audit_get` *(`operation_id`)* | `system audit get <operation_id>`                  | —          | live                  |
 | 45| Import a file and handle unknown layout via confirmation flow      | `import_files` *(returns `confirmation_required` envelope on first-encounter unknown layouts; `actions[]` contains `import_confirm` hint)* | `import files PATHS... [--confirm/--no-confirm] [--mapping field=col]` *(TTY: interactive prompt; non-TTY/`--output json`: envelope + exit 0)* | —          | live                  |
 | 46| Confirm a proposed import column mapping                          | `import_confirm` *(`file_path`, `accept=True`, `mapping={...}`)* | `import confirm <file> --accept` / `--mapping field=column` | —          | live                  |
+| 47| List available import formats (tabular + PDF) for selection / introspection | `import_formats` *(returns `formats` + `pdf_formats` arrays)* | `import formats list [--type tabular\|pdf\|all]` *(text or JSON; agent can also `import formats show <name>` for either kind)* | —          | live                  |
 
 *(Bootstrap rows only; full table populates incrementally as
 follow-up work closes the parity backlog. A prior row covering
@@ -135,7 +136,11 @@ no privacy middleware) and emit a banner pointing at `moneybin sql query`.
 Rows 45–46 added 2026-05-29 with the smart-import-confirmation PR: `import_files`
 gains a `confirmation_required` envelope state for first-encounter unknown layouts;
 `import_confirm` (MCP) and `moneybin import confirm` (CLI) are the terminal `_confirm`
-step for ratifying proposed column mappings.)*
+step for ratifying proposed column mappings.
+Row 47 added 2026-05-31 with the smart-import-pdf Phase 2a PR: `import_formats`
+gains a `pdf_formats` array surfacing auto-derived PDF recipes (layout fingerprint,
+routing, replay statistics); CLI adds `--type {tabular,pdf,all}` filter and PDF
+namespace fallthrough on `import formats show`.)*
 
 ## Exemption categories
 

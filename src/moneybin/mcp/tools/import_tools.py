@@ -31,6 +31,7 @@ from moneybin.privacy.payloads.imports import (
     ImportFormatInfoPayload,
     ImportFormatRow,
     ImportFormatsPayload,
+    ImportPdfFormatRow,
     ImportPerFileRow,
     ImportPreviewPayload,
     ImportRevertPayload,
@@ -482,23 +483,42 @@ def import_revert(import_id: str) -> ResponseEnvelope[ImportRevertPayload]:
 
 @mcp_tool()
 def import_formats() -> ResponseEnvelope[ImportFormatsPayload]:
-    """List all available tabular import formats (built-in and user-saved).
+    """List all available import formats (tabular + PDF, built-in and user-saved).
 
-    Returns format name, institution, sign convention, date format, and
-    header signature for each format. Use ``import_preview`` to test
-    a format against a specific file.
+    The ``formats`` list holds tabular formats (CSV/Excel/etc.) with column
+    mappings, sign convention, and header signature. The ``pdf_formats`` list
+    (Phase 2a) holds auto-derived PDF recipes keyed by layout fingerprint:
+    institution, document kind, routing target, and replay statistics. Use
+    ``import_preview`` to test a tabular format against a specific file.
     """
     from moneybin.extractors.tabular.formats import (
         load_builtin_formats,
         load_formats_from_db,
         merge_formats,
     )
+    from moneybin.repositories.pdf_formats_repo import PdfFormatsRepo
 
     builtin = load_builtin_formats()
+    pdf_format_rows: list[ImportPdfFormatRow] = []
     try:
         with get_database(read_only=True) as db:
             formats = merge_formats(builtin, load_formats_from_db(db))
-    except Exception:  # noqa: BLE001 -- DB may not exist; fall back to built-in
+            for pf in PdfFormatsRepo(db).list_all():
+                pdf_format_rows.append(
+                    ImportPdfFormatRow(
+                        name=pf.name,
+                        institution_name=pf.institution_name,
+                        document_kind=pf.document_kind,
+                        routing=pf.routing,
+                        front_end=pf.front_end,
+                        version=pf.version,
+                        times_used=pf.times_used,
+                        last_used_at=pf.last_used_at.isoformat()
+                        if pf.last_used_at is not None
+                        else None,
+                    )
+                )
+    except Exception:  # noqa: BLE001 -- DB may not exist; fall back to built-in only
         formats = builtin
 
     format_rows = [
@@ -515,9 +535,9 @@ def import_formats() -> ResponseEnvelope[ImportFormatsPayload]:
         for fmt in sorted(formats.values(), key=lambda f: f.name)
     ]
     return build_envelope(
-        data=ImportFormatsPayload(formats=format_rows),
+        data=ImportFormatsPayload(formats=format_rows, pdf_formats=pdf_format_rows),
         actions=[
-            "Use import_preview to test a format against a file",
+            "Use import_preview to test a tabular format against a file",
             "Use import_files to import a file once you have the format name available",
         ],
     )
