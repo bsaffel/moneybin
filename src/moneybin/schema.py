@@ -86,6 +86,7 @@ _NON_PROVIDER_SCHEMA_FILES: list[str] = [
     "app_ai_consent_grants.sql",
     "raw_gsheet_seeds.sql",
     "raw_pdf_seeds.sql",
+    "app_pdf_formats.sql",
 ]
 
 
