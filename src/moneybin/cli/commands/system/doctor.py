@@ -111,11 +111,14 @@ def doctor_command(
         typer.echo(line)
         if verbose and result.affected_ids:
             typer.echo(f"   Affected: {', '.join(result.affected_ids)}")
-        # Cap the per-invariant render so a doctor run that turns up hundreds
-        # of orphan rows doesn't bury the operator in 100s of identical
-        # rationale lines. JSON output is uncapped (machine consumers handle
-        # the volume). Threshold matches the file-list-truncation feel in
-        # other CLI commands.
+        # Recovery actions render unconditionally (no --verbose gate). This is
+        # asymmetric with affected_ids on purpose: raw IDs are debug-only
+        # (operator inspecting the failure), but the actions are the agent's
+        # next-step contract — they need to be visible on a plain
+        # `moneybin system doctor` call too, since the CLI is a first-class
+        # agent surface (AGENTS.md). The 5-action cap below keeps that
+        # unconditional-render output bounded when a single invariant flags
+        # many orphans.
         recovery = result.recovery_actions or []
         max_actions_rendered = 5
         for action in recovery[:max_actions_rendered]:

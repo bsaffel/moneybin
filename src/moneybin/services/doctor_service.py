@@ -564,11 +564,14 @@ class DoctorService:
             )
         if rows:
             affected = [str(r[0]) for r in rows]
+            # "Entries" not "rows" — each tag entry collapses 1..N raw
+            # transaction_tags rows for the same orphan transaction_id, so a
+            # raw row count would overstate the orphan count. Notes are 1:1.
             return InvariantResult(
                 name=name,
                 status="fail",
                 detail=(
-                    f"{len(affected)} orphan note/tag row(s) reference a "
+                    f"{len(affected)} orphan note/tag entry(s) reference a "
                     "transaction_id absent from core.fct_transactions"
                 ),
                 affected_ids=affected,

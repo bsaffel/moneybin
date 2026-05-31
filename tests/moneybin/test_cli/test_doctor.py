@@ -180,6 +180,11 @@ def test_doctor_json_verbose_includes_affected_ids(
     assert inv["affected_ids"] == ["abc123"]
 
 
+# Fixture mirrors the real orphan_app_state recipe contract:
+# notes_delete is "suggested" (non-idempotent across a batch — see recipe
+# docstring), tags_set is "certain" (clear-to-empty is idempotent). Holding
+# the fixture to the real recipe values makes this test catch future
+# confidence-value regressions in the recipe itself, not just rendering.
 _RECOVERY_REPORT = DoctorReport(
     invariants=[
         InvariantResult(
@@ -192,7 +197,7 @@ _RECOVERY_REPORT = DoctorReport(
                     tool="transactions_notes_delete",
                     arguments={"note_id": "n1"},
                     rationale="Delete orphan note n1.",
-                    confidence="certain",
+                    confidence="suggested",
                     idempotent=False,
                 ),
                 RecoveryAction(
@@ -245,5 +250,5 @@ def test_doctor_json_includes_recovery_actions_per_invariant(
         a for a in inv["recovery_actions"] if a["tool"] == "transactions_notes_delete"
     )
     assert notes_action["arguments"] == {"note_id": "n1"}
-    assert notes_action["confidence"] == "certain"
+    assert notes_action["confidence"] == "suggested"
     assert notes_action["idempotent"] is False
