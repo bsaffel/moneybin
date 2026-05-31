@@ -297,16 +297,25 @@ def _score_mapping(
 ) -> tuple[float, tuple[str, ...]]:
     """Compute a normalized confidence score + the missing-required set."""
     has_date = "transaction_date" in mapping
-    has_amount = "amount" in mapping or (
-        "debit_amount" in mapping and "credit_amount" in mapping
-    )
-    has_description = "description" in mapping
+    has_single_amount = "amount" in mapping
+    has_debit = "debit_amount" in mapping
+    has_credit = "credit_amount" in mapping
+    has_amount = has_single_amount or (has_debit and has_credit)
     missing: list[str] = []
     if not has_date:
         missing.append("transaction_date")
     if not has_amount:
-        missing.append("amount")
-    if not has_description:
+        # When the detector found one half of a debit/credit pair, the
+        # actionable fix is the missing half — not "amount". Reporting
+        # "amount" here sends the user to a contradictory override
+        # (single-amount layered on partial-split).
+        if has_debit and not has_credit:
+            missing.append("credit_amount")
+        elif has_credit and not has_debit:
+            missing.append("debit_amount")
+        else:
+            missing.append("amount")
+    if "description" not in mapping:
         missing.append("description")
     if missing:
         return 0.40, tuple(missing)

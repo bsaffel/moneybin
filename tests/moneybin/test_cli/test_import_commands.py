@@ -357,6 +357,10 @@ class TestImportFilesCommand:
         assert payload["data"]["total_count"] == 1
         assert "files" in payload["data"]
         assert payload["summary"]["sensitivity"] == "low"
+        # The single-file success entry must include sign_correction_suggested,
+        # matching the batch path — JSON-output agents see the same shape
+        # regardless of single-vs-multi-file invocation.
+        assert "sign_correction_suggested" in payload["data"]["files"][0]
 
     def test_batch_envelope_sensitivity_medium_when_confirmation_payload_present(
         self,
@@ -382,7 +386,7 @@ class TestImportFilesCommand:
             per_file=[
                 PerFileResult(
                     path=str(a),
-                    status="needs_confirmation",  # type: ignore[arg-type]
+                    status="confirmation_required",
                     source_type=None,
                     rows_loaded=0,
                     import_id=None,

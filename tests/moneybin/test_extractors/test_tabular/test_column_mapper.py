@@ -142,6 +142,40 @@ class TestMappingResultScore:
         if result.confidence == "low":
             assert len(result.missing_required) > 0
 
+    def test_missing_credit_amount_for_half_split(self) -> None:
+        """Debit-only files must surface 'credit_amount' as missing, not 'amount'.
+
+        Reporting 'amount' sends the user to a contradictory override
+        (single-amount layered on partial split). Mirrors the rule in
+        validate_partial_mapping.
+        """
+        df = _make_df({
+            "Date": ["01/15/2026", "02/20/2026"],
+            "Description": ["KROGER #1234", "WALMART"],
+            "Debit": ["42.50", "100.00"],
+        })
+        result = map_columns(df)
+        assert "debit_amount" in result.field_mapping
+        assert "credit_amount" not in result.field_mapping
+        assert "credit_amount" in result.missing_required
+        assert "amount" not in result.missing_required
+
+    def test_missing_debit_amount_for_half_split(self) -> None:
+        """Credit-only files must surface 'debit_amount' as missing, not 'amount'.
+
+        Mirror of the debit-only case.
+        """
+        df = _make_df({
+            "Date": ["01/15/2026", "02/20/2026"],
+            "Description": ["KROGER #1234", "WALMART"],
+            "Credit": ["42.50", "100.00"],
+        })
+        result = map_columns(df)
+        assert "credit_amount" in result.field_mapping
+        assert "debit_amount" not in result.field_mapping
+        assert "debit_amount" in result.missing_required
+        assert "amount" not in result.missing_required
+
     def test_to_confidence_returns_uniform_value(self) -> None:
         from moneybin.extractors.confidence import Confidence
 

@@ -355,6 +355,10 @@ def import_files_command(
                             "source_type": result.file_type,
                             "rows_loaded": result.transactions,
                             "import_id": result.import_id,
+                            # Mirror the batch path: JSON-output agents need
+                            # the structured signal regardless of single vs
+                            # multi-file invocation.
+                            "sign_correction_suggested": result.sign_correction_suggested,
                         }
                     ]
                     data = {
