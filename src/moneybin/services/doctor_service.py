@@ -6,7 +6,6 @@ import logging
 from dataclasses import dataclass, replace
 from typing import Literal
 
-import duckdb
 from sqlglot import exp
 
 from moneybin.audits import recipes as recipe_registry
@@ -64,9 +63,10 @@ class InvariantResult:
     """Result of one pipeline invariant check.
 
     The optional ``recovery_actions`` field carries structured recovery
-    hints when an audit fails or warns. PR 4 (doctor recipe registry)
-    will populate this from per-audit recipes; for now it defaults to
-    ``None`` so existing call sites are unaffected.
+    hints when an audit fails or warns. ``DoctorService.run_all`` populates
+    this from per-audit recipes registered in ``moneybin.audits.recipes``.
+    ``None`` for pass/skipped results and for audits without a registered
+    recipe.
     """
 
     name: str
@@ -139,15 +139,28 @@ class DoctorService:
         Single seam: every audit's result passes through here on its way into
         the report, so per-audit ``_run_*`` methods stay unaware of the registry.
         Pass/skipped results don't get recovery actions — there's nothing to fix.
+
+        Per-invariant exception isolation: a recipe that raises (e.g. a future
+        recipe that queries the DB via ``RecipeContext.db`` and hits a lock or
+        column drift) MUST NOT abort ``run_all``'s aggregation — the invariant
+        keeps its computed status and just loses its ``recovery_actions``.
+        Matches the broad-except pattern every ``_run_*`` method uses.
         """
         if result.status in ("pass", "skipped"):
             return result
         recipe_fn = recipe_registry.get(result.name)
         if recipe_fn is None:
             return result
-        actions = recipe_fn(
-            result.affected_ids, recipe_registry.RecipeContext(db=self._db)
-        )
+        try:
+            actions = recipe_fn(
+                result.affected_ids, recipe_registry.RecipeContext(db=self._db)
+            )
+        except Exception:  # noqa: BLE001 — per-invariant isolation; one recipe must not abort the report
+            logger.warning(
+                f"Recipe for {result.name!r} raised; leaving recovery_actions=None",
+                exc_info=True,
+            )
+            return result
         # `replace()` (not constructor) so a future field on `InvariantResult`
         # carries through automatically — explicit by-field copy would drop it.
         return replace(result, recovery_actions=actions)
@@ -488,17 +501,17 @@ class DoctorService:
                 ORDER BY aid
                 """  # noqa: S608  # TableRef constants, no user input
             ).fetchall()
-        except duckdb.CatalogException as e:
-            # Narrow catch: only the expected "core.fct_transactions hasn't
-            # been built yet" case maps to `skipped`. Other DuckDB errors
-            # (column drift, lock contention, permissions) propagate so a real
-            # fault doesn't silently masquerade as 'core not ready'. Same
-            # pattern as `_run_dedup_reconciliation`'s narrowed handling.
+        except Exception as e:  # noqa: BLE001 — per-invariant isolation; one audit's failure must not abort the whole DoctorReport
+            # Matches every other ``_run_*`` method in this file: any failure
+            # (missing core.fct_transactions on first run, app-table column
+            # drift, lock contention) returns ``skipped`` so the rest of the
+            # report survives. exc_info on the debug log keeps real faults
+            # diagnosable for operators tailing logs.
             logger.debug(f"orphan_app_state skipped: {e}", exc_info=True)
             return InvariantResult(
                 name=name,
                 status="skipped",
-                detail="prep/core layer not available; run transform first",
+                detail=f"orphan check unavailable: {e}",
                 affected_ids=[],
             )
         if rows:
