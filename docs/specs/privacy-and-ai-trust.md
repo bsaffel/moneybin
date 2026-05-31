@@ -1,6 +1,6 @@
 # Privacy & AI Trust
 
-> Last updated: 2026-04-19 — promoted to ready
+> Last updated: 2026-05-29 — deterministic-computation / LLM-prose invariant added
 > Status: Ready — framework spec for MoneyBin's privacy model across all AI data flows.
 > Companions: [`privacy-security-roadmap.md`](privacy-security-roadmap.md) (data custody tiers), [`ADR-002: Privacy Tiers`](../decisions/002-privacy-tiers.md) (data custody architecture), [`smart-import-overview.md`](smart-import-overview.md) (pillar F depends on this), [`matching-overview.md`](matching-overview.md) (audit log shared), `CLAUDE.md` Security section, `.claude/rules/security.md`
 
@@ -20,6 +20,7 @@ MoneyBin is an AI-first financial application. AI makes it better — smarter im
 2. **Consent when minimization isn't sufficient.** If the question can't be answered with masked data, get the user's consent — at least once per flow category. The user sees what's going, where, and why.
 3. **Every byte that leaves has a receipt.** The audit log records what was sent, to which backend, when, and what came back. The user can query it at any time. The log stores metadata, not a second copy of sensitive data.
 4. **Capabilities matter alongside privacy.** When a user chooses an AI backend, they should see both the provider's privacy stance and what features it unlocks. MoneyBin does not artificially limit features to the lowest common denominator across providers — it helps the user make an informed choice.
+5. **Deterministic code owns the numbers.** LLMs may explain, summarize, or draft prose from already-computed MoneyBin results; they must not be the source of financial calculations, classifications that bypass review, or report truth. Any AI-written summary cites the deterministic result/report/lineage reference it summarizes.
 
 ## Data sensitivity taxonomy
 

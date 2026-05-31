@@ -1,8 +1,9 @@
 # Investments — Overview
 
-> Last updated: 2026-05-24 — initial draft. Umbrella doc for the investments
-> initiative (milestone M3B). Child specs listed in [The four pillars](#the-four-pillars)
-> are written separately; the foundation child is [`investments-data-model.md`](investments-data-model.md).
+> Last updated: 2026-05-29 — 1099-B tie-out reaffirmed as the hard M1J close gate.
+> Umbrella doc for the investments initiative (milestone M1J). Child specs listed
+> in [The four pillars](#the-four-pillars) are written separately; the foundation
+> child is [`investments-data-model.md`](investments-data-model.md).
 > Status: draft
 > Type: Umbrella
 > Companions: [`asset-tracking.md`](asset-tracking.md) (the asset/investment dividing
@@ -15,13 +16,13 @@
 ## Purpose
 
 Investments is MoneyBin's largest competitive moat: a personal-finance platform
-that produces **cost-basis output reconcilable against a real 1099-B**, computed
-independently from the user's own transaction ledger rather than trusted blindly
-from a broker feed. This doc fixes the vision, the data-model contract, the scope
-boundary, and the build order. Design and implementation details live in the
-child specs it points to.
+that produces **cost-basis output reconcilable against a real 1099-B for a full
+tax year**, computed independently from the user's own transaction ledger rather
+than trusted blindly from a broker feed. This doc fixes the vision, the data-model
+contract, the scope boundary, and the build order. Design and implementation
+details live in the child specs it points to.
 
-This is the keystone of milestone **M3B**. At least six already-written specs gate
+This is the keystone of milestone **M1J**. At least six already-written specs gate
 on it: Plaid Investments sync, portfolio/holdings reports, investment-transaction
 dedup and transfer detection, investment OFX (`<INVSTMTRS>`) import, and net-worth
 holdings valuation. None of them can proceed until the contracts here are fixed.
@@ -44,8 +45,9 @@ Four commitments:
 3. **Method-agnostic by construction.** The lot grain supports FIFO, specific
    identification, and average cost as computations over the same data. Picking fewer
    methods for v1 costs no rework later.
-4. **1099-B is the bar.** M3B does not close until cost-basis output ties to a real
-   1099-B end-to-end. Reconciliation, not plausibility, is the success metric.
+4. **1099-B is the bar.** M1J does not close until cost-basis output ties to a real
+   broker 1099-B for a full tax year end-to-end. Reconciliation, not plausibility,
+   is the success metric; a holdings dashboard without the tie-out is not enough.
 
 ## The asset / investment dividing line
 
@@ -104,7 +106,7 @@ price.** It is computed entirely from the ledger — a sale's proceeds versus th
 cost of the consumed lots, both of which are recorded events. Only *unrealized*
 gain/loss (paper value of what you still hold) requires a current price.
 
-Therefore the foundation child (Pillar A + B) reaches the M3B "ties to a real
+Therefore the foundation child (Pillar A + B) reaches the M1J "ties to a real
 1099-B end-to-end" bar **without** Pillar C. Price feeds (C) and net-worth
 integration (D) become clean follow-on children that add valuation on top of an
 already-correct cost-basis engine.
@@ -163,7 +165,7 @@ data; charts often use adjusted).
 
 A `currency` column lands on the ledger, lots, prices, and holdings in the
 foundation child — adding it to `core` later is a breaking migration. v1 assumes a
-single reporting currency and does no FX. Multi-currency conversion is **M3C**
+single reporting currency and does no FX. Multi-currency conversion is **M1K**
 (`multi-currency`, future). Same "lock the schema, stage the algorithm" move as the
 cost-basis methods.
 
@@ -180,11 +182,11 @@ cost-basis methods.
 
 ## Out of scope
 
-- **Options** (exercise/assignment/expiration) — distinct modeling, not in the M3B
+- **Options** (exercise/assignment/expiration) — distinct modeling, not in the M1J
   bar. Reserved for a later child.
 - **Wash-sale detection / Schedule D** — owned by the `us_tax` package
   (`extension-contracts.md`), which consumes the core tables defined here.
-- **Multi-currency FX conversion** — M3C. The `currency` column lands now; conversion
+- **Multi-currency FX conversion** — M1K. The `currency` column lands now; conversion
   does not.
 - **IRS election-policy enforcement** — MoneyBin mirrors the broker's method (see
   cross-cutting above).
@@ -195,21 +197,21 @@ cost-basis methods.
 
 1. **Foundation child A+B** ([`investments-data-model.md`](investments-data-model.md))
    — securities dimension, ledger, lots, and the three-method cost-basis engine with
-   manual entry. Reaches the 1099-B bar. Fixes every schema contract the gated
-   children wait on.
+   manual entry. Reaches the full-tax-year 1099-B bar. Fixes every schema contract
+   the gated children wait on.
 2. **Pillar C** (`investments-price-feeds.md`) — append-only price history, daily
    valuation, unrealized gain/loss.
 3. **Pillar D** (`investments-net-worth.md`) — holdings valuation into
    `reports.net_worth`.
 4. **Already-carved children** (Plaid sync, OFX import, portfolio reports, matching)
-   — proceed against the now-fixed contracts, in any order. M3B closes when the
+   — proceed against the now-fixed contracts, in any order. M1J closes when the
    milestone's promise (1099-B reconciliation + holdings in net worth) is met.
 
 ## Success criteria
 
 - **1099-B reconciliation (headline).** For a real brokerage account, MoneyBin's
-  realized gain/loss per lot — short-term and long-term — ties to the broker's 1099-B
-  under the broker's reported method.
+  realized gain/loss per lot — short-term and long-term — ties to the broker's
+  1099-B for a full tax year under the broker's reported method.
 - **Ledger-derived correctness.** Holdings, lots, and gain/loss are fully rebuildable
   from `core.fct_investment_transactions` + `app.*` on every SQLMesh run; no derived
   state is authoritative.

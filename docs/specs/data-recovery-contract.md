@@ -207,7 +207,7 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
     | `transactions_matches_set(match_id, status)` | 1b (accept/reject one decision) | `moneybin transactions matches set` |
     | `transactions_matches_history(limit?, match_type?)` | 5 (time-series) | `moneybin transactions matches history` |
 
-    `_run` and `_history` mirror the existing CLI. `transactions_matches_pending` is named to match the existing `transactions_categorize_pending` convention; it lists pending match proposals (pair ids + confidence, no amounts or descriptions). `_set` is genuinely new non-interactive surface: today accept/reject lives only in the interactive `transactions review --type matches` queue, so agents can't reach it. `_set` accepts or rejects **one decision by `match_id`** (`status ∈ {accepted, rejected}`). Rejecting an already-accepted match errors with a recovery action pointing at `system_audit_undo` (the M2D audit-log undo consumer); until it ships, the CLI `moneybin transactions matches undo` is the manual interim route named in the action's rationale. There is no `match_group_id`/`primary` write surface — `match_group_id` is a derived prep-layer column (the connected-component group key in `int_transactions__matched`), and dedup collapses each group by field-level source-priority merge (`int_transactions__merged`), so no single physical row is "primary."
+    `_run` and `_history` mirror the existing CLI. `transactions_matches_pending` is named to match the existing `transactions_categorize_pending` convention; it lists pending match proposals (pair ids + confidence, no amounts or descriptions). `_set` is genuinely new non-interactive surface: today accept/reject lives only in the interactive `transactions review --type matches` queue, so agents can't reach it. `_set` accepts or rejects **one decision by `match_id`** (`status ∈ {accepted, rejected}`). Rejecting an already-accepted match errors with a recovery action pointing at `system_audit_undo` (the M1L audit-log undo consumer); until it ships, the CLI `moneybin transactions matches undo` is the manual interim route named in the action's rationale. There is no `match_group_id`/`primary` write surface — `match_group_id` is a derived prep-layer column (the connected-component group key in `int_transactions__matched`), and dedup collapses each group by field-level source-priority merge (`int_transactions__merged`), so no single physical row is "primary."
 
     No `transactions_matches_undo` MCP tool. `app.match_decisions` is protected by Invariant 10 → audit_log → `system_audit_undo`. The existing CLI `moneybin transactions matches undo` migrates to call `system_audit_undo` internally.
 
@@ -527,8 +527,8 @@ Each PR includes a property test asserting that every error path in the domain e
 
 - `.claude/rules/data-recovery.md` per Req 11.
 - Append Invariant 11 (Req 14) to `architecture-shared-primitives.md`.
-- Update `docs/roadmap.md` — close M2D row with ✅ shipped.
-- CHANGELOG entry under M2D dated section: added recoverable-state contract, audit-log undo, doctor recipes, matches MCP, refresh error surfacing.
+- Update `docs/roadmap.md` — close M1L row with ✅ shipped.
+- CHANGELOG entry under M1L dated section: added recoverable-state contract, audit-log undo, doctor recipes, matches MCP, refresh error surfacing.
 - New guide: `docs/guides/agent-recovery.md` — how agents discover and execute recovery (audience: agent integrators / power users).
 - Update `docs/specs/app-integrity-invariant.md` — mark Phase 2 as superseded by this spec; cross-link.
 - Update `docs/specs/INDEX.md` — promote this spec to `implemented`.
@@ -557,7 +557,7 @@ Per `.claude/rules/testing.md` test layers.
 - **Atomic time-range undo (`system_audit_undo_range(since, until)`).** Sequencing via `system_audit_history` + per-op `system_audit_undo` covers it. Atomic version is a sharp edge — could undo across user intent boundaries. Revisit if agent UX shows the walk is too verbose.
 - **Encryption-key recovery.** Out of layer; covered by `privacy-data-protection.md` and external backups.
 - **Schema migration rollback.** Covered by `database-migration.md`. The Phase 2 schema additions in this spec are forward-only.
-- **External-state side-effect undo (M3A Plaid sync).** No external mutations in the current sync model; sync server is opaque per AGENTS.md. M3A spec decides if needed.
+- **External-state side-effect undo (M1G Plaid sync).** No external mutations in the current sync model; sync server is opaque per AGENTS.md. M1G spec decides if needed.
 - **Undoing `import_revert` via `system_audit_undo`.** `import_revert` mutates `raw.*`, which is outside Invariant 10 / audit_log scope by design (the schema boundary is load-bearing — `raw.*` is bytes-from-source). The cascade self-heal that `import_revert` triggers (orphan cleanup in `app.transaction_categories`, `app.transaction_splits`) IS audit-logged and individually undoable, but undoing those rows without re-importing would only restore orphans pointing at deleted raw rows. The correct recovery for an unwanted revert is to re-import the source file; `import_revert`'s error envelope on a "no, I want it back" agent prompt MUST escalate to the user with `error_code="recovery_no_path"` rather than silently chain audit undos.
 - **`dedup_reconciliation` invariant (formerly `staging_coverage`).** Unblocked separately against the real pair-decision model — no `is_primary`/group column needed; the expected absorbed count is simply the accepted-dedup decision count. Now active; see `moneybin-doctor.md`. Not part of this milestone.
 - **`system_audit_undo_cascade` tool.** Block-don't-cascade is the Phase 1 default. Add later only if walk-and-retry pattern is verbose enough in real agent UX.
@@ -585,7 +585,7 @@ Resolved during the 2026-05-19/2026-05-20 brainstorm. Captured so future readers
 
 8. **CLI parity from day one.** CLI JSON output carries the same `recovery_actions`. Per `feedback_cli_agent_surface.md`, CLI is a first-class agent surface — same JSON, same redaction, same audit. Human-readable CLI output renders recovery_actions as a numbered list with `moneybin <cmd>` invocation syntax.
 
-9. **New milestone slot (M2D), not bundled into M2C.** The envelope is a one-way door — lock once, every future spec inherits — so it deserves its own scope. Bundling into M2C dilutes both. Cross-cutting into M3A-D fragments the contract.
+9. **New milestone slot (M1L), not bundled into M1C.** The envelope is a one-way door — lock once, every future spec inherits — so it deserves its own scope. Bundling into M1C dilutes both. Cross-cutting into M1G–M1K fragments the contract.
 
 10. **Invariant 11 (Recoverability of mutations), not just a documentation update.** Codified at the same level as Invariant 10 in `architecture-shared-primitives.md`. Forces future specs to declare their recovery path during design, not after.
 

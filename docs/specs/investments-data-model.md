@@ -7,7 +7,8 @@ draft
 
 Establish the securities dimension and the investment-transaction ledger, then
 derive lots, holdings, and **realized** gain/loss (short- and long-term) from that
-ledger — reproducing broker numbers well enough to reconcile against a real 1099-B.
+ledger — reproducing broker numbers well enough to reconcile against a real
+full-tax-year 1099-B.
 This is the foundation child of the investments initiative (Pillars A + B of
 [`investments-overview.md`](investments-overview.md)). It deliberately stops short
 of market-price valuation: realized gain/loss needs no price feed, so the 1099-B bar
@@ -16,7 +17,7 @@ separate children.
 
 ## Background
 
-Investments are the keystone of milestone M3B and the single most-referenced
+Investments are the keystone of milestone M1J and the single most-referenced
 unwritten contract in the repo (see [`investments-overview.md`](investments-overview.md)
 for the full gate list). This spec fixes the contracts those gated specs wait on:
 the security identity key, the ledger shape and its `type` taxonomy, and the
@@ -86,7 +87,7 @@ Related specs:
 14. **Mirror, don't enforce.** v1 reproduces the broker's reported method; it does not
     enforce IRS election lock-in or wash-sale rules.
 15. **Currency column** on ledger, lots, gains, and holdings now; no FX conversion
-    (deferred to M3C).
+    (deferred to M1K).
 16. **CLI commands** under a top-level `investments` group (see CLI Interface).
 17. **MCP tools** under the `investments_*` namespace (see MCP Interface).
 18. **All commands support `--output json`** for non-interactive / agent parity.
@@ -566,9 +567,10 @@ Standard envelope from [`mcp-architecture.md`](mcp-architecture.md), e.g. for
 - Scenario tests under `tests/scenarios/` (run via `make test-scenarios`) with a
   persona holding a mix of FIFO stocks and an average-cost fund, verifying
   `fct_investment_lots`, `fct_realized_gains`, and `dim_holdings` against ground truth.
-- A **1099-B reconciliation scenario**: a hand-labeled fixture modeling a real
-  brokerage year (buys, sells, reinvested dividends, a split), with expected realized
-  gains per term that the engine must match exactly. This is the headline M3B test.
+- A **1099-B reconciliation scenario**: a hand-labeled fixture from a real broker
+  1099-B for a full tax year (buys, sells, reinvested dividends, and any broker
+  adjustments present in the fixture), with expected realized gains per term that
+  the engine must match exactly. This is the headline M1J test.
 
 ### Tier 3 — Integration
 
@@ -597,7 +599,7 @@ Standard envelope from [`mcp-architecture.md`](mcp-architecture.md), e.g. for
 - **Options, margin, short positions, derivatives** — future.
 - **Wash sales, Schedule D, qualified-dividend logic** — the `us_tax` package.
 - **IRS election-policy enforcement** — v1 mirrors the broker.
-- **Multi-currency FX conversion** — M3C (the `currency` column lands now; conversion does not).
+- **Multi-currency FX conversion** — M1K (the `currency` column lands now; conversion does not).
 - **Investment-transaction dedup / transfer detection** — matching children, against this contract.
 
 ## Implementation Plan
@@ -649,7 +651,7 @@ Standard envelope from [`mcp-architecture.md`](mcp-architecture.md), e.g. for
    override that determines it must be too — reconciling the `extension-contracts.md`
    inconsistency noted in the overview.
 7. **Currency column now, FX later.** A one-way-door column added pre-emptively to
-   avoid a breaking `core` migration in M3C.
+   avoid a breaking `core` migration in M1K.
 8. **Top-level `investments` CLI/MCP group.** A four-pillar domain is a peer of
    `accounts`/`transactions`/`assets`, not a subtree under `accounts`.
 ```

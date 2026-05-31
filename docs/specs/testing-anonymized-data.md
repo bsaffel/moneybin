@@ -1,7 +1,7 @@
 # Feature: Anonymized Data Generator
 
 ## Status
-planned
+draft
 
 ## Goal
 
@@ -12,6 +12,8 @@ Produce a structure-preserving anonymized copy of a real user's MoneyBin databas
 MoneyBin is a personal financial data warehouse. Real user data is the most valuable test corpus we have — it captures format quirks, edge cases, and provider behaviors that synthetic personas cannot. But shipping real data is a privacy non-starter. The synthetic data generator ([`testing-synthetic-data.md`](testing-synthetic-data.md)) covers Level 2 realism for life-like financial histories, but cannot reproduce the *specific* bug-triggering data shape that a user encountered.
 
 This spec fills that gap. It is a **peer child spec** of `testing-overview.md` alongside the synthetic generator: different problem (data masking pipeline vs. financial life simulator), same output layer (`synthetic` schema, raw table writes).
+
+**Roadmap placement.** This is an **M1 (Ingestion Core)** deliverable. The anonymized real-data parity check is part of the **Ingestion-Complete gate** (see [`roadmap.md`](../roadmap.md) and `private/testing.md`): it is the enabler that turns pipeline-correctness-against-real-data from a manual, maintainer-only session into a reproducible, agent-runnable regression — the highest-leverage unlock for a single-developer/tester workflow.
 
 ### Primary use cases
 
@@ -41,9 +43,7 @@ The synthetic generator builds data from declared persona parameters. The anonym
 
 ## Requirements
 
-*To be detailed in a future iteration. The current document is a placeholder establishing scope and primary use cases.*
-
-High-level requirement areas:
+Draft requirements (firmed up at `draft → ready`). The masking pipeline must satisfy the five Design Principles above. Requirement areas:
 
 - Merchant name substitution (canonical merchant catalog → anonymized substitutes preserving category)
 - Amount perturbation (distribution-preserving, within configurable noise bounds)
@@ -60,7 +60,19 @@ Output writes to the existing `synthetic` schema raw tables, identical to the sy
 
 ## Implementation Plan
 
-*Deferred. This spec is a planned placeholder; implementation plan will be authored when the spec is promoted from `planned` to `draft`.*
+Sequenced for M1 (Ingestion Core); Stage 1 of this plan is the load-bearing slice for the Ingestion-Complete gate.
+
+**Stage 1 — masking primitives + CLI (the parity-fixture path).**
+1. `moneybin synthetic anonymize --source <profile> --target <profile> --seed N` CLI scaffold, writing to the `synthetic` schema raw tables (same output contract as the synthetic generator).
+2. Deterministic-given-seed masking primitives: merchant substitution (category-preserving), amount perturbation (distribution-preserving), date shifting (cadence-preserving: day-of-week / day-of-month / inter-arrival), account-ID replacement (relationship-preserving), description scrubbing (reuse the PII patterns from `privacy-and-ai-trust.md`).
+3. Ground-truth label preservation: confirmed categorizations and transfer pairs mapped to anonymized IDs so evaluations retain ground truth.
+4. Scenario-runner integration: a `setup.persona: from-db` (anonymized-snapshot) path so a scenario can load an anonymized fixture — the mechanism behind the Gate A real-data parity check.
+5. Per-primitive unit tests + a round-trip e2e (anonymize → full `transform → match → categorize` → Tier-1 structural invariants).
+
+**Stage 2 — re-identification resistance (hardening, before any corpus leaves the maintainer's machine).**
+6. k-anonymity check over quasi-identifier projections; documented threat model.
+7. Re-identification attack tests (amount+date join deanonymization; k-anonymity violation).
+8. Statistical-similarity tests (KS-test / Wasserstein distance within configured tolerance).
 
 ## CLI Interface
 

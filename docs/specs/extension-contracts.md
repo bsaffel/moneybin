@@ -4,7 +4,7 @@
 
 - **Type:** Architecture
 - **Status:** in-progress
-- **Authority:** Defines the contributor-facing surface for the three extension types — **Reports**, **Analysis Packages**, and **Providers**. The contract every future MoneyBin extension lands as. Pre-launch deliverable; locks at M3E alongside the public MCP and CLI surfaces.
+- **Authority:** Defines the contributor-facing surface for the three extension types — **Reports**, **Analysis Packages**, and **Providers**. The contract every future MoneyBin extension lands as. The framework is M1Q and locks at the M1→M2 boundary; reference packages are M2M; contributor UX is M3I.
 
 ## Goal
 
@@ -13,6 +13,13 @@ MoneyBin's strategic frame is that the largest competitor isn't other PFM apps �
 This spec defines that contributor-facing surface: three extension types, their trust postures, their registration mechanisms, their quality progression, and the guided-contribution skills shipped alongside. Together they answer: *how does someone who wants to extend MoneyBin do so, cleanly and predictably?*
 
 This spec is not a feature spec. It defines contracts that future feature specs cite. The pre-launch surgical work it implies — provider `Protocol` definition, package framework implementation, scaffolder templates, validator CLI — is enumerated in [§Pre-launch surgical work](#pre-launch-surgical-work) and tracked separately as implementation plans.
+
+This is intentionally narrower than a general plugin SDK. The 1.0 contract is
+for warehouse-coherent extensions — Reports, Analysis Packages, and Providers —
+not arbitrary UI plugins. MoneyBin optimizes for coherent data contracts,
+capability declarations, and Quality Scale evidence before plugin count. UI
+component slots can arrive later as typed extensions of reports/packages once the
+Web UI and hosted runtime are mature.
 
 ## Background
 
@@ -81,7 +88,7 @@ flowchart LR
 
 ### Core vs Package distinction
 
-Existing MoneyBin domain logic — categorization, budget, merchants, accounts, sync, refresh, investments (M3B), multi-currency (M3C) — is **built-in MoneyBin functionality**, not an analysis package. It lives in the existing layered structure (`extractors/`, `services/`, `mcp/`, `cli/`) and the analysis-package contract does not retroactively apply.
+Existing MoneyBin domain logic — categorization, budget, merchants, accounts, sync, refresh, investments (M1J), multi-currency (M1K) — is **built-in MoneyBin functionality**, not an analysis package. It lives in the existing layered structure (`extractors/`, `services/`, `mcp/`, `cli/`) and the analysis-package contract does not retroactively apply.
 
 New modular domains contributed as installable units (`assets`, `us_tax`, future `crypto`, `canadian_tax`, `retirement`, etc.) follow the analysis-package contract.
 
@@ -89,12 +96,17 @@ New modular domains contributed as installable units (`assets`, `us_tax`, future
 
 ### 1.0 launch lineup
 
-The reference packages shipping at M3E:
+The reference packages shipping at M2M:
 
 - **`assets`** — user-entered domain data (real estate, vehicles, collectibles). Validates the "new entity types, user-entered" package shape.
 - **`us_tax`** — locale-specific tax computations layered on investments core (Schedule D, wash-sale checks, estimated payments). Validates the "deep analytical layer over core" shape. Seeds the follow-on community-contribution story (`canadian_tax`, `uk_tax`, etc.).
 
 Both ship at Platinum quality (see [§Quality Scale](#quality-scale)). Cost basis tracking is part of core investments, not its own package.
+
+Arbitrary UI plugins are out of scope for the 1.0 launch lineup. The package
+contract may later gain typed UI or MCP App component slots for reports/packages,
+but it should not become a playground for unbounded client-side UI code before
+the core Web UI contract is stable.
 
 ## Analysis Package contract
 
@@ -563,7 +575,7 @@ src/moneybin/extractors/<source>/
 └── README.md
 ```
 
-Existing extractors (OFX, Plaid, tabular) migrate to this shape as part of pre-launch surgical work. The `loaders/` directory is collapsed into `extractors/<name>/` — every provider is unified under one location regardless of input shape. (The W2 PDF-extraction provider was cut from M3E scope; tax-data ingestion will be re-designed as part of the broader tax-domain work.)
+Existing extractors (OFX, Plaid, tabular) migrate to this shape as part of pre-launch surgical work. The `loaders/` directory is collapsed into `extractors/<name>/` — every provider is unified under one location regardless of input shape. (The W2 PDF-extraction provider was cut from M3H scope; tax-data ingestion will be re-designed as part of the broader tax-domain work.)
 
 ### Registration: filesystem discovery
 
@@ -647,9 +659,9 @@ The single-line statement shipped in `docs/security.md`, README security section
 
 ### Launch shipping posture
 
-What ships at M3E vs. what's deferred:
+What ships at M3H vs. what's deferred:
 
-| Element | M3E launch | Post-launch hardening |
+| Element | M3H launch | Post-launch hardening |
 |---|---|---|
 | `quality_scale` manifest field | ✅ Required for all extensions | — |
 | Bronze → Platinum tier validation at registration | ✅ Manifest validity, capability-vs-SQL match, prefix discipline, code-owner declared, tests/scenario tests/regression fixtures present | Signed-release signature verification, test-coverage threshold enforcement, observability-emit detection (harder runtime checks) |
@@ -744,7 +756,7 @@ For non–Claude Code surfaces (Claude Desktop `.mcpb`, Cursor, ChatGPT/Codex MC
 
 ## Pre-launch surgical work
 
-Items required to make the contracts in this spec describable cleanly. These land before M3E:
+Items required to make the contracts in this spec describable cleanly. These land before M3H:
 
 | Item | Scope | Effort estimate |
 |---|---|---|
@@ -764,7 +776,7 @@ Items required to make the contracts in this spec describable cleanly. These lan
 | Implement `us_tax` package at Platinum | Same | ~1-2 weeks |
 | Platinum-ify existing providers (OFX, Plaid, tabular) | Add scenario tests, regression fixtures, schema-drift detection, code-owner declarations | ~3-5 days per provider |
 | Platinum-ify existing reports | Migrate to `@report` runner shape; add fixture-based tests; write `docs/guides/reports/<name>.md` user guides | ~1-2 days per report |
-| Resolve audit B-tier reports items | Unregister `reports_budget` (gated on M3C); remove `reports_health` CLI stub; update `merchant_id` spec drift in `reports-recipe-library.md` | ~½ day |
+| Resolve audit B-tier reports items | Unregister `reports_budget` (gated on M2C); remove `reports_health` CLI stub; update `merchant_id` spec drift in `reports-recipe-library.md` | ~½ day |
 
 Total estimate: ~8-12 weeks of agent-coordinated effort with parallelization. The implementation plan that follows this spec (via `/writing-plans`) decomposes into ordered work units.
 
@@ -776,7 +788,7 @@ Items deliberately deferred to post-launch hardening, captured here to anchor th
 - **Runtime network-enforcement** — outbound HTTP proxy or DNS allowlist enforcing `network` declarations
 - **Marketplace UI** — browseable directory with verification badges, quality-scale display, install button (the `claude plugins install` flow handles distribution today)
 - **Promotion workflow** — request-to-promote flow for external packages climbing from Bronze upward; automated verification of tier evidence
-- **First investment-augmentation package** — fundamentals overlay, FIRE projection, analyst signals — deferred until investments-core (M3B) is spec'd; shape depends on the investments contract
+- **First investment-augmentation package** — fundamentals overlay, FIRE projection, analyst signals — deferred until investments-core (M1J) is spec'd; shape depends on the investments contract
 - **UI/MCP App components for reports** — the doc surface defined at Platinum (`docs/guides/reports/<name>.md`) accommodates this expansion; the manifest gains optional `ui_component` and `mcp_app` fields when the feature ships
 - **Cross-package data flow constraints** — currently unrestricted on the reading side; if abuse emerges, add explicit read-from-other-package declarations
 

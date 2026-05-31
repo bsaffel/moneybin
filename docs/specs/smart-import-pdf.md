@@ -70,7 +70,7 @@ The only genuinely new code is **PDF → rows extraction + the routing decision.
 10a. **Account resolution.** The account identifier captured per Requirement 7a resolves to a `dim_accounts` row through the **existing** account-matching that tabular import already uses (`extractors/tabular/account_matching.py`); an unresolved identifier follows the same fallback tabular does. PDF transactions never land account-less.
 11. **Catch-all → seed.** Non-transaction documents are stored in `raw.pdf_seeds` as JSON, with an auto-generated `raw.pdf_<alias>` view projecting inferred typed columns. Seeds require an `--alias` (kebab/slug; default derived from issuer + document type, refused on collision).
 12. **Seed access boundary.** Seeds do not participate in matching, categorization, or curated `reports.*`. They ARE queryable via `sql_query` MCP, the REPL, and user SQL joining to `fct_transactions`, and appear in `moneybin://schema` with a `pdf-seed` origin marker. Documented at import time.
-13. **Investments deferral.** Brokerage *positions/holdings* PDFs route to seed until an investments core schema lands (M3B). No positions core table is invented here.
+13. **Investments deferral.** Brokerage *positions/holdings* PDFs route to seed until an investments core schema lands (M1J). No positions core table is invented here.
 
 ### Privacy & egress
 
@@ -295,7 +295,7 @@ Generate native-text PDF fixtures from existing synthetic personas: a checking s
 - **Local-first `ollama` rung** — a future zero-egress LLM option for users without a bridge; added as a local-first approach when prioritized.
 - **Local OCR (`pytesseract`) zero-key offline scan path** — additive follow-up if real users need offline scans without an agent.
 - **Multi-account / combined statements** (checking + savings + card in one PDF) — the PDF face of the multi-account problem; deferred to the future multi-tab / multi-account tabular-format work and solved there once, not as a PDF-specific path. (Single-account statements with a captured account id per Requirement 10a are in scope.)
-- **Document semantics** — W-2/1099 → tax, positions → investments. These belong to packages (`us_tax`) / future core (investments, M3B), consuming seeds. The importer stays generic.
+- **Document semantics** — W-2/1099 → tax, positions → investments. These belong to packages (`us_tax`) / future core (investments, M1J), consuming seeds. The importer stays generic.
 - **Receipts** — different doc shape (one transaction per doc); separate feature per the umbrella.
 - **Password-protected PDFs** — user unlocks before import (umbrella scope line).
 - **Write-back / annotation of source PDFs** — read-only.
