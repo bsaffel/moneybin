@@ -220,12 +220,19 @@ class SystemStatusPayload:
 
 @dataclass(frozen=True, slots=True)
 class InvariantResultPayload:
-    """One pipeline invariant check result inside SystemDoctorPayload."""
+    """One pipeline invariant check result inside SystemDoctorPayload.
+
+    ``recovery_actions`` carries the doctor-recipe-produced
+    :class:`RecoveryActionPayload` list for failing/warning invariants — pass
+    and skipped invariants always carry an empty list. Mirrors the precedent
+    set by :class:`SystemAuditHistoryEntryPayload.recovery_actions`.
+    """
 
     name: Annotated[str, DataClass.RECORD_ID]
     status: Annotated[str, DataClass.TXN_TYPE]
     detail: Annotated[str | None, DataClass.DESCRIPTION]
     affected_ids: Annotated[list[str], DataClass.RECORD_ID]
+    recovery_actions: list[RecoveryActionPayload]
 
 
 @dataclass(frozen=True, slots=True)

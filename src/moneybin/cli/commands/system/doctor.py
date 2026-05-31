@@ -74,6 +74,9 @@ def doctor_command(
                     "status": r.status,
                     "detail": r.detail,
                     "affected_ids": r.affected_ids,
+                    "recovery_actions": [
+                        a.model_dump() for a in (r.recovery_actions or [])
+                    ],
                 }
                 for r in report.invariants
             ],
@@ -108,6 +111,11 @@ def doctor_command(
         typer.echo(line)
         if verbose and result.affected_ids:
             typer.echo(f"   Affected: {', '.join(result.affected_ids)}")
+        for action in result.recovery_actions or []:
+            typer.echo(
+                f"   💡 [{action.confidence}] {action.tool}({action.arguments}) "
+                f"— {action.rationale}"
+            )
 
     if not quiet:
         n = len(report.invariants)

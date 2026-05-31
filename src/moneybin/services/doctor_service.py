@@ -8,6 +8,7 @@ from typing import Literal
 
 from sqlglot import exp
 
+from moneybin.audits import recipes as recipe_registry
 from moneybin.config import get_settings
 from moneybin.database import Database, sqlmesh_context
 from moneybin.errors import RecoveryAction
@@ -29,6 +30,8 @@ from moneybin.tables import (
     PROPOSED_RULES,
     TABULAR_FORMATS,
     TRANSACTION_CATEGORIES,
+    TRANSACTION_NOTES,
+    TRANSACTION_TAGS,
     USER_CATEGORIES,
     USER_MERCHANTS,
     TableRef,
@@ -117,13 +120,39 @@ class DoctorService:
         dedup_reconciliation = self._run_dedup_reconciliation()
         categorization = self._run_categorization_coverage()
         app_integrity = self._run_app_integrity(full=full)
-        invariants = [
+        orphan_app_state = self._run_orphan_app_state()
+        raw_invariants = [
             *sqlmesh_results,
             dedup_reconciliation,
             categorization,
             *app_integrity,
+            orphan_app_state,
         ]
+        invariants = [self._apply_recipe(r) for r in raw_invariants]
         return DoctorReport(invariants=invariants, transaction_count=transaction_count)
+
+    def _apply_recipe(self, result: InvariantResult) -> InvariantResult:
+        """Populate ``recovery_actions`` from the recipe registry, if a recipe exists.
+
+        Single seam: every audit's result passes through here on its way into
+        the report, so per-audit ``_run_*`` methods stay unaware of the registry.
+        Pass/skipped results don't get recovery actions — there's nothing to fix.
+        """
+        if result.status in ("pass", "skipped"):
+            return result
+        recipe_fn = recipe_registry.get(result.name)
+        if recipe_fn is None:
+            return result
+        actions = recipe_fn(
+            result.affected_ids, recipe_registry.RecipeContext(db=self._db)
+        )
+        return InvariantResult(
+            name=result.name,
+            status=result.status,
+            detail=result.detail,
+            affected_ids=result.affected_ids,
+            recovery_actions=actions,
+        )
 
     def _run_app_integrity(self, *, full: bool) -> list[InvariantResult]:
         """Per-table integrity checks for protected ``app.*`` tables (Invariant 10).
@@ -406,6 +435,61 @@ class DoctorService:
                 name=name,
                 status="warn",
                 detail=f"{len(affected)} merchant(s) referenced by no categorization",
+                affected_ids=affected,
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _run_orphan_app_state(self) -> InvariantResult:
+        """Flag orphan ``app.transaction_notes`` / ``app.transaction_tags`` rows.
+
+        A note or tag whose ``transaction_id`` no longer resolves in
+        ``core.fct_transactions`` is an orphan. Skipped before the first
+        transform builds ``core.fct_transactions``.
+
+        ``affected_ids`` are emitted with prefixes so the doctor recipe can
+        dispatch to the right MCP tool without re-querying:
+
+        - ``note:<note_id>`` → one note per row (each note has its own PK)
+        - ``tag:<transaction_id>`` → one row per orphan transaction (tags are
+          cleared wholesale per transaction; multiple tag rows on the same
+          orphan transaction collapse to one affected_id)
+        """
+        name = "orphan_app_state"
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT 'note:' || note_id AS aid
+                FROM {TRANSACTION_NOTES.full_name} n
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM {FCT_TRANSACTIONS.full_name} t
+                    WHERE t.transaction_id = n.transaction_id
+                )
+                UNION
+                SELECT 'tag:' || transaction_id
+                FROM {TRANSACTION_TAGS.full_name} g
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM {FCT_TRANSACTIONS.full_name} t
+                    WHERE t.transaction_id = g.transaction_id
+                )
+                ORDER BY aid
+                """  # noqa: S608  # TableRef constants, no user input
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — core.fct_transactions may not exist yet
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"orphan check unavailable: {e}",
+                affected_ids=[],
+            )
+        if rows:
+            affected = [str(r[0]) for r in rows]
+            return InvariantResult(
+                name=name,
+                status="fail",
+                detail=(
+                    f"{len(affected)} orphan note/tag row(s) reference a "
+                    "transaction_id absent from core.fct_transactions"
+                ),
                 affected_ids=affected,
             )
         return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])

@@ -699,8 +699,9 @@ def test_run_all_returns_expected_invariants(
     # tabular_formats / match_decisions / imports + user_categories uniqueness +
     # user_merchants orphans + proposed_rules->rule FK + transaction_categories->fct
     # FK + account_settings->dim_accounts FK + balance_assertions->dim_accounts FK +
-    # budgets->dim_categories FK + match_decisions->dim_accounts FK).
-    assert len(report.invariants) == 26
+    # budgets->dim_categories FK + match_decisions->dim_accounts FK) +
+    # orphan_app_state (PR4: scans transaction_notes / transaction_tags vs core).
+    assert len(report.invariants) == 27
     names = [r.name for r in report.invariants]
     assert "fct_transactions_fk_integrity" in names
     assert "fct_transactions_sign_convention" in names
@@ -721,6 +722,7 @@ def test_run_all_returns_expected_invariants(
     assert "app_balance_assertions_account_fk" in names
     assert "app_budgets_category_fk" in names
     assert "app_match_decisions_account_fk" in names
+    assert "orphan_app_state" in names
 
 
 @pytest.mark.unit

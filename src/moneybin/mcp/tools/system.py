@@ -235,6 +235,16 @@ def system_doctor(full: bool = False) -> ResponseEnvelope[SystemDoctorPayload]:
                     status=r.status,
                     detail=r.detail,
                     affected_ids=r.affected_ids,
+                    recovery_actions=[
+                        RecoveryActionPayload(
+                            tool=a.tool,
+                            arguments=a.arguments,
+                            rationale=a.rationale,
+                            confidence=a.confidence,
+                            idempotent=a.idempotent,
+                        )
+                        for a in (r.recovery_actions or [])
+                    ],
                 )
                 for r in report.invariants
             ],
