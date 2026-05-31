@@ -674,7 +674,7 @@ Integration tests require a coordinated test environment: a running moneybin-ser
 
 ### Synthetic data interaction
 
-The [`testing-and-validation-overview.md`](testing-and-validation-overview.md) umbrella spec deferred Plaid Sandbox testing to this spec. The testing strategy here completes that contract: golden-file payloads captured from sandbox for offline unit tests, live sandbox for integration tests.
+The [`testing-overview.md`](testing-overview.md) umbrella spec deferred Plaid Sandbox testing to this spec. The testing strategy here completes that contract: golden-file payloads captured from sandbox for offline unit tests, live sandbox for integration tests.
 
 ---
 

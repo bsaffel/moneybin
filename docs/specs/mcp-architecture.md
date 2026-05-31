@@ -1,7 +1,7 @@
 # MCP Architecture & Design
 
 > Companions: [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) (AI data flow tiers, consent model), [`moneybin-mcp.md`](moneybin-mcp.md) (concrete tool/prompt/resource definitions), [`extension-contracts.md`](extension-contracts.md) (contributor-facing surface — packages and reports register tools into this server via entry points), [ADR-003: MCP Primary Interface](../decisions/003-mcp-primary-interface.md)
-> Supersedes: [`mcp-tier1-tools.md`](mcp-tier1-tools.md) (prototype-era tool list), [`archived/mcp-read-tools.md`](archived/mcp-read-tools.md), [`archived/mcp-write-tools.md`](archived/mcp-write-tools.md)
+> Supersedes: `mcp-tier1-tools.md` (prototype-era tool list), [`archived/mcp-read-tools.md`](archived/mcp-read-tools.md), [`archived/mcp-write-tools.md`](archived/mcp-write-tools.md)
 
 ## Purpose
 
@@ -640,7 +640,7 @@ These decisions and their rationale should be documented in the 12-month plan.
 
 | Spec | Disposition |
 |---|---|
-| [`mcp-tier1-tools.md`](mcp-tier1-tools.md) | Superseded. Prototype-era tool list designed before the privacy framework. Tool concepts that survive are redesigned in `moneybin-mcp.md`. |
+| `mcp-tier1-tools.md` | Superseded. Prototype-era tool list designed before the privacy framework. Tool concepts that survive are redesigned in `moneybin-mcp.md`. |
 | [`archived/mcp-read-tools.md`](archived/mcp-read-tools.md) | Historical record of the prototype. Implementation will be replaced. |
 | [`archived/mcp-write-tools.md`](archived/mcp-write-tools.md) | Historical record of the prototype. Implementation will be replaced. |
 
