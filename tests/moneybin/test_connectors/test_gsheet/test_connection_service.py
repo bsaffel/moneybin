@@ -418,3 +418,157 @@ def test_disconnect_purge_drops_view_and_deletes_rows(
     ).fetchone()
     assert view_check is not None
     assert view_check[0] == 0
+
+
+class TestGSheetPartialMergeColumnMapping:
+    """Verify --column-mapping is partial-merge, not whole-map replacement."""
+
+    def test_partial_merge_keeps_detected_for_unspecified_fields(
+        self, in_memory_db: Database
+    ) -> None:
+        """Override for one dest field; others fall back to detection."""
+        svc, sheets, _ = _make_service(in_memory_db)
+        # Tiller sheet: detection proposes Date→transaction_date, Amount→amount,
+        # Description→description. User supplies description override only.
+        sheets.register_workbook("ssPM", _tiller_workbook())
+        req = ConnectionRequest(
+            url="https://docs.google.com/spreadsheets/d/ssPM/edit#gid=0",
+            adapter="transactions",
+            account_name="Chase Checking",
+            account_id="acct_chase",
+            # source→dest override: remap "Description" source col to "description" dest
+            # (same result as detection, but exercises the partial-merge path)
+            column_mapping={"Description": "description"},
+            yes=True,
+            no_initial_pull=True,
+        )
+        result = svc.connect(req)
+        cm = result.connection.column_mapping
+        # Detected fields must survive; the override field is present too.
+        assert cm.get("Date") == "transaction_date"
+        assert cm.get("Amount") == "amount"
+        assert cm.get("Description") == "description"
+
+    def test_partial_merge_validates_missing_required(
+        self, in_memory_db: Database
+    ) -> None:
+        """Override that leaves a required dest unmapped raises an error."""
+        svc, sheets, _ = _make_service(in_memory_db)
+        # Sheet where column content can't be detected as a date (no date-like data).
+        sheets.register_workbook(
+            "ssPM2",
+            FakeWorkbook(
+                title="Sheet",
+                tabs=[
+                    FakeSheetTab(
+                        name="Data",
+                        gid=0,
+                        # Gibberish content — no date-like values, so the tabular
+                        # column_mapper cannot detect transaction_date by content.
+                        headers=["ColA", "ColB", "ColC"],
+                        rows=[["xyz", "50", "note"], ["abc", "100", "note2"]],
+                    )
+                ],
+            ),
+        )
+        # User supplies an override for amount only; detection can't find
+        # transaction_date and the override doesn't supply it either.
+        req = ConnectionRequest(
+            url="https://docs.google.com/spreadsheets/d/ssPM2/edit#gid=0",
+            adapter="transactions",
+            account_name="Test",
+            account_id="acct_test",
+            column_mapping={"ColB": "amount"},  # only amount; no transaction_date
+            yes=True,
+            no_initial_pull=True,
+        )
+        with pytest.raises(GSheetError, match="transaction_date"):
+            svc.connect(req)
+
+    def test_partial_merge_rejects_unknown_source_column(
+        self, in_memory_db: Database
+    ) -> None:
+        """Override naming a header not in the sheet raises an error."""
+        svc, sheets, _ = _make_service(in_memory_db)
+        sheets.register_workbook("ssPM3", _tiller_workbook())
+        req = ConnectionRequest(
+            url="https://docs.google.com/spreadsheets/d/ssPM3/edit#gid=0",
+            adapter="transactions",
+            account_name="Chase Checking",
+            account_id="acct_chase",
+            # "NoSuchCol" is not in the sheet headers.
+            column_mapping={"NoSuchCol": "description"},
+            yes=True,
+            no_initial_pull=True,
+        )
+        with pytest.raises(GSheetError, match="NoSuchCol"):
+            svc.connect(req)
+
+
+class TestGSheetSharedConfidenceBands:
+    """Verify gsheet uses ImportSettings.confidence bands for tier derivation."""
+
+    def test_tier_derived_from_score_with_shared_bands(
+        self, in_memory_db: Database
+    ) -> None:
+        """Detection score drives tier via the shared band thresholds."""
+        # The Tiller workbook produces a high-confidence detection (score >= 0.90).
+        # Verify that connect() succeeds without --yes for a high-tier result.
+        svc, sheets, _ = _make_service(in_memory_db)
+        sheets.register_workbook("ssBands", _tiller_workbook())
+        req = ConnectionRequest(
+            url="https://docs.google.com/spreadsheets/d/ssBands/edit#gid=0",
+            adapter="transactions",
+            account_name="Chase Checking",
+            account_id="acct_chase",
+            yes=False,  # no explicit acceptance — relies on high confidence
+            no_initial_pull=True,
+        )
+        # High confidence should succeed without --yes.
+        result = svc.connect(req)
+        assert result.connection.adapter == "transactions"
+
+    def test_tier_responds_to_custom_bands(
+        self, in_memory_db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Lowering T_high to the detection score promotes medium → high tier.
+
+        A sheet with score=0.75 is 'medium' under default bands (t_high=0.90).
+        When T_high is lowered to 0.70, the same score clears t_high and
+        becomes 'high' — the connect succeeds without --yes.
+        """
+        import moneybin.config as config_module
+
+        # Lower T_high so that a score of 0.75 clears it → "high".
+        monkeypatch.setenv("MONEYBIN_IMPORT___CONFIDENCE__T_HIGH", "0.70")
+        # Invalidate the global settings cache so the env var takes effect.
+        monkeypatch.setattr(config_module, "_current_settings", None)
+
+        svc, sheets, _ = _make_service(in_memory_db)
+        # This workbook produces score≈0.75 (medium under defaults): Date/Description/Amount
+        # with a non-parseable date value so the date flag marks it below "high".
+        sheets.register_workbook(
+            "ssBands2",
+            FakeWorkbook(
+                title="Score75",
+                tabs=[
+                    FakeSheetTab(
+                        name="Transactions",
+                        gid=0,
+                        headers=["Date", "Description", "Amount"],
+                        rows=[["not-a-date", "Coffee", "-4.50"]],
+                    )
+                ],
+            ),
+        )
+        req = ConnectionRequest(
+            url="https://docs.google.com/spreadsheets/d/ssBands2/edit#gid=0",
+            adapter="transactions",
+            account_name="Chase Checking",
+            account_id="acct_chase",
+            yes=False,  # no explicit acceptance — high tier succeeds without --yes
+            no_initial_pull=True,
+        )
+        # With T_high=0.70, score=0.75 ≥ T_high → "high" → no --yes needed.
+        result = svc.connect(req)
+        assert result.connection.adapter == "transactions"

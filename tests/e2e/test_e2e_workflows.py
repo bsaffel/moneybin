@@ -76,6 +76,7 @@ class TestCSVImportPipeline:
             "--account-id",
             "e2e-test-acct",
             "--no-refresh",
+            "--confirm",
             env=env,
         )
         result.assert_success()
@@ -114,6 +115,7 @@ class TestOFXImportPipeline:
             "files",
             str(fixture),
             "--no-refresh",
+            "--confirm",
             env=env,
         )
         result.assert_success()
@@ -248,6 +250,7 @@ class TestCategorizationPipeline:
             "--account-id",
             "e2e-cat-acct",
             "--no-refresh",
+            "--confirm",
             env=env,
         )
         result.assert_success()
@@ -295,6 +298,7 @@ class TestAutoRulePipeline:
             "--account-id",
             "wf-autorule-acct-a",
             "--no-refresh",
+            "--confirm",
             env=env,
         )
         result.assert_success()
@@ -361,6 +365,7 @@ class TestAutoRulePipeline:
             "--account-id",
             "wf-autorule-acct-b",
             "--no-refresh",
+            "--confirm",
             env=env,
         )
         result.assert_success()

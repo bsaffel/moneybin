@@ -88,6 +88,55 @@ PDF_SEED_ROWS_TOTAL = Counter(
     ["alias"],
 )
 
+# ── Smart import confirmation ────────────────────────────────────────────────
+
+IMPORT_CONFIRMATIONS_TOTAL = Counter(
+    "moneybin_import_confirmations_total",
+    "First-encounter confirms by channel, tier, and outcome.",
+    ("channel", "tier", "outcome"),
+)
+
+IMPORT_DETECTION_SCORE = Histogram(
+    "moneybin_import_detection_score",
+    "Distribution of normalized confidence score across all detections.",
+    # _score_mapping in column_mapper.py emits a discrete set today:
+    # {0.40, 0.75, 0.85, 1.0}. Buckets are aligned to that distribution so
+    # the histogram's high-band buckets aren't permanently empty (which
+    # would make tuning t_high above 0.85 functionally equivalent to 0.86).
+    # If _score_mapping evolves to a continuous distribution, re-fan these.
+    buckets=(0.0, 0.4, 0.75, 0.85, 1.0),
+)
+
+IMPORT_SELF_ACCEPT_TOTAL = Counter(
+    "moneybin_import_self_accept_total",
+    "Agent self-accepts at `high` (zero until calibration gate opens).",
+    ("channel",),
+)
+
+IMPORT_OVERRIDE_TOTAL = Counter(
+    "moneybin_import_override_total",
+    "Confirms that supplied a mapping override; high values flag weak detection.",
+    ("channel",),
+)
+
+IMPORT_KNOWN_FORMAT_REUSE_TOTAL = Counter(
+    "moneybin_import_known_format_reuse_total",
+    "Silent reuses of a confirmed layout (mastery-curve KPI).",
+    ("channel",),
+)
+
+IMPORT_REVALIDATION_FAILURE_TOTAL = Counter(
+    "moneybin_import_revalidation_failure_total",
+    "Known layout that failed the replay/validation guard and re-surfaced.",
+    ("channel",),
+)
+# Declared but not yet incremented — the matched_format path (see
+# ImportService._import_tabular) currently trusts the saved layout
+# without a structural replay check (column presence, header drift).
+# The .inc() call wires in when the replay guard lands; declaring the
+# counter now keeps dashboards/alerting stable across that change.
+
+
 # ── SQLMesh transforms ───────────────────────────────────────────────────────
 
 SQLMESH_RUN_DURATION_SECONDS = Histogram(

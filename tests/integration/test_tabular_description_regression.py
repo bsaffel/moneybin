@@ -46,7 +46,7 @@ def test_tabular_import_preserves_description(
     assert fixture.exists(), f"missing fixture: {fixture}"
 
     result = ImportService(db).import_file(
-        fixture, account_name="checking", auto_accept=True
+        fixture, account_name="checking", auto_accept=True, confirm=True
     )
     assert result.transactions > 0, "fixture should yield transactions"
     assert result.core_tables_rebuilt, "transforms should have run"

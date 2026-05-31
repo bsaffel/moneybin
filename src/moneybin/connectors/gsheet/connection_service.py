@@ -21,18 +21,29 @@ from typing import Any
 import polars as pl
 from sqlglot import exp
 
+from moneybin.config import get_settings
 from moneybin.connectors.gsheet.adapters import ADAPTERS
 from moneybin.connectors.gsheet.adapters.base import (
     DetectionResult,
     GSheetConnection,
     LoadResult,
 )
-from moneybin.connectors.gsheet.adapters.transactions import REQUIRED_DEST_FIELDS
 from moneybin.connectors.gsheet.errors import GSheetError, GSheetUnreachableError
 from moneybin.connectors.gsheet.sheets_api import SheetsAPI
 from moneybin.connectors.gsheet.url_parser import parse_sheet_url
 from moneybin.database import Database
+from moneybin.extractors.confidence import tier_for
+from moneybin.extractors.tabular.formats import SignConventionType
+from moneybin.metrics.registry import (
+    IMPORT_CONFIRMATIONS_TOTAL,
+    IMPORT_DETECTION_SCORE,
+    IMPORT_OVERRIDE_TOTAL,
+)
 from moneybin.repositories.gsheet_connections_repo import GSheetConnectionsRepo
+from moneybin.services.import_confirmation import (
+    MappingValidationError,
+    validate_partial_mapping,
+)
 from moneybin.tables import GSHEET_SEEDS, TABULAR_TRANSACTIONS
 
 logger = logging.getLogger(__name__)
@@ -65,6 +76,7 @@ class ConnectionRequest:
     account_name: str | None = None
     account_id: str | None = None
     column_mapping: dict[str, str] | None = None
+    sign: SignConventionType | None = None
     yes: bool = False
     accept_seed_fallback: bool = False
     no_initial_pull: bool = False
@@ -138,17 +150,29 @@ class GSheetConnectionService:
         adapter = ADAPTERS[target_adapter]
         detection = adapter.detect(df, account_name=req.account_name)
 
+        # Derive tier from normalized score + shared confidence bands.
+        if target_adapter == "transactions":
+            bands = get_settings().import_.confidence
+            tier = tier_for(detection.score, t_high=bands.t_high, t_med=bands.t_med)
+        else:
+            tier = detection.confidence  # seed adapter uses the categorical value
+
         # Fall-through: auto-detect → low-confidence transactions → maybe seed.
         if (
             target_adapter == "transactions"
-            and detection.confidence == "low"
+            and tier == "low"
             and req.column_mapping is None
         ):
             if req.adapter is None and req.accept_seed_fallback:
                 target_adapter = "seed"
                 adapter = ADAPTERS["seed"]
                 detection = adapter.detect(df, account_name=None)
+                tier = detection.confidence
             else:
+                IMPORT_DETECTION_SCORE.observe(detection.score)
+                IMPORT_CONFIRMATIONS_TOTAL.labels(
+                    channel="gsheet", tier=tier, outcome="declined"
+                ).inc()
                 raise LowConfidenceError(
                     "Low-confidence transactions detection. "
                     "Provide --column-mapping or retry with "
@@ -161,10 +185,14 @@ class GSheetConnectionService:
         # corrupt the initial pull.
         if (
             target_adapter == "transactions"
-            and detection.confidence == "medium"
+            and tier == "medium"
             and req.column_mapping is None
             and not req.yes
         ):
+            IMPORT_DETECTION_SCORE.observe(detection.score)
+            IMPORT_CONFIRMATIONS_TOTAL.labels(
+                channel="gsheet", tier=tier, outcome="declined"
+            ).inc()
             raise AmbiguousDetectionError(
                 "Medium-confidence transactions detection. "
                 "Re-run with --yes to accept the inferred mapping, "
@@ -207,20 +235,122 @@ class GSheetConnectionService:
 
         # For seed adapter the column_mapping field holds inferred typed_columns
         # (the raw_seed adapter reuses the field for its typed view).
-        # For transactions, a user-supplied override (req.column_mapping) wins
-        # over detection — that's the whole point of letting the user pass it.
+        # For transactions, merge the user-supplied override onto detection and
+        # validate the merged result. The override is partial: only the
+        # destination fields the user names are replaced; others fall back to
+        # the detector's proposal (partial-merge per spec Req 6).
+        # sign_convention_for_save is overwritten by the override path when the
+        # merged mapping is split debit/credit; defaults to detection otherwise.
+        sign_convention_for_save = detection.sign_convention
         if target_adapter == "seed":
             column_mapping = detection.typed_columns
-        elif req.column_mapping is not None:
-            # User override: schema-validate before persisting. Without this,
-            # a missing or typo'd required dest (e.g. `amount`) creates a
-            # "healthy" connection whose pulls fail with zero rows loaded —
-            # silent ingestion failure indistinguishable from an empty sheet.
-            _validate_transactions_column_mapping(
-                user_mapping=req.column_mapping,
-                sheet_headers=list(df.columns),
+        elif target_adapter == "transactions":
+            # detection.column_mapping is source→dest; validate_partial_mapping
+            # expects dest→source for both proposed and override.
+            proposed_dest_to_src = {
+                dest: src for src, dest in detection.column_mapping.items()
+            }
+            override_dest_to_src: dict[str, str] = {}
+            if req.column_mapping:
+                override_dest_to_src = {
+                    dest: src for src, dest in req.column_mapping.items()
+                }
+            # Required-amount shape derives from the MERGED dest set so a
+            # user override can swap a split debit/credit detection to a
+            # single ``amount`` column (or vice versa). The transactions
+            # adapter shares ``map_columns`` with tabular and can therefore
+            # produce a ``debit_amount``+``credit_amount`` proposal that
+            # satisfies the score-1.0 path without a literal ``amount``.
+            from moneybin.extractors.tabular.field_aliases import FIELD_ALIASES
+
+            # Pre-compute the effective amount-shape the same way
+            # validate_partial_mapping will resolve it, so the required-
+            # fields check agrees with the override-driven shape change.
+            # See _import_tabular for the equivalent tabular logic.
+            override_has_amount_only = (
+                "amount" in override_dest_to_src
+                and "debit_amount" not in override_dest_to_src
+                and "credit_amount" not in override_dest_to_src
             )
-            column_mapping = req.column_mapping
+            override_has_split_only = (
+                "amount" not in override_dest_to_src
+                and "debit_amount" in override_dest_to_src
+                and "credit_amount" in override_dest_to_src
+            )
+            proposed_is_split = (
+                "debit_amount" in proposed_dest_to_src
+                and "credit_amount" in proposed_dest_to_src
+                and "amount" not in proposed_dest_to_src
+            )
+            if override_has_amount_only:
+                required_for_amount: tuple[str, ...] = ("amount",)
+            elif override_has_split_only:
+                required_for_amount = ("debit_amount", "credit_amount")
+            elif proposed_is_split:
+                required_for_amount = ("debit_amount", "credit_amount")
+            else:
+                required_for_amount = ("amount",)
+            required_fields_dynamic = ("transaction_date", *required_for_amount)
+            try:
+                merged_dest_to_src = validate_partial_mapping(
+                    proposed=proposed_dest_to_src,
+                    override=override_dest_to_src,
+                    available_columns=tuple(df.columns),
+                    required_fields=required_fields_dynamic,
+                    valid_destinations=tuple(FIELD_ALIASES.keys()),
+                )
+            except MappingValidationError as e:
+                raise GSheetError(str(e)) from e
+            # Invert back to source→dest for storage.
+            column_mapping = {src: dest for dest, src in merged_dest_to_src.items()}
+            # If the merged mapping is split debit/credit (whether the user
+            # added it via override or the detection produced it), the only
+            # sign convention that makes sense is split_debit_credit — the
+            # transform rejects rows when the convention disagrees with the
+            # mapping shape. Coerce here so a `--column-mapping
+            # debit_amount=Debit credit_amount=Credit` override doesn't
+            # silently persist a stale single-amount sign convention. Date
+            # format and number format remain detector-derived; remapping
+            # the date or amount source columns to a different format
+            # without `--date-format`/`--number-format` is still a documented
+            # reconnect path.
+            has_split = (
+                "debit_amount" in merged_dest_to_src
+                and "credit_amount" in merged_dest_to_src
+                and "amount" not in merged_dest_to_src
+            )
+            detector_was_split = detection.sign_convention == "split_debit_credit"
+            if has_split:
+                if req.sign is not None and req.sign != "split_debit_credit":
+                    raise GSheetError(
+                        f"--sign={req.sign!r} contradicts the resolved "
+                        "split debit/credit mapping. Drop --sign (the shape "
+                        "implies split_debit_credit) or change the column "
+                        "mapping to a single amount column."
+                    )
+                sign_convention_for_save = "split_debit_credit"
+            elif detector_was_split:
+                # Split → single via override: detector's split-only
+                # convention is no longer valid against the resolved
+                # single-amount mapping. When the caller doesn't pass
+                # --sign we fall back to the most common convention
+                # (negative_is_expense), but this is a guess: a
+                # credit-card-style export (positive_is_expense) would
+                # silently persist inverted polarity. Pass --sign on
+                # connect / reconnect to be explicit.
+                sign_convention_for_save = req.sign or "negative_is_expense"
+            else:
+                sign_convention_for_save = req.sign or detection.sign_convention
+            IMPORT_DETECTION_SCORE.observe(detection.score)
+            if req.column_mapping:
+                IMPORT_OVERRIDE_TOTAL.labels(channel="gsheet").inc()
+                IMPORT_CONFIRMATIONS_TOTAL.labels(
+                    channel="gsheet", tier=tier, outcome="overridden"
+                ).inc()
+            else:
+                IMPORT_CONFIRMATIONS_TOTAL.labels(
+                    channel="gsheet", tier=tier, outcome="accepted"
+                ).inc()
         else:
             column_mapping = detection.column_mapping
 
@@ -236,7 +366,7 @@ class GSheetConnectionService:
             column_mapping=column_mapping,
             header_signature=detection.header_signature,
             date_format=detection.date_format,
-            sign_convention=detection.sign_convention,
+            sign_convention=sign_convention_for_save,
             number_format=detection.number_format,
             skip_rows=detection.skip_rows,
             skip_trailing_patterns=detection.skip_trailing_patterns or None,
@@ -349,7 +479,12 @@ class GSheetConnectionService:
             raise
 
     def reconnect(
-        self, connection_id: str, *, yes: bool = False, actor: str = "cli"
+        self,
+        connection_id: str,
+        *,
+        yes: bool = False,
+        sign: SignConventionType | None = None,
+        actor: str = "cli",
     ) -> ConnectResult:
         """Re-detect against the current sheet, re-pin mapping, run a pull."""
         existing = self._repo.get(connection_id)
@@ -376,7 +511,17 @@ class GSheetConnectionService:
         adapter = ADAPTERS[existing["adapter"]]
         detection = adapter.detect(df, account_name=existing.get("account_name"))
 
-        if existing["adapter"] == "transactions" and detection.confidence == "low":
+        if existing["adapter"] == "transactions":
+            bands = get_settings().import_.confidence
+            tier = tier_for(detection.score, t_high=bands.t_high, t_med=bands.t_med)
+        else:
+            tier = detection.confidence
+
+        if existing["adapter"] == "transactions" and tier == "low":
+            IMPORT_DETECTION_SCORE.observe(detection.score)
+            IMPORT_CONFIRMATIONS_TOTAL.labels(
+                channel="gsheet", tier=tier, outcome="declined"
+            ).inc()
             raise LowConfidenceError(
                 "Reconnect detection returned low confidence; "
                 "the sheet structure may have changed substantially."
@@ -384,11 +529,11 @@ class GSheetConnectionService:
 
         # Symmetric to connect(): a medium-confidence remap can silently
         # re-pin the wrong mapping, so require explicit acceptance via --yes.
-        if (
-            existing["adapter"] == "transactions"
-            and detection.confidence == "medium"
-            and not yes
-        ):
+        if existing["adapter"] == "transactions" and tier == "medium" and not yes:
+            IMPORT_DETECTION_SCORE.observe(detection.score)
+            IMPORT_CONFIRMATIONS_TOTAL.labels(
+                channel="gsheet", tier=tier, outcome="declined"
+            ).inc()
             raise AmbiguousDetectionError(
                 "Reconnect detection returned medium confidence. "
                 "Re-run with --yes to accept the inferred mapping."
@@ -399,13 +544,50 @@ class GSheetConnectionService:
             if existing["adapter"] == "seed"
             else detection.column_mapping
         )
+        if existing["adapter"] == "transactions":
+            IMPORT_DETECTION_SCORE.observe(detection.score)
+            IMPORT_CONFIRMATIONS_TOTAL.labels(
+                channel="gsheet", tier=tier, outcome="accepted"
+            ).inc()
+
+        # Mirror connect() — coerce sign_convention to match the resolved
+        # amount shape. reconnect() doesn't accept a --column-mapping
+        # override today, so the gap only bites if the detector itself
+        # returned a sign/shape mismatch, but the symmetry keeps both
+        # write paths trustworthy as the gsheet surface evolves.
+        if existing["adapter"] == "transactions":
+            dest_to_src_reconnect = {dest: src for src, dest in column_mapping.items()}
+            reconnect_has_split = (
+                "debit_amount" in dest_to_src_reconnect
+                and "credit_amount" in dest_to_src_reconnect
+                and "amount" not in dest_to_src_reconnect
+            )
+            reconnect_detector_was_split = (
+                detection.sign_convention == "split_debit_credit"
+            )
+            if reconnect_has_split:
+                if sign is not None and sign != "split_debit_credit":
+                    raise GSheetError(
+                        f"--sign={sign!r} contradicts the resolved split "
+                        "debit/credit mapping. Drop --sign or change the "
+                        "column mapping to a single amount column."
+                    )
+                sign_convention_to_save = "split_debit_credit"
+            elif reconnect_detector_was_split:
+                # See connect() — split→single fallback is a guess unless
+                # the caller passes --sign explicitly.
+                sign_convention_to_save = sign or "negative_is_expense"
+            else:
+                sign_convention_to_save = sign or detection.sign_convention
+        else:
+            sign_convention_to_save = sign or detection.sign_convention
 
         self._repo.update_mapping(
             connection_id,
             column_mapping=column_mapping,
             header_signature=detection.header_signature,
             date_format=detection.date_format,
-            sign_convention=detection.sign_convention,
+            sign_convention=sign_convention_to_save,
             number_format=detection.number_format,
             skip_rows=detection.skip_rows,
             skip_trailing_patterns=detection.skip_trailing_patterns or None,
@@ -429,40 +611,6 @@ class GSheetConnectionService:
             initial_pull=pull.load_result,
             initial_pull_status=pull.status,
             initial_pull_error=pull.error_message,
-        )
-
-
-def _validate_transactions_column_mapping(
-    *,
-    user_mapping: dict[str, str],
-    sheet_headers: list[str],
-) -> None:
-    """Verify a user-supplied --column-mapping is schema-complete.
-
-    Mapping shape is ``{source_header: dest_field}``. Two failure modes:
-
-    1. Required dest field missing — pulls will fail every run.
-    2. Source header referenced but not present in the sheet — header
-       lookup fails at transform-time, leaks Polars error to MCP.
-
-    Raises GSheetError with a message that names the missing field /
-    unknown header so the user can fix the mapping without a stack-
-    trace dig.
-    """
-    dest_fields = set(user_mapping.values())
-    missing = [f for f in REQUIRED_DEST_FIELDS if f not in dest_fields]
-    if missing:
-        raise GSheetError(
-            f"--column-mapping is missing required dest field(s): {missing}. "
-            f"The transactions adapter needs {list(REQUIRED_DEST_FIELDS)} "
-            "to produce rows."
-        )
-    sheet_header_set = set(sheet_headers)
-    unknown_sources = [src for src in user_mapping if src not in sheet_header_set]
-    if unknown_sources:
-        raise GSheetError(
-            f"--column-mapping references header(s) not in the sheet: "
-            f"{unknown_sources}. Available headers: {sheet_headers}."
         )
 
 

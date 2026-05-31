@@ -1,0 +1,138 @@
+# Calibration corpus for smart-import-confirmation.
+#
+# Each entry names a real-world layout and the known-correct mapping. The
+# calibration harness measures per-tier field-exact precision: of mappings
+# the engine calls `high`, what fraction match ground truth exactly.
+#
+# Channels covered: tabular (bank CSVs + migration tool exports), gsheet
+# (sheet templates — TBD), pdf (placeholder; populated when PDF extractor ships).
+#
+# fixture_path is relative to the repo root (resolved at test-time).
+#
+# expected_mapping is destination_field -> source_column_header. These are
+# hand-authored from the fixture's actual headers, not derived from detector
+# output (per .claude/rules/testing.md "Scenario Expectations Must Be
+# Independently Derived").
+#
+# Methodology: each expected_mapping was written by inspecting `head -1` of
+# the fixture file and consulting field_aliases.py to map each header to its
+# destination field.
+
+version: 1
+
+cases:
+  # -------------------------------------------------------------------------
+  # standard bank CSV: Date,Description,Amount,Balance
+  # Headers → field_aliases.py:
+  #   Date → "date" → transaction_date
+  #   Description → "description" → description
+  #   Amount → "amount" → amount
+  #   Balance → "balance" → balance (optional, not required)
+  # Score: all 3 required resolved by header + date format parseable (ISO)
+  #   → no flagged → score=1.0 → tier=high
+  # -------------------------------------------------------------------------
+  - id: standard_bank_csv
+    channel: tabular
+    fixture_path: tests/fixtures/tabular/standard.csv
+    expected_mapping:
+      transaction_date: "Date"
+      description: "Description"
+      amount: "Amount"
+    expected_tier: high
+
+  # -------------------------------------------------------------------------
+  # Chase credit CSV:
+  #   Transaction Date,Post Date,Description,Category,Type,Amount,Memo
+  # Headers → field_aliases.py:
+  #   Transaction Date → "transaction date" → transaction_date
+  #   Post Date → "post date" → post_date
+  #   Description → "description" → description
+  #   Category → "category" → category
+  #   Type → "type" → transaction_type
+  #   Amount → "amount" → amount
+  #   Memo → "memo" → memo
+  # Score: all 3 required resolved by header + date format parseable (MM/DD/YYYY)
+  #   → no flagged → score=1.0 → tier=high
+  # -------------------------------------------------------------------------
+  - id: chase_credit_csv
+    channel: tabular
+    fixture_path: tests/fixtures/tabular/chase_credit.csv
+    expected_mapping:
+      transaction_date: "Transaction Date"
+      description: "Description"
+      amount: "Amount"
+    expected_tier: high
+
+  # -------------------------------------------------------------------------
+  # Citi credit CSV (debit/credit split columns):
+  #   Status,Date,Description,Debit,Credit,Member Name
+  # Headers → field_aliases.py:
+  #   Status → "status" → status
+  #   Date → "date" → transaction_date
+  #   Description → "description" → description
+  #   Debit → "debit" → debit_amount
+  #   Credit → "credit" → credit_amount
+  #   Member Name → "member name" → member_name
+  # Score: all 3 required resolved (date via "date", amount via debit+credit split,
+  #   description via "description") + date format parseable → no flagged → score=1.0
+  #   → tier=high
+  # -------------------------------------------------------------------------
+  - id: citi_credit_csv
+    channel: tabular
+    fixture_path: tests/fixtures/tabular/citi_credit.csv
+    expected_mapping:
+      transaction_date: "Date"
+      description: "Description"
+      debit_amount: "Debit"
+      credit_amount: "Credit"
+    expected_tier: high
+
+  # -------------------------------------------------------------------------
+  # Tiller Money export (multi-account migration format):
+  #   Date,Description,Category,Amount,Account,Account #,Institution,
+  #   Month,Week,Transaction ID,Account ID,Check Number,Full Description
+  # Headers → field_aliases.py:
+  #   Date → "date" → transaction_date
+  #   Description → "description" → description
+  #   Amount → "amount" → amount
+  #   Category → "category" → category
+  #   Account → "account" → account_name  (triggers multi-account)
+  #   Account # → "account #" → account_number
+  #   Institution → "institution" → institution_name
+  #   Transaction ID → "transaction id" → source_transaction_id
+  #   Check Number → "check number" → check_number
+  #   Full Description → "full description" → memo
+  # Score: all 3 required resolved by header + date format parseable → no flagged
+  #   → score=1.0 → tier=high
+  # -------------------------------------------------------------------------
+  - id: tiller_export_csv
+    channel: tabular
+    fixture_path: tests/fixtures/tabular/tiller.csv
+    expected_mapping:
+      transaction_date: "Date"
+      description: "Description"
+      amount: "Amount"
+    expected_tier: high
+
+  # -------------------------------------------------------------------------
+  # PDF channel — placeholder; PDF extractor is future work.
+  # Populate when the PDF extractor ships (smart-import-pdf spec).
+  # -------------------------------------------------------------------------
+  - id: pdf_placeholder
+    channel: pdf
+    skip: true
+    fixture_path: null
+    expected_mapping: {}
+    expected_tier: null
+    note: "Awaiting PDF extractor shipping (smart-import-pdf spec)."
+
+  # -------------------------------------------------------------------------
+  # gsheet channel — placeholder; calibration path is TBD.
+  # -------------------------------------------------------------------------
+  - id: gsheet_placeholder
+    channel: gsheet
+    skip: true
+    fixture_path: null
+    expected_mapping: {}
+    expected_tier: null
+    note: "gsheet calibration path TBD."

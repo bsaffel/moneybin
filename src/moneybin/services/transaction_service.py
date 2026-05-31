@@ -284,8 +284,19 @@ class TransactionService:
             params.append(amount_max)
 
         if description:
-            conditions.append("(description ILIKE ? OR memo ILIKE ?)")
-            like = f"%{description}%"
+            # Escape LIKE-special characters in the user's pattern so a
+            # query for ``description="%"`` (or "_") does not match every
+            # row. The `!` escape is paired with the ``ESCAPE '!'`` clause
+            # below; `!!` is the literal `!`. DuckDB requires the escape
+            # character to be a single character and to be declared per-
+            # predicate.
+            escaped = (
+                description.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+            )
+            conditions.append(
+                "(description ILIKE ? ESCAPE '!' OR memo ILIKE ? ESCAPE '!')"
+            )
+            like = f"%{escaped}%"
             params.extend([like, like])
 
         if uncategorized_only:

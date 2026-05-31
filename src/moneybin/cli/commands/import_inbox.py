@@ -19,6 +19,7 @@ def _print_sync_text(result: InboxSyncResult) -> None:
     """Render a sync result as human-readable text."""
     processed = result.processed
     failed = result.failed
+    pending = result.pending
     skipped = result.skipped
 
     if skipped and any(s.get("reason") == "inbox_busy" for s in skipped):
@@ -34,8 +35,24 @@ def _print_sync_text(result: InboxSyncResult) -> None:
         typer.echo(f"✗ {item['filename']}  →  failed ({item['error_code']})", err=True)
         if "sidecar" in item:
             typer.echo(f"   See {item['sidecar']}", err=True)
+    for item in pending:
+        moved_to = item.get("moved_to", item["filename"])
+        tier = item.get("tier", "unknown")
+        typer.echo(
+            f"👀 {item['filename']}  →  pending confirmation (tier={tier})",
+            err=True,
+        )
+        typer.echo(
+            f"   Run 'moneybin import confirm {moved_to}' to ratify "
+            "(or re-run with --mapping to override).",
+            err=True,
+        )
 
-    typer.echo(f"Done: {len(processed)} imported, {len(failed)} failed.", err=True)
+    typer.echo(
+        f"Done: {len(processed)} imported, {len(failed)} failed, "
+        f"{len(pending)} pending.",
+        err=True,
+    )
 
 
 @app.callback(invoke_without_command=True)

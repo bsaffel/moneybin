@@ -5,7 +5,7 @@
 
 ## Status
 <!-- draft | ready | in-progress | implemented -->
-draft
+in-progress
 
 ## Goal
 
@@ -369,6 +369,29 @@ extractor, and tabular/gsheet adopt them in this spec's work.
 
 ## Out of Scope
 
+- **Unified `ConfirmationRequired` envelope for `gsheet connect`/`reconnect`.**
+  Tabular `import_files` and the per-pull gsheet path both route through
+  `resolve_or_confirm` and surface `ImportConfirmationRequiredError` /
+  `confirmation_required` envelopes. The connect-time gate
+  (`gsheet_connect` / `gsheet reconnect`) is intentionally a different
+  surface — it establishes a persistent connection, not a one-shot import,
+  and uses domain errors (`LowConfidenceError`,
+  `AmbiguousDetectionError`) with actionable strings naming the recovery
+  flag (`--column-mapping`, `--yes`). The shared confidence contract
+  (`Confidence`, bands, `tier_for`) is enforced uniformly via
+  `to_confidence(bands)`; the *envelope shape* differs by surface
+  intentionally. Unifying it would require collapsing the
+  connect/reconnect/per-pull surfaces into one shape — explicitly out of
+  scope; per-pull and one-shot import already share the contract.
+- **CLI `import files <single-file>` preserves fail-loud refresh.**
+  `ImportService.import_file(refresh=True)` raises `RuntimeError` when
+  refresh fails after a successful raw load — the CLI exit code reflects
+  the broken state. The MCP `import_files` path bypasses this for
+  single-file calls (round 6 fix: it calls `import_file(refresh=False)`
+  and runs `_refresh` separately so `import_id` survives a refresh
+  failure for `import_revert`). The CLI fail-loud is intentional;
+  `moneybin import status` exposes the orphaned raw load if recovery is
+  needed.
 - **Interactive MCP wizard (MCP Apps).** Phase 2 per the overview; v1 is the tool-level
   propose→confirm exchange.
 - **Per-field confidence in the contract.** v1 confidence is per-detection (one score +

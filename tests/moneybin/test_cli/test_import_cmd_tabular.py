@@ -87,6 +87,8 @@ class TestImportFileAccountName:
             no_row_limit=False,
             no_size_limit=False,
             auto_accept=False,
+            confirm=False,
+            actor_kind="human",
         )
 
 

@@ -862,6 +862,79 @@ class TestSidecarPIIBudget:
         assert len(loaded["message"]) <= 200
 
 
+class TestPendingSidecarAccountHint:
+    """Pending sidecar actions thread the inbox subfolder account hint.
+
+    When a file arrives via inbox/<account>/, the generated
+    `moneybin import confirm` actions in the pending sidecar MUST include
+    `--account-name <hint>`. Without it, ImportService rejects the call
+    on single-account CSVs with "Single-account files require
+    --account-name or --account-id" — the user follows the suggested
+    command verbatim and immediately hits a wall.
+    """
+
+    def test_actions_include_account_name_when_subfolder_hint_present(
+        self, tmp_path: Path
+    ) -> None:
+        from pathlib import Path as _Path
+
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        moved = svc.pending_dir / "2026-05" / "statement.csv"
+        moved.parent.mkdir(parents=True, exist_ok=True)
+        moved.write_text("Date,Amount\n2026-05-01,-10\n")
+
+        sidecar = svc.write_pending_sidecar(
+            _Path(moved),
+            channel="tabular",
+            tier="medium",
+            score=0.72,
+            reason="unknown_layout",
+            proposed_mapping={"Date": "transaction_date", "Amount": "amount"},
+            samples={},
+            flagged=[],
+            missing_required=[],
+            unmapped_columns=[],
+            account_hint="chase-checking",
+        )
+
+        import yaml
+
+        payload = yaml.safe_load(sidecar.read_text())
+        actions = payload["actions"]
+        assert all("--account-name chase-checking" in a for a in actions), actions
+
+    def test_actions_omit_account_name_when_no_hint(self, tmp_path: Path) -> None:
+        from pathlib import Path as _Path
+
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        moved = svc.pending_dir / "2026-05" / "statement.csv"
+        moved.parent.mkdir(parents=True, exist_ok=True)
+        moved.write_text("Date,Amount\n2026-05-01,-10\n")
+
+        sidecar = svc.write_pending_sidecar(
+            _Path(moved),
+            channel="tabular",
+            tier="medium",
+            score=0.72,
+            reason="unknown_layout",
+            proposed_mapping={"Date": "transaction_date", "Amount": "amount"},
+            samples={},
+            flagged=[],
+            missing_required=[],
+            unmapped_columns=[],
+        )
+
+        import yaml
+
+        payload = yaml.safe_load(sidecar.read_text())
+        actions = payload["actions"]
+        assert all("--account-name" not in a for a in actions), actions
+
+
 class TestSyncVanishedSource:
     """sync() handles a file that disappears between enumeration and import."""
 

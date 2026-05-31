@@ -180,6 +180,7 @@ def gsheet_connect(
     account_name: str | None = None,
     account_id: str | None = None,
     column_mapping: dict[str, str] | None = None,
+    sign: str | None = None,
     yes: bool = False,
     accept_seed_fallback: bool = False,
     no_initial_pull: bool = False,
@@ -199,9 +200,21 @@ def gsheet_connect(
     gsheet_disconnect(connection_id, purge=True). Requires prior gsheet_auth
     (MCP) or `moneybin gsheet auth` (CLI) — both drive the same in-process
     OAuth installed-app flow.
+
+    `sign` is required when `column_mapping` changes a detected split
+    debit/credit layout into a single 'amount' column and the export uses
+    positive_is_expense (credit-card style); without it the saved sign
+    defaults to negative_is_expense and amounts persist with inverted
+    polarity. Choices: 'negative_is_expense', 'negative_is_income',
+    'split_debit_credit'.
     """
+    from typing import cast as _cast  # noqa: PLC0415
+
     from moneybin.connectors.gsheet.connection_service import (  # noqa: PLC0415
         ConnectionRequest,
+    )
+    from moneybin.extractors.tabular.formats import (  # noqa: PLC0415
+        SignConventionType,
     )
 
     req = ConnectionRequest(
@@ -211,6 +224,7 @@ def gsheet_connect(
         account_name=account_name,
         account_id=account_id,
         column_mapping=column_mapping,
+        sign=_cast(SignConventionType, sign) if sign else None,
         yes=yes,
         no_initial_pull=no_initial_pull,
         accept_seed_fallback=accept_seed_fallback,
@@ -337,7 +351,7 @@ def gsheet_status(
 
 @mcp_tool(read_only=False, idempotent=False, open_world=True)
 def gsheet_reconnect(
-    connection_id: str, yes: bool = False
+    connection_id: str, yes: bool = False, sign: str | None = None
 ) -> ResponseEnvelope[GsheetConnectPayload]:
     """Re-detect the sheet structure, re-pin the mapping, and run a pull.
 
@@ -349,13 +363,29 @@ def gsheet_reconnect(
     it, an ambiguous remap raises AmbiguousDetectionError so the agent can
     confirm with the user before silently re-pinning the wrong mapping.
 
+    `sign` overrides the saved sign convention when the re-detected shape
+    implies a different convention than the source export actually uses
+    (e.g., a credit-card export now using positive_is_expense). Choices:
+    'negative_is_expense', 'negative_is_income', 'split_debit_credit'.
+
     Mutation surface: updates app.gsheet_connections.column_mapping +
     header_signature (audited) and writes raw rows via the pull side-effect.
     Revert: there is no revert — the connection re-binds to whatever the
     sheet currently looks like. Run gsheet_status afterwards to verify.
     """
+    from typing import cast as _cast  # noqa: PLC0415
+
+    from moneybin.extractors.tabular.formats import (  # noqa: PLC0415
+        SignConventionType,
+    )
+
     with _build_connection_service() as service:
-        result = service.reconnect(connection_id, yes=yes, actor="mcp")
+        result = service.reconnect(
+            connection_id,
+            yes=yes,
+            sign=_cast(SignConventionType, sign) if sign else None,
+            actor="mcp",
+        )
 
     data = GsheetConnectPayload(
         connection=_connection_row(result.connection),

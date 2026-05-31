@@ -1,6 +1,6 @@
 # Feature: Connect — Google Sheets (Live Tabular Sync)
 
-> Companions: [`smart-import-tabular.md`](smart-import-tabular.md) (reused pipeline, Stages 1–5), [`smart-import-transform.md`](smart-import-transform.md) (refresh pipeline + transform handoff), [`sync-overview.md`](sync-overview.md) (provider-agnostic sync framework — gsheet is **not** part of it; see "Why not `sync`" below), [`matching-overview.md`](matching-overview.md) (cross-source dedup), [`categorization-overview.md`](categorization-overview.md), [`app-integrity-invariant.md`](app-integrity-invariant.md) (audit-paired mutations), [`privacy-data-protection.md`](privacy-data-protection.md) (encryption + SecretStore), [`mcp-architecture.md`](mcp-architecture.md), [`moneybin-cli.md`](moneybin-cli.md).
+> Companions: [`smart-import-tabular.md`](smart-import-tabular.md) (reused pipeline, Stages 1–5), [`smart-import-confirmation.md`](smart-import-confirmation.md) (confirm/confidence layer; confidence bands and `--column-mapping` partial-merge aligned here), [`smart-import-transform.md`](smart-import-transform.md) (refresh pipeline + transform handoff), [`sync-overview.md`](sync-overview.md) (provider-agnostic sync framework — gsheet is **not** part of it; see "Why not `sync`" below), [`matching-overview.md`](matching-overview.md) (cross-source dedup), [`categorization-overview.md`](categorization-overview.md), [`app-integrity-invariant.md`](app-integrity-invariant.md) (audit-paired mutations), [`privacy-data-protection.md`](privacy-data-protection.md) (encryption + SecretStore), [`mcp-architecture.md`](mcp-architecture.md), [`moneybin-cli.md`](moneybin-cli.md).
 
 First entry in the `connect-*` family: live tabular sources connected via direct user OAuth, sitting alongside (not inside) the moneybin-server-mediated `sync` framework. Future siblings: `connect-airtable.md`, `connect-smartsheet.md`, `connect-notion.md`, etc.
 
@@ -72,7 +72,7 @@ gsheet inverts that model. The client speaks Google's API directly. moneybin-ser
 1. **Connect a sheet** via `moneybin gsheet connect <url>` (or `gsheet_connect` MCP). URL must include `/edit#gid=N` or `?gid=N` so the tab is unambiguous.
 2. **OAuth on first run.** Open browser to Google consent (PKCE flow, embedded public client ID, no client secret). Capture redirect on `localhost:<random-port>`. Store refresh token in `SecretStore` (keyring).
 3. **Detection at connect time.** Fetch sheet headers + sample rows, run `extractors/tabular/` Stages 1–3 (format detect, read, column mapping). Produce mapping + confidence tier.
-4. **Confirmation gate.** High confidence + `--yes` flag → auto-confirm. Low confidence → refuse with actionable error. Medium → interactive confirmation (CLI prompt; MCP returns mapping for caller to accept).
+4. **Confirmation gate.** High confidence + `--yes` flag → auto-confirm. Low confidence → refuse with actionable error. Medium → interactive confirmation (CLI prompt; MCP returns mapping for caller to accept). Confidence bands are aligned to `ImportSettings.confidence` (`T_high=0.90`, `T_med=0.70` defaults; configurable via `MONEYBIN_IMPORT___CONFIDENCE__T_HIGH` / `__T_MED`). Realized by [`smart-import-confirmation.md`](smart-import-confirmation.md).
 5. **Pin the detection result.** Save `column_mapping`, `header_signature`, `date_format`, `sign_convention`, `number_format`, `skip_rows`, `skip_trailing_patterns` to `app.gsheet_connections`. The pinned mapping is the contract for subsequent pulls.
 6. **Initial pull.** After save, trigger a normal pull (same path as subsequent pulls). Triggers end-of-pull refresh pipeline by default.
 7. **Reconnect** via `moneybin gsheet reconnect <id>` — re-runs detection against the sheet's current state, updates the pinned mapping if the user confirms, clears any drift state.
@@ -595,7 +595,11 @@ Options:
                             raw.gsheet_<alias>. Refused if alias collides.
   --account-name=NAME       Destination account (transactions adapter)
   --account-id=ID           Explicit account ID bypass
-  --column-mapping=JSON     Override detection (for low-confidence cases)
+  --column-mapping=JSON     Partial-merge override of the detected column mapping:
+                            only the destination fields you name are overridden;
+                            unspecified fields fall back to the detected mapping.
+                            Previously a whole-map replacement — **behavior change**
+                            to a shipped surface. (for low-confidence cases)
   --yes / -y                Auto-confirm detection
   --no-initial-pull         Save connection without running first pull (rare)
 

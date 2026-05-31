@@ -324,7 +324,7 @@ class SyncConfig(BaseModel):
         default=None,
         description="MoneyBin Sync server URL (e.g., https://sync.moneybin.app)",
     )
-    api_key: str | None = Field(
+    api_key: SecretStr | None = Field(
         default=None,
         description="API key for MoneyBin Sync service (legacy - prefer OAuth)",
     )
@@ -372,8 +372,30 @@ class GSheetSettings(BaseModel):
     )
 
 
+class ConfidenceBands(BaseModel):
+    """Score thresholds used to band a detection into high/medium/low.
+
+    Bands are calibration-tunable (see smart-import-confirmation.md Req 12);
+    defaults match the brainstorm proposal (T_high 0.90 / T_med 0.70). PDF's
+    inherited 0.70 reconciliation threshold maps to T_med.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    t_high: float = Field(default=0.90, ge=0.0, le=1.0)
+    t_med: float = Field(default=0.70, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def _check_ordering(self) -> "ConfidenceBands":
+        if self.t_high < self.t_med:
+            raise ValueError(
+                f"t_high must be >= t_med (got t_high={self.t_high}, t_med={self.t_med})"
+            )
+        return self
+
+
 class ImportSettings(BaseModel):
-    """File-import related settings (inbox layout)."""
+    """File-import related settings (inbox layout + confirmation gate)."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -383,6 +405,18 @@ class ImportSettings(BaseModel):
             "Parent directory for the user-facing import workspace. "
             "Per-profile subdirs (<inbox_root>/<profile>/{inbox,processed,failed}/) "
             "are created on first use. Defaults to ~/Documents/MoneyBin."
+        ),
+    )
+
+    confidence: ConfidenceBands = Field(default_factory=ConfidenceBands)
+
+    self_accept_high: bool = Field(
+        default=False,
+        description=(
+            "When True, MCP-driven imports auto-accept a `high`-tier first "
+            "encounter. Gated off until the calibration corpus proves the "
+            "`high` band clears the precision bar (smart-import-confirmation.md "
+            "Req 12). The CLI human path always prompts regardless."
         ),
     )
 
@@ -440,6 +474,7 @@ class MatchingSettings(BaseModel):
     source_priority: list[str] = Field(
         default=[
             "manual",
+            "gsheet",
             "plaid",
             "csv",
             "excel",

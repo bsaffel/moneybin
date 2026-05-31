@@ -32,6 +32,7 @@ from moneybin.extractors.tabular.formats import NumberFormatType, SignConvention
 if TYPE_CHECKING:
     from moneybin.database import Database
     from moneybin.extractors.tabular.formats import TabularFormat
+    from moneybin.services.import_confirmation import ConfirmationRequired
 
 app = typer.Typer(
     help=("Import financial files (OFX/QFX, CSV/TSV/Excel/Parquet) into MoneyBin"),
@@ -148,6 +149,23 @@ def import_files_command(
             "--override amount=Amount). Single-file mode only."
         ),
     ),
+    mapping: list[str] = typer.Option(
+        None,
+        "--mapping",
+        help=(
+            "Field→column override, repeatable (alias for --override). "
+            "e.g. --mapping description=Memo. Single-file mode only."
+        ),
+    ),
+    confirm: bool = typer.Option(
+        False,
+        "--confirm/--no-confirm",
+        help=(
+            "Accept the proposed column mapping without prompting. "
+            "Use when a previous import returned confirmation_required. "
+            "Single-file mode only."
+        ),
+    ),
     sign: SignConventionType | None = typer.Option(
         None,
         "--sign",
@@ -235,13 +253,19 @@ def import_files_command(
         logger.error(f"❌ File not found: {file_paths[0]}")
         raise typer.Exit(1)
 
-    overrides = _parse_overrides(override)
+    # --mapping is an alias for --override; merge both into one dict.
+    combined_override = list(override or []) + list(mapping or [])
+    overrides = _parse_overrides(combined_override or None)
     interactive = not yes and sys.stdin.isatty()
 
-    # Any flag that ImportService.import_files() does not forward routes the
-    # single-file path through the legacy import_file() so the flag still
-    # takes effect. Behavioral flags (--yes, --no-row-limit, --no-size-limit)
-    # belong in this set even though they aren't data-shape overrides.
+    # Single-file mode (`len(file_paths) == 1`) always uses import_file
+    # directly so ImportConfirmationRequiredError can bubble. This variable
+    # only drives the warning at line ~289 for multi-file invocations: any
+    # per-file flag silently ignored by the batch path warrants a warning.
+    # NOTE: ``confirm`` is NOT in this set because the batch path forwards
+    # it (see svc.import_files call below). ``overrides`` IS — the batch
+    # method doesn't accept it, so multi-file + --mapping silently ignores
+    # the override.
     has_single_file_knobs = (
         any(
             v is not None
@@ -270,6 +294,18 @@ def import_files_command(
             "⚠️  Per-file flags only apply in single-file mode and will be "
             "ignored. Use one file per command for per-file overrides."
         )
+    if len(file_paths) > 1 and confirm:
+        # --confirm with multiple files would silently auto-accept every
+        # first-encounter layout in the batch sight-unseen. Each layout is a
+        # separate trust decision; refuse the batch and require per-file
+        # invocations or use `moneybin import confirm <file>` after the
+        # confirmation_required envelopes surface.
+        raise typer.BadParameter(
+            "--confirm cannot be combined with multiple files. Each first-"
+            "encounter layout requires its own confirmation. Re-run per-file "
+            "or import without --confirm to surface confirmation_required "
+            "envelopes, then ratify with `moneybin import confirm <file>`."
+        )
 
     from moneybin.database import get_database  # noqa: PLC0415 — deferred import
 
@@ -279,7 +315,10 @@ def import_files_command(
         with handle_cli_errors():
             with get_database() as db:
                 svc = ImportService(db)
-                if len(file_paths) == 1 and has_single_file_knobs:
+                # Single-path invocations always use import_file directly so
+                # ImportConfirmationRequiredError can bubble to the CLI handler.
+                # Multi-path stays on import_files (batch contract).
+                if len(file_paths) == 1:
                     result = svc.import_file(
                         file_path=file_paths[0],
                         refresh=refresh,
@@ -300,6 +339,8 @@ def import_files_command(
                         no_row_limit=no_row_limit,
                         no_size_limit=no_size_limit,
                         auto_accept=yes,
+                        confirm=confirm,
+                        actor_kind="human",
                     )
                     if result.sign_correction_suggested:
                         typer.echo(
@@ -315,6 +356,10 @@ def import_files_command(
                             "source_type": result.file_type,
                             "rows_loaded": result.transactions,
                             "import_id": result.import_id,
+                            # Mirror the batch path: JSON-output agents need
+                            # the structured signal regardless of single vs
+                            # multi-file invocation.
+                            "sign_correction_suggested": result.sign_correction_suggested,
                         }
                     ]
                     data = {
@@ -331,6 +376,8 @@ def import_files_command(
                         refresh=refresh,
                         force=force,
                         interactive=interactive,
+                        confirm=confirm,
+                        actor_kind="human",
                     )
                     if any(r.sign_correction_suggested for r in batch.per_file):
                         typer.echo(
@@ -347,7 +394,18 @@ def import_files_command(
                             "source_type": r.source_type,
                             "rows_loaded": r.rows_loaded,
                             "import_id": r.import_id,
+                            # Always include sign_correction_suggested so
+                            # JSON-output agents see a structured signal that
+                            # amounts may need re-import with --sign — the TTY
+                            # path already warns to stderr; this closes the
+                            # gap for scripted callers.
+                            "sign_correction_suggested": r.sign_correction_suggested,
                             **({"error": r.error} if r.error else {}),
+                            **(
+                                {"confirmation_payload": r.confirmation_payload}
+                                if r.confirmation_payload
+                                else {}
+                            ),
                         }
                         for r in batch.per_file
                     ]
@@ -361,12 +419,93 @@ def import_files_command(
                     }
                     if batch.transforms_error:
                         data["transforms_error"] = batch.transforms_error
-    except (ValueError, PermissionError) as e:
-        # Single-file path raises on extractor failure; surface it as a
-        # structured failed-file envelope so --output json stays consistent
-        # with the batch-mode contract (multi-file mode already returns
-        # per-file failures via BatchImportResult).
-        error_type = type(e).__name__
+    except Exception as _exc:  # noqa: BLE001 — dispatch on type below
+        from moneybin.services.import_confirmation import (  # noqa: PLC0415
+            ImportConfirmationRequiredError,
+            ProposedMapping,
+        )
+
+        if isinstance(_exc, ImportConfirmationRequiredError):
+            # Surface the confirmation_required envelope.  Non-TTY / --output
+            # json callers get JSON directly; interactive callers see a
+            # human-readable summary with re-run instructions.
+            #
+            # TODO(v1-edit): Full interactive field-walk (prompt per flagged
+            # field) is deferred.  The interactive path below directs the user
+            # to re-run with --confirm or --mapping instead.
+            outcome = _exc.outcome
+            file_path_str = str(file_paths[0]) if len(file_paths) == 1 else ""
+            proposed_mapping: dict[str, str] = (
+                outcome.proposed.field_mapping
+                if isinstance(outcome.proposed, ProposedMapping)
+                else {}
+            )
+            unmapped = (
+                list(outcome.proposed.unmapped_columns)
+                if isinstance(outcome.proposed, ProposedMapping)
+                else []
+            )
+            envelope_data: dict[str, Any] = {
+                "status": "confirmation_required",
+                "channel": outcome.channel,
+                "tier": outcome.confidence.tier,
+                "score": outcome.confidence.score,
+                "reason": outcome.reason,
+                "error_message": outcome.error_message,
+                "proposed_mapping": proposed_mapping,
+                "samples": outcome.samples,
+                "flagged": list(outcome.confidence.flagged),
+                "missing_required": list(outcome.confidence.missing_required),
+                "unmapped_columns": unmapped,
+            }
+            confirm_actions: list[str] = []
+            if outcome.error_message:
+                confirm_actions.append(f"Validation failed: {outcome.error_message}")
+            # resolve_or_confirm refuses Accept on low-tier proposals (the
+            # detector couldn't form a complete one); suggesting --confirm
+            # there would just bounce back with the same outcome. Only
+            # surface the accept hint when the tier permits acceptance.
+            if outcome.confidence.tier != "low":
+                confirm_actions.append(
+                    "Re-run with --confirm to accept the proposed mapping as-is."
+                )
+            confirm_actions.extend([
+                "Re-run with --mapping <field>=<column> to override specific fields.",
+                f"Run 'moneybin import preview {file_path_str}' to inspect the proposal.",
+            ])
+            if outcome.confidence.tier != "low":
+                confirm_actions.append(
+                    f"Run 'moneybin import confirm {file_path_str} --accept' "
+                    "as a subcommand."
+                )
+            if output == OutputFormat.JSON or not sys.stdout.isatty():
+                # Non-TTY / --output json: emit the full ResponseEnvelope so
+                # CLI --output json matches the MCP envelope shape (same
+                # top-level status/summary/data/actions wrapper).
+                # Exit 0 so scripted consumers receive the envelope cleanly.
+                confirm_envelope = build_envelope(
+                    data=envelope_data,
+                    sensitivity="medium",
+                    actions=confirm_actions,
+                )
+                render_or_json(
+                    confirm_envelope,
+                    OutputFormat.JSON,
+                    cli_actor="import_files_command",
+                )
+                raise typer.Exit(0) from _exc
+            # Interactive human path: render a human-readable summary and exit
+            # 1 so pipelines halt cleanly (unlike the non-TTY path which exits
+            # 0 so scripted consumers can parse the envelope).
+            _render_confirmation_prompt(outcome, file_path_str)
+            raise typer.Exit(1) from _exc
+
+        if not isinstance(_exc, (ValueError, PermissionError)):
+            raise
+
+        # ValueError / PermissionError: surface as a structured failed-file
+        # envelope so --output json stays consistent with the batch contract.
+        error_type = type(_exc).__name__
         files_list = [
             {
                 "path": str(file_paths[0]) if len(file_paths) == 1 else "",
@@ -389,10 +528,18 @@ def import_files_command(
         if output == OutputFormat.JSON:
             render_or_json(envelope, output, cli_actor="import_files_command")
         else:
-            logger.error(f"❌ {e}")
-        raise typer.Exit(1) from e
+            logger.error(f"❌ {_exc}")
+        raise typer.Exit(1) from _exc
 
-    envelope = build_envelope(data=data, sensitivity="low")
+    # Bump sensitivity to "medium" when any per-file entry carries a
+    # confirmation_payload — those payloads include detector samples
+    # (description / merchant cells) and must match the single-file
+    # confirmation_required envelope's medium tier so agents apply the
+    # same consent gate to batch proposals.
+    batch_sensitivity = (
+        "medium" if any(f.get("confirmation_payload") for f in files_list) else "low"
+    )
+    envelope = build_envelope(data=data, sensitivity=batch_sensitivity)
     if output == OutputFormat.JSON:
         render_or_json(envelope, output, cli_actor="import_files_command")
     elif not quiet:
@@ -416,6 +563,272 @@ def import_files_command(
     # Mirrors the fail-loud single-file path that raises on refresh() error.
     if data.get("transforms_error"):
         raise typer.Exit(1)
+
+
+def _render_confirmation_prompt(
+    outcome: ConfirmationRequired, file_path_str: str
+) -> None:
+    """Print a human-readable confirmation summary for an unknown-layout encounter.
+
+    Interactive edit-flow (walking each flagged field one at a time) is deferred
+    to a future task.  This v1 implementation shows the proposal and instructs
+    the user to re-run with the appropriate flags.
+    """
+    import shlex  # noqa: PLC0415
+
+    from moneybin.services.import_confirmation import ProposedMapping  # noqa: PLC0415
+
+    quoted_path = shlex.quote(file_path_str)
+    tier = outcome.confidence.tier
+    tier_icon = {"high": "✅", "medium": "⚠️", "low": "❓"}.get(tier, "❓")
+
+    typer.echo(f"\n{tier_icon}  Confirmation required ({tier} confidence)")
+    typer.echo(f"   File: {file_path_str}")
+    typer.echo(f"   Reason: {outcome.reason}")
+    if outcome.error_message:
+        typer.echo(f"   ❌ Validation failed: {outcome.error_message}")
+
+    if isinstance(outcome.proposed, ProposedMapping):
+        typer.echo("\n   Proposed column mapping:")
+        for dest, src in outcome.proposed.field_mapping.items():
+            samples = outcome.samples.get(dest, [])[:3]
+            sample_str = (
+                f"  (e.g. {', '.join(str(s) for s in samples)})" if samples else ""
+            )
+            typer.echo(f"     {dest} ← {src}{sample_str}")
+
+        if outcome.confidence.flagged:
+            typer.echo(
+                f"\n   ⚠️  Flagged fields: {', '.join(outcome.confidence.flagged)}"
+            )
+        if outcome.confidence.missing_required:
+            typer.echo(
+                f"   ❌ Missing required fields: "
+                f"{', '.join(outcome.confidence.missing_required)}"
+            )
+        if outcome.proposed.unmapped_columns:
+            typer.echo(
+                f"   Unmapped source columns: "
+                f"{', '.join(outcome.proposed.unmapped_columns)}"
+            )
+
+    typer.echo("\n   To proceed:")
+    # Suggested commands shlex-quoted so paths with spaces survive copy-paste.
+    # Accept hint is gated on tier — resolve_or_confirm refuses Accept at the
+    # low-tier gate, so suggesting --confirm there would loop indefinitely.
+    if tier != "low":
+        typer.echo(f"     moneybin import files {quoted_path} --confirm")
+    typer.echo(
+        f"     moneybin import files {quoted_path} --mapping description=<column>"
+    )
+    if tier != "low":
+        typer.echo(
+            f"     moneybin import confirm {quoted_path} --accept   "
+            "(dedicated confirm subcommand)"
+        )
+    typer.echo(
+        f"     moneybin import preview {quoted_path}   (inspect proposal in detail)"
+    )
+    typer.echo()
+
+
+@app.command("confirm")
+def import_confirm_command(
+    file_path: Path = typer.Argument(..., help="Path to the file to confirm."),
+    accept: bool = typer.Option(
+        False,
+        "--accept",
+        help="Accept the detected mapping as-is.",
+    ),
+    mapping: list[str] = typer.Option(
+        None,
+        "--mapping",
+        help="Partial-merge override (repeatable): --mapping field=column.",
+    ),
+    account_id: str | None = typer.Option(
+        None,
+        "--account-id",
+        help="Account ID to associate with imported transactions.",
+    ),
+    account_name: str | None = typer.Option(
+        None,
+        "--account-name",
+        help="Account name to associate with imported transactions.",
+    ),
+    save_format: bool = typer.Option(
+        True,
+        "--save-format/--no-save-format",
+        help="Auto-save the confirmed mapping as a named format for future imports.",
+    ),
+    output: OutputFormat = output_option,
+    quiet: bool = quiet_option,
+) -> None:
+    """Accept or override the proposed mapping for a file awaiting confirmation.
+
+    Use after 'import files' returns confirmation_required.  Pass --accept to
+    ratify the detected mapping as-is, or supply --mapping field=column (repeatable)
+    to override specific destination fields.
+
+    Examples:
+        moneybin import confirm ~/Downloads/statement.csv --accept
+        moneybin import confirm ~/Downloads/statement.csv --mapping description=Memo
+        moneybin import confirm ~/Downloads/statement.csv --mapping date=Date --mapping amount=Amount
+        moneybin import confirm ~/Downloads/statement.csv --accept --output json
+        moneybin import confirm ~/Downloads/statement.csv --accept --account-name "Chase Checking"
+    """
+    from moneybin.cli.output import render_or_json  # noqa: PLC0415
+    from moneybin.cli.utils import handle_cli_errors  # noqa: PLC0415
+    from moneybin.database import get_database  # noqa: PLC0415
+    from moneybin.protocol.envelope import build_envelope  # noqa: PLC0415
+    from moneybin.services.import_service import ImportService  # noqa: PLC0415
+
+    if not accept and not mapping:
+        raise typer.BadParameter(
+            "Pass --accept to ratify the proposed mapping, or at least one "
+            "--mapping field=column to override specific fields.",
+            param_hint="'--accept' or '--mapping'",
+        )
+
+    if not file_path.exists():
+        logger.error(f"❌ File not found: {file_path}")
+        raise typer.Exit(1)
+
+    parsed_mapping = _parse_overrides(list(mapping)) if mapping else None
+
+    from moneybin.services.import_confirmation import (
+        ImportConfirmationRequiredError,
+        ProposedMapping,
+    )
+
+    try:
+        with handle_cli_errors():
+            with get_database() as db:
+                result = ImportService(
+                    db
+                ).import_file(
+                    file_path=file_path,
+                    confirm=accept,
+                    overrides=parsed_mapping,
+                    account_id=account_id,
+                    account_name=account_name,
+                    save_format=save_format,
+                    actor_kind="human",
+                    refresh=False,  # caller can run 'moneybin transform apply' separately
+                )
+    except ImportConfirmationRequiredError as e:
+        # The confirm attempt itself can re-surface ConfirmationRequired —
+        # e.g. an override that names an unknown source column, or a
+        # low-tier proposal where the user-supplied mapping still leaves
+        # required fields missing. For --output json / non-TTY callers
+        # emit the same envelope shape import_files uses so agents see
+        # a structured payload instead of an unparseable stderr message.
+        # Exit code stays 1: the confirm action did not succeed.
+        outcome = e.outcome
+        proposed_mapping_dict = (
+            outcome.proposed.field_mapping
+            if isinstance(outcome.proposed, ProposedMapping)
+            else {}
+        )
+        unmapped = (
+            list(outcome.proposed.unmapped_columns)
+            if isinstance(outcome.proposed, ProposedMapping)
+            else []
+        )
+        envelope_data: dict[str, Any] = {
+            "status": "confirmation_required",
+            "channel": outcome.channel,
+            "tier": outcome.confidence.tier,
+            "score": outcome.confidence.score,
+            "reason": outcome.reason,
+            "error_message": outcome.error_message,
+            "proposed_mapping": proposed_mapping_dict,
+            "samples": outcome.samples,
+            "flagged": list(outcome.confidence.flagged),
+            "missing_required": list(outcome.confidence.missing_required),
+            "unmapped_columns": unmapped,
+        }
+        confirm_actions: list[str] = []
+        if outcome.error_message:
+            confirm_actions.append(f"Validation failed: {outcome.error_message}")
+        confirm_actions.append(
+            "Re-run with --mapping <field>=<column> to override specific fields."
+        )
+        if outcome.confidence.tier != "low":
+            confirm_actions.append(
+                f"Re-run 'moneybin import confirm {file_path} --accept' "
+                "to accept the proposed mapping as-is."
+            )
+        confirm_actions.append(
+            f"Run 'moneybin import preview {file_path}' to inspect the proposal."
+        )
+        if output == OutputFormat.JSON or not sys.stdout.isatty():
+            envelope = build_envelope(
+                data=envelope_data,
+                sensitivity="medium",
+                actions=confirm_actions,
+            )
+            render_or_json(
+                envelope, OutputFormat.JSON, cli_actor="import_confirm_command"
+            )
+            # Exit 0 to mirror `moneybin import files` JSON-mode behavior on
+            # confirmation_required (data.status is the discriminant).
+            # Scripted propose→review→confirm loops branch on the body, not
+            # exit code — a non-zero exit would abort the loop on every
+            # partial-override iteration.
+            return
+        # Interactive path: human-readable summary + exit code 1.
+        msg = f"❌ Confirmation failed: {outcome.reason}" + (
+            f" — {outcome.error_message}" if outcome.error_message else ""
+        )
+        logger.error(msg)
+        logger.info(
+            "💡 Inspect the proposal with 'moneybin import preview "
+            f"{file_path}' and re-run with a corrected --mapping."
+        )
+        raise typer.Exit(1) from e
+
+    if output == OutputFormat.JSON:
+        data: dict[str, Any] = {
+            # Mirror the confirmation_required envelope's top-level status
+            # field so scripted propose→review→confirm loops branch on a
+            # single discriminant (`data.status`) regardless of outcome.
+            "status": "imported",
+            "import_id": result.import_id,
+            "rows_loaded": result.transactions,
+            "file_type": result.file_type,
+            "sign_correction_suggested": result.sign_correction_suggested,
+            # merged_mapping is authoritative (threaded from
+            # ImportResult.field_mapping); agents need it to verify which
+            # column mapping was actually applied without re-detecting.
+            "merged_mapping": dict(result.field_mapping or {}),
+        }
+        actions = [
+            f"Use 'moneybin import revert {result.import_id}' to undo this import.",
+            "Run 'moneybin transform apply' to rebuild derived tables.",
+            "Run 'moneybin import status' to confirm imported counts.",
+        ]
+        if result.sign_correction_suggested:
+            actions.insert(
+                0,
+                "⚠️  Sign convention may be inverted — inspect amounts and re-import "
+                "with --mapping corrected if needed.",
+            )
+        envelope = build_envelope(data=data, sensitivity="medium", actions=actions)
+        render_or_json(envelope, output, cli_actor="import_confirm_command")
+        return
+
+    if not quiet:
+        logger.info(
+            f"✅ Imported {file_path.name}: {result.transactions} rows "
+            f"(import_id: {result.import_id})"
+        )
+        if result.sign_correction_suggested:
+            typer.echo(
+                "⚠️  Sign convention may be inverted (running balance suggests "
+                "negation). If amounts look wrong, re-run with --mapping corrected.",
+                err=True,
+            )
+        logger.info("💡 Run 'moneybin transform apply' to rebuild derived tables.")
 
 
 @app.command("history")
@@ -639,7 +1052,12 @@ def import_preview(
             for field, col in matched_format.field_mapping.items():
                 typer.echo(f"  {field} ← {col}")
         else:
-            mapping_result = map_columns(df, overrides=overrides)
+            from moneybin.config import get_settings  # noqa: PLC0415
+
+            bands = get_settings().import_.confidence
+            mapping_result = map_columns(
+                df, overrides=overrides, t_high=bands.t_high, t_med=bands.t_med
+            )
             typer.echo(f"\nDetected mapping (confidence: {mapping_result.confidence}):")
             for field, col in mapping_result.field_mapping.items():
                 typer.echo(f"  {field} ← {col}")

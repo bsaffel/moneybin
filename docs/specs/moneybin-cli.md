@@ -106,9 +106,21 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |     [--format NAME]            Use saved tabular format
 |   |     [--save-format NAME]       Save detection as reusable format
 |   |     [--override MAPPING]       Override detected column mapping
+|   |     [--mapping field=column]   Partial-merge override (alias of --override; repeatable)
+|   |     [--confirm/--no-confirm]   Accept/reject a confirmation_required proposal inline
 |   |     [--sheet NAME]             Excel sheet selection
 |   |     [--refresh/--no-refresh]   Run post-load pipeline (default on)
 |   |     [--yes]                    Non-interactive mode
+|   |     [--output text|json]       JSON emits the full ResponseEnvelope (incl. confirmation_required)
+|   |   On TTY with an unknown layout: interactive confirmation prompt.
+|   |   Non-TTY / --output json: returns confirmation_required envelope + exit 0.
+|   +-- confirm <file>             -- Terminal step of the propose→review→confirm workflow
+|   |     --accept                   Accept the detected mapping as-is
+|   |     [--mapping field=column]   Partial-merge override (repeatable)
+|   |     [--save-format/--no-save-format]  Pin merged mapping for silent reuse (default on)
+|   |     [--account-name NAME]      Required for single-account files
+|   |     [--account-id ID]          Explicit account ID bypass
+|   |     [--output text|json]       JSON emits the standard ResponseEnvelope
 |   +-- history                    -- Show recent import batches
 |   +-- preview                    -- Detect format / column mapping without writing
 |   +-- revert                     -- Undo a recent import batch by import_id

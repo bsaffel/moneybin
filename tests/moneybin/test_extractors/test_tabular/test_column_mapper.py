@@ -107,3 +107,97 @@ class TestMultiAccountDetection:
         })
         result = map_columns(df)
         assert result.is_multi_account is False
+
+
+class TestMappingResultScore:
+    """Verify map_columns produces normalized score + Confidence view."""
+
+    def test_score_present_on_result(self) -> None:
+        df = _make_df({
+            "Transaction Date": ["01/15/2026", "02/20/2026"],
+            "Amount": ["-42.50", "100.00"],
+            "Description": ["KROGER #1234", "DIRECT DEPOSIT"],
+        })
+        result = map_columns(df)
+        assert 0.0 <= result.score <= 1.0
+        assert result.score >= 0.90
+
+    def test_score_yields_low_for_unmappable(self) -> None:
+        df = _make_df({
+            "Name": ["Alice", "Bob"],
+            "Score": ["95", "87"],
+            "Grade": ["A", "B"],
+        })
+        result = map_columns(df)
+        assert result.confidence == "low"
+        assert result.score < 0.70
+
+    def test_missing_required_listed_for_low(self) -> None:
+        df = _make_df({
+            "Name": ["Alice", "Bob"],
+            "Score": ["95", "87"],
+            "Grade": ["A", "B"],
+        })
+        result = map_columns(df)
+        if result.confidence == "low":
+            assert len(result.missing_required) > 0
+
+    def test_missing_credit_amount_for_half_split(self) -> None:
+        """Debit-only files must surface 'credit_amount' as missing, not 'amount'.
+
+        Reporting 'amount' sends the user to a contradictory override
+        (single-amount layered on partial split). Mirrors the rule in
+        validate_partial_mapping.
+        """
+        df = _make_df({
+            "Date": ["01/15/2026", "02/20/2026"],
+            "Description": ["KROGER #1234", "WALMART"],
+            "Debit": ["42.50", "100.00"],
+        })
+        result = map_columns(df)
+        assert "debit_amount" in result.field_mapping
+        assert "credit_amount" not in result.field_mapping
+        assert "credit_amount" in result.missing_required
+        assert "amount" not in result.missing_required
+
+    def test_missing_debit_amount_for_half_split(self) -> None:
+        """Credit-only files must surface 'debit_amount' as missing, not 'amount'.
+
+        Mirror of the debit-only case.
+        """
+        df = _make_df({
+            "Date": ["01/15/2026", "02/20/2026"],
+            "Description": ["KROGER #1234", "WALMART"],
+            "Credit": ["42.50", "100.00"],
+        })
+        result = map_columns(df)
+        assert "credit_amount" in result.field_mapping
+        assert "debit_amount" not in result.field_mapping
+        assert "debit_amount" in result.missing_required
+        assert "amount" not in result.missing_required
+
+    def test_to_confidence_returns_uniform_value(self) -> None:
+        from moneybin.extractors.confidence import Confidence
+
+        df = _make_df({
+            "Transaction Date": ["01/15/2026", "02/20/2026"],
+            "Amount": ["-42.50", "100.00"],
+            "Description": ["KROGER #1234", "DIRECT DEPOSIT"],
+        })
+        result = map_columns(df)
+        c = result.to_confidence(t_high=0.90, t_med=0.70)
+        assert isinstance(c, Confidence)
+        assert c.tier == result.confidence
+        assert c.score == result.score
+        assert tuple(result.flagged_fields) == c.flagged
+        assert result.missing_required == c.missing_required
+
+    def test_back_compat_confidence_tier_preserved(self) -> None:
+        df = _make_df({
+            "Col1": ["01/15/2026", "02/20/2026"],
+            "Col2": ["KROGER #1234", "WALMART"],
+            "Col3": ["Groceries", "Groceries"],
+            "Col4": ["-42.50", "100.00"],
+        })
+        result = map_columns(df)
+        assert result.confidence in ("high", "medium", "low")

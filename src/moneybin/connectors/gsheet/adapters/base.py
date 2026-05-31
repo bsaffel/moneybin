@@ -28,6 +28,8 @@ class DetectionResult:
     # Seed-adapter-only:
     typed_columns: dict[str, str] = field(default_factory=dict)  # header → SQL type
     notes: list[str] = field(default_factory=list)
+    # Normalized confidence score in [0, 1]; 0.0 for adapters that don't compute one.
+    score: float = 0.0
 
 
 @dataclass(frozen=True)

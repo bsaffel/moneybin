@@ -6,9 +6,16 @@ Determines how the source represents expenses vs income:
 - split_debit_credit: separate debit and credit columns
 """
 
+import re
 from dataclasses import dataclass
 
 from moneybin.extractors.tabular.formats import SignConventionType
+
+# Word-boundary "credit" match for credit-card context detection. Without
+# the boundary, columns like ``credit_limit`` or ``credit_card_number`` on
+# a checking-account CSV would flip the inferred convention to
+# ``negative_is_income`` and silently invert every transaction sign.
+_CREDIT_WORD_RE = re.compile(r"\bcredit\b", flags=re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -77,7 +84,7 @@ def infer_sign_convention(
             reason="All amounts are positive — sign convention is ambiguous",
         )
 
-    if "credit" in header_context.lower():
+    if _CREDIT_WORD_RE.search(header_context):
         return SignConventionResult(
             convention="negative_is_income",
             reason="Credit card context detected — negative values are payments/credits",
