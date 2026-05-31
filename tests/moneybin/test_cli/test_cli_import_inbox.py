@@ -91,6 +91,41 @@ def test_inbox_drain_failure_exits_zero_but_warns(
     assert "1 failed" in result.stderr
 
 
+def test_inbox_drain_renders_pending_files(
+    runner: CliRunner, patch_inbox: MagicMock
+) -> None:
+    """Pending files (confirmation_required) must appear in text output.
+
+    Before this rendering existed, a confirmation_required outcome on an
+    inbox file was silently invisible: the file moved to pending/ and a
+    sidecar was written, but the user saw "0 imported, 0 failed" with no
+    pointer to the import-confirm command.
+    """
+    patch_inbox.sync.return_value = InboxSyncResult(
+        processed=[],
+        failed=[],
+        pending=[
+            {
+                "filename": "unknown-statement.csv",
+                "channel": "tabular",
+                "tier": "medium",
+                "score": 0.72,
+                "reason": "unknown_layout",
+                "moved_to": "pending/2026-05/unknown-statement.csv",
+                "sidecar": "pending/2026-05/unknown-statement.csv.pending.yml",
+            }
+        ],
+    )
+
+    result = runner.invoke(app, ["import", "inbox"])
+
+    assert result.exit_code == 0, result.stderr
+    assert "unknown-statement.csv" in result.stderr
+    assert "pending confirmation" in result.stderr
+    assert "moneybin import confirm" in result.stderr
+    assert "1 pending" in result.stderr
+
+
 def test_inbox_drain_json_output(runner: CliRunner, patch_inbox: MagicMock) -> None:
     """--output json emits a JSON envelope with sync payload."""
     patch_inbox.sync.return_value = InboxSyncResult(

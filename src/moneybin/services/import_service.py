@@ -16,6 +16,7 @@ from typing import Any, Literal, cast
 import duckdb
 
 from moneybin.database import Database
+from moneybin.errors import UserError
 from moneybin.extractors.tabular.formats import (
     NumberFormatType,
     SignConventionType,
@@ -30,6 +31,10 @@ from moneybin.metrics.registry import (
 from moneybin.repositories.imports_repo import ImportsRepo
 from moneybin.services._validators import validate_slug
 from moneybin.services.audit_service import AuditService
+from moneybin.services.import_confirmation import (
+    ActorKind,
+    ImportConfirmationRequiredError,
+)
 from moneybin.services.refresh import refresh as _refresh
 
 logger = logging.getLogger(__name__)
@@ -52,6 +57,13 @@ class ImportResult:
     """True if running balance suggests sign inversion; amounts were NOT auto-corrected."""
     import_id: str | None = None
     """UUID of the raw.import_log row this import created."""
+    field_mapping: dict[str, str] | None = None
+    """Authoritative destination → source column mapping the load used.
+
+    Populated for tabular imports from the resolved (matched-format or
+    confirmed) mapping. None for OFX/non-tabular paths. Callers
+    (import_confirm response, audit log) should prefer this over re-running
+    detection, which can diverge in ambiguous-header edge cases."""
 
     def summary(self) -> str:
         """Human-readable import summary."""
@@ -76,10 +88,17 @@ class ImportResult:
 
 @dataclass(frozen=True)
 class PerFileResult:
-    """One file's outcome inside a batch import."""
+    """One file's outcome inside a batch import.
+
+    ``status="confirmation_required"`` is used when ``_import_one`` raised
+    ``ImportConfirmationRequiredError`` — the file's detector proposal is
+    captured in ``confirmation_payload`` so the multi-file MCP envelope
+    can list per-file pending entries with enough context for the agent
+    to invoke ``import_confirm`` on each.
+    """
 
     path: str
-    status: Literal["imported", "failed", "skipped"]
+    status: Literal["imported", "failed", "skipped", "confirmation_required"]
     source_type: str | None
     rows_loaded: int = 0
     rows_skipped: int = 0
@@ -87,6 +106,11 @@ class PerFileResult:
     error: str | None = None
     sign_correction_suggested: bool = False
     """True if running balance suggests sign inversion; amounts were NOT auto-corrected."""
+
+    confirmation_payload: dict[str, object] | None = None
+    """Populated only when status == 'confirmation_required': detector proposal
+    + samples + flagged + missing_required so the agent can call
+    ``import_confirm`` per file. None on imported/failed/skipped rows."""
 
 
 @dataclass(frozen=True)
@@ -645,6 +669,8 @@ class ImportService:
         no_row_limit: bool = False,
         no_size_limit: bool = False,
         auto_accept: bool = False,
+        confirm: bool = False,
+        actor_kind: "ActorKind" = "human",
     ) -> ImportResult:
         """Import a tabular file through the five-stage pipeline.
 
@@ -664,6 +690,8 @@ class ImportService:
             no_row_limit: Override row count limit.
             no_size_limit: Override file size limit.
             auto_accept: Auto-accept the top fuzzy account match without prompting.
+            confirm: If True, acts as Accept signal to resolve_or_confirm.
+            actor_kind: 'human' (always surfaces) or 'agent' (may self-accept at high tier).
 
         Returns:
             ImportResult with summary.
@@ -757,14 +785,127 @@ class ImportService:
                 "built-in" if matched_format.name in builtin_formats else "saved"
             )
         else:
-            mapping_result = map_columns(df, overrides=overrides)
-            resolved = ResolvedMapping(
+            from moneybin.config import get_settings
+            from moneybin.metrics.registry import (
+                IMPORT_CONFIRMATIONS_TOTAL,
+                IMPORT_DETECTION_SCORE,
+                IMPORT_OVERRIDE_TOTAL,
+                IMPORT_SELF_ACCEPT_TOTAL,
+            )
+            from moneybin.services.import_confirmation import (
+                Accept,
+                ConfirmationRequired,
+                ImportConfirmationRequiredError,
+                Override,
+                ProposedMapping,
+                resolve_or_confirm,
+            )
+
+            settings = get_settings()
+            bands = settings.import_.confidence
+            mapping_result = map_columns(
+                df, overrides=overrides, t_high=bands.t_high, t_med=bands.t_med
+            )
+            confidence = mapping_result.to_confidence(
+                t_high=bands.t_high, t_med=bands.t_med
+            )
+            proposed = ProposedMapping(
                 field_mapping=mapping_result.field_mapping,
+                sample_values=mapping_result.sample_values,
+                unmapped_columns=tuple(mapping_result.unmapped_columns),
+            )
+
+            signal: Accept | Override | None
+            if overrides:
+                signal = Override(mapping=overrides)
+            elif confirm:
+                signal = Accept()
+            else:
+                signal = None
+
+            # Required fields depend on the EFFECTIVE amount shape after the
+            # override resolves the single/split contention. Both this
+            # pre-compute and validate_partial_mapping's merge logic call
+            # resolve_amount_shape so a future shape addition only updates
+            # one place.
+            from moneybin.extractors.tabular.field_aliases import FIELD_ALIASES
+            from moneybin.services.import_confirmation import resolve_amount_shape
+
+            amount_required = resolve_amount_shape(
+                proposed_keys=set(proposed.field_mapping.keys()),
+                override_keys=set(overrides.keys()) if overrides else set(),
+            )
+            required_fields = (
+                "transaction_date",
+                *amount_required,
+                "description",
+            )
+            outcome = resolve_or_confirm(
+                channel="tabular",
+                confidence=confidence,
+                proposed=proposed,
+                available_columns=tuple(df.columns),
+                required_fields=required_fields,
+                valid_destinations=tuple(FIELD_ALIASES.keys()),
+                signal=signal,
+                self_accept_enabled=settings.import_.self_accept_high,
+                actor_kind=actor_kind,
+            )
+
+            IMPORT_DETECTION_SCORE.observe(confidence.score)
+
+            if isinstance(outcome, ConfirmationRequired):
+                IMPORT_CONFIRMATIONS_TOTAL.labels(
+                    channel="tabular",
+                    tier=confidence.tier,
+                    outcome="declined",
+                ).inc()
+                raise ImportConfirmationRequiredError(outcome)
+
+            if outcome.self_accepted:
+                IMPORT_SELF_ACCEPT_TOTAL.labels(channel="tabular").inc()
+            if isinstance(signal, Override):
+                IMPORT_OVERRIDE_TOTAL.labels(channel="tabular").inc()
+                IMPORT_CONFIRMATIONS_TOTAL.labels(
+                    channel="tabular",
+                    tier=confidence.tier,
+                    outcome="overridden",
+                ).inc()
+            else:
+                IMPORT_CONFIRMATIONS_TOTAL.labels(
+                    channel="tabular",
+                    tier=confidence.tier,
+                    outcome="accepted",
+                ).inc()
+
+            # Coerce sign_convention based on the resolved amount shape so an
+            # override that swaps single ⇄ split doesn't carry a stale
+            # detector-derived convention into transform_dataframe (split
+            # rule against a single ``amount`` mapping rejects every row,
+            # and vice versa). Detector-derived sign for the resolved shape
+            # is preserved when the override didn't change the shape.
+            resolved_has_split = (
+                "debit_amount" in outcome.field_mapping
+                and "credit_amount" in outcome.field_mapping
+            )
+            detector_was_split = mapping_result.sign_convention == "split_debit_credit"
+            if resolved_has_split and not detector_was_split:
+                resolved_sign = "split_debit_credit"
+            elif not resolved_has_split and detector_was_split:
+                # Split → single: detector's split-only convention is no
+                # longer valid. Fall back to the default
+                # ``negative_is_expense``; callers can pass --sign to
+                # override if their export uses a different convention.
+                resolved_sign = "negative_is_expense"
+            else:
+                resolved_sign = mapping_result.sign_convention
+            resolved = ResolvedMapping(
+                field_mapping=outcome.field_mapping,
                 date_format=mapping_result.date_format or "%Y-%m-%d",
-                sign_convention=mapping_result.sign_convention,
+                sign_convention=resolved_sign,
                 number_format=mapping_result.number_format,
                 is_multi_account=mapping_result.is_multi_account,
-                confidence=mapping_result.confidence,
+                confidence=confidence.tier,
             )
             format_source = "detected"
 
@@ -775,20 +916,39 @@ class ImportService:
                     "use --sign to override if expense amounts look wrong."
                 )
 
-            if mapping_result.confidence == "low":
-                raise ValueError(
-                    f"Could not reliably detect column mapping for "
-                    f"{file_path.name}. Use --override to specify columns manually."
-                )
-
         # Record format match and detection confidence metrics
         if matched_format:
+            from moneybin.metrics.registry import IMPORT_KNOWN_FORMAT_REUSE_TOTAL
+
+            IMPORT_KNOWN_FORMAT_REUSE_TOTAL.labels(channel="tabular").inc()
             TABULAR_FORMAT_MATCHES.labels(
                 format_name=matched_format.name, format_source=format_source
             ).inc()
         TABULAR_DETECTION_CONFIDENCE.labels(confidence=resolved.confidence).inc()
 
-        # Apply CLI overrides — rebuild a new ResolvedMapping (frozen)
+        # Apply CLI overrides — rebuild a new ResolvedMapping (frozen).
+        # Validate at runtime: typing.cast has no runtime effect, so an
+        # invalid value like ``--sign=backwards`` would silently propagate
+        # into the transform pipeline and surface deep inside SQLMesh,
+        # leaving a dangling raw.import_log row in ``importing`` state.
+        # Guard explicitly via get_args so the failure is a clean UserError
+        # at the import boundary.
+        from typing import get_args
+
+        if sign and sign not in get_args(SignConventionType):
+            raise UserError(
+                f"Invalid sign convention: {sign!r}. "
+                f"Valid values: {list(get_args(SignConventionType))}.",
+                code="invalid_sign_convention",
+            )
+        if number_format_override and number_format_override not in get_args(
+            NumberFormatType
+        ):
+            raise UserError(
+                f"Invalid number format: {number_format_override!r}. "
+                f"Valid values: {list(get_args(NumberFormatType))}.",
+                code="invalid_number_format",
+            )
         if sign or date_format_override or number_format_override:
             resolved = dataclasses.replace(
                 resolved,
@@ -939,17 +1099,29 @@ class ImportService:
         result.transactions = rows_imported
         result.details = {"transactions": rows_imported, "accounts": len(unique_ids)}
         result.sign_correction_suggested = transform_result.sign_correction_suggested
+        result.field_mapping = dict(resolved.field_mapping)
 
         if rows_imported > 0:
             result.date_range = self._query_date_range(
                 "raw.tabular_transactions", "transaction_date", file_path
             )
 
-        # Auto-save detected format for future imports
+        # Auto-save detected format for future imports.
+        # Save when EITHER the detector was high/medium confidence (it
+        # produced a complete proposal on its own) OR the user supplied an
+        # explicit Override (they ratified the resolved mapping themselves,
+        # so the resolved mapping is just as trustworthy regardless of the
+        # initial detection tier). Previously this gated only on raw
+        # detector tier, so a user calling import_confirm with a complete
+        # override on a low-tier file got their import to succeed but the
+        # --save-format flag was silently ignored.
+        user_ratified_via_override = bool(overrides)
         if (
             save_format
             and not matched_format
-            and resolved.confidence in ("high", "medium")
+            and (
+                resolved.confidence in ("high", "medium") or user_ratified_via_override
+            )
             and rows_imported > 0
         ):
             try:
@@ -1000,6 +1172,8 @@ class ImportService:
         no_row_limit: bool = False,
         no_size_limit: bool = False,
         auto_accept: bool = False,
+        confirm: bool = False,
+        actor_kind: ActorKind = "human",
     ) -> ImportResult:
         """Import a financial data file into DuckDB.
 
@@ -1031,6 +1205,8 @@ class ImportService:
             no_size_limit: Override file size limit for tabular imports.
             auto_accept: Auto-accept the top fuzzy account match without prompting
                 (CLI: --yes / -y). Defaults to False.
+            confirm: Accept the proposed mapping without further prompting.
+            actor_kind: 'human' (always surfaces) or 'agent' (may self-accept at high tier).
 
         Returns:
             ImportResult with summary of what was imported.
@@ -1058,6 +1234,8 @@ class ImportService:
             no_row_limit=no_row_limit,
             no_size_limit=no_size_limit,
             auto_accept=auto_accept,
+            confirm=confirm,
+            actor_kind=actor_kind,
         )
 
         if refresh and result.file_type in ("ofx", "tabular"):
@@ -1093,6 +1271,8 @@ class ImportService:
         no_row_limit: bool = False,
         no_size_limit: bool = False,
         auto_accept: bool = False,
+        confirm: bool = False,
+        actor_kind: ActorKind = "human",
     ) -> ImportResult:
         """Extract + load one file. Does NOT run the refresh pipeline.
 
@@ -1129,6 +1309,8 @@ class ImportService:
                 no_row_limit=no_row_limit,
                 no_size_limit=no_size_limit,
                 auto_accept=auto_accept,
+                confirm=confirm,
+                actor_kind=actor_kind,
             )
         raise ValueError(f"Unsupported file type: {file_type}")
 
@@ -1139,6 +1321,8 @@ class ImportService:
         refresh: bool = True,
         force: bool = False,
         interactive: bool = False,
+        confirm: bool = False,
+        actor_kind: ActorKind = "human",
     ) -> BatchImportResult:
         """Import a list of files; run refresh once at end of batch.
 
@@ -1161,7 +1345,13 @@ class ImportService:
         for raw_path in paths:
             path = Path(raw_path)
             try:
-                r = self._import_one(path, force=force, interactive=interactive)
+                r = self._import_one(
+                    path,
+                    force=force,
+                    interactive=interactive,
+                    confirm=confirm,
+                    actor_kind=actor_kind,
+                )
                 rows_loaded = r.transactions
                 per_file.append(
                     PerFileResult(
@@ -1176,6 +1366,47 @@ class ImportService:
                 any_succeeded = True
                 if r.file_type in ("ofx", "tabular"):
                     any_transformable = True
+            except ImportConfirmationRequiredError as e:
+                # Distinct from generic failure: the file's detector formed
+                # a proposal (or surfaced low-tier with no proposal); the
+                # caller needs the payload to ratify or override per file.
+                from moneybin.services.import_confirmation import ProposedMapping
+
+                proposed_mapping = (
+                    e.outcome.proposed.field_mapping
+                    if isinstance(e.outcome.proposed, ProposedMapping)
+                    else {}
+                )
+                unmapped = (
+                    list(e.outcome.proposed.unmapped_columns)
+                    if isinstance(e.outcome.proposed, ProposedMapping)
+                    else []
+                )
+                logger.info(
+                    f"Import requires confirmation for {path}: "
+                    f"tier={e.outcome.confidence.tier} reason={e.outcome.reason}"
+                )
+                per_file.append(
+                    PerFileResult(
+                        path=str(path),
+                        status="confirmation_required",
+                        source_type=None,
+                        confirmation_payload={
+                            "channel": e.outcome.channel,
+                            "tier": e.outcome.confidence.tier,
+                            "score": e.outcome.confidence.score,
+                            "reason": e.outcome.reason,
+                            "error_message": e.outcome.error_message,
+                            "proposed_mapping": dict(proposed_mapping),
+                            "samples": dict(e.outcome.samples),
+                            "flagged": list(e.outcome.confidence.flagged),
+                            "missing_required": list(
+                                e.outcome.confidence.missing_required
+                            ),
+                            "unmapped_columns": unmapped,
+                        },
+                    )
+                )
             except Exception as e:  # noqa: BLE001 — per-file failure must not abort batch
                 # error_type only; raw str(e) may embed PII per extractors/ofx/extractor.py
                 error_type = type(e).__name__

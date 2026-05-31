@@ -25,6 +25,7 @@ from moneybin.connectors.gsheet.service_factory import (
 from moneybin.connectors.gsheet.service_factory import (
     build_pull_service_with_db as _build_pull_service,
 )
+from moneybin.extractors.tabular.formats import SignConventionType
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +139,17 @@ def gsheet_connect(
         help='Override auto-detected mapping. JSON ({"Date":"date",...}) '
         "or comma-separated key=value pairs.",
     ),
+    sign: SignConventionType | None = typer.Option(
+        None,
+        "--sign",
+        help="Sign-convention override for the saved connection. Required "
+        "when --column-mapping changes a split debit/credit detection "
+        "into a single 'amount' column and the export uses "
+        "positive_is_expense (credit-card style); otherwise the saved "
+        "sign defaults to negative_is_expense and amounts persist with "
+        "inverted polarity. Choices: negative_is_expense, "
+        "negative_is_income, split_debit_credit.",
+    ),
     yes: bool = typer.Option(
         False,
         "--yes",
@@ -178,6 +190,7 @@ def gsheet_connect(
                 account_name=account_name,
                 account_id=account_id,
                 column_mapping=parsed_mapping,
+                sign=sign,
                 yes=yes,
                 no_initial_pull=no_initial_pull,
                 accept_seed_fallback=accept_seed_fallback,
@@ -419,6 +432,15 @@ def gsheet_reconnect(
         "-y",
         help="Skip any interactive confirmation prompts.",
     ),
+    sign: SignConventionType | None = typer.Option(
+        None,
+        "--sign",
+        help="Sign-convention override for the re-pinned mapping. Use when "
+        "the source sheet shape implies a different convention than the "
+        "saved connection (e.g., a credit-card export now using "
+        "positive_is_expense). Choices: negative_is_expense, "
+        "negative_is_income, split_debit_credit.",
+    ),
     output: OutputFormat = output_option,
 ) -> None:
     """Re-detect the sheet structure, re-pin the mapping, and run a pull.
@@ -428,7 +450,7 @@ def gsheet_reconnect(
     """
     with handle_cli_errors():
         with _build_connection_service() as service:
-            result = service.reconnect(connection_id, yes=yes, actor="cli")
+            result = service.reconnect(connection_id, yes=yes, sign=sign, actor="cli")
 
     if output == OutputFormat.JSON:
         typer.echo(

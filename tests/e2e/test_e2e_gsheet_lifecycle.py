@@ -26,6 +26,7 @@ import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.main import app
+from moneybin.config import ConfidenceBands, ImportSettings, MoneyBinSettings
 from moneybin.connectors.gsheet.connection_service import GSheetConnectionService
 from moneybin.connectors.gsheet.pull_service import GSheetPullService
 from moneybin.connectors.gsheet.testing import (
@@ -115,6 +116,13 @@ def _patch_cli_builders(
     def _pull_service() -> Generator[tuple[GSheetPullService, Database], None, None]:
         yield GSheetPullService(db=db, sheets_client=sheets, oauth_client=oauth), db
 
+    # The connection service reads `get_settings().import_.confidence` to band
+    # detection scores; this in-process test never creates a real profile, so
+    # the lazy resolver would otherwise drop into the first-run wizard. Stub
+    # get_settings at the call sites that read confidence bands.
+    fake_settings = MoneyBinSettings.model_construct(
+        import_=ImportSettings(confidence=ConfidenceBands()),
+    )
     with (
         patch(
             "moneybin.cli.commands.gsheet._build_connection_service",
@@ -123,6 +131,10 @@ def _patch_cli_builders(
         patch(
             "moneybin.cli.commands.gsheet._build_pull_service",
             _pull_service,
+        ),
+        patch(
+            "moneybin.connectors.gsheet.connection_service.get_settings",
+            return_value=fake_settings,
         ),
         # Suppress the refresh step — that pipeline is exercised in scenarios;
         # this test focuses on the gsheet lifecycle plumbing in isolation.

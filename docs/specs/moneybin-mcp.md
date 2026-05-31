@@ -677,13 +677,38 @@ Recent match decisions (accepted and rejected).
 
 Import one or more financial data files into MoneyBin. Format detected automatically per file from extension (OFX/QFX/QBO, CSV/TSV/Excel/Parquet/Feather). Per-file failures do not abort the batch; transforms run once at end of batch by default.
 
-- **Sensitivity:** `low` — return envelope reports per-file counts and status, not transaction content.
+- **Sensitivity:** `low` on success; `medium` on `confirmation_required` state (returns sample rows + proposed mapping).
 - **Unique parameters:** `paths: list[str]` (required, each path must be within the user's home directory), `refresh: bool = True`, `force: bool = False`.
-- **Behavior:** Validates each path, delegates to `ImportService.import_files()`. Returns envelope with `data.{imported_count, failed_count, total_count, transforms_applied, transforms_duration_seconds, files: list[{path, status, source_type, rows_loaded, import_id, error?}]}`. Amounts use accounting convention: negative=expense, positive=income; transfers exempt.
-- **Service:** `ImportService.import_files() -> BatchImportResult`
-- **CLI:** `moneybin import files PATHS... [--no-refresh] [--output json]`
+- **Behavior:** Validates each path, delegates to `ImportService.import_files()`. On success, returns envelope with `data.{imported_count, failed_count, total_count, transforms_applied, transforms_duration_seconds, files: list[{path, status, source_type, rows_loaded, import_id, error?}]}`. Amounts use accounting convention: negative=expense, positive=income; transfers exempt.
+
+  **`confirmation_required` state (first-encounter unknown layout):** instead of importing, returns a `ResponseEnvelope` with `status="ok"`, `summary.status="confirmation_required"`, and `data.{proposed_mapping, samples, flagged, missing_required, unmapped_columns}`. The `actions[]` field contains concrete invocation hints for `import_confirm`. The caller inspects the proposal (optionally via `import_preview`) and calls `import_confirm` to ratify. Sensitivity is `medium` for this state because the envelope contains sample row values.
+- **Service:** `ImportService.import_files() -> BatchImportResult | ConfirmationRequiredResult`
+- **CLI:** `moneybin import files PATHS... [--confirm/--no-confirm] [--mapping field=column] [--no-refresh] [--output json]`
 
 Per-file overrides (`account_name`, `institution`, `format_name`) are not exposed on the batch MCP surface — use the CLI for those.
+
+### `import_confirm`
+
+Terminal `_confirm` step of the propose→review→confirm workflow for tabular imports.
+`import_files` returns a `confirmation_required` envelope on a first-encounter unknown
+layout; the agent inspects the proposal (optionally via `import_preview`) and calls
+`import_confirm` to ratify with `accept=True` or a partial `mapping={...}` override.
+
+- **Sensitivity:** `medium` — returns row-shaped sample values and the merged mapping.
+- **Annotations:** `read_only=False`, `destructive=False`, `idempotent=False`.
+- **Unique parameters:**
+
+  | Parameter | Type | Notes |
+  |---|---|---|
+  | `file_path` | `str` | Path to the file to import. Must match the path from the `confirmation_required` envelope. |
+  | `accept` | `bool` | Accept the detected mapping as-is. Default `False`. |
+  | `mapping` | `dict[str, str] \| None` | Partial-merge override: dest field → source column. Unspecified fields fall back to the detected mapping. |
+  | `save_format` | `bool` | Pin the merged mapping as a saved `app.tabular_formats` entry for silent reuse on future imports. Default `True`. |
+
+- **Behavior:** Merges `mapping` (if supplied) over the detected proposal, validates the result, and executes the import. Returns standard `ImportResult` envelope. Amounts use accounting convention: negative=expense, positive=income; transfers exempt.
+- **Mutation surface:** `raw.tabular_transactions` (load), `app.tabular_formats` (when `save_format=True`). Revertible via `import_revert` (data rows) and `system_audit_undo` (format save).
+- **Service:** `ImportService.confirm_import() -> ImportResult`
+- **CLI:** `moneybin import confirm <file> [--accept] [--mapping field=column] [--save-format/--no-save-format] [--account-name NAME] [--account-id ID] [--output text|json]`
 
 ### `import_status`
 

@@ -51,7 +51,66 @@ _IMPORT_ID_PLACEHOLDER = "__pending__"
 # emptiness counts as drift. Optional columns (description, notes) are routinely
 # blank in real exports and must not pin a connection in drift_detected forever.
 # Defined here (the adapter owns the requirement); imported by connection_service.
+#
+# Amount has two shapes: a single ``amount`` column OR split
+# ``debit_amount`` + ``credit_amount`` columns. ``REQUIRED_DEST_FIELDS`` lists
+# the canonical single-column form (used at connect-time when no mapping
+# exists yet); ``required_sources_for_mapping`` resolves the actual required
+# source columns for a concrete mapping so a split-column connection isn't
+# silently approved as "all required fields present" when only one of the
+# split pair is empty.
 REQUIRED_DEST_FIELDS = ("transaction_date", "amount")
+
+
+def _is_null_or_blank(value: object) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str) and value.strip() == "":
+        return True
+    return False
+
+
+def _split_pair_both_null_ratio(
+    df: pl.DataFrame, debit_col: str, credit_col: str
+) -> float:
+    """Fraction of rows where BOTH split-amount sources are null/blank.
+
+    A normal credit-card statement (every row in Debit, every row blank in
+    Credit) returns 0.0 — Debit fills both halves of the pair. The pair
+    drifts only when every row leaves *both* columns empty, which is the
+    only state that actually breaks transform_dataframe.
+    """
+    if df.height == 0:
+        return 0.0
+    debit_vals = df[debit_col].cast(pl.String, strict=False).to_list()
+    credit_vals = df[credit_col].cast(pl.String, strict=False).to_list()
+    both_empty = sum(
+        1
+        for d, c in zip(debit_vals, credit_vals, strict=False)
+        if _is_null_or_blank(d) and _is_null_or_blank(c)
+    )
+    return both_empty / df.height
+
+
+def required_sources_for_mapping(column_mapping: dict[str, str]) -> set[str]:
+    """Source columns whose emptiness counts as drift for this mapping.
+
+    Always includes the source mapped to ``transaction_date``. For amount,
+    accepts either a single ``amount`` mapping OR the ``debit_amount`` +
+    ``credit_amount`` pair — whichever the connection was actually saved
+    with. Mapping that satisfies neither returns an empty amount set
+    (drift check still gates on transaction_date).
+    """
+    by_dest = {dest: src for src, dest in column_mapping.items()}
+    required: set[str] = set()
+    if "transaction_date" in by_dest:
+        required.add(by_dest["transaction_date"])
+    if "amount" in by_dest:
+        required.add(by_dest["amount"])
+    elif "debit_amount" in by_dest and "credit_amount" in by_dest:
+        required.add(by_dest["debit_amount"])
+        required.add(by_dest["credit_amount"])
+    return required
 
 
 class TransactionsAdapter:
@@ -67,6 +126,12 @@ class TransactionsAdapter:
     ) -> DetectionResult:
         """Detect the column mapping for a transactions-shaped sheet."""
         _ = account_name  # accepted for Protocol parity; unused by map_columns
+        # MappingResult.confidence here is informational (forwarded onto
+        # DetectionResult.confidence for display). The gsheet control-flow
+        # path computes its own Confidence via to_confidence(bands) in
+        # connection_service, so we don't import settings here — that would
+        # trip the first-run wizard for CliRunner-driven tests that haven't
+        # initialized a profile.
         mapping_result = map_columns(df)
         # MappingResult.field_mapping is dest_field → source_column; invert
         # to source_header → dest_field for the DetectionResult contract.
@@ -83,6 +148,7 @@ class TransactionsAdapter:
             skip_rows=0,
             skip_trailing_patterns=[],
             notes=[],
+            score=mapping_result.score,
         )
 
     def check_drift(
@@ -92,21 +158,57 @@ class TransactionsAdapter:
     ) -> DriftReport:
         """Compare the current pull against the pinned header signature.
 
-        Only the source columns mapped to REQUIRED_DEST_FIELDS gate drift on
-        emptiness — a mostly-blank optional column (Description, Notes) is
-        normal and must not trigger drift_detected.
+        Only the source columns required by this mapping's amount-shape gate
+        drift on emptiness — a mostly-blank optional column (Description,
+        Notes) is normal and must not trigger drift_detected.
+
+        Split-amount handling: for a debit/credit split connection,
+        transform_dataframe accepts rows where only ONE of debit_amount /
+        credit_amount has a value (a normal credit-card statement has every
+        row in Debit and zero rows in Credit). A naive per-column null
+        ratio check would mark Credit as drifted in that shape. We instead
+        pass the non-split required sources to ``detect_drift`` and run a
+        row-level ``both null`` check for the split pair; the pair drifts
+        only when every sampled row has neither debit nor credit populated.
         """
-        required_sources = {
-            src
-            for src, dest in connection.column_mapping.items()
-            if dest in REQUIRED_DEST_FIELDS
-        }
-        return detect_drift(
+        by_dest = {dest: src for src, dest in connection.column_mapping.items()}
+        non_split_required = required_sources_for_mapping(connection.column_mapping)
+        split_pair: tuple[str, str] | None = None
+        if (
+            "debit_amount" in by_dest
+            and "credit_amount" in by_dest
+            and "amount" not in by_dest
+        ):
+            split_pair = (by_dest["debit_amount"], by_dest["credit_amount"])
+            non_split_required = non_split_required - set(split_pair)
+        report = detect_drift(
             pinned_signature=connection.header_signature,
             current_headers=list(current_df.columns),
             sample_df=current_df,
-            mapped_columns=required_sources,
+            mapped_columns=non_split_required,
         )
+        if split_pair is None:
+            return report
+        debit_col, credit_col = split_pair
+        if debit_col not in current_df.columns or credit_col not in current_df.columns:
+            # detect_drift already flags missing headers from the pinned
+            # signature, so neither extending nor short-circuiting is needed.
+            return report
+        if _split_pair_both_null_ratio(current_df, debit_col, credit_col) > 0.5:
+            empties = sorted([*report.empty_mapped_columns, debit_col, credit_col])
+            reason_parts = [report.reason] if report.reason != "no drift" else []
+            reason_parts.append(
+                f"split debit/credit pair {debit_col}+{credit_col} both empty"
+            )
+            from dataclasses import replace as _replace
+
+            return _replace(
+                report,
+                is_drift=True,
+                reason="; ".join(reason_parts),
+                empty_mapped_columns=empties,
+            )
+        return report
 
     def transform(
         self,

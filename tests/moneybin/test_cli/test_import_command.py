@@ -10,11 +10,7 @@ import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.commands.import_cmd import app
-from moneybin.services.import_service import (
-    BatchImportResult,
-    ImportResult,
-    PerFileResult,
-)
+from moneybin.services.import_service import ImportResult
 
 runner = CliRunner()
 
@@ -129,27 +125,21 @@ def test_import_file_surfaces_sign_correction_warning(csv_path: Path) -> None:
     assert "Sign convention may be inverted" in result.output
 
 
-def test_import_files_batch_surfaces_sign_correction_warning(csv_path: Path) -> None:
-    """Batch path (no per-file knobs) emits the sign-inversion warning too.
+def test_import_files_single_no_knobs_surfaces_sign_correction_warning(
+    csv_path: Path,
+) -> None:
+    """Single-file import (no per-file knobs) emits the sign-inversion warning.
 
-    `moneybin import files <path>` without --account-name / --sign / --override
-    falls into the batch branch (svc.import_files), not the single-file branch
-    (svc.import_file). Both paths must surface the warning.
+    Single-path invocations always route through import_file (not import_files)
+    so ImportConfirmationRequiredError can bubble.  The sign-correction warning
+    still surfaces through this path.
     """
 
-    def fake_run_batch(*args: Any, **kwargs: Any) -> BatchImportResult:
-        return BatchImportResult(
-            per_file=[
-                PerFileResult(
-                    path=str(csv_path),
-                    status="imported",
-                    source_type="tabular",
-                    rows_loaded=1,
-                    sign_correction_suggested=True,
-                )
-            ],
-            transforms_applied=False,
-            transforms_duration_seconds=None,
+    def fake_run_import(**kwargs: Any) -> ImportResult:
+        return ImportResult(
+            file_path=str(kwargs["file_path"]),
+            file_type="tabular",
+            sign_correction_suggested=True,
         )
 
     with (
@@ -162,8 +152,8 @@ def test_import_files_batch_surfaces_sign_correction_warning(csv_path: Path) -> 
             _fake_db_ctx,
         ),
         patch(
-            "moneybin.services.import_service.ImportService.import_files",
-            side_effect=fake_run_batch,
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=fake_run_import,
         ),
     ):
         result = runner.invoke(

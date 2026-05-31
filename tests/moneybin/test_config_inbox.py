@@ -2,7 +2,9 @@
 
 from pathlib import Path
 
-from moneybin.config import ImportSettings, MoneyBinSettings
+import pytest
+
+from moneybin.config import ConfidenceBands, ImportSettings, MoneyBinSettings
 
 
 class TestImportSettings:
@@ -15,6 +17,40 @@ class TestImportSettings:
     def test_inbox_root_overridable_via_init(self, tmp_path: Path) -> None:
         settings = ImportSettings(inbox_root=tmp_path / "custom")
         assert settings.inbox_root == tmp_path / "custom"
+
+    def test_default_self_accept_high_false(self) -> None:
+        assert ImportSettings().self_accept_high is False
+
+    def test_self_accept_high_can_enable(self) -> None:
+        assert ImportSettings(self_accept_high=True).self_accept_high is True
+
+    def test_confidence_bands_default(self) -> None:
+        s = ImportSettings()
+        assert s.confidence.t_high == 0.90
+        assert s.confidence.t_med == 0.70
+
+
+class TestConfidenceBands:
+    """Validate confidence band thresholds and constraints."""
+
+    def test_defaults_per_spec(self) -> None:
+        b = ConfidenceBands()
+        assert b.t_high == 0.90
+        assert b.t_med == 0.70
+
+    def test_rejects_inverted(self) -> None:
+        with pytest.raises(ValueError, match="t_high must be >= t_med"):
+            ConfidenceBands(t_high=0.5, t_med=0.7)
+
+    def test_rejects_out_of_range(self) -> None:
+        with pytest.raises(ValueError):
+            ConfidenceBands(t_high=1.5, t_med=0.7)
+        with pytest.raises(ValueError):
+            ConfidenceBands(t_high=0.9, t_med=-0.1)
+
+    def test_accepts_equal_bands(self) -> None:
+        b = ConfidenceBands(t_high=0.8, t_med=0.8)
+        assert b.t_high == b.t_med
 
 
 class TestProfileInboxDir:

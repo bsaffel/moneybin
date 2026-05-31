@@ -2,7 +2,8 @@
 
 Covers: import_files, import_preview, import_status, import_revert,
 import_formats, import_inbox_sync, import_inbox_pending,
-and import_labels_set (curation tool migrated from batch 4 stopgap).
+import_labels_set (curation tool migrated from batch 4 stopgap),
+and import_confirm.
 
 Each field carries ``Annotated[T, DataClass.X]`` metadata so the Phase 6
 middleware can derive sensitivity via ``derive_tier`` without inspecting
@@ -23,6 +24,8 @@ Tier derivation summary:
                                      failed list may contain error strings)
   - ``ImportInboxPendingPayload``  → Tier.LOW (filename/account metadata only)
   - ``ImportLabelsSetPayload``     → Tier.MEDIUM (labels = USER_NOTE)
+  - ``ImportConfirmPayload``       → Tier.MEDIUM (sample_values = DESCRIPTION —
+                                     raw file content may contain PII)
 """
 
 from __future__ import annotations
@@ -48,6 +51,13 @@ class ImportPerFileRow:
     import_id: Annotated[str | None, DataClass.RECORD_ID]
     error: Annotated[str | None, DataClass.DESCRIPTION]
     sign_correction_suggested: Annotated[bool, DataClass.TXN_TYPE] = False
+    # Populated only when status == "confirmation_required": detector
+    # proposal + samples + flagged + missing_required so the agent can
+    # call `import_confirm` per file. Sample values are row-shaped
+    # (DESCRIPTION / MEDIUM).
+    confirmation_payload: Annotated[dict[str, object] | None, DataClass.DESCRIPTION] = (
+        None
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -185,6 +195,7 @@ class ImportInboxSyncPayload:
 
     processed: Annotated[list[dict[str, object]], DataClass.AGGREGATE]
     failed: Annotated[list[dict[str, object]], DataClass.DESCRIPTION]
+    pending: Annotated[list[dict[str, object]], DataClass.DESCRIPTION]
     skipped: Annotated[list[dict[str, object]], DataClass.AGGREGATE]
     ignored: Annotated[list[dict[str, object]], DataClass.AGGREGATE]
     transforms_applied: Annotated[bool, DataClass.TXN_TYPE]
@@ -225,3 +236,37 @@ class ImportLabelsSetPayload:
 
     import_id: Annotated[str, DataClass.RECORD_ID]
     labels: Annotated[list[str], DataClass.USER_NOTE]
+
+
+# ---------------------------------------------------------------------------
+# import_confirm — confirmation outcome payload
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class ImportConfirmPayload:
+    """Payload for ``import_confirm`` — post-confirmation import result.
+
+    ``status`` is always ``"imported"`` here — the discriminant mirrors the
+    ``confirmation_required`` envelope's top-level status field, so callers
+    can branch on a single discriminant regardless of whether ``import_confirm``
+    succeeded or re-surfaced ConfirmationRequired (a re-surface emits a raw
+    dict with ``status="confirmation_required"``; see ``import_tools.py``).
+    ``merged_mapping`` is the authoritative destination → source column
+    mapping the load actually used (threaded from ``ImportResult.field_mapping``
+    populated inside ``_import_tabular`` from the ``resolve_or_confirm`` outcome,
+    NOT re-derived from a post-hoc detection pass — those can diverge on
+    ambiguous headers).
+    ``sample_values`` carries raw file content that may include PII
+    (merchant names, description text); annotated as DESCRIPTION (MEDIUM).
+    Sample values are populated best-effort by re-reading the file post-load
+    for display; they're informational, not load-state.
+    """
+
+    import_id: Annotated[str | None, DataClass.RECORD_ID]
+    rows_loaded: Annotated[int, DataClass.AGGREGATE]
+    merged_mapping: Annotated[dict[str, Any], DataClass.TXN_TYPE]
+    # raw file content — may contain PII → DESCRIPTION (MEDIUM)
+    sample_values: Annotated[dict[str, Any], DataClass.DESCRIPTION]
+    sign_correction_suggested: Annotated[bool, DataClass.TXN_TYPE] = False
+    status: Annotated[str, DataClass.TXN_TYPE] = "imported"

@@ -146,7 +146,11 @@ class TabularExtractor:
         balance_validated: bool | None = None,
     ) -> None:
         """Finalize an import batch. Delegates to import_log module + records metric."""
-        if rows_imported == 0 and rows_rejected > 0:
+        # Zero-row imports (whether all-rejected, all-trailing-skipped, or
+        # an entirely empty file) must NOT report "complete" — that would
+        # be a green signal for an import that wrote nothing. Map any
+        # zero-imported outcome to "failed" so callers can detect it.
+        if rows_imported == 0:
             status = "failed"
         elif rows_rejected == 0:
             status = "complete"

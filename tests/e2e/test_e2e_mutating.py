@@ -648,6 +648,32 @@ class TestImportMutating:
         result = run_cli("import", "revert", "nonexistent-id", "--yes", env=env)
         assert "Traceback (most recent call last)" not in result.output
 
+    def test_import_confirm_accept_loads_rows(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """Import confirm <file> --accept imports rows and exits 0."""
+        env = make_workflow_env_fast(
+            tmp_path, "importconfirm", _mutating_profile_template
+        )
+        fixture = FIXTURES_DIR / "tabular" / "standard.csv"
+
+        result = run_cli(
+            "import",
+            "confirm",
+            str(fixture),
+            "--accept",
+            "--account-name",
+            "smoke-acct",
+            "--no-save-format",
+            "--output",
+            "json",
+            env=env,
+        )
+        result.assert_success()
+        payload = json.loads(result.stdout)
+        assert payload["status"] == "ok"
+        assert payload["data"]["rows_loaded"] > 0
+
     def test_import_delete_format(
         self, _mutating_profile_template: Path, tmp_path: Path
     ) -> None:

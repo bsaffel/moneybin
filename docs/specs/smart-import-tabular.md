@@ -1,7 +1,7 @@
 # Feature: Smart Tabular Import
 
 > Last updated: 2026-04-22 — added open-source learnings: import batch tracking/reverting, DD/MM disambiguation, running balance validation, size guardrails, regex skip patterns, named number formats, Maybe migration format, design rationale section. Fixtures: 73 → 96.
-> Companions: [`smart-import-overview.md`](smart-import-overview.md) (umbrella), [`matching-overview.md`](matching-overview.md) (provenance contract), [`matching-same-record-dedup.md`](matching-same-record-dedup.md) (downstream dedup), [`categorization-overview.md`](categorization-overview.md) (category bootstrap), [`privacy-data-protection.md`](privacy-data-protection.md) (encryption), [`database-migration.md`](database-migration.md) (schema migration), [`mcp-architecture.md`](mcp-architecture.md) (CLI/MCP symmetry)
+> Companions: [`smart-import-overview.md`](smart-import-overview.md) (umbrella), [`smart-import-confirmation.md`](smart-import-confirmation.md) (confirm/confidence layer this spec's column-mapping engine feeds), [`matching-overview.md`](matching-overview.md) (provenance contract), [`matching-same-record-dedup.md`](matching-same-record-dedup.md) (downstream dedup), [`categorization-overview.md`](categorization-overview.md) (category bootstrap), [`privacy-data-protection.md`](privacy-data-protection.md) (encryption), [`database-migration.md`](database-migration.md) (schema migration), [`mcp-architecture.md`](mcp-architecture.md) (CLI/MCP symmetry)
 
 ## Status
 <!-- draft | ready | in-progress | implemented -->
@@ -70,6 +70,10 @@ fully-categorized MoneyBin on day one.
 8. Assign a confidence tier (high / medium / low) to every detection result.
 9. Present detected mappings for user confirmation before importing. High confidence
    with `--yes` auto-confirms. Low confidence refuses with actionable guidance.
+   **Behavior change:** `medium`-confidence detections now gate on confirmation
+   (surfacing a `confirmation_required` envelope / interactive prompt) rather than
+   waving through with a log warning. Realized by
+   [`smart-import-confirmation.md`](smart-import-confirmation.md).
 10. Auto-save successful detections as formats in `app.tabular_formats` for reuse.
 11. Support format override and update via `--override` + `--save-format` in a single
     invocation — no separate "edit format" step required.

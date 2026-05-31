@@ -2,8 +2,11 @@
 
 Wraps ImportService.import_file() with a watched-folder UX:
 files dropped in <inbox_root>/<profile>/inbox/ are drained on demand,
-moved to processed/YYYY-MM/ on success or failed/YYYY-MM/ + .error.yml
-sidecar on failure. See docs/specs/smart-import-inbox.md.
+moved to processed/YYYY-MM/ on success, pending/YYYY-MM/ + .pending.yml
+sidecar when the import surfaces confirmation_required (first-encounter
+unknown layout — the user runs ``moneybin import confirm <pending-path>``
+to ratify), or failed/YYYY-MM/ + .error.yml sidecar on any other failure.
+See docs/specs/smart-import-inbox.md.
 """
 
 from __future__ import annotations
@@ -35,7 +38,11 @@ logger = logging.getLogger(__name__)
 
 _DIR_MODE = 0o700
 _FILE_MODE = 0o600
-_OUTCOME_DIRS: tuple[Literal["processed", "failed"], ...] = ("processed", "failed")
+_OUTCOME_DIRS: tuple[Literal["processed", "failed", "pending"], ...] = (
+    "processed",
+    "failed",
+    "pending",
+)
 _STAGING_PREFIX = "staging-"
 _ACCOUNT_SLUG_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 _YEAR_MONTH_RE = re.compile(r"^\d{4}-\d{2}$")
@@ -47,16 +54,15 @@ _SIDECAR_MESSAGE_MAX = 200
 _MAX_FILENAME_COLLISIONS = 9999
 
 # Substring → (error_code, stage) for ValueError messages from ImportService.
+# Note: the historical "low_confidence_mapping" pattern was removed in the
+# smart-import-confirm spec — _import_tabular now raises
+# ImportConfirmationRequiredError for that case, which _sync_one intercepts
+# before _handle_failure ever runs.
 _VALUE_ERROR_PATTERNS: tuple[tuple[str, str, str], ...] = (
     (
         "Single-account files require",
         "needs_account_name",
         "resolve_account",
-    ),
-    (
-        "Could not reliably detect column mapping",
-        "low_confidence_mapping",
-        "map_columns",
     ),
     ("Unsupported file type", "unsupported_file_type", "detect_file_type"),
     ("No data rows found", "empty_file", "read_file"),
@@ -79,6 +85,7 @@ class InboxSyncResult:
 
     processed: list[dict[str, object]] = field(default_factory=list)
     failed: list[dict[str, object]] = field(default_factory=list)
+    pending: list[dict[str, object]] = field(default_factory=list)
     skipped: list[dict[str, object]] = field(default_factory=list)
     ignored: list[dict[str, object]] = field(default_factory=list)
     transforms_applied: bool = False
@@ -143,6 +150,11 @@ class InboxService:
         return self.root / "failed"
 
     @property
+    def pending_dir(self) -> Path:
+        """Holding root for files awaiting `moneybin import confirm`."""
+        return self.root / "pending"
+
+    @property
     def lock_path(self) -> Path:
         """Path to the per-profile lockfile."""
         return self.root / ".inbox.lock"
@@ -181,8 +193,14 @@ class InboxService:
             fh.close()
 
     def ensure_layout(self) -> None:
-        """Create <root>/{inbox,processed,failed}/ with 0700 perms (idempotent)."""
-        for d in (self.root, self.inbox_dir, self.processed_dir, self.failed_dir):
+        """Create <root>/{inbox,processed,failed,pending}/ with 0700 perms (idempotent)."""
+        for d in (
+            self.root,
+            self.inbox_dir,
+            self.processed_dir,
+            self.failed_dir,
+            self.pending_dir,
+        ):
             d.mkdir(parents=True, exist_ok=True, mode=_DIR_MODE)
             # mkdir's mode is masked by umask on creation; chmod fixes existing dirs too.
             d.chmod(_DIR_MODE)
@@ -240,7 +258,7 @@ class InboxService:
         self,
         src: Path,
         *,
-        outcome: Literal["processed", "failed"],
+        outcome: Literal["processed", "failed", "pending"],
         year_month: str,
     ) -> Path:
         """Atomic two-step move: src → outcome/staging-name → outcome/YYYY-MM/name."""
@@ -391,12 +409,35 @@ class InboxService:
         rel_filename = str(item["filename"])
         account_hint = item["account_hint"]
         src = self.inbox_dir / rel_filename
+        # Local import: the inbox catch-all must distinguish
+        # confirmation_required (pending bucket, recoverable) from other
+        # failures (failed bucket, error sidecar). The exception type is
+        # defined in the same package, no cycle risk.
+        from moneybin.services.import_confirmation import (
+            ImportConfirmationRequiredError,
+        )
+
         try:
             import_result = importer.import_file(
                 str(src),
                 refresh=False,
                 account_name=account_hint if isinstance(account_hint, str) else None,
+                # Inbox sync is an unattended background path — the caller is
+                # the scheduler/agent, not a human at a CLI. actor_kind=agent
+                # also lets self-accept (gated separately by ImportSettings)
+                # take effect for inbox-discovered files.
+                actor_kind="agent",
             )
+        except ImportConfirmationRequiredError as e:
+            self._handle_pending(
+                src,
+                rel_filename,
+                e,
+                year_month,
+                result,
+                account_hint=account_hint if isinstance(account_hint, str) else None,
+            )
+            return
         except Exception as e:  # noqa: BLE001 — surfaced as structured failure entry
             self._handle_failure(src, rel_filename, e, year_month, result)
             return
@@ -415,6 +456,11 @@ class InboxService:
             "moved_to": str(final.relative_to(self.root)),
             "transactions": import_result.transactions,
             "file_type": import_result.file_type,
+            # Inbox sync runs unattended (and may self-accept once
+            # calibration opens); surface the running-balance sign-flip
+            # warning so the agent / scheduler has a structured signal
+            # for files that may need re-import with --sign.
+            "sign_correction_suggested": import_result.sign_correction_suggested,
         })
         INBOX_SYNC_TOTAL.labels(outcome="processed").inc()
 
@@ -478,6 +524,95 @@ class InboxService:
         INBOX_SYNC_TOTAL.labels(outcome="failed").inc()
         logger.warning(log_line)
 
+    def _handle_pending(
+        self,
+        src: Path,
+        rel_filename: str,
+        error: Exception,
+        year_month: str,
+        result: InboxSyncResult,
+        *,
+        account_hint: str | None = None,
+    ) -> None:
+        """Move surfaced file to pending/ and write a proposal sidecar.
+
+        Reached when ``ImportService.import_file`` raises
+        ``ImportConfirmationRequiredError``: the detector formed a proposal
+        (or surfaced a low-tier no-proposal state) and the user must
+        confirm before data lands. The file lands in ``pending/YYYY-MM/``
+        next to a YAML sidecar carrying the proposed mapping, tier,
+        score, flagged fields, missing required, and concrete
+        ``moneybin import confirm`` invocations the user can run to
+        ratify or override.
+        """
+        from moneybin.services.import_confirmation import (
+            ImportConfirmationRequiredError,
+            ProposedMapping,
+        )
+
+        if not isinstance(error, ImportConfirmationRequiredError):
+            # Caller is the only invocation site and always passes the right
+            # type; this branch is defensive against future refactors.
+            raise TypeError(
+                "_handle_pending requires an ImportConfirmationRequiredError"
+            )
+        outcome_obj = error.outcome
+        log_line = (
+            f"Inbox import requires confirmation: {rel_filename} "
+            f"→ tier={outcome_obj.confidence.tier} reason={outcome_obj.reason}"
+        )
+
+        def _base_entry() -> dict[str, object]:
+            return {
+                "filename": rel_filename,
+                "channel": outcome_obj.channel,
+                "tier": outcome_obj.confidence.tier,
+                "score": outcome_obj.confidence.score,
+                "reason": outcome_obj.reason,
+            }
+
+        if not src.exists():
+            result.pending.append(_base_entry())
+            INBOX_SYNC_TOTAL.labels(outcome="pending").inc()
+            logger.info(log_line)
+            return
+        try:
+            moved = self.move_to_outcome(src, outcome="pending", year_month=year_month)
+        except OSError as move_err:
+            result.pending.append(_base_entry())
+            INBOX_SYNC_TOTAL.labels(outcome="pending").inc()
+            logger.warning(
+                f"{log_line} (could not move to pending/: "
+                f"{move_err.__class__.__name__})"
+            )
+            return
+
+        proposed_mapping: dict[str, str] = {}
+        unmapped_columns: list[str] = []
+        if isinstance(outcome_obj.proposed, ProposedMapping):
+            proposed_mapping = dict(outcome_obj.proposed.field_mapping)
+            unmapped_columns = list(outcome_obj.proposed.unmapped_columns)
+
+        sidecar = self.write_pending_sidecar(
+            moved,
+            channel=outcome_obj.channel,
+            tier=outcome_obj.confidence.tier,
+            score=outcome_obj.confidence.score,
+            reason=outcome_obj.reason,
+            proposed_mapping=proposed_mapping,
+            samples=outcome_obj.samples,
+            flagged=list(outcome_obj.confidence.flagged),
+            missing_required=list(outcome_obj.confidence.missing_required),
+            unmapped_columns=unmapped_columns,
+            account_hint=account_hint,
+        )
+        entry = _base_entry()
+        entry["moved_to"] = str(moved.relative_to(self.root))
+        entry["sidecar"] = str(sidecar.relative_to(self.root))
+        result.pending.append(entry)
+        INBOX_SYNC_TOTAL.labels(outcome="pending").inc()
+        logger.info(log_line)
+
     @staticmethod
     def _classify_error(error: Exception) -> tuple[str, str]:
         """Map an exception to (error_code, stage)."""
@@ -506,10 +641,6 @@ class InboxService:
             "needs_account_name": (
                 "Move the file into inbox/<account-slug>/ "
                 "(e.g., inbox/chase-checking/) and re-run sync."
-            ),
-            "low_confidence_mapping": (
-                "Use 'moneybin import files <path> --override field=column' "
-                "to map columns explicitly, then re-drop in inbox/."
             ),
             "unsupported_file_type": (
                 "Convert to OFX/QFX, CSV, TSV, XLSX, Parquet, or PDF."
@@ -547,6 +678,68 @@ class InboxService:
             payload["suggestion"] = suggestion
         if extra:
             payload.update(extra)
+        sidecar.write_text(yaml.safe_dump(payload, sort_keys=False))
+        sidecar.chmod(_FILE_MODE)
+        return sidecar
+
+    @staticmethod
+    def write_pending_sidecar(
+        moved_path: Path,
+        *,
+        channel: str,
+        tier: str,
+        score: float,
+        reason: str,
+        proposed_mapping: dict[str, str],
+        samples: dict[str, list[str]],
+        flagged: list[str],
+        missing_required: list[str],
+        unmapped_columns: list[str],
+        account_hint: str | None = None,
+    ) -> Path:
+        """Write a <filename>.pending.yml sidecar with the detector proposal.
+
+        The sidecar carries enough context for a human (or agent) to run
+        ``moneybin import confirm <pending-path>`` with `--accept` or
+        `--mapping field=column` to ratify or override the detector's
+        proposal. Sample values are bounded by the upstream
+        ``_SAMPLE_SIZE`` cap; no extra truncation is applied here.
+
+        ``account_hint`` (the inbox subdirectory name, e.g. ``chase-checking``)
+        is appended as ``--account-name <hint>`` to the action lines so a
+        single-account CSV that arrived via ``inbox/<account>/`` confirms
+        cleanly when the user runs the suggested command verbatim. Without
+        it, ImportService rejects the call with
+        "Single-account files require --account-name or --account-id".
+        """
+        sidecar = moved_path.with_name(moved_path.name + ".pending.yml")
+        account_suffix = f" --account-name {account_hint}" if account_hint else ""
+        # resolve_or_confirm refuses --accept on low-tier proposals; omit the
+        # accept hint there so the user (or agent) doesn't loop back with the
+        # same outcome. Override is always available as a recovery path.
+        actions: list[str] = []
+        if tier != "low":
+            actions.append(
+                f"moneybin import confirm {moved_path} --accept{account_suffix} "
+                "(accept the proposed mapping as-is)"
+            )
+        actions.append(
+            f"moneybin import confirm {moved_path} "
+            f"--mapping <dest_field>=<source_column>{account_suffix} "
+            "(partial-merge override; repeatable)"
+        )
+        payload: dict[str, object] = {
+            "channel": channel,
+            "tier": tier,
+            "score": round(float(score), 4),
+            "reason": reason,
+            "proposed_mapping": dict(proposed_mapping),
+            "samples": {k: list(v) for k, v in samples.items()},
+            "flagged": list(flagged),
+            "missing_required": list(missing_required),
+            "unmapped_columns": list(unmapped_columns),
+            "actions": actions,
+        }
         sidecar.write_text(yaml.safe_dump(payload, sort_keys=False))
         sidecar.chmod(_FILE_MODE)
         return sidecar
