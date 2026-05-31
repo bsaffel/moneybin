@@ -18,7 +18,7 @@ This spec fills that gap. It is a **peer child spec** of `testing-overview.md` a
 ### Primary use cases
 
 1. **Automated bug reports.** When a user files a bug, the support flow (manual today, eventually automated via an agent loop) produces an anonymized snapshot of the relevant slice of their database. The snapshot becomes a fixture under `tests/scenarios/data/fixtures/<bug-id>/`. A scenario authored against that fixture per [`testing-scenario-comprehensive.md`](testing-scenario-comprehensive.md)'s recipe gives permanent regression coverage.
-2. **Format-compatibility seeds.** Anonymized real CSV/OFX exports populate `tests/fixtures/csv_formats/` per the deferred [`testing-csv-fixtures.md`](testing-csv-fixtures.md).
+2. **Format-compatibility seeds.** Anonymized real CSV/OFX exports populate `tests/fixtures/csv_formats/` per the deferred `testing-csv-fixtures.md`.
 3. **Distribution-faithful evaluation corpora.** Categorization and matching evaluations run against anonymized real data alongside synthetic personas, providing a sanity check that scores aren't gaming the synthetic generator's biases.
 
 ### Why this is a separate engine
