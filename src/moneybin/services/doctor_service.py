@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
+import duckdb
 from sqlglot import exp
 
 from moneybin.audits import recipes as recipe_registry
@@ -146,13 +147,9 @@ class DoctorService:
         actions = recipe_fn(
             result.affected_ids, recipe_registry.RecipeContext(db=self._db)
         )
-        return InvariantResult(
-            name=result.name,
-            status=result.status,
-            detail=result.detail,
-            affected_ids=result.affected_ids,
-            recovery_actions=actions,
-        )
+        # `replace()` (not constructor) so a future field on `InvariantResult`
+        # carries through automatically — explicit by-field copy would drop it.
+        return replace(result, recovery_actions=actions)
 
     def _run_app_integrity(self, *, full: bool) -> list[InvariantResult]:
         """Per-table integrity checks for protected ``app.*`` tables (Invariant 10).
@@ -474,11 +471,17 @@ class DoctorService:
                 ORDER BY aid
                 """  # noqa: S608  # TableRef constants, no user input
             ).fetchall()
-        except Exception as e:  # noqa: BLE001 — core.fct_transactions may not exist yet
+        except duckdb.CatalogException as e:
+            # Narrow catch: only the expected "core.fct_transactions hasn't
+            # been built yet" case maps to `skipped`. Other DuckDB errors
+            # (column drift, lock contention, permissions) propagate so a real
+            # fault doesn't silently masquerade as 'core not ready'. Same
+            # pattern as `_run_dedup_reconciliation`'s narrowed handling.
+            logger.debug(f"orphan_app_state skipped: {e}", exc_info=True)
             return InvariantResult(
                 name=name,
                 status="skipped",
-                detail=f"orphan check unavailable: {e}",
+                detail="prep/core layer not available; run transform first",
                 affected_ids=[],
             )
         if rows:

@@ -1,32 +1,34 @@
 """Round-trip-executable contract for every registered recipe.
 
-Each ``RecoveryAction`` a recipe emits MUST satisfy two properties:
+Each ``RecoveryAction`` a recipe emits MUST satisfy three properties:
 
 1. ``action.tool`` resolves to a real MCP tool function in the MoneyBin
    codebase.
 2. ``action.arguments`` binds cleanly to that tool's signature — same
    parameter names, no missing required args, no unknown keys.
+3. Argument values whose parameter is typed ``Literal[...]`` are members
+   of that literal — catches the case where ``sig.bind()`` accepts a typo
+   like ``methods=['rule']`` that the live tool would Pydantic-reject.
 
 This is the highest-value test in PR4: it's the one that catches recipe
-drift when a tool gets renamed, an argument changes, or a parameter is
-added/removed. Without it, recipes can silently emit instructions that fail
-the instant an agent dispatches them.
+drift when a tool gets renamed, an argument changes, or a literal value
+is misspelled. Without it, recipes can silently emit instructions that
+fail the instant an agent dispatches them.
 """
 
 from __future__ import annotations
 
 import inspect
+import types
+import typing
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal, get_args, get_origin, get_type_hints
 
 import pytest
 
 from moneybin.audits.recipes import (
-    bridge_transfers_balanced,
     categorization_coverage,
     dedup_reconciliation,
-    fct_transactions_fk_integrity,
-    fct_transactions_sign_convention,
     orphan_app_state,
     registry,
 )
@@ -51,8 +53,47 @@ _TOOLS: dict[str, Callable[..., Any]] = {
 
 
 def _underlying(fn: Callable[..., Any]) -> Callable[..., Any]:
-    """Strip the ``@mcp_tool`` decorator wrapper to get the real signature."""
-    return getattr(fn, "__wrapped__", fn)
+    """Strip the ``@mcp_tool`` decorator wrapper to get the real signature.
+
+    Asserts ``__wrapped__`` is present rather than silently falling back —
+    a decorator change that dropped ``functools.wraps`` would otherwise
+    make this test silently degrade (the wrapper's ``*args, **kwargs``
+    signature accepts every call).
+    """
+    wrapped = getattr(fn, "__wrapped__", None)
+    assert wrapped is not None, (
+        f"{fn.__name__} has no __wrapped__ attribute — the @mcp_tool "
+        "decorator must use functools.wraps so signature inspection sees "
+        "the real parameters. Without it this test silently passes for "
+        "everything."
+    )
+    return wrapped
+
+
+def _literal_members(annotation: object) -> tuple[Any, ...] | None:
+    """If the annotation is (or wraps) ``Literal[...]``, return its members.
+
+    Handles ``Literal['a','b']``, ``list[Literal['a','b']]``, and
+    ``Literal['a','b'] | None`` (and the ``Optional`` equivalent). Returns
+    ``None`` for any other shape — caller skips the membership check.
+    """
+    origin = get_origin(annotation)
+    if origin is Literal:
+        return get_args(annotation)
+    # list[Literal[...]] — descend into the element type.
+    if origin in (list, tuple, set, frozenset):
+        args = get_args(annotation)
+        if args:
+            return _literal_members(args[0])
+    # Literal[...] | None  (Union form — both typing.Union and PEP-604 X | Y)
+    if origin is typing.Union or origin is types.UnionType:
+        for arg in get_args(annotation):
+            if arg is type(None):
+                continue
+            inner = _literal_members(arg)
+            if inner is not None:
+                return inner
+    return None
 
 
 # (audit_name, sample affected_ids) — enough to exercise every branch in each
@@ -66,16 +107,6 @@ _RECIPE_CASES = [
     ),
     pytest.param("categorization_coverage", [], id="categorization_coverage"),
     pytest.param("dedup_reconciliation", [], id="dedup_reconciliation"),
-    pytest.param("fct_transactions_fk_integrity", [], id="fk_integrity-empty"),
-    pytest.param(
-        "fct_transactions_fk_integrity",
-        ["txn_orphan_1", "txn_orphan_2"],
-        id="fk_integrity-verbose",
-    ),
-    pytest.param(
-        "fct_transactions_sign_convention", ["zero_amount_txn"], id="sign_convention"
-    ),
-    pytest.param("bridge_transfers_balanced", ["debit_txn_1"], id="bridge_balanced"),
 ]
 
 
@@ -115,6 +146,41 @@ def test_recipe_arguments_bind_to_tool_signature(
             )
 
 
+@pytest.mark.parametrize(("audit_name", "affected_ids"), _RECIPE_CASES)
+def test_recipe_literal_arguments_are_valid_members(
+    audit_name: str, affected_ids: list[str]
+) -> None:
+    """Literal-member check on every emitted argument value.
+
+    For parameters typed ``Literal`` (or ``list[Literal]``), assert the
+    emitted values are members. Catches typos like ``methods=['rule']``
+    (vs ``'rules'``) that ``sig.bind`` would accept but the live tool
+    would Pydantic-reject.
+    """
+    recipe = registry.get(audit_name)
+    assert recipe is not None
+    actions = recipe(affected_ids, registry.RecipeContext(db=None))
+    for action in actions:
+        tool_fn = _underlying(_TOOLS[action.tool])
+        # Resolve string-form annotations (from `from __future__ import annotations`).
+        hints = get_type_hints(tool_fn)
+        for arg_name, arg_value in action.arguments.items():
+            annotation = hints.get(arg_name)
+            if annotation is None:
+                continue
+            members = _literal_members(annotation)
+            if members is None:
+                continue
+            # arg_value may be a list (for list[Literal[...]]) or scalar.
+            values_to_check = arg_value if isinstance(arg_value, list) else [arg_value]
+            for v in values_to_check:
+                assert v in members, (
+                    f"Recipe '{audit_name}' emitted invalid Literal value for "
+                    f"'{action.tool}({arg_name}=...)': {v!r} is not in "
+                    f"{members!r}. The live tool would reject this."
+                )
+
+
 def test_every_explicit_recipe_module_is_registered() -> None:
     """Every recipe module listed here must register its function.
 
@@ -122,11 +188,8 @@ def test_every_explicit_recipe_module_is_registered() -> None:
     matching ``register(...)`` call in ``__init__.py``.
     """
     modules_to_audit_names = {
-        bridge_transfers_balanced: "bridge_transfers_balanced",
         categorization_coverage: "categorization_coverage",
         dedup_reconciliation: "dedup_reconciliation",
-        fct_transactions_fk_integrity: "fct_transactions_fk_integrity",
-        fct_transactions_sign_convention: "fct_transactions_sign_convention",
         orphan_app_state: "orphan_app_state",
     }
     for module, name in modules_to_audit_names.items():

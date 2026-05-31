@@ -112,8 +112,13 @@ def doctor_command(
         if verbose and result.affected_ids:
             typer.echo(f"   Affected: {', '.join(result.affected_ids)}")
         for action in result.recovery_actions or []:
+            # Render arguments as Python kwargs (key=repr(value)) so an agent
+            # reading this line can paste it directly into a follow-up call.
+            # `dict.__repr__` would produce single-quoted Python-literal syntax
+            # that's neither valid JSON nor valid kwargs.
+            kwargs = ", ".join(f"{k}={v!r}" for k, v in action.arguments.items())
             typer.echo(
-                f"   💡 [{action.confidence}] {action.tool}({action.arguments}) "
+                f"   💡 [{action.confidence}] {action.tool}({kwargs}) "
                 f"— {action.rationale}"
             )
 

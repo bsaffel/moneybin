@@ -174,8 +174,15 @@ async def test_system_doctor_orphan_state_emits_executable_actions(
     tools = sorted(a["tool"] for a in orphan["recovery_actions"])
     assert tools == ["transactions_notes_delete", "transactions_tags_set"]
     # Spot-check confidence + idempotent flags ride through the envelope.
+    # Confidence varies by tool: tags-clear is certain (idempotent), single-id
+    # notes-delete is suggested (non-idempotent across a batch) — see
+    # orphan_app_state recipe docstring.
+    expected_confidence = {
+        "transactions_notes_delete": "suggested",
+        "transactions_tags_set": "certain",
+    }
     for action in orphan["recovery_actions"]:
-        assert action["confidence"] == "certain"
+        assert action["confidence"] == expected_confidence[action["tool"]]
         assert "idempotent" in action
 
 

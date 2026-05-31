@@ -1,9 +1,12 @@
 """Recipe for the ``dedup_reconciliation`` audit (fail).
 
-A staging-vs-core row-count mismatch usually means either (a) an accepted
-dedup decision didn't collapse its rows (rerun matching) or (b) new rows
-imported since the last transform — the audit detail already explains the
-common cause. Both actions are suggested investigations, not certain fixes.
+A staging-vs-core row-count mismatch is fixed by rebuilding ``core`` from
+the current staging layer: re-run matching to apply any pending dedup
+decisions, *then* re-run transform to rebuild ``core.fct_transactions``
+against the updated decisions. Match alone updates ``app.match_decisions``
+and ``prep.*`` views but does NOT propagate into ``core``, so a match-only
+refresh leaves the audit symptom unchanged. The recipe therefore emits the
+full default refresh cascade (no ``steps=`` arg).
 """
 
 from __future__ import annotations
@@ -16,15 +19,16 @@ def recipe(
     affected_ids: list[str],  # noqa: ARG001 — dedup audit doesn't carry per-row ids
     context: RecipeContext,  # noqa: ARG001 — pure recipe
 ) -> list[RecoveryAction]:
-    """Emit refresh_run(steps=['match']) + system_doctor(full=True)."""
+    """Emit full refresh_run + system_doctor(full=True)."""
     return [
         RecoveryAction(
             tool="refresh_run",
-            arguments={"steps": ["match"]},
+            arguments={},
             rationale=(
-                "Re-run matching to apply any recorded dedup decision whose "
-                "rows didn't collapse — fixes the common cause of staging vs "
-                "core count drift."
+                "Run the full refresh cascade (match + transform + categorize) "
+                "to apply any pending dedup decisions and rebuild "
+                "core.fct_transactions — match alone updates app.match_decisions "
+                "but doesn't propagate into core."
             ),
             confidence="suggested",
             idempotent=True,

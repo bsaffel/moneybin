@@ -8,6 +8,8 @@ prefixed ids — no database access needed.
 
 from __future__ import annotations
 
+import pytest
+
 from moneybin.audits.recipes import orphan_app_state, registry
 from moneybin.errors import RecoveryAction
 
@@ -23,8 +25,41 @@ def test_note_prefix_emits_notes_delete_action() -> None:
     assert isinstance(action, RecoveryAction)
     assert action.tool == "transactions_notes_delete"
     assert action.arguments == {"note_id": "n1"}
-    assert action.confidence == "certain"
-    assert action.idempotent is False  # hard-delete is not idempotent
+    # Suggested (not certain) because the single-id delete is non-idempotent
+    # across a multi-orphan batch — mid-stream retry would raise LookupError
+    # on the already-succeeded ids. PR 8's list form will upgrade to certain.
+    assert action.confidence == "suggested"
+    assert action.idempotent is False
+
+
+def test_empty_note_id_is_skipped_with_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # An empty note_id (e.g. a future audit-shape bug emitting a bare 'note:'
+    # prefix) must not produce a malformed RecoveryAction the agent can't run.
+    with caplog.at_level("WARNING", logger="moneybin.audits.recipes.orphan_app_state"):
+        actions = orphan_app_state.recipe(["note:"], _ctx())
+    assert actions == []
+    assert any("empty note_id" in r.message for r in caplog.records)
+
+
+def test_empty_transaction_id_is_skipped_with_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level("WARNING", logger="moneybin.audits.recipes.orphan_app_state"):
+        actions = orphan_app_state.recipe(["tag:"], _ctx())
+    assert actions == []
+    assert any("empty transaction_id" in r.message for r in caplog.records)
+
+
+def test_unknown_prefix_logs_warning(caplog: pytest.LogCaptureFixture) -> None:
+    # Future audit-recipe drift (e.g. a 'split:<id>' prefix added to the audit
+    # but not the recipe) must surface in logs rather than silently produce
+    # fewer actions than the audit's affected_ids count.
+    with caplog.at_level("WARNING", logger="moneybin.audits.recipes.orphan_app_state"):
+        actions = orphan_app_state.recipe(["split:s1"], _ctx())
+    assert actions == []
+    assert any("unknown id prefix" in r.message for r in caplog.records)
 
 
 def test_tag_prefix_emits_tags_set_clear_action() -> None:
@@ -46,8 +81,13 @@ def test_mixed_prefixes_emit_one_action_each() -> None:
     ]
 
 
-def test_unprefixed_id_is_skipped() -> None:
+def test_unprefixed_id_is_skipped_with_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     # Future-proofing: an unprefixed id (some other audit's affected_ids
-    # leaking in by mistake) should not crash or produce a malformed action.
-    actions = orphan_app_state.recipe(["bare_id"], _ctx())
+    # leaking in by mistake) does not produce a malformed action, AND the
+    # drift surfaces as a warning rather than silent zero-output.
+    with caplog.at_level("WARNING", logger="moneybin.audits.recipes.orphan_app_state"):
+        actions = orphan_app_state.recipe(["bare_id"], _ctx())
     assert actions == []
+    assert any("unknown id prefix" in r.message for r in caplog.records)
