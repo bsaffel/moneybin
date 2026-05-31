@@ -8,6 +8,10 @@ Successor to the cut W-2 extractor (PR #186), whose removal note named this desi
 <!-- draft | ready | in-progress | implemented -->
 in-progress
 
+**Phase 1 (seed path, deterministic rung)** — implemented (PR #228). Every PDF flows native-text → `pdfplumber` → IR → `raw.pdf_seeds` (JSON) → auto-generated `raw.pdf_<alias>` view. No recipe layer, no fingerprint match, no bridge, no transactions routing yet. The shared `generate_seed_view_sql` builder is lifted (gsheet + PDF share it).
+
+**Phase 2 (recipes + ladder + transactions routing)** — in-progress. Adds `app.pdf_formats`, the recipe executor + replay guard, fingerprint match, the bridge export/apply seam, and transaction-shaped routing through `raw.tabular_transactions` (`source_type='pdf'`). The seed path becomes the *fallback* once routing exists.
+
 ## Goal
 
 Turn an arbitrary PDF into one of two outcomes, reusing existing machinery for both:
@@ -86,20 +90,21 @@ The only genuinely new code is **PDF → rows extraction + the routing decision.
 
 ## Data Model
 
-### New table: `raw.pdf_seeds` (catch-all storage)
+### New table: `raw.pdf_seeds` (catch-all storage) — implemented Phase 1
 
-Pure-JSON storage (we don't know the schema); the auto-generated per-alias view supplies the typed projection. Mirrors `raw.gsheet_seeds`, minus live-mirror soft-delete (PDFs are one-shot files, not a live connection — re-imports dedup by content hash).
+Pure-JSON storage (we don't know the schema); the auto-generated per-alias view supplies the typed projection. Mirrors `raw.gsheet_seeds`, minus live-mirror soft-delete (PDFs are one-shot files, not a live connection — re-imports dedup by content+position hash).
 
 ```sql
 /* Row-level storage for the PDF seed (catch-all) path. JSON column holds the
    extracted row verbatim; per-alias auto-generated views in raw.pdf_<alias>
    project JSON paths into typed columns for ergonomic SQL. Identity is a
-   content hash so re-importing the same statement under the same alias is a
-   no-op (idempotent within an alias; PK is (alias, row_hash) — the same
-   document under a different alias is a distinct seed source by design). */
+   position-aware content hash (see "Row identity" below) so re-importing
+   the same statement under the same alias is a no-op (idempotent within an
+   alias; PK is (alias, row_hash) — the same document under a different alias
+   is a distinct seed source by design). */
 CREATE TABLE IF NOT EXISTS raw.pdf_seeds (
     alias VARCHAR NOT NULL,        -- Logical seed source; becomes view name raw.pdf_<alias>
-    row_hash VARCHAR NOT NULL,     -- Content hash of the row (pdf_ prefix); stable identity for dedup
+    row_hash VARCHAR NOT NULL,     -- Position-aware content hash (pdf_ prefix); stable identity for dedup
     data JSON NOT NULL,            -- Extracted row as a JSON object: field-name -> value
     source_file VARCHAR NOT NULL,  -- Original filename (informational; basename only, no path)
     page INTEGER,                  -- Source page number (informational)
@@ -109,7 +114,13 @@ CREATE TABLE IF NOT EXISTS raw.pdf_seeds (
 );
 ```
 
-### New table: `app.pdf_formats` (learned layouts)
+**Row identity — position-aware, not pure content.** `row_hash = "pdf_" + SHA-256(alias|p<page>r<row_idx>|json(row))[:16]`, where `row_idx` is a per-page running counter over extracted cells (sorted). The page+index component is load-bearing: a statement legitimately contains repeated rows (two same-day same-amount coffee charges), and a pure content hash would silently collapse them to one. Position-awareness keeps the dedup invariant — *same content at the same physical position* — narrow enough to preserve true duplicates while still making re-imports of the same statement a no-op. The pure content hash described in earlier drafts of this spec was discarded for this reason during Phase 1.
+
+**First-import ownership.** Re-imports use `INSERT OR IGNORE`: rows already present keep their original `import_id`, so reverting a later import never removes rows the first import's log claims as complete. Audit/metrics report the *inserted* count (≤ extracted), not the extracted count, so re-imports don't inflate dashboards.
+
+**Carry columns + system-column boundary.** The auto-generated `raw.pdf_<alias>` view projects inferred typed columns from the `data` JSON, plus a small set of *carry columns* lifted from row metadata: today `_page` and `_loaded_at` for PDF, `_page`/`_row_number`/`_deleted_from_source_at`/`_loaded_at` for gsheet. Carry columns are emitted with a leading underscore by the shared `generate_seed_view_sql` builder so they never collide with extracted field names and so any consumer (SQL/MCP/recipe) can tell a system column from extracted content by syntax alone. Phase 2 recipes MUST treat any `_`-prefixed key in the IR as system-owned and never map it to a destination field.
+
+### New table: `app.pdf_formats` (learned layouts) — Phase 2
 
 Parallels `app.tabular_formats`; shares the field-mapping / sign / date / number concepts, adds the PDF-specific fingerprint, front-end, recipe, and routing.
 
@@ -150,7 +161,7 @@ CREATE TABLE IF NOT EXISTS app.pdf_formats (
 
 ### `tables.py` constants
 
-`PDF_SEEDS = TableRef("raw", "pdf_seeds")`, `PDF_FORMATS = TableRef("app", "pdf_formats")`.
+`PDF_SEEDS = TableRef("raw", "pdf_seeds")` (Phase 1, shipped). `PDF_FORMATS = TableRef("app", "pdf_formats")` (Phase 2).
 
 ## Architecture
 
@@ -214,17 +225,20 @@ Per `.claude/rules/surface-design.md`, PDF import stays within the existing `imp
 
 ### Files to Create
 
-- `src/moneybin/extractors/pdf/__init__.py` — `PDFExtractor` (rung dispatch: deterministic vs. bridge).
-- `src/moneybin/extractors/pdf/ir.py` — IR dataclasses + normalization.
-- `src/moneybin/extractors/pdf/frontends/text.py` — `pdfplumber`/`camelot` → IR.
-- `src/moneybin/extractors/pdf/recipe.py` — recipe schema, deterministic executor (bounded: per-pattern timeout + complexity cap, Req 9b), confidence scorer, replay guard.
-- `src/moneybin/extractors/pdf/routing.py` — known/seed routing + fingerprinting.
-- `src/moneybin/extractors/pdf/bridge.py` — build the bridge extraction request (IR / page image) and parse the agent's returned recipe + rows. (No `AIBackend`; this is the export/apply seam.)
-- `src/moneybin/repositories/pdf_formats_repo.py` — audited `app.pdf_formats` mutations (Invariant 10) + recipe versioning (bump `version`, history via audit log, Req 9a).
-- `src/moneybin/sql/seed_view.py` (or similar shared home) — `generate_seed_view_sql` **lifted** from `connectors/gsheet/view_generator.py` so both gsheet and PDF use one implementation.
-- `src/moneybin/sql/schema/raw_pdf_seeds.sql`, `src/moneybin/sql/schema/app_pdf_formats.sql` — DDL.
-- The next sequential migration (`V0NN__add_pdf_tables`) — additive table creation for existing DBs. **Assign the number at implementation** by checking `src/moneybin/sql/migrations/` for the current latest (V023 at time of writing → V024) to avoid a collision. Fresh DBs get the schema files above via `init_schemas`.
-- Tests under `tests/moneybin/test_extractors/test_pdf/` (+ fixtures) and a scenario.
+Phase 1 (shipped) and Phase 2 (next) are interleaved here so the layout reads as one unit.
+
+- `src/moneybin/extractors/pdf/__init__.py` — `PDFExtractor` exports. **Phase 1: shipped** (re-exports `PDFExtractor` from `extractor.py`). Phase 2 evolves this if rung-dispatch needs its own surface above the front-ends.
+- `src/moneybin/extractors/pdf/ir.py` — IR dataclasses + normalization. **Phase 1: shipped** (`PdfDocument`, `PdfTable`).
+- `src/moneybin/extractors/pdf/extractor.py` — Phase 1's deterministic front-end (`pdfplumber` → IR). **Phase 1: shipped.** Phase 2 may rename to `frontends/text.py` and add `frontends/__init__.py` if a second front-end (vision-via-bridge) materializes; until then a single file is simpler than a two-file `frontends/` package for one front-end.
+- `src/moneybin/extractors/pdf/recipe.py` — recipe schema, deterministic executor (bounded: per-pattern timeout + complexity cap, Req 9b), confidence scorer, replay guard. **Phase 2.**
+- `src/moneybin/extractors/pdf/routing.py` — known/seed routing + fingerprinting. **Phase 2.**
+- `src/moneybin/extractors/pdf/bridge.py` — build the bridge extraction request (IR / page image) and parse the agent's returned recipe + rows. (No `AIBackend`; this is the export/apply seam.) **Phase 2.**
+- `src/moneybin/extractors/pdf/seed_store.py` — `write_pdf_seed`: position-aware hash, `INSERT OR IGNORE` ownership, per-alias view (re)generation, typed-column inference. **Phase 1: shipped.** Phase 2 calls this on the `seed` routing branch unchanged.
+- `src/moneybin/repositories/pdf_formats_repo.py` — audited `app.pdf_formats` mutations (Invariant 10) + recipe versioning (bump `version`, history via audit log, Req 9a). **Phase 2.**
+- `src/moneybin/sql/seed_view.py` — `generate_seed_view_sql` **lifted** from `connectors/gsheet/view_generator.py` so both gsheet and PDF use one implementation. **Phase 1: shipped** (with carry-column auto-prefix; see Data Model).
+- `src/moneybin/sql/schema/raw_pdf_seeds.sql` — **Phase 1: shipped.** `src/moneybin/sql/schema/app_pdf_formats.sql` — **Phase 2.**
+- `src/moneybin/sql/migrations/V025__add_pdf_seeds.sql` — **Phase 1: shipped.** Phase 2 adds `V0NN__add_app_pdf_formats` (number assigned at implementation by checking `src/moneybin/sql/migrations/` for the current latest, to avoid a collision); fresh DBs get the schema file above via `init_schemas`.
+- Tests under `tests/moneybin/test_extractors/test_pdf/` (+ fixtures) and a scenario. **Phase 1: shipped** for the seed path; Phase 2 adds recipe / routing / bridge / replay-guard / reconciliation tests.
 
 ### Files to Modify
 
