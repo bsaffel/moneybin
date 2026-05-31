@@ -17,6 +17,14 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   now raise a clear error on the next `gsheet pull` telling the user to
   reconnect with a shorter alias. Connections with aliases ≤56 chars are
   unaffected.
+- **`raw.gsheet_*` and `raw.pdf_*` views: lifecycle columns now `_`-prefixed** (#228).
+  System carry columns surface as `_loaded_at`, `_row_number`,
+  `_deleted_from_source_at`, and `_page` (instead of the bare names) so
+  they can never collide with normalized user headers from the source
+  data (e.g. a PDF "Page" column or a Google Sheet "row_number"
+  column). Existing `raw.gsheet_<alias>` views regenerate on next
+  `gsheet pull`; queries referencing the old names need updating to the
+  underscored form. Pre-launch — no migration path.
 - **Report CLI flags auto-derive from parameter names.** With reports now
   generated from runner signatures, multi-word flags follow the parameter name:
   `moneybin reports cashflow`/`spending` use `--from-month` / `--to-month`

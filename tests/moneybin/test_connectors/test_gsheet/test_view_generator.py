@@ -45,15 +45,17 @@ class TestGenerateSeedViewSql:
         assert "CAST(data->>'First Name' AS VARCHAR) AS \"first_name\"" in sql
 
     def test_lifecycle_columns_always_included(self):
-        """row_number, deleted_from_source_at, loaded_at always in output."""
+        """row_number, deleted_from_source_at, loaded_at surface as _-prefixed columns."""
         sql = generate_seed_view_sql(
             alias="test",
             connection_id="conn-100",
             typed_columns={"Col": "BIGINT"},
         )
-        assert "row_number" in sql
-        assert "deleted_from_source_at" in sql
-        assert "loaded_at" in sql
+        # Exact alias form — guards against silent rename of system columns
+        # (the auto-prefix is the system-vs-user-column boundary).
+        assert '"row_number" AS "_row_number"' in sql
+        assert '"deleted_from_source_at" AS "_deleted_from_source_at"' in sql
+        assert '"loaded_at" AS "_loaded_at"' in sql
 
     def test_safe_connection_id_uuidv4_form(self):
         """connection_id in UUID format passes validation."""
@@ -65,23 +67,24 @@ class TestGenerateSeedViewSql:
         assert "550e8400-e29b-41d4-a716-446655440000" in sql
 
     def test_empty_typed_columns_still_includes_lifecycle_cols(self):
-        """typed_columns={} → only lifecycle cols, no SELECT values."""
+        """typed_columns={} → only lifecycle cols (auto-prefixed), no SELECT values."""
         sql = generate_seed_view_sql(
             alias="empty",
             connection_id="conn-1",
             typed_columns={},
         )
         assert 'CREATE OR REPLACE VIEW raw."gsheet_empty"' in sql
-        assert "row_number" in sql
-        assert "deleted_from_source_at" in sql
-        assert "loaded_at" in sql
+        # Exact alias form — system carry columns surface as _-prefixed names.
+        assert '"row_number" AS "_row_number"' in sql
+        assert '"deleted_from_source_at" AS "_deleted_from_source_at"' in sql
+        assert '"loaded_at" AS "_loaded_at"' in sql
         # Should have SELECT with only lifecycle cols (no CAST lines).
         select_lines = [
             line.strip()
             for line in sql.split("\n")
-            if "row_number" in line
-            or "deleted_from_source_at" in line
-            or "loaded_at" in line
+            if '"_row_number"' in line
+            or '"_deleted_from_source_at"' in line
+            or '"_loaded_at"' in line
         ]
         assert len(select_lines) >= 1  # At least one lifecycle col on its own line.
 
