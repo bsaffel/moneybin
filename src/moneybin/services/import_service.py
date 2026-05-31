@@ -1470,7 +1470,20 @@ class ImportService:
                 safe_view = exp.to_identifier(f"pdf_{source_origin}", quoted=True).sql(
                     "duckdb"
                 )
-                self._db.execute(f"DROP VIEW IF EXISTS raw.{safe_view}")
+                # DDL runs post-commit (DuckDB autocommits DDL outside the
+                # transaction). The rows are already gone and import_log is
+                # already 'reverted', so a catalog error here would orphan
+                # the view with no recovery path other than manual SQL.
+                # Best-effort log + continue keeps the rest of the revert
+                # outcome intact.
+                try:
+                    self._db.execute(f"DROP VIEW IF EXISTS raw.{safe_view}")
+                except Exception:  # noqa: BLE001 — DDL best-effort post-commit
+                    logger.warning(
+                        f"DROP VIEW raw.{safe_view} failed during revert of "
+                        f"import_id={import_id[:8]}...; view may be orphaned",
+                        exc_info=True,
+                    )
 
         logger.info(
             f"Reverted import {import_id[:8]}...: {rows_to_delete} rows deleted"
