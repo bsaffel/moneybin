@@ -164,6 +164,7 @@ def test_replay_hit_reconcile_pass_routes_to_transactions(db: Database) -> None:
     assert decision.replay_guard_failed is False
     assert len(decision.rows) > 0
     assert decision.confidence > 0.0
+    assert decision.matched_format_name == "chase_checking_pdf"
 
 
 # ---------------------------------------------------------------------------
@@ -183,6 +184,7 @@ def test_replay_hit_reconcile_fail_sets_replay_guard(db: Database) -> None:
     assert decision.outcome == "seed"
     assert decision.reason == "replay_reconciliation_failed"
     assert decision.replay_guard_failed is True
+    assert decision.matched_format_name == "chase_checking_pdf"
 
 
 # ---------------------------------------------------------------------------
@@ -224,6 +226,7 @@ def test_no_fingerprint_match_auto_derive_reconcile_pass(db: Database) -> None:
     assert decision.reason == "passed"
     assert decision.replay_guard_failed is False
     assert decision.recipe is not None
+    assert decision.matched_format_name is None
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +247,7 @@ def test_no_fingerprint_no_transaction_table(db: Database) -> None:
     assert decision.reason == "no_transaction_table"
     assert decision.recipe is None
     assert decision.confidence == 0.0
+    assert decision.matched_format_name is None
 
 
 # ---------------------------------------------------------------------------
@@ -381,6 +385,7 @@ def test_replay_success_does_not_set_replay_guard(db: Database) -> None:
 
     assert decision.outcome == "transactions"
     assert decision.replay_guard_failed is False
+    assert decision.matched_format_name == "chase_checking_pdf"
 
 
 # ---------------------------------------------------------------------------

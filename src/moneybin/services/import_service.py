@@ -11,9 +11,13 @@ import time
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import duckdb
+
+if TYPE_CHECKING:
+    from moneybin.extractors.pdf.ir import PdfDocument
+    from moneybin.extractors.pdf.routing import RouteDecision
 
 from moneybin.database import Database
 from moneybin.errors import UserError
@@ -29,6 +33,7 @@ from moneybin.metrics.registry import (
     TABULAR_FORMAT_MATCHES,
 )
 from moneybin.repositories.imports_repo import ImportsRepo
+from moneybin.repositories.pdf_formats_repo import PdfFormatsRepo
 from moneybin.services._validators import validate_slug
 from moneybin.services.audit_service import AuditService
 from moneybin.services.import_confirmation import (
@@ -296,6 +301,7 @@ class ImportService:
         self._db = db
         self._audit = audit if audit is not None else AuditService(db)
         self._imports = ImportsRepo(db, audit=self._audit)
+        self._pdf_formats = PdfFormatsRepo(db)
 
     def allocate_import_log(
         self,
@@ -1194,11 +1200,19 @@ class ImportService:
         return result
 
     def _import_pdf(self, file_path: Path) -> ImportResult:
-        """Import a native-text PDF as a seed (Phase 1: catch-all only)."""
+        """Import a native-text PDF via the Phase 2a routing state machine.
+
+        High-confidence PDFs with reconciling rows land in raw.tabular_transactions
+        and save their auto-derived recipe to app.pdf_formats (first contact) or
+        reuse the saved recipe (replay). Everything else falls through to the Phase 1
+        raw.pdf_seeds path.
+        """
         from moneybin.extractors.pdf.extractor import PDFExtractor
+        from moneybin.extractors.pdf.routing import route_pdf_import
         from moneybin.extractors.pdf.seed_store import write_pdf_seed
         from moneybin.loaders import import_log
         from moneybin.metrics.registry import PDF_IMPORT_TOTAL, PDF_SEED_ROWS_TOTAL
+        from moneybin.tables import PDF_SEEDS
 
         canonical = file_path.resolve()
         result = ImportResult(file_path=str(canonical), file_type="pdf")
@@ -1213,10 +1227,40 @@ class ImportService:
         )
         result.import_id = import_id
 
+        try:
+            doc = PDFExtractor().extract(canonical)
+            decision = route_pdf_import(doc, self._db)
+        except Exception:
+            try:
+                import_log.finalize_import(
+                    self._db, import_id, status="failed", rows_total=0, rows_imported=0
+                )
+            except Exception:  # noqa: BLE001 — failure-path finalize is best-effort
+                logger.warning(
+                    f"PDF finalize_import(failed) raised for import_id={import_id[:8]}...",
+                    exc_info=True,
+                )
+            PDF_IMPORT_TOTAL.labels(outcome="failed", rung="deterministic").inc()
+            raise
+
+        # ------------------------------------------------------------------
+        # Dispatch on routing decision
+        # ------------------------------------------------------------------
+
+        if decision.outcome == "transactions":
+            return self._import_pdf_transactions(
+                canonical=canonical,
+                resolved_alias=resolved_alias,
+                import_id=import_id,
+                result=result,
+                decision=decision,
+                doc=doc,
+            )
+
+        # Seed path (Phase 1 fallback) ——————————————————————————————————
         extracted = 0
         inserted = 0
         try:
-            doc = PDFExtractor().extract(canonical)
             extracted, inserted = write_pdf_seed(
                 self._db, doc, alias=resolved_alias, import_id=import_id
             )
@@ -1226,20 +1270,12 @@ class ImportService:
                     "selectable text (image-only / scanned PDFs are not supported)."
                 )
         except Exception:
-            # Clean up any rows already written under this import_id before the failure.
-            # Without this, a view-creation failure mid-import would leak orphan rows
-            # into a future successful import with the same alias. The DELETE is
-            # wrapped so a cleanup failure doesn't mask the original exception or
-            # leave the import_log stuck in 'in_progress' (the finally block below
-            # always runs finalize_import).
-            from moneybin.tables import PDF_SEEDS  # noqa: PLC0415
-
             try:
                 self._db.execute(
                     f"DELETE FROM {PDF_SEEDS.full_name} WHERE import_id = ?",
                     [import_id],
                 )
-            except Exception:  # noqa: BLE001 — cleanup is best-effort; original error is what matters
+            except Exception:  # noqa: BLE001 — cleanup is best-effort
                 logger.warning(
                     f"PDF cleanup DELETE failed for import_id={import_id[:8]}...",
                     exc_info=True,
@@ -1260,9 +1296,6 @@ class ImportService:
             PDF_IMPORT_TOTAL.labels(outcome="failed", rung="deterministic").inc()
             raise
 
-        # success path: extracted > 0 guaranteed here. Audit log + metrics
-        # report the inserted (newly persisted) count so re-imports of
-        # already-stored content don't inflate row totals.
         import_log.finalize_import(
             self._db,
             import_id,
@@ -1273,10 +1306,191 @@ class ImportService:
         PDF_IMPORT_TOTAL.labels(outcome="seed", rung="deterministic").inc()
         PDF_SEED_ROWS_TOTAL.labels(alias=resolved_alias).inc(inserted)
         result.details = {"seed_rows": inserted, "seed_rows_extracted": extracted}
-        result.transactions = 0  # Phase 1: seed path writes no core transactions
+        result.transactions = 0
         logger.info(
-            f"PDF import complete: alias={resolved_alias} "
+            f"PDF import complete (seed): alias={resolved_alias} "
             f"import_id={import_id[:8]}... extracted={extracted} inserted={inserted}"
+        )
+        return result
+
+    def _import_pdf_transactions(
+        self,
+        *,
+        canonical: Path,
+        resolved_alias: str,
+        import_id: str,
+        result: ImportResult,
+        decision: "RouteDecision",
+        doc: "PdfDocument",
+    ) -> ImportResult:
+        """Write deterministic PDF rows to raw.tabular_transactions.
+
+        Called by _import_pdf when the routing decision is 'transactions'.
+        Saves a new format recipe on first contact (decision.matched_format_name is None).
+        """
+        import hashlib
+        import json
+        from decimal import Decimal
+
+        import duckdb
+        import polars as pl
+
+        from moneybin.extractors.pdf.fingerprint import compute_fingerprint
+        from moneybin.loaders import import_log
+        from moneybin.metrics.registry import PDF_IMPORT_TOTAL
+        from moneybin.tables import TABULAR_TRANSACTIONS
+        from moneybin.utils import slugify
+
+        if decision.recipe is None:
+            # Should never happen: route_pdf_import only emits outcome="transactions"
+            # when a recipe was successfully derived or loaded.
+            raise ValueError(
+                "PDF routing returned outcome='transactions' but recipe is None"
+            )
+
+        # Account ID: the statement's own issuer label is authoritative for PDFs.
+        # _resolve_account_via_matcher is for tabular files where typos are possible;
+        # PDF metadata comes from the issuer itself.
+        account_id: str
+        if decision.metadata.account_id:
+            account_id = slugify(decision.metadata.account_id)
+        else:
+            # Fallback: routing requires metadata for reconciliation, but guard
+            # against a future path that relaxes that constraint.
+            account_id = resolved_alias
+
+        sign_conv: str = decision.recipe.sign_convention
+
+        def _normalize_amount(row: dict[str, Any]) -> Decimal:
+            """Return canonical-signed Decimal (negative=expense, positive=income)."""
+            # decision.rows preserves original header casing; lowercase for lookup.
+            lrow = {k.lower(): v for k, v in row.items()}
+            if sign_conv == "split_debit_credit":
+                debit = lrow.get("debit") or Decimal("0")
+                credit = lrow.get("credit") or Decimal("0")
+                return Decimal(str(credit)) - Decimal(str(debit))
+            raw_amt = lrow.get("amount") or Decimal("0")
+            amount_d = Decimal(str(raw_amt))
+            if sign_conv == "negative_is_income":
+                return -amount_d
+            return amount_d  # negative_is_expense already matches canonical convention
+
+        rows_list: list[dict[str, Any]] = []
+        for idx, row in enumerate(decision.rows, start=1):
+            lrow = {k.lower(): v for k, v in row.items()}
+            amt = _normalize_amount(row)
+            date_val = (
+                lrow.get("date")
+                or lrow.get("transaction date")
+                or lrow.get("trans date")
+            )
+            desc = lrow.get("description") or lrow.get("memo") or lrow.get("payee")
+
+            date_iso = (
+                date_val.isoformat()
+                if date_val is not None and hasattr(date_val, "isoformat")
+                else str(date_val)
+            )
+            raw_hash = f"{date_iso}|{amt}|{desc}|{account_id}|{idx}"
+            digest = hashlib.sha256(raw_hash.encode()).hexdigest()[:16]
+            transaction_id = f"pdf_{digest}"
+
+            rows_list.append({
+                "transaction_id": transaction_id,
+                "account_id": account_id,
+                "transaction_date": date_val,
+                "amount": amt,
+                "description": str(desc) if desc is not None else None,
+                "source_file": str(canonical),
+                "source_type": "pdf",
+                "source_origin": resolved_alias,
+                "import_id": import_id,
+                "row_number": idx,
+            })
+
+        try:
+            df = pl.DataFrame(rows_list)
+            # on_conflict="ignore": content-hash IDs make re-import of the same PDF
+            # a no-op; we never overwrite an existing transaction on re-import.
+            self._db.ingest_dataframe(
+                TABULAR_TRANSACTIONS.full_name, df, on_conflict="ignore"
+            )
+
+            # Save format recipe on first contact (auto-derive path, not a replay).
+            # decision.matched_format_name is None ↔ no saved format matched this layout.
+            if decision.matched_format_name is None:
+                fp = compute_fingerprint(doc)
+                fp_hash = hashlib.sha256(
+                    json.dumps(fp, sort_keys=True).encode()
+                ).hexdigest()[:12]
+                issuer_slug = fp.get("issuer", "unknown").lower().replace(" ", "_")
+                format_name = f"{issuer_slug}_{fp_hash}"
+
+                try:
+                    self._pdf_formats.save_new(
+                        name=format_name,
+                        recipe=decision.recipe.model_dump(),
+                        fingerprint=fp,
+                        institution_name=fp.get("issuer", "unknown"),
+                        document_kind="transactions",
+                        front_end="pdfplumber",
+                        routing="transactions",
+                        sign_convention=decision.recipe.sign_convention,
+                        date_format=None,  # multi-field; per-field date_format lives in recipe
+                        number_format=decision.recipe.number_format,
+                        source="detected",
+                        actor="system",  # auto-detected: system-driven (Invariant 10)
+                    )
+                    logger.info(
+                        f"PDF format saved: name={format_name!r} "
+                        f"import_id={import_id[:8]}..."
+                    )
+                except duckdb.ConstraintException:
+                    # Hash collision or race: a format with this name already exists.
+                    # The existing recipe covers the same layout; no update needed.
+                    logger.debug(
+                        f"PDF format {format_name!r} already exists — skipping save_new"
+                    )
+
+        except Exception:
+            try:
+                self._db.execute(
+                    f"DELETE FROM {TABULAR_TRANSACTIONS.full_name} WHERE import_id = ?",
+                    [import_id],
+                )
+            except Exception:  # noqa: BLE001 — cleanup is best-effort
+                logger.warning(
+                    f"PDF transactions cleanup DELETE failed for import_id={import_id[:8]}...",
+                    exc_info=True,
+                )
+            try:
+                import_log.finalize_import(
+                    self._db, import_id, status="failed", rows_total=0, rows_imported=0
+                )
+            except Exception:  # noqa: BLE001 — failure-path finalize is best-effort
+                logger.warning(
+                    f"PDF finalize_import(failed) raised for import_id={import_id[:8]}...",
+                    exc_info=True,
+                )
+            PDF_IMPORT_TOTAL.labels(outcome="failed", rung="deterministic").inc()
+            raise
+
+        rows_inserted = len(rows_list)
+        import_log.finalize_import(
+            self._db,
+            import_id,
+            status="complete",
+            rows_total=rows_inserted,
+            rows_imported=rows_inserted,
+        )
+        PDF_IMPORT_TOTAL.labels(outcome="transactions", rung="deterministic").inc()
+
+        result.transactions = rows_inserted
+        result.accounts = 1
+        result.details = {"transactions": rows_inserted}
+        logger.info(
+            f"PDF import complete (transactions): alias={resolved_alias} "
+            f"rows={rows_inserted} import_id={import_id[:8]}..."
         )
         return result
 

@@ -72,6 +72,9 @@ class RouteDecision:
     confidence: float
     reason: _Reason
     replay_guard_failed: bool = False
+    # saved_format.name when a saved format matched (Replay path); None on auto-derive.
+    # The service uses this to decide whether to persist a new recipe (first contact).
+    matched_format_name: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -182,6 +185,7 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
                 metadata=StatementMetadata(None, None, None, None, None),
                 confidence=0.0,
                 reason="no_transaction_table",
+                # matched_format_name stays None: early return before saved_format lookup
             )
 
     # ------------------------------------------------------------------
@@ -198,6 +202,7 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
             metadata=StatementMetadata(None, None, None, None, None),
             confidence=0.0,
             reason="no_rows",
+            matched_format_name=saved_format.name if saved_format is not None else None,
         )
 
     # ------------------------------------------------------------------
@@ -212,6 +217,7 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
             metadata=StatementMetadata(None, None, None, None, None),
             confidence=conf,
             reason="low_confidence",
+            matched_format_name=saved_format.name if saved_format is not None else None,
         )
 
     # ------------------------------------------------------------------
@@ -227,6 +233,7 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
             metadata=metadata,
             confidence=conf,
             reason="metadata_incomplete",
+            matched_format_name=saved_format.name if saved_format is not None else None,
         )
 
     # ------------------------------------------------------------------
@@ -248,6 +255,7 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
             metadata=metadata,
             confidence=conf,
             reason="passed",
+            matched_format_name=saved_format.name if saved_format is not None else None,
         )
 
     # Reconciliation failed.
@@ -268,6 +276,7 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
             confidence=conf,
             reason="replay_reconciliation_failed",
             replay_guard_failed=True,
+            matched_format_name=saved_format.name if saved_format is not None else None,
         )
 
     return RouteDecision(
@@ -278,4 +287,5 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
         confidence=conf,
         reason="reconciliation_failed",
         replay_guard_failed=False,
+        matched_format_name=None,  # auto-derive path, never a replay
     )

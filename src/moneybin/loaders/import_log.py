@@ -52,7 +52,11 @@ REVERT_TABLES: dict[str, list[TableRef]] = {
     "pipe": _TABULAR_RAW_TABLES,
     "ofx": [OFX_TRANSACTIONS, OFX_ACCOUNTS, OFX_BALANCES, OFX_INSTITUTIONS],
     "manual": [MANUAL_TRANSACTIONS],
-    "pdf": [PDF_SEEDS],
+    # Phase 2a: PDF imports can land in either pdf_seeds (Phase 1 fallback) or
+    # tabular_transactions (deterministic path). Both are listed so revert clears
+    # whichever table the import wrote to. The revert logic filters by import_id,
+    # so non-PDF rows in tabular_transactions are never touched.
+    "pdf": [PDF_SEEDS, TABULAR_TRANSACTIONS],
 }
 
 
