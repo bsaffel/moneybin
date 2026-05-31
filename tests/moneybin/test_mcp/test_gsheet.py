@@ -370,7 +370,9 @@ async def test_gsheet_reconnect_returns_envelope(mock_build: MagicMock) -> None:
     envelope = await gsheet_reconnect(connection_id="conn_abc", yes=True)
     assert envelope.summary.sensitivity == "critical"
     assert envelope.data.connection.status == "healthy"
-    service.reconnect.assert_called_once_with("conn_abc", yes=True, actor="mcp")
+    service.reconnect.assert_called_once_with(
+        "conn_abc", yes=True, sign=None, actor="mcp"
+    )
 
 
 @pytest.mark.unit
@@ -390,7 +392,9 @@ async def test_gsheet_reconnect_passes_yes_flag_through(
     from moneybin.mcp.tools.gsheet import gsheet_reconnect
 
     await gsheet_reconnect(connection_id="conn_abc")  # default yes=False
-    service.reconnect.assert_called_once_with("conn_abc", yes=False, actor="mcp")
+    service.reconnect.assert_called_once_with(
+        "conn_abc", yes=False, sign=None, actor="mcp"
+    )
 
 
 # ---------------------------------------------------------------------------

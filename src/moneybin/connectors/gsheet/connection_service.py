@@ -33,6 +33,7 @@ from moneybin.connectors.gsheet.sheets_api import SheetsAPI
 from moneybin.connectors.gsheet.url_parser import parse_sheet_url
 from moneybin.database import Database
 from moneybin.extractors.confidence import tier_for
+from moneybin.extractors.tabular.formats import SignConventionType
 from moneybin.metrics.registry import (
     IMPORT_CONFIRMATIONS_TOTAL,
     IMPORT_DETECTION_SCORE,
@@ -72,6 +73,7 @@ class ConnectionRequest:
     account_name: str | None = None
     account_id: str | None = None
     column_mapping: dict[str, str] | None = None
+    sign: SignConventionType | None = None
     yes: bool = False
     accept_seed_fallback: bool = False
     no_initial_pull: bool = False
@@ -316,16 +318,26 @@ class GSheetConnectionService:
             )
             detector_was_split = detection.sign_convention == "split_debit_credit"
             if has_split:
+                if req.sign is not None and req.sign != "split_debit_credit":
+                    raise GSheetError(
+                        f"--sign={req.sign!r} contradicts the resolved "
+                        "split debit/credit mapping. Drop --sign (the shape "
+                        "implies split_debit_credit) or change the column "
+                        "mapping to a single amount column."
+                    )
                 sign_convention_for_save = "split_debit_credit"
             elif detector_was_split:
                 # Split → single via override: detector's split-only
                 # convention is no longer valid against the resolved
-                # single-amount mapping. Fall back to the default sign;
-                # callers can pass --sign on reconnect if their export
-                # uses a different convention.
-                sign_convention_for_save = "negative_is_expense"
+                # single-amount mapping. When the caller doesn't pass
+                # --sign we fall back to the most common convention
+                # (negative_is_expense), but this is a guess: a
+                # credit-card-style export (positive_is_expense) would
+                # silently persist inverted polarity. Pass --sign on
+                # connect / reconnect to be explicit.
+                sign_convention_for_save = req.sign or "negative_is_expense"
             else:
-                sign_convention_for_save = detection.sign_convention
+                sign_convention_for_save = req.sign or detection.sign_convention
             IMPORT_DETECTION_SCORE.observe(detection.score)
             if req.column_mapping:
                 IMPORT_OVERRIDE_TOTAL.labels(channel="gsheet").inc()
@@ -464,7 +476,12 @@ class GSheetConnectionService:
             raise
 
     def reconnect(
-        self, connection_id: str, *, yes: bool = False, actor: str = "cli"
+        self,
+        connection_id: str,
+        *,
+        yes: bool = False,
+        sign: SignConventionType | None = None,
+        actor: str = "cli",
     ) -> ConnectResult:
         """Re-detect against the current sheet, re-pin mapping, run a pull."""
         existing = self._repo.get(connection_id)
@@ -546,13 +563,21 @@ class GSheetConnectionService:
                 detection.sign_convention == "split_debit_credit"
             )
             if reconnect_has_split:
+                if sign is not None and sign != "split_debit_credit":
+                    raise GSheetError(
+                        f"--sign={sign!r} contradicts the resolved split "
+                        "debit/credit mapping. Drop --sign or change the "
+                        "column mapping to a single amount column."
+                    )
                 sign_convention_to_save = "split_debit_credit"
             elif reconnect_detector_was_split:
-                sign_convention_to_save = "negative_is_expense"
+                # See connect() — split→single fallback is a guess unless
+                # the caller passes --sign explicitly.
+                sign_convention_to_save = sign or "negative_is_expense"
             else:
-                sign_convention_to_save = detection.sign_convention
+                sign_convention_to_save = sign or detection.sign_convention
         else:
-            sign_convention_to_save = detection.sign_convention
+            sign_convention_to_save = sign or detection.sign_convention
 
         self._repo.update_mapping(
             connection_id,

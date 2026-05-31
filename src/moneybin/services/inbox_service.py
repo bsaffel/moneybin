@@ -429,7 +429,14 @@ class InboxService:
                 actor_kind="agent",
             )
         except ImportConfirmationRequiredError as e:
-            self._handle_pending(src, rel_filename, e, year_month, result)
+            self._handle_pending(
+                src,
+                rel_filename,
+                e,
+                year_month,
+                result,
+                account_hint=account_hint if isinstance(account_hint, str) else None,
+            )
             return
         except Exception as e:  # noqa: BLE001 — surfaced as structured failure entry
             self._handle_failure(src, rel_filename, e, year_month, result)
@@ -524,6 +531,8 @@ class InboxService:
         error: Exception,
         year_month: str,
         result: InboxSyncResult,
+        *,
+        account_hint: str | None = None,
     ) -> None:
         """Move surfaced file to pending/ and write a proposal sidecar.
 
@@ -595,6 +604,7 @@ class InboxService:
             flagged=list(outcome_obj.confidence.flagged),
             missing_required=list(outcome_obj.confidence.missing_required),
             unmapped_columns=unmapped_columns,
+            account_hint=account_hint,
         )
         entry = _base_entry()
         entry["moved_to"] = str(moved.relative_to(self.root))
@@ -685,6 +695,7 @@ class InboxService:
         flagged: list[str],
         missing_required: list[str],
         unmapped_columns: list[str],
+        account_hint: str | None = None,
     ) -> Path:
         """Write a <filename>.pending.yml sidecar with the detector proposal.
 
@@ -693,20 +704,28 @@ class InboxService:
         `--mapping field=column` to ratify or override the detector's
         proposal. Sample values are bounded by the upstream
         ``_SAMPLE_SIZE`` cap; no extra truncation is applied here.
+
+        ``account_hint`` (the inbox subdirectory name, e.g. ``chase-checking``)
+        is appended as ``--account-name <hint>`` to the action lines so a
+        single-account CSV that arrived via ``inbox/<account>/`` confirms
+        cleanly when the user runs the suggested command verbatim. Without
+        it, ImportService rejects the call with
+        "Single-account files require --account-name or --account-id".
         """
         sidecar = moved_path.with_name(moved_path.name + ".pending.yml")
+        account_suffix = f" --account-name {account_hint}" if account_hint else ""
         # resolve_or_confirm refuses --accept on low-tier proposals; omit the
         # accept hint there so the user (or agent) doesn't loop back with the
         # same outcome. Override is always available as a recovery path.
         actions: list[str] = []
         if tier != "low":
             actions.append(
-                f"moneybin import confirm {moved_path} --accept "
+                f"moneybin import confirm {moved_path} --accept{account_suffix} "
                 "(accept the proposed mapping as-is)"
             )
         actions.append(
             f"moneybin import confirm {moved_path} "
-            "--mapping <dest_field>=<source_column> "
+            f"--mapping <dest_field>=<source_column>{account_suffix} "
             "(partial-merge override; repeatable)"
         )
         payload: dict[str, object] = {

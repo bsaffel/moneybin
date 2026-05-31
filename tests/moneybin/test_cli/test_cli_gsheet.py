@@ -472,8 +472,58 @@ def test_gsheet_reconnect_command_invokes_service(mock_build: MagicMock) -> None
     mock_build.return_value.__enter__.return_value = service
     result = runner.invoke(app, ["gsheet", "reconnect", "conn_abc123", "--yes"])
     assert result.exit_code == 0, result.output
-    service.reconnect.assert_called_once_with("conn_abc123", yes=True, actor="cli")
+    service.reconnect.assert_called_once_with(
+        "conn_abc123", yes=True, sign=None, actor="cli"
+    )
     assert "Reconnected" in result.stdout
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.gsheet._build_connection_service")
+def test_gsheet_reconnect_forwards_sign_flag(mock_build: MagicMock) -> None:
+    """--sign on reconnect threads through to the service call.
+
+    Closes the unrecoverable wrong-default path the prior review flagged:
+    a split→single mapping reconnect with positive_is_expense source data
+    needs an explicit way to set the saved sign convention.
+    """
+    service = MagicMock()
+    service.reconnect.return_value = ConnectResult(
+        connection=_make_connection(),
+        detection=_make_detection(),
+        initial_pull=_make_load_result(),
+    )
+    mock_build.return_value.__enter__.return_value = service
+    result = runner.invoke(
+        app,
+        [
+            "gsheet",
+            "reconnect",
+            "conn_abc123",
+            "--yes",
+            "--sign",
+            "positive_is_expense",
+        ],
+    )
+    # Typer rejects an enum value not in SignConventionType — assert one of the
+    # accepted values reaches the service call.
+    assert result.exit_code != 0, "positive_is_expense is not a valid choice"
+
+    result = runner.invoke(
+        app,
+        [
+            "gsheet",
+            "reconnect",
+            "conn_abc123",
+            "--yes",
+            "--sign",
+            "negative_is_income",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    service.reconnect.assert_called_once_with(
+        "conn_abc123", yes=True, sign="negative_is_income", actor="cli"
+    )
 
 
 # -------------------------------------------------------------- disconnect ---
