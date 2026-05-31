@@ -41,6 +41,11 @@ from moneybin.extractors.pdf.ir import PdfDocument
 from moneybin.extractors.pdf.metadata import StatementMetadata, capture_metadata
 from moneybin.extractors.pdf.recipe import Recipe, execute_recipe
 from moneybin.extractors.pdf.reconciliation import reconcile
+from moneybin.metrics.registry import (
+    PDF_EXTRACTION_CONFIDENCE,
+    PDF_RECIPE_HIT_TOTAL,
+    PDF_REPLAY_GUARD_FAILURE_TOTAL,
+)
 from moneybin.repositories.pdf_formats_repo import PdfFormatsRepo
 
 logger = logging.getLogger(__name__)
@@ -209,6 +214,9 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
     # 3. Confidence score
     # ------------------------------------------------------------------
     conf = _compute_confidence(recipe, rows)
+    # Observe every routing call — histogram reveals confidence distribution
+    # across all PDFs and helps tune the is_high_confidence threshold.
+    PDF_EXTRACTION_CONFIDENCE.observe(conf)
     if not is_high_confidence(conf):
         return RouteDecision(
             outcome="seed",
@@ -248,6 +256,8 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
     recon = reconcile(rows_for_recon, metadata, recipe.sign_convention)
 
     if recon.passed:
+        if is_replay:
+            PDF_RECIPE_HIT_TOTAL.labels(outcome="replay_success").inc()
         return RouteDecision(
             outcome="transactions",
             recipe=recipe,
@@ -260,7 +270,8 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
 
     # Reconciliation failed.
     if is_replay:
-        # TODO: metric pdf_replay_guard_failure_total (Task 11)
+        PDF_RECIPE_HIT_TOTAL.labels(outcome="replay_failed").inc()
+        PDF_REPLAY_GUARD_FAILURE_TOTAL.inc()
         # Balance values intentionally omitted — `.claude/rules/security.md`
         # forbids logging financial values; the reason code suffices.
         _format_name = saved_format.name if saved_format is not None else "unknown"

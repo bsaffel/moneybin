@@ -13,6 +13,7 @@ import logging
 import sys
 from dataclasses import asdict, dataclass
 from datetime import date
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -32,7 +33,17 @@ from moneybin.extractors.tabular.formats import NumberFormatType, SignConvention
 if TYPE_CHECKING:
     from moneybin.database import Database
     from moneybin.extractors.tabular.formats import TabularFormat
+    from moneybin.repositories.pdf_formats_repo import PdfFormat
     from moneybin.services.import_confirmation import ConfirmationRequired
+
+
+class _FormatTypeFilter(StrEnum):
+    """Projection filter for `import formats list`."""
+
+    tabular = "tabular"
+    pdf = "pdf"
+    all = "all"
+
 
 app = typer.Typer(
     help=("Import financial files (OFX/QFX, CSV/TSV/Excel/Parquet) into MoneyBin"),
@@ -86,6 +97,19 @@ def _load_all_formats(
             logger.debug("Could not load user formats from DB, using built-in only")
     all_formats = merge_formats(builtin, user_formats)
     return all_formats, builtin
+
+
+def _load_pdf_formats(db: Database | None) -> list[PdfFormat]:
+    """Load saved PDF format profiles from the DB, or return [] on miss."""
+    if db is None:
+        return []
+    try:
+        from moneybin.repositories.pdf_formats_repo import PdfFormatsRepo
+
+        return PdfFormatsRepo(db).list_all()
+    except Exception:  # noqa: BLE001, S110 — app.pdf_formats may not exist yet
+        logger.debug("Could not load PDF formats from DB")
+        return []
 
 
 @app.command("files")
@@ -1086,56 +1110,126 @@ def import_preview(
 def formats_list(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
+    # _type shadows the builtin `type` — Typer CLI name remains --type (A001).
+    _type: _FormatTypeFilter = typer.Option(  # noqa: A002
+        _FormatTypeFilter.all,
+        "--type",
+        help=(
+            "Filter by format type: tabular (CSV/Excel/etc.), pdf, or all (default). "
+            "JSON output uses a uniform list; each row carries a 'type' field. "
+            "Example: --type=pdf"
+        ),
+    ),
 ) -> None:
     """List all formats (built-in and user-saved).
 
     Displays format name, institution, sign convention, and date format
-    for all available import formats.
+    for tabular formats, and name, institution, routing, front-end, version,
+    times-used, and last-used for PDF formats.
 
     Example:
         moneybin import formats list
+        moneybin import formats list --type=pdf
+        moneybin import formats list --type=tabular --output json
     """
     from moneybin.database import get_database
 
     try:
         with get_database(read_only=True) as db:
             all_formats, builtin = _load_all_formats(db)
-    except Exception:  # noqa: BLE001 — DB may not exist yet; show built-in only
+            pdf_formats = _load_pdf_formats(db)
+    except Exception:  # noqa: BLE001 — DB may not exist yet; show built-in / empty PDF
         all_formats, builtin = _load_all_formats(None)
+        pdf_formats = _load_pdf_formats(None)
+
+    show_tabular = _type in (_FormatTypeFilter.tabular, _FormatTypeFilter.all)
+    show_pdf = _type in (_FormatTypeFilter.pdf, _FormatTypeFilter.all)
 
     if output == OutputFormat.JSON:
-        formats_payload = [
-            {
-                "name": fmt.name,
-                "institution": fmt.institution_name,
-                "sign_convention": fmt.sign_convention,
-                "date_format": fmt.date_format,
-                "source": "builtin" if fmt.name in builtin else "user",
-            }
-            for fmt in sorted(all_formats.values(), key=lambda f: f.name)
-        ]
+        # Uniform list with a 'type' discriminator per row — agents can filter
+        # via jq '.formats | map(select(.type=="pdf"))' with no flag required.
+        formats_payload: list[dict[str, Any]] = []
+        if show_tabular:
+            for fmt in sorted(all_formats.values(), key=lambda f: f.name):
+                formats_payload.append({
+                    "type": "tabular",
+                    "name": fmt.name,
+                    "institution": fmt.institution_name,
+                    "sign_convention": fmt.sign_convention,
+                    "date_format": fmt.date_format,
+                    "source": "builtin" if fmt.name in builtin else "user",
+                })
+        if show_pdf:
+            for pf in pdf_formats:
+                last_used = (
+                    pf.last_used_at.date().isoformat()
+                    if pf.last_used_at is not None
+                    else None
+                )
+                formats_payload.append({
+                    "type": "pdf",
+                    "name": pf.name,
+                    "institution": pf.institution_name,
+                    "routing": pf.routing,
+                    "front_end": pf.front_end,
+                    "version": pf.version,
+                    "times_used": pf.times_used,
+                    "last_used": last_used,
+                })
         emit_json("formats", formats_payload)
         return
 
-    if not all_formats:
-        if not quiet:
-            logger.warning("⚠️  No formats found")
-        return
+    # ---- Text output -------------------------------------------------------
 
-    typer.echo(
-        f"\n{'Name':<24} {'Institution':<28} {'Sign Convention':<24} {'Date Format'}"
-    )
-    typer.echo("-" * 100)
-    for fmt in sorted(all_formats.values(), key=lambda f: f.name):
-        source_tag = " (user)" if fmt.name not in builtin else ""
-        typer.echo(
-            f"{fmt.name:<24} {fmt.institution_name:<28} "
-            f"{fmt.sign_convention:<24} {fmt.date_format}{source_tag}"
-        )
-    if not quiet:
-        n_builtin = len(builtin)
-        n_user = len(all_formats) - len(builtin)
-        typer.echo(f"\n{n_builtin} built-in, {n_user} user-saved format(s)\n")
+    if show_tabular:
+        if not all_formats:
+            if not quiet:
+                logger.warning("⚠️  No tabular formats found")
+        else:
+            n_builtin = len(builtin)
+            n_user = len(all_formats) - len(builtin)
+            section_hdr = f"Tabular formats ({n_builtin} built-in, {n_user} user-saved)"
+            typer.echo(f"\n{section_hdr}")
+            typer.echo(
+                f"\n{'Name':<24} {'Institution':<28} {'Sign Convention':<24} "
+                f"{'Date Format'}"
+            )
+            typer.echo("-" * 100)
+            for fmt in sorted(all_formats.values(), key=lambda f: f.name):
+                source_tag = " (user)" if fmt.name not in builtin else ""
+                typer.echo(
+                    f"{fmt.name:<24} {fmt.institution_name:<28} "
+                    f"{fmt.sign_convention:<24} {fmt.date_format}{source_tag}"
+                )
+
+    if show_pdf:
+        if not pdf_formats:
+            if not quiet:
+                if show_tabular:
+                    typer.echo("")
+                logger.warning("⚠️  No PDF formats found")
+        else:
+            if show_tabular:
+                typer.echo("")
+            typer.echo(f"PDF formats ({len(pdf_formats)})")
+            typer.echo(
+                f"\n{'Name':<28} {'Institution':<20} {'Routing':<16} "
+                f"{'Front-end':<14} {'Ver':<5} {'Used':<6} {'Last used'}"
+            )
+            typer.echo("-" * 104)
+            for pf in pdf_formats:
+                last_used = (
+                    pf.last_used_at.date().isoformat()
+                    if pf.last_used_at is not None
+                    else "—"
+                )
+                typer.echo(
+                    f"{pf.name:<28} {pf.institution_name:<20} {pf.routing:<16} "
+                    f"{pf.front_end:<14} {pf.version:<5} {pf.times_used:<6} "
+                    f"{last_used}"
+                )
+
+    typer.echo("")
 
 
 @formats_app.command("show")
@@ -1148,21 +1242,33 @@ def formats_show(
 
     Displays the full configuration for a built-in or user-saved format,
     including column mappings, detection signature, and format options.
+    If the name does not match a tabular format, the command falls through
+    to the PDF format namespace before reporting not-found.
 
     Example:
         moneybin import formats show tiller
+        moneybin import formats show chase_a1b2c3d4e5f6
     """
     from moneybin.database import get_database
 
     try:
         with get_database(read_only=True) as db:
             all_formats, _ = _load_all_formats(db)
-    except Exception:  # noqa: BLE001 — DB may not exist yet; show built-in only
+            pdf_formats_list = _load_pdf_formats(db)
+    except Exception:  # noqa: BLE001 — DB may not exist yet; show built-in / empty PDF
         all_formats, _ = _load_all_formats(None)
+        pdf_formats_list = _load_pdf_formats(None)
+
     fmt = all_formats.get(name)
 
-    if fmt is None:
-        available = ", ".join(sorted(all_formats.keys())) or "(none)"
+    # Fall through to PDF namespace if name not in tabular formats.
+    pdf_fmt = next((pf for pf in pdf_formats_list if pf.name == name), None)
+
+    if fmt is None and pdf_fmt is None:
+        tabular_names = sorted(all_formats.keys())
+        pdf_names = sorted(pf.name for pf in pdf_formats_list)
+        all_names = tabular_names + pdf_names
+        available = ", ".join(all_names) or "(none)"
         if output == OutputFormat.JSON:
             emit_json_error(
                 UserError(
@@ -1176,46 +1282,99 @@ def formats_show(
             logger.info(f"💡 Available formats: {available}")
         raise typer.Exit(1)
 
-    if output == OutputFormat.JSON:
-        payload = {
-            "name": fmt.name,
-            "institution": fmt.institution_name,
-            "file_type": fmt.file_type,
-            "delimiter": fmt.delimiter,
-            "encoding": fmt.encoding,
-            "skip_rows": fmt.skip_rows,
-            "sheet": fmt.sheet,
-            "sign_convention": fmt.sign_convention,
-            "date_format": fmt.date_format,
-            "number_format": fmt.number_format,
-            "multi_account": fmt.multi_account,
-            "header_signature": fmt.header_signature,
-            "field_mapping": dict(fmt.field_mapping),
-            "skip_trailing_patterns": fmt.skip_trailing_patterns,
-        }
-        emit_json("format", payload)
+    # ---- Tabular format ----
+    if fmt is not None:
+        if output == OutputFormat.JSON:
+            payload = {
+                "type": "tabular",
+                "name": fmt.name,
+                "institution": fmt.institution_name,
+                "file_type": fmt.file_type,
+                "delimiter": fmt.delimiter,
+                "encoding": fmt.encoding,
+                "skip_rows": fmt.skip_rows,
+                "sheet": fmt.sheet,
+                "sign_convention": fmt.sign_convention,
+                "date_format": fmt.date_format,
+                "number_format": fmt.number_format,
+                "multi_account": fmt.multi_account,
+                "header_signature": fmt.header_signature,
+                "field_mapping": dict(fmt.field_mapping),
+                "skip_trailing_patterns": fmt.skip_trailing_patterns,
+            }
+            emit_json("format", payload)
+            return
+
+        typer.echo(f"\nFormat: {fmt.name}")
+        typer.echo(f"Institution: {fmt.institution_name}")
+        typer.echo(f"File type: {fmt.file_type}")
+        if fmt.delimiter:
+            typer.echo(f"Delimiter: {fmt.delimiter!r}")
+        typer.echo(f"Encoding: {fmt.encoding}")
+        if fmt.skip_rows:
+            typer.echo(f"Skip rows: {fmt.skip_rows}")
+        if fmt.sheet:
+            typer.echo(f"Sheet: {fmt.sheet}")
+        typer.echo(f"Sign convention: {fmt.sign_convention}")
+        typer.echo(f"Date format: {fmt.date_format}")
+        typer.echo(f"Number format: {fmt.number_format}")
+        typer.echo(f"Multi-account: {fmt.multi_account}")
+        typer.echo(f"\nHeader signature: {fmt.header_signature}")
+        typer.echo("\nField mapping:")
+        for field, col in fmt.field_mapping.items():
+            typer.echo(f"  {field} ← {col}")
+        if fmt.skip_trailing_patterns:
+            typer.echo(f"\nSkip trailing patterns: {fmt.skip_trailing_patterns}")
+        typer.echo()
         return
 
-    typer.echo(f"\nFormat: {fmt.name}")
-    typer.echo(f"Institution: {fmt.institution_name}")
-    typer.echo(f"File type: {fmt.file_type}")
-    if fmt.delimiter:
-        typer.echo(f"Delimiter: {fmt.delimiter!r}")
-    typer.echo(f"Encoding: {fmt.encoding}")
-    if fmt.skip_rows:
-        typer.echo(f"Skip rows: {fmt.skip_rows}")
-    if fmt.sheet:
-        typer.echo(f"Sheet: {fmt.sheet}")
-    typer.echo(f"Sign convention: {fmt.sign_convention}")
-    typer.echo(f"Date format: {fmt.date_format}")
-    typer.echo(f"Number format: {fmt.number_format}")
-    typer.echo(f"Multi-account: {fmt.multi_account}")
-    typer.echo(f"\nHeader signature: {fmt.header_signature}")
-    typer.echo("\nField mapping:")
-    for field, col in fmt.field_mapping.items():
-        typer.echo(f"  {field} ← {col}")
-    if fmt.skip_trailing_patterns:
-        typer.echo(f"\nSkip trailing patterns: {fmt.skip_trailing_patterns}")
+    # ---- PDF format ----
+    # pdf_fmt is not None — if both were None we raised above; only PDF path remains.
+    if pdf_fmt is None:  # pragma: no cover — defensive; unreachable by logic above
+        raise RuntimeError("pdf_fmt is None after not-found guard — logic error")
+    last_used = (
+        pdf_fmt.last_used_at.date().isoformat()
+        if pdf_fmt.last_used_at is not None
+        else None
+    )
+    if output == OutputFormat.JSON:
+        payload_pdf: dict[str, Any] = {
+            "type": "pdf",
+            "name": pdf_fmt.name,
+            "institution": pdf_fmt.institution_name,
+            "document_kind": pdf_fmt.document_kind,
+            "routing": pdf_fmt.routing,
+            "front_end": pdf_fmt.front_end,
+            "sign_convention": pdf_fmt.sign_convention,
+            "date_format": pdf_fmt.date_format,
+            "number_format": pdf_fmt.number_format,
+            "version": pdf_fmt.version,
+            "times_used": pdf_fmt.times_used,
+            "last_used": last_used,
+            "source": pdf_fmt.source,
+            "extraction_recipe": pdf_fmt.extraction_recipe,
+        }
+        emit_json("format", payload_pdf)
+        return
+
+    typer.echo(f"\nFormat: {pdf_fmt.name}")
+    typer.echo("Type: pdf")
+    typer.echo(f"Institution: {pdf_fmt.institution_name}")
+    typer.echo(f"Document kind: {pdf_fmt.document_kind}")
+    typer.echo(f"Routing: {pdf_fmt.routing}")
+    typer.echo(f"Front-end: {pdf_fmt.front_end}")
+    if pdf_fmt.sign_convention:
+        typer.echo(f"Sign convention: {pdf_fmt.sign_convention}")
+    if pdf_fmt.date_format:
+        typer.echo(f"Date format: {pdf_fmt.date_format}")
+    typer.echo(f"Number format: {pdf_fmt.number_format}")
+    typer.echo(f"Version: {pdf_fmt.version}  Times used: {pdf_fmt.times_used}")
+    if last_used:
+        typer.echo(f"Last used: {last_used}")
+    typer.echo(f"Source: {pdf_fmt.source}")
+    typer.echo(
+        f"\nExtraction recipe:\n{json.dumps(pdf_fmt.extraction_recipe, indent=2)}"
+    )
     typer.echo()
 
 

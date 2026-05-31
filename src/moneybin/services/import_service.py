@@ -1204,8 +1204,11 @@ class ImportService:
 
         High-confidence PDFs with reconciling rows land in raw.tabular_transactions
         and save their auto-derived recipe to app.pdf_formats (first contact) or
-        reuse the saved recipe (replay). Everything else falls through to the Phase 1
-        raw.pdf_seeds path.
+        reuse the saved recipe (replay). These rows feed SQLMesh's
+        stg_tabular__transactions model; refresh runs when import_file or
+        import_files detect file_type="pdf". PDFs that route to the seed path
+        fall back to raw.pdf_seeds and are excluded from the refresh pipeline
+        (no tabular rows to transform).
         """
         from moneybin.extractors.pdf.extractor import PDFExtractor
         from moneybin.extractors.pdf.routing import route_pdf_import
@@ -1528,10 +1531,11 @@ class ImportService:
             file_path: Path to the file to import.
             refresh: Whether to run the post-load refresh pipeline (matching +
                 SQLMesh apply + categorization) after loading. Defaults to
-                True. **PDFs are excluded from the refresh pipeline in Phase
-                1** — they land in ``raw.pdf_seeds`` only and don't feed
-                SQLMesh transforms yet, so ``refresh=True`` is a silent
-                no-op for PDF inputs.
+                True. PDFs that routed to ``raw.tabular_transactions``
+                (deterministic path) trigger refresh so rows propagate through
+                SQLMesh into ``dim_accounts``/``fct_transactions``. PDFs that
+                fell back to ``raw.pdf_seeds`` (seed path) also pass the gate
+                but refresh is a fast no-op since they wrote no tabular rows.
             institution: Institution name override (OFX only). Auto-detected if
                 omitted.
             force: Re-import even if the file has been imported before (OFX only).
@@ -1586,7 +1590,10 @@ class ImportService:
             actor_kind=actor_kind,
         )
 
-        if refresh and result.file_type in ("ofx", "tabular"):
+        # Include "pdf" so deterministic-path PDFs (raw.tabular_transactions)
+        # propagate into core.fct_transactions. Seed-path PDFs also reach
+        # this branch but refresh is a fast no-op (no new tabular rows exist).
+        if refresh and result.file_type in ("ofx", "tabular", "pdf"):
             # Single-file imports preserve the legacy fail-loud contract so
             # CLI exit codes reflect the broken state. Batch imports use the
             # soft-fail variant via import_files() instead.
@@ -1716,7 +1723,9 @@ class ImportService:
                     )
                 )
                 any_succeeded = True
-                if r.file_type in ("ofx", "tabular"):
+                # Include "pdf" so deterministic-path PDFs propagate into core.
+                # Seed-path PDFs also set this flag; refresh is a no-op for them.
+                if r.file_type in ("ofx", "tabular", "pdf"):
                     any_transformable = True
             except ImportConfirmationRequiredError as e:
                 # Distinct from generic failure: the file's detector formed

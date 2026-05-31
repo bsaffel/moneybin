@@ -4,7 +4,7 @@
 CREATE TABLE IF NOT EXISTS raw.import_log (
     import_id VARCHAR PRIMARY KEY,              -- UUID generated at the start of each import batch
     source_file VARCHAR NOT NULL,               -- Absolute path to the imported file
-    source_type VARCHAR NOT NULL,               -- File format: csv, tsv, excel, parquet, feather, pipe
+    source_type VARCHAR NOT NULL,               -- File format: csv, tsv, excel, parquet, feather, pipe, pdf
     source_origin VARCHAR NOT NULL,             -- Format/institution that produced this data
     format_name VARCHAR,                        -- Name of the matched or saved format (NULL if no format matched)
     format_source VARCHAR,                      -- How the format was resolved: "built-in", "saved", "detected", "override"
