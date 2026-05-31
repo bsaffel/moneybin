@@ -677,6 +677,13 @@ def test_categorization_coverage_warns_when_below_50pct(
     cat = next(r for r in report.invariants if r.name == "categorization_coverage")
     assert cat.status == "warn"
     assert "uncategorized" in (cat.detail or "").lower()
+    # The recipe registry populates recovery_actions for failing/warning
+    # invariants — categorization_coverage emits a single suggested
+    # transactions_categorize_run action that an agent can dispatch.
+    assert cat.recovery_actions is not None
+    assert len(cat.recovery_actions) == 1
+    assert cat.recovery_actions[0].tool == "transactions_categorize_run"
+    assert cat.recovery_actions[0].confidence == "suggested"
 
 
 @pytest.mark.unit

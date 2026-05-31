@@ -168,9 +168,98 @@ def test_truly_orphaned_note_still_flagged_alongside_pending_manual(
     assert result.affected_ids == ["note:orphan_n"]
 
 
+def _stub_prep_int_transactions_matched(db: Database) -> None:
+    """Create a minimal prep.int_transactions__matched table for the deduped test.
+
+    Production builds this as a SQLMesh view; for the deduped-manual case
+    we just need a column shape we can INSERT a marker row into. The audit
+    only references ``source_transaction_id`` on this table.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS prep.int_transactions__matched "
+        "(source_transaction_id VARCHAR, match_group_id VARCHAR)"
+    )
+
+
+def test_deduped_manual_note_is_flagged_after_matching(db: Database) -> None:
+    """Once the matcher processes a manual, the suppression lifts.
+
+    Reproduces the dedup edge case PR #231 reviewers raised: a manual
+    transaction gets created with predicted id T123, the user adds a note
+    against T123, then refresh runs matching → the manual joins a dedup
+    group with a different canonical id, so T123 is NOT in core. The
+    note is now genuinely orphaned (it points at an id that will never
+    exist in core), and the audit must report it rather than silently
+    suppressing forever.
+
+    Signal that distinguishes pending vs deduped:
+    ``prep.int_transactions__matched`` carries a row referencing the
+    manual's ``source_transaction_id`` once the matcher has run.
+    Pre-matcher: no row → suppress (still pending). Post-matcher: row
+    exists → don't suppress → report the orphan.
+    """
+    create_core_tables(db)
+    _stub_prep_int_transactions_matched(db)
+    # Manual was inserted, matched (prep row exists), and absorbed into a
+    # dedup group with a different canonical id (so T123 is NOT in core).
+    _insert_pending_manual(
+        db,
+        source_transaction_id="manual_deduped",
+        predicted_transaction_id="T123_deduped_away",
+    )
+    db.execute(
+        "INSERT INTO prep.int_transactions__matched "  # noqa: S608  # test input
+        "(source_transaction_id, match_group_id) VALUES (?, ?)",
+        ["manual_deduped", "group_canonical_id"],
+    )
+    _insert_note(db, note_id="lost_note", transaction_id="T123_deduped_away")
+    result = DoctorService(db)._run_orphan_app_state()
+    assert result.status == "fail"
+    assert "note:lost_note" in result.affected_ids
+
+
+def test_pending_manual_still_suppressed_when_prep_view_empty_of_it(
+    db: Database,
+) -> None:
+    """Pending suppression still applies when matcher hasn't seen the manual.
+
+    The complement to ``test_deduped_manual_note_is_flagged_after_matching``:
+    if prep.int_transactions__matched exists but has no row for this
+    manual's source_transaction_id, the matcher hasn't processed it yet —
+    notes against the predicted id are pending, not orphaned.
+    """
+    create_core_tables(db)
+    _stub_prep_int_transactions_matched(db)
+    _insert_pending_manual(
+        db,
+        source_transaction_id="manual_truly_pending",
+        predicted_transaction_id="T456_pending",
+    )
+    # Prep view has rows for OTHER source ids but not for our manual.
+    db.execute(
+        "INSERT INTO prep.int_transactions__matched "  # noqa: S608  # test input
+        "(source_transaction_id, match_group_id) VALUES (?, ?)",
+        ["some_other_source", "group_y"],
+    )
+    _insert_note(db, note_id="pending_n", transaction_id="T456_pending")
+    result = DoctorService(db)._run_orphan_app_state()
+    assert result.status == "pass"
+
+
 def test_run_all_populates_recovery_actions_for_orphan_app_state(
     db: Database,
 ) -> None:
+    """End-to-end wiring check for the orphan_app_state recipe.
+
+    SQLMesh isn't booted in this fixture (no ``monkeypatch`` of
+    ``sqlmesh_context``), so ``_run_sqlmesh_audits`` degrades to a single
+    ``sqlmesh_audits_unavailable`` skipped result instead of producing the
+    real 3 SQLMesh-audit results. That's fine for this test — we filter by
+    name to find ``orphan_app_state`` and exercise ``_apply_recipe`` for it
+    plus every non-SQLMesh ``_run_*`` method. SQLMesh-recipe wiring is
+    covered separately by the round-trip-executable test.
+    """
     create_core_tables(db)
     _insert_note(db, note_id="orphan_n1", transaction_id="missing_txn_a")
     _insert_tag(db, transaction_id="missing_txn_b", tag="z")

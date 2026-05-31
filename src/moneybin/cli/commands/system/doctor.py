@@ -111,7 +111,14 @@ def doctor_command(
         typer.echo(line)
         if verbose and result.affected_ids:
             typer.echo(f"   Affected: {', '.join(result.affected_ids)}")
-        for action in result.recovery_actions or []:
+        # Cap the per-invariant render so a doctor run that turns up hundreds
+        # of orphan rows doesn't bury the operator in 100s of identical
+        # rationale lines. JSON output is uncapped (machine consumers handle
+        # the volume). Threshold matches the file-list-truncation feel in
+        # other CLI commands.
+        recovery = result.recovery_actions or []
+        max_actions_rendered = 5
+        for action in recovery[:max_actions_rendered]:
             # Render arguments as Python kwargs (key=repr(value)) so an agent
             # reading this line can paste it directly into a follow-up call.
             # `dict.__repr__` would produce single-quoted Python-literal syntax
@@ -120,6 +127,12 @@ def doctor_command(
             typer.echo(
                 f"   💡 [{action.confidence}] {action.tool}({kwargs}) "
                 f"— {action.rationale}"
+            )
+        remaining = len(recovery) - max_actions_rendered
+        if remaining > 0:
+            typer.echo(
+                f"   … and {remaining} more recovery action(s) "
+                "(use --output json for the full list)"
             )
 
     if not quiet:

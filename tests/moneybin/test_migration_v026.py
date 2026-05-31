@@ -5,7 +5,17 @@ via the same hash ``_predict_manual_gold_key`` uses), so per
 ``.claude/rules/database.md`` migration-realism rules the fixture seeds
 ≥3 realistic rows with ``transaction_id = NULL`` (the pre-V026 state) and
 asserts the backfill writes the expected deterministic hash for each.
+
+Includes a lockstep test asserting the migration's ``_predict`` produces
+the same hash as ``transaction_service._predict_manual_gold_key`` — a fix
+to one without the matching change to the other would re-introduce the
+exact false-positive V026 exists to suppress.
 """
+
+# pyright: reportPrivateUsage=false
+# This test deliberately imports module-private hash helpers from both
+# transaction_service and the V026 migration so it can assert they stay in
+# lockstep (the whole point of the test).
 
 from __future__ import annotations
 
@@ -15,6 +25,10 @@ from decimal import Decimal
 import pytest
 
 from moneybin.database import Database
+from moneybin.services.transaction_service import _predict_manual_gold_key
+from moneybin.sql.migrations.V026__add_transaction_id_to_manual_transactions import (
+    _predict as _migration_predict,
+)
 from moneybin.sql.migrations.V026__add_transaction_id_to_manual_transactions import (
     migrate,
 )
@@ -25,6 +39,31 @@ def _expected_hash(source_transaction_id: str, account_id: str) -> str:
     """Mirror ``_predict_manual_gold_key`` — the SQL transform uses the same."""
     raw = f"manual|{source_transaction_id}|{account_id}"
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+@pytest.mark.parametrize(
+    ("source_transaction_id", "account_id"),
+    [
+        ("manual_aaaa11112222", "acct-chase-001"),
+        ("manual_bbbb33334444", "acct-amex-002"),
+        ("manual_cccc55556666", "acct-fido-003"),
+        ("manual_xxxxx", "weird-acct/with-symbols-001"),
+    ],
+)
+def test_migration_predict_matches_service_predict(
+    source_transaction_id: str, account_id: str
+) -> None:
+    """V026 migration's ``_predict`` MUST produce the same hash as the service.
+
+    They're separate Python definitions of the same SHA256 formula
+    (mirroring the unmatched-row branch of ``int_transactions__matched``).
+    A drift between them re-introduces the orphan-suppression
+    false-positive V026 exists to fix — pre-V026 rows would be backfilled
+    with one hash while new ``create_manual_batch`` writes use the other.
+    """
+    assert _migration_predict(source_transaction_id, account_id) == (
+        _predict_manual_gold_key(source_transaction_id, account_id)
+    )
 
 
 @pytest.fixture()
