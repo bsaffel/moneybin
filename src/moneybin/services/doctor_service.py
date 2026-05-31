@@ -455,24 +455,29 @@ class DoctorService:
 
         A note or tag whose ``transaction_id`` no longer resolves in
         ``core.fct_transactions`` is an orphan — UNLESS it points at a manual
-        transaction still pending materialization (the row is in
-        ``raw.manual_transactions`` but the matcher hasn't yet processed it
-        into ``core.fct_transactions``). ``transactions_create`` returns the
-        predicted ``transaction_id`` immediately, so notes/tags written
-        against it before ``refresh_run`` are legitimate state, not orphans.
+        transaction whose row is still in ``raw.manual_transactions``.
+        ``transactions_create`` returns the predicted ``transaction_id``
+        immediately, so notes/tags written against it before ``refresh_run``
+        materializes the row are legitimate state, not orphans (V026 column
+        + suppression).
 
-        Pending-vs-deduped distinction (matters because a manual that later
-        joins a dedup group has its predicted id REPLACED by the group's
-        canonical id in core; the raw row keeps the predicted id forever):
-        a manual is "still pending" when ``prep.int_transactions__matched``
-        has NO row referencing its ``source_transaction_id`` — the matcher
-        hasn't seen it yet. Once the matcher runs, every manual gets a row
-        there regardless of dedup outcome, so the inner ``NOT EXISTS`` flips
-        false and the suppression lifts; any remaining orphan (deduped-away
-        case) is then correctly reported.
+        **Known limitation — deduped-away manuals.** When a manual joins a
+        dedup group during refresh, its predicted id is REPLACED in core by
+        the group's canonical id, but the raw row keeps the predicted id
+        forever. Notes/tags written against the original predicted id are
+        then genuinely orphaned, but this audit still suppresses them
+        because the raw row exists. The narrower production-correct
+        discriminator would be "manual not yet processed by the matcher,"
+        but the obvious signal (``prep.int_transactions__matched``) is a
+        live VIEW that reflects raw rows immediately — it cannot distinguish
+        pending from processed. Closing this gap requires a real
+        materialization signal (e.g., a ``processed_at`` column on
+        ``raw.manual_transactions`` set by transform) and is tracked as a
+        PR9 follow-up. The trade-off is accepted: the primary protection
+        (against destroying notes on freshly-created manuals) is correct,
+        and the deduped-away case is rare in practice.
 
-        Skipped before the first transform builds ``core.fct_transactions``
-        (or ``prep.int_transactions__matched``).
+        Skipped before the first transform builds ``core.fct_transactions``.
 
         ``affected_ids`` are emitted with prefixes so the doctor recipe can
         dispatch to the right MCP tool without re-querying:
@@ -483,51 +488,6 @@ class DoctorService:
           orphan transaction collapse to one affected_id)
         """
         name = "orphan_app_state"
-        # Branch on prep view existence so a pre-first-transform DB (where
-        # prep.int_transactions__matched isn't built yet) falls back to the
-        # broader "suppress every manual" semantics. Once the matcher has run
-        # at least once the view exists and we use the tighter check that
-        # correctly reports deduped-away orphans.
-        try:
-            # duckdb_tables() exposes the column as `table_name`;
-            # duckdb_views() exposes it as `view_name` — must query each
-            # separately rather than UNION-ing on a single column name.
-            prep_present_row = self._db.execute(
-                "SELECT 1 FROM duckdb_tables() "
-                "WHERE schema_name = ? AND table_name = ? "
-                "UNION ALL "
-                "SELECT 1 FROM duckdb_views() "
-                "WHERE schema_name = ? AND view_name = ? "
-                "LIMIT 1",
-                [
-                    INT_TRANSACTIONS_MATCHED.schema,
-                    INT_TRANSACTIONS_MATCHED.name,
-                    INT_TRANSACTIONS_MATCHED.schema,
-                    INT_TRANSACTIONS_MATCHED.name,
-                ],
-            ).fetchone()
-            prep_present = prep_present_row is not None
-        except Exception:  # noqa: BLE001 — duckdb_tables/views always exist; treat any error as 'not present'
-            prep_present = False
-        manual_suppression_clause = (
-            f"""
-            AND NOT EXISTS (
-                SELECT 1 FROM {MANUAL_TRANSACTIONS.full_name} m
-                WHERE m.transaction_id = REF.transaction_id
-                  AND NOT EXISTS (
-                      SELECT 1 FROM {INT_TRANSACTIONS_MATCHED.full_name} p
-                      WHERE p.source_transaction_id = m.source_transaction_id
-                  )
-            )
-            """
-            if prep_present
-            else f"""
-            AND NOT EXISTS (
-                SELECT 1 FROM {MANUAL_TRANSACTIONS.full_name} m
-                WHERE m.transaction_id = REF.transaction_id
-            )
-            """
-        )
         try:
             rows = self._db.execute(
                 f"""
@@ -537,7 +497,10 @@ class DoctorService:
                     SELECT 1 FROM {FCT_TRANSACTIONS.full_name} t
                     WHERE t.transaction_id = n.transaction_id
                 )
-                {manual_suppression_clause.replace("REF", "n")}
+                AND NOT EXISTS (
+                    SELECT 1 FROM {MANUAL_TRANSACTIONS.full_name} m
+                    WHERE m.transaction_id = n.transaction_id
+                )
                 UNION
                 SELECT 'tag:' || transaction_id
                 FROM {TRANSACTION_TAGS.full_name} g
@@ -545,9 +508,12 @@ class DoctorService:
                     SELECT 1 FROM {FCT_TRANSACTIONS.full_name} t
                     WHERE t.transaction_id = g.transaction_id
                 )
-                {manual_suppression_clause.replace("REF", "g")}
+                AND NOT EXISTS (
+                    SELECT 1 FROM {MANUAL_TRANSACTIONS.full_name} m
+                    WHERE m.transaction_id = g.transaction_id
+                )
                 ORDER BY aid
-                """  # noqa: S608  # TableRef constants + code-supplied SQL fragment, no user input
+                """  # noqa: S608  # TableRef constants, no user input
             ).fetchall()
         except Exception as e:  # noqa: BLE001 — per-invariant isolation; one audit's failure must not abort the whole DoctorReport
             # Matches every other ``_run_*`` method in this file: any failure

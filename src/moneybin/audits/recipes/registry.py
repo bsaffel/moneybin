@@ -5,8 +5,10 @@ A *recipe* converts an audit's ``affected_ids`` into a list of
 over their inputs; ``RecipeContext`` carries the database handle for the rare
 recipe that needs to query for additional state, but most recipes ignore it.
 
-Recipes self-register via :func:`register` from each recipe module; importing
-the parent ``moneybin.audits.recipes`` package triggers that registration.
+Recipes are registered by the parent package's ``__init__.py`` at import time
+(NOT by the recipe modules themselves). Adding a new recipe needs both a new
+``moneybin/audits/recipes/<audit_name>.py`` module AND an explicit
+``register(...)`` call in ``__init__.py``.
 """
 
 from __future__ import annotations
