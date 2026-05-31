@@ -101,6 +101,10 @@ dependencies = [
     "tomlkit>=0.13.2",
     "httpx>=0.27",
     "pdfplumber>=0.11.9",
+    # Used instead of stdlib `re` because stdlib has no `timeout=` parameter.
+    # The `regex` package's timeout= enforces a wall-clock bound per match,
+    # preventing ReDoS against untrusted document text. (Req 9b dynamic bound)
+    "regex>=2023.6.3",
 ]
 
 [project.urls]
