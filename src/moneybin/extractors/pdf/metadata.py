@@ -42,7 +42,8 @@ _TIMEOUT_SEC = 0.1
 # a two-group "Statement Period: start - end" anchor.  Rationale: uniform
 # dict[str, list[str]] shape throughout; two-group anchors would require a
 # special-case code path for one field.
-_DEFAULT_ANCHORS: dict[str, list[str]] = {
+#: Public alias used by auto_derive to freeze metadata anchors into a Recipe.
+DEFAULT_ANCHORS: dict[str, list[str]] = {
     "account_id": [
         r"Account\s+Number[:\s]+(\S+)",
         r"Account\s+ending\s+in\s+(\d+)",
@@ -94,7 +95,7 @@ def capture_metadata(
     Returns:
         ``StatementMetadata`` with None for any field that could not be captured.
     """
-    resolved = anchors if anchors is not None else _DEFAULT_ANCHORS
+    resolved = anchors if anchors is not None else DEFAULT_ANCHORS
     raw: dict[str, str | None] = {}
     for field_name, patterns in resolved.items():
         raw[field_name] = _first_match(document_text, patterns)
