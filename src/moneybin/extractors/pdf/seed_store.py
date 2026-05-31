@@ -16,10 +16,15 @@ from moneybin.tables import PDF_SEEDS
 
 logger = logging.getLogger(__name__)
 
-_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-# Used with .fullmatch() — match/search would accept "inf"/"nan"/"1e5"
-# and break the CAST to DECIMAL/BIGINT downstream.
-_PLAIN_NUMERIC_RE = re.compile(r"[+-]?(\d+\.\d+|\d+)")
+# re.ASCII keeps \d ASCII-only so Arabic-Indic / Devanagari / other
+# Unicode digit codepoints (which DuckDB cannot CAST to BIGINT/DECIMAL)
+# don't get mis-inferred as numeric types and break view queries.
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$", re.ASCII)
+# Used with .fullmatch() — match/search would accept partial-numeric
+# strings like "1e5abc" by matching only the "1e5" prefix and break the
+# CAST to DECIMAL/BIGINT downstream. re.ASCII protects against Unicode
+# digits too (see _DATE_RE comment).
+_PLAIN_NUMERIC_RE = re.compile(r"[+-]?(\d+\.\d+|\d+)", re.ASCII)
 
 
 def write_pdf_seed(

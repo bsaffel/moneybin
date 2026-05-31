@@ -55,17 +55,18 @@ def generate_seed_view_sql(
                 f"Must be one of: {sorted(_SAFE_SQL_TYPES)}"
             )
 
-    seen: dict[str, str] = dict.fromkeys(carry_columns, "<carry column>")
+    # Carry columns are emitted as ``<source> AS "_<source>"`` so they can
+    # never collide with normalized user headers — ``_normalize_col_name``
+    # strips leading underscores, so no header can produce ``_page`` /
+    # ``_loaded_at``. A real PDF column "Page" stays as user-visible
+    # ``page`` next to the system carry column ``_page``.
+    carry_aliases = {col: f"_{col}" for col in carry_columns}
+    seen: dict[str, str] = dict.fromkeys(carry_aliases.values(), "<carry column>")
     select_parts: list[str] = []
     for header, sql_type in typed_columns.items():
         col_name = _normalize_col_name(header)
         if col_name in seen:
             prior = seen[col_name]
-            if prior == "<carry column>":
-                raise ValueError(
-                    f"Header {header!r} normalizes to {col_name!r}, which collides "
-                    f"with the reserved carry column. Rename the header before importing."
-                )
             raise ValueError(
                 f"Headers {prior!r} and {header!r} both normalize to {col_name!r}. "
                 f"Rename one before importing."
@@ -74,9 +75,10 @@ def generate_seed_view_sql(
         header_lit = header.replace("'", "''")
         safe_col = exp.to_identifier(col_name, quoted=True).sql("duckdb")
         select_parts.append(f"CAST(data->>'{header_lit}' AS {sql_type}) AS {safe_col}")
-    select_parts.extend(
-        exp.to_identifier(col, quoted=True).sql("duckdb") for col in carry_columns
-    )
+    for src_col, alias_col in carry_aliases.items():
+        safe_src = exp.to_identifier(src_col, quoted=True).sql("duckdb")
+        safe_alias = exp.to_identifier(alias_col, quoted=True).sql("duckdb")
+        select_parts.append(f"{safe_src} AS {safe_alias}")
     select_clause = ",\n    ".join(select_parts)
 
     safe_view = exp.to_identifier(view_name, quoted=True).sql("duckdb")

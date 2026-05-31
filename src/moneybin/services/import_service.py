@@ -66,6 +66,19 @@ class ImportResult:
             lines.append(f"  Transactions: {self.transactions}")
         if self.balances:
             lines.append(f"  Balances: {self.balances}")
+        # PDF Phase 1 sets transactions=0 (no core rows land), so surface the
+        # seed-row count instead — otherwise the summary tells the user
+        # nothing about what landed.
+        if "seed_rows" in self.details:
+            seeded = self.details["seed_rows"]
+            extracted = self.details.get("seed_rows_extracted", seeded)
+            if extracted == seeded:
+                lines.append(f"  Seed rows: {seeded}")
+            else:
+                lines.append(
+                    f"  Seed rows: {seeded} (extracted {extracted}, "
+                    f"{extracted - seeded} already present from prior import)"
+                )
         if self.date_range:
             lines.append(f"  Date range: {self.date_range}")
         if self.core_tables_rebuilt:
@@ -157,14 +170,22 @@ def _pdf_alias(file_path: Path) -> str:
     ``pdf_{alias}``, not just ``{alias}``.
 
     Capped at 59 chars so the ``pdf_{alias}`` view name fits the shared
-    builder's 63-char limit.
+    builder's 63-char limit. When truncation would silently merge distinct
+    long filenames (two PDFs whose slugified stems share the first 59
+    chars), a 4-char content-hash suffix preserves uniqueness within the
+    same ceiling.
     """
+    import hashlib
+
     from moneybin.utils import slugify
 
     slug = slugify(file_path.stem).replace("-", "_")
     if not slug:
         slug = "import"
-    return slug[:59]
+    if len(slug) > 59:
+        suffix = hashlib.sha256(slug.encode()).hexdigest()[:4]
+        slug = f"{slug[:54]}_{suffix}"
+    return slug
 
 
 # Unambiguous tabular extensions: extension wins, no OFX sniffing attempted.
@@ -1118,7 +1139,11 @@ class ImportService:
         Args:
             file_path: Path to the file to import.
             refresh: Whether to run the post-load refresh pipeline (matching +
-                SQLMesh apply + categorization) after loading. Defaults to True.
+                SQLMesh apply + categorization) after loading. Defaults to
+                True. **PDFs are excluded from the refresh pipeline in Phase
+                1** — they land in ``raw.pdf_seeds`` only and don't feed
+                SQLMesh transforms yet, so ``refresh=True`` is a silent
+                no-op for PDF inputs.
             institution: Institution name override (OFX only). Auto-detected if
                 omitted.
             force: Re-import even if the file has been imported before (OFX only).
@@ -1273,7 +1298,9 @@ class ImportService:
             path = Path(raw_path)
             try:
                 r = self._import_one(path, force=force, interactive=interactive)
-                rows_loaded = r.transactions
+                # PDFs land in raw.pdf_seeds (transactions=0); report the seed
+                # count so batch output reflects actual rows persisted.
+                rows_loaded = r.details.get("seed_rows", r.transactions)
                 per_file.append(
                     PerFileResult(
                         path=str(path),
@@ -1426,7 +1453,10 @@ class ImportService:
         # view that was never created (zero-row import path).
         # Only drop the view if no other completed imports remain for this alias —
         # reverting one import should not hide rows from sibling imports of the
-        # same source.
+        # same source. Note: with on_conflict='ignore' the first import owns
+        # every row of identical content; a sibling import's log entry can be
+        # 'complete' while holding zero rows, so the preserved view may be
+        # legitimately empty after this revert.
         if src_type == "pdf" and source_origin:
             other_row = self._db.execute(
                 f"SELECT COUNT(*) FROM {IMPORT_LOG.full_name} "

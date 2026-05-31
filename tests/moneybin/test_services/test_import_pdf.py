@@ -66,17 +66,40 @@ def test_import_pdf_zero_rows_raises(db: Database, empty_statement_pdf: Path) ->
         ("simple_statement.pdf", "simple_statement"),
         ("2024_Q4.pdf", "2024_q4"),
         (".pdfrc", "pdfrc"),
-        (("a" * 80) + ".pdf", "a" * 59),
+        # 80-char stem → 54-char truncation + "_" + 4-char content hash
+        # (deterministic via SHA-256 of the full slug).
+        (("a" * 80) + ".pdf", ("a" * 54) + "_0f45"),
     ],
     ids=[
         "stem_clean_letter_start",
         "stem_leading_digit_no_prefix",
         "stem_leading_dot_stripped_letter_start",
-        "long_stem_truncated_to_59_chars",
+        "long_stem_truncated_with_hash_suffix",
     ],
 )
 def test_pdf_alias_resolves(filename: str, expected: str) -> None:
     assert _pdf_alias(Path(filename)) == expected
+
+
+def test_pdf_alias_long_stems_avoid_collision() -> None:
+    """Distinct long filenames sharing a 59-char prefix get distinct aliases."""
+    a = _pdf_alias(Path("bank_statement_checking_account_january_2024.pdf"))
+    b = _pdf_alias(Path("bank_statement_checking_account_january_2025.pdf"))
+    # Both inputs are <60 chars, so neither triggers truncation — they
+    # naturally diverge. The collision case is for >59-char stems.
+    assert a != b
+
+    # Now exercise the truncation path explicitly.
+    long_a = "x" * 56 + "_january_2024"
+    long_b = "x" * 56 + "_january_2025"
+    alias_a = _pdf_alias(Path(long_a + ".pdf"))
+    alias_b = _pdf_alias(Path(long_b + ".pdf"))
+    assert len(alias_a) <= 59
+    assert len(alias_b) <= 59
+    assert alias_a != alias_b, (
+        f"long stems sharing the first 59 chars must hash to distinct aliases; "
+        f"got alias_a={alias_a!r} alias_b={alias_b!r}"
+    )
 
 
 @pytest.mark.integration

@@ -15,7 +15,7 @@ from typing import Any
 import duckdb
 
 from moneybin.database import Database, get_database
-from moneybin.tables import INTERFACE_TABLES
+from moneybin.tables import IMPORT_LOG, INTERFACE_TABLES
 
 logger = logging.getLogger(__name__)
 
@@ -631,13 +631,13 @@ def _pdf_seed_views(db: Database) -> list[dict[str, Any]]:
     """
     try:
         aliases = db.execute(
-            """
+            f"""
             SELECT DISTINCT source_origin
-            FROM raw.import_log
+            FROM {IMPORT_LOG.full_name}
             WHERE source_type = 'pdf'
               AND status = 'complete'
             ORDER BY source_origin ASC
-            """
+            """  # noqa: S608 — compile-time TableRef constant, no user input
         ).fetchall()
     except duckdb.CatalogException:
         # Table absent on bare DBs before init_schemas — no PDF views to add.

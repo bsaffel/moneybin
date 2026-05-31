@@ -29,7 +29,8 @@ def test_write_seed_creates_view_and_rows(db: Database) -> None:
     assert extracted == 2
     assert inserted == 2
     rows = db.execute(
-        'SELECT "date", "description", "amount", page FROM raw.pdf_acme ORDER BY "date"'
+        'SELECT "date", "description", "amount", "_page" '
+        'FROM raw.pdf_acme ORDER BY "date"'
     ).fetchall()
     assert rows[0][1] == "COFFEE"
     assert rows[1][2] == 2000.00
@@ -109,6 +110,13 @@ def test_duplicate_rows_within_doc_are_preserved(db: Database) -> None:
             ["-1234567890123456789"],
             "VARCHAR",
         ),  # negative, 19 digits without sign — fallback
+        # Unicode digit codepoints (Arabic-Indic, Devanagari, full-width)
+        # must NOT be mis-inferred as numeric — DuckDB can't CAST them to
+        # BIGINT/DECIMAL, which would silently break view queries.
+        (["٤٢"], "VARCHAR"),  # Arabic-Indic "٤٢"
+        (["२०"], "VARCHAR"),  # Devanagari "२०"
+        (["１２３"], "VARCHAR"),  # full-width "１２３"
+        (["१३११-०१-०ॢ"], "VARCHAR"),
     ],
     ids=[
         "empty",
@@ -125,6 +133,10 @@ def test_duplicate_rows_within_doc_are_preserved(db: Database) -> None:
         "18_digit_int_stays_BIGINT",
         "negative_18_digit_int_stays_BIGINT",
         "negative_19_digit_int_falls_to_VARCHAR",
+        "arabic_indic_digits_VARCHAR",
+        "devanagari_digits_VARCHAR",
+        "fullwidth_digits_VARCHAR",
+        "devanagari_date_pattern_VARCHAR",
     ],
 )
 def test_infer_type_branches(samples: list[str], expected: str) -> None:
