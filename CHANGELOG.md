@@ -13,6 +13,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 M2 closing out and M3 underway. M2A curator state shipped (transaction notes, tags, splits, manual entry, audit log). M2B architecture reference shipped (`architecture-shared-primitives.md`; writer-coordination contract via short-lived per-call connections). M2C brand surface advancing: `moneybin system doctor` integrity command, `reports.*` recipe library (eight curated views), and the `transform_*` MCP toolset closing the agent ingest loop. M3A Plaid Transactions sync shipped (Phase 1). Doc surface tightened for the personas reachable today; MCP surface hardened with protocol-standard annotations, `accounts_resolve`, list-parameter cap, structured error envelopes, and shell completion. Categorization correctness pass: memo-aware matcher, exemplar accumulation, source-precedence enforcement, auto-fan-out after apply; seed merchant catalogs retired in favor of user-driven and LLM-assist-driven merchant creation.
 
 ### Added
+- **Smart-import-pdf Phase 2a — deterministic PDF routing to `raw.tabular_transactions`.**
+  PDFs that auto-derive (or replay a saved) high-confidence recipe land
+  rows in `raw.tabular_transactions` (`source_type='pdf'`) instead of the
+  Phase 1 catch-all seed table; everything else (no transaction-shaped
+  table, reconciliation failure, missing balance metadata) still falls
+  back to `raw.pdf_seeds`. Auto-derived recipes persist to
+  `app.pdf_formats` on first contact (keyed by layout fingerprint =
+  issuer + sorted dedup headers + page bucket) so a second statement
+  with the same layout replays the saved recipe instead of re-deriving.
+  Reconciliation gate enforces pre-sign-normalization sum identity with
+  the statement's reported balance delta within 1¢. See
+  [`docs/specs/smart-import-pdf.md`](docs/specs/smart-import-pdf.md).
+- **`moneybin import formats list --type {tabular,pdf,all}`** (default
+  `all`) filters by format kind and renders tabular + PDF sections in
+  text; JSON output is a uniform list with a `type` discriminator per
+  row. **`moneybin import formats show <name>`** resolves across both
+  namespaces.
+- **`import_formats` MCP tool now returns `pdf_formats: list[…]` alongside
+  the existing `formats: list[…]`** so agents have parity with the CLI.
+  Each PDF row carries `{name, institution_name, document_kind, routing,
+  front_end, version, times_used, last_used_at}`.
+- **Three new Prometheus metrics under `moneybin_pdf_*`:**
+  `extraction_confidence` (Histogram, 0–1), `recipe_hit_total{outcome}`
+  (Counter, outcomes: `replay_success`/`replay_failed`), and
+  `replay_guard_failure_total` (Counter, no labels — separate raw signal
+  for alerting on recipe drift).
 - **`import_confirm` MCP tool + `moneybin import confirm` CLI subcommand.**
   Terminal `_confirm` step of the propose→review→confirm flow for smart tabular
   imports. First-encounter imports surface a `confirmation_required` envelope;
