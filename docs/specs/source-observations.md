@@ -103,7 +103,7 @@ The review queue is narrow and well-defined. It carries:
 
 What does **not** enter the review queue:
 
-- **Cross-source duplicates** — resolved deterministically by [`matching-nway-dedup.md`](matching-nway-dedup.md). One real transaction observed in OFX + CSV + Plaid collapses to a single `core.fct_transactions` row via union-find spanning forest, no human in the loop.
+- **High-confidence cross-source duplicates** (≥0.95) — resolved deterministically by [`matching-nway-dedup.md`](matching-nway-dedup.md) via union-find spanning forest. One real transaction observed in OFX + CSV + Plaid at high confidence collapses to a single `core.fct_transactions` row, no human in the loop. Medium-confidence cross-source pairs (0.70–0.95) flow through the review queue as matcher-pending edges per the first bullet above; they are not auto-collapsed.
 - **Within-source duplicates** — resolved by Tier 2b of [`matching-same-record-dedup.md`](matching-same-record-dedup.md). Overlapping statements from the same bank collapse automatically.
 - **Auto-promoted bank-only rows** — a Plaid (or OFX, or CSV) transaction that the matcher does not collapse into an existing canonical row survives into `core.fct_transactions` as its own canonical row with `source_count = 1`. This is the correct outcome; the row is a real transaction the user has not previously recorded.
 
