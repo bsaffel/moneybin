@@ -202,6 +202,10 @@ def system_doctor(full: bool = False) -> ResponseEnvelope[SystemDoctorPayload]:
     """Run pipeline integrity checks across all SQLMesh named audits.
 
     Returns pass/fail/warn per invariant plus a transaction count.
+    Failing and warning invariants include a ``recovery_actions`` list of
+    pre-built, directly-executable tool calls (each with ``tool``,
+    ``arguments``, ``rationale``, ``confidence``, ``idempotent``) the
+    agent can dispatch to remediate the issue without further reasoning.
     May write SQLMesh state tables on first Context init. Call before
     relying on analytical results to confirm the pipeline is self-consistent.
 
@@ -433,6 +437,10 @@ def register_system_tools(mcp: FastMCP) -> None:
         "system_doctor",
         "Run pipeline integrity checks across all SQLMesh named audits. "
         "Returns pass/fail/warn per invariant plus transaction count. "
+        "Failing and warning invariants include a `recovery_actions` list of "
+        "pre-built, directly-executable tool calls (tool, arguments, rationale, "
+        "confidence, idempotent) the agent can dispatch to remediate the issue "
+        "without further reasoning. "
         "May write SQLMesh state tables on first call. Call before relying on analytical results to confirm the pipeline is self-consistent.",
     )
     register(

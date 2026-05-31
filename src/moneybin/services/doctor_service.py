@@ -27,6 +27,7 @@ from moneybin.tables import (
     IMPORTS,
     INT_TRANSACTIONS_MATCHED,
     INT_TRANSACTIONS_UNIONED,
+    MANUAL_TRANSACTIONS,
     MATCH_DECISIONS,
     PROPOSED_RULES,
     TABULAR_FORMATS,
@@ -440,8 +441,16 @@ class DoctorService:
         """Flag orphan ``app.transaction_notes`` / ``app.transaction_tags`` rows.
 
         A note or tag whose ``transaction_id`` no longer resolves in
-        ``core.fct_transactions`` is an orphan. Skipped before the first
-        transform builds ``core.fct_transactions``.
+        ``core.fct_transactions`` is an orphan — UNLESS it points at a manual
+        transaction still pending materialization (the row is in
+        ``raw.manual_transactions`` but a refresh hasn't propagated it into
+        core yet). ``transactions_create`` returns the predicted
+        ``transaction_id`` immediately, so notes/tags written against it
+        before ``refresh_run`` are legitimate state, not orphans. The
+        ``raw.manual_transactions.transaction_id`` column (migration V026)
+        carries the same predicted hash for that suppression join.
+
+        Skipped before the first transform builds ``core.fct_transactions``.
 
         ``affected_ids`` are emitted with prefixes so the doctor recipe can
         dispatch to the right MCP tool without re-querying:
@@ -461,12 +470,20 @@ class DoctorService:
                     SELECT 1 FROM {FCT_TRANSACTIONS.full_name} t
                     WHERE t.transaction_id = n.transaction_id
                 )
+                AND NOT EXISTS (
+                    SELECT 1 FROM {MANUAL_TRANSACTIONS.full_name} m
+                    WHERE m.transaction_id = n.transaction_id
+                )
                 UNION
                 SELECT 'tag:' || transaction_id
                 FROM {TRANSACTION_TAGS.full_name} g
                 WHERE NOT EXISTS (
                     SELECT 1 FROM {FCT_TRANSACTIONS.full_name} t
                     WHERE t.transaction_id = g.transaction_id
+                )
+                AND NOT EXISTS (
+                    SELECT 1 FROM {MANUAL_TRANSACTIONS.full_name} m
+                    WHERE m.transaction_id = g.transaction_id
                 )
                 ORDER BY aid
                 """  # noqa: S608  # TableRef constants, no user input

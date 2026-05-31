@@ -42,6 +42,37 @@ def _insert_tag(db: Database, *, transaction_id: str, tag: str) -> None:
     )
 
 
+def _insert_pending_manual(
+    db: Database,
+    *,
+    source_transaction_id: str,
+    predicted_transaction_id: str,
+    account_id: str = "acct1",
+) -> None:
+    """Insert a manual row in raw with a predicted transaction_id but NO core row.
+
+    Mirrors the state between ``transactions_create`` and the first
+    ``refresh_run`` — the audit must NOT flag notes/tags written against
+    ``predicted_transaction_id`` as orphans during this window.
+    """
+    db.execute(
+        "INSERT INTO raw.manual_transactions "  # noqa: S608  # test input, not user SQL
+        "(source_transaction_id, import_id, account_id, transaction_date, "
+        " amount, description, created_by, transaction_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            source_transaction_id,
+            "imp1",
+            account_id,
+            date(2024, 1, 1),
+            Decimal("10.00"),
+            "manual entry",
+            "mcp",
+            predicted_transaction_id,
+        ],
+    )
+
+
 def test_orphan_app_state_skipped_before_core_exists(db: Database) -> None:
     # Without core.fct_transactions, the audit returns 'skipped' rather than
     # spuriously failing — matches the pattern used by every other FK audit.
@@ -88,6 +119,53 @@ def test_orphan_mix_of_notes_and_tags(db: Database) -> None:
     result = DoctorService(db)._run_orphan_app_state()
     assert result.status == "fail"
     assert set(result.affected_ids) == {"note:orphan_n1", "tag:gone2"}
+
+
+def test_pending_manual_note_is_not_flagged(db: Database) -> None:
+    """Notes written against a manual transaction before refresh must pass.
+
+    Reproduces the data-loss scenario flagged by PR #231's reviewers:
+    ``transactions_create`` returns a predicted ``transaction_id`` whose row
+    sits in ``raw.manual_transactions`` until the next ``refresh_run``
+    materializes it into ``core.fct_transactions``. A note added in that
+    window must NOT be flagged as an orphan — destroying it would discard
+    legitimate user curation.
+    """
+    create_core_tables(db)
+    _insert_pending_manual(
+        db,
+        source_transaction_id="manual_abc",
+        predicted_transaction_id="pending_txn_hash",
+    )
+    _insert_note(db, note_id="pending_n", transaction_id="pending_txn_hash")
+    _insert_tag(db, transaction_id="pending_txn_hash", tag="pending")
+    result = DoctorService(db)._run_orphan_app_state()
+    assert result.status == "pass"
+    assert result.affected_ids == []
+
+
+def test_truly_orphaned_note_still_flagged_alongside_pending_manual(
+    db: Database,
+) -> None:
+    """Pending-manual suppression is *narrow*: real orphans still fire.
+
+    Guards against an over-broad suppression — the third NOT EXISTS arm
+    must only exclude rows whose transaction_id is present in raw.manual,
+    not blanket-exempt every note.
+    """
+    create_core_tables(db)
+    # One pending manual (legitimate) — should be suppressed.
+    _insert_pending_manual(
+        db,
+        source_transaction_id="manual_pending",
+        predicted_transaction_id="pending_txn",
+    )
+    _insert_note(db, note_id="pending_n", transaction_id="pending_txn")
+    # One truly orphaned note (no row in raw OR core) — should still fire.
+    _insert_note(db, note_id="orphan_n", transaction_id="totally_gone")
+    result = DoctorService(db)._run_orphan_app_state()
+    assert result.status == "fail"
+    assert result.affected_ids == ["note:orphan_n"]
 
 
 def test_run_all_populates_recovery_actions_for_orphan_app_state(
