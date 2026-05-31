@@ -27,6 +27,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from moneybin.database import Database
 from moneybin.extractors.pdf.ir import PdfDocument, PdfTable
 from moneybin.extractors.pdf.routing import route_pdf_import
@@ -411,3 +413,35 @@ def test_metadata_incomplete_metadata_has_no_balances(db: Database) -> None:
     assert decision.reason == "metadata_incomplete"
     assert decision.metadata.opening_balance is None
     assert decision.metadata.closing_balance is None
+
+
+# ---------------------------------------------------------------------------
+# low_confidence branch — under the Phase 2a binary-fill confidence model,
+# this branch is structurally unreachable (non-empty rows always score 1.0;
+# empty rows trip no_rows before confidence is computed). The branch remains
+# as a defensive guard for Phase 2b partial-fill scoring. Test wiring via
+# monkeypatch so the routing logic is locked even when the scorer can't
+# produce a sub-threshold score on its own.
+# ---------------------------------------------------------------------------
+
+
+def test_low_confidence_routes_to_seed(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When is_high_confidence returns False, routing falls back to seed."""
+
+    def _always_low(_conf: float) -> bool:
+        return False
+
+    monkeypatch.setattr(
+        "moneybin.extractors.pdf.routing.is_high_confidence", _always_low
+    )
+    doc = _standard_doc()
+
+    decision = route_pdf_import(doc, db)
+
+    assert decision.outcome == "seed"
+    assert decision.reason == "low_confidence"
+    assert decision.recipe is not None  # recipe was derived; just didn't score
+    assert decision.rows  # rows were extracted before the score check fired
+    assert decision.metadata.opening_balance is None  # metadata not captured yet

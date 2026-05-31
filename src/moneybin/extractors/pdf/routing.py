@@ -62,8 +62,10 @@ _Reason = Literal[
     "replay_reconciliation_failed",  # saved recipe stopped reconciling — Phase 2b bridge
     "metadata_incomplete",  # opening or closing balance not captured
     "no_rows",  # recipe matched zero rows
-    "recipe_validation_failed",  # saved recipe failed Recipe.model_validate
 ]
+# Note: a saved recipe failing Recipe.model_validate is NOT a terminal reason —
+# the router logs a warning and falls through to auto-derive, then reports the
+# auto-derive outcome via the appropriate reason above.
 
 
 @dataclass(frozen=True)

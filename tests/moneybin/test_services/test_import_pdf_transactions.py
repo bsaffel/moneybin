@@ -328,3 +328,133 @@ def test_pdf_revert_clears_tabular_transactions(db: Database, tmp_path: Path) ->
     ).fetchone()
     assert seeds is not None
     assert seeds[0] == 0
+
+
+# ---------------------------------------------------------------------------
+# Test 6: Re-import of the same PDF reports 0 newly-inserted rows
+# (regression for the rows_inserted overcount fix — on_conflict="ignore"
+# means duplicates land silently, so the count must subtract pre-existing rows)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_pdf_reimport_reports_zero_newly_inserted_rows(
+    db: Database, tmp_path: Path
+) -> None:
+    """Re-importing the same PDF reports 0 inserted, preserves extracted count."""
+    doc = _standard_doc()
+    svc, fake_pdf = _service_with_fake_pdf(db, doc, tmp_path)
+
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+        return_value=doc,
+    ):
+        first = svc.import_file(fake_pdf, refresh=False)
+
+    assert first.transactions == 2  # 2 rows in _standard_table()
+    assert first.details["transactions"] == 2
+    assert first.details["transactions_extracted"] == 2
+
+    # Second import — same canonical path is excluded by import_log, so we
+    # write to a different file path with identical content. Same content
+    # hash, same import row would collide via on_conflict="ignore".
+    fake_pdf_2 = tmp_path / "statement_again.pdf"
+    fake_pdf_2.write_bytes(b"%PDF-1.4 fake")
+
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+        return_value=doc,
+    ):
+        second = svc.import_file(fake_pdf_2, refresh=False)
+
+    # All rows duplicate by content hash → 0 inserted, 2 extracted.
+    assert second.details["transactions_extracted"] == 2
+    assert second.transactions == 0
+    assert second.details["transactions"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Test 7: Duplicate format name (hash collision / race) is non-fatal
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_pdf_duplicate_format_name_is_swallowed(db: Database, tmp_path: Path) -> None:
+    """Second import with a pre-existing format name (same fingerprint) is a no-op."""
+    doc = _standard_doc()
+    svc, fake_pdf = _service_with_fake_pdf(db, doc, tmp_path)
+
+    # First import creates the format.
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+        return_value=doc,
+    ):
+        svc.import_file(fake_pdf, refresh=False)
+
+    # Delete the saved-format fingerprint from the routing side so the second
+    # import takes the "auto-derive again, try save_new" path instead of replay.
+    # The format row itself stays — so save_new raises ConstraintException.
+    db.execute("UPDATE app.pdf_formats SET layout_fingerprint = '{}'::JSON")
+
+    fake_pdf_2 = tmp_path / "statement_again.pdf"
+    fake_pdf_2.write_bytes(b"%PDF-1.4 fake")
+
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+        return_value=doc,
+    ):
+        # Should not raise — ConstraintException on save_new is logged and skipped.
+        result = svc.import_file(fake_pdf_2, refresh=False)
+
+    assert result.file_type == "pdf"
+    # Still exactly one format row (no duplicate save).
+    formats = db.execute("SELECT COUNT(*) FROM app.pdf_formats").fetchone()
+    assert formats is not None
+    assert formats[0] == 1
+
+
+# ---------------------------------------------------------------------------
+# Test 8: Failure during ingest cleans up tabular rows + finalizes as failed
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_pdf_transactions_path_cleanup_on_ingest_failure(
+    db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ingest_dataframe raising mid-import → DELETE + finalize_import(failed)."""
+    doc = _standard_doc()
+    svc, fake_pdf = _service_with_fake_pdf(db, doc, tmp_path)
+
+    # Patch ingest_dataframe to raise AFTER rows have landed, so the failure-cleanup
+    # path (DELETE + finalize "failed") executes against real DB state. `db` here
+    # is the same connection ImportService holds — patching it here patches both.
+    original_ingest = db.ingest_dataframe
+
+    def _flaky_ingest(*args: Any, **kwargs: Any) -> None:
+        original_ingest(*args, **kwargs)
+        raise RuntimeError("simulated mid-ingest failure")
+
+    monkeypatch.setattr(db, "ingest_dataframe", _flaky_ingest)
+
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+        return_value=doc,
+    ):
+        with pytest.raises(RuntimeError, match="simulated"):
+            svc.import_file(fake_pdf, refresh=False)
+
+    # Cleanup ran: no tabular_transactions rows survive the failure
+    rows = db.execute(
+        "SELECT COUNT(*) FROM raw.tabular_transactions WHERE source_type = 'pdf'"
+    ).fetchone()
+    assert rows is not None
+    assert rows[0] == 0
+
+    # The import_log row was finalized as "failed", not left in "importing"
+    log_status = db.execute(
+        "SELECT status FROM raw.import_log WHERE source_type = 'pdf' "
+        "ORDER BY started_at DESC LIMIT 1"
+    ).fetchone()
+    assert log_status is not None
+    assert log_status[0] == "failed"

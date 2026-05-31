@@ -1415,9 +1415,21 @@ class ImportService:
             df = pl.DataFrame(rows_list)
             # on_conflict="ignore": content-hash IDs make re-import of the same PDF
             # a no-op; we never overwrite an existing transaction on re-import.
+            # Count by transaction_id before+after so rows_inserted reflects what
+            # actually landed (not what we attempted) — re-imports of the same
+            # PDF would otherwise overstate the import count to the user.
+            tx_ids = [r["transaction_id"] for r in rows_list]
+            placeholders = ",".join(["?"] * len(tx_ids))
+            count_before_row = self._db.execute(
+                f"SELECT COUNT(*) FROM {TABULAR_TRANSACTIONS.full_name} "
+                f"WHERE transaction_id IN ({placeholders})",  # noqa: S608  # placeholders are ?-bound; tx_ids is parameter list
+                tx_ids,
+            ).fetchone()
+            rows_already_present = count_before_row[0] if count_before_row else 0
             self._db.ingest_dataframe(
                 TABULAR_TRANSACTIONS.full_name, df, on_conflict="ignore"
             )
+            rows_inserted = len(rows_list) - rows_already_present
 
             # Save format recipe on first contact (auto-derive path, not a replay).
             # decision.matched_format_name is None ↔ no saved format matched this layout.
@@ -1478,22 +1490,25 @@ class ImportService:
             PDF_IMPORT_TOTAL.labels(outcome="failed", rung="deterministic").inc()
             raise
 
-        rows_inserted = len(rows_list)
         import_log.finalize_import(
             self._db,
             import_id,
             status="complete",
-            rows_total=rows_inserted,
+            rows_total=len(rows_list),
             rows_imported=rows_inserted,
         )
         PDF_IMPORT_TOTAL.labels(outcome="transactions", rung="deterministic").inc()
 
         result.transactions = rows_inserted
         result.accounts = 1
-        result.details = {"transactions": rows_inserted}
+        result.details = {
+            "transactions": rows_inserted,
+            "transactions_extracted": len(rows_list),
+        }
         logger.info(
             f"PDF import complete (transactions): alias={resolved_alias} "
-            f"rows={rows_inserted} import_id={import_id[:8]}..."
+            f"extracted={len(rows_list)} inserted={rows_inserted} "
+            f"import_id={import_id[:8]}..."
         )
         return result
 
