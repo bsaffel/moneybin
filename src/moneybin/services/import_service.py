@@ -78,6 +78,19 @@ class ImportResult:
             lines.append(f"  Transactions: {self.transactions}")
         if self.balances:
             lines.append(f"  Balances: {self.balances}")
+        # PDF Phase 1 sets transactions=0 (no core rows land), so surface the
+        # seed-row count instead — otherwise the summary tells the user
+        # nothing about what landed.
+        if "seed_rows" in self.details:
+            seeded = self.details["seed_rows"]
+            extracted = self.details.get("seed_rows_extracted", seeded)
+            if extracted == seeded:
+                lines.append(f"  Seed rows: {seeded}")
+            else:
+                lines.append(
+                    f"  Seed rows: {seeded} (extracted {extracted}, "
+                    f"{extracted - seeded} already present from prior import)"
+                )
         if self.date_range:
             lines.append(f"  Date range: {self.date_range}")
         if self.core_tables_rebuilt:
@@ -172,6 +185,33 @@ def _display_label(file_type: str, file_path: Path) -> str:
     return file_type.upper()
 
 
+def _pdf_alias(file_path: Path) -> str:
+    """Resolve the seed alias from the file stem.
+
+    Returns a slug used in ``raw.pdf_<alias>`` view names. The ``pdf_``
+    prefix is added by the view-name construction, so the alias itself can
+    start with any character (including digits) — the view regex sees
+    ``pdf_{alias}``, not just ``{alias}``.
+
+    Capped at 59 chars so the ``pdf_{alias}`` view name fits the shared
+    builder's 63-char limit. When truncation would silently merge distinct
+    long filenames (two PDFs whose slugified stems share the first 59
+    chars), a 4-char content-hash suffix preserves uniqueness within the
+    same ceiling.
+    """
+    import hashlib
+
+    from moneybin.utils import slugify
+
+    slug = slugify(file_path.stem).replace("-", "_")
+    if not slug:
+        slug = "import"
+    if len(slug) > 59:
+        suffix = hashlib.sha256(slug.encode()).hexdigest()[:4]
+        slug = f"{slug[:54]}_{suffix}"
+    return slug
+
+
 # Unambiguous tabular extensions: extension wins, no OFX sniffing attempted.
 # (.txt / .dat are excluded because they're generic and may contain OFX content.)
 _UNAMBIGUOUS_TABULAR: frozenset[str] = frozenset({
@@ -192,7 +232,7 @@ def _detect_file_type(file_path: Path) -> str:
     """Detect file type from extension, falling back to magic-byte sniffing.
 
     Returns:
-        File type string: 'ofx' or 'tabular'.
+        File type string: 'ofx', 'pdf', or 'tabular'.
 
     Raises:
         ValueError: If the file cannot be classified.
@@ -205,17 +245,20 @@ def _detect_file_type(file_path: Path) -> str:
     if suffix in _UNAMBIGUOUS_TABULAR:
         return "tabular"
 
-    # Try magic-byte sniffing before falling back to remaining tabular extensions
-    # (.txt, .dat) and the unknown-extension error path.
+    # Magic-byte sniff wins over ambiguous extensions — a .pdf-named file
+    # carrying OFX content gets the clear "ofx" route instead of an opaque
+    # pdfplumber error downstream.
     if _sniff_ofx_content(file_path):
         return "ofx"
 
+    if suffix == ".pdf":
+        return "pdf"
     if suffix in TABULAR_EXTENSIONS:
         return "tabular"
 
     raise ValueError(
         f"Unsupported file type: {suffix}. "
-        f"Supported: .ofx, .qfx, .qbo, .csv, .tsv, .xlsx, .parquet, .feather"
+        f"Supported: .ofx, .qfx, .qbo, .pdf, .csv, .tsv, .xlsx, .parquet, .feather"
     )
 
 
@@ -1150,6 +1193,93 @@ class ImportService:
 
         return result
 
+    def _import_pdf(self, file_path: Path) -> ImportResult:
+        """Import a native-text PDF as a seed (Phase 1: catch-all only)."""
+        from moneybin.extractors.pdf.extractor import PDFExtractor
+        from moneybin.extractors.pdf.seed_store import write_pdf_seed
+        from moneybin.loaders import import_log
+        from moneybin.metrics.registry import PDF_IMPORT_TOTAL, PDF_SEED_ROWS_TOTAL
+
+        canonical = file_path.resolve()
+        result = ImportResult(file_path=str(canonical), file_type="pdf")
+        resolved_alias = _pdf_alias(canonical)
+
+        import_id = import_log.begin_import(
+            self._db,
+            source_file=str(canonical),
+            source_type="pdf",
+            source_origin=resolved_alias,
+            account_names=[resolved_alias],
+        )
+        result.import_id = import_id
+
+        extracted = 0
+        inserted = 0
+        try:
+            doc = PDFExtractor().extract(canonical)
+            extracted, inserted = write_pdf_seed(
+                self._db, doc, alias=resolved_alias, import_id=import_id
+            )
+            if extracted == 0:
+                raise ValueError(
+                    "No tables extracted from PDF. Verify the file contains "
+                    "selectable text (image-only / scanned PDFs are not supported)."
+                )
+        except Exception:
+            # Clean up any rows already written under this import_id before the failure.
+            # Without this, a view-creation failure mid-import would leak orphan rows
+            # into a future successful import with the same alias. The DELETE is
+            # wrapped so a cleanup failure doesn't mask the original exception or
+            # leave the import_log stuck in 'in_progress' (the finally block below
+            # always runs finalize_import).
+            from moneybin.tables import PDF_SEEDS  # noqa: PLC0415
+
+            try:
+                self._db.execute(
+                    f"DELETE FROM {PDF_SEEDS.full_name} WHERE import_id = ?",
+                    [import_id],
+                )
+            except Exception:  # noqa: BLE001 — cleanup is best-effort; original error is what matters
+                logger.warning(
+                    f"PDF cleanup DELETE failed for import_id={import_id[:8]}...",
+                    exc_info=True,
+                )
+            try:
+                import_log.finalize_import(
+                    self._db,
+                    import_id,
+                    status="failed",
+                    rows_total=0,
+                    rows_imported=0,
+                )
+            except Exception:  # noqa: BLE001 — failure-path finalize is best-effort
+                logger.warning(
+                    f"PDF finalize_import(failed) raised for import_id={import_id[:8]}...",
+                    exc_info=True,
+                )
+            PDF_IMPORT_TOTAL.labels(outcome="failed", rung="deterministic").inc()
+            raise
+
+        # success path: extracted > 0 guaranteed here. Audit log + metrics
+        # report the inserted (newly persisted) count so re-imports of
+        # already-stored content don't inflate row totals.
+        import_log.finalize_import(
+            self._db,
+            import_id,
+            status="complete",
+            rows_total=extracted,
+            rows_imported=inserted,
+        )
+        PDF_IMPORT_TOTAL.labels(outcome="seed", rung="deterministic").inc()
+        PDF_SEED_ROWS_TOTAL.labels(alias=resolved_alias).inc(inserted)
+        result.details = {"seed_rows": inserted, "seed_rows_extracted": extracted}
+        result.transactions = 0  # Phase 1: seed path writes no core transactions
+        logger.info(
+            f"PDF import complete: alias={resolved_alias} "
+            f"import_id={import_id[:8]}... extracted={extracted} inserted={inserted}"
+        )
+        return result
+
     def import_file(
         self,
         file_path: str | Path,
@@ -1183,7 +1313,11 @@ class ImportService:
         Args:
             file_path: Path to the file to import.
             refresh: Whether to run the post-load refresh pipeline (matching +
-                SQLMesh apply + categorization) after loading. Defaults to True.
+                SQLMesh apply + categorization) after loading. Defaults to
+                True. **PDFs are excluded from the refresh pipeline in Phase
+                1** — they land in ``raw.pdf_seeds`` only and don't feed
+                SQLMesh transforms yet, so ``refresh=True`` is a silent
+                no-op for PDF inputs.
             institution: Institution name override (OFX only). Auto-detected if
                 omitted.
             force: Re-import even if the file has been imported before (OFX only).
@@ -1312,6 +1446,8 @@ class ImportService:
                 confirm=confirm,
                 actor_kind=actor_kind,
             )
+        if file_type == "pdf":
+            return self._import_pdf(path)
         raise ValueError(f"Unsupported file type: {file_type}")
 
     def import_files(
@@ -1352,7 +1488,9 @@ class ImportService:
                     confirm=confirm,
                     actor_kind=actor_kind,
                 )
-                rows_loaded = r.transactions
+                # PDFs land in raw.pdf_seeds (transactions=0); report the seed
+                # count so batch output reflects actual rows persisted.
+                rows_loaded = r.details.get("seed_rows", r.transactions)
                 per_file.append(
                     PerFileResult(
                         path=str(path),
@@ -1460,7 +1598,7 @@ class ImportService:
         from moneybin.tables import IMPORT_LOG  # noqa: PLC0415
 
         row = self._db.execute(
-            f"SELECT source_type, status, source_file, started_at "
+            f"SELECT source_type, status, source_file, started_at, source_origin "
             f"FROM {IMPORT_LOG.full_name} WHERE import_id = ?",
             [import_id],
         ).fetchone()
@@ -1468,7 +1606,7 @@ class ImportService:
         if row is None:
             return {"status": "not_found", "reason": f"No import with ID {import_id}"}
 
-        src_type, status, source_file, started_at = row
+        src_type, status, source_file, started_at, source_origin = row
 
         if status == "reverted":
             return {"status": "already_reverted"}
@@ -1539,6 +1677,44 @@ class ImportService:
         except Exception:
             self._db.rollback()
             raise
+
+        # Drop the auto-generated raw.pdf_<alias> view after row deletion
+        # succeeds. DDL is autocommit in DuckDB (cannot be inside the transaction),
+        # so this runs after commit. IF EXISTS guards against re-reverts or a
+        # view that was never created (zero-row import path).
+        # Only drop the view if no other completed imports remain for this alias —
+        # reverting one import should not hide rows from sibling imports of the
+        # same source. Note: with on_conflict='ignore' the first import owns
+        # every row of identical content; a sibling import's log entry can be
+        # 'complete' while holding zero rows, so the preserved view may be
+        # legitimately empty after this revert.
+        if src_type == "pdf" and source_origin:
+            other_row = self._db.execute(
+                f"SELECT COUNT(*) FROM {IMPORT_LOG.full_name} "
+                f"WHERE source_type = 'pdf' AND source_origin = ? "
+                f"AND status = 'complete' AND import_id != ?",
+                [source_origin, import_id],
+            ).fetchone()
+            if other_row is not None and other_row[0] == 0:
+                from sqlglot import exp  # noqa: PLC0415
+
+                safe_view = exp.to_identifier(f"pdf_{source_origin}", quoted=True).sql(
+                    "duckdb"
+                )
+                # DDL runs post-commit (DuckDB autocommits DDL outside the
+                # transaction). The rows are already gone and import_log is
+                # already 'reverted', so a catalog error here would orphan
+                # the view with no recovery path other than manual SQL.
+                # Best-effort log + continue keeps the rest of the revert
+                # outcome intact.
+                try:
+                    self._db.execute(f"DROP VIEW IF EXISTS raw.{safe_view}")
+                except Exception:  # noqa: BLE001 — DDL best-effort post-commit
+                    logger.warning(
+                        f"DROP VIEW raw.{safe_view} failed during revert of "
+                        f"import_id={import_id[:8]}...; view may be orphaned",
+                        exc_info=True,
+                    )
 
         logger.info(
             f"Reverted import {import_id[:8]}...: {rows_to_delete} rows deleted"

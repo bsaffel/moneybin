@@ -72,6 +72,22 @@ OFX_IMPORT_BATCHES = Counter(
     labelnames=("status",),
 )
 
+# Phase 1 outcomes: "seed" (success), "failed" (extraction error OR zero rows).
+# Spec also declares "declined" (recipe rejection) — added when Phase 2 ships routing.
+PDF_IMPORT_TOTAL = Counter(
+    "moneybin_pdf_import_total",
+    "PDF imports by outcome and rung.",
+    ["outcome", "rung"],
+)
+
+# Phase 1: cardinality bounded by distinct PDF aliases per user (~dozens).
+# Revisit before multi-user hosted launch (M3E).
+PDF_SEED_ROWS_TOTAL = Counter(
+    "moneybin_pdf_seed_rows_total",
+    "Rows written to raw.pdf_seeds.",
+    ["alias"],
+)
+
 # ── Smart import confirmation ────────────────────────────────────────────────
 
 IMPORT_CONFIRMATIONS_TOTAL = Counter(
@@ -119,6 +135,7 @@ IMPORT_REVALIDATION_FAILURE_TOTAL = Counter(
 # without a structural replay check (column presence, header drift).
 # The .inc() call wires in when the replay guard lands; declaring the
 # counter now keeps dashboards/alerting stable across that change.
+
 
 # ── SQLMesh transforms ───────────────────────────────────────────────────────
 

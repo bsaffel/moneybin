@@ -43,6 +43,20 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   `known_format_reuse_total{channel}`, `revalidation_failure_total{channel}`.
 
 ### Changed
+- **GSheet alias limit tightened from 63 to 56 chars** (#228) so the
+  generated `gsheet_<alias>` view name fits DuckDB's 63-char identifier
+  limit. A pre-existing gsheet connection with a 57–63 char alias will
+  now raise a clear error on the next `gsheet pull` telling the user to
+  reconnect with a shorter alias. Connections with aliases ≤56 chars are
+  unaffected.
+- **`raw.gsheet_*` and `raw.pdf_*` views: lifecycle columns now `_`-prefixed** (#228).
+  System carry columns surface as `_loaded_at`, `_row_number`,
+  `_deleted_from_source_at`, and `_page` (instead of the bare names) so
+  they can never collide with normalized user headers from the source
+  data (e.g. a PDF "Page" column or a Google Sheet "row_number"
+  column). Existing `raw.gsheet_<alias>` views regenerate on next
+  `gsheet pull`; queries referencing the old names need updating to the
+  underscored form. Pre-launch — no migration path.
 - **`medium`-confidence tabular imports now gate on confirmation** instead of waving
   through with a sign-convention log warning. Callers receive a `confirmation_required`
   envelope (MCP / `--output json`) or an interactive prompt (TTY CLI). Closes the
@@ -82,6 +96,7 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   spec.
 
 ### Added
+- **PDF import (seed path).** Native-text PDFs import via `moneybin import <file.pdf>` and the inbox; their tables land as a queryable JSON seed (`raw.pdf_seeds`) with an auto-generated typed view (`raw.pdf_<alias>`), reversible like any import. Mapping PDFs to transactions/core is a later phase.
 - **Report auto-generation framework — one runner generates every surface.**
   A report is now a single decorated runner (`@report`) that returns a
   parameterized query against its `reports.*` view; the framework introspects

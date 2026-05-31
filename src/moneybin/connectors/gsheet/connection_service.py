@@ -48,10 +48,13 @@ from moneybin.tables import GSHEET_SEEDS, TABULAR_TRANSACTIONS
 
 logger = logging.getLogger(__name__)
 
-# Mirrors ``view_generator._SAFE_ALIAS_RE`` so disconnect(purge=True) can
-# re-validate the alias before string-interpolating it into DROP VIEW.
-# Defense-in-depth: insert path already validates via the view_generator on
-# load, but DROP VIEW happens outside the load path so we re-check here.
+# Defense-in-depth: disconnect(purge=True) re-validates the alias before
+# string-interpolating it into DROP VIEW. This pattern is intentionally
+# LOOSER than ``view_generator._SAFE_ALIAS_RE`` (≤56 chars): it enforces
+# SQL-safety (chars + DuckDB's 63-char identifier limit) so legacy long
+# aliases — created before view_generator tightened to 56 chars — can
+# still be purged cleanly. Create-time validation lives in
+# view_generator; this re-check is purely about safe interpolation.
 _SAFE_ALIAS_RE = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 
 

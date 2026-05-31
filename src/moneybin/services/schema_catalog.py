@@ -15,7 +15,7 @@ from typing import Any
 import duckdb
 
 from moneybin.database import Database, get_database
-from moneybin.tables import INTERFACE_TABLES
+from moneybin.tables import IMPORT_LOG, INTERFACE_TABLES
 
 logger = logging.getLogger(__name__)
 
@@ -508,6 +508,7 @@ def build_schema_doc() -> dict[str, Any]:
         # Build seed-view entries while db is open — reuses this one
         # connection rather than opening a second.
         seed_view_entries = _gsheet_seed_views(db)
+        pdf_view_entries = _pdf_seed_views(db)
 
     tables_by_name: dict[str, dict[str, Any]] = {}
     for full_name, table_comment, col_name, dtype, nullable, col_comment in rows:
@@ -532,6 +533,7 @@ def build_schema_doc() -> dict[str, Any]:
 
     tables = list(tables_by_name.values())
     tables.extend(seed_view_entries)
+    tables.extend(pdf_view_entries)
     logger.info(f"Schema doc built: {len(tables)} interface tables present")
 
     return {
@@ -604,6 +606,74 @@ def _gsheet_seed_views(db: Database) -> list[dict[str, Any]]:
             "purpose": (
                 f"Live mirror of Google Sheets seed connection (alias={alias})."
             ),
+            "columns": [
+                {
+                    "name": col_name,
+                    "type": dtype,
+                    "nullable": True,
+                    "comment": "",
+                }
+                for col_name, dtype in cols
+            ],
+            "examples": [],
+        })
+    return entries
+
+
+def _pdf_seed_views(db: Database) -> list[dict[str, Any]]:
+    """Return one entry per successfully-imported PDF whose view exists in the catalog.
+
+    Skips failed or in-progress imports, and aliases whose view hasn't been
+    created yet. Mirrors the _gsheet_seed_views entry shape.
+
+    Takes the caller's live read-only ``db`` rather than opening a second
+    connection — build_schema_doc already holds one open.
+    """
+    try:
+        aliases = db.execute(
+            f"""
+            SELECT DISTINCT source_origin
+            FROM {IMPORT_LOG.full_name}
+            WHERE source_type = 'pdf'
+              AND status = 'complete'
+            ORDER BY source_origin ASC
+            """  # noqa: S608 — compile-time TableRef constant, no user input
+        ).fetchall()
+    except duckdb.CatalogException:
+        # Table absent on bare DBs before init_schemas — no PDF views to add.
+        return []
+
+    if not aliases:
+        return []
+
+    # Catalog membership filter — skip aliases without a materialized view.
+    live_views = {
+        row[0]
+        for row in db.execute(
+            """
+            SELECT view_name FROM duckdb_views()
+            WHERE schema_name = 'raw' AND view_name LIKE 'pdf_%'
+            """
+        ).fetchall()
+    }
+
+    entries: list[dict[str, Any]] = []
+    for (alias,) in aliases:
+        view_name = f"pdf_{alias}"
+        if view_name not in live_views:
+            continue
+        cols = db.execute(
+            """
+            SELECT column_name, data_type
+            FROM duckdb_columns()
+            WHERE schema_name = 'raw' AND table_name = ?
+            ORDER BY column_index
+            """,
+            [view_name],
+        ).fetchall()
+        entries.append({
+            "name": f"raw.{view_name}",
+            "purpose": f"PDF seed data imported from file (alias={alias}).",
             "columns": [
                 {
                     "name": col_name,

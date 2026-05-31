@@ -24,6 +24,7 @@ from moneybin.tables import (
     OFX_BALANCES,
     OFX_INSTITUTIONS,
     OFX_TRANSACTIONS,
+    PDF_SEEDS,
     TABULAR_ACCOUNTS,
     TABULAR_TRANSACTIONS,
     TableRef,
@@ -33,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 
 _SourceType = Literal[
-    "csv", "tsv", "excel", "parquet", "feather", "pipe", "ofx", "manual"
+    "csv", "tsv", "excel", "parquet", "feather", "pipe", "ofx", "manual", "pdf"
 ]
 
 
@@ -51,6 +52,7 @@ REVERT_TABLES: dict[str, list[TableRef]] = {
     "pipe": _TABULAR_RAW_TABLES,
     "ofx": [OFX_TRANSACTIONS, OFX_ACCOUNTS, OFX_BALANCES, OFX_INSTITUTIONS],
     "manual": [MANUAL_TRANSACTIONS],
+    "pdf": [PDF_SEEDS],
 }
 
 

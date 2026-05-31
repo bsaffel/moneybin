@@ -100,6 +100,7 @@ dependencies = [
     # TOML round-trip writer for codex config installs (preserves comments/formatting)
     "tomlkit>=0.13.2",
     "httpx>=0.27",
+    "pdfplumber>=0.11.9",
 ]
 
 [project.urls]

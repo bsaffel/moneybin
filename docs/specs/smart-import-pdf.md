@@ -6,7 +6,7 @@ Successor to the cut W-2 extractor (PR #186), whose removal note named this desi
 
 ## Status
 <!-- draft | ready | in-progress | implemented -->
-ready
+in-progress
 
 ## Goal
 

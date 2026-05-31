@@ -403,7 +403,8 @@ The honest gap list. See the [roadmap](../roadmap.md) for current sequencing.
 - **Automated migration from Monarch or Copilot.** No API pull; CSV-only.
 - **Broker / investment statements.** Plaid investment accounts load if exposed, but holdings, cost basis, and FIFO lot tracking land with the investments milestone.
 - **Multi-currency at import time.** Today MoneyBin treats every amount as USD. Original-currency preservation and FX gain/loss are planned.
-- **PDF ingest.** No PDF formats are currently supported. Account-statement, W-2, 1099, and receipt parsing aren't on the near-term roadmap.
+- **Native-text PDF (seed path).** Drop a PDF into `moneybin import files` or the watched inbox; tables land as a queryable JSON seed in `raw.pdf_seeds` with an auto-generated typed view (`raw.pdf_<alias>`). Reversible via `moneybin import revert <import_id>`. Phase 2 will add recipe-driven routing of PDF rows to canonical transactions.
+- **Scanned / image-only PDF.** PDFs without selectable text (scanned pages, fax-quality images) are not supported — text extraction yields no rows and the import fails with a zero-row error. Use a document scanner with OCR to produce a native-text PDF first.
 - **General-purpose row-level updates.** No `transactions update` command; use notes, tags, splits, categorize subcommands or revert and re-import.
 - **`--watch` mode for the inbox.** Cron or `launchd`/`systemd` is the supported pattern today.
 - **Bulk manual transaction entry.** One row at a time via `moneybin transactions create`; for batches, build a CSV and import it.

@@ -48,3 +48,19 @@ class TestDetectFileType:
         f.write_text("not a recognized format")
         with pytest.raises(ValueError, match="Unsupported file type"):
             _detect_file_type(f)
+
+    def test_sniffs_ofx_inside_misnamed_pdf(self, tmp_path: Path) -> None:
+        """A .pdf-named file with OFX magic bytes routes to OFX, not PDF.
+
+        The sniffer runs before the .pdf extension check so misnamed files
+        get a clear OFX-import error rather than an opaque pdfplumber
+        failure on what is not actually a PDF.
+        """
+        f = tmp_path / "misnamed.pdf"
+        f.write_text("OFXHEADER:100\nDATA:OFXSGML\n<OFX></OFX>")
+        assert _detect_file_type(f) == "ofx"
+
+    def test_genuine_pdf_extension_routes_pdf(self, tmp_path: Path) -> None:
+        f = tmp_path / "statement.pdf"
+        f.write_bytes(b"%PDF-1.4 fake header for routing test")
+        assert _detect_file_type(f) == "pdf"
