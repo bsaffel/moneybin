@@ -179,11 +179,18 @@ def _classify_sign_convention(
     if amount_indices:
         return "negative_is_expense", amount_indices
 
-    # Debit + credit pair
+    # Debit + credit pair — DEFERRED to Phase 2b. The recipe row_split
+    # uses \s{2,} which collapses blank columns positionally, and bank
+    # statements have exactly one blank side per row. Without positional
+    # column hints (column_starts on the recipe) we can't disambiguate
+    # debit-only from credit-only rows: both produce the same token list.
+    # Bailing out cleanly here routes the document to seed with
+    # reason="no_transaction_table" rather than silently dropping every
+    # row mid-extract.
     debit_indices = [i for i, h in enumerate(headers) if _DEBIT_COL_RE.search(h)]
     credit_indices = [i for i, h in enumerate(headers) if _CREDIT_COL_RE.search(h)]
     if debit_indices and credit_indices:
-        return "split_debit_credit", debit_indices + credit_indices
+        return None, []
 
     return None, []
 
@@ -315,7 +322,13 @@ def _pattern_to_fmt(pattern: str) -> str:
     for fmt, pat in _DATE_FORMATS:
         if pat == pattern:
             return fmt
-    return "%m/%d/%Y"  # safe fallback; unreachable given our format list
+    # Defensive: keeps _DATE_FORMATS and this function honest. If a new
+    # date pattern lands in _DATE_FORMATS without a corresponding entry
+    # here, fail loud instead of silently parsing dates as %m/%d/%Y.
+    raise AssertionError(
+        f"unrecognised date pattern {pattern!r} — add a row to _DATE_FORMATS "
+        "covering (strptime_fmt, regex_pattern)"
+    )
 
 
 # ---------------------------------------------------------------------------

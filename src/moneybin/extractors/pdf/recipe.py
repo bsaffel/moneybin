@@ -151,13 +151,22 @@ def _carve_region(text: str, anchors: RegionAnchors) -> str:
 
 
 def _cast(field: FieldExtraction, raw: str) -> Any:
-    """Cast a raw string to the declared type; raises ValueError on failure."""
+    """Cast a raw string to the declared type; raises ValueError on failure.
+
+    For numeric casts, an empty string returns Decimal("0") / 0 so that
+    split_debit_credit recipes (which use an optional amount pattern for
+    Debit and Credit) yield a clean zero on the blank side of each row.
+    """
     if field.cast == "str":
         return raw
     if field.cast == "decimal":
-        return Decimal(raw.replace(",", ""))
+        if not raw:
+            return Decimal("0")
+        return Decimal(raw.replace(",", "").replace("$", ""))
     if field.cast == "int":
-        return int(raw.replace(",", ""))
+        if not raw:
+            return 0
+        return int(raw.replace(",", "").replace("$", ""))
     if field.cast == "date":
         fmt = field.date_format or "%Y-%m-%d"
         return datetime.strptime(raw, fmt).date()

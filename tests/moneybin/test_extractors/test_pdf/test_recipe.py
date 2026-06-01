@@ -194,3 +194,34 @@ def test_executor_drops_rows_with_wrong_field_count() -> None:
     )
     result = execute_recipe(recipe, text)
     assert len(result.rows) == 1
+
+
+def test_executor_decimal_cast_strips_dollar_sign() -> None:
+    """Amount pattern emits $1,500.00 → _cast must strip both , and $."""
+    text = "TRANSACTIONS\n01/15/2024  $1,500.00\nTOTAL"
+    recipe = Recipe.model_validate(
+        _make_recipe(
+            row_region={"start_anchor": "TRANSACTIONS", "end_anchor": "TOTAL"},
+            row_split=r"\s{2,}",
+            fields=[
+                _make_field("date", r"\d{2}/\d{2}/\d{4}", "date", "%m/%d/%Y"),
+                _make_field("amount", r"-?\$?[\d,]+\.\d{2}", "decimal"),
+            ],
+        )
+    )
+    result = execute_recipe(recipe, text)
+    assert len(result.rows) == 1
+    assert str(result.rows[0]["amount"]) == "1500.00"
+
+
+def test_cast_decimal_handles_empty_string() -> None:
+    """Direct unit test on _cast — empty string returns Decimal(0)."""
+    from decimal import Decimal
+
+    from moneybin.extractors.pdf.recipe import (  # type: ignore[attr-defined]
+        FieldExtraction,
+        _cast,  # pyright: ignore[reportPrivateUsage] -- intentional cast contract probe
+    )
+
+    fld = FieldExtraction(name="amount", pattern=r".*", cast="decimal")
+    assert _cast(fld, "") == Decimal("0")

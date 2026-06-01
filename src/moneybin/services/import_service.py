@@ -1341,7 +1341,7 @@ class ImportService:
         from moneybin.extractors.pdf.fingerprint import compute_fingerprint
         from moneybin.loaders import import_log
         from moneybin.metrics.registry import PDF_IMPORT_TOTAL
-        from moneybin.tables import TABULAR_TRANSACTIONS
+        from moneybin.tables import TABULAR_ACCOUNTS, TABULAR_TRANSACTIONS
         from moneybin.utils import slugify
 
         if decision.recipe is None:
@@ -1378,15 +1378,20 @@ class ImportService:
                 return -amount_d
             return amount_d  # negative_is_expense already matches canonical convention
 
+        # Locate the recipe's date field by cast type, not by hard-coded header
+        # names — the auto_derive regex matches "posting date" too (Chase/BofA),
+        # and any future date-column heuristic would similarly drift past a
+        # closed allowlist here.
+        date_field_name = next(
+            (f.name.lower() for f in decision.recipe.fields if f.cast == "date"),
+            None,
+        )
+
         rows_list: list[dict[str, Any]] = []
         for idx, row in enumerate(decision.rows, start=1):
             lrow = {k.lower(): v for k, v in row.items()}
             amt = _normalize_amount(row)
-            date_val = (
-                lrow.get("date")
-                or lrow.get("transaction date")
-                or lrow.get("trans date")
-            )
+            date_val = lrow.get(date_field_name) if date_field_name else None
             desc = lrow.get("description") or lrow.get("memo") or lrow.get("payee")
 
             date_iso = (
@@ -1431,8 +1436,38 @@ class ImportService:
             )
             rows_inserted = len(rows_list) - rows_already_present
 
+            # Account row to raw.tabular_accounts — without this, the SQLMesh
+            # stg_tabular__accounts model never produces a core.dim_accounts
+            # entry for this account_id, and reports that inner-join dim_accounts
+            # (reports.spending_trend, etc.) silently drop the PDF transactions.
+            institution = decision.metadata.account_id or "unknown"
+            account_df = pl.DataFrame({
+                "account_id": [account_id],
+                "account_name": [
+                    str(decision.metadata.account_id)
+                    if decision.metadata.account_id
+                    else resolved_alias
+                ],
+                "account_number": [None],
+                "account_number_masked": [None],
+                "account_type": [None],
+                "institution_name": [str(institution) if institution else None],
+                "currency": [None],
+                "source_file": [str(canonical)],
+                "source_type": ["pdf"],
+                "source_origin": [resolved_alias],
+                "import_id": [import_id],
+            })
+            self._db.ingest_dataframe(
+                TABULAR_ACCOUNTS.full_name, account_df, on_conflict="ignore"
+            )
+
             # Save format recipe on first contact (auto-derive path, not a replay).
             # decision.matched_format_name is None ↔ no saved format matched this layout.
+            if decision.matched_format_name is not None:
+                # Replay hit — bump usage counter + last_used_at so the formats
+                # list reflects actual replay activity.
+                self._pdf_formats.record_use(decision.matched_format_name)
             if decision.matched_format_name is None:
                 fp = compute_fingerprint(doc)
                 fp_hash = hashlib.sha256(
@@ -1468,16 +1503,18 @@ class ImportService:
                     )
 
         except Exception:
-            try:
-                self._db.execute(
-                    f"DELETE FROM {TABULAR_TRANSACTIONS.full_name} WHERE import_id = ?",
-                    [import_id],
-                )
-            except Exception:  # noqa: BLE001 — cleanup is best-effort
-                logger.warning(
-                    f"PDF transactions cleanup DELETE failed for import_id={import_id[:8]}...",
-                    exc_info=True,
-                )
+            for table_ref in (TABULAR_TRANSACTIONS, TABULAR_ACCOUNTS):
+                try:
+                    self._db.execute(
+                        f"DELETE FROM {table_ref.full_name} WHERE import_id = ?",
+                        [import_id],
+                    )
+                except Exception:  # noqa: BLE001 — cleanup is best-effort
+                    logger.warning(
+                        f"PDF cleanup DELETE failed on {table_ref.full_name} "
+                        f"for import_id={import_id[:8]}...",
+                        exc_info=True,
+                    )
             try:
                 import_log.finalize_import(
                     self._db, import_id, status="failed", rows_total=0, rows_imported=0

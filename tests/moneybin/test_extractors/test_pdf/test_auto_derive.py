@@ -131,8 +131,15 @@ def test_derive_single_amount_row_split() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_derive_debit_credit_returns_recipe() -> None:
-    """Debit/Credit layout yields a Recipe."""
+def test_derive_debit_credit_returns_none_phase_2a() -> None:
+    r"""Debit/Credit layout is deferred to Phase 2b — auto_derive returns None.
+
+    Rationale: \s{2,} row_split collapses blank columns positionally, so
+    debit-only and credit-only rows produce identical token lists with no way
+    to disambiguate without column-position hints on the recipe. Gating here
+    routes the document cleanly to seed (no_transaction_table) instead of
+    extracting zero rows mid-flight.
+    """
     doc = _make_doc(
         header=["Date", "Desc", "Debit", "Credit"],
         rows=[
@@ -140,39 +147,16 @@ def test_derive_debit_credit_returns_recipe() -> None:
             ["01/16/2024", "Paycheck", "", "1500.00"],
         ],
     )
-    recipe = derive_recipe(doc, _EMPTY_META)
-    assert recipe is not None
+    assert derive_recipe(doc, _EMPTY_META) is None
 
 
-def test_derive_debit_credit_sign_convention() -> None:
-    doc = _make_doc(
-        header=["Date", "Desc", "Debit", "Credit"],
-        rows=[["01/15/2024", "Coffee Shop", "4.50", ""]],
-    )
-    recipe = derive_recipe(doc, _EMPTY_META)
-    assert recipe is not None
-    assert recipe.sign_convention == "split_debit_credit"
-
-
-def test_derive_debit_credit_field_count() -> None:
-    doc = _make_doc(
-        header=["Date", "Desc", "Debit", "Credit"],
-        rows=[["01/15/2024", "Coffee Shop", "4.50", ""]],
-    )
-    recipe = derive_recipe(doc, _EMPTY_META)
-    assert recipe is not None
-    assert len(recipe.fields) == 4
-
-
-def test_derive_withdraw_deposit_sign_convention() -> None:
-    """Withdraw/Deposit variant also maps to split_debit_credit."""
+def test_derive_withdraw_deposit_returns_none_phase_2a() -> None:
+    """Withdraw/Deposit variant also deferred (same Phase 2b blocker)."""
     doc = _make_doc(
         header=["Date", "Description", "Withdrawals", "Deposits"],
         rows=[["01/15/2024", "Coffee Shop", "4.50", ""]],
     )
-    recipe = derive_recipe(doc, _EMPTY_META)
-    assert recipe is not None
-    assert recipe.sign_convention == "split_debit_credit"
+    assert derive_recipe(doc, _EMPTY_META) is None
 
 
 # ---------------------------------------------------------------------------

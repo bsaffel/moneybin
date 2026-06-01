@@ -183,7 +183,7 @@ class PdfFormatsRepo(BaseRepo):
                     ?, ?, ?,
                     ?::JSON, ?, ?::JSON, ?,
                     ?::JSON, ?, ?, ?,
-                    ?, ?, 1, 0,
+                    ?, ?, 1, 1,
                     CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
                 )
                 """,  # noqa: S608  # TableRef + parameterized values
@@ -277,6 +277,25 @@ class PdfFormatsRepo(BaseRepo):
         if row is None:
             return None
         return _row_to_pdf_format(_decode_row(row))
+
+    def record_use(self, name: str) -> None:
+        """Bump times_used + stamp last_used_at on a replay hit.
+
+        Per-import usage counters are observability, not user-state mutation —
+        emitting an audit row for every replay would bloat app.audit_log
+        without adding undo value (there is nothing to undo about "we used
+        the saved recipe again"). save_new and bump_version still go through
+        the audited path; only the counter bump is unaudited.
+        """
+        self._db.execute(
+            f"""
+            UPDATE {PDF_FORMATS.full_name}
+            SET times_used = times_used + 1,
+                last_used_at = CURRENT_TIMESTAMP
+            WHERE name = ?
+            """,  # noqa: S608  # TableRef + parameterized value
+            [name],
+        )
 
     def list_all(self) -> list[PdfFormat]:
         """Return all saved PDF format profiles, ordered by name."""
