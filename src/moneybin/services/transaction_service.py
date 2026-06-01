@@ -403,6 +403,13 @@ class TransactionService:
                 transaction_id = _predict_manual_gold_key(
                     source_transaction_id, entry["account_id"]
                 )
+                # Persist the predicted ``transaction_id`` alongside the source
+                # id so the doctor ``orphan_app_state`` audit can join on it to
+                # suppress false-positives for notes/tags written against this
+                # row in the window between ``transactions_create`` and the
+                # next ``refresh_run`` (which materializes the row in
+                # ``core.fct_transactions``). Migration V026 added the column;
+                # the hash here mirrors ``_predict_manual_gold_key`` exactly.
                 self._db.conn.execute(
                     f"""
                     INSERT INTO {MANUAL_TRANSACTIONS.full_name} (
@@ -410,8 +417,8 @@ class TransactionService:
                         transaction_date, amount, description, merchant_name,
                         memo, category, subcategory, payment_channel,
                         transaction_type, check_number, currency_code,
-                        created_by
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        created_by, transaction_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     [
                         source_transaction_id,
@@ -435,6 +442,7 @@ class TransactionService:
                         entry.get("check_number"),
                         entry.get("currency_code") or "USD",
                         actor,
+                        transaction_id,
                     ],
                 )
                 results.append(

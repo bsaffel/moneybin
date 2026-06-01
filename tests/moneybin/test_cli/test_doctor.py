@@ -9,6 +9,7 @@ import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.main import app
+from moneybin.errors import RecoveryAction
 from moneybin.services.doctor_service import DoctorReport, InvariantResult
 
 runner = CliRunner()
@@ -177,3 +178,77 @@ def test_doctor_json_verbose_includes_affected_ids(
     envelope = json.loads(result.stdout)
     inv = envelope["data"]["invariants"][0]
     assert inv["affected_ids"] == ["abc123"]
+
+
+# Fixture mirrors the real orphan_app_state recipe contract:
+# notes_delete is "suggested" (non-idempotent across a batch — see recipe
+# docstring), tags_set is "certain" (clear-to-empty is idempotent). Holding
+# the fixture to the real recipe values makes this test catch future
+# confidence-value regressions in the recipe itself, not just rendering.
+_RECOVERY_REPORT = DoctorReport(
+    invariants=[
+        InvariantResult(
+            "orphan_app_state",
+            "fail",
+            "2 orphan rows",
+            ["note:n1", "tag:t2"],
+            recovery_actions=[
+                RecoveryAction(
+                    tool="transactions_notes_delete",
+                    arguments={"note_id": "n1"},
+                    rationale="Delete orphan note n1.",
+                    confidence="suggested",
+                    idempotent=False,
+                ),
+                RecoveryAction(
+                    tool="transactions_tags_set",
+                    arguments={"transaction_id": "t2", "tags": []},
+                    rationale="Clear orphan tags on t2.",
+                    confidence="certain",
+                    idempotent=True,
+                ),
+            ],
+        ),
+    ],
+    transaction_count=10,
+)
+
+
+@patch("moneybin.cli.commands.system.doctor.get_database")
+@patch("moneybin.cli.commands.system.doctor.DoctorService")
+def test_doctor_text_renders_recovery_action_hints(
+    mock_svc_cls: MagicMock, mock_get_db: MagicMock
+) -> None:
+    """Failing invariants with recipes render each action's tool + confidence."""
+    mock_get_db.return_value = MagicMock()
+    mock_svc_cls.return_value.run_all.return_value = _RECOVERY_REPORT
+    result = runner.invoke(app, ["system", "doctor"])
+    assert result.exit_code == 1
+    # Tool names appear so an agent reading the text output sees the next steps.
+    assert "transactions_notes_delete" in result.output
+    assert "transactions_tags_set" in result.output
+    # Confidence tag accompanies each action for fast scanning.
+    assert "certain" in result.output
+
+
+@patch("moneybin.cli.commands.system.doctor.get_database")
+@patch("moneybin.cli.commands.system.doctor.DoctorService")
+def test_doctor_json_includes_recovery_actions_per_invariant(
+    mock_svc_cls: MagicMock, mock_get_db: MagicMock
+) -> None:
+    mock_get_db.return_value = MagicMock()
+    mock_svc_cls.return_value.run_all.return_value = _RECOVERY_REPORT
+    result = runner.invoke(app, ["system", "doctor", "--output", "json"])
+    assert result.exit_code == 1
+    envelope = json.loads(result.stdout)
+    inv = envelope["data"]["invariants"][0]
+    assert inv["name"] == "orphan_app_state"
+    tools = sorted(a["tool"] for a in inv["recovery_actions"])
+    assert tools == ["transactions_notes_delete", "transactions_tags_set"]
+    # Each action ships its full executable shape — arguments are not stringified.
+    notes_action = next(
+        a for a in inv["recovery_actions"] if a["tool"] == "transactions_notes_delete"
+    )
+    assert notes_action["arguments"] == {"note_id": "n1"}
+    assert notes_action["confidence"] == "suggested"
+    assert notes_action["idempotent"] is False

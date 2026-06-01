@@ -123,6 +123,69 @@ async def test_system_doctor_sensitivity_is_low(mcp_db: object) -> None:
     assert result.to_dict()["summary"]["sensitivity"] == "medium"
 
 
+@pytest.mark.unit
+async def test_system_doctor_invariants_carry_recovery_actions_field(
+    mcp_db: object,
+) -> None:
+    """Every invariant payload carries a ``recovery_actions`` list (possibly empty).
+
+    PR4: DoctorService populates this from the recipe registry. A passing
+    invariant has an empty list; a failing one with a registered recipe gets
+    pre-built actions an agent can execute.
+    """
+    from moneybin.mcp.tools.system import system_doctor
+
+    result = await system_doctor()
+    invariants = result.to_dict()["data"]["invariants"]
+    assert invariants, "expected at least one invariant in the payload"
+    for inv in invariants:
+        assert "recovery_actions" in inv
+        assert isinstance(inv["recovery_actions"], list)
+
+
+@pytest.mark.unit
+async def test_system_doctor_orphan_state_emits_executable_actions(
+    mcp_db: object,
+) -> None:
+    """Seed orphan note + tag → system_doctor emits round-trip-executable actions.
+
+    The returned invariant carries certain recovery actions whose tool names
+    and arguments validate against the registered MCP tool schemas.
+    """
+    from moneybin.database import get_database
+    from moneybin.mcp.tools.system import system_doctor
+
+    with get_database() as db:
+        db.execute(
+            "INSERT INTO app.transaction_notes "  # noqa: S608  # test input
+            "(note_id, transaction_id, text, author) "
+            "VALUES ('orphn1', 'missing_txn_a', 'x', 'mcp')"
+        )
+        db.execute(
+            "INSERT INTO app.transaction_tags "  # noqa: S608  # test input
+            "(transaction_id, tag, applied_by) "
+            "VALUES ('missing_txn_b', 'z', 'mcp')"
+        )
+
+    result = await system_doctor()
+    invariants = result.to_dict()["data"]["invariants"]
+    orphan = next(i for i in invariants if i["name"] == "orphan_app_state")
+    assert orphan["status"] == "fail"
+    tools = sorted(a["tool"] for a in orphan["recovery_actions"])
+    assert tools == ["transactions_notes_delete", "transactions_tags_set"]
+    # Spot-check confidence + idempotent flags ride through the envelope.
+    # Confidence varies by tool: tags-clear is certain (idempotent), single-id
+    # notes-delete is suggested (non-idempotent across a batch) — see
+    # orphan_app_state recipe docstring.
+    expected_confidence = {
+        "transactions_notes_delete": "suggested",
+        "transactions_tags_set": "certain",
+    }
+    for action in orphan["recovery_actions"]:
+        assert action["confidence"] == expected_confidence[action["tool"]]
+        assert "idempotent" in action
+
+
 # ── system_audit_undo / _history / _get ─────────────────────────────────────
 
 
