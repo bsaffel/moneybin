@@ -1453,7 +1453,9 @@ class ImportService:
             # stg_tabular__accounts model never produces a core.dim_accounts
             # entry for this account_id, and reports that inner-join dim_accounts
             # (reports.spending_trend, etc.) silently drop the PDF transactions.
-            institution = decision.metadata.account_id or "unknown"
+            # institution_name carries the issuer (Chase / American Express / …),
+            # NOT the masked account number — fp["issuer"] is the canonical source.
+            institution = fp.get("issuer", "unknown")
             account_df = pl.DataFrame({
                 "account_id": [account_id],
                 "account_name": [

@@ -62,7 +62,9 @@ def test_derive_single_amount_sign_convention() -> None:
 def test_derive_single_amount_number_format() -> None:
     doc = _make_doc(
         header=["Date", "Description", "Amount"],
-        rows=[["01/15/2024", "Coffee Shop", "1,234.56"]],
+        # Include at least one negative so the sign-convention sanity check
+        # (added for the codex P1 / claude zero-delta finding) doesn't bail.
+        rows=[["01/15/2024", "Coffee Shop", "-1,234.56"]],
     )
     recipe = derive_recipe(doc, _EMPTY_META)
     assert recipe is not None
@@ -202,6 +204,28 @@ def test_no_amount_column_returns_none() -> None:
     )
     result = derive_recipe(doc, _EMPTY_META)
     assert result is None
+
+
+def test_all_positive_amounts_returns_none() -> None:
+    """All-positive amounts → ambiguous sign convention → seed fallback.
+
+    Credit-card statements use positive=expense / negative=payment, the
+    opposite of bank statements. auto_derive defaults to negative_is_expense,
+    so a recipe built from an all-positive sample would corrupt signs on
+    import. Detecting the absence of any negative in the sample is a
+    cheap signal that the layout doesn't match the default convention.
+    Regression for the codex P1 + claude zero-delta-month findings.
+    """
+    doc = _make_doc(
+        header=["Date", "Description", "Amount"],
+        rows=[
+            # Credit-card style: charges shown as positive
+            ["01/15/2024", "Coffee Shop", "4.50"],
+            ["01/16/2024", "Restaurant", "32.18"],
+            ["01/17/2024", "Gas Station", "55.00"],
+        ],
+    )
+    assert derive_recipe(doc, _EMPTY_META) is None
 
 
 # ---------------------------------------------------------------------------

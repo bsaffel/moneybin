@@ -124,6 +124,19 @@ def derive_recipe(doc: PdfDocument, _metadata: StatementMetadata) -> Recipe | No
     if number_fmt != "us":
         return None
 
+    # Sign-convention sanity check: auto_derive defaults single-amount
+    # layouts to negative_is_expense, but credit-card statements use the
+    # opposite convention (positive = expense, negative = payment). When
+    # the sampled rows contain no negative amounts the convention is
+    # ambiguous — reconciliation can still pass on a flat (zero-delta)
+    # month and the import would write positive expenses as income.
+    # Route to seed rather than auto-derive a recipe that silently
+    # corrupts signs on every future replay.
+    if sign == "negative_is_expense" and not _has_any_negative_amount(
+        table, amount_cols
+    ):
+        return None
+
     fields = _build_fields(table.header, date_pattern, number_fmt)
     metadata_anchors = _build_metadata_anchors()
     # start_anchor: just the first header word. layout=True extraction emits
@@ -288,6 +301,22 @@ def _detect_number_format(
         return "european"
 
     return None
+
+
+def _has_any_negative_amount(table: PdfTable, amount_col_indices: list[int]) -> bool:
+    """Return True if any sampled amount cell carries a leading minus sign.
+
+    Used by derive_recipe to verify the negative_is_expense default is
+    consistent with the document. A statement with zero negative amounts in
+    sample is almost certainly a positive=expense (credit-card) layout that
+    Phase 2a doesn't yet auto-handle correctly.
+    """
+    for row in table.rows[:_SAMPLE_SIZE]:
+        for idx in amount_col_indices:
+            cell = row[idx].strip().lstrip("$").strip()
+            if cell.startswith("-"):
+                return True
+    return False
 
 
 # ---------------------------------------------------------------------------
