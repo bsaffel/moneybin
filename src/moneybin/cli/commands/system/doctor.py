@@ -74,6 +74,9 @@ def doctor_command(
                     "status": r.status,
                     "detail": r.detail,
                     "affected_ids": r.affected_ids,
+                    "recovery_actions": [
+                        a.model_dump() for a in (r.recovery_actions or [])
+                    ],
                 }
                 for r in report.invariants
             ],
@@ -108,6 +111,32 @@ def doctor_command(
         typer.echo(line)
         if verbose and result.affected_ids:
             typer.echo(f"   Affected: {', '.join(result.affected_ids)}")
+        # Recovery actions render unconditionally (no --verbose gate). This is
+        # asymmetric with affected_ids on purpose: raw IDs are debug-only
+        # (operator inspecting the failure), but the actions are the agent's
+        # next-step contract — they need to be visible on a plain
+        # `moneybin system doctor` call too, since the CLI is a first-class
+        # agent surface (AGENTS.md). The 5-action cap below keeps that
+        # unconditional-render output bounded when a single invariant flags
+        # many orphans.
+        recovery = result.recovery_actions or []
+        max_actions_rendered = 5
+        for action in recovery[:max_actions_rendered]:
+            # Render arguments as Python kwargs (key=repr(value)) so an agent
+            # reading this line can paste it directly into a follow-up call.
+            # `dict.__repr__` would produce single-quoted Python-literal syntax
+            # that's neither valid JSON nor valid kwargs.
+            kwargs = ", ".join(f"{k}={v!r}" for k, v in action.arguments.items())
+            typer.echo(
+                f"   💡 [{action.confidence}] {action.tool}({kwargs}) "
+                f"— {action.rationale}"
+            )
+        remaining = len(recovery) - max_actions_rendered
+        if remaining > 0:
+            typer.echo(
+                f"   … and {remaining} more recovery action(s) "
+                "(use --output json for the full list)"
+            )
 
     if not quiet:
         n = len(report.invariants)
