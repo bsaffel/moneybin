@@ -3,7 +3,7 @@
 ## Status
 
 - **Type:** Architecture
-- **Status:** draft
+- **Status:** implemented
 - **Address:** M1M (per [`docs/roadmap.md`](../roadmap.md))
 - **Authority:** Positioning doc. **This spec introduces no new primitives.** It names where MoneyBin's source-observation primitives already live so that future agents and the Web UI do not re-derive them as a parallel `core.*` layer, a parallel `app.*` curation overlay, or in-memory client state. The schema and behaviors it points at are owned by other specs ([`architecture-shared-primitives.md`](architecture-shared-primitives.md), [`matching-overview.md`](matching-overview.md), [`reports-net-worth.md`](reports-net-worth.md), [`app-integrity-invariant.md`](app-integrity-invariant.md), [`data-recovery-contract.md`](data-recovery-contract.md)).
 
@@ -123,7 +123,7 @@ The Web UI surfaced in `web-ui-prototype.md` is expected to render a two-ledger 
 
 | UI need | Source query |
 |---|---|
-| Per-source transaction rows visible to the user (the "bank ledger" pane) | `raw.tabular_transactions` / `raw.plaid_transactions` filtered by `account_id` + `transaction_date`; `raw.ofx_transactions` filtered by `account_id` + `date_posted` (OFX's `DTPOSTED` element, mapped to `transaction_date` in `core`). Use `source_type` for source attribution. For tabular and gsheet sources only, soft-deleted upstream rows carry `deleted_from_source_at` (per [`connect-gsheet.md`](connect-gsheet.md)) — exclude or surface depending on the view; OFX and Plaid raw tables do not have this column. |
+| Per-source transaction rows visible to the user (the "bank ledger" pane) | `raw.tabular_transactions` / `raw.plaid_transactions` filtered by `account_id` + `transaction_date`; `raw.ofx_transactions` filtered by `account_id` + `date_posted` (OFX's `DTPOSTED` element, mapped to `transaction_date` in `core`). Use `source_type` for source attribution. **Plaid amount convention:** `raw.plaid_transactions.amount` stores Plaid's native sign (positive = expense); apply `amount * -1` when displaying alongside `core.fct_transactions.amount`, which uses MoneyBin's negative-expense convention via the `prep.stg_plaid__transactions` flip. For tabular and gsheet sources only, soft-deleted upstream rows carry `deleted_from_source_at` (per [`connect-gsheet.md`](connect-gsheet.md)) — exclude or surface depending on the view; OFX and Plaid raw tables do not have this column. |
 | "What did this canonical transaction come from?" (lineage drilldown) | `core.fct_transactions` joined to `meta.fct_transaction_provenance` by `transaction_id`. Lists every contributing raw row across every source. |
 | Pending review items (matcher couldn't decide) | `transactions_matches_pending` MCP tool or `moneybin transactions review --type matches --output json` CLI. Same `ResponseEnvelope` shape per [`architecture-shared-primitives.md`](architecture-shared-primitives.md). |
 | Bank-only rows (matcher saw nothing to collapse into; survived as their own canonical) | `core.fct_transactions WHERE source_count = 1 AND source_type != 'manual'` — the `source_type != 'manual'` predicate is required because manual entries never participate in matching and so always have `source_count = 1`; without it, user-entered transactions would appear in the bank-ledger pane. Optionally filter further by `source_type` (the public column, aliased from `canonical_source_type` in the underlying SQLMesh model). |
