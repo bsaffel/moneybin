@@ -58,16 +58,19 @@ def _detect_issuer(doc: PdfDocument) -> str:
 
 
 def _sorted_table_headers(doc: PdfDocument) -> list[str]:
-    """Return the unique, alphabetically sorted set of column headers.
+    """Return the unique, alphabetically sorted column headers of the largest table.
 
-    Headers are collected from every table in the document and de-duplicated
-    so that multi-page layouts with identical tables fingerprint the same as
-    single-page layouts (volume differentiation is handled by ``page_bucket``).
+    Scoped to the single largest table (most rows) — typically the
+    transaction-detail table — so a secondary table that changes month to
+    month (e.g. a rewards summary whose columns drift) doesn't flip the
+    fingerprint and break replay. Multi-page layouts with identical tables
+    still fingerprint the same (volume differentiation is handled by
+    ``page_bucket``).
     """
-    seen: set[str] = set()
-    for table in doc.tables:
-        seen.update(table.header)
-    return sorted(seen)
+    if not doc.tables:
+        return []
+    largest = max(doc.tables, key=lambda t: len(t.rows))
+    return sorted(set(largest.header))
 
 
 def _page_bucket(n: int) -> str:

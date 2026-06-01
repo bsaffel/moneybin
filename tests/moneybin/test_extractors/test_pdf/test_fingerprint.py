@@ -139,17 +139,33 @@ def test_headers_deduplicated_and_sorted() -> None:
     assert fp["headers"] == ["Amount", "Date", "Description"]
 
 
-def test_headers_merged_across_different_tables() -> None:
-    """Headers from structurally different tables are merged and sorted."""
+def test_headers_scope_to_largest_table_only() -> None:
+    """Fingerprint headers come from the single largest table.
+
+    Regression for the codex/claude CONSIDER finding: a secondary table
+    (rewards summary, account summary, etc.) whose columns drift month to
+    month must NOT flip the fingerprint and break replay. Scoping to the
+    largest transaction table keeps the fingerprint stable.
+    """
     doc = _make_doc(
         text_lines=["Chase Statement"],
         tables=[
-            PdfTable(page=1, header=["Date", "Amount"], rows=[]),
-            PdfTable(page=2, header=["Category", "Total"], rows=[]),
+            # Largest: transaction table with 3 rows
+            PdfTable(
+                page=1,
+                header=["Date", "Description", "Amount"],
+                rows=[
+                    ["01/01/2024", "x", "1.00"],
+                    ["01/02/2024", "y", "2.00"],
+                    ["01/03/2024", "z", "3.00"],
+                ],
+            ),
+            # Secondary: rewards summary with 1 row — should be IGNORED
+            PdfTable(page=2, header=["Category", "Points"], rows=[["dining", "100"]]),
         ],
     )
     fp = compute_fingerprint(doc)
-    assert fp["headers"] == ["Amount", "Category", "Date", "Total"]
+    assert fp["headers"] == ["Amount", "Date", "Description"]
 
 
 def test_page_count_derives_from_max_table_page() -> None:

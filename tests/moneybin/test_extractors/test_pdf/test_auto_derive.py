@@ -228,8 +228,10 @@ def test_picks_largest_table() -> None:
     doc = PdfDocument(source_file="stmt.pdf", tables=[small, large])
     recipe = derive_recipe(doc, _EMPTY_META)
     assert recipe is not None
-    # Anchors should reflect the large table's headers, not the small one's
-    assert "Description" in recipe.row_region.start_anchor
+    # Anchor is the first header of the SELECTED (largest) table.
+    assert recipe.row_region.start_anchor == "Date"
+    # Recipe field count matches the selected (large) table — 3 columns, not 2.
+    assert len(recipe.fields) == 3
 
 
 # ---------------------------------------------------------------------------
@@ -298,15 +300,21 @@ def test_metadata_anchor_field_names() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_region_start_anchor_uses_header() -> None:
-    """start_anchor contains the column headers joined with double-space."""
+def test_region_start_anchor_uses_first_header_only() -> None:
+    """start_anchor is just the first header word so it survives layout=True spacing.
+
+    Regression for the claude CONSIDER finding: pdfplumber's layout=True
+    emits proportional whitespace, so a multi-word anchor with a fixed
+    separator never matches a real PDF. The single first-header word always
+    appears at the start of the row-region in extracted text.
+    """
     doc = _make_doc(
         header=["Date", "Description", "Amount"],
         rows=[["01/15/2024", "Coffee Shop", "-4.50"]],
     )
     recipe = derive_recipe(doc, _EMPTY_META)
     assert recipe is not None
-    assert recipe.row_region.start_anchor == "Date  Description  Amount"
+    assert recipe.row_region.start_anchor == "Date"
 
 
 def test_region_end_anchor_is_total() -> None:

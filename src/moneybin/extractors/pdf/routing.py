@@ -28,6 +28,7 @@ LLM extraction enters the loop.
 from __future__ import annotations
 
 import logging
+import re as _stdlib_re
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -62,6 +63,7 @@ _Reason = Literal[
     "replay_reconciliation_failed",  # saved recipe stopped reconciling — Phase 2b bridge
     "metadata_incomplete",  # opening or closing balance not captured
     "no_rows",  # recipe matched zero rows
+    "unsupported_number_format",  # executor doesn't yet handle this locale
 ]
 # Note: a saved recipe failing Recipe.model_validate is NOT a terminal reason —
 # the router logs a warning and falls through to auto-derive, then reports the
@@ -94,6 +96,47 @@ _DATE_FIELD_NAMES = frozenset({
     "transaction date",
     "posting date",
 })
+
+
+# Canonical-key regexes — the rows in RouteDecision.rows use these canonical
+# names regardless of what the PDF column headers were called ("Transaction
+# Amount" / "Withdrawals" / "Deposit"), so reconcile() and the service layer
+# can both read by stable keys instead of re-implementing the same regexes.
+_DEBIT_NAME_RE = _stdlib_re.compile(r"debit|withdraw", _stdlib_re.IGNORECASE)
+_CREDIT_NAME_RE = _stdlib_re.compile(r"credit|deposit", _stdlib_re.IGNORECASE)
+_AMOUNT_NAME_RE = _stdlib_re.compile(r"amount", _stdlib_re.IGNORECASE)
+_DESC_NAME_RE = _stdlib_re.compile(r"description|memo|payee", _stdlib_re.IGNORECASE)
+
+
+def _canonical_key(field: Any) -> str:
+    """Map a recipe FieldExtraction to the canonical row-dict key."""
+    name = field.name
+    if field.cast == "date":
+        return "date"
+    if field.cast in ("decimal", "int"):
+        if _DEBIT_NAME_RE.search(name):
+            return "debit"
+        if _CREDIT_NAME_RE.search(name):
+            return "credit"
+        if _AMOUNT_NAME_RE.search(name):
+            return "amount"
+    if _DESC_NAME_RE.search(name):
+        return "description"
+    return name.lower()
+
+
+def _canonicalize_rows(
+    recipe: Recipe, rows: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Map each row's PDF-header keys to canonical names (date/amount/etc.).
+
+    Build the per-field mapping once from recipe.fields and reuse it across
+    every row so the work is O(rows · fields) once, not per-cell-per-call.
+    """
+    if not rows:
+        return rows
+    key_map = {f.name: _canonical_key(f) for f in recipe.fields}
+    return [{key_map.get(k, k.lower()): v for k, v in row.items()} for row in rows]
 
 
 def _compute_confidence(recipe: Recipe, rows: list[dict[str, Any]]) -> float:
@@ -198,8 +241,27 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
     # ------------------------------------------------------------------
     # 2. Execute recipe → rows
     # ------------------------------------------------------------------
-    extracted = execute_recipe(recipe, document_text)
-    rows = extracted.rows
+    try:
+        extracted = execute_recipe(recipe, document_text)
+    except NotImplementedError:
+        # Recipe declares a number_format the executor can't handle yet
+        # (e.g. european, swiss_french). Route to seed instead of failing
+        # the whole import — the PDF can still land as a seed for later
+        # reprocessing once the executor adds that locale.
+        logger.warning(
+            f"execute_recipe: unsupported number_format "
+            f"{recipe.number_format!r} — routing to seed"
+        )
+        return RouteDecision(
+            outcome="seed",
+            recipe=recipe,
+            rows=[],
+            metadata=StatementMetadata(None, None, None, None, None),
+            confidence=0.0,
+            reason="unsupported_number_format",
+            matched_format_name=saved_format.name if saved_format is not None else None,
+        )
+    rows = _canonicalize_rows(recipe, extracted.rows)
 
     if not rows:
         return RouteDecision(
@@ -233,7 +295,13 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
     # ------------------------------------------------------------------
     # 4. Capture metadata
     # ------------------------------------------------------------------
-    metadata = capture_metadata(document_text)
+    # Replay path: use the saved recipe's metadata_anchors so a bridge-authored
+    # or manually corrected format with non-default balance/account labels can
+    # actually find its values on replay. Empty list ⇒ fall back to DEFAULT_ANCHORS.
+    anchors_dict: dict[str, list[str]] | None = None
+    if is_replay and recipe.metadata_anchors:
+        anchors_dict = {f.name: [f.pattern] for f in recipe.metadata_anchors}
+    metadata = capture_metadata(document_text, anchors=anchors_dict)
 
     if not metadata.is_complete_for_reconciliation():
         return RouteDecision(
@@ -249,13 +317,11 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
     # ------------------------------------------------------------------
     # 5. Reconcile
     # ------------------------------------------------------------------
-    # reconcile() expects lowercase amount/debit/credit keys.  derive_recipe
-    # names fields after PDF header columns which may be mixed-case ("Amount",
-    # "Debit", "Credit").  Normalise to lowercase at the reconciliation
-    # boundary only — the rows returned in RouteDecision keep the original
-    # casing so downstream consumers see the exact header names.
-    rows_for_recon = [{k.lower(): v for k, v in row.items()} for row in rows]
-    recon = reconcile(rows_for_recon, metadata, recipe.sign_convention)
+    # rows are already canonical-keyed (date/amount/debit/credit/description)
+    # by _canonicalize_rows above, so reconcile() can read by stable keys
+    # regardless of the original PDF column headers ("Transaction Amount",
+    # "Withdrawals", "Deposit Amount", etc.).
+    recon = reconcile(rows, metadata, recipe.sign_convention)
 
     if recon.passed:
         if is_replay:

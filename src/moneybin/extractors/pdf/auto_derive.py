@@ -112,11 +112,21 @@ def derive_recipe(doc: PdfDocument, _metadata: StatementMetadata) -> Recipe | No
     number_fmt = _detect_number_format(table, amount_cols)
     if number_fmt is None:
         return None
+    # execute_recipe only supports the US number format in Phase 2a.
+    # Routing also catches NotImplementedError as a safety net, but
+    # bailing here avoids polluting app.pdf_formats with recipes the
+    # executor can't replay.
+    if number_fmt != "us":
+        return None
 
     fields = _build_fields(table.header, date_pattern, number_fmt)
     metadata_anchors = _build_metadata_anchors()
+    # start_anchor: just the first header word. layout=True extraction emits
+    # proportional whitespace between columns, so a multi-word anchor with a
+    # fixed separator never matches a real PDF — the first header alone is
+    # always present and stable across statements with the same layout.
     row_region = RegionAnchors(
-        start_anchor="  ".join(table.header),
+        start_anchor=table.header[0],
         end_anchor="Total:",
     )
 

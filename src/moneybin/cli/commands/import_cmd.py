@@ -378,7 +378,7 @@ def import_files_command(
                             "path": str(file_paths[0]),
                             "status": "imported",
                             "source_type": result.file_type,
-                            "rows_loaded": result.transactions,
+                            "rows_loaded": result.rows_loaded,
                             "import_id": result.import_id,
                             # Mirror the batch path: JSON-output agents need
                             # the structured signal regardless of single vs
@@ -818,7 +818,7 @@ def import_confirm_command(
             # single discriminant (`data.status`) regardless of outcome.
             "status": "imported",
             "import_id": result.import_id,
-            "rows_loaded": result.transactions,
+            "rows_loaded": result.rows_loaded,
             "file_type": result.file_type,
             "sign_correction_suggested": result.sign_correction_suggested,
             # merged_mapping is authoritative (threaded from

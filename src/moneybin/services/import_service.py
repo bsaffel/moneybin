@@ -70,6 +70,19 @@ class ImportResult:
     (import_confirm response, audit log) should prefer this over re-running
     detection, which can diverge in ambiguous-header edge cases."""
 
+    @property
+    def rows_loaded(self) -> int:
+        """Per-file row count for CLI/MCP JSON output.
+
+        Mirrors ``PerFileResult.rows_loaded``: prefer ``details['seed_rows']``
+        when populated (PDF seed path writes no transactions; the seed row
+        count is the meaningful one), else fall back to ``transactions``.
+        Without this, single-file JSON output reports ``rows_loaded: 0`` for
+        every seed-path PDF — same regression that ``import_files`` fixed by
+        introducing this property on ``PerFileResult``.
+        """
+        return self.details.get("seed_rows", self.transactions)
+
     def summary(self) -> str:
         """Human-readable import summary."""
         label = _display_label(self.file_type, Path(self.file_path))
@@ -1351,12 +1364,15 @@ class ImportService:
                 "PDF routing returned outcome='transactions' but recipe is None"
             )
 
-        # Account ID: the statement's own issuer label is authoritative for PDFs.
-        # _resolve_account_via_matcher is for tabular files where typos are possible;
-        # PDF metadata comes from the issuer itself.
+        # Account ID: prefix with issuer slug so the same masked suffix
+        # (e.g. "...1234") from two different banks doesn't collide on a
+        # single core.dim_accounts row. Compute the fingerprint here so the
+        # issuer is available regardless of replay-vs-first-contact below.
+        fp = compute_fingerprint(doc)
+        issuer_slug = slugify(fp.get("issuer", "unknown"))
         account_id: str
         if decision.metadata.account_id:
-            account_id = slugify(decision.metadata.account_id)
+            account_id = f"{issuer_slug}_{slugify(decision.metadata.account_id)}"
         else:
             # Fallback: routing requires metadata for reconciliation, but guard
             # against a future path that relaxes that constraint.
@@ -1365,34 +1381,28 @@ class ImportService:
         sign_conv: str = decision.recipe.sign_convention
 
         def _normalize_amount(row: dict[str, Any]) -> Decimal:
-            """Return canonical-signed Decimal (negative=expense, positive=income)."""
-            # decision.rows preserves original header casing; lowercase for lookup.
-            lrow = {k.lower(): v for k, v in row.items()}
+            """Return canonical-signed Decimal (negative=expense, positive=income).
+
+            Rows in decision.rows are pre-canonicalized by routing.py — keys
+            are "amount" / "debit" / "credit" regardless of the original
+            PDF column header text.
+            """
             if sign_conv == "split_debit_credit":
-                debit = lrow.get("debit") or Decimal("0")
-                credit = lrow.get("credit") or Decimal("0")
+                debit = row.get("debit") or Decimal("0")
+                credit = row.get("credit") or Decimal("0")
                 return Decimal(str(credit)) - Decimal(str(debit))
-            raw_amt = lrow.get("amount") or Decimal("0")
+            raw_amt = row.get("amount") or Decimal("0")
             amount_d = Decimal(str(raw_amt))
             if sign_conv == "negative_is_income":
                 return -amount_d
             return amount_d  # negative_is_expense already matches canonical convention
 
-        # Locate the recipe's date field by cast type, not by hard-coded header
-        # names — the auto_derive regex matches "posting date" too (Chase/BofA),
-        # and any future date-column heuristic would similarly drift past a
-        # closed allowlist here.
-        date_field_name = next(
-            (f.name.lower() for f in decision.recipe.fields if f.cast == "date"),
-            None,
-        )
-
         rows_list: list[dict[str, Any]] = []
         for idx, row in enumerate(decision.rows, start=1):
-            lrow = {k.lower(): v for k, v in row.items()}
             amt = _normalize_amount(row)
-            date_val = lrow.get(date_field_name) if date_field_name else None
-            desc = lrow.get("description") or lrow.get("memo") or lrow.get("payee")
+            # rows are canonical-keyed by routing._canonicalize_rows.
+            date_val = row.get("date")
+            desc = row.get("description")
 
             date_iso = (
                 date_val.isoformat()
@@ -1469,11 +1479,10 @@ class ImportService:
                 # list reflects actual replay activity.
                 self._pdf_formats.record_use(decision.matched_format_name)
             if decision.matched_format_name is None:
-                fp = compute_fingerprint(doc)
+                # fp + issuer_slug already computed above for account_id prefixing.
                 fp_hash = hashlib.sha256(
                     json.dumps(fp, sort_keys=True).encode()
                 ).hexdigest()[:12]
-                issuer_slug = fp.get("issuer", "unknown").lower().replace(" ", "_")
                 format_name = f"{issuer_slug}_{fp_hash}"
 
                 try:
