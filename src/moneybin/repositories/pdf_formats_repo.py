@@ -279,7 +279,13 @@ class PdfFormatsRepo(BaseRepo):
         return _row_to_pdf_format(_decode_row(row))
 
     def record_use(self, name: str) -> None:
-        """Bump times_used + stamp last_used_at on a replay hit.
+        """Bump times_used + stamp last_used_at on an import that used this format.
+
+        ``times_used`` counts every import a format served, including its own
+        first-contact auto-derive (which ``save_new`` initialises to 1) and
+        every subsequent replay. The service calls this on the replay path so
+        replay imports contribute to the counter just like the first-contact
+        import did.
 
         Per-import usage counters are observability, not user-state mutation —
         emitting an audit row for every replay would bloat app.audit_log

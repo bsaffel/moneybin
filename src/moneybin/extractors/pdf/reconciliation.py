@@ -121,16 +121,27 @@ def _sum_pre_normalization(
     conventions differ only in the downstream sign flip applied when writing
     to ``core.fct_transactions`` — the summation is identical here.
 
-    For ``split_debit_credit``, rows have ``"debit"`` and ``"credit"`` keys.
-    Missing keys default to ``Decimal("0")`` so a partially-populated row
-    moves the observed delta rather than crashing the gate.
+    For ``split_debit_credit``, this function uses the **bank-account
+    convention**: ``closing = opening + credits − debits``, so the observed
+    delta is ``total_credits − total_debits``. Credit-card statements use
+    the opposite convention (``closing = opening + debits − credits``) —
+    that path is **not supported in Phase 2a**. ``auto_derive`` returns
+    None for split-column layouts so no Phase 2a code path constructs a
+    ``split_debit_credit`` recipe today, but a manually-stored recipe for
+    a credit card statement would silently reconcile to the negation of
+    expected (always outside the 1¢ tolerance) and route to seed. Phase 2b
+    will need to either split the sign convention into bank vs. card
+    variants or add a per-recipe ``statement_type`` discriminator.
+
+    Missing ``debit``/``credit`` keys default to ``Decimal("0")`` so a
+    partially-populated row moves the observed delta rather than crashing.
     """
     if sign_convention in ("negative_is_expense", "negative_is_income"):
         return sum(
             (row.get("amount") or Decimal("0") for row in rows),
             Decimal("0"),
         )
-    # split_debit_credit
+    # split_debit_credit — bank-account convention (see docstring).
     total_credits = sum(
         (row.get("credit") or Decimal("0") for row in rows), Decimal("0")
     )

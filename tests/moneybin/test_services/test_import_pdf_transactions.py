@@ -321,6 +321,17 @@ def test_pdf_revert_clears_tabular_transactions(db: Database, tmp_path: Path) ->
     assert after is not None
     assert after[0] == 0
 
+    # Account row gone after revert — REVERT_TABLES["pdf"] includes
+    # TABULAR_ACCOUNTS so the account row written alongside the transactions
+    # gets cleared. Without this assertion a regression that drops
+    # TABULAR_ACCOUNTS from REVERT_TABLES would leave orphan account rows.
+    accounts_after = db.execute(
+        "SELECT COUNT(*) FROM raw.tabular_accounts WHERE import_id = ?",
+        [result.import_id],
+    ).fetchone()
+    assert accounts_after is not None
+    assert accounts_after[0] == 0
+
     # pdf_seeds is vacuously empty (nothing was written there)
     seeds = db.execute(
         "SELECT COUNT(*) FROM raw.pdf_seeds WHERE import_id = ?",
@@ -331,17 +342,23 @@ def test_pdf_revert_clears_tabular_transactions(db: Database, tmp_path: Path) ->
 
 
 # ---------------------------------------------------------------------------
-# Test 6: Re-import of the same PDF reports 0 newly-inserted rows
-# (regression for the rows_inserted overcount fix — on_conflict="ignore"
-# means duplicates land silently, so the count must subtract pre-existing rows)
+# Test 6: rows_inserted matches the table's conflict key
+# (regression for the codex finding that pre-count by transaction_id alone
+# under-reported when source_file differed — tabular_transactions PK is
+# (transaction_id, account_id, source_file), so a same-content import from a
+# different path genuinely inserts new rows. The count now reflects that.)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
-def test_pdf_reimport_reports_zero_newly_inserted_rows(
-    db: Database, tmp_path: Path
-) -> None:
-    """Re-importing the same PDF reports 0 inserted, preserves extracted count."""
+def test_pdf_reimport_count_matches_conflict_key(db: Database, tmp_path: Path) -> None:
+    """Re-importing same content from a NEW path inserts and counts the rows.
+
+    Different source_file ⇒ different PK row in tabular_transactions, so
+    the INSERT genuinely lands and rows_inserted reports the true count.
+    The pre-count was changed to match the table's (transaction_id,
+    account_id, source_file) key so reporting and storage agree.
+    """
     doc = _standard_doc()
     svc, fake_pdf = _service_with_fake_pdf(db, doc, tmp_path)
 
@@ -351,13 +368,10 @@ def test_pdf_reimport_reports_zero_newly_inserted_rows(
     ):
         first = svc.import_file(fake_pdf, refresh=False)
 
-    assert first.transactions == 2  # 2 rows in _standard_table()
+    assert first.transactions == 2
     assert first.details["transactions"] == 2
     assert first.details["transactions_extracted"] == 2
 
-    # Second import — same canonical path is excluded by import_log, so we
-    # write to a different file path with identical content. Same content
-    # hash, same import row would collide via on_conflict="ignore".
     fake_pdf_2 = tmp_path / "statement_again.pdf"
     fake_pdf_2.write_bytes(b"%PDF-1.4 fake")
 
@@ -367,10 +381,18 @@ def test_pdf_reimport_reports_zero_newly_inserted_rows(
     ):
         second = svc.import_file(fake_pdf_2, refresh=False)
 
-    # All rows duplicate by content hash → 0 inserted, 2 extracted.
+    # Second import from a different path: rows DO land (PK includes
+    # source_file). The honest count is 2 inserted, 2 extracted.
     assert second.details["transactions_extracted"] == 2
-    assert second.transactions == 0
-    assert second.details["transactions"] == 0
+    assert second.transactions == 2
+    assert second.details["transactions"] == 2
+
+    # Both imports landed rows — total rows in the table reflects both.
+    row_count = db.execute(
+        "SELECT COUNT(*) FROM raw.tabular_transactions WHERE source_type = 'pdf'"
+    ).fetchone()
+    assert row_count is not None
+    assert row_count[0] == 4  # 2 from first import + 2 from second
 
 
 # ---------------------------------------------------------------------------

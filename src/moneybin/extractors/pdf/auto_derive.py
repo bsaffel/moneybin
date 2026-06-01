@@ -29,13 +29,18 @@ The largest matching table (most rows) is selected.
 
 from __future__ import annotations
 
+import logging
 import re
 from datetime import datetime
 from typing import Literal
 
+from pydantic import ValidationError
+
 from moneybin.extractors.pdf.ir import PdfDocument, PdfTable
 from moneybin.extractors.pdf.metadata import DEFAULT_ANCHORS, StatementMetadata
 from moneybin.extractors.pdf.recipe import FieldExtraction, Recipe, RegionAnchors
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Column-classification regexes (compiled once)
@@ -130,15 +135,24 @@ def derive_recipe(doc: PdfDocument, _metadata: StatementMetadata) -> Recipe | No
         end_anchor="Total:",
     )
 
-    return Recipe(
-        metadata_anchors=metadata_anchors,
-        row_region=row_region,
-        row_split=r"\s{2,}",
-        fields=fields,
-        sign_convention=sign,
-        number_format=number_fmt,
-        routing="transactions",
-    )
+    try:
+        return Recipe(
+            metadata_anchors=metadata_anchors,
+            row_region=row_region,
+            row_split=r"\s{2,}",
+            fields=fields,
+            sign_convention=sign,
+            number_format=number_fmt,
+            routing="transactions",
+        )
+    except ValidationError as exc:
+        # Phase 2a patterns are all hardcoded constants well under the
+        # security bounds in Recipe._bound_patterns, so this is dead today.
+        # The catch preserves the documented Recipe | None contract for
+        # Phase 2b when bridge-authored patterns enter the pipeline and
+        # could conceivably trip the static bounds.
+        logger.warning(f"derive_recipe: Recipe validation failed — {exc}")
+        return None
 
 
 # ---------------------------------------------------------------------------

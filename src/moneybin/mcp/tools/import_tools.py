@@ -158,7 +158,10 @@ def import_files(
                     actor_kind="agent",
                 )
                 loaded_import_id = one.import_id
-                if refresh and one.file_type in ("ofx", "tabular"):
+                # Include "pdf" so deterministic-path PDFs (raw.tabular_transactions)
+                # propagate into core.fct_transactions on the MCP path too —
+                # mirrors the service-level gate in ImportService.import_file.
+                if refresh and one.file_type in ("ofx", "tabular", "pdf"):
                     from moneybin.services.refresh import refresh as _refresh
 
                     refresh_result = _refresh(db)

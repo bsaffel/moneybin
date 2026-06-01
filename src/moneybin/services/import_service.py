@@ -1428,17 +1428,20 @@ class ImportService:
 
         try:
             df = pl.DataFrame(rows_list)
-            # on_conflict="ignore": content-hash IDs make re-import of the same PDF
-            # a no-op; we never overwrite an existing transaction on re-import.
-            # Count by transaction_id before+after so rows_inserted reflects what
-            # actually landed (not what we attempted) — re-imports of the same
-            # PDF would otherwise overstate the import count to the user.
+            # on_conflict="ignore": tabular_transactions PRIMARY KEY is
+            # (transaction_id, account_id, source_file). Pre-count by the SAME
+            # key the table conflicts on — counting transaction_id alone would
+            # under-report when the same PDF is re-imported from a different
+            # path (different source_file → insert succeeds with a duplicate
+            # raw row, but tx_id pre-count matched and rows_inserted=0).
             tx_ids = [r["transaction_id"] for r in rows_list]
             placeholders = ",".join(["?"] * len(tx_ids))
+            src_file = str(canonical)
             count_before_row = self._db.execute(
                 f"SELECT COUNT(*) FROM {TABULAR_TRANSACTIONS.full_name} "
-                f"WHERE transaction_id IN ({placeholders})",  # noqa: S608  # placeholders are ?-bound; tx_ids is parameter list
-                tx_ids,
+                f"WHERE transaction_id IN ({placeholders}) "
+                f"AND account_id = ? AND source_file = ?",  # noqa: S608  # placeholders are ?-bound; tx_ids is parameter list
+                [*tx_ids, account_id, src_file],
             ).fetchone()
             rows_already_present = count_before_row[0] if count_before_row else 0
             self._db.ingest_dataframe(
