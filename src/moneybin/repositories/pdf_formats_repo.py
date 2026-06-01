@@ -178,13 +178,13 @@ class PdfFormatsRepo(BaseRepo):
                     layout_fingerprint, front_end, extraction_recipe, routing,
                     field_mapping, seed_alias, sign_convention, date_format,
                     number_format, source, version, times_used,
-                    created_at, updated_at
+                    last_used_at, created_at, updated_at
                 ) VALUES (
                     ?, ?, ?,
                     ?::JSON, ?, ?::JSON, ?,
                     ?::JSON, ?, ?, ?,
                     ?, ?, 1, 1,
-                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
                 )
                 """,  # noqa: S608  # TableRef + parameterized values
                 [

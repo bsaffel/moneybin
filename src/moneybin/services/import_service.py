@@ -1598,8 +1598,10 @@ class ImportService:
                 True. PDFs that routed to ``raw.tabular_transactions``
                 (deterministic path) trigger refresh so rows propagate through
                 SQLMesh into ``dim_accounts``/``fct_transactions``. PDFs that
-                fell back to ``raw.pdf_seeds`` (seed path) also pass the gate
-                but refresh is a fast no-op since they wrote no tabular rows.
+                fell back to ``raw.pdf_seeds`` (seed path) skip refresh — they
+                wrote nothing tabular and a full SQLMesh apply for no purpose
+                wastes a refresh cycle (and could raise on unrelated transform
+                failures even though no PDF data needs to propagate).
             institution: Institution name override (OFX only). Auto-detected if
                 omitted.
             force: Re-import even if the file has been imported before (OFX only).
@@ -1654,10 +1656,14 @@ class ImportService:
             actor_kind=actor_kind,
         )
 
-        # Include "pdf" so deterministic-path PDFs (raw.tabular_transactions)
-        # propagate into core.fct_transactions. Seed-path PDFs also reach
-        # this branch but refresh is a fast no-op (no new tabular rows exist).
-        if refresh and result.file_type in ("ofx", "tabular", "pdf"):
+        # Include PDFs only when the deterministic path landed transactions —
+        # seed-path PDFs write nothing tabular, so a refresh would run the
+        # full SQLMesh apply for no purpose and could raise on unrelated
+        # transform failures even though no PDF data needs to propagate.
+        if refresh and (
+            result.file_type in ("ofx", "tabular")
+            or (result.file_type == "pdf" and result.transactions > 0)
+        ):
             # Single-file imports preserve the legacy fail-loud contract so
             # CLI exit codes reflect the broken state. Batch imports use the
             # soft-fail variant via import_files() instead.
@@ -1787,9 +1793,13 @@ class ImportService:
                     )
                 )
                 any_succeeded = True
-                # Include "pdf" so deterministic-path PDFs propagate into core.
-                # Seed-path PDFs also set this flag; refresh is a no-op for them.
-                if r.file_type in ("ofx", "tabular", "pdf"):
+                # Only PDFs that landed transactions count as transformable.
+                # Seed-path PDFs set "seed_rows" in details; transactions
+                # path sets "transactions" — that key distinguishes them
+                # without needing a separate flag on PerFileResult.
+                if r.file_type in ("ofx", "tabular") or (
+                    r.file_type == "pdf" and "transactions" in r.details
+                ):
                     any_transformable = True
             except ImportConfirmationRequiredError as e:
                 # Distinct from generic failure: the file's detector formed

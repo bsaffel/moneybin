@@ -158,10 +158,13 @@ def import_files(
                     actor_kind="agent",
                 )
                 loaded_import_id = one.import_id
-                # Include "pdf" so deterministic-path PDFs (raw.tabular_transactions)
-                # propagate into core.fct_transactions on the MCP path too —
-                # mirrors the service-level gate in ImportService.import_file.
-                if refresh and one.file_type in ("ofx", "tabular", "pdf"):
+                # Include PDFs only when they landed transactions — seed-path
+                # PDFs write nothing tabular, so refresh would run the full
+                # SQLMesh apply for no purpose. Mirrors ImportService.import_file.
+                if refresh and (
+                    one.file_type in ("ofx", "tabular")
+                    or (one.file_type == "pdf" and one.transactions > 0)
+                ):
                     from moneybin.services.refresh import refresh as _refresh
 
                     refresh_result = _refresh(db)
@@ -273,7 +276,7 @@ def import_files(
                         path=str(validated[0]),
                         status="imported",
                         source_type=one.file_type,
-                        rows_loaded=one.transactions,
+                        rows_loaded=one.rows_loaded,
                         import_id=one.import_id,
                         sign_correction_suggested=one.sign_correction_suggested,
                     )

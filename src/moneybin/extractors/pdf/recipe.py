@@ -138,7 +138,12 @@ def _carve_region(text: str, anchors: RegionAnchors) -> str:
     The fallback is logged so a misconfigured recipe is observable.
     """
     start_idx = text.find(anchors.start_anchor)
-    end_idx = text.find(anchors.end_anchor)
+    # Search for end_anchor only AFTER start_anchor — a transaction
+    # description containing the end-anchor text (e.g. "Year-to-Date
+    # Total: $5,000" or a merchant named "Total Kitchen") would otherwise
+    # truncate the carve region and silently drop every subsequent row.
+    after_start = start_idx + len(anchors.start_anchor) if start_idx != -1 else 0
+    end_idx = text.find(anchors.end_anchor, after_start)
     if start_idx == -1 or end_idx == -1 or end_idx <= start_idx:
         logger.warning(
             f"row_region anchors not found in document "
@@ -146,7 +151,6 @@ def _carve_region(text: str, anchors: RegionAnchors) -> str:
             f"falling back to full text"
         )
         return text
-    after_start = start_idx + len(anchors.start_anchor)
     return text[after_start:end_idx]
 
 

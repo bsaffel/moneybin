@@ -215,6 +215,12 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
             )
             recipe = None
             is_replay = False  # treat as auto-derive for replay_guard semantics
+            # Clear saved_format too so the success path below doesn't set
+            # matched_format_name from this invalid saved row — the service
+            # treats a populated matched_format_name as "this is a replay,
+            # skip save_new", which would leave the broken recipe in place
+            # for every future import.
+            saved_format = None
 
     if recipe is None:
         # Auto-derive: metadata not yet captured; derive_recipe accepts an
