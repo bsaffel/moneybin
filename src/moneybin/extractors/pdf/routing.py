@@ -90,14 +90,6 @@ class RouteDecision:
 # Confidence helpers
 # ---------------------------------------------------------------------------
 
-_DATE_FIELD_NAMES = frozenset({
-    "date",
-    "trans date",
-    "transaction date",
-    "posting date",
-})
-
-
 # Canonical-key regexes — the rows in RouteDecision.rows use these canonical
 # names regardless of what the PDF column headers were called ("Transaction
 # Amount" / "Withdrawals" / "Deposit"), so reconcile() and the service layer
@@ -106,12 +98,20 @@ _DEBIT_NAME_RE = _stdlib_re.compile(r"debit|withdraw", _stdlib_re.IGNORECASE)
 _CREDIT_NAME_RE = _stdlib_re.compile(r"credit|deposit", _stdlib_re.IGNORECASE)
 _AMOUNT_NAME_RE = _stdlib_re.compile(r"amount", _stdlib_re.IGNORECASE)
 _DESC_NAME_RE = _stdlib_re.compile(r"description|memo|payee", _stdlib_re.IGNORECASE)
+# "Posting Date" / "Post Date" appear alongside "Transaction Date" in
+# credit-card statements; without separating them, both date columns
+# collapse to a single "date" key and the row loop overwrites the first
+# with the second — the import would silently store posting date as the
+# transaction date.
+_POST_DATE_NAME_RE = _stdlib_re.compile(r"post(?:ing)?\s*date", _stdlib_re.IGNORECASE)
 
 
 def _canonical_key(field: Any) -> str:
     """Map a recipe FieldExtraction to the canonical row-dict key."""
     name = field.name
     if field.cast == "date":
+        if _POST_DATE_NAME_RE.search(name):
+            return "post_date"
         return "date"
     if field.cast in ("decimal", "int"):
         if _DEBIT_NAME_RE.search(name):

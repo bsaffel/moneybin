@@ -145,10 +145,17 @@ def _carve_region(text: str, anchors: RegionAnchors) -> str:
     after_start = start_idx + len(anchors.start_anchor) if start_idx != -1 else 0
     end_idx = text.find(anchors.end_anchor, after_start)
     if start_idx == -1 or end_idx == -1 or end_idx <= start_idx:
+        # The full-text fallback usually results in reconciliation failing
+        # later (summary/balance rows look like transactions) and silently
+        # routes to seed. Surface the cause here so operators tailing logs
+        # can see when an end_anchor mismatch is the root cause — most real
+        # bank PDFs use "Totals" / "TOTAL" / "Total Transactions" rather
+        # than the auto-derive default of "Total:".
         logger.warning(
             f"row_region anchors not found in document "
-            f"(start_found={start_idx != -1}, end_found={end_idx != -1}); "
-            f"falling back to full text"
+            f"(start_anchor={anchors.start_anchor!r} found={start_idx != -1}, "
+            f"end_anchor={anchors.end_anchor!r} found={end_idx != -1}); "
+            f"falling back to full text — reconciliation may fail downstream"
         )
         return text
     return text[after_start:end_idx]

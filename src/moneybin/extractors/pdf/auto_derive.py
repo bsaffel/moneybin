@@ -34,6 +34,7 @@ import re
 from datetime import datetime
 from typing import Literal
 
+import regex as _re
 from pydantic import ValidationError
 
 from moneybin.extractors.pdf.ir import PdfDocument, PdfTable
@@ -61,11 +62,34 @@ _DATE_FORMATS: list[tuple[str, str]] = [
     ("%m/%d/%y", r"\d{2}/\d{2}/\d{2}"),
 ]
 
-# US number format: optional leading minus, optional $, digits with optional
-# comma-grouped thousands, 2 decimal places.  Accepts both 1500.00 (no
-# thousands separator) and 1,500.00 (with separator).
-_US_NUMBER_RE = re.compile(r"^-?\$?(\d{1,3}(,\d{3})*|\d+)\.\d{2}$")
-_EUROPEAN_NUMBER_RE = re.compile(r"^-?(\d{1,3}(\.\d{3})*|\d+),\d{2}$")
+# US / European number formats. Run via the `regex` package with a wall-clock
+# timeout — the inner alternation (\d{1,3}(,\d{3})*|\d+) can backtrack
+# exponentially on adversarial input like "1,2,3,4,5,6,7,8". This matches the
+# security posture established in recipe.py + metadata.py for any pattern
+# run against untrusted PDF cell text. (Req 9b dynamic bound)
+_NUMBER_PATTERN_TIMEOUT_SEC = 0.05  # 50 ms — these patterns run per sample cell
+_US_NUMBER_RE = _re.compile(r"^-?\$?(\d{1,3}(,\d{3})*|\d+)\.\d{2}$")
+_EUROPEAN_NUMBER_RE = _re.compile(r"^-?(\d{1,3}(\.\d{3})*|\d+),\d{2}$")
+
+
+def _matches_us(sample: str) -> bool:
+    try:
+        return (
+            _US_NUMBER_RE.match(sample, timeout=_NUMBER_PATTERN_TIMEOUT_SEC) is not None
+        )
+    except TimeoutError:
+        return False
+
+
+def _matches_european(sample: str) -> bool:
+    try:
+        return (
+            _EUROPEAN_NUMBER_RE.match(sample, timeout=_NUMBER_PATTERN_TIMEOUT_SEC)
+            is not None
+        )
+    except TimeoutError:
+        return False
+
 
 # Number of sample values to use for format detection (first N non-empty cells).
 _SAMPLE_SIZE = 5
@@ -294,24 +318,30 @@ def _detect_number_format(
         # Still nothing — can't determine format; refuse to auto-derive.
         return None
 
-    # All samples must match a single format.
-    if all(_US_NUMBER_RE.match(s) for s in samples):
+    # All samples must match a single format. Use the bounded helpers so a
+    # pathological cell value can't ReDoS the format-detection scan.
+    if all(_matches_us(s) for s in samples):
         return "us"
-    if all(_EUROPEAN_NUMBER_RE.match(s) for s in samples):
+    if all(_matches_european(s) for s in samples):
         return "european"
 
     return None
 
 
 def _has_any_negative_amount(table: PdfTable, amount_col_indices: list[int]) -> bool:
-    """Return True if any sampled amount cell carries a leading minus sign.
+    """Return True if any amount cell in the table carries a leading minus sign.
 
     Used by derive_recipe to verify the negative_is_expense default is
-    consistent with the document. A statement with zero negative amounts in
-    sample is almost certainly a positive=expense (credit-card) layout that
-    Phase 2a doesn't yet auto-handle correctly.
+    consistent with the document. A statement with zero negative amounts is
+    almost certainly a positive=expense (credit-card) layout that Phase 2a
+    doesn't yet auto-handle correctly.
+
+    Scans the full transaction table (not just _SAMPLE_SIZE) — for a
+    deposit-heavy first few rows on a real bank statement, the negatives
+    might appear after row 5 and a truncated scan would falsely route the
+    document to seed.
     """
-    for row in table.rows[:_SAMPLE_SIZE]:
+    for row in table.rows:
         for idx in amount_col_indices:
             cell = row[idx].strip().lstrip("$").strip()
             if cell.startswith("-"):

@@ -1400,8 +1400,11 @@ class ImportService:
         rows_list: list[dict[str, Any]] = []
         for idx, row in enumerate(decision.rows, start=1):
             amt = _normalize_amount(row)
-            # rows are canonical-keyed by routing._canonicalize_rows.
+            # rows are canonical-keyed by routing._canonicalize_rows. Credit-card
+            # layouts with both columns produce "date" and "post_date"; we keep
+            # them on distinct DB columns so neither overwrites the other.
             date_val = row.get("date")
+            post_date_val = row.get("post_date")
             desc = row.get("description")
 
             date_iso = (
@@ -1417,6 +1420,7 @@ class ImportService:
                 "transaction_id": transaction_id,
                 "account_id": account_id,
                 "transaction_date": date_val,
+                "post_date": post_date_val,
                 "amount": amt,
                 "description": str(desc) if desc is not None else None,
                 "source_file": str(canonical),
@@ -1456,15 +1460,20 @@ class ImportService:
             # institution_name carries the issuer (Chase / American Express / …),
             # NOT the masked account number — fp["issuer"] is the canonical source.
             institution = fp.get("issuer", "unknown")
+            # account_name is the human-readable display label. The captured
+            # account-number mask (e.g. "****1234") is data, not a label, and
+            # belongs in account_number_masked; resolved_alias is the canonical
+            # slug the rest of the import is keyed on.
+            raw_account_id = (
+                str(decision.metadata.account_id)
+                if decision.metadata.account_id
+                else None
+            )
             account_df = pl.DataFrame({
                 "account_id": [account_id],
-                "account_name": [
-                    str(decision.metadata.account_id)
-                    if decision.metadata.account_id
-                    else resolved_alias
-                ],
+                "account_name": [resolved_alias],
                 "account_number": [None],
-                "account_number_masked": [None],
+                "account_number_masked": [raw_account_id],
                 "account_type": [None],
                 "institution_name": [str(institution) if institution else None],
                 "currency": [None],
@@ -1476,45 +1485,6 @@ class ImportService:
             self._db.ingest_dataframe(
                 TABULAR_ACCOUNTS.full_name, account_df, on_conflict="ignore"
             )
-
-            # Save format recipe on first contact (auto-derive path, not a replay).
-            # decision.matched_format_name is None ↔ no saved format matched this layout.
-            if decision.matched_format_name is not None:
-                # Replay hit — bump usage counter + last_used_at so the formats
-                # list reflects actual replay activity.
-                self._pdf_formats.record_use(decision.matched_format_name)
-            if decision.matched_format_name is None:
-                # fp + issuer_slug already computed above for account_id prefixing.
-                fp_hash = hashlib.sha256(
-                    json.dumps(fp, sort_keys=True).encode()
-                ).hexdigest()[:12]
-                format_name = f"{issuer_slug}_{fp_hash}"
-
-                try:
-                    self._pdf_formats.save_new(
-                        name=format_name,
-                        recipe=decision.recipe.model_dump(),
-                        fingerprint=fp,
-                        institution_name=fp.get("issuer", "unknown"),
-                        document_kind="transactions",
-                        front_end="pdfplumber",
-                        routing="transactions",
-                        sign_convention=decision.recipe.sign_convention,
-                        date_format=None,  # multi-field; per-field date_format lives in recipe
-                        number_format=decision.recipe.number_format,
-                        source="detected",
-                        actor="system",  # auto-detected: system-driven (Invariant 10)
-                    )
-                    logger.info(
-                        f"PDF format saved: name={format_name!r} "
-                        f"import_id={import_id[:8]}..."
-                    )
-                except duckdb.ConstraintException:
-                    # Hash collision or race: a format with this name already exists.
-                    # The existing recipe covers the same layout; no update needed.
-                    logger.debug(
-                        f"PDF format {format_name!r} already exists — skipping save_new"
-                    )
 
         except Exception:
             for table_ref in (TABULAR_TRANSACTIONS, TABULAR_ACCOUNTS):
@@ -1540,6 +1510,59 @@ class ImportService:
                 )
             PDF_IMPORT_TOTAL.labels(outcome="failed", rung="deterministic").inc()
             raise
+
+        # Format save + record_use happen AFTER the data-write try/except so a
+        # bookkeeping failure (schema mismatch on app.pdf_formats, etc.) can't
+        # trigger the cleanup DELETE on rows that already landed successfully.
+        # Both are best-effort: the import succeeds either way.
+        if decision.matched_format_name is not None:
+            try:
+                self._pdf_formats.record_use(decision.matched_format_name)
+            except Exception:  # noqa: BLE001 — observability bump must not roll back data
+                logger.warning(
+                    f"PDF record_use failed for format "
+                    f"{decision.matched_format_name!r} (import_id="
+                    f"{import_id[:8]}...) — counter not bumped",
+                    exc_info=True,
+                )
+        else:
+            # First-contact auto-derive: persist the recipe. fp + issuer_slug
+            # were computed above for account_id prefixing.
+            fp_hash = hashlib.sha256(
+                json.dumps(fp, sort_keys=True).encode()
+            ).hexdigest()[:12]
+            format_name = f"{issuer_slug}_{fp_hash}"
+            try:
+                self._pdf_formats.save_new(
+                    name=format_name,
+                    recipe=decision.recipe.model_dump(),
+                    fingerprint=fp,
+                    institution_name=fp.get("issuer", "unknown"),
+                    document_kind="transactions",
+                    front_end="pdfplumber",
+                    routing="transactions",
+                    sign_convention=decision.recipe.sign_convention,
+                    date_format=None,  # per-field date_format lives in recipe
+                    number_format=decision.recipe.number_format,
+                    source="detected",
+                    actor="system",  # auto-detected: system-driven (Invariant 10)
+                )
+                logger.info(
+                    f"PDF format saved: name={format_name!r} "
+                    f"import_id={import_id[:8]}..."
+                )
+            except duckdb.ConstraintException:
+                # Hash collision or race: a format with this name already exists.
+                # The existing recipe covers the same layout; no update needed.
+                logger.debug(
+                    f"PDF format {format_name!r} already exists — skipping save_new"
+                )
+            except Exception:  # noqa: BLE001 — format save is bookkeeping; data is committed
+                logger.warning(
+                    f"PDF save_new failed for format {format_name!r} "
+                    f"(import_id={import_id[:8]}...) — recipe not persisted",
+                    exc_info=True,
+                )
 
         import_log.finalize_import(
             self._db,
@@ -1795,12 +1818,13 @@ class ImportService:
                     )
                 )
                 any_succeeded = True
-                # Only PDFs that landed transactions count as transformable.
-                # Seed-path PDFs set "seed_rows" in details; transactions
-                # path sets "transactions" — that key distinguishes them
-                # without needing a separate flag on PerFileResult.
+                # Only PDFs that actually landed transactions count as
+                # transformable. r.details["transactions"] is present on the
+                # transactions path AND can be 0 on a no-op re-import; matching
+                # the single-file gate (transactions > 0) keeps the batch path
+                # from running a SQLMesh refresh when no new rows landed.
                 if r.file_type in ("ofx", "tabular") or (
-                    r.file_type == "pdf" and "transactions" in r.details
+                    r.file_type == "pdf" and r.details.get("transactions", 0) > 0
                 ):
                     any_transformable = True
             except ImportConfirmationRequiredError as e:
