@@ -34,7 +34,7 @@ def budget_set(
         monthly_amount: Monthly spending target in USD (as string, e.g. "200.00").
         start_month: First active month (YYYY-MM). Defaults to current month.
     """
-    with get_database() as db:
+    with get_database(read_only=False) as db:
         service = BudgetService(db)
         result = service.set_budget(
             category=category,

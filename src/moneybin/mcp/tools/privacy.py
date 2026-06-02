@@ -55,7 +55,7 @@ def privacy_consent_grant(
             Re-granting an existing active category+backend is a no-op and does
             NOT change the mode; revoke then grant again to change it.
     """
-    with get_database() as db:
+    with get_database(read_only=False) as db:
         result = ConsentService(db).grant_consent(
             feature_category=category,
             backend=backend,
@@ -84,7 +84,7 @@ def privacy_consent_revoke(
         category: The feature category to revoke.
         backend: AI backend; defaults to the configured default backend.
     """
-    with get_database() as db:
+    with get_database(read_only=False) as db:
         result = ConsentService(db).revoke_consent(
             feature_category=category,
             backend=backend,

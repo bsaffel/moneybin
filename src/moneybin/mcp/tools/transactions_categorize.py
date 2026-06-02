@@ -213,7 +213,7 @@ def transactions_categorize_commit(
         )
 
     validated, parse_errors = validate_items(items)
-    with get_database() as db:
+    with get_database(read_only=False) as db:
         result = CategorizationService(db).categorize_items(validated)
     result.merge_parse_errors(parse_errors)
     return build_envelope(
@@ -243,7 +243,7 @@ def transactions_categorize_rules_create(
             False; only future categorizations are affected.
     """
     validated, parse_errors = validate_rule_items(rules)
-    with get_database() as db:
+    with get_database(read_only=False) as db:
         result = CategorizationService(db).create_rules(
             validated, reapply=reapply, actor="mcp"
         )
@@ -273,7 +273,7 @@ def transactions_categorize_rules_delete(
             to be re-evaluated. Default False; existing categorizations are
             left untouched.
     """
-    with get_database() as db:
+    with get_database(read_only=False) as db:
         deactivated = CategorizationService(db).deactivate_rule(
             rule_id, reapply=reapply, actor="mcp"
         )
@@ -317,7 +317,7 @@ def transactions_categorize_auto_accept(
         accept: Proposal IDs to accept and promote to active rules.
         reject: Proposal IDs to reject and dismiss.
     """
-    with get_database() as db:
+    with get_database(read_only=False) as db:
         result = AutoRuleService(db).accept(
             accept=accept or [],
             reject=reject or [],
@@ -344,7 +344,7 @@ def transactions_categorize_run(
         methods: Engines to run in the listed order. Defaults to
             ["rules", "merchants"].
     """
-    with get_database() as db:
+    with get_database(read_only=False) as db:
         data = CategorizationService(db).categorize_run(methods=methods)
     payload = CategorizeRunPayload(
         applied_by_method=data["applied_by_method"], total_applied=data["total_applied"]

@@ -64,7 +64,7 @@ def merchants_create(
     skipped = 0
     error_details: list[dict[str, str]] = []
 
-    with get_database() as db:
+    with get_database(read_only=False) as db:
         service = CategorizationService(db)
         for item in merchants:
             raw_pattern = str(item.get("raw_pattern", "")).strip()

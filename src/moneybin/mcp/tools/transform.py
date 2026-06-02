@@ -101,7 +101,7 @@ def transform_audit(start: str, end: str) -> ResponseEnvelope[TransformAuditPayl
     """
     from moneybin.services.transform_service import TransformService
 
-    with get_database() as db:
+    with get_database(read_only=False) as db:
         result = TransformService(db).audit(start, end)
     return build_envelope(
         data=TransformAuditPayload(
