@@ -261,7 +261,7 @@ def accounts_set(
                 raise typer.Exit(2)
 
     with handle_cli_errors():
-        with get_database() as db:
+        with get_database(read_only=False) as db:
             # Decimal conversion inside the handler so InvalidOperation surfaces
             # via classify_user_error rather than as a raw traceback.
             _add(

@@ -118,7 +118,7 @@ def accounts_balance_assert(
     """Assert a balance for an account on a specific date."""
     parsed_date: _date
     with handle_cli_errors():
-        with get_database() as db:
+        with get_database(read_only=False) as db:
             parsed_date = _date.fromisoformat(assertion_date)
             parsed_amount = Decimal(amount)
             result = BalanceService(db).assert_balance(
@@ -168,7 +168,7 @@ def accounts_balance_assertion_delete(
     """Delete a balance assertion. Silent no-op if no row exists."""
     parsed_date: _date
     with handle_cli_errors():
-        with get_database() as db:
+        with get_database(read_only=False) as db:
             parsed_date = _date.fromisoformat(assertion_date)
             BalanceService(db).delete_assertion(account_id, parsed_date, actor="cli")
     typer.echo(

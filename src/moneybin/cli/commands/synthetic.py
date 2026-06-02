@@ -78,7 +78,7 @@ def _run_generate(
                 get_database,  # noqa: PLC0415 — deferred import
             )
 
-            with get_database() as db:
+            with get_database(read_only=False) as db:
                 # Check if profile already has data
                 try:
                     row = db.execute(
@@ -211,7 +211,7 @@ def synthetic_reset(
                 get_database,  # noqa: PLC0415 — deferred import
             )
 
-            with get_database() as db:
+            with get_database(read_only=False) as db:
                 # Safety check: only reset profiles created by the generator
                 try:
                     gt_row = db.execute(

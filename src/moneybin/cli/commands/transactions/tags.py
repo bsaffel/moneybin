@@ -40,7 +40,7 @@ def transactions_tags_add(
 
     try:
         with handle_cli_errors():
-            with get_database() as db:
+            with get_database(read_only=False) as db:
                 added = TransactionService(db).add_tags(
                     transaction_id, tags, actor="cli"
                 )
@@ -74,7 +74,7 @@ def transactions_tags_remove(
     from moneybin.services.transaction_service import TransactionService
 
     with handle_cli_errors():
-        with get_database() as db:
+        with get_database(read_only=False) as db:
             removed = TransactionService(db).remove_tags(
                 transaction_id, tags, actor="cli"
             )
@@ -161,7 +161,7 @@ def transactions_tags_rename(
 
     try:
         with handle_cli_errors():
-            with get_database() as db:
+            with get_database(read_only=False) as db:
                 result = TransactionService(db).rename_tag(old, new, actor="cli")
     except ValueError as e:
         typer.echo(f"❌ {e}", err=True)

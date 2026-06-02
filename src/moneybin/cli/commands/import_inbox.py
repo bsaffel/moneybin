@@ -69,7 +69,7 @@ def inbox_default(
     from moneybin.database import get_database  # noqa: PLC0415
 
     with handle_cli_errors():
-        with get_database() as db:
+        with get_database(read_only=False) as db:
             result = InboxService(db=db, settings=get_settings()).sync()
 
     if output == OutputFormat.JSON:

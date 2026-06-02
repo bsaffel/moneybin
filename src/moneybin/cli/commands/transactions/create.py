@@ -90,7 +90,7 @@ def transactions_create(
 
     try:
         with handle_cli_errors():
-            with get_database() as db:
+            with get_database(read_only=False) as db:
                 svc = TransactionService(db)
                 batch = svc.create_manual_batch([entry], actor="cli")
                 row = batch.results[0]

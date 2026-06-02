@@ -34,7 +34,7 @@ def privacy_revoke(
             abort=True,
         )
     with handle_cli_errors():
-        with get_database() as db:
+        with get_database(read_only=False) as db:
             result = ConsentService(db).revoke_consent(
                 feature_category=category,
                 backend=resolved_backend,

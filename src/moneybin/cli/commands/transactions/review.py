@@ -95,7 +95,7 @@ def _review_matches_noninteractive(
         raise typer.Exit(2)
 
     with handle_cli_errors():
-        with get_database() as db:
+        with get_database(read_only=False) as db:
             svc = MatchingService(db)
             if confirm_all:
                 n = svc.accept_all_pending(actor="cli")

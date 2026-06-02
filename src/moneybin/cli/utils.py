@@ -177,7 +177,7 @@ def sqlmesh_command(
 
     logger.info(f"⚙️  {label}...")
     try:
-        with operation(), get_database() as db:
+        with operation(), get_database(read_only=False) as db:
             yield db
         logger.info(f"✅ {success or f'{label} completed'}")
     except typer.Exit:

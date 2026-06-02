@@ -24,7 +24,7 @@ def privacy_revoke_all(
     if not yes:
         typer.confirm("Revoke ALL active consent grants?", abort=True)
     with handle_cli_errors():
-        with get_database() as db:
+        with get_database(read_only=False) as db:
             count = ConsentService(db).revoke_all(actor="cli.privacy_revoke_all")
     if output == OutputFormat.JSON:
         render_or_json(

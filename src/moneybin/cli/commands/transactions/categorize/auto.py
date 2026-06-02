@@ -88,7 +88,7 @@ def categorize_auto_accept(
         raise typer.Exit(2)
 
     with handle_cli_errors():
-        with get_database() as db:
+        with get_database(read_only=False) as db:
             svc = AutoRuleService(db)
             if accept_all or reject_all:
                 pending_ids = [

@@ -213,7 +213,7 @@ def categorize_commit(
 
     if items:
         with handle_cli_errors():
-            with get_database() as db:
+            with get_database(read_only=False) as db:
                 result = CategorizationService(db).categorize_items(items)
     else:
         result = CategorizationResult(applied=0, skipped=0, errors=0, error_details=[])
@@ -301,7 +301,7 @@ def categorize_run(
         raise typer.Exit(2)
 
     with handle_cli_errors():
-        with get_database() as db:
+        with get_database(read_only=False) as db:
             data = CategorizationService(db).categorize_run(methods=typed_methods)
 
     payload = CategorizeRunPayload(
@@ -420,7 +420,7 @@ def stats(
     from moneybin.services.categorization import CategorizationService
 
     with handle_cli_errors():
-        with get_database() as db:
+        with get_database(read_only=True) as db:
             coverage = CategorizationService(db).categorization_stats()
 
     if output == OutputFormat.JSON:

@@ -72,7 +72,7 @@ def transactions_splits_add(
 
     try:
         with handle_cli_errors():
-            with get_database() as db:
+            with get_database(read_only=False) as db:
                 svc = TransactionService(db)
                 split = svc.add_split(
                     transaction_id,
@@ -150,7 +150,7 @@ def transactions_splits_remove(
 
     try:
         with handle_cli_errors():
-            with get_database() as db:
+            with get_database(read_only=False) as db:
                 svc = TransactionService(db)
                 # Look up parent before delete so we can report residual after.
                 parent = db.conn.execute(
@@ -202,7 +202,7 @@ def transactions_splits_clear(
             raise typer.Exit(0)
 
     with handle_cli_errors():
-        with get_database() as db:
+        with get_database(read_only=False) as db:
             TransactionService(db).clear_splits(transaction_id, actor="cli")
 
     if output == OutputFormat.JSON:

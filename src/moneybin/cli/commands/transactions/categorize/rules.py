@@ -95,7 +95,7 @@ def rules_apply() -> None:
     from moneybin.services.categorization import CategorizationService
 
     with handle_cli_errors():
-        with get_database() as db:
+        with get_database(read_only=False) as db:
             stats = CategorizationService(db).categorize_pending()
             if stats["total"] > 0:
                 logger.info(
@@ -212,7 +212,7 @@ def rules_create(
 
     with handle_cli_errors():
         validated, parse_errors = validate_rule_items(rules)
-        with get_database() as db:
+        with get_database(read_only=False) as db:
             result = CategorizationService(db).create_rules(
                 validated, reapply=reapply, actor="cli"
             )
@@ -264,7 +264,7 @@ def rules_delete(
     )
 
     with handle_cli_errors():
-        with get_database() as db:
+        with get_database(read_only=False) as db:
             deactivated = CategorizationService(db).deactivate_rule(
                 rule_id, reapply=reapply, actor="cli"
             )

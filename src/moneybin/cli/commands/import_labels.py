@@ -40,7 +40,7 @@ def import_labels_add(
 
     try:
         with handle_cli_errors():
-            with get_database() as db:
+            with get_database(read_only=False) as db:
                 updated = ImportService(db).add_labels(import_id, labels, actor="cli")
     except ValueError as e:
         typer.echo(f"❌ {e}", err=True)
@@ -69,7 +69,7 @@ def import_labels_remove(
 
     try:
         with handle_cli_errors():
-            with get_database() as db:
+            with get_database(read_only=False) as db:
                 updated = ImportService(db).remove_labels(
                     import_id, labels, actor="cli"
                 )
@@ -101,7 +101,7 @@ def import_labels_list(
     from moneybin.services.import_service import ImportService
 
     with handle_cli_errors():
-        with get_database() as db:
+        with get_database(read_only=True) as db:
             svc = ImportService(db)
             if import_id is not None:
                 labels = svc.list_labels(import_id)
