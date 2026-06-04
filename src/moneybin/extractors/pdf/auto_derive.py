@@ -30,27 +30,33 @@ The largest matching table (most rows) is selected.
 from __future__ import annotations
 
 import logging
-import re
 from datetime import datetime
 from typing import Literal
 
 import regex as _re
 from pydantic import ValidationError
 
+from moneybin.extractors.pdf.column_names import (
+    AMOUNT_NAME_RE as _AMOUNT_COL_RE,
+)
+from moneybin.extractors.pdf.column_names import (
+    CREDIT_NAME_RE as _CREDIT_COL_RE,
+)
+from moneybin.extractors.pdf.column_names import (
+    DATE_HEADER_RE as _DATE_COL_RE,
+)
+from moneybin.extractors.pdf.column_names import (
+    DEBIT_NAME_RE as _DEBIT_COL_RE,
+)
 from moneybin.extractors.pdf.ir import PdfDocument, PdfTable
 from moneybin.extractors.pdf.metadata import DEFAULT_ANCHORS, StatementMetadata
 from moneybin.extractors.pdf.recipe import FieldExtraction, Recipe, RegionAnchors
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Column-classification regexes (compiled once)
-# ---------------------------------------------------------------------------
-
-_DATE_COL_RE = re.compile(r"^(date|trans.*date|posting.*date)$", re.IGNORECASE)
-_AMOUNT_COL_RE = re.compile(r"amount", re.IGNORECASE)
-_DEBIT_COL_RE = re.compile(r"debit|withdraw", re.IGNORECASE)
-_CREDIT_COL_RE = re.compile(r"credit|deposit", re.IGNORECASE)
+# Column-classification regexes live in column_names (imported above) so
+# both auto_derive (column → sign-convention) and routing (column → canonical
+# row-dict key) stay in sync when a header synonym is added.
 
 # ---------------------------------------------------------------------------
 # Date / number format constants
@@ -93,6 +99,30 @@ def _matches_european(sample: str) -> bool:
 
 # Number of sample values to use for format detection (first N non-empty cells).
 _SAMPLE_SIZE = 5
+
+# Candidate "end of transaction table" sentinels, ordered most-specific first.
+# Auto-derive scans the document text AFTER the table's start_anchor and
+# picks the first sentinel that appears; if none match we fall back to
+# "Total:". The order matters — generic strings like "TOTAL" / "Total:"
+# routinely appear inside transaction descriptions and "Year-to-Date Total:
+# $5,000" lines, so we try the longer, structure-bound variants first.
+_END_ANCHOR_CANDIDATES: tuple[str, ...] = (
+    "Total Transactions",
+    "Total New Charges",
+    "Total New Activity",
+    "Total Activity",
+    "Total of Withdrawals",
+    "Total of Deposits",
+    "Total Charges",
+    "Total Fees",
+    "Total Payments",
+    "Ending Balance",
+    "ENDING BALANCE",
+    "Closing Balance",
+    "Totals",
+    "TOTAL",
+    "Total:",
+)
 
 # Cast defaults for metadata-anchor fields (field_name → cast literal).
 _META_FIELD_CASTS: dict[str, Literal["str", "decimal", "date", "int"]] = {
@@ -167,9 +197,12 @@ def derive_recipe(doc: PdfDocument, _metadata: StatementMetadata) -> Recipe | No
     # proportional whitespace between columns, so a multi-word anchor with a
     # fixed separator never matches a real PDF — the first header alone is
     # always present and stable across statements with the same layout.
+    start_anchor = table.header[0]
+    document_text = "\n".join(doc.text_lines)
+    end_anchor = _detect_end_anchor(document_text, start_anchor)
     row_region = RegionAnchors(
-        start_anchor=table.header[0],
-        end_anchor="Total:",
+        start_anchor=start_anchor,
+        end_anchor=end_anchor,
     )
 
     try:
@@ -190,6 +223,33 @@ def derive_recipe(doc: PdfDocument, _metadata: StatementMetadata) -> Recipe | No
         # could conceivably trip the static bounds.
         logger.warning(f"derive_recipe: Recipe validation failed — {exc}")
         return None
+
+
+# ---------------------------------------------------------------------------
+# End-anchor detection
+# ---------------------------------------------------------------------------
+
+
+def _detect_end_anchor(document_text: str, start_anchor: str) -> str:
+    """Pick a transaction-table end_anchor present in *document_text*.
+
+    Iterates ``_END_ANCHOR_CANDIDATES`` (most specific first) and returns
+    the first candidate that appears AFTER ``start_anchor``. A leading
+    ``start_anchor`` match constrains the search so a candidate string that
+    also appears in the statement preamble (e.g. an issuer's tagline
+    containing "TOTAL") doesn't get picked.
+
+    Falls back to ``"Total:"`` if no candidate matches — the executor's
+    full-text fallback in ``_carve_region`` is the same safety net the
+    previous hardcoded anchor relied on, and the misconfiguration is
+    logged loudly there.
+    """
+    start_idx = document_text.find(start_anchor)
+    search_from = start_idx + len(start_anchor) if start_idx != -1 else 0
+    for candidate in _END_ANCHOR_CANDIDATES:
+        if document_text.find(candidate, search_from) != -1:
+            return candidate
+    return "Total:"
 
 
 # ---------------------------------------------------------------------------

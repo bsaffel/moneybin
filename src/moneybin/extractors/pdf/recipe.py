@@ -72,7 +72,13 @@ class RegionAnchors(BaseModel):
 class Recipe(BaseModel):
     """Serializable descriptor for deterministic PDF row extraction."""
 
-    metadata_anchors: list[FieldExtraction] = Field(default_factory=list)
+    # ``None`` means "no explicit anchors authored — fall back to
+    # capture_metadata's DEFAULT_ANCHORS". An empty list means "this recipe
+    # deliberately declines metadata capture" (Phase 2b bridge-authored
+    # recipes for statement formats with no balance lines). The distinction
+    # matters so a deliberately-empty list isn't silently overridden by
+    # DEFAULT_ANCHORS during replay — see routing.route_pdf_import.
+    metadata_anchors: list[FieldExtraction] | None = Field(default=None)
     row_region: RegionAnchors
     row_split: str
     fields: list[FieldExtraction]
@@ -85,7 +91,7 @@ class Recipe(BaseModel):
     @model_validator(mode="after")
     def _bound_patterns(self) -> Recipe:
         """Enforce static security bounds on every regex the executor will run."""
-        for f in [*self.metadata_anchors, *self.fields]:
+        for f in [*(self.metadata_anchors or []), *self.fields]:
             self._check_pattern(f.pattern, f"field '{f.name}'")
         # row_split is also executed against document text in execute_recipe;
         # bound it on the same terms or a pathological splitter bypasses both

@@ -19,9 +19,24 @@ Limitations
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any
 
 from moneybin.extractors.pdf.ir import PdfDocument
+
+
+def serialize_fingerprint(fp: dict[str, Any]) -> str:
+    """Return the canonical JSON encoding used to hash / store a fingerprint.
+
+    Three independent sites need byte-for-byte identical encodings or the
+    saved ``layout_fingerprint`` JSON, the ``get_by_fingerprint`` lookup key,
+    and the ``issuer_slug + fp_hash`` format name silently drift apart and
+    break duplicate detection. ``sort_keys=True`` is the load-bearing
+    invariant — dropping it (or adding ``separators=...`` at one site and
+    not the others) is the foot-gun this helper exists to prevent.
+    """
+    return json.dumps(fp, sort_keys=True)
+
 
 if TYPE_CHECKING:
     from moneybin.repositories.pdf_formats_repo import PdfFormat, PdfFormatsRepo

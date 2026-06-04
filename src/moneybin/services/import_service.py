@@ -1379,11 +1379,11 @@ class ImportService:
         Saves a new format recipe on first contact (decision.matched_format_name is None).
         """
         import hashlib
-        import json
         from decimal import Decimal
 
         import polars as pl
 
+        from moneybin.extractors.pdf.fingerprint import serialize_fingerprint
         from moneybin.loaders import import_log
         from moneybin.metrics.registry import PDF_IMPORT_TOTAL
         from moneybin.tables import TABULAR_ACCOUNTS, TABULAR_TRANSACTIONS
@@ -1411,8 +1411,18 @@ class ImportService:
         fp = decision.fp
         issuer_slug = slugify(fp.get("issuer", "unknown"))
         account_id: str
-        if decision.metadata.account_id:
-            account_id = f"{issuer_slug}_{slugify(decision.metadata.account_id)}"
+        # Mask the captured account identifier BEFORE slugifying it into
+        # the account_id PK. The captured value may be a full unmasked
+        # institution account number ("Account Number: 123456789"), and
+        # storing that verbatim into raw.tabular_transactions.account_id
+        # / raw.tabular_accounts.account_id leaks it through every
+        # downstream surface that treats account_id as an opaque identifier.
+        # `_to_account_number_mask` reduces it to a last-4 mask; slugify
+        # then strips the asterisks, yielding a stable digits-only suffix
+        # ("chase_6789") that is safe to flow through raw/core/app.
+        masked_acct = _to_account_number_mask(decision.metadata.account_id)
+        if masked_acct:
+            account_id = f"{issuer_slug}_{slugify(masked_acct)}"
         else:
             # Fallback: routing requires metadata for reconciliation, but guard
             # against a future path that relaxes that constraint.
@@ -1437,6 +1447,15 @@ class ImportService:
                 return -amount_d
             return amount_d  # negative_is_expense already matches canonical convention
 
+        # Per-content-key dedup counter: when two rows in the same statement
+        # share (date, amt, desc, account_id) the first uses the bare content
+        # hash; each subsequent collision appends an occurrence index. Position
+        # within the statement (`row_number`) is intentionally NOT in the hash
+        # so a recipe change that shifts row order (or rejects one extra
+        # boundary line) doesn't renumber every following transaction_id and
+        # defeat INSERT OR IGNORE on re-import (Req identifiers.md "content
+        # hash" contract).
+        content_dup_counter: dict[str, int] = {}
         rows_list: list[dict[str, Any]] = []
         for idx, row in enumerate(decision.rows, start=1):
             amt = _normalize_amount(row)
@@ -1452,7 +1471,10 @@ class ImportService:
                 if date_val is not None and hasattr(date_val, "isoformat")
                 else str(date_val)
             )
-            raw_hash = f"{date_iso}|{amt}|{desc}|{account_id}|{idx}"
+            content_key = f"{date_iso}|{amt}|{desc}|{account_id}"
+            dup_idx = content_dup_counter.get(content_key, 0)
+            content_dup_counter[content_key] = dup_idx + 1
+            raw_hash = content_key if dup_idx == 0 else f"{content_key}|{dup_idx}"
             digest = hashlib.sha256(raw_hash.encode()).hexdigest()[:16]
             transaction_id = f"pdf_{digest}"
 
@@ -1571,10 +1593,14 @@ class ImportService:
                 )
         else:
             # First-contact auto-derive: persist the recipe. fp + issuer_slug
-            # were computed above for account_id prefixing.
-            fp_hash = hashlib.sha256(
-                json.dumps(fp, sort_keys=True).encode()
-            ).hexdigest()[:12]
+            # were computed above for account_id prefixing. Use the shared
+            # serialize_fingerprint helper so the hash that names the format
+            # ("issuer_slug + fp_hash") stays byte-for-byte identical to the
+            # JSON used by the repo for lookup + storage; any drift breaks
+            # ConstraintException-based duplicate detection silently.
+            fp_hash = hashlib.sha256(serialize_fingerprint(fp).encode()).hexdigest()[
+                :12
+            ]
             format_name = f"{issuer_slug}_{fp_hash}"
             try:
                 self._pdf_formats.save_new(

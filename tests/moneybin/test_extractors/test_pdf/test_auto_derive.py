@@ -300,6 +300,7 @@ def test_metadata_anchors_populated() -> None:
     )
     recipe = derive_recipe(doc, _EMPTY_META)
     assert recipe is not None
+    assert recipe.metadata_anchors is not None
     assert len(recipe.metadata_anchors) > 0
 
 
@@ -311,6 +312,7 @@ def test_metadata_anchor_field_names() -> None:
     )
     recipe = derive_recipe(doc, _EMPTY_META)
     assert recipe is not None
+    assert recipe.metadata_anchors is not None
     names = {f.name for f in recipe.metadata_anchors}
     assert "account_id" in names
     assert "period_start" in names

@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from moneybin.extractors.pdf.fingerprint import serialize_fingerprint
 from moneybin.repositories.base import BaseRepo
 from moneybin.services.audit_service import AuditEvent
 from moneybin.tables import PDF_FORMATS
@@ -191,7 +192,7 @@ class PdfFormatsRepo(BaseRepo):
                     name,
                     institution_name,
                     document_kind,
-                    json.dumps(fingerprint, sort_keys=True),
+                    serialize_fingerprint(fingerprint),
                     front_end,
                     json.dumps(recipe, sort_keys=True),
                     routing,
@@ -263,7 +264,7 @@ class PdfFormatsRepo(BaseRepo):
         equality cast. If multiple names share the fingerprint, returns the one
         with the highest ``version`` (the most recently bumped).
         """
-        fp_json = json.dumps(fp, sort_keys=True)
+        fp_json = serialize_fingerprint(fp)
         row = self._db.execute(
             f"""
             SELECT {", ".join(f'"{c}"' for c in _PDF_FORMATS_COLUMNS)}

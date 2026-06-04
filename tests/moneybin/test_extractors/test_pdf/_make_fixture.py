@@ -115,30 +115,12 @@ c3.save()
 print(f"wrote {out_chase}")  # noqa: T201  # one-shot generator script
 
 # ── amex_credit_simple.pdf ────────────────────────────────────────────────────
-# Credit card statement using negative_is_expense convention (charges negative).
-# Dates in MM/DD/YYYY. Balances: opening=0.00, closing=-247.50;
-# row sum: -89.99 + -15.99 + -141.52 = -247.50; closing - opening = -247.50 ✓
-# Note: closing_balance anchor matches digits + decimal — "-247.50" has a leading
-# minus that the anchor strips (the $ prefix branch). We store "247.50" in the
-# Ending Balance line and rely on the sign flowing through the row amounts.
-# Actually: capture group r"([\d,]+\.\d{2})" captures only unsigned digits, so
-# the anchor returns "247.50" for a line "Ending Balance: $247.50". We model
-# opening=0.00, closing=247.50 and keep ALL row amounts negative; reconciliation
-# compares abs(sum(rows)) to abs(closing-opening) within ±0.01.
-# Wait — reconciliation uses the sign convention directly. Let's check:
-# reconcile() sums row amounts and compares to closing-opening. If opening=0.00
-# and closing=247.50 (positive), expected_delta=247.50. Row sum=-247.50.
-# That fails reconciliation. We need the anchor-captured closing to be negative,
-# but the regex can't capture negatives.
-#
-# Simplest fix: make the Amex statement show charges as POSITIVE (negative_is_income
-# or no, just make opening=0.00 and closing=247.50 with positive row amounts).
-# But task requires negative_is_expense convention.
-#
-# Alternative: opening=500.00, closing=252.50 (after paying charges of 247.50).
-# Row amounts: -89.99, -15.99, -141.52. Sum=-247.50.
-# closing - opening = 252.50 - 500.00 = -247.50. Row sum=-247.50. ✓
-# Both anchors capture unsigned values. reconcile sees expected_delta=-247.50, sum=-247.50. ✓
+# Credit card statement, negative_is_expense convention (charges are negative
+# row amounts). Balance anchors capture unsigned digits — r"([\d,]+\.\d{2})"
+# strips any leading minus — so we model opening=500.00, closing=252.50 so the
+# expected_delta = closing - opening = -247.50 matches the row sum of -247.50
+# (charges of 89.99 + 15.99 + 141.52, each stored as negative). Both balances
+# are positive on the page; the convention flows through the row amounts.
 out_amex = fixtures / "amex_credit_simple.pdf"
 c4 = canvas.Canvas(str(out_amex), pagesize=letter)
 c4.setFont("Courier", 10)

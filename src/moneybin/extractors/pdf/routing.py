@@ -28,7 +28,6 @@ LLM extraction enters the loop.
 from __future__ import annotations
 
 import logging
-import re as _stdlib_re
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -36,6 +35,21 @@ from pydantic import ValidationError
 
 from moneybin.database import Database
 from moneybin.extractors.pdf.auto_derive import derive_recipe
+from moneybin.extractors.pdf.column_names import (
+    AMOUNT_NAME_RE as _AMOUNT_NAME_RE,
+)
+from moneybin.extractors.pdf.column_names import (
+    CREDIT_NAME_RE as _CREDIT_NAME_RE,
+)
+from moneybin.extractors.pdf.column_names import (
+    DEBIT_NAME_RE as _DEBIT_NAME_RE,
+)
+from moneybin.extractors.pdf.column_names import (
+    DESC_NAME_RE as _DESC_NAME_RE,
+)
+from moneybin.extractors.pdf.column_names import (
+    POST_DATE_NAME_RE as _POST_DATE_NAME_RE,
+)
 from moneybin.extractors.pdf.confidence import is_high_confidence, score
 from moneybin.extractors.pdf.fingerprint import compute_fingerprint, match_format
 from moneybin.extractors.pdf.ir import PdfDocument
@@ -96,20 +110,20 @@ class RouteDecision:
 # Confidence helpers
 # ---------------------------------------------------------------------------
 
-# Canonical-key regexes — the rows in RouteDecision.rows use these canonical
-# names regardless of what the PDF column headers were called ("Transaction
-# Amount" / "Withdrawals" / "Deposit"), so reconcile() and the service layer
-# can both read by stable keys instead of re-implementing the same regexes.
-_DEBIT_NAME_RE = _stdlib_re.compile(r"debit|withdraw", _stdlib_re.IGNORECASE)
-_CREDIT_NAME_RE = _stdlib_re.compile(r"credit|deposit", _stdlib_re.IGNORECASE)
-_AMOUNT_NAME_RE = _stdlib_re.compile(r"amount", _stdlib_re.IGNORECASE)
-_DESC_NAME_RE = _stdlib_re.compile(r"description|memo|payee", _stdlib_re.IGNORECASE)
-# "Posting Date" / "Post Date" appear alongside "Transaction Date" in
-# credit-card statements; without separating them, both date columns
-# collapse to a single "date" key and the row loop overwrites the first
-# with the second — the import would silently store posting date as the
-# transaction date.
-_POST_DATE_NAME_RE = _stdlib_re.compile(r"post(?:ing)?\s*date", _stdlib_re.IGNORECASE)
+# Canonical-key regexes live in column_names (imported above) so both
+# auto_derive (header → sign convention) and routing (header → canonical
+# row-dict key) stay in sync when a header synonym is added. The rows in
+# RouteDecision.rows use canonical names ("date", "amount", "debit",
+# "credit", "post_date", "description") regardless of what the original
+# PDF column headers were called ("Transaction Amount" / "Withdrawals"
+# / "Deposit"), so reconcile() and the service layer can both read by
+# stable keys instead of re-implementing the same regexes.
+#
+# "Posting Date" / "Post Date" deserve a separate regex from the generic
+# date column: credit-card statements expose BOTH "Transaction Date" and
+# "Posting Date", and without splitting them both columns would collapse
+# to a single "date" key and the row loop would overwrite the transaction
+# date with the posting date.
 
 
 def _canonical_key(field: FieldExtraction) -> str:
@@ -158,7 +172,13 @@ def _compute_confidence(recipe: Recipe, rows: list[dict[str, Any]]) -> float:
 
     for f in recipe.fields:
         is_date = f.cast == "date"
-        is_amount = f.cast in ("decimal", "int") and f.name.lower() in (
+        # `f.name` carries the original PDF column header ("Transaction
+        # Amount", "Withdrawals", "Deposits", "Post Date" …); a literal
+        # lowercase compare against {"amount","debit","credit"} would never
+        # match those, defeating the required-fields gate. Use _canonical_key
+        # so the same canonicalisation that maps row keys also drives the
+        # confidence model.
+        is_amount = f.cast in ("decimal", "int") and _canonical_key(f) in (
             "amount",
             "debit",
             "credit",
@@ -335,16 +355,23 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
     # ------------------------------------------------------------------
     # 4. Capture metadata
     # ------------------------------------------------------------------
-    # Replay path: use the saved recipe's metadata_anchors so a bridge-authored
-    # or manually corrected format with non-default balance/account labels can
-    # actually find its values on replay. Empty list ⇒ fall back to DEFAULT_ANCHORS.
-    # Group by field name so multiple FieldExtraction entries with the same
-    # name (different alternative patterns for the same field — e.g. the two
-    # default account_id anchors "Account Number: \\S+" and "Account ending
-    # in \\d+") are preserved as ordered alternatives. Without grouping,
-    # capture_metadata only sees the first pattern per name.
+    # Replay path: use the saved recipe's metadata_anchors so a bridge-
+    # authored or manually corrected format with non-default balance/account
+    # labels can actually find its values on replay. Group by field name so
+    # multiple FieldExtraction entries with the same name (alternative
+    # patterns for the same field — e.g. the two default account_id anchors
+    # "Account Number: \\S+" and "Account ending in \\d+") are preserved as
+    # ordered alternatives. Without grouping, capture_metadata only sees the
+    # first pattern per name.
+    #
+    # Tri-state semantics on Recipe.metadata_anchors:
+    #   * None        → no anchors authored; fall back to DEFAULT_ANCHORS
+    #   * non-empty   → use the listed anchors verbatim
+    #   * empty list  → caller deliberately declines metadata capture
+    #                    (Phase 2b bridge-authored recipes for statement
+    #                    formats with no balance lines)
     anchors_dict: dict[str, list[str]] | None = None
-    if is_replay and recipe.metadata_anchors:
+    if is_replay and recipe.metadata_anchors is not None:
         anchors_dict = {}
         for f in recipe.metadata_anchors:
             anchors_dict.setdefault(f.name, []).append(f.pattern)

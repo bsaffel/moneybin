@@ -103,9 +103,14 @@ def _standard_doc(
 
 
 def _valid_recipe_dict() -> dict[str, Any]:
-    """A Recipe dict that model_validate accepts and execute_recipe can run."""
+    """A Recipe dict that model_validate accepts and execute_recipe can run.
+
+    ``metadata_anchors`` is omitted so it deserialises to ``None``, signalling
+    "no explicit anchors — fall back to DEFAULT_ANCHORS." An explicit empty
+    list would mean "deliberately decline metadata capture" and route to seed
+    with reason=metadata_incomplete.
+    """
     return {
-        "metadata_anchors": [],
         "row_region": {
             "start_anchor": _ROW_REGION_START,
             "end_anchor": _ROW_REGION_END,
