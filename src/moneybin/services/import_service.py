@@ -230,6 +230,40 @@ def _pdf_alias(file_path: Path) -> str:
     return slug
 
 
+_ACCOUNT_MASK_PREFIXES: tuple[str, ...] = ("****", "xxxx", "XXXX")
+
+
+def _to_account_number_mask(raw: str | None) -> str | None:
+    """Reduce a captured PDF account identifier to a last-4 display mask.
+
+    Statement layouts emit account identifiers in several forms:
+
+      ``Account Number: 123456789``  → raw = "123456789"  → ``"****6789"``
+      ``Account ending in 1234``     → raw = "1234"       → ``"****1234"``
+      ``Account Number: ****1234``   → raw = "****1234"   → ``"****1234"``
+
+    The ``raw.tabular_accounts.account_number_masked`` column is contract-
+    defined as a last-4 display mask. Storing the full captured token there
+    would leak a real institution account number into a column that downstream
+    consumers treat as already masked. Apply the reduction at the import
+    boundary so the raw schema's privacy contract is preserved.
+
+    Returns the original string when no digits are present (e.g. an
+    institution-specific token) so we never silently drop a captured value.
+    """
+    if raw is None:
+        return None
+    stripped = raw.strip()
+    if not stripped:
+        return None
+    if any(stripped.startswith(prefix) for prefix in _ACCOUNT_MASK_PREFIXES):
+        return stripped
+    digits = "".join(c for c in stripped if c.isdigit())
+    if not digits:
+        return stripped
+    return f"****{digits[-4:]}"
+
+
 # Unambiguous tabular extensions: extension wins, no OFX sniffing attempted.
 # (.txt / .dat are excluded because they're generic and may contain OFX content.)
 _UNAMBIGUOUS_TABULAR: frozenset[str] = frozenset({
@@ -1348,10 +1382,8 @@ class ImportService:
         import json
         from decimal import Decimal
 
-        import duckdb
         import polars as pl
 
-        from moneybin.extractors.pdf.fingerprint import compute_fingerprint
         from moneybin.loaders import import_log
         from moneybin.metrics.registry import PDF_IMPORT_TOTAL
         from moneybin.tables import TABULAR_ACCOUNTS, TABULAR_TRANSACTIONS
@@ -1366,9 +1398,17 @@ class ImportService:
 
         # Account ID: prefix with issuer slug so the same masked suffix
         # (e.g. "...1234") from two different banks doesn't collide on a
-        # single core.dim_accounts row. Compute the fingerprint here so the
-        # issuer is available regardless of replay-vs-first-contact below.
-        fp = compute_fingerprint(doc)
+        # single core.dim_accounts row. Reuse the fingerprint already
+        # computed by route_pdf_import (attached to RouteDecision) instead
+        # of recomputing it here.
+        if decision.fp is None:
+            # Defensive: route_pdf_import attaches fp on every outcome that
+            # reaches this method; this branch is a guard against future
+            # callers that build a RouteDecision by hand.
+            raise ValueError(
+                "PDF routing returned outcome='transactions' but fp is None"
+            )
+        fp = decision.fp
         issuer_slug = slugify(fp.get("issuer", "unknown"))
         account_id: str
         if decision.metadata.account_id:
@@ -1463,7 +1503,11 @@ class ImportService:
             # account_name is the human-readable display label. The captured
             # account-number mask (e.g. "****1234") is data, not a label, and
             # belongs in account_number_masked; resolved_alias is the canonical
-            # slug the rest of the import is keyed on.
+            # slug the rest of the import is keyed on. Reduce to a last-4
+            # display mask before storing — the captured value may be a full
+            # institution account number ("Account Number: 123456789") and the
+            # raw schema's account_number_masked column is contract-defined as
+            # last-4 only.
             raw_account_id = (
                 str(decision.metadata.account_id)
                 if decision.metadata.account_id
@@ -1473,7 +1517,7 @@ class ImportService:
                 "account_id": [account_id],
                 "account_name": [resolved_alias],
                 "account_number": [None],
-                "account_number_masked": [raw_account_id],
+                "account_number_masked": [_to_account_number_mask(raw_account_id)],
                 "account_type": [None],
                 "institution_name": [str(institution) if institution else None],
                 "currency": [None],
@@ -1693,9 +1737,20 @@ class ImportService:
         # seed-path PDFs write nothing tabular, so a refresh would run the
         # full SQLMesh apply for no purpose and could raise on unrelated
         # transform failures even though no PDF data needs to propagate.
+        #
+        # Gate on "the deterministic path produced rows" (transactions_extracted),
+        # not "rows were newly inserted" (result.transactions). raw inserts use
+        # INSERT OR IGNORE on the (transaction_id, account_id, source_file)
+        # PK, so a re-import after a prior refresh failed reports
+        # transactions == 0 even though every row is present. Without this,
+        # the user would re-run the same file, see zero inserts, skip
+        # refresh, and the rows would stay invisible to core/reports.
         if refresh and (
             result.file_type in ("ofx", "tabular")
-            or (result.file_type == "pdf" and result.transactions > 0)
+            or (
+                result.file_type == "pdf"
+                and result.details.get("transactions_extracted", 0) > 0
+            )
         ):
             # Single-file imports preserve the legacy fail-loud contract so
             # CLI exit codes reflect the broken state. Batch imports use the
@@ -1826,13 +1881,16 @@ class ImportService:
                     )
                 )
                 any_succeeded = True
-                # Only PDFs that actually landed transactions count as
-                # transformable. r.details["transactions"] is present on the
-                # transactions path AND can be 0 on a no-op re-import; matching
-                # the single-file gate (transactions > 0) keeps the batch path
-                # from running a SQLMesh refresh when no new rows landed.
+                # Match the single-file refresh gate: the deterministic PDF
+                # path is transformable when it produced rows
+                # (transactions_extracted), regardless of how many were
+                # newly inserted. INSERT OR IGNORE means a re-import after
+                # a prior refresh failure has transactions == 0 even though
+                # the rows are present and waiting for transform — gating
+                # on insert count would skip refresh and leave them invisible.
                 if r.file_type in ("ofx", "tabular") or (
-                    r.file_type == "pdf" and r.details.get("transactions", 0) > 0
+                    r.file_type == "pdf"
+                    and r.details.get("transactions_extracted", 0) > 0
                 ):
                     any_transformable = True
             except ImportConfirmationRequiredError as e:

@@ -36,6 +36,7 @@ _RECIPE_V2: dict[str, Any] = {
 _FINGERPRINT: dict[str, Any] = {
     "issuer": "chase",
     "headers": ["Date", "Description", "Amount"],
+    "page_bucket": "2-3",
 }
 
 
@@ -221,6 +222,42 @@ def test_list_all_returns_inserted_rows(db: Database) -> None:
 def test_list_all_returns_empty_for_no_rows(db: Database) -> None:
     repo = PdfFormatsRepo(db)
     assert repo.list_all() == []
+
+
+def test_record_use_bumps_times_used_and_stamps_last_used_at(db: Database) -> None:
+    """save_new initialises times_used=1; record_use bumps it and stamps the timestamp."""
+    repo = PdfFormatsRepo(db)
+    _save_new(repo)
+
+    before = db.conn.execute(
+        "SELECT times_used, last_used_at FROM app.pdf_formats WHERE name = ?",
+        ["chase_checking_pdf"],
+    ).fetchone()
+    assert before is not None
+    assert before[0] == 1  # save_new initialises to 1
+
+    repo.record_use("chase_checking_pdf")
+
+    after = db.conn.execute(
+        "SELECT times_used, last_used_at FROM app.pdf_formats WHERE name = ?",
+        ["chase_checking_pdf"],
+    ).fetchone()
+    assert after is not None
+    assert after[0] == 2  # bumped exactly once
+    assert after[1] is not None  # last_used_at stamped
+
+
+def test_record_use_does_not_audit(db: Database) -> None:
+    """Per-import counter bumps are observability — no audit row, by design."""
+    repo = PdfFormatsRepo(db)
+    _save_new(repo)
+    audit_before = _audit_rows_for(db, "chase_checking_pdf")
+
+    repo.record_use("chase_checking_pdf")
+
+    audit_after = _audit_rows_for(db, "chase_checking_pdf")
+    # No new audit row from record_use (only the prior save_new row remains).
+    assert len(audit_after) == len(audit_before)
 
 
 def test_save_new_rolls_back_when_audit_raises(db: Database) -> None:

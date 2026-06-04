@@ -412,7 +412,20 @@ def _pattern_to_fmt(pattern: str) -> str:
 
 
 def _build_metadata_anchors() -> list[FieldExtraction]:
-    """Freeze DEFAULT_ANCHORS as FieldExtraction entries (first pattern per field).
+    r"""Freeze every DEFAULT_ANCHORS pattern as its own FieldExtraction entry.
+
+    Each field name in DEFAULT_ANCHORS carries an ordered list of alternative
+    patterns (e.g. account_id has both ``"Account Number: \S+"`` and
+    ``"Account ending in \d+"``). Saving only ``patterns[0]`` means a
+    first-contact capture that matched the second pattern can't be reproduced
+    on replay — `account_id` falls back to None and the import re-aliases by
+    filename, splitting future statements for the same account into different
+    `dim_accounts` rows.
+
+    Emit one ``FieldExtraction(name=field_name, pattern=...)`` per pattern;
+    routing.py groups them back into ``dict[name -> list[patterns]]`` for
+    ``capture_metadata`` on replay (preserving the original list order so the
+    cheapest pattern still tries first).
 
     Cast defaults:
         account_id       → str
@@ -421,14 +434,13 @@ def _build_metadata_anchors() -> list[FieldExtraction]:
     """
     anchors: list[FieldExtraction] = []
     for field_name, patterns in DEFAULT_ANCHORS.items():
-        if not patterns:
-            continue
         cast = _META_FIELD_CASTS.get(field_name, "str")
-        anchors.append(
-            FieldExtraction(
-                name=field_name,
-                pattern=patterns[0],
-                cast=cast,
+        for pattern in patterns:
+            anchors.append(
+                FieldExtraction(
+                    name=field_name,
+                    pattern=pattern,
+                    cast=cast,
+                )
             )
-        )
     return anchors

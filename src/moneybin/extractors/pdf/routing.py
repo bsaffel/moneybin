@@ -40,7 +40,7 @@ from moneybin.extractors.pdf.confidence import is_high_confidence, score
 from moneybin.extractors.pdf.fingerprint import compute_fingerprint, match_format
 from moneybin.extractors.pdf.ir import PdfDocument
 from moneybin.extractors.pdf.metadata import StatementMetadata, capture_metadata
-from moneybin.extractors.pdf.recipe import Recipe, execute_recipe
+from moneybin.extractors.pdf.recipe import FieldExtraction, Recipe, execute_recipe
 from moneybin.extractors.pdf.reconciliation import reconcile
 from moneybin.metrics.registry import (
     PDF_EXTRACTION_CONFIDENCE,
@@ -84,6 +84,12 @@ class RouteDecision:
     # saved_format.name when a saved format matched (Replay path); None on auto-derive.
     # The service uses this to decide whether to persist a new recipe (first contact).
     matched_format_name: str | None = None
+    # Layout fingerprint computed once at the head of route_pdf_import. Threading
+    # it through here avoids the importing service having to recompute it (one
+    # O(tables × rows) pass) and removes the risk of divergent results if the
+    # doc were somehow mutated between calls. None on early seed returns that
+    # short-circuit before the fingerprint is computed.
+    fp: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -106,7 +112,7 @@ _DESC_NAME_RE = _stdlib_re.compile(r"description|memo|payee", _stdlib_re.IGNOREC
 _POST_DATE_NAME_RE = _stdlib_re.compile(r"post(?:ing)?\s*date", _stdlib_re.IGNORECASE)
 
 
-def _canonical_key(field: Any) -> str:
+def _canonical_key(field: FieldExtraction) -> str:
     """Map a recipe FieldExtraction to the canonical row-dict key."""
     name = field.name
     if field.cast == "date":
@@ -238,10 +244,17 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
                 outcome="seed",
                 recipe=None,
                 rows=[],
-                metadata=StatementMetadata(None, None, None, None, None),
+                metadata=StatementMetadata(
+                    account_id=None,
+                    period_start=None,
+                    period_end=None,
+                    opening_balance=None,
+                    closing_balance=None,
+                ),
                 confidence=0.0,
                 reason="no_transaction_table",
                 # matched_format_name stays None: early return before saved_format lookup
+                fp=fp,
             )
 
     # ------------------------------------------------------------------
@@ -262,10 +275,17 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
             outcome="seed",
             recipe=recipe,
             rows=[],
-            metadata=StatementMetadata(None, None, None, None, None),
+            metadata=StatementMetadata(
+                account_id=None,
+                period_start=None,
+                period_end=None,
+                opening_balance=None,
+                closing_balance=None,
+            ),
             confidence=0.0,
             reason="unsupported_number_format",
             matched_format_name=saved_format.name if saved_format is not None else None,
+            fp=fp,
         )
     rows = _canonicalize_rows(recipe, extracted.rows)
 
@@ -274,10 +294,17 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
             outcome="seed",
             recipe=recipe,
             rows=[],
-            metadata=StatementMetadata(None, None, None, None, None),
+            metadata=StatementMetadata(
+                account_id=None,
+                period_start=None,
+                period_end=None,
+                opening_balance=None,
+                closing_balance=None,
+            ),
             confidence=0.0,
             reason="no_rows",
             matched_format_name=saved_format.name if saved_format is not None else None,
+            fp=fp,
         )
 
     # ------------------------------------------------------------------
@@ -292,10 +319,17 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
             outcome="seed",
             recipe=recipe,
             rows=rows,
-            metadata=StatementMetadata(None, None, None, None, None),
+            metadata=StatementMetadata(
+                account_id=None,
+                period_start=None,
+                period_end=None,
+                opening_balance=None,
+                closing_balance=None,
+            ),
             confidence=conf,
             reason="low_confidence",
             matched_format_name=saved_format.name if saved_format is not None else None,
+            fp=fp,
         )
 
     # ------------------------------------------------------------------
@@ -304,9 +338,16 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
     # Replay path: use the saved recipe's metadata_anchors so a bridge-authored
     # or manually corrected format with non-default balance/account labels can
     # actually find its values on replay. Empty list ⇒ fall back to DEFAULT_ANCHORS.
+    # Group by field name so multiple FieldExtraction entries with the same
+    # name (different alternative patterns for the same field — e.g. the two
+    # default account_id anchors "Account Number: \\S+" and "Account ending
+    # in \\d+") are preserved as ordered alternatives. Without grouping,
+    # capture_metadata only sees the first pattern per name.
     anchors_dict: dict[str, list[str]] | None = None
     if is_replay and recipe.metadata_anchors:
-        anchors_dict = {f.name: [f.pattern] for f in recipe.metadata_anchors}
+        anchors_dict = {}
+        for f in recipe.metadata_anchors:
+            anchors_dict.setdefault(f.name, []).append(f.pattern)
     metadata = capture_metadata(document_text, anchors=anchors_dict)
 
     if not metadata.is_complete_for_reconciliation():
@@ -318,6 +359,7 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
             confidence=conf,
             reason="metadata_incomplete",
             matched_format_name=saved_format.name if saved_format is not None else None,
+            fp=fp,
         )
 
     # ------------------------------------------------------------------
@@ -340,6 +382,7 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
             confidence=conf,
             reason="passed",
             matched_format_name=saved_format.name if saved_format is not None else None,
+            fp=fp,
         )
 
     # Reconciliation failed.
@@ -362,6 +405,7 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
             reason="replay_reconciliation_failed",
             replay_guard_failed=True,
             matched_format_name=saved_format.name if saved_format is not None else None,
+            fp=fp,
         )
 
     return RouteDecision(
@@ -373,4 +417,5 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
         reason="reconciliation_failed",
         replay_guard_failed=False,
         matched_format_name=None,  # auto-derive path, never a replay
+        fp=fp,
     )
