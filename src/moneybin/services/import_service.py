@@ -1552,10 +1552,18 @@ class ImportService:
                     f"import_id={import_id[:8]}..."
                 )
             except duckdb.ConstraintException:
-                # Hash collision or race: a format with this name already exists.
-                # The existing recipe covers the same layout; no update needed.
-                logger.debug(
-                    f"PDF format {format_name!r} already exists — skipping save_new"
+                # A format with this fingerprint-derived name already exists.
+                # The common cause is a previously-saved recipe that failed
+                # model_validate on replay and now permanently routes through
+                # auto-derive without ever updating the stored recipe. Warn so
+                # the stuck-format state is observable until Phase 2b adds
+                # bump_version.
+                logger.warning(
+                    f"PDF format {format_name!r} already exists — save_new "
+                    f"skipped. If the saved recipe is broken (e.g. failed "
+                    f"model_validate on prior replay), it will keep auto-"
+                    f"deriving without updating the stored recipe until "
+                    f"Phase 2b bump_version lands."
                 )
             except Exception:  # noqa: BLE001 — format save is bookkeeping; data is committed
                 logger.warning(

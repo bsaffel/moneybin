@@ -843,7 +843,7 @@ def import_confirm_command(
 
     if not quiet:
         logger.info(
-            f"✅ Imported {file_path.name}: {result.transactions} rows "
+            f"✅ Imported {file_path.name}: {result.rows_loaded} rows "
             f"(import_id: {result.import_id})"
         )
         if result.sign_correction_suggested:

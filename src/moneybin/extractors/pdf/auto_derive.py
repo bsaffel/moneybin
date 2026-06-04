@@ -307,11 +307,13 @@ def _detect_number_format(
     if not samples:
         # All amount cells are empty (e.g. debit/credit with only one side per row).
         # Fall back to checking for digit-dot pattern to infer US format.
-        # Collect any non-empty cell from amount columns.
+        # Collect any non-empty, non-dash cell from amount columns. The "-"
+        # exclusion must mirror the first pass: a sample of only "-" placeholders
+        # would fail _matches_us and force the recipe to seed.
         for row in table.rows[:_SAMPLE_SIZE]:
             for idx in amount_col_indices:
                 cell = row[idx].strip().lstrip("$").strip()
-                if cell:
+                if cell and cell != "-":
                     samples.append(cell)
 
     if not samples:

@@ -509,21 +509,27 @@ def import_formats() -> ResponseEnvelope[ImportFormatsPayload]:
     try:
         with get_database(read_only=True) as db:
             formats = merge_formats(builtin, load_formats_from_db(db))
-            for pf in PdfFormatsRepo(db).list_all():
-                pdf_format_rows.append(
-                    ImportPdfFormatRow(
-                        name=pf.name,
-                        institution_name=pf.institution_name,
-                        document_kind=pf.document_kind,
-                        routing=pf.routing,
-                        front_end=pf.front_end,
-                        version=pf.version,
-                        times_used=pf.times_used,
-                        last_used_at=pf.last_used_at.isoformat()
-                        if pf.last_used_at is not None
-                        else None,
+            # Independent try/except: app.pdf_formats may be absent on
+            # pre-V027 DBs. A failure here must not clobber the tabular
+            # formats already merged above.
+            try:
+                for pf in PdfFormatsRepo(db).list_all():
+                    pdf_format_rows.append(
+                        ImportPdfFormatRow(
+                            name=pf.name,
+                            institution_name=pf.institution_name,
+                            document_kind=pf.document_kind,
+                            routing=pf.routing,
+                            front_end=pf.front_end,
+                            version=pf.version,
+                            times_used=pf.times_used,
+                            last_used_at=pf.last_used_at.isoformat()
+                            if pf.last_used_at is not None
+                            else None,
+                        )
                     )
-                )
+            except Exception:  # noqa: BLE001 -- pre-V027 DB; fall back to empty
+                pdf_format_rows = []
     except Exception:  # noqa: BLE001 -- DB may not exist; fall back to built-in only
         formats = builtin
 
