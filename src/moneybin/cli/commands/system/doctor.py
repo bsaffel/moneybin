@@ -51,7 +51,11 @@ def doctor_command(
     invariants pass or warn; exits 1 when any fail.
     """
     with handle_cli_errors():
-        with get_database(read_only=True) as db:
+        # read_only=False matches the MCP system_doctor tool: DoctorService
+        # initializes a SQLMesh Context which may write internal state tables
+        # on first init; a read-only connection silently marks SQLMesh audits
+        # as unavailable.
+        with get_database(read_only=False) as db:
             report = DoctorService(db).run_all(verbose=verbose, full=full)
 
     status_icon = {"pass": "✅", "fail": "❌", "warn": "⚠️ ", "skipped": "⏭️ "}

@@ -162,7 +162,7 @@ def backfill(db: Database) -> dict[str, int]:
 
 
 if __name__ == "__main__":
-    db = get_database()
+    db = get_database(read_only=False)
     logger.info("Backfilling categorization links")
 
     result = backfill(db)

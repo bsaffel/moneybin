@@ -363,7 +363,7 @@ def match_status(env: dict[str, str], match_id: str) -> str | None:
             _workflow_db_path(env),
             secret_store=mock_store,
             no_auto_upgrade=True,
-            read_only=False,
+            read_only=True,
         ) as db:
             row = get_match_decision(db, match_id)
     finally:

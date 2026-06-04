@@ -104,10 +104,10 @@ def mcp_db(
     a connection open during test body execution.
 
     Tests that need per-test setup (INSERTs, CREATE VIEW, etc.) must use the
-    ``get_database()`` context manager and close it before calling any MCP
-    tool:
+    ``get_database(read_only=False)`` context manager and close it before
+    calling any MCP tool:
 
-        with get_database() as db:
+        with get_database(read_only=False) as db:
             db.execute("INSERT ...")
         result = await some_tool()
     """

@@ -8,8 +8,10 @@ Usage::
 
     from moneybin.database import get_database
 
-    db = get_database(read_only=True)
-    db.execute("SELECT * FROM core.fct_transactions WHERE account_id = ?", [acct_id])
+    with get_database(read_only=True) as db:
+        db.execute(
+            "SELECT * FROM core.fct_transactions WHERE account_id = ?", [acct_id]
+        )
 
 Never call ``duckdb.connect()`` directly. See the data-protection spec
 (``docs/specs/privacy-data-protection.md``) for the full design.
@@ -75,6 +77,10 @@ def build_attach_sql(
     read_only: bool = False,
 ) -> str:
     """Build a DuckDB ATTACH statement for an encrypted database.
+
+    SQL-building helper, not a connection opener — the ``read_only`` default
+    here is intentional and matches DuckDB's own ATTACH default. Connection
+    openers (``Database.__init__``, ``get_database``) require ``read_only``.
 
     Single-quote escapes the path and key to prevent injection. The alias
     is double-quoted via sqlglot as defense in depth. All three parameters
@@ -782,7 +788,7 @@ def get_database(
     """Create and return a new short-lived Database connection.
 
     Each call opens a fresh connection; callers must close it when done
-    (``with get_database() as db: ...`` closes automatically).
+    (``with get_database(read_only=...) as db: ...`` closes automatically).
 
     Both read-only and write connections retry on DatabaseLockError with
     exponential backoff (start 50 ms, ×1.5, cap 500 ms) until max_wait is
