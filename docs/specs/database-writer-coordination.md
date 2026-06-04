@@ -5,6 +5,8 @@ implemented
 
 > **Tool-name drift since this spec landed.** The pattern is unchanged — every MCP tool acquires its own `get_database(read_only=...)` connection — but several tool names referenced in the body have evolved through coherence passes: noun-only reads (PR #172 dropped `_list`), `transactions_categorize_apply` → `_commit` (PR #171), per-field account writes consolidated into `accounts_set` (PR #170/#171), `refresh_run` umbrella retiring `transform_apply` from the user-intent layer (PR #173). The classification rule (read vs. write) is still the source of truth; the example lists below reflect today's surface.
 
+> **Required-kwarg hardening (PR #XXX).** `Database.__init__()` and `get_database()` now require `read_only` as a keyword-only argument; the prior `read_only: bool = False` default is removed. Every caller declares intent explicitly. Read-only enforcement at every read site is the trust boundary protected by this change — the SQL allowlists at MCP/CLI boundaries remain as defense-in-depth, but `ATTACH ... READ_ONLY` is the physical guard. The mechanism is the type system (no separate lint rule); pyright in `make check` fails any call site that omits the kwarg.
+
 ## Goal
 
 Implement [ADR-010](../decisions/010-writer-coordination.md): replace the long-lived read-write singleton in `database.py` with short-lived, purpose-declared connections. Every caller acquires a connection, does its work, and releases it. Read-only connections skip `init_schemas()` and `refresh_views()` (~14 ms overhead) and coexist across processes. Write connections are exclusive (~79 ms) and retry on lock contention up to 5 seconds.
@@ -20,8 +22,8 @@ Implement [ADR-010](../decisions/010-writer-coordination.md): replace the long-l
 
 1. `Database(read_only=True)` skips `init_schemas()`, `refresh_views()`, and all migrations; opens DuckDB with `READ_ONLY` flag.
 2. `Database(read_only=True)` raises `DatabaseNotInitializedError` before any DuckDB operation if `db_path` does not exist.
-3. `Database(read_only=False)` (default) behaves identically to the current `Database.__init__()` sequence.
-4. `get_database(read_only, max_wait)` creates a new `Database` per call; no singleton.
+3. `Database(read_only=False)` behaves identically to the current `Database.__init__()` sequence.
+4. `get_database(*, read_only, max_wait)` creates a new `Database` per call; no singleton. `read_only` is a required keyword-only argument with no default.
 5. `get_database()` retries on `DatabaseLockError` with exponential backoff (start 50 ms, ×1.5, cap 500 ms) until `max_wait` is exhausted, then re-raises `DatabaseLockError` with a message that names the blocking process if `lsof` can identify it, falling back to a generic hint if not.
 6. The encryption key retrieved from `SecretStore` is cached in process memory after the first successful retrieval; never re-fetched within the process lifetime.
 7. All `get_database()` callers use the context-manager protocol to ensure connections are released immediately after use.
@@ -32,6 +34,7 @@ Implement [ADR-010](../decisions/010-writer-coordination.md): replace the long-l
 12. The atexit metrics flush opens a fresh connection only if the database was accessed during the session.
 13. `DatabaseNotInitializedError` is caught at all CLI error handlers alongside `DatabaseKeyError`, displayed as a one-line message with no traceback.
 14. The `.claude/rules/database.md` connection-management section is updated to reflect the new per-operation model.
+15. `Database.__init__()` and `get_database()` both require `read_only` as a keyword-only argument; there is no default. All call sites declare intent explicitly. Pyright catches any missing kwarg at type-check time.
 
 ## Implementation Plan
 
@@ -78,7 +81,7 @@ def __init__(
     self,
     db_path: Path,
     *,
-    read_only: bool = False,
+    read_only: bool,
     secret_store: SecretStore | None = None,
     no_auto_upgrade: bool = False,
 ) -> None:
@@ -134,7 +137,8 @@ _migration_check_done: bool = False
 
 
 def get_database(
-    read_only: bool = False,
+    *,
+    read_only: bool,
     max_wait: float = 5.0,
 ) -> Database:
     global _database_accessed, _migration_check_done
@@ -323,7 +327,7 @@ with get_database(read_only=True) as db:
 
 After (write):
 ```python
-with get_database() as db:
+with get_database(read_only=False) as db:
     return SomeService(db).write_operation()
 ```
 
@@ -390,7 +394,7 @@ with handle_cli_errors():
 
 # write command
 with handle_cli_errors():
-    with get_database() as db:
+    with get_database(read_only=False) as db:
         SomeService(db).write_operation()
 ```
 
@@ -409,7 +413,7 @@ def sqlmesh_command(
 ) -> Generator[Database, None, None]:
     logger.info(f"⚙️  {operation}...")
     try:
-        with get_database() as db:
+        with get_database(read_only=False) as db:
             yield db
         logger.info(f"✅ {success or f'{operation} completed'}")
     except typer.Exit:

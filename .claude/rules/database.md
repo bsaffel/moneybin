@@ -9,7 +9,7 @@ paths: ["**/*.sql", "sqlmesh/**", "src/moneybin/sql/**", "src/moneybin/database.
 
 **Never call `duckdb.connect()` directly.** Use the `Database` class (`src/moneybin/database.py`) via `get_database()` for all database access. The `Database` class handles encryption key retrieval, encrypted file attachment, extension loading, schema initialization, and migrations.
 
-Connections are **short-lived and purpose-declared** — acquire, use, release immediately via the context manager:
+Connections are **short-lived and purpose-declared** — acquire, use, release immediately via the context manager. The `read_only` argument is **required** on both `Database.__init__()` and `get_database()`; there is no default. Every call site declares intent explicitly.
 
 ```python
 from moneybin.database import get_database
@@ -21,7 +21,7 @@ with get_database(read_only=True) as db:
     )
 
 # write path — exclusive (~79 ms); retries up to max_wait on contention
-with get_database() as db:
+with get_database(read_only=False) as db:
     db.execute("INSERT INTO app.some_table ...")
 ```
 
