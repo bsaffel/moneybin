@@ -5,7 +5,7 @@ implemented
 
 > **Tool-name drift since this spec landed.** The pattern is unchanged — every MCP tool acquires its own `get_database(read_only=...)` connection — but several tool names referenced in the body have evolved through coherence passes: noun-only reads (PR #172 dropped `_list`), `transactions_categorize_apply` → `_commit` (PR #171), per-field account writes consolidated into `accounts_set` (PR #170/#171), `refresh_run` umbrella retiring `transform_apply` from the user-intent layer (PR #173). The classification rule (read vs. write) is still the source of truth; the example lists below reflect today's surface.
 
-> **Required-kwarg hardening (PR #XXX).** `Database.__init__()` and `get_database()` now require `read_only` as a keyword-only argument; the prior `read_only: bool = False` default is removed. Every caller declares intent explicitly. Read-only enforcement at every read site is the trust boundary protected by this change — the SQL allowlists at MCP/CLI boundaries remain as defense-in-depth, but `ATTACH ... READ_ONLY` is the physical guard. The mechanism is the type system (no separate lint rule); pyright in `make check` fails any call site that omits the kwarg.
+> **Required-kwarg hardening (PR #234).** `Database.__init__()` and `get_database()` now require `read_only` as a keyword-only argument; the prior `read_only: bool = False` default is removed. Every caller declares intent explicitly. Read-only enforcement at every read site is the trust boundary protected by this change — the SQL allowlists at MCP/CLI boundaries remain as defense-in-depth, but `ATTACH ... READ_ONLY` is the physical guard. The mechanism is the type system (no separate lint rule); pyright in `make check` fails any call site that omits the kwarg.
 
 ## Goal
 
