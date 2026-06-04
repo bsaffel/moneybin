@@ -158,12 +158,23 @@ def import_files(
                     actor_kind="agent",
                 )
                 loaded_import_id = one.import_id
-                # Include PDFs only when they landed transactions — seed-path
-                # PDFs write nothing tabular, so refresh would run the full
-                # SQLMesh apply for no purpose. Mirrors ImportService.import_file.
+                # Include PDFs only when the deterministic path produced rows —
+                # seed-path PDFs write nothing tabular, so refresh would run
+                # the full SQLMesh apply for no purpose. Mirrors
+                # ImportService.import_file and import_files: gate on
+                # transactions_extracted (deterministic path produced rows),
+                # not transactions (newly-inserted count). raw inserts use
+                # INSERT OR IGNORE on the (transaction_id, account_id,
+                # source_file) PK so a re-import after a prior refresh
+                # failure reports transactions == 0 even though every row is
+                # present — gating on insert count would skip refresh and
+                # leave those rows invisible in core/reports.
                 if refresh and (
                     one.file_type in ("ofx", "tabular")
-                    or (one.file_type == "pdf" and one.transactions > 0)
+                    or (
+                        one.file_type == "pdf"
+                        and one.details.get("transactions_extracted", 0) > 0
+                    )
                 ):
                     from moneybin.services.refresh import refresh as _refresh
 
