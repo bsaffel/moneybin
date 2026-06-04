@@ -21,7 +21,10 @@ from moneybin.validation.assertions.schema import (
 def db(tmp_path: Path, mock_secret_store: MagicMock) -> Database:
     """Provide a test Database with a table covering INTEGER, VARCHAR, and DECIMAL types."""
     database = Database(
-        tmp_path / "test.duckdb", secret_store=mock_secret_store, no_auto_upgrade=True
+        tmp_path / "test.duckdb",
+        secret_store=mock_secret_store,
+        no_auto_upgrade=True,
+        read_only=False,
     )
     database.execute("CREATE TABLE t (id INTEGER, name VARCHAR, amount DECIMAL(18,2))")
     database.execute(

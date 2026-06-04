@@ -18,6 +18,7 @@ def fresh_db(tmp_path: Path) -> Database:
         tmp_path / "fresh.duckdb",
         secret_store=mock_store,
         no_auto_upgrade=True,
+        read_only=False,
     )
 
 

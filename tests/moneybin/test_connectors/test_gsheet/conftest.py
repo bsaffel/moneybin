@@ -18,7 +18,9 @@ def in_memory_db(
 ) -> Generator[Database, None, None]:
     """Test Database with the full base schema (raw + app + core scaffolding)."""
     db_path = tmp_path / "gsheet_test.duckdb"
-    database = Database(db_path, secret_store=mock_secret_store, no_auto_upgrade=True)
+    database = Database(
+        db_path, secret_store=mock_secret_store, no_auto_upgrade=True, read_only=False
+    )
     yield database
     database.close()
 

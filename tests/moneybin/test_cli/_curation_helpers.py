@@ -26,6 +26,7 @@ def make_curation_db(tmp_path: Path) -> Database:
         tmp_path / "curation.duckdb",
         secret_store=mock_store,
         no_auto_upgrade=True,
+        read_only=False,
     )
     create_core_tables_raw(database.conn)
     database.conn.execute(

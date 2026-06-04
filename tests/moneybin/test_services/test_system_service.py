@@ -40,6 +40,7 @@ def system_db(tmp_path: Path) -> Generator[Database, None, None]:
         tmp_path / "test.duckdb",
         secret_store=mock_store,
         no_auto_upgrade=True,
+        read_only=False,
     )
     conn = database.conn
     create_core_tables_raw(conn)
@@ -118,6 +119,7 @@ def test_status_date_range_empty_db(tmp_path: Path) -> None:
         tmp_path / "empty.duckdb",
         secret_store=mock_store,
         no_auto_upgrade=True,
+        read_only=False,
     )
     create_core_tables_raw(database.conn)
     try:
@@ -223,6 +225,7 @@ def test_status_transforms_pending_when_raw_newer_than_dim(
         tmp_path / "pending.duckdb",
         secret_store=mock_store,
         no_auto_upgrade=True,
+        read_only=False,
     )
     try:
         create_core_tables_raw(database.conn)
@@ -247,6 +250,7 @@ def test_status_transforms_not_pending_after_apply(tmp_path: Path) -> None:
         tmp_path / "fresh.duckdb",
         secret_store=mock_store,
         no_auto_upgrade=True,
+        read_only=False,
     )
     try:
         create_core_tables_raw(database.conn)
@@ -272,6 +276,7 @@ def test_status_transforms_pending_false_with_no_imports(tmp_path: Path) -> None
         tmp_path / "empty.duckdb",
         secret_store=mock_store,
         no_auto_upgrade=True,
+        read_only=False,
     )
     try:
         # No core.dim_accounts and no imports → freshness returns pending=False.

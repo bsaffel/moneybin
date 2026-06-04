@@ -31,6 +31,7 @@ def assertion_db(
         tmp_path / "assertion_test.duckdb",
         secret_store=mock_secret_store,
         no_auto_upgrade=True,
+        read_only=False,
     )
     create_core_tables(database)
     database.execute(

@@ -124,6 +124,7 @@ def test_resolve_account_via_matcher_uses_existing_id_on_match(
         tmp_path / "match.duckdb",
         secret_store=mock_secret_store,
         no_auto_upgrade=True,
+        read_only=False,
     )
     try:
         db.execute("""
@@ -157,6 +158,7 @@ def test_resolve_account_via_matcher_creates_new_when_no_candidates(
         tmp_path / "new.duckdb",
         secret_store=mock_secret_store,
         no_auto_upgrade=True,
+        read_only=False,
     )
     try:
         # Confirm the table exists so this exercises the empty-table path,
@@ -185,6 +187,7 @@ def test_resolve_account_via_matcher_auto_accepts_top_candidate(
         tmp_path / "fuzzy.duckdb",
         secret_store=mock_secret_store,
         no_auto_upgrade=True,
+        read_only=False,
     )
     try:
         db.execute("""
@@ -220,6 +223,7 @@ def test_resolve_account_via_matcher_warns_and_falls_back_when_not_auto(
         tmp_path / "fuzzy2.duckdb",
         secret_store=mock_secret_store,
         no_auto_upgrade=True,
+        read_only=False,
     )
     try:
         db.execute("""
@@ -263,6 +267,7 @@ class TestTabularConfirmationFlow:
             tmp_path / "conf_flow.duckdb",
             secret_store=mock_secret_store,
             no_auto_upgrade=True,
+            read_only=False,
         )
 
     def test_low_confidence_raises_confirmation_required(

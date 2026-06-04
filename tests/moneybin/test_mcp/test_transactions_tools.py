@@ -80,7 +80,7 @@ async def test_matches_pending_component_key_present(mcp_db: object) -> None:
     import json
     from datetime import UTC, datetime
 
-    with get_database() as db:
+    with get_database(read_only=False) as db:
         for match_id, stid_a, stype_a, stid_b, stype_b, acct in [
             ("mc_ab", "t1", "csv", "t2", "ofx", "ACC001"),
             ("mc_bc", "t2", "ofx", "t3", "tiller", "ACC001"),
@@ -149,7 +149,7 @@ async def test_matches_pending_dedup_group_count_zero_for_transfer_scope(
     import json
     from datetime import UTC, datetime
 
-    with get_database() as db:
+    with get_database(read_only=False) as db:
         db.execute(
             """
             INSERT INTO app.match_decisions (

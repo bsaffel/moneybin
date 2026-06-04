@@ -22,7 +22,9 @@ def test_init_does_not_fail_when_existing_table_missing_new_columns(
     """
     db_path = tmp_path / "moneybin.duckdb"
 
-    db = Database(db_path, secret_store=mock_secret_store, no_auto_upgrade=True)
+    db = Database(
+        db_path, secret_store=mock_secret_store, no_auto_upgrade=True, read_only=False
+    )
     try:
         db.execute("ALTER TABLE raw.ofx_institutions DROP COLUMN import_id")
         db.execute("ALTER TABLE raw.ofx_institutions DROP COLUMN source_type")
@@ -30,7 +32,9 @@ def test_init_does_not_fail_when_existing_table_missing_new_columns(
     finally:
         db.close()
 
-    db2 = Database(db_path, secret_store=mock_secret_store, no_auto_upgrade=False)
+    db2 = Database(
+        db_path, secret_store=mock_secret_store, no_auto_upgrade=False, read_only=False
+    )
     try:
         cols = {
             row[0]
@@ -58,7 +62,9 @@ def test_init_does_not_fail_when_proposed_rules_missing_rule_id(
     """
     db_path = tmp_path / "moneybin.duckdb"
 
-    db = Database(db_path, secret_store=mock_secret_store, no_auto_upgrade=True)
+    db = Database(
+        db_path, secret_store=mock_secret_store, no_auto_upgrade=True, read_only=False
+    )
     try:
         # DuckDB refuses ALTER ... DROP COLUMN while any index exists on
         # the table, so drop both indexes; the schema file recreates the
@@ -70,7 +76,9 @@ def test_init_does_not_fail_when_proposed_rules_missing_rule_id(
     finally:
         db.close()
 
-    db2 = Database(db_path, secret_store=mock_secret_store, no_auto_upgrade=False)
+    db2 = Database(
+        db_path, secret_store=mock_secret_store, no_auto_upgrade=False, read_only=False
+    )
     try:
         cols = {
             row[0]

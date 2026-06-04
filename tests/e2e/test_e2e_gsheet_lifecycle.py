@@ -77,6 +77,7 @@ def lifecycle_db(tmp_path: Path) -> Generator[Database, None, None]:
         tmp_path / "gsheet-lifecycle.duckdb",
         secret_store=secret_store,
         no_auto_upgrade=True,
+        read_only=False,
     )
     try:
         yield db

@@ -20,7 +20,10 @@ from moneybin.validation.result import ExpectationResult
 def _make_db(tmp_path: Path, mock_secret_store: MagicMock, name: str) -> Database:
     # init_schemas creates app.* tables; core/meta schemas are present but empty.
     return Database(
-        tmp_path / name, secret_store=mock_secret_store, no_auto_upgrade=True
+        tmp_path / name,
+        secret_store=mock_secret_store,
+        no_auto_upgrade=True,
+        read_only=False,
     )
 
 

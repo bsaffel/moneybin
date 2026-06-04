@@ -543,7 +543,9 @@ class TestAutoUpgrade:
         with patch(
             "moneybin.database.importlib.metadata.version", return_value="1.0.0"
         ):
-            database = Database(db_path, secret_store=mock_secret_store)
+            database = Database(
+                db_path, secret_store=mock_secret_store, read_only=False
+            )
         try:
             row = database.execute(
                 "SELECT version FROM app.versions WHERE component = 'moneybin'"
@@ -562,14 +564,14 @@ class TestAutoUpgrade:
         with patch(
             "moneybin.database.importlib.metadata.version", return_value="1.0.0"
         ):
-            db1 = Database(db_path, secret_store=mock_secret_store)
+            db1 = Database(db_path, secret_store=mock_secret_store, read_only=False)
             db1.close()
 
         # Second init at version 2.0.0 — should trigger migration sequence
         with patch(
             "moneybin.database.importlib.metadata.version", return_value="2.0.0"
         ):
-            db2 = Database(db_path, secret_store=mock_secret_store)
+            db2 = Database(db_path, secret_store=mock_secret_store, read_only=False)
         try:
             row = db2.execute(
                 "SELECT version, previous_version FROM app.versions "
@@ -596,7 +598,7 @@ class TestAutoUpgrade:
         with patch(
             "moneybin.database.importlib.metadata.version", return_value="1.0.0"
         ):
-            db1 = Database(db_path, secret_store=mock_secret_store)
+            db1 = Database(db_path, secret_store=mock_secret_store, read_only=False)
             # Simulate "a migration was never recorded" by deleting one applied
             # row from schema_migrations. On next open the runner.pending()
             # check should re-apply it without any version bump.
@@ -616,7 +618,7 @@ class TestAutoUpgrade:
         with patch(
             "moneybin.database.importlib.metadata.version", return_value="1.0.0"
         ):
-            db2 = Database(db_path, secret_store=mock_secret_store)
+            db2 = Database(db_path, secret_store=mock_secret_store, read_only=False)
         try:
             count = db2.execute(
                 "SELECT COUNT(*) FROM app.schema_migrations WHERE version = ?",
@@ -645,7 +647,9 @@ class TestAutoUpgrade:
             patch("moneybin.database.importlib.metadata.version", return_value="1.0.0"),
             patch("moneybin.database.get_settings", return_value=mock_settings),
         ):
-            database = Database(db_path, secret_store=mock_secret_store)
+            database = Database(
+                db_path, secret_store=mock_secret_store, read_only=False
+            )
         try:
             row = database.execute(
                 "SELECT COUNT(*) FROM app.versions WHERE component = 'moneybin'"

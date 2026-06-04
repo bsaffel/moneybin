@@ -67,6 +67,7 @@ class TestSyntheticWriter:
             tmp_path / "test.duckdb",
             secret_store=mock_secret_store,
             no_auto_upgrade=True,
+            read_only=False,
         )
         yield db
         db.close()

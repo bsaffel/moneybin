@@ -22,7 +22,10 @@ from moneybin.validation.assertions.domain import (
 def continuity_db(tmp_path: Path, mock_secret_store: MagicMock) -> Database:
     """Provide a test Database with a simple date/account table."""
     database = Database(
-        tmp_path / "test.duckdb", secret_store=mock_secret_store, no_auto_upgrade=True
+        tmp_path / "test.duckdb",
+        secret_store=mock_secret_store,
+        no_auto_upgrade=True,
+        read_only=False,
     )
     database.execute("CREATE TABLE txns (account_id VARCHAR, transaction_date DATE)")
     return database
@@ -32,7 +35,10 @@ def continuity_db(tmp_path: Path, mock_secret_store: MagicMock) -> Database:
 def txn_db(tmp_path: Path, mock_secret_store: MagicMock) -> Database:
     """Provide a test Database with core.fct_transactions."""
     database = Database(
-        tmp_path / "test.duckdb", secret_store=mock_secret_store, no_auto_upgrade=True
+        tmp_path / "test.duckdb",
+        secret_store=mock_secret_store,
+        no_auto_upgrade=True,
+        read_only=False,
     )
     database.execute("CREATE SCHEMA IF NOT EXISTS core")
     database.execute(
@@ -174,7 +180,10 @@ def test_date_continuity_flags_account_with_all_null_dates(
 def db(tmp_path: Path, mock_secret_store: MagicMock) -> Database:
     """Provide an empty test Database for tests that create their own table ``t``."""
     return Database(
-        tmp_path / "test.duckdb", secret_store=mock_secret_store, no_auto_upgrade=True
+        tmp_path / "test.duckdb",
+        secret_store=mock_secret_store,
+        no_auto_upgrade=True,
+        read_only=False,
     )
 
 

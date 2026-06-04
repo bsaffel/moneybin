@@ -23,7 +23,12 @@ def reports_db(tmp_path: Path) -> Generator[Database, None, None]:
     """A Database with classified core tables and a reports.* test view."""
     store = MagicMock()
     store.get_key.return_value = "test-encryption-key-for-unit-tests"
-    db = Database(tmp_path / "reports.duckdb", secret_store=store, no_auto_upgrade=True)
+    db = Database(
+        tmp_path / "reports.duckdb",
+        secret_store=store,
+        no_auto_upgrade=True,
+        read_only=False,
+    )
     create_core_tables_raw(db.conn)
     db.execute(
         """

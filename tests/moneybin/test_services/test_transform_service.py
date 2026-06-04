@@ -42,6 +42,7 @@ def _open_db(tmp_path: Path, mock_secret_store: MagicMock) -> Database:
         tmp_path / "test.duckdb",
         secret_store=mock_secret_store,
         no_auto_upgrade=True,
+        read_only=False,
     )
 
 

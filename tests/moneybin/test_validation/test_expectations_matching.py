@@ -20,7 +20,10 @@ def _make_db(tmp_path: Path, mock_secret_store: MagicMock, name: str) -> Databas
     # init_schemas runs automatically and creates app.* tables; meta/core/prep
     # schemas are created but have no tables yet — we add them below.
     return Database(
-        tmp_path / name, secret_store=mock_secret_store, no_auto_upgrade=True
+        tmp_path / name,
+        secret_store=mock_secret_store,
+        no_auto_upgrade=True,
+        read_only=False,
     )
 
 

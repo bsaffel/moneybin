@@ -33,6 +33,7 @@ def populated_db(tmp_path: Path) -> Generator[Database, None, None]:
         tmp_path / "privacy.duckdb",
         secret_store=mock_store,
         no_auto_upgrade=True,
+        read_only=False,
     )
     create_core_tables_raw(database.conn)
     apply_core_table_comments(database)

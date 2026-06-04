@@ -41,7 +41,10 @@ def _mcp_db_template(  # pyright: ignore[reportUnusedFunction]  # pytest fixture
     template_path = template_dir / "template.duckdb"
 
     database = Database(
-        template_path, secret_store=_make_mock_store(), no_auto_upgrade=True
+        template_path,
+        secret_store=_make_mock_store(),
+        no_auto_upgrade=True,
+        read_only=False,
     )
     conn = database.conn
     create_core_tables_raw(conn)

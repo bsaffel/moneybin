@@ -105,7 +105,7 @@ class TestToolRegistration:
     @pytest.mark.unit
     async def test_sql_query_returns_envelope(self, mcp_db: Path) -> None:
 
-        with get_database() as db:
+        with get_database(read_only=False) as db:
             db.conn.execute(_INSERT_TRANSACTIONS)
 
         # Also exercise registration to ensure no smoke errors.

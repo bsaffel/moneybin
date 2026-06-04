@@ -92,6 +92,7 @@ def account_db(tmp_path: Path) -> Generator[Database, None, None]:
         tmp_path / "test.duckdb",
         secret_store=mock_store,
         no_auto_upgrade=True,
+        read_only=False,
     )
     conn = database.conn
     create_core_tables_raw(conn)
@@ -243,6 +244,7 @@ def test_db(
         tmp_path / "test.duckdb",
         secret_store=mock_secret_store,
         no_auto_upgrade=True,
+        read_only=False,
     )
     create_core_tables(database)
     database.execute(
@@ -289,6 +291,7 @@ class TestEmptyResults:
             tmp_path / "test.duckdb",
             secret_store=mock_store,
             no_auto_upgrade=True,
+            read_only=False,
         )
         create_core_tables_raw(database.conn)
         yield database
@@ -555,6 +558,7 @@ def extended_db(
         tmp_path / "extended_test.duckdb",
         secret_store=mock_secret_store,
         no_auto_upgrade=True,
+        read_only=False,
     )
     create_core_tables(database)
     try:

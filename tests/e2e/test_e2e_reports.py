@@ -116,7 +116,12 @@ def reports_env(e2e_home: Path) -> Iterator[dict[str, str]]:
     # the original on exit so we don't leak the e2e key into other tests.
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr("moneybin.database._cached_encryption_key", None)
-        db = Database(db_path, secret_store=_FixedKeyStore(), no_auto_upgrade=True)  # pyright: ignore[reportArgumentType]  # minimal SecretStore stand-in
+        db = Database(
+            db_path,
+            secret_store=_FixedKeyStore(),  # pyright: ignore[reportArgumentType]  # minimal SecretStore stand-in
+            no_auto_upgrade=True,
+            read_only=False,
+        )
         try:
             db.execute("CREATE SCHEMA IF NOT EXISTS reports")
             for ddl in _STUB_VIEWS:

@@ -44,7 +44,7 @@ def mock_store(encryption_key: str) -> MagicMock:
 def encrypted_db(tmp_path: Path, mock_store: MagicMock) -> Database:
     """Real encrypted database with base schemas initialized."""
     db_path = tmp_path / "integration.duckdb"
-    db = Database(db_path, secret_store=mock_store)
+    db = Database(db_path, secret_store=mock_store, read_only=False)
     return db
 
 
@@ -117,7 +117,7 @@ class TestPassphraseRoundTrip:
         assert "DATABASE__ENCRYPTION_KEY" in keychain
 
         # Write some test data
-        db = Database(db_path, secret_store=fake_store)
+        db = Database(db_path, secret_store=fake_store, read_only=False)
         db.execute("CREATE TABLE raw.test_data (id INTEGER, val VARCHAR)")
         db.execute("INSERT INTO raw.test_data VALUES (1, 'hello')")
         db.close()
@@ -133,7 +133,7 @@ class TestPassphraseRoundTrip:
         assert "DATABASE__ENCRYPTION_KEY" in keychain
 
         # Step 4: Verify data is accessible
-        db2 = Database(db_path, secret_store=fake_store)
+        db2 = Database(db_path, secret_store=fake_store, read_only=False)
         try:
             row = db2.execute("SELECT val FROM raw.test_data WHERE id = 1").fetchone()
             assert row is not None
@@ -195,7 +195,7 @@ class TestKeyRotation:
         keychain["DATABASE__ENCRYPTION_KEY"] = initial_key
 
         # Create database and insert data
-        db = Database(db_path, secret_store=fake_store)
+        db = Database(db_path, secret_store=fake_store, read_only=False)
         db.execute("CREATE TABLE raw.test_data (id INTEGER, val VARCHAR)")
         db.execute("INSERT INTO raw.test_data VALUES (42, 'pre-rotation')")
         db.close()
@@ -210,7 +210,7 @@ class TestKeyRotation:
         assert len(new_key) == 64  # 32 bytes hex
 
         # Verify data is accessible with new key
-        db2 = Database(db_path, secret_store=fake_store)
+        db2 = Database(db_path, secret_store=fake_store, read_only=False)
         try:
             row = db2.execute("SELECT val FROM raw.test_data WHERE id = 42").fetchone()
             assert row is not None

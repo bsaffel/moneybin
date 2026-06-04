@@ -72,7 +72,10 @@ def db(tmp_path: Path) -> Database:
     mock_store = MagicMock()
     mock_store.get_key.return_value = "test-encryption-key-for-tests"
     database = Database(
-        tmp_path / "test.duckdb", secret_store=mock_store, no_auto_upgrade=True
+        tmp_path / "test.duckdb",
+        secret_store=mock_store,
+        no_auto_upgrade=True,
+        read_only=False,
     )
     # Core tables are managed by SQLMesh in production; create concrete
     # tables here so tests can INSERT fixture data directly.
@@ -638,7 +641,10 @@ def real_db(tmp_path: Path) -> Database:
     mock_store = MagicMock()
     mock_store.get_key.return_value = "test-key"
     db = Database(
-        tmp_path / "test.duckdb", secret_store=mock_store, no_auto_upgrade=True
+        tmp_path / "test.duckdb",
+        secret_store=mock_store,
+        no_auto_upgrade=True,
+        read_only=False,
     )
     create_core_tables(db)
     return db
@@ -892,6 +898,7 @@ def test_categorize_items_uses_constant_number_of_db_calls(
         tmp_path / "perf.duckdb",
         secret_store=mock_secret_store,
         no_auto_upgrade=True,
+        read_only=False,
     )
     create_core_tables(db)
     # Seed 25 transactions and 25 corresponding category items.
@@ -950,6 +957,7 @@ def test_categorize_items_dedupes_merchant_creation_within_batch(
         tmp_path / "dedup.duckdb",
         secret_store=mock_secret_store,
         no_auto_upgrade=True,
+        read_only=False,
     )
     create_core_tables(db)
     for i in range(3):
@@ -1089,7 +1097,10 @@ def db_with_uncategorized_txns(
 ) -> Database:
     """Database seeded with 10 uncategorized transactions in core.fct_transactions."""
     db = Database(
-        tmp_path / "assist.duckdb", secret_store=mock_secret_store, no_auto_upgrade=True
+        tmp_path / "assist.duckdb",
+        secret_store=mock_secret_store,
+        no_auto_upgrade=True,
+        read_only=False,
     )
     create_core_tables(db)
     descriptions = [

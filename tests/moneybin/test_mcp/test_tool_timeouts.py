@@ -194,13 +194,20 @@ async def test_back_to_back_call_after_timeout_succeeds(
 
     # Create the test DB once — quick_tool will open fresh connections to it.
     db_path = tmp_path / "t.duckdb"
-    Database(db_path, secret_store=mock_secret_store, no_auto_upgrade=True).close()
+    Database(
+        db_path, secret_store=mock_secret_store, no_auto_upgrade=True, read_only=False
+    ).close()
 
     from contextlib import contextmanager
 
     @contextmanager
     def _fake_get_database(read_only: bool = False, **_: object):  # type: ignore[misc]
-        conn = Database(db_path, secret_store=mock_secret_store, no_auto_upgrade=True)
+        conn = Database(
+            db_path,
+            secret_store=mock_secret_store,
+            no_auto_upgrade=True,
+            read_only=False,
+        )
         if not read_only:
             with db_module._active_write_lock:  # pyright: ignore[reportPrivateUsage]
                 db_module._active_write_conn = conn  # pyright: ignore[reportPrivateUsage]

@@ -65,7 +65,9 @@ def concurrent_db(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, str]:
     mock_store = MagicMock()
     mock_store.get_key.return_value = _TEST_KEY
 
-    db = Database(db_path, secret_store=mock_store, no_auto_upgrade=True)
+    db = Database(
+        db_path, secret_store=mock_store, no_auto_upgrade=True, read_only=False
+    )
     db.execute("CREATE TABLE IF NOT EXISTS ping (x INTEGER)")
     db.close()
 

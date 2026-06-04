@@ -27,7 +27,10 @@ def mock_secret_store() -> MagicMock:
 @pytest.fixture()
 def db(tmp_path: Path, mock_secret_store: MagicMock) -> Database:
     return Database(
-        tmp_path / "test.duckdb", secret_store=mock_secret_store, no_auto_upgrade=True
+        tmp_path / "test.duckdb",
+        secret_store=mock_secret_store,
+        no_auto_upgrade=True,
+        read_only=False,
     )
 
 
