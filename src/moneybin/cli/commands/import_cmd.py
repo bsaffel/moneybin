@@ -93,7 +93,7 @@ def _load_all_formats(
     if db is not None:
         try:
             user_formats = load_formats_from_db(db)
-        except Exception:  # noqa: BLE001, S110 — DB table may not exist yet
+        except Exception:  # noqa: BLE001 — DB table may not exist yet
             logger.debug("Could not load user formats from DB, using built-in only")
     all_formats = merge_formats(builtin, user_formats)
     return all_formats, builtin
@@ -107,7 +107,7 @@ def _load_pdf_formats(db: Database | None) -> list[PdfFormat]:
         from moneybin.repositories.pdf_formats_repo import PdfFormatsRepo
 
         return PdfFormatsRepo(db).list_all()
-    except Exception:  # noqa: BLE001, S110 — app.pdf_formats may not exist yet
+    except Exception:  # noqa: BLE001 — app.pdf_formats may not exist yet
         logger.debug("Could not load PDF formats from DB")
         return []
 
