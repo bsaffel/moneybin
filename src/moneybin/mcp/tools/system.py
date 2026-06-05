@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
 import duckdb
 from fastmcp import FastMCP
 
+from moneybin.db_lock.lock import _LOCK_SUFFIX  # type: ignore[reportPrivateUsage]
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.privacy.payloads.system import (
@@ -21,15 +24,19 @@ from moneybin.privacy.payloads.system import (
     SystemDoctorPayload,
     SystemStatusAccountsInfo,
     SystemStatusCategorizationInfo,
+    SystemStatusDatabaseConnectionsInfo,
     SystemStatusGsheetInfo,
     SystemStatusGsheetRow,
     SystemStatusMatchesInfo,
     SystemStatusPayload,
+    SystemStatusReader,
     SystemStatusSchemaDrift,
     SystemStatusTransactionsInfo,
     SystemStatusTransformsInfo,
+    SystemStatusWriter,
 )
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.utils.db_processes import find_blocking_processes
 
 _HEALTHY_STATUSES = frozenset({"healthy"})
 _DISCONNECTED_STATUSES = frozenset({"disconnected"})
@@ -108,6 +115,45 @@ def _gsheet_action_hints(needs_attention: list[dict[str, Any]]) -> list[str]:
     return hints
 
 
+def _database_connections_block(db_path: Path) -> dict[str, Any]:
+    """Merge file-lock writer metadata with lsof-derived reader enumeration.
+
+    Returns the empty-shape ``{"writers": [], "readers": []}`` when neither
+    source reports anything. Tolerates a corrupted lock file by treating it
+    as no-writer-info — the lock-file payload is best-effort observability,
+    not a correctness contract. The writer's pid is filtered out of the
+    reader list to avoid double-listing the writer process.
+    """
+    writers: list[dict[str, Any]] = []
+    writer_pid: int | None = None
+    lock_path = db_path.parent / (db_path.name + _LOCK_SUFFIX)
+    if lock_path.exists():
+        try:
+            metadata = json.loads(lock_path.read_text())
+            writer_pid = int(metadata["pid"])
+            writers.append({
+                "pid": writer_pid,
+                "command": str(metadata["command"]),
+                "started_at": str(metadata["started_at"]),
+                "operation_type": str(metadata["operation_type"]),
+            })
+        except (OSError, ValueError, KeyError):
+            # Corrupted metadata or partial write — treat as no writer.
+            writers = []
+            writer_pid = None
+
+    readers: list[dict[str, Any]] = []
+    for proc in find_blocking_processes(db_path):
+        if writer_pid is not None and proc["pid"] == writer_pid:
+            continue  # Avoid double-listing the writer as a reader
+        readers.append({
+            "pid": int(proc["pid"]),
+            "command": str(proc.get("cmdline") or proc.get("command", "")),
+        })
+
+    return {"writers": writers, "readers": readers}
+
+
 @mcp_tool()
 def system_status() -> ResponseEnvelope[SystemStatusPayload]:
     """Return data inventory, pending review queue counts, and transforms freshness.
@@ -117,12 +163,14 @@ def system_status() -> ResponseEnvelope[SystemStatusPayload]:
     ``gsheet`` block summarizes Google Sheets connection health: drift-detected
     connections surface a paired ``gsheet_reconnect`` hint in ``actions[]``.
     """
+    from moneybin.config import get_settings
     from moneybin.database import get_database
     from moneybin.services.system_service import SystemService
 
     with get_database(read_only=True) as db:
         status = SystemService(db).status()
         gsheet = _gsheet_block(db)
+        db_connections = _database_connections_block(get_settings().database.path)
 
     min_date, max_date = status.transactions_date_range
 
@@ -191,6 +239,10 @@ def system_status() -> ResponseEnvelope[SystemStatusPayload]:
                     )
                     for r in gsheet["needs_attention"]
                 ],
+            ),
+            database_connections=SystemStatusDatabaseConnectionsInfo(
+                writers=[SystemStatusWriter(**w) for w in db_connections["writers"]],
+                readers=[SystemStatusReader(**r) for r in db_connections["readers"]],
             ),
         ),
         actions=actions,
