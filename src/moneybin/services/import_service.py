@@ -174,6 +174,45 @@ class BatchImportResult:
         return len(self.per_file)
 
 
+# Routing reasons where Phase 2b escalates `import_preview` to the bridge.
+# The deterministic rung produced *something* but couldn't finalize it — the
+# driving agent has a chance to crack the layout where the deterministic path
+# couldn't. ``no_transaction_table``, ``no_rows``, and ``unsupported_number_format``
+# are deliberately NOT in this set: the document isn't transaction-shaped (so
+# bridge would be off-target) or has no extractable content (so a text-bridge
+# has nothing to read).
+_BRIDGE_ELIGIBLE_REASONS: frozenset[str] = frozenset({
+    "low_confidence",
+    "replay_reconciliation_failed",
+    "reconciliation_failed",
+    "metadata_incomplete",
+})
+
+
+@dataclass(frozen=True)
+class PdfPreviewResult:
+    """Outcome of running ``pdf_preview`` against a native-text PDF.
+
+    Returned when the deterministic rung either succeeded or failed in a way
+    that the bridge can't improve on (e.g. ``no_transaction_table``). When the
+    deterministic outcome IS bridge-eligible, ``pdf_preview`` raises
+    ``ImportConfirmationRequiredError`` carrying a ``BridgePayload`` instead of
+    returning — the escalation is the result.
+    """
+
+    file_path: str
+    deterministic: bool
+    """True when the recipe ran cleanly and rows would route to transactions."""
+
+    decision_reason: str
+    """Routing reason (``passed`` on success; ``no_transaction_table`` /
+    ``no_rows`` / ``unsupported_number_format`` on non-escalating fallbacks)."""
+
+    confidence: float
+    row_count: int
+    fingerprint: dict[str, Any] | None = None
+
+
 @dataclass(frozen=True)
 class ResolvedMapping:
     """Final per-import mapping from the matched format or auto-detection.
@@ -1245,6 +1284,133 @@ class ImportService:
                 logger.debug("Could not auto-save format", exc_info=True)
 
         return result
+
+    def pdf_preview(self, file_path: Path) -> PdfPreviewResult:
+        """Run the Phase 2a routing state machine on a PDF without importing.
+
+        Three outcomes — same machinery as ``_import_pdf`` but no side effects
+        on raw tables and no ``raw.import_log`` row:
+
+        - Deterministic success (``decision.outcome == "transactions"``):
+          returns ``PdfPreviewResult(deterministic=True, ...)`` with the row
+          count and fingerprint. The caller can then call ``import_files``
+          to actually load.
+        - Bridge-eligible failure (``decision.outcome == "seed"`` with a
+          ``_BRIDGE_ELIGIBLE_REASONS`` reason): escalates by raising
+          ``ImportConfirmationRequiredError`` carrying a ``BridgePayload``
+          (a typed ``BridgeRequest`` wrapped in the channel-agnostic
+          envelope). Writes a ``smart_import_parse`` audit row (Req 14)
+          and increments ``PDF_BRIDGE_EGRESS_TOTAL{outcome="proposed"}``
+          before raising — the egress is the audited event regardless of
+          whether the agent ratifies.
+        - Non-bridge-eligible failure (``no_transaction_table`` / ``no_rows``
+          / ``unsupported_number_format``): returns
+          ``PdfPreviewResult(deterministic=False, ...)``. The bridge would
+          not help on these (the document isn't transaction-shaped, or has
+          no extractable content), so we surface the gap honestly rather
+          than ship an empty payload.
+
+        This is a read-mostly path: side effects are the audit row on
+        escalation (Req 14) and the metric bump. No ``raw.*`` rows land.
+        """
+        from moneybin.extractors.pdf.bridge import build_bridge_request
+        from moneybin.extractors.pdf.extractor import PDFExtractor
+        from moneybin.extractors.pdf.routing import route_pdf_import
+        from moneybin.metrics.registry import PDF_BRIDGE_EGRESS_TOTAL
+        from moneybin.services.import_confirmation import (
+            BridgePayload,
+            ConfirmationRequired,
+            ImportConfirmationRequiredError,
+        )
+
+        canonical = file_path.resolve()
+        doc = PDFExtractor().extract(canonical)
+        decision = route_pdf_import(doc, self._db)
+
+        if decision.outcome == "transactions":
+            return PdfPreviewResult(
+                file_path=str(canonical),
+                deterministic=True,
+                decision_reason=decision.reason,
+                confidence=decision.confidence,
+                row_count=len(decision.rows),
+                fingerprint=decision.fp,
+            )
+
+        if decision.reason in _BRIDGE_ELIGIBLE_REASONS:
+            # Bridge escalation. The driving agent gets the payload; whether
+            # it ratifies is a follow-up call to import_confirm. We audit the
+            # egress regardless (Req 14): the hand-off happened.
+            request_kind = (
+                "replay_failed_re_derive"
+                if decision.reason == "replay_reconciliation_failed"
+                else "propose_recipe"
+            )
+            saved_recipe = (
+                # The matched recipe is available on the decision when a saved
+                # format was the source of the failure; for first-contact
+                # paths it's None.
+                {"name": decision.matched_format_name}
+                if request_kind == "replay_failed_re_derive"
+                and decision.matched_format_name
+                else None
+            )
+            bridge_request = build_bridge_request(
+                doc,
+                request_kind=request_kind,
+                saved_recipe_for_re_derive=saved_recipe,
+            )
+            from dataclasses import asdict
+
+            payload = BridgePayload(payload=asdict(bridge_request))
+            self._audit.record_audit_event(
+                action="smart_import_parse",
+                target=("raw", "pdf_seeds", str(canonical)),
+                before=None,
+                after={
+                    "request_kind": request_kind,
+                    "fingerprint": bridge_request.fingerprint,
+                    "source_file": bridge_request.source_file,
+                    "decision_reason": decision.reason,
+                },
+                actor="system",
+                context={"confidence": decision.confidence},
+            )
+            PDF_BRIDGE_EGRESS_TOTAL.labels(outcome="proposed").inc()
+            from moneybin.config import get_settings as _get_settings
+            from moneybin.extractors.confidence import Confidence, tier_for
+
+            bands = _get_settings().import_.confidence
+            confidence_obj = Confidence(
+                score=decision.confidence,
+                tier=tier_for(
+                    decision.confidence, t_high=bands.t_high, t_med=bands.t_med
+                ),
+                flagged=(),
+                missing_required=(),
+            )
+            raise ImportConfirmationRequiredError(
+                ConfirmationRequired(
+                    channel="pdf",
+                    confidence=confidence_obj,
+                    proposed=payload,
+                    reason=(
+                        "validation_failure"
+                        if request_kind == "replay_failed_re_derive"
+                        else "unknown_layout"
+                    ),
+                )
+            )
+
+        # Non-bridge-eligible seed fallback — return the honest gap.
+        return PdfPreviewResult(
+            file_path=str(canonical),
+            deterministic=False,
+            decision_reason=decision.reason,
+            confidence=decision.confidence,
+            row_count=0,
+            fingerprint=decision.fp,
+        )
 
     def _import_pdf(
         self,

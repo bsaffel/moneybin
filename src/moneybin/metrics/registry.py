@@ -110,6 +110,18 @@ PDF_SEED_ROWS_TOTAL = Counter(
     ["alias"],
 )
 
+# Phase 2b — bridge egress events (Req 14). One increment per hand-off to the
+# driving agent. Outcomes: "proposed" (egress occurred, no response yet),
+# "applied" (agent returned a vetted recipe + rows that landed), "declined"
+# (agent or user rejected the proposal), "invalid" (response failed
+# parse_bridge_response / Recipe.model_validate). Labels stay bounded for stable
+# dashboards.
+PDF_BRIDGE_EGRESS_TOTAL = Counter(
+    "moneybin_pdf_bridge_egress_total",
+    "PDF bridge hand-offs to the driving agent by outcome.",
+    ["outcome"],  # values: "proposed", "applied", "declined", "invalid"
+)
+
 # ── Smart import confirmation ────────────────────────────────────────────────
 
 IMPORT_CONFIRMATIONS_TOTAL = Counter(

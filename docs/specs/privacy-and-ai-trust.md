@@ -77,27 +77,31 @@ Every path where data might leave the user's machine falls into one of four tier
 
 ### Tier 3 — Programmatic, real data
 
-**Examples:** Smart Import pillar F sends a file preview to AI for parsing when heuristics fail. Future: autonomous AI analysis runs (scheduled spending summaries, anomaly detection).
+**Examples:** Future autonomous AI analysis runs (scheduled spending summaries, anomaly detection) once the in-process cloud rung (separate `AIBackend`) lands.
+
+**Status:** Not used by any v1 surface. The smart-import-pdf path that earlier drafts placed here uses the **bridge-to-driving-agent** model below instead — a different trust shape that doesn't fit the redacted-preview promise.
 
 **Data state:** Real financial data, sent by the system — not in response to a direct user question.
-**Consent:** Per-invocation with redacted preview. Every call shows:
+**Consent (when this tier activates):** Per-invocation with redacted preview. Every call shows:
 - What will be sent (redacted preview of the actual payload)
 - Where it will be sent (backend name and provider privacy stance)
 - What response shape is expected (e.g., "column mapping," not raw transactions)
 
-The user confirms, declines, or switches backend each time. No persistent consent for tier 3 in v1. If a single user action (e.g., one file import) would trigger multiple AI calls, the consent prompt covers the full set of calls for that action — not one prompt per internal API call.
+The user confirms, declines, or switches backend each time. No persistent consent for tier 3 in v1. If a single user action would trigger multiple AI calls, the consent prompt covers the full set of calls for that action — not one prompt per internal API call.
 
-**Consent prompt example:**
-> Smart Import couldn't auto-detect the format of `chase_2024.csv`.
->
-> To parse this file, MoneyBin can send a preview to **Anthropic (Claude)**:
-> - **Rows:** 5 sample rows (of 1,240 total)
-> - **Masked:** Account numbers replaced with `****XXXX`, amounts with synthetic values
-> - **Visible to AI:** Column headers, date formats, description text, transaction structure
->
-> **Privacy:** Anthropic does not train on API data.
->
-> Send preview? [y/N] or switch backend [b]
+### Bridge-to-driving-agent (smart-import-pdf, Phase 2b)
+
+**Examples:** Native-text PDF whose deterministic recipe extraction can't reconcile, or whose saved recipe broke — the document is handed to the same agent the user is *already* driving MoneyBin with, the agent proposes a Recipe + rows, and `import_confirm` ratifies. See `smart-import-pdf.md` Reqs 14–16.
+
+**Trust model — distinct from Tier 3.** The recipient is not a new third-party backend MoneyBin chose to send data to; it is the LLM host already running the user's MoneyBin session. The user established trust with that host at session start (by typing into it, granting MCP tool access, etc.). The bridge surfaces the document *to that same host* — no new egress relationship is created, and no new privacy stance applies. Tier 3's per-invocation consent-with-redacted-preview is the wrong shape: there is nothing to redact *against*, because the host is already the user's trusted agent.
+
+**Honest egress — no "redacted preview" claim.** The values are the payload. MoneyBin states plainly that proceeding will surface the document's content (text lines + table headers + a small per-table row sample) to the driving agent. There is no synthesized-values preview, no claim of masking. The user's choice is binary: proceed (the agent reads the document) or fall back to the seed path (`raw.pdf_seeds` JSON, queryable but not routed to transactions). Standalone-identifier masking (SSN, full account numbers) before egress is a deferred best-effort lever (Req 16) that becomes meaningful when the in-process cloud rung lands; until then, no masking is applied.
+
+**Local-first guarantee (Req 15).** Every native-text PDF that the deterministic rung extracts cleanly imports with **zero network calls and no bridge hand-off**. The bridge is reached only when the deterministic rung produces a bridge-eligible failure (low confidence, replay reconciliation failure, auto-derive reconciliation failure, incomplete balance metadata). Verifiable from the audit log — a `SELECT * FROM app.audit_log WHERE action = 'smart_import_parse'` returns zero rows for a deterministic-only session.
+
+**Transparency + audit (Req 14).** Every bridge hand-off writes one `app.audit_log` row (action: `smart_import_parse`, actor: `system`, target: `raw.pdf_seeds/<file>`, context carrying the routing reason + confidence) and increments `moneybin_pdf_bridge_egress_total{outcome="proposed"}`. No silent send: the egress event is recoverable, reportable, and replayable independently of whether the agent ratifies.
+
+**Transparency notice in the payload.** The bridge payload itself carries the transparency notice as a typed field (`BridgeRequest.transparency_notice`) — not buried convention, not optional formatting. The driving agent surfaces it to the user before invoking `import_confirm`; the user proceeds or declines.
 
 ## Provider profiles
 
