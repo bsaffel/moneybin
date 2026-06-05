@@ -565,3 +565,198 @@ The one gap — knowing which *tool* within an MCP session holds the lock — is
 - Connection pooling within a single process.
 - `transform apply` progress notifications to unblock other writers mid-run.
 - Lockfile-based writer identity visible during retry — `moneybin db ps` is the inspection path.
+
+---
+
+## PR B hardening pass: Write critical-section lock + checkpoint helpers
+
+> **Status note.** This section is the additive PR B amendment to the
+> `implemented` spec. The pattern is the same — short-lived per-call
+> connections (ADR-010) — with a MoneyBin-owned coordination layer
+> sitting in front of writer-vs-writer contention. ADR-010's text
+> remains the architectural source of truth; this section refines
+> observable behavior.
+
+### Why a MoneyBin-owned lock?
+
+ADR-010 leaves cross-process arbitration entirely to DuckDB's own lock
+matrix. Empirical verification on DuckDB 1.5.3 found two regressions
+against the spec as written:
+
+1. The 1.5.2 error strings (`Conflicting lock is held`,
+   `different configuration`) used by `_attach_encrypted`'s classifier
+   no longer fire on 1.5.3 — the messages unified into
+   `Could not set lock on file`. Cross-process contention was leaking
+   as raw `duckdb.IOException` instead of `DatabaseLockError`.
+2. Without a MoneyBin-owned coordination point, two writers contending
+   on the same DuckDB file produced wall-clock-correlated DuckDB error
+   strings with no holder identity. Recovery actions had nothing to
+   point at.
+
+The PR B hardening pass adds:
+
+- A per-profile process file lock (`<db_path>.write.lock`) acquired
+  via stdlib `fcntl.flock(LOCK_EX | LOCK_NB)` around write-mode
+  `get_database()` opens. Identifies the holder via a JSON metadata
+  payload (pid, command, started_at, operation_type).
+- A 10-second policy ceiling on writer waits, configurable via
+  `MoneyBinSettings.database.write_lock_timeout_seconds`. Any operation
+  exceeding 10 s is an alarm, not a knob.
+- Updated string classification in `_attach_encrypted` to match
+  DuckDB 1.5.3's unified message while preserving the 1.5.2 matchers.
+- A `Database.checkpoint(reason)` helper that emits `CHECKPOINT` +
+  observability at named durable boundaries (post-migration,
+  post-transform-apply for now; pre-backup / post-compact /
+  post-large-import reserved for when those features ship).
+- A `system_status` `database_connections` section that merges the
+  file-lock metadata (writers) with `lsof` enumeration (readers).
+
+### Verified DuckDB 1.5.3 cross-process matrix
+
+Tested against DuckDB 1.5.3 via two `uv run python` subprocesses
+sharing one encrypted DuckDB file:
+
+| Scenario | Result |
+|---|---|
+| A=write, B=write | ❌ `IOException: Could not set lock on file` |
+| A=write, B=read | ❌ `IOException: Could not set lock on file` |
+| A=read, B=write | ❌ `IOException: Could not set lock on file` |
+| A=read, B=read | ✅ succeeds |
+
+The directional invariants from ADR-010 still hold: read-read
+coexists; all other combinations fail. The 1.5.2 table in ADR-010
+remains as the historical record.
+
+### Lock primitive contract
+
+```python
+@contextmanager
+def write_lock(
+    db_path: Path,
+    *,
+    deadline: float,  # monotonic value; shared with ATTACH retry
+    operation_type: OperationType,  # "interactive" | "migration" | "transform_apply" | "backup"
+) -> Generator[None, None, None]: ...
+```
+
+- **Read-mode opens never call this.** The file lock is exclusively a
+  write-write coordination primitive.
+- **Reentrant within a process.** Re-entry from the same PID returns
+  immediately without re-acquiring the OS lock; depth is tracked.
+- **Released on crash.** `fcntl` semantics reclaim the lock on process
+  death — no stale-lockfile cleanup required.
+- **Holder metadata atomic.** Written to `<db_path>.write.lock` via
+  write-then-rename so a partial write from a killed process never
+  leaves garbled JSON.
+- **Lifetime bound to the returned Database, not to ATTACH.**
+  `get_database()` enters the `write_lock` context via an
+  `ExitStack` and stashes the stack's `close` on the returned
+  `Database`. `Database.close()` invokes it, releasing the file
+  lock alongside the DuckDB connection. Releasing at ATTACH return
+  would let a second writer slip in while the first still holds an
+  open write connection, reintroducing the raw IOException PR B
+  exists to prevent.
+
+### Shared-deadline invariant
+
+```python
+def get_database(
+    *,
+    read_only: bool,
+    max_wait: float = 10.0,
+    operation_type: OperationType = "interactive",
+) -> Database:
+    deadline = time.monotonic() + max_wait
+    if read_only:
+        return _open_with_attach_retry(deadline=deadline, ...)
+    with write_lock(db_path, deadline=deadline, operation_type=...):
+        return _open_with_attach_retry(deadline=deadline, ...)
+```
+
+**The same `deadline` value drives both the file-lock acquire AND the
+inner ATTACH retry.** Without this, two independent 10 s budgets would
+compose to a 20 s worst case, violating the policy ceiling.
+
+`operation_type` is a closed `Literal["interactive", "migration",
+"transform_apply", "backup"]` — no `"unknown"` fallback. Pyright
+catches mis-spellings at the type level, so the metric label
+vocabulary on `moneybin_db_write_lock_timeout_total{operation_type=...}`
+stays bounded by construction.
+
+### Checkpoint policy
+
+`Database.checkpoint(reason)` runs `CHECKPOINT` + increments
+`moneybin_db_checkpoint_total{reason=...}` + emits an INFO log line.
+`reason` is a closed `Literal["post_migration", "post_transform",
+"pre_backup", "post_compact", "post_large_import"]`.
+
+| Reason | When | Wired in PR B |
+|---|---|---|
+| `post_migration` | `Database.__init__` after `MigrationRunner.apply_pending()` returns with `applied_count > 0` | ✅ |
+| `post_transform` | `TransformService.apply()` after a successful apply (shared CLI + MCP call point) | ✅ |
+| `pre_backup` | Before backup/export writes a snapshot | Helper exists; site lands when backup ships |
+| `post_compact` | After a future `db compact` operation | Helper exists; site lands when compact ships |
+| `post_large_import` | After an import that exceeds a measured threshold | Helper exists; site lands when the threshold is measured |
+
+Per the kickoff: **do not** checkpoint on every app-state mutation —
+that's a perf regression with no durability win.
+
+### `system_status` `database_connections` section
+
+Returns:
+
+```json
+{
+  "writers": [
+    {
+      "pid": 47281,
+      "command": "moneybin sync pull",
+      "started_at": "2026-06-04T15:22:14+00:00",
+      "operation_type": "interactive"
+    }
+  ],
+  "readers": [
+    {"pid": 47312, "command": "moneybin reports spending"}
+  ]
+}
+```
+
+Payload classes follow the existing `payloads/system.py` convention:
+`@dataclass(frozen=True, slots=True)` with `Annotated[T, DataClass.X]`
+sensitivity tags — not Pydantic. Data sources:
+
+- **Writers** — read the file lock metadata at `<db_path>.write.lock`.
+  At most one entry (lock is exclusive).
+- **Readers** — enumerate via the existing
+  `moneybin.utils.db_processes.find_blocking_processes` (`lsof` + `ps`).
+  The writer's pid is filtered out to avoid double-listing.
+
+The `database_connections` section is the target of the recovery
+action injected by `classify_user_error` when wrapping a
+`DatabaseLockError`. The lock primitive itself raises a plain
+`DatabaseLockError(msg)`; the structured `RecoveryAction`
+(`tool="system_status"`, `arguments={"section": "database_connections"}`,
+`confidence="certain"`, `idempotent=True`) is added at the CLI/MCP
+boundary, matching how every other error in `src/moneybin/errors.py`
+is enriched. This keeps the lock primitive a stdlib-only module and
+avoids a parallel `recovery_actions` attribute on bare `Exception`
+subclasses.
+
+### Observability
+
+Two new counters (no histogram — the 10 s binary ceiling makes the
+wait-time distribution observability theater):
+
+| Metric | Labels | Increments when |
+|---|---|---|
+| `moneybin_db_write_lock_timeout_total` | `operation_type` | `write_lock` deadline expires |
+| `moneybin_db_checkpoint_total` | `reason` | `Database.checkpoint(reason)` invoked |
+
+### Out of scope (reaffirmed from kickoff)
+
+- No read-side lock — reads must remain unblocked.
+- No write queue / serializer — DuckDB writer semantics unchanged.
+- No Treeline-style read serialization — different problem.
+- No singleton `Database` cache — per-call connections per ADR-010.
+- No writer-priority arbitration / starvation prevention — the 10 s
+  ceiling is the safety net at single-user scale.
