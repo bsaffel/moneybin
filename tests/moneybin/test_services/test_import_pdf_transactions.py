@@ -82,8 +82,11 @@ def _standard_doc(
 
 
 def _valid_recipe_dict() -> dict[str, Any]:
+    # `metadata_anchors` omitted → None → routing falls back to DEFAULT_ANCHORS
+    # for capture_metadata, so opening/closing balance anchors find values and
+    # reconciliation passes. An explicit `[]` would mean "deliberately decline
+    # metadata capture" and route to seed with reason=metadata_incomplete.
     return {
-        "metadata_anchors": [],
         "row_region": {
             "start_anchor": _ROW_REGION_START,
             "end_anchor": _ROW_REGION_END,
