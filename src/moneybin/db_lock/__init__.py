@@ -6,5 +6,6 @@ coordination primitive — read-mode connections never touch it.
 """
 
 from moneybin.db_lock._types import CheckpointReason, OperationType
+from moneybin.db_lock.lock import write_lock
 
-__all__ = ["CheckpointReason", "OperationType"]
+__all__ = ["CheckpointReason", "OperationType", "write_lock"]

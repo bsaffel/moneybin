@@ -130,6 +130,19 @@ def classify_user_error(exc: BaseException) -> UserError | None:
             str(exc),
             code=error_codes.INFRA_DATABASE_LOCKED,
             hint="💡 Run 'moneybin db ps' for details or wait and retry",
+            recovery_actions=[
+                RecoveryAction(
+                    tool="system_status",
+                    arguments={"section": "database_connections"},
+                    rationale=(
+                        "Identify the process holding the database so the agent "
+                        "can decide whether to wait, retry, or surface to the "
+                        "user."
+                    ),
+                    confidence="certain",
+                    idempotent=True,
+                ),
+            ],
         )
     if isinstance(exc, DatabaseKeyError):
         return UserError(
