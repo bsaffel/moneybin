@@ -85,6 +85,34 @@ def test_split_debit_credit_pass() -> None:
     assert result.observed_delta == Decimal("-150.00")
 
 
+def test_split_debit_credit_credit_card_convention_fails() -> None:
+    """Credit-card debit/credit semantics are explicitly unsupported.
+
+    Bank statements treat a debit as money leaving the account
+    (credits − debits = delta). Credit-card statements use the opposite
+    convention: a charge appears in the "Debits" column AND raises the
+    statement balance. Without a per-recipe statement_type discriminator
+    in Phase 2a, every split_debit_credit recipe is interpreted as the
+    bank convention; reconciliation comes out the wrong sign for a card
+    statement and the document routes to seed. This test pins that
+    behaviour so a future change that "fixes" credit-card sign handling
+    can't silently flip the bank-account pass case.
+    """
+    # Credit-card framing: opening=500 (prior balance), $100 of new charges,
+    # closing=600 (balance rose). Under credit-card semantics the row
+    # delta is +100; under the bank semantics the reconciler applies
+    # (credits − debits) = -100, which doesn't match expected_delta=+100.
+    rows = _split_rows(("100.00", "0.00"))
+    result = reconcile(rows, _meta("500.00", "600.00"), "split_debit_credit")
+    assert result.passed is False
+    assert result.reason == "delta_mismatch"
+    # Observed sign reflects bank semantics, NOT card semantics — the gap
+    # between observed=-100 and expected=+100 is the precise signal that
+    # routes this layout to seed.
+    assert result.expected_delta == Decimal("100.00")
+    assert result.observed_delta == Decimal("-100.00")
+
+
 # ---------------------------------------------------------------------------
 # metadata_incomplete → short-circuit
 # ---------------------------------------------------------------------------

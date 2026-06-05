@@ -235,34 +235,36 @@ def derive_recipe(doc: PdfDocument, _metadata: StatementMetadata) -> Recipe | No
 
 
 def _detect_start_anchor(doc: PdfDocument, table: PdfTable) -> str:
-    """Pick a start_anchor that uniquely identifies the transaction-table header line.
+    r"""Pick a start_anchor that uniquely identifies the transaction-table header line.
 
-    Scans ``doc.text_lines`` for a line containing every value in
-    ``table.header`` in original order, and returns that stripped line.
-    The full header line ("Date   Description   Amount") is far more
-    specific than the bare first column name ("Date"): preamble lines
-    such as "Statement Date: 02/01/2024" routinely match the single-word
-    anchor and cause ``_carve_region`` to start carving above the actual
-    transaction table.
+    Scans ``doc.text_lines`` for a line whose ``\s{2,}`` split is exactly
+    ``table.header`` — i.e. the actual column-header row produced by
+    ``layout=True`` extraction. Returns that stripped line. The full header
+    line ("Date   Description   Amount") is far more specific than the bare
+    first column name ("Date"): preamble lines such as "Statement Date:
+    02/01/2024" routinely match a one-word anchor and cause
+    ``_carve_region`` to start carving above the actual transaction table.
 
-    Falls back to ``table.header[0]`` when no scanned line carries all
-    header tokens — the executor's full-text fallback in ``_carve_region``
-    is the same safety net used everywhere else and the misconfiguration
-    is logged loudly there.
+    Requiring exact-split-equality (not just "all tokens appear in order")
+    rejects sentence-style preamble lines like "Date of Statement,
+    Description: monthly, Amount due" that happen to contain the header
+    tokens but aren't the header row. The ``\s{2,}`` separator matches the
+    ``row_split`` the executor will use against this region, so a match
+    here means the executor will see the same column boundaries.
+
+    Falls back to ``table.header[0]`` when no scanned line splits exactly
+    into the header list — the executor's full-text fallback in
+    ``_carve_region`` is the same safety net used everywhere else and the
+    misconfiguration is logged loudly there.
     """
+    expected = list(table.header)
     for line in doc.text_lines:
-        cursor = 0
-        all_found = True
-        for header in table.header:
-            found = line.find(header, cursor)
-            if found == -1:
-                all_found = False
-                break
-            cursor = found + len(header)
-        if all_found:
-            stripped = line.strip()
-            if stripped:
-                return stripped
+        stripped = line.strip()
+        if not stripped:
+            continue
+        cells = _re.split(r"\s{2,}", stripped)
+        if cells == expected:
+            return stripped
     return table.header[0]
 
 

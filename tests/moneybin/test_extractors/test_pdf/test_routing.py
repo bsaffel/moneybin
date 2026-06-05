@@ -41,8 +41,13 @@ from moneybin.repositories.pdf_formats_repo import PdfFormatsRepo
 #: Standard column headers used throughout these tests.
 _HEADERS = ["Date", "Description", "Amount"]
 
-#: Row region anchor produced by derive_recipe for _HEADERS.
-#: derive_recipe sets start_anchor = "  ".join(table.header)
+#: Row region anchor for these tests.
+#: _detect_start_anchor() scans doc.text_lines for the literal line whose
+#: `\s{2,}` split equals the header list and returns it verbatim. The
+#: fixture's text_lines include "Date  Description  Amount" so the anchor
+#: lands on that string — which happens to equal "  ".join(_HEADERS) for
+#: this fixture but would differ on a real PDF with proportionally-spaced
+#: text (e.g. "Date     Description          Amount").
 _ROW_REGION_START = "Date  Description  Amount"
 _ROW_REGION_END = "Total:"
 

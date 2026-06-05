@@ -73,29 +73,46 @@ def _detect_issuer(doc: PdfDocument) -> str:
 
 
 def _unique_table_headers(doc: PdfDocument) -> list[str]:
-    """Return the unique column headers of the largest table in original order.
+    """Return the unique column headers of the transaction table in original order.
 
-    Scoped to the single largest table (most rows) — typically the
-    transaction-detail table — so a secondary table that changes month to
-    month (e.g. a rewards summary whose columns drift) doesn't flip the
-    fingerprint and break replay. Multi-page layouts with identical tables
-    still fingerprint the same (volume differentiation is handled by
-    ``page_bucket``).
+    Scoped to the **transaction-shaped** table that ``derive_recipe`` will
+    use — NOT just "the largest table" — so the fingerprint and the recipe
+    always agree on which table to characterise. Picking by row count alone
+    breaks recipe reuse on multi-table PDFs: an Amex statement with a
+    larger rewards-summary grid, or an investment statement with a large
+    positions table, would fingerprint the wrong table and either (a) flip
+    the fingerprint as the incidental large table changes month-to-month,
+    so replay never fires, or (b) keep the same fingerprint while the
+    real transaction layout actually changes, so replay returns the wrong
+    recipe.
+
+    Falls back to "largest table" if no transaction-shaped table is
+    detectable — Phase 2a routing routes to seed in that case anyway, so
+    fingerprint stability matters less.
 
     Order matters: ``execute_recipe`` zips PDF cells positionally against
     ``recipe.fields``, so two layouts with the same column names in a
     different order are NOT interchangeable. Sorting the header list would
     collapse those layouts onto a single fingerprint and let the recipe
-    parse cells against the wrong fields (e.g. "Transaction Date" and
-    "Posting Date" swap, both still match a date pattern, reconciliation
-    passes, but every imported transaction has the columns reversed).
-    Preserve the original column order using an ordered set built from
-    a dict — Python dicts preserve insertion order since 3.7.
+    parse cells against the wrong fields. Preserve original column order
+    using an ordered set built from a dict — Python dicts preserve
+    insertion order since 3.7.
     """
     if not doc.tables:
         return []
-    largest = max(doc.tables, key=lambda t: len(t.rows))
-    return list(dict.fromkeys(largest.header))
+    # Defer the import to break a potential cycle and to keep fingerprint
+    # leaf-leaf even when auto_derive evolves.
+    from moneybin.extractors.pdf.auto_derive import (
+        _select_transaction_table,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    txn_table = _select_transaction_table(doc)
+    target = (
+        txn_table
+        if txn_table is not None
+        else max(doc.tables, key=lambda t: len(t.rows))
+    )
+    return list(dict.fromkeys(target.header))
 
 
 def _page_bucket(n: int) -> str:

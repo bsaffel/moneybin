@@ -136,14 +136,17 @@ def _sum_pre_normalization(
     Missing ``debit``/``credit`` keys default to ``Decimal("0")`` so a
     partially-populated row moves the observed delta rather than crashing.
     """
+    # Use dict.get(key, default) instead of `row.get(key) or Decimal("0")`:
+    # Decimal("0") is falsy in Python, so the `or` idiom collapses an explicit
+    # zero amount onto the same path as a missing key. They happen to evaluate
+    # to the same value today but conflate two distinct cases, and they silently
+    # mask any upstream type that's truthy-but-not-Decimal (empty strings,
+    # int(0), and so on) by substituting the default. The default-on-absence
+    # form is the original intent.
+    zero = Decimal("0")
     if sign_convention in ("negative_is_expense", "negative_is_income"):
-        return sum(
-            (row.get("amount") or Decimal("0") for row in rows),
-            Decimal("0"),
-        )
+        return sum((row.get("amount", zero) for row in rows), zero)
     # split_debit_credit — bank-account convention (see docstring).
-    total_credits = sum(
-        (row.get("credit") or Decimal("0") for row in rows), Decimal("0")
-    )
-    total_debits = sum((row.get("debit") or Decimal("0") for row in rows), Decimal("0"))
+    total_credits = sum((row.get("credit", zero) for row in rows), zero)
+    total_debits = sum((row.get("debit", zero) for row in rows), zero)
     return total_credits - total_debits

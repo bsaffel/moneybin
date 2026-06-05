@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS app.pdf_formats (
     date_format VARCHAR,                 -- strftime format for date parsing
     number_format VARCHAR NOT NULL DEFAULT 'us', -- us | european | swiss_french | zero_decimal
     source VARCHAR NOT NULL DEFAULT 'detected', -- detected (bridge-proposed + vetted) | manual
-    version INTEGER NOT NULL DEFAULT 1,         -- Bumped on each recipe refresh; prior versions recoverable via app.audit_log (Invariant 11); undo restores a previous version
+    version INTEGER NOT NULL DEFAULT 1,         -- Bumped on each recipe refresh via PdfFormatsRepo.bump_version (mutation audited per Invariant 10); prior versions recoverable through app.audit_log undo (Invariant 11, data-recovery-contract.md)
     times_used INTEGER NOT NULL DEFAULT 0,      -- Successful imports using this format
     last_used_at TIMESTAMP,                     -- Most recent successful use
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- Timestamp when this format was first created

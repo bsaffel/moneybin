@@ -1246,7 +1246,7 @@ class ImportService:
 
         return result
 
-    def _import_pdf(self, file_path: Path) -> ImportResult:
+    def _import_pdf(self, file_path: Path, *, save_format: bool = True) -> ImportResult:
         """Import a native-text PDF via the Phase 2a routing state machine.
 
         High-confidence PDFs with reconciling rows land in raw.tabular_transactions
@@ -1256,6 +1256,15 @@ class ImportService:
         import_files detect file_type="pdf". PDFs that route to the seed path
         fall back to raw.pdf_seeds and are excluded from the refresh pipeline
         (no tabular rows to transform).
+
+        Args:
+            file_path: Path to the PDF file.
+            save_format: When False, suppresses the auto-derived recipe save
+                on first contact. Mirrors the tabular ``--no-save-format`` /
+                ``save_format=False`` semantics so a user/agent importing a
+                one-off or sensitive statement can avoid leaving an
+                ``app.pdf_formats`` row that fingerprints the layout for
+                future replays.
         """
         from moneybin.extractors.pdf.extractor import PDFExtractor
         from moneybin.extractors.pdf.routing import route_pdf_import
@@ -1305,6 +1314,7 @@ class ImportService:
                 result=result,
                 decision=decision,
                 doc=doc,
+                save_format=save_format,
             )
 
         # Seed path (Phase 1 fallback) ——————————————————————————————————
@@ -1372,11 +1382,15 @@ class ImportService:
         result: ImportResult,
         decision: "RouteDecision",
         doc: "PdfDocument",
+        save_format: bool = True,
     ) -> ImportResult:
         """Write deterministic PDF rows to raw.tabular_transactions.
 
         Called by _import_pdf when the routing decision is 'transactions'.
-        Saves a new format recipe on first contact (decision.matched_format_name is None).
+        Saves a new format recipe on first contact (decision.matched_format_name is None),
+        unless ``save_format`` is False — mirrors the tabular ``--no-save-format``
+        semantics so a user/agent importing a one-off or sensitive statement can
+        avoid persisting the layout fingerprint.
         """
         import hashlib
         from decimal import Decimal
@@ -1437,12 +1451,17 @@ class ImportService:
             are "amount" / "debit" / "credit" regardless of the original
             PDF column header text.
             """
+            # Use dict.get(key, default) instead of `or Decimal("0")`:
+            # Decimal("0") is falsy in Python, so the `or` idiom collapses
+            # an explicit zero amount onto the same path as a missing key.
+            # Numerically equivalent today but conflates two distinct cases
+            # and silently masks upstream type mistakes.
+            _zero = Decimal("0")
             if sign_conv == "split_debit_credit":
-                debit = row.get("debit") or Decimal("0")
-                credit = row.get("credit") or Decimal("0")
-                return Decimal(str(credit)) - Decimal(str(debit))
-            raw_amt = row.get("amount") or Decimal("0")
-            amount_d = Decimal(str(raw_amt))
+                return Decimal(str(row.get("credit", _zero))) - Decimal(
+                    str(row.get("debit", _zero))
+                )
+            amount_d = Decimal(str(row.get("amount", _zero)))
             if sign_conv == "negative_is_income":
                 return -amount_d
             return amount_d  # negative_is_expense already matches canonical convention
@@ -1455,8 +1474,26 @@ class ImportService:
         # boundary line) doesn't renumber every following transaction_id and
         # defeat INSERT OR IGNORE on re-import (Req identifiers.md "content
         # hash" contract).
+        # Statement scope keeps two legitimately-distinct same-content
+        # transactions (e.g. two recurring $5 coffees on the same day in
+        # different monthly statements for the same account) on separate
+        # transaction_ids. Without this, prep.stg_tabular__transactions
+        # dedups by (transaction_id, account_id) and one of the two
+        # disappears from core/reports. Includes only fields the PDF
+        # already captured for routing, so a re-import of the *same*
+        # statement bytes still produces the same content_key.
+        period_marker = ""
+        if (
+            decision.metadata.period_start is not None
+            and decision.metadata.period_end is not None
+        ):
+            period_marker = (
+                f"{decision.metadata.period_start.isoformat()}-"
+                f"{decision.metadata.period_end.isoformat()}"
+            )
         content_dup_counter: dict[str, int] = {}
         rows_list: list[dict[str, Any]] = []
+        _zero = Decimal("0")
         for idx, row in enumerate(decision.rows, start=1):
             amt = _normalize_amount(row)
             # rows are canonical-keyed by routing._canonicalize_rows. Credit-card
@@ -1471,7 +1508,21 @@ class ImportService:
                 if date_val is not None and hasattr(date_val, "isoformat")
                 else str(date_val)
             )
-            content_key = f"{date_iso}|{amt}|{desc}|{account_id}"
+            # Build the content key from the RAW per-cell values (pre
+            # sign-normalisation) so a later bug-fix to _normalize_amount
+            # — for instance correcting how negative_is_income statements
+            # flip signs — does not silently rotate every transaction_id.
+            # If it did, INSERT OR IGNORE would no longer recognise the
+            # already-imported rows and every re-import would create
+            # duplicates. Per identifiers.md the content hash must be
+            # stable across re-imports of the same source bytes.
+            raw_amount = row.get("amount", _zero)
+            raw_debit = row.get("debit", _zero)
+            raw_credit = row.get("credit", _zero)
+            content_key = (
+                f"{period_marker}|{date_iso}|{raw_amount}|{raw_debit}|"
+                f"{raw_credit}|{desc}|{account_id}"
+            )
             dup_idx = content_dup_counter.get(content_key, 0)
             content_dup_counter[content_key] = dup_idx + 1
             raw_hash = content_key if dup_idx == 0 else f"{content_key}|{dup_idx}"
@@ -1500,16 +1551,25 @@ class ImportService:
             # under-report when the same PDF is re-imported from a different
             # path (different source_file → insert succeeds with a duplicate
             # raw row, but tx_id pre-count matched and rows_inserted=0).
+            # Routing guarantees rows_list is non-empty here (every zero-row
+            # outcome sets RouteDecision.outcome="seed"), but guard locally
+            # anyway: an empty tx_ids list would generate
+            # `WHERE transaction_id IN () AND ...`, which DuckDB rejects, and
+            # the failure would land AFTER raw rows had already been ingested
+            # — leaving import_log stuck in 'importing' status.
             tx_ids = [r["transaction_id"] for r in rows_list]
-            placeholders = ",".join(["?"] * len(tx_ids))
             src_file = str(canonical)
-            count_before_row = self._db.execute(
-                f"SELECT COUNT(*) FROM {TABULAR_TRANSACTIONS.full_name} "
-                f"WHERE transaction_id IN ({placeholders}) "
-                f"AND account_id = ? AND source_file = ?",  # noqa: S608  # placeholders are ?-bound; tx_ids is parameter list
-                [*tx_ids, account_id, src_file],
-            ).fetchone()
-            rows_already_present = count_before_row[0] if count_before_row else 0
+            if tx_ids:
+                placeholders = ",".join(["?"] * len(tx_ids))
+                count_before_row = self._db.execute(
+                    f"SELECT COUNT(*) FROM {TABULAR_TRANSACTIONS.full_name} "
+                    f"WHERE transaction_id IN ({placeholders}) "
+                    f"AND account_id = ? AND source_file = ?",  # noqa: S608  # placeholders are ?-bound; tx_ids is parameter list
+                    [*tx_ids, account_id, src_file],
+                ).fetchone()
+                rows_already_present = count_before_row[0] if count_before_row else 0
+            else:
+                rows_already_present = 0
             self._db.ingest_dataframe(
                 TABULAR_TRANSACTIONS.full_name, df, on_conflict="ignore"
             )
@@ -1581,6 +1641,47 @@ class ImportService:
         # bookkeeping failure (schema mismatch on app.pdf_formats, etc.) can't
         # trigger the cleanup DELETE on rows that already landed successfully.
         # Both are best-effort: the import succeeds either way.
+        # Derive the first-contact format name once: it's needed both for
+        # backfilling import_log (next block) and for save_new below. The
+        # name is deterministic over the fingerprint and the issuer slug,
+        # so computing it twice would always agree but invites drift if
+        # one site ever changes its hashing — keep it single-source.
+        first_contact_format_name = (
+            f"{issuer_slug}_"
+            + (hashlib.sha256(serialize_fingerprint(fp).encode()).hexdigest()[:12])
+        )
+
+        # Backfill format columns on raw.import_log now that routing has
+        # decided. Tabular knows its format before begin_import; PDFs only
+        # know it post-routing, so without this update every PDF import_log
+        # entry would carry NULL format_name/format_source and users could
+        # not tell whether a replay or auto-derive served the import.
+        if decision.matched_format_name is not None:
+            pdf_format_name: str | None = decision.matched_format_name
+            pdf_format_source = "saved"
+        elif save_format:
+            pdf_format_name = first_contact_format_name
+            pdf_format_source = "detected"
+        else:
+            # First-contact import that intentionally won't persist a recipe;
+            # leave format_name NULL so it doesn't look saveable to operators
+            # tailing import_log.
+            pdf_format_name = None
+            pdf_format_source = "detected"
+        try:
+            import_log.update_format(
+                self._db,
+                import_id,
+                format_name=pdf_format_name,
+                format_source=pdf_format_source,
+            )
+        except Exception:  # noqa: BLE001 — observability stamp must not roll back data
+            logger.warning(
+                f"PDF import_log.update_format failed for import_id="
+                f"{import_id[:8]}... — format columns left NULL",
+                exc_info=True,
+            )
+
         if decision.matched_format_name is not None:
             try:
                 self._pdf_formats.record_use(decision.matched_format_name)
@@ -1591,17 +1692,24 @@ class ImportService:
                     f"{import_id[:8]}...) — counter not bumped",
                     exc_info=True,
                 )
+        elif not save_format:
+            # First contact, but caller (CLI --no-save-format / MCP
+            # save_format=False / agent) requested no persistence. Skip
+            # the save_new call so the layout fingerprint never lands in
+            # app.pdf_formats. Mirrors the tabular path's behaviour.
+            logger.info(
+                f"PDF first-contact recipe save suppressed by save_format=False "
+                f"(import_id={import_id[:8]}...) — layout will be re-derived "
+                f"on every future import of this format"
+            )
         else:
-            # First-contact auto-derive: persist the recipe. fp + issuer_slug
-            # were computed above for account_id prefixing. Use the shared
-            # serialize_fingerprint helper so the hash that names the format
-            # ("issuer_slug + fp_hash") stays byte-for-byte identical to the
-            # JSON used by the repo for lookup + storage; any drift breaks
-            # ConstraintException-based duplicate detection silently.
-            fp_hash = hashlib.sha256(serialize_fingerprint(fp).encode()).hexdigest()[
-                :12
-            ]
-            format_name = f"{issuer_slug}_{fp_hash}"
+            # First-contact auto-derive: persist the recipe under the
+            # already-computed first_contact_format_name. The hash is built
+            # from serialize_fingerprint(fp) so it stays byte-for-byte
+            # identical to the JSON the repo uses for lookup + storage —
+            # any drift breaks ConstraintException-based duplicate
+            # detection silently.
+            format_name = first_contact_format_name
             try:
                 self._pdf_formats.save_new(
                     name=format_name,
@@ -1852,7 +1960,7 @@ class ImportService:
                 actor_kind=actor_kind,
             )
         if file_type == "pdf":
-            return self._import_pdf(path)
+            return self._import_pdf(path, save_format=save_format)
         raise ValueError(f"Unsupported file type: {file_type}")
 
     def import_files(

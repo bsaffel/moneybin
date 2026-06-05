@@ -117,6 +117,33 @@ def begin_import(
     return import_id
 
 
+def update_format(
+    db: Database,
+    import_id: str,
+    *,
+    format_name: str | None,
+    format_source: str | None,
+) -> None:
+    """Backfill the format columns on an in-flight import_log row.
+
+    Tabular imports know the format before calling ``begin_import`` and pass
+    it in there. PDFs route AFTER ``begin_import`` so the format is unknown
+    at that point — this helper closes the observability gap by stamping
+    ``format_name`` and ``format_source`` once the routing decision is in.
+    Without it every PDF entry in ``raw.import_log`` has NULL format
+    columns and users can't tell whether a replay or auto-derive served
+    that import.
+    """
+    db.execute(
+        f"""
+        UPDATE {IMPORT_LOG.full_name}
+        SET format_name = ?, format_source = ?
+        WHERE import_id = ?
+        """,
+        [format_name, format_source, import_id],
+    )
+
+
 def finalize_import(
     db: Database,
     import_id: str,
