@@ -24,12 +24,14 @@ import stat
 import sys
 import threading
 import time
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Literal
 
 import duckdb
+
+from moneybin.db_lock._types import OperationType
 
 # SQLMesh resolves MAX_FORK_WORKERS at import via os.sched_getaffinity, which
 # does not exist on macOS — falling through to ProcessPoolExecutor's default
@@ -298,6 +300,10 @@ class Database:
         self._conn: duckdb.DuckDBPyConnection | None = None
         self._closed = False
         self._read_only = read_only
+        # Populated by get_database() for write-mode opens — releases the
+        # process file lock acquired in front of the connection. None on
+        # read-mode opens and on direct Database() construction in tests.
+        self._lock_release: Callable[[], None] | None = None
 
         if read_only and not db_path.exists():
             raise DatabaseNotInitializedError(
@@ -684,20 +690,37 @@ class Database:
         self.close()
 
     def close(self) -> None:
-        """Close the database connection and release resources."""
-        global _active_write_conn  # noqa: PLW0603
-        with _active_write_lock:
-            if _active_write_conn is self:
-                _active_write_conn = None
+        """Close the database connection and release resources.
 
-        if self._conn is not None:
-            try:
-                self._conn.close()
-            except Exception:  # noqa: BLE001 S110  # intentional broad catch on close; pass is correct here
-                pass
-            self._conn = None
-        self._closed = True
-        logger.debug(f"Database connection closed: {self._db_path}")
+        Releases the process file lock (acquired by ``get_database()`` on
+        write-mode opens) before tearing down the DuckDB connection so that
+        a DuckDB-side close failure cannot leak the file lock — fcntl OS
+        semantics would eventually reclaim it on process death, but explicit
+        release keeps the holder-metadata file accurate for any peer
+        inspecting it via ``system_status`` while close runs. The release
+        callable is nulled before invocation so a re-entrant close raised
+        from an exception handler cannot double-release.
+        """
+        global _active_write_conn  # noqa: PLW0603
+
+        release = self._lock_release
+        self._lock_release = None
+        try:
+            if release is not None:
+                release()
+        finally:
+            with _active_write_lock:
+                if _active_write_conn is self:
+                    _active_write_conn = None
+
+            if self._conn is not None:
+                try:
+                    self._conn.close()
+                except Exception:  # noqa: BLE001 S110  # intentional broad catch on close; pass is correct here
+                    pass
+                self._conn = None
+            self._closed = True
+            logger.debug(f"Database connection closed: {self._db_path}")
 
     def interrupt_and_reset(self) -> None:
         """Interrupt any active statement and force-close the connection.
@@ -789,30 +812,120 @@ def database_was_written() -> bool:
 def get_database(
     *,
     read_only: bool,
-    max_wait: float = 5.0,
+    max_wait: float = 10.0,
+    operation_type: OperationType = "interactive",
 ) -> "Database":
     """Create and return a new short-lived Database connection.
 
     Each call opens a fresh connection; callers must close it when done
     (``with get_database(read_only=...) as db: ...`` closes automatically).
 
+    Write-mode opens acquire a process file lock (``write_lock``) that is
+    held for the **lifetime of the returned Database**, not just during
+    ATTACH. ``Database.close()`` releases the file lock alongside the
+    DuckDB connection. Read-mode opens never touch the file lock — DuckDB's
+    own arbitration handles read-write contention at the ATTACH layer.
+
+    A single shared ``deadline = monotonic() + max_wait`` drives both
+    file-lock acquisition AND the existing ATTACH retry, so end-to-end
+    writer wait stays under ``max_wait`` (default 10 s, per the
+    writer-coordination policy ceiling).
+
     Both read-only and write connections retry on DatabaseLockError with
-    exponential backoff (start 50 ms, ×1.5, cap 500 ms) until max_wait is
-    exhausted — DuckDB's exclusive/shared-lock matrix means a read-only
-    open also fails (and retries) when another process holds a write lock,
-    and a write open fails (and retries) when another process holds a
-    read-only attach.
+    exponential backoff (start 50 ms, ×1.5, cap 500 ms) until the deadline
+    is reached — DuckDB's exclusive/shared-lock matrix means a read-only
+    open can also fail (and retry) when another process holds a write
+    lock, and a write open can fail (and retry) when another process
+    holds a read-only attach.
     """
     global _database_accessed, _database_written, _active_write_conn  # noqa: PLW0603
+
+    # Lazy import: db_lock.lock imports DatabaseLockError from this module,
+    # so deferring the import past module-load time breaks the cycle.
+    from contextlib import ExitStack
+
+    from moneybin.db_lock import write_lock
+
     settings = get_settings()
     db_path = settings.database.path
     deadline = time.monotonic() + max_wait
-    delay = 0.05
     skip_upgrade = (
         read_only
         or settings.database.no_auto_upgrade
         or (db_path in _migration_check_done)
     )
+
+    if read_only:
+        return _open_with_attach_retry(
+            db_path=db_path,
+            read_only=True,
+            skip_upgrade=skip_upgrade,
+            deadline=deadline,
+            max_wait=max_wait,
+        )
+
+    # Write path: enter the write_lock context manager into an ExitStack and
+    # stash stack.close on the returned Database. The lock outlives this
+    # function — Database.close() invokes stack.close() to exit the context
+    # and release the file lock. Holding the lock for the full Database
+    # lifetime (not just during ATTACH) is what prevents a second writer
+    # from slipping in between get_database() returning and
+    # Database.close() running and surfacing a raw IOException at ATTACH.
+    stack = ExitStack()
+    try:
+        stack.enter_context(
+            write_lock(db_path, deadline=deadline, operation_type=operation_type)
+        )
+        db = _open_with_attach_retry(
+            db_path=db_path,
+            read_only=False,
+            skip_upgrade=skip_upgrade,
+            deadline=deadline,
+            max_wait=max_wait,
+        )
+        # get_database() is the sole site that supplies the lock-release
+        # callable; the field is "private" only in that no external caller
+        # should set it.
+        db._lock_release = stack.close  # pyright: ignore[reportPrivateUsage]
+        _database_written = True
+        _migration_check_done.add(db_path)
+        with _active_write_lock:
+            _active_write_conn = db
+        # If the MCP decorator registered a per-call holder on this
+        # thread, store the connection there too. The timeout handler
+        # reads from the holder to interrupt the *specific* connection
+        # it dispatched rather than whatever is currently in the global
+        # slot (which may belong to a different concurrent tool call).
+        _holder = getattr(_write_conn_thread_local, "conn_holder", None)
+        if _holder is not None:
+            _holder[0] = db
+        return db
+    except BaseException:
+        # ATTACH retry exhausted, Database init raised, or any other failure
+        # after the file lock was acquired — release the lock so the next
+        # caller can proceed.
+        stack.close()
+        raise
+
+
+def _open_with_attach_retry(
+    *,
+    db_path: Path,
+    read_only: bool,
+    skip_upgrade: bool,
+    deadline: float,
+    max_wait: float,
+) -> "Database":
+    """Open a ``Database`` with the existing ATTACH-retry loop.
+
+    Factored out of ``get_database()`` so the write path can run the loop
+    inside the ``write_lock`` context. Bookkeeping that depends on the
+    open being a write (``_database_written``, ``_migration_check_done``,
+    ``_active_write_conn``, MCP per-call holder) stays in
+    ``get_database()`` so it runs only after a successful write open.
+    """
+    global _database_accessed  # noqa: PLW0603
+    delay = 0.05
     while True:
         try:
             db = Database(
@@ -821,19 +934,6 @@ def get_database(
                 no_auto_upgrade=skip_upgrade,
             )
             _database_accessed = True
-            if not read_only:
-                _database_written = True
-                _migration_check_done.add(db_path)
-                with _active_write_lock:
-                    _active_write_conn = db
-                # If the MCP decorator registered a per-call holder on this
-                # thread, store the connection there too. The timeout handler
-                # reads from the holder to interrupt the *specific* connection
-                # it dispatched rather than whatever is currently in the global
-                # slot (which may belong to a different concurrent tool call).
-                _holder = getattr(_write_conn_thread_local, "conn_holder", None)
-                if _holder is not None:
-                    _holder[0] = db
             return db
         except DatabaseLockError:
             if time.monotonic() >= deadline:
