@@ -28,7 +28,7 @@ def _make_secret_store() -> MagicMock:
 
 def _make_db(tmp_path: Path) -> tuple[Database, MagicMock]:
     store = _make_secret_store()
-    db = Database(tmp_path / "test.duckdb", secret_store=store)
+    db = Database(tmp_path / "test.duckdb", secret_store=store, read_only=False)
     return db, store
 
 

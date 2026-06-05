@@ -23,7 +23,10 @@ def empty_db(tmp_path: Path) -> Generator[Database, None, None]:
     mock_store = MagicMock()
     mock_store.get_key.return_value = "test-encryption-key-256bit-placeholder"
     database = Database(
-        tmp_path / "test.duckdb", secret_store=mock_store, no_auto_upgrade=True
+        tmp_path / "test.duckdb",
+        secret_store=mock_store,
+        no_auto_upgrade=True,
+        read_only=False,
     )
     create_core_tables_raw(database.conn)
     yield database
@@ -36,7 +39,10 @@ def spending_db(tmp_path: Path) -> Generator[Database, None, None]:
     mock_store = MagicMock()
     mock_store.get_key.return_value = "test-encryption-key-256bit-placeholder"
     database = Database(
-        tmp_path / "test.duckdb", secret_store=mock_store, no_auto_upgrade=True
+        tmp_path / "test.duckdb",
+        secret_store=mock_store,
+        no_auto_upgrade=True,
+        read_only=False,
     )
     conn = database.conn
     create_core_tables_raw(conn)

@@ -16,7 +16,8 @@ runner = CliRunner()
 
 
 @contextmanager
-def _fake_db_ctx() -> Generator[object, None, None]:
+def _fake_db_ctx(read_only: bool = False) -> Generator[object, None, None]:
+    _ = read_only
     yield object()
 
 

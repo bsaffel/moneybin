@@ -65,7 +65,9 @@ def concurrent_db(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, str]:
     mock_store = MagicMock()
     mock_store.get_key.return_value = _TEST_KEY
 
-    db = Database(db_path, secret_store=mock_store, no_auto_upgrade=True)
+    db = Database(
+        db_path, secret_store=mock_store, no_auto_upgrade=True, read_only=False
+    )
     db.execute("CREATE TABLE IF NOT EXISTS ping (x INTEGER)")
     db.close()
 
@@ -149,7 +151,7 @@ def test_write_write_contention_retries(
     mock_store = MagicMock()
     mock_store.get_key.return_value = key
 
-    with Database(db_path, secret_store=mock_store, no_auto_upgrade=True) as db:
+    with Database(db_path, read_only=False, secret_store=mock_store, no_auto_upgrade=True) as db:
         open("{signal_path}", "w").close()
         time.sleep(3)
     sys.exit(0)
@@ -181,7 +183,7 @@ def test_write_write_contention_retries(
 
     while time.monotonic() < deadline:
         try:
-            db = Database(db_path, secret_store=mock_store, no_auto_upgrade=True)
+            db = Database(db_path, read_only=False, secret_store=mock_store, no_auto_upgrade=True)
             break
         except DatabaseLockError as e:
             last_exc = e
@@ -284,7 +286,7 @@ def test_read_only_holder_blocks_write_then_succeeds(
 
     while time.monotonic() < deadline:
         try:
-            db = Database(db_path, secret_store=mock_store, no_auto_upgrade=True)
+            db = Database(db_path, read_only=False, secret_store=mock_store, no_auto_upgrade=True)
             break
         except DatabaseLockError as e:
             last_exc = e

@@ -323,7 +323,10 @@ def seed_pending_match(env: dict[str, str], match_id: str) -> None:
     invalidate_encryption_key_cache()
     try:
         with Database(
-            _workflow_db_path(env), secret_store=mock_store, no_auto_upgrade=True
+            _workflow_db_path(env),
+            secret_store=mock_store,
+            no_auto_upgrade=True,
+            read_only=False,
         ) as db:
             MatchDecisionsRepo(db).insert(
                 match_id=match_id,
@@ -357,7 +360,10 @@ def match_status(env: dict[str, str], match_id: str) -> str | None:
     invalidate_encryption_key_cache()
     try:
         with Database(
-            _workflow_db_path(env), secret_store=mock_store, no_auto_upgrade=True
+            _workflow_db_path(env),
+            secret_store=mock_store,
+            no_auto_upgrade=True,
+            read_only=True,
         ) as db:
             row = get_match_decision(db, match_id)
     finally:

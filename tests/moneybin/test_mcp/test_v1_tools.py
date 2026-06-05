@@ -33,7 +33,7 @@ class TestCategorizePendingGet:
 
     @staticmethod
     def _install_view() -> None:
-        with get_database() as db:
+        with get_database(read_only=False) as db:
             _create_reports_schema(db)
             db.conn.execute("""
                 CREATE OR REPLACE VIEW reports.uncategorized_queue AS
@@ -100,7 +100,7 @@ class TestCategorizePendingGet:
     @staticmethod
     def _install_resolver_accounts() -> None:
         """Add display_name / collision-pair rows to core.dim_accounts."""
-        with get_database() as db:
+        with get_database(read_only=False) as db:
             db.conn.execute("""
                 INSERT INTO core.dim_accounts
                     (account_id, source_type, display_name, archived)
@@ -116,7 +116,7 @@ class TestCategorizePendingGet:
         # The resolver must translate "Alpha" → "A1" before binding to SQL.
         self._install_view()
         self._install_resolver_accounts()
-        with get_database() as db:
+        with get_database(read_only=False) as db:
             db.conn.execute("""
                 CREATE OR REPLACE VIEW reports.uncategorized_queue AS
                 SELECT
@@ -171,7 +171,7 @@ class TestCategorizePendingGet:
         # Pre-first-import case: drop fct_transactions so the resolver can
         # tell "no data yet" apart from "schema drift". Returns empty data
         # with an "import first" action hint, not an error.
-        with get_database() as db:
+        with get_database(read_only=False) as db:
             db.conn.execute("DROP TABLE core.fct_transactions")
         result = await transactions_categorize_pending()
         parsed = result.to_dict()

@@ -194,7 +194,7 @@ def accounts_set(
             )
         for field in clear_fields:
             kwargs[field] = CLEAR
-    with get_database() as db:
+    with get_database(read_only=False) as db:
         settings, warnings = AccountService(db).settings_update(
             account_id,
             actor="mcp",
@@ -308,7 +308,7 @@ def accounts_balance_assert(
     """
     parsed_date = _date.fromisoformat(assertion_date)
     parsed_balance = Decimal(str(balance))
-    with get_database() as db:
+    with get_database(read_only=False) as db:
         result = BalanceService(db).assert_balance(
             account_id=account_id,
             assertion_date=parsed_date,
@@ -330,7 +330,7 @@ def accounts_balance_assertion_delete(
         assertion_date: ISO date (YYYY-MM-DD)
     """
     parsed_date = _date.fromisoformat(assertion_date)
-    with get_database() as db:
+    with get_database(read_only=False) as db:
         BalanceService(db).delete_assertion(account_id, parsed_date, actor="mcp")
     return build_envelope(
         data=BalanceAssertionDeletePayload(

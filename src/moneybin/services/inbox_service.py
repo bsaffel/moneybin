@@ -115,7 +115,7 @@ class InboxService:
         from moneybin.config import get_settings
         from moneybin.database import get_database
 
-        return cls(db=get_database(), settings=get_settings())
+        return cls(db=get_database(read_only=False), settings=get_settings())
 
     @classmethod
     def for_active_profile_no_db(cls) -> InboxService:

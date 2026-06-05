@@ -32,7 +32,7 @@ def _secret_store() -> MagicMock:
 
 def _build_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Database:
     db_path = tmp_path / "dim_freshness.duckdb"
-    db = Database(db_path, secret_store=_secret_store())
+    db = Database(db_path, secret_store=_secret_store(), read_only=False)
     settings = MagicMock()
     settings.database.path = db_path
     monkeypatch.setattr("moneybin.database.get_settings", lambda: settings)

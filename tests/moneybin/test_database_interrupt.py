@@ -16,7 +16,10 @@ def test_interrupt_and_reset_calls_interrupt_then_closes(
     tmp_path: Path, mock_secret_store: MagicMock
 ) -> None:
     db = Database(
-        tmp_path / "t.duckdb", secret_store=mock_secret_store, no_auto_upgrade=True
+        tmp_path / "t.duckdb",
+        secret_store=mock_secret_store,
+        no_auto_upgrade=True,
+        read_only=False,
     )
     real_conn = db._conn  # pyright: ignore[reportPrivateUsage]
     assert real_conn is not None
@@ -36,7 +39,10 @@ def test_module_helper_fires_on_active_write_conn(
 ) -> None:
     monkeypatch.setattr(db_module, "_active_write_conn", None)
     db = Database(
-        tmp_path / "t2.duckdb", secret_store=mock_secret_store, no_auto_upgrade=True
+        tmp_path / "t2.duckdb",
+        secret_store=mock_secret_store,
+        no_auto_upgrade=True,
+        read_only=False,
     )
     # Register as active write conn
     with db_module._active_write_lock:  # pyright: ignore[reportPrivateUsage]

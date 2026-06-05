@@ -67,14 +67,14 @@ def test_migration_roundtrip_preserves_row_counts() -> None:
         run_step("transform", scenario.setup, db, env=env)
 
         db.close()
-        db = get_database()
+        db = get_database(read_only=False)
         pre = {tbl: _row_count(db, tbl) for tbl in tracked_tables}
 
         run_step("migrate", scenario.setup, db, env=env)
         run_step("match", scenario.setup, db, env=env)
 
         db.close()
-        db = get_database()
+        db = get_database(read_only=False)
         post = {tbl: _row_count(db, tbl) for tbl in tracked_tables}
         db.close()
 

@@ -33,7 +33,7 @@ def test_tabular_import_preserves_description(
     secret_store.get_key.return_value = "integration-test-key-0123456789abcdef"
 
     db_path = tmp_path / "tabular_desc.duckdb"
-    db = Database(db_path, secret_store=secret_store)
+    db = Database(db_path, secret_store=secret_store, read_only=False)
 
     # get_settings().database.path is used by sqlmesh_context() to key the
     # adapter injection; point it at this test DB so SQLMesh reuses our

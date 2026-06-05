@@ -41,7 +41,10 @@ def _mcp_db_template(  # pyright: ignore[reportUnusedFunction]  # pytest fixture
     template_path = template_dir / "template.duckdb"
 
     database = Database(
-        template_path, secret_store=_make_mock_store(), no_auto_upgrade=True
+        template_path,
+        secret_store=_make_mock_store(),
+        no_auto_upgrade=True,
+        read_only=False,
     )
     conn = database.conn
     create_core_tables_raw(conn)
@@ -101,10 +104,10 @@ def mcp_db(
     a connection open during test body execution.
 
     Tests that need per-test setup (INSERTs, CREATE VIEW, etc.) must use the
-    ``get_database()`` context manager and close it before calling any MCP
-    tool:
+    ``get_database(read_only=False)`` context manager and close it before
+    calling any MCP tool:
 
-        with get_database() as db:
+        with get_database(read_only=False) as db:
             db.execute("INSERT ...")
         result = await some_tool()
     """

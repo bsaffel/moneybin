@@ -34,7 +34,12 @@ def seeded_db(tmp_path: Path) -> Generator[Database, None, None]:
     """A Database with core.* tables and one account row to mask."""
     store = MagicMock()
     store.get_key.return_value = "test-encryption-key-for-unit-tests"
-    db = Database(tmp_path / "sql_cli.duckdb", secret_store=store, no_auto_upgrade=True)
+    db = Database(
+        tmp_path / "sql_cli.duckdb",
+        secret_store=store,
+        no_auto_upgrade=True,
+        read_only=False,
+    )
     create_core_tables_raw(db.conn)
     apply_core_table_comments(db)
     create_core_dim_stub_views(db)

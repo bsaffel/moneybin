@@ -38,7 +38,7 @@ def test_boot_check_runs_self_heal_under_real_sqlmesh(
     secret_store.get_key.return_value = "integration-test-key-0123456789abcdef"
 
     db_path = tmp_path / "drift.duckdb"
-    db = Database(db_path, secret_store=secret_store)
+    db = Database(db_path, secret_store=secret_store, read_only=False)
 
     # sqlmesh_context() reads get_settings().database.path to key the
     # adapter cache. Point it at this test DB so SQLMesh reuses the

@@ -43,6 +43,14 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   `known_format_reuse_total{channel}`, `revalidation_failure_total{channel}`.
 
 ### Changed
+- **`Database.__init__()` and `get_database()` now require `read_only` as a
+  keyword-only argument.** The prior `read_only: bool = False` default is
+  removed; every call site declares intent explicitly. This is the physical
+  enforcement that complements the SQL allowlists at MCP/CLI boundaries —
+  read surfaces open with `ATTACH ... READ_ONLY`, not just by convention.
+  Internal API change only; no external callers. See
+  [`docs/specs/database-writer-coordination.md`](docs/specs/database-writer-coordination.md)
+  and [ADR-010](docs/decisions/010-writer-coordination.md).
 - **GSheet alias limit tightened from 63 to 56 chars** (#228) so the
   generated `gsheet_<alias>` view name fits DuckDB's 63-char identifier
   limit. A pre-existing gsheet connection with a 57–63 char alias will

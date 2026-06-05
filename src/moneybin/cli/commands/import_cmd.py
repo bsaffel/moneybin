@@ -313,7 +313,7 @@ def import_files_command(
     data: dict[str, Any] = {}
     try:
         with handle_cli_errors():
-            with get_database() as db:
+            with get_database(read_only=False) as db:
                 svc = ImportService(db)
                 # Single-path invocations always use import_file directly so
                 # ImportConfirmationRequiredError can bubble to the CLI handler.
@@ -702,7 +702,7 @@ def import_confirm_command(
 
     try:
         with handle_cli_errors():
-            with get_database() as db:
+            with get_database(read_only=False) as db:
                 result = ImportService(
                     db
                 ).import_file(
@@ -925,7 +925,7 @@ def import_revert(
             raise typer.Exit(0)
 
     with handle_cli_errors():
-        with get_database() as db:
+        with get_database(read_only=False) as db:
             result = ImportService(db).revert(import_id)
 
     status = result.get("status")
@@ -1253,7 +1253,7 @@ def formats_delete(
             raise typer.Exit(0)
 
     with handle_cli_errors():
-        with get_database() as db:
+        with get_database(read_only=False) as db:
             deleted = delete_format_from_db(db, name, actor="cli")
 
     if not deleted:

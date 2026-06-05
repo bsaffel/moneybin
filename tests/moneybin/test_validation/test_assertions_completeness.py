@@ -18,7 +18,10 @@ from moneybin.validation.assertions.completeness import (
 def db(tmp_path: Path, mock_secret_store: MagicMock) -> Database:
     """Provide a test Database with a txn table."""
     database = Database(
-        tmp_path / "test.duckdb", secret_store=mock_secret_store, no_auto_upgrade=True
+        tmp_path / "test.duckdb",
+        secret_store=mock_secret_store,
+        no_auto_upgrade=True,
+        read_only=False,
     )
     database.execute("CREATE TABLE txn (id INT, amount DECIMAL(18,2), note VARCHAR)")
     return database
@@ -28,7 +31,10 @@ def db(tmp_path: Path, mock_secret_store: MagicMock) -> Database:
 def src_db(tmp_path: Path, mock_secret_store: MagicMock) -> Database:
     """Provide a test Database with a ``source_type`` column (the assertion default)."""
     database = Database(
-        tmp_path / "src.duckdb", secret_store=mock_secret_store, no_auto_upgrade=True
+        tmp_path / "src.duckdb",
+        secret_store=mock_secret_store,
+        no_auto_upgrade=True,
+        read_only=False,
     )
     database.execute("CREATE TABLE t (id INT, source_type VARCHAR)")
     return database

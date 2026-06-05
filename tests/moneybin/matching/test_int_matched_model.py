@@ -170,6 +170,7 @@ def matched_db(
         tmp_path / "test_matched.duckdb",
         secret_store=mock_secret_store,
         no_auto_upgrade=True,
+        read_only=False,
     )
     database.execute(_PREP_SCHEMA_DDL)
     database.execute(_UNIONED_STUB_DDL)

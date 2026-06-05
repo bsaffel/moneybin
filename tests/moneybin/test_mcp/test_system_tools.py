@@ -155,7 +155,7 @@ async def test_system_doctor_orphan_state_emits_executable_actions(
     from moneybin.database import get_database
     from moneybin.mcp.tools.system import system_doctor
 
-    with get_database() as db:
+    with get_database(read_only=False) as db:
         db.execute(
             "INSERT INTO app.transaction_notes "  # noqa: S608  # test input
             "(note_id, transaction_id, text, author) "
@@ -195,7 +195,7 @@ def _make_tag_op(tag: str = "trip") -> str:
     from moneybin.repositories.transaction_tags_repo import TransactionTagsRepo
     from moneybin.services.mutation_context import operation
 
-    with get_database() as db, operation() as op:
+    with get_database(read_only=False) as db, operation() as op:
         TransactionTagsRepo(db).add(transaction_id="txn_1", tag=tag, actor="cli")
     return op
 
@@ -206,7 +206,7 @@ def _make_note_op() -> str:
     from moneybin.repositories.transaction_notes_repo import TransactionNotesRepo
     from moneybin.services.mutation_context import operation
 
-    with get_database() as db, operation() as op:
+    with get_database(read_only=False) as db, operation() as op:
         TransactionNotesRepo(db).add(
             transaction_id="txn_1", note_id="n1", text="hi", actor="cli"
         )
@@ -222,7 +222,7 @@ def _make_note_edit_op() -> str:
     from moneybin.repositories.transaction_notes_repo import TransactionNotesRepo
     from moneybin.services.mutation_context import operation
 
-    with get_database() as db, operation() as op:
+    with get_database(read_only=False) as db, operation() as op:
         TransactionNotesRepo(db).edit(note_id="n1", text="edited", actor="cli")
     return op
 
@@ -351,7 +351,7 @@ async def test_audit_get_hint_distinguishes_unresolvable(mcp_db: object) -> None
     from moneybin.services.audit_service import AuditService
     from moneybin.services.mutation_context import operation
 
-    with get_database() as db, operation() as op:
+    with get_database(read_only=False) as db, operation() as op:
         AuditService(db).record_audit_event(
             action="manual.create",
             target=("raw", "manual_transactions", "imp_1"),
@@ -375,7 +375,7 @@ async def test_audit_get_hint_for_marker_only(mcp_db: object) -> None:
     from moneybin.services.audit_service import AuditService
     from moneybin.services.mutation_context import operation
 
-    with get_database() as db, operation() as op:
+    with get_database(read_only=False) as db, operation() as op:
         AuditService(db).record_audit_event(
             action="tag.rename",
             target=("app", "transaction_tags", None),

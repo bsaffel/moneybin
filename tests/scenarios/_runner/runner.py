@@ -168,7 +168,7 @@ def run_scenario(
                 # lock (e.g. transform_via_subprocess spawns a subprocess that
                 # needs the write lock). Re-open only when that happens.
                 if db._closed:  # pyright: ignore[reportPrivateUsage]
-                    db = get_database()
+                    db = get_database(read_only=False)
         except Exception as exc:  # noqa: BLE001 — surface as halted result
             # Don't use logger.exception — tracebacks may include local
             # variables holding amounts/descriptions (PII rule).
@@ -264,7 +264,7 @@ def _bootstrap_database() -> Database:
     clear_settings_cache()
     set_current_profile("scenario")
 
-    return get_database()
+    return get_database(read_only=False)
 
 
 def _resolve_runtime_args(args: dict[str, Any], *, tmpdir: str) -> dict[str, Any]:

@@ -16,7 +16,7 @@ def _seed_pending_import(import_id: str = "IMP_PENDING_001") -> None:
     triggers pending. Seed a raw.ofx_accounts row with a future
     extracted_at so the new signal fires.
     """
-    with get_database() as db:
+    with get_database(read_only=False) as db:
         db.execute(
             """
             INSERT INTO raw.import_log (
@@ -82,7 +82,7 @@ async def test_system_status_surfaces_schema_drift_when_columns_missing(
     mcp_db: object,
 ) -> None:
     """schema_drift block lists missing columns when drift is detected."""
-    with get_database() as db:
+    with get_database(read_only=False) as db:
         db.execute("ALTER TABLE core.dim_accounts DROP COLUMN display_name")
     env = await system_status()
     data = env.to_dict()["data"]
@@ -96,7 +96,7 @@ async def test_system_status_surfaces_schema_drift_when_columns_missing(
 @pytest.mark.unit
 async def test_system_status_action_hint_for_schema_drift(mcp_db: object) -> None:
     """Actions array includes a refresh remediation hint when drift detected."""
-    with get_database() as db:
+    with get_database(read_only=False) as db:
         db.execute("ALTER TABLE core.dim_accounts DROP COLUMN display_name")
     env = await system_status()
     actions = env.to_dict()["actions"]
@@ -109,7 +109,7 @@ def test_check_schema_at_boot_self_heals_drift(mcp_db: object, mocker: object) -
     from moneybin.mcp.server import check_schema_at_boot
     from moneybin.services.transform_service import ApplyResult, TransformService
 
-    with get_database() as db:
+    with get_database(read_only=False) as db:
         db.execute("ALTER TABLE core.dim_accounts DROP COLUMN display_name")
 
     def _fake_apply(svc: TransformService) -> ApplyResult:
@@ -133,7 +133,7 @@ def test_check_schema_at_boot_raises_when_heal_does_not_resolve(
     from moneybin.mcp.server import check_schema_at_boot
     from moneybin.services.transform_service import ApplyResult, TransformService
 
-    with get_database() as db:
+    with get_database(read_only=False) as db:
         db.execute("ALTER TABLE core.dim_accounts DROP COLUMN display_name")
 
     def _fake_apply(svc: TransformService) -> ApplyResult:
@@ -154,7 +154,7 @@ def test_check_schema_at_boot_propagates_apply_failure(
     from moneybin.mcp.server import check_schema_at_boot
     from moneybin.services.transform_service import ApplyResult, TransformService
 
-    with get_database() as db:
+    with get_database(read_only=False) as db:
         db.execute("ALTER TABLE core.dim_accounts DROP COLUMN display_name")
 
     def _failing_apply(svc: TransformService) -> ApplyResult:

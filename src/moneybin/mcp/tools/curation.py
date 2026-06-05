@@ -165,7 +165,7 @@ def transactions_create(
     batch before any insert — a single bad row aborts the whole batch.
     """
     prepared = _prepare_manual_entries(transactions)
-    with get_database() as db:
+    with get_database(read_only=False) as db:
         result = TransactionService(db).create_manual_batch(prepared, actor="mcp")
     return build_envelope(
         data=ManualBatchPayload(
@@ -190,7 +190,7 @@ def transactions_notes_add(
     transaction_id: str, text: str
 ) -> ResponseEnvelope[NotePayload]:
     """Append a note to a transaction. Returns the created note row."""
-    with get_database() as db:
+    with get_database(read_only=False) as db:
         note = TransactionService(db).add_note(transaction_id, text, actor="mcp")
     return build_envelope(data=_note_payload(note))
 
@@ -198,7 +198,7 @@ def transactions_notes_add(
 @mcp_tool(read_only=False)
 def transactions_notes_edit(note_id: str, text: str) -> ResponseEnvelope[NotePayload]:
     """Update an existing note's text. Returns the updated row."""
-    with get_database() as db:
+    with get_database(read_only=False) as db:
         note = TransactionService(db).edit_note(note_id, text, actor="mcp")
     return build_envelope(data=_note_payload(note))
 
@@ -206,7 +206,7 @@ def transactions_notes_edit(note_id: str, text: str) -> ResponseEnvelope[NotePay
 @mcp_tool(read_only=False, destructive=True, idempotent=False)
 def transactions_notes_delete(note_id: str) -> ResponseEnvelope[NoteDeletePayload]:
     """Delete a note by ID. Hard-delete; raises LookupError if the note is gone."""
-    with get_database() as db:
+    with get_database(read_only=False) as db:
         TransactionService(db).delete_note(note_id, actor="mcp")
     return build_envelope(data=NoteDeletePayload(note_id=note_id))
 
@@ -222,7 +222,7 @@ def transactions_tags_set(
     a single DuckDB transaction. The returned payload is the sorted final
     tag list — the diff itself is captured in the audit log.
     """
-    with get_database() as db:
+    with get_database(read_only=False) as db:
         final = TransactionService(db).set_tags(transaction_id, tags, actor="mcp")
     return build_envelope(data=TagsPayload(transaction_id=transaction_id, tags=final))
 
@@ -232,7 +232,7 @@ def transactions_tags_rename(
     old_tag: str, new_tag: str
 ) -> ResponseEnvelope[TagRenamePayload]:
     """Rename a tag globally. Emits one parent + N child audit events."""
-    with get_database() as db:
+    with get_database(read_only=False) as db:
         res = TransactionService(db).rename_tag(old_tag, new_tag, actor="mcp")
     return build_envelope(
         data=TagRenamePayload(
@@ -254,7 +254,7 @@ def transactions_splits_set(
     ``subcategory``, and ``note`` are optional. Order is preserved.
     """
     prepared = _prepare_splits(splits)
-    with get_database() as db:
+    with get_database(read_only=False) as db:
         out = TransactionService(db).set_splits(transaction_id, prepared, actor="mcp")
     return build_envelope(data=SplitsPayload(splits=[_split_row(s) for s in out]))
 
@@ -268,7 +268,7 @@ def import_labels_set(
     Replaces the import's label set and emits one full-row ``import.set`` audit
     row (Invariant 10) capturing the complete before/after labels.
     """
-    with get_database() as db:
+    with get_database(read_only=False) as db:
         final = ImportService(db).set_labels(import_id, labels, actor="mcp")
     return build_envelope(
         data=ImportLabelsSetPayload(import_id=import_id, labels=final)

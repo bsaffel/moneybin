@@ -62,7 +62,7 @@ def _seed_one_transaction(db: Database) -> str:
 def _make_db(tmp_path: Path) -> tuple[Database, MagicMock]:
     """Create a seeded test database and return (db, secret_store)."""
     store = _make_secret_store()
-    db = Database(tmp_path / "test.duckdb", secret_store=store)
+    db = Database(tmp_path / "test.duckdb", secret_store=store, read_only=False)
     return db, store
 
 

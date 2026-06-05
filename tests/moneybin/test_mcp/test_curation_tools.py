@@ -50,7 +50,7 @@ def _seed_transaction(
     Opens and closes its own write connection so callers don't hold an open
     connection when the MCP tool runs.
     """
-    with get_database() as db:
+    with get_database(read_only=False) as db:
         db.execute(
             """
             INSERT INTO core.fct_transactions (
@@ -79,7 +79,7 @@ def _seed_transaction(
 
 def _seed_import(import_id: str = "IMP_TEST_001") -> str:
     """Insert one raw.import_log row that import_labels_set can attach to."""
-    with get_database() as db:
+    with get_database(read_only=False) as db:
         db.execute(
             """
             INSERT INTO raw.import_log (
@@ -221,7 +221,7 @@ class TestTagsSetAndRename:
         # one tag.remove for 'a' (round 2). Round 3 is a no-op.
         # target_id is the row PK ("TXN_TAG_1:<tag>", row-grain cascade), so filter
         # by action + the transaction prefix rather than an exact target_id match.
-        with get_database() as db:
+        with get_database(read_only=False) as db:
             events = AuditService(db).list_events(action_pattern="tag.%", limit=100)
         for_txn = [e for e in events if (e.target_id or "").startswith("TXN_TAG_1:")]
         adds = [e for e in for_txn if e.action == "tag.add"]

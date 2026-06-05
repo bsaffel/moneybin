@@ -37,7 +37,7 @@ def _seed_named_account(
     ACC001/ACC002 with display_name=NULL, so resolve tests need to seed their
     own rows to exercise display_name and institution_name matches.
     """
-    with get_database() as db:
+    with get_database(read_only=False) as db:
         db.execute(
             """
             INSERT INTO core.dim_accounts (
@@ -133,7 +133,9 @@ class TestAccountsResolve:
         empty_path = tmp_path / "empty.duckdb"
 
         # Set up an empty DB at the path
-        empty = Database(empty_path, secret_store=store, no_auto_upgrade=True)
+        empty = Database(
+            empty_path, secret_store=store, no_auto_upgrade=True, read_only=False
+        )
         create_core_tables_raw(empty.conn)
         empty.close()
 

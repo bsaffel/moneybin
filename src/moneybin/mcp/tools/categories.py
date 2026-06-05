@@ -39,7 +39,7 @@ def categories_create(
     category: str, subcategory: str | None = None, description: str | None = None
 ) -> ResponseEnvelope[CategoryCreatePayload]:
     """Create a custom category or subcategory (non-default, active by default)."""
-    with get_database() as db:
+    with get_database(read_only=False) as db:
         category_id = CategorizationService(db).create_category(
             category,
             subcategory=subcategory,
@@ -76,7 +76,7 @@ def categories_set(
         is_active: Whether the category is selectable for new
             categorizations.
     """
-    with get_database() as db:
+    with get_database(read_only=False) as db:
         CategorizationService(db).toggle_category(
             category_id,
             is_active=is_active,
@@ -100,7 +100,7 @@ def categories_delete(
             budget rows; if False (default), refuse when references
             exist.
     """
-    with get_database() as db:
+    with get_database(read_only=False) as db:
         CategorizationService(db).delete_category(category_id, force=force, actor="mcp")
     return build_envelope(
         data=CategoryDeletePayload(

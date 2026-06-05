@@ -145,7 +145,7 @@ def system_audit_undo(
     from moneybin.services.undo_service import UndoService
 
     with handle_cli_errors():
-        with get_database() as db:
+        with get_database(read_only=False) as db:
             result = UndoService(db).undo(operation_id, actor="cli")
 
     def _render_text(_: object) -> None:

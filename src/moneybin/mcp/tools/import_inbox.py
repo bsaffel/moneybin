@@ -64,7 +64,7 @@ def import_inbox_sync(refresh: bool = True) -> ResponseEnvelope[ImportInboxSyncP
     """
     from moneybin.config import get_settings
 
-    with get_database() as db:
+    with get_database(read_only=False) as db:
         service = InboxService(db=db, settings=get_settings())
         sync_result = service.sync(refresh=refresh)
 

@@ -25,7 +25,7 @@ def _insert_connection(
 ) -> None:
     """Insert a connection row directly (bypasses audited repo for test speed)."""
     spreadsheet_id = spreadsheet_id or f"ss_{connection_id}"
-    with get_database() as db:
+    with get_database(read_only=False) as db:
         db.execute(
             """
             INSERT INTO app.gsheet_connections (

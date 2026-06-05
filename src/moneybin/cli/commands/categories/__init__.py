@@ -73,7 +73,7 @@ def categories_delete(
     # Both imports resolve BEFORE the delete: an import failure after a
     # committed deletion would strand the user with no confirmation/envelope.
     with handle_cli_errors():
-        with get_database() as db:
+        with get_database(read_only=False) as db:
             CategorizationService(db).delete_category(
                 category_id, force=force, actor="cli"
             )

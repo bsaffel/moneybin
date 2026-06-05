@@ -103,7 +103,7 @@ def categorize_commit_from_file(
         from moneybin.services.categorization import CategorizationService
 
         with handle_cli_errors():
-            with get_database() as db:
+            with get_database(read_only=False) as db:
                 result = CategorizationService(db).categorize_items(items)
     else:
         result = CategorizationResult(applied=0, skipped=0, errors=0, error_details=[])

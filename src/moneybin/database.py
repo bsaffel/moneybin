@@ -8,8 +8,10 @@ Usage::
 
     from moneybin.database import get_database
 
-    db = get_database()
-    db.execute("SELECT * FROM core.fct_transactions WHERE account_id = ?", [acct_id])
+    with get_database(read_only=True) as db:
+        db.execute(
+            "SELECT * FROM core.fct_transactions WHERE account_id = ?", [acct_id]
+        )
 
 Never call ``duckdb.connect()`` directly. See the data-protection spec
 (``docs/specs/privacy-data-protection.md``) for the full design.
@@ -75,6 +77,10 @@ def build_attach_sql(
     read_only: bool = False,
 ) -> str:
     """Build a DuckDB ATTACH statement for an encrypted database.
+
+    SQL-building helper, not a connection opener — the ``read_only`` default
+    here is intentional and matches DuckDB's own ATTACH default. Connection
+    openers (``Database.__init__``, ``get_database``) require ``read_only``.
 
     Single-quote escapes the path and key to prevent injection. The alias
     is double-quoted via sqlglot as defense in depth. All three parameters
@@ -259,7 +265,7 @@ class Database:
         self,
         db_path: Path,
         *,
-        read_only: bool = False,
+        read_only: bool,
         secret_store: SecretStore | None = None,
         no_auto_upgrade: bool | None = None,
     ) -> None:
@@ -775,13 +781,14 @@ def database_was_written() -> bool:
 
 
 def get_database(
-    read_only: bool = False,
+    *,
+    read_only: bool,
     max_wait: float = 5.0,
 ) -> "Database":
     """Create and return a new short-lived Database connection.
 
     Each call opens a fresh connection; callers must close it when done
-    (``with get_database() as db: ...`` closes automatically).
+    (``with get_database(read_only=...) as db: ...`` closes automatically).
 
     Both read-only and write connections retry on DatabaseLockError with
     exponential backoff (start 50 ms, ×1.5, cap 500 ms) until max_wait is
@@ -868,7 +875,7 @@ def sqlmesh_context(
 
     Usage::
 
-        with get_database() as db:
+        with get_database(read_only=False) as db:
             with sqlmesh_context(db) as ctx:
                 ctx.plan(auto_apply=True, no_prompts=True)
 
@@ -1085,7 +1092,9 @@ def init_db(
             # after _KEY_NAME succeeded still triggers the rollback below.
             store.set_key(_KEY_NAME, encryption_key)
             store.set_key(SALT_NAME, base64.b64encode(salt).decode())
-            with Database(db_path, secret_store=store, no_auto_upgrade=False) as db:
+            with Database(
+                db_path, read_only=False, secret_store=store, no_auto_upgrade=False
+            ) as db:
                 from moneybin.seeds import materialize_seeds
 
                 materialize_seeds(db)
@@ -1147,7 +1156,9 @@ def init_db(
                 )
 
         try:
-            with Database(db_path, secret_store=store, no_auto_upgrade=False) as db:
+            with Database(
+                db_path, read_only=False, secret_store=store, no_auto_upgrade=False
+            ) as db:
                 from moneybin.seeds import materialize_seeds
 
                 materialize_seeds(db)

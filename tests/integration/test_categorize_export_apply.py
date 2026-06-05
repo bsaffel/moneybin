@@ -38,7 +38,7 @@ def _make_db_with_uncategorized(
 ) -> tuple[Database, MagicMock]:
     """Create a seeded test database with uncategorized transactions."""
     store = _make_secret_store()
-    db = Database(tmp_path / "test.duckdb", secret_store=store)
+    db = Database(tmp_path / "test.duckdb", secret_store=store, read_only=False)
 
     db.execute(  # noqa: S608  # test input, not executing SQL
         """

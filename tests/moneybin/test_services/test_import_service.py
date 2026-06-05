@@ -22,6 +22,7 @@ def db(tmp_path: Path) -> Generator[Database, None, None]:
         tmp_path / "labels.duckdb",
         secret_store=mock_store,
         no_auto_upgrade=True,
+        read_only=False,
     )
     yield database
     database.close()

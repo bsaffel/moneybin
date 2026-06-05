@@ -421,7 +421,7 @@ def db_info(
 
     # Open database to get table info
     try:
-        with Database(db_path, secret_store=store) as db:
+        with Database(db_path, secret_store=store, read_only=True) as db:
             tables = db.execute("""
                 SELECT table_schema, table_name
                 FROM information_schema.tables
@@ -599,7 +599,7 @@ def db_restore(
 
     store = SecretStore()
     try:
-        with Database(db_path, secret_store=store):
+        with Database(db_path, secret_store=store, read_only=True):
             pass
         logger.info(f"✅ Database restored from {selected_path.name}")
     except DatabaseKeyError:
@@ -693,7 +693,7 @@ def db_unlock() -> None:
         logger.info("💡 Run 'moneybin db init --passphrase' to create a new database.")
         raise typer.Exit(1)
     try:
-        with Database(settings.database.path, secret_store=store):
+        with Database(settings.database.path, secret_store=store, read_only=True):
             pass
         from moneybin.database import (  # noqa: PLC0415 — defer to avoid cold-start cost
             invalidate_encryption_key_cache,

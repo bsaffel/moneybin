@@ -149,7 +149,7 @@ def import_files(
         # branch's transforms_error wiring.
         loaded_import_id: str | None = None
         try:
-            with get_database() as db:
+            with get_database(read_only=False) as db:
                 one = ImportService(db).import_file(
                     validated[0],
                     refresh=False,
@@ -279,7 +279,7 @@ def import_files(
                 transforms_error=transforms_error,
             )
     else:
-        with get_database() as db:
+        with get_database(read_only=False) as db:
             batch = ImportService(db).import_files(
                 [str(p) for p in validated],
                 refresh=refresh,
@@ -455,7 +455,7 @@ def import_revert(import_id: str) -> ResponseEnvelope[ImportRevertPayload]:
     """
     from moneybin.services.import_service import ImportService  # noqa: PLC0415
 
-    with get_database() as db:
+    with get_database(read_only=False) as db:
         result = ImportService(db).revert(import_id)
     status = result.get("status")
 
@@ -586,7 +586,7 @@ def import_confirm(
         )
 
     try:
-        with get_database() as db:
+        with get_database(read_only=False) as db:
             result = ImportService(db).import_file(
                 path,
                 confirm=accept,

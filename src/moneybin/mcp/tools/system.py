@@ -217,7 +217,7 @@ def system_doctor(full: bool = False) -> ResponseEnvelope[SystemDoctorPayload]:
     from moneybin.database import get_database
     from moneybin.services.doctor_service import DoctorService
 
-    with get_database() as db:
+    with get_database(read_only=False) as db:
         report = DoctorService(db).run_all(verbose=False, full=full)
 
     actions: list[str] = []
@@ -280,7 +280,7 @@ def system_audit_undo(operation_id: str) -> ResponseEnvelope[SystemAuditUndoPayl
     from moneybin.database import get_database
     from moneybin.services.undo_service import UndoService
 
-    with get_database() as db:
+    with get_database(read_only=False) as db:
         result = UndoService(db).undo(operation_id, actor="mcp")
     return build_envelope(
         data=SystemAuditUndoPayload(

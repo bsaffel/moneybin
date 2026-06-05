@@ -91,7 +91,7 @@ def matches_run(
     """Run matcher against existing transactions."""
     try:
         with handle_cli_errors():
-            with get_database() as db:
+            with get_database(read_only=False) as db:
                 result = MatchingService(db).run(
                     auto_accept_transfers=auto_accept_transfers, actor="cli"
                 )
@@ -173,7 +173,7 @@ def matches_undo(
 
     try:
         with handle_cli_errors():
-            with get_database() as db:
+            with get_database(read_only=False) as db:
                 MatchingService(db).undo(match_id, reversed_by="user", actor="cli")
                 logger.info(f"Reversed match {match_id[:8]}...")
     except ValueError as e:
@@ -191,7 +191,7 @@ def matches_set(
         logger.error("❌ --status must be 'accepted' or 'rejected'")
         raise typer.Exit(2)
     with handle_cli_errors():
-        with get_database() as db:
+        with get_database(read_only=False) as db:
             MatchingService(db).set_status(match_id, status=status, actor="cli")
     logger.info(f"✅ Set match {match_id[:8]}... to {status}")
 
@@ -210,7 +210,7 @@ def matches_backfill(
     """One-time scan of all existing transactions for latent duplicates."""
     try:
         with handle_cli_errors():
-            with get_database() as db:
+            with get_database(read_only=False) as db:
                 count = db.execute(
                     f"SELECT COUNT(*) FROM {INT_TRANSACTIONS_UNIONED.full_name}"  # noqa: S608 — TableRef constant
                 ).fetchone()

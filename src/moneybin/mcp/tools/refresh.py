@@ -54,7 +54,7 @@ def refresh_run(
     both accept a list parameter to scope which sub-operations execute,
     both default to the full set, both raise on unknown member names.
     """
-    with get_database() as db:
+    with get_database(read_only=False) as db:
         result = refresh(db, steps=list(steps) if steps is not None else None)
     return refresh_envelope(result, requested=expand_steps(steps))
 

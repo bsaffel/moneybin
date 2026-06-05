@@ -150,6 +150,7 @@ def schema_catalog_db(
         tmp_path / "schema_catalog.duckdb",
         secret_store=mock_secret_store,
         no_auto_upgrade=True,
+        read_only=False,
     )
     create_core_tables_raw(database.conn)
     apply_core_table_comments(database)
@@ -289,7 +290,12 @@ def module_db(
     mock_store.get_key.return_value = "test-encryption-key-for-unit-tests"
 
     db_path = tmp_path_factory.mktemp("module_db") / "test.duckdb"
-    database = Database(db_path, secret_store=mock_store, no_auto_upgrade=True)
+    database = Database(
+        db_path,
+        secret_store=mock_store,
+        no_auto_upgrade=True,
+        read_only=False,
+    )
     yield database
     database.close()
 
@@ -354,6 +360,11 @@ def db(tmp_path: Path, mock_secret_store: MagicMock) -> Generator[Database, None
         A Database instance ready for test queries.
     """
     db_path = tmp_path / "test.duckdb"
-    database = Database(db_path, secret_store=mock_secret_store, no_auto_upgrade=True)
+    database = Database(
+        db_path,
+        secret_store=mock_secret_store,
+        no_auto_upgrade=True,
+        read_only=False,
+    )
     yield database
     database.close()

@@ -97,12 +97,12 @@ class TestCategorySetWritePath:
 
     @pytest.mark.unit
     async def test_set_default_category_writes_override(self, mcp_db: Path) -> None:
-        with get_database() as db:
+        with get_database(read_only=False) as db:
             seed_categories_view(db)
 
         await categories_set(category_id="FND", is_active=False)
 
-        with get_database() as db:
+        with get_database(read_only=False) as db:
             rows = db.execute(
                 "SELECT category_id, is_active FROM app.category_overrides"
             ).fetchall()
@@ -112,7 +112,7 @@ class TestCategorySetWritePath:
     async def test_set_user_category_updates_user_categories(
         self, mcp_db: Path
     ) -> None:
-        with get_database() as db:
+        with get_database(read_only=False) as db:
             seed_categories_view(db)
             db.execute("""
                 INSERT INTO app.user_categories
@@ -122,7 +122,7 @@ class TestCategorySetWritePath:
 
         await categories_set(category_id="CUSTOM1", is_active=False)
 
-        with get_database() as db:
+        with get_database(read_only=False) as db:
             rows = db.execute(
                 "SELECT is_active FROM app.user_categories WHERE category_id = ?",
                 ["CUSTOM1"],
@@ -140,7 +140,7 @@ class TestCategoriesDeleteTool:
 
     @pytest.mark.unit
     async def test_deletes_unreferenced_user_category(self, mcp_db: Path) -> None:
-        with get_database() as db:
+        with get_database(read_only=False) as db:
             db.execute(
                 "INSERT INTO app.user_categories "
                 "(category_id, category, subcategory, is_active) "
@@ -161,7 +161,7 @@ class TestCategoriesDeleteTool:
 
     @pytest.mark.unit
     async def test_default_category_returns_error_envelope(self, mcp_db: Path) -> None:
-        with get_database() as db:
+        with get_database(read_only=False) as db:
             seed_categories_view(db)
         envelope = (await categories_delete(category_id="FND")).to_dict()
         assert envelope["status"] == "error"
@@ -171,7 +171,7 @@ class TestCategoriesDeleteTool:
     async def test_force_cascade_clears_transaction_reference(
         self, mcp_db: Path
     ) -> None:
-        with get_database() as db:
+        with get_database(read_only=False) as db:
             db.execute(
                 "INSERT INTO app.user_categories "
                 "(category_id, category, subcategory, is_active) "
@@ -235,7 +235,7 @@ class TestTransactionsCategorizeCommit:
         self, mcp_db: Path
     ) -> None:
         """Commit tool accepts items and writes categorizations."""
-        with get_database() as db:
+        with get_database(read_only=False) as db:
             db.execute(
                 """
                 INSERT INTO core.fct_transactions
@@ -292,7 +292,7 @@ class TestCategorizePendingSortParam:
 
     @staticmethod
     def _install_view_with_transactions() -> None:
-        with get_database() as db:
+        with get_database(read_only=False) as db:
             db.execute("CREATE SCHEMA IF NOT EXISTS reports")
             db.execute("""
                 CREATE OR REPLACE VIEW reports.uncategorized_queue AS

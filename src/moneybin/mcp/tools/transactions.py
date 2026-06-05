@@ -164,7 +164,7 @@ def transactions_matches_set(
         status: 'accepted' folds the pair via dedup; 'rejected' keeps both and
             prevents re-proposal.
     """
-    with get_database() as db:
+    with get_database(read_only=False) as db:
         MatchingService(db).set_status(match_id, status=status, actor="mcp")
     return build_envelope(
         data=MatchSetPayload(match_id=match_id, match_status=status),
@@ -273,7 +273,7 @@ def transactions_matches_run() -> ResponseEnvelope[MatchRunPayload]:
     finalize each with transactions_matches_set. Does not auto-accept. Reverse an
     accepted match via `moneybin transactions matches undo` (no MCP undo tool yet).
     """
-    with get_database() as db:
+    with get_database(read_only=False) as db:
         result = MatchingService(db).run(actor="mcp")
     return build_envelope(
         data=MatchRunPayload(

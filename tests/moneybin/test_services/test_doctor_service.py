@@ -83,6 +83,7 @@ def doctor_db(tmp_path: Path) -> Generator[Database, None, None]:
         tmp_path / "doctor.duckdb",
         secret_store=mock_store,
         no_auto_upgrade=True,
+        read_only=False,
     )
     create_core_tables(database)
     # Seed one valid account and two transactions (both resolve)

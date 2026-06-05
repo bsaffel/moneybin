@@ -28,7 +28,7 @@ def _run(sql: str) -> ResponseEnvelope[Any]:
 @pytest.fixture()
 def _seeded_txn(mcp_db: object) -> None:  # type: ignore[type-arg]
     """Insert one transaction row so amount-based tests have data."""
-    with get_database() as db:
+    with get_database(read_only=False) as db:
         db.execute("""
             INSERT INTO core.fct_transactions
                 (transaction_id, account_id, transaction_date, amount,
@@ -152,7 +152,7 @@ def test_truncation_sets_has_more(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """When results exceed the row cap, has_more is true and total_count > returned."""
-    with get_database() as db:
+    with get_database(read_only=False) as db:
         db.execute("""
             INSERT INTO core.fct_transactions
                 (transaction_id, account_id, transaction_date, amount,

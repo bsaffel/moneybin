@@ -54,7 +54,7 @@ def transactions_notes_add(
 
     try:
         with handle_cli_errors():
-            with get_database() as db:
+            with get_database(read_only=False) as db:
                 note = TransactionService(db).add_note(
                     transaction_id, text, actor="cli"
                 )
@@ -114,7 +114,7 @@ def transactions_notes_edit(
 
     try:
         with handle_cli_errors():
-            with get_database() as db:
+            with get_database(read_only=False) as db:
                 note = TransactionService(db).edit_note(note_id, text, actor="cli")
     except LookupError as e:
         typer.echo(f"❌ {e}", err=True)
@@ -149,7 +149,7 @@ def transactions_notes_delete(
 
     try:
         with handle_cli_errors():
-            with get_database() as db:
+            with get_database(read_only=False) as db:
                 TransactionService(db).delete_note(note_id, actor="cli")
     except LookupError as e:
         typer.echo(f"❌ {e}", err=True)

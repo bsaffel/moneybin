@@ -71,7 +71,7 @@ def refresh_command(
     # service code that accepts ``list[str]`` works unchanged.
     steps: list[str] | None = [s.value for s in step] if step else None
 
-    with handle_cli_errors(), get_database() as db:
+    with handle_cli_errors(), get_database(read_only=False) as db:
         result = refresh(db, steps=steps)
     requested = expand_steps(steps)
 

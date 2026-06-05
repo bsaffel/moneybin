@@ -19,7 +19,10 @@ from moneybin.validation.assertions.distribution import (
 def db(tmp_path: Path, mock_secret_store: MagicMock) -> Database:
     """Provide a test Database with an amount/category table."""
     database = Database(
-        tmp_path / "test.duckdb", secret_store=mock_secret_store, no_auto_upgrade=True
+        tmp_path / "test.duckdb",
+        secret_store=mock_secret_store,
+        no_auto_upgrade=True,
+        read_only=False,
     )
     database.execute("CREATE TABLE t (amount DECIMAL(18,2), category VARCHAR)")
     database.execute(
@@ -70,6 +73,7 @@ def coverage_db(tmp_path: Path, mock_secret_store: MagicMock) -> Database:
         tmp_path / "coverage.duckdb",
         secret_store=mock_secret_store,
         no_auto_upgrade=True,
+        read_only=False,
     )
     database.execute("CREATE SCHEMA IF NOT EXISTS core")
     database.execute("CREATE SCHEMA IF NOT EXISTS prep")
