@@ -193,12 +193,16 @@ def derive_recipe(doc: PdfDocument, _metadata: StatementMetadata) -> Recipe | No
 
     fields = _build_fields(table.header, date_pattern, number_fmt)
     metadata_anchors = _build_metadata_anchors()
-    # start_anchor: just the first header word. layout=True extraction emits
-    # proportional whitespace between columns, so a multi-word anchor with a
-    # fixed separator never matches a real PDF — the first header alone is
-    # always present and stable across statements with the same layout.
-    start_anchor = table.header[0]
+    # start_anchor: pick the actual document line that contains every table
+    # header word in order — typically the header row itself. A bare
+    # `table.header[0]` like "Date" routinely matches preamble lines such as
+    # "Statement Date: 02/01/2024" before the transaction table starts, and
+    # _carve_region would then carve the wrong region (often capturing
+    # account summary rows that look like transactions, or nothing at all
+    # when an end-anchor candidate appears in the preamble). The full
+    # header line is uniquely specific to the transaction table.
     document_text = "\n".join(doc.text_lines)
+    start_anchor = _detect_start_anchor(doc, table)
     end_anchor = _detect_end_anchor(document_text, start_anchor)
     row_region = RegionAnchors(
         start_anchor=start_anchor,
@@ -226,8 +230,40 @@ def derive_recipe(doc: PdfDocument, _metadata: StatementMetadata) -> Recipe | No
 
 
 # ---------------------------------------------------------------------------
-# End-anchor detection
+# Region anchor detection
 # ---------------------------------------------------------------------------
+
+
+def _detect_start_anchor(doc: PdfDocument, table: PdfTable) -> str:
+    """Pick a start_anchor that uniquely identifies the transaction-table header line.
+
+    Scans ``doc.text_lines`` for a line containing every value in
+    ``table.header`` in original order, and returns that stripped line.
+    The full header line ("Date   Description   Amount") is far more
+    specific than the bare first column name ("Date"): preamble lines
+    such as "Statement Date: 02/01/2024" routinely match the single-word
+    anchor and cause ``_carve_region`` to start carving above the actual
+    transaction table.
+
+    Falls back to ``table.header[0]`` when no scanned line carries all
+    header tokens — the executor's full-text fallback in ``_carve_region``
+    is the same safety net used everywhere else and the misconfiguration
+    is logged loudly there.
+    """
+    for line in doc.text_lines:
+        cursor = 0
+        all_found = True
+        for header in table.header:
+            found = line.find(header, cursor)
+            if found == -1:
+                all_found = False
+                break
+            cursor = found + len(header)
+        if all_found:
+            stripped = line.strip()
+            if stripped:
+                return stripped
+    return table.header[0]
 
 
 def _detect_end_anchor(document_text: str, start_anchor: str) -> str:

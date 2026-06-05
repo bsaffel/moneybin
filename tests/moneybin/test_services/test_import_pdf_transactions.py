@@ -483,3 +483,42 @@ def test_pdf_transactions_path_cleanup_on_ingest_failure(
     ).fetchone()
     assert log_status is not None
     assert log_status[0] == "failed"
+
+
+# ---------------------------------------------------------------------------
+# Test 9: _to_account_number_mask covers every branch of the privacy boundary
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        # None / empty / whitespace-only → None
+        (None, None),
+        ("", None),
+        ("   ", None),
+        # Already-masked tokens (any supported prefix) → stripped, unchanged
+        ("****1234", "****1234"),
+        ("xxxx1234", "xxxx1234"),
+        ("XXXX1234", "XXXX1234"),
+        ("  ****1234  ", "****1234"),
+        # Multi-digit raw values reduce to ****<last4>
+        ("123456789", "****6789"),
+        ("Account Number: 5678", "****5678"),
+        ("1234", "****1234"),
+        # No-digits branch returns the captured value verbatim (stripped),
+        # never silently dropped — the column stays observable to the operator
+        # even if the captured token is something exotic.
+        ("ABC-XYZ", "ABC-XYZ"),
+        ("  ABC  ", "ABC"),
+    ],
+)
+def test_to_account_number_mask_covers_every_branch(
+    raw: str | None, expected: str | None
+) -> None:
+    """Exercise every branch of _to_account_number_mask (privacy boundary)."""
+    from moneybin.services.import_service import (
+        _to_account_number_mask,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    assert _to_account_number_mask(raw) == expected

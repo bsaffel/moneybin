@@ -135,10 +135,11 @@ def _save_chase_format(db: Database, recipe: dict[str, Any] | None = None) -> No
     """Insert a Chase format row into app.pdf_formats so fingerprint lookup hits."""
     repo = PdfFormatsRepo(db)
     # Fingerprint must match what compute_fingerprint(_standard_doc()) produces.
-    # Chase issuer, headers = ["Amount", "Date", "Description"] (sorted), page_bucket = "1"
+    # Chase issuer, headers preserved in original PDF column order
+    # ["Date", "Description", "Amount"], page_bucket = "1".
     fingerprint = {
         "issuer": "Chase",
-        "headers": ["Amount", "Date", "Description"],
+        "headers": ["Date", "Description", "Amount"],
         "page_bucket": "1",
     }
     repo.save_new(

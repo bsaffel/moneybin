@@ -126,8 +126,15 @@ def test_issuer_detection_is_case_insensitive() -> None:
     assert fp["issuer"] == "Chase"
 
 
-def test_headers_deduplicated_and_sorted() -> None:
-    """Headers from multiple tables are de-duplicated and sorted."""
+def test_headers_deduplicated_in_original_order() -> None:
+    """Headers from multiple tables are de-duplicated, preserving original order.
+
+    Sorting headers alphabetically would collapse two layouts whose columns
+    appear in different orders (e.g. one statement format with "Date,
+    Description, Amount" vs another with "Amount, Description, Date") onto
+    the same fingerprint, then ``execute_recipe`` would parse cells
+    positionally against the wrong fields.
+    """
     doc = _make_doc(
         text_lines=["Chase Statement"],
         tables=[
@@ -136,11 +143,11 @@ def test_headers_deduplicated_and_sorted() -> None:
         ],
     )
     fp = compute_fingerprint(doc)
-    assert fp["headers"] == ["Amount", "Date", "Description"]
+    assert fp["headers"] == ["Date", "Description", "Amount"]
 
 
 def test_headers_scope_to_largest_table_only() -> None:
-    """Fingerprint headers come from the single largest table.
+    """Fingerprint headers come from the single largest table, original order.
 
     Regression for the codex/claude CONSIDER finding: a secondary table
     (rewards summary, account summary, etc.) whose columns drift month to
@@ -165,7 +172,7 @@ def test_headers_scope_to_largest_table_only() -> None:
         ],
     )
     fp = compute_fingerprint(doc)
-    assert fp["headers"] == ["Amount", "Date", "Description"]
+    assert fp["headers"] == ["Date", "Description", "Amount"]
 
 
 def test_page_count_derives_from_max_table_page() -> None:
