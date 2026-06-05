@@ -1246,7 +1246,13 @@ class ImportService:
 
         return result
 
-    def _import_pdf(self, file_path: Path, *, save_format: bool = True) -> ImportResult:
+    def _import_pdf(
+        self,
+        file_path: Path,
+        *,
+        save_format: bool = True,
+        account_id: str | None = None,
+    ) -> ImportResult:
         """Import a native-text PDF via the Phase 2a routing state machine.
 
         High-confidence PDFs with reconciling rows land in raw.tabular_transactions
@@ -1265,6 +1271,13 @@ class ImportService:
                 one-off or sensitive statement can avoid leaving an
                 ``app.pdf_formats`` row that fingerprints the layout for
                 future replays.
+            account_id: Optional override for the account_id the rows are
+                attached to. Required when reconciliation passes via balances
+                alone (no account anchor captured) but the user still wants
+                the rows attached to an existing ``dim_accounts`` row —
+                without this, the import falls back to the filename-derived
+                alias and creates a new ``dim_accounts`` row. Mirrors the
+                tabular path's ``account_id`` semantics.
         """
         from moneybin.extractors.pdf.extractor import PDFExtractor
         from moneybin.extractors.pdf.routing import route_pdf_import
@@ -1315,6 +1328,7 @@ class ImportService:
                 decision=decision,
                 doc=doc,
                 save_format=save_format,
+                account_id_override=account_id,
             )
 
         # Seed path (Phase 1 fallback) ——————————————————————————————————
@@ -1383,6 +1397,7 @@ class ImportService:
         decision: "RouteDecision",
         doc: "PdfDocument",
         save_format: bool = True,
+        account_id_override: str | None = None,
     ) -> ImportResult:
         """Write deterministic PDF rows to raw.tabular_transactions.
 
@@ -1391,6 +1406,12 @@ class ImportService:
         unless ``save_format`` is False — mirrors the tabular ``--no-save-format``
         semantics so a user/agent importing a one-off or sensitive statement can
         avoid persisting the layout fingerprint.
+
+        ``account_id_override`` short-circuits the issuer-slug + masked-account
+        prefix logic and uses the supplied value verbatim. Required when the
+        statement contains no account anchor and the user/agent wants the rows
+        attached to an existing ``dim_accounts`` row rather than the
+        filename-derived alias.
         """
         import hashlib
         from decimal import Decimal
@@ -1425,22 +1446,29 @@ class ImportService:
         fp = decision.fp
         issuer_slug = slugify(fp.get("issuer", "unknown"))
         account_id: str
-        # Mask the captured account identifier BEFORE slugifying it into
-        # the account_id PK. The captured value may be a full unmasked
-        # institution account number ("Account Number: 123456789"), and
-        # storing that verbatim into raw.tabular_transactions.account_id
-        # / raw.tabular_accounts.account_id leaks it through every
-        # downstream surface that treats account_id as an opaque identifier.
-        # `_to_account_number_mask` reduces it to a last-4 mask; slugify
-        # then strips the asterisks, yielding a stable digits-only suffix
-        # ("chase_6789") that is safe to flow through raw/core/app.
-        masked_acct = _to_account_number_mask(decision.metadata.account_id)
-        if masked_acct:
-            account_id = f"{issuer_slug}_{slugify(masked_acct)}"
+        # Explicit account override takes precedence — agents/users can
+        # pin a PDF whose statement omits an account anchor to an existing
+        # dim_accounts row instead of accepting the filename-derived alias
+        # and creating a fresh dim_accounts entry.
+        if account_id_override:
+            account_id = account_id_override
         else:
-            # Fallback: routing requires metadata for reconciliation, but guard
-            # against a future path that relaxes that constraint.
-            account_id = resolved_alias
+            # Mask the captured account identifier BEFORE slugifying it into
+            # the account_id PK. The captured value may be a full unmasked
+            # institution account number ("Account Number: 123456789"), and
+            # storing that verbatim into raw.tabular_transactions.account_id
+            # / raw.tabular_accounts.account_id leaks it through every
+            # downstream surface that treats account_id as an opaque identifier.
+            # `_to_account_number_mask` reduces it to a last-4 mask; slugify
+            # then strips the asterisks, yielding a stable digits-only suffix
+            # ("chase_6789") that is safe to flow through raw/core/app.
+            masked_acct = _to_account_number_mask(decision.metadata.account_id)
+            if masked_acct:
+                account_id = f"{issuer_slug}_{slugify(masked_acct)}"
+            else:
+                # Fallback: routing requires metadata for reconciliation, but
+                # guard against a future path that relaxes that constraint.
+                account_id = resolved_alias
 
         sign_conv: str = decision.recipe.sign_convention
 
@@ -1960,7 +1988,9 @@ class ImportService:
                 actor_kind=actor_kind,
             )
         if file_type == "pdf":
-            return self._import_pdf(path, save_format=save_format)
+            return self._import_pdf(
+                path, save_format=save_format, account_id=account_id
+            )
         raise ValueError(f"Unsupported file type: {file_type}")
 
     def import_files(

@@ -522,3 +522,114 @@ def test_to_account_number_mask_covers_every_branch(
     )
 
     assert _to_account_number_mask(raw) == expected
+
+
+# ---------------------------------------------------------------------------
+# Test 10: save_format=False suppresses first-contact recipe persistence
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_pdf_first_contact_save_format_false_suppresses_recipe(
+    db: Database, tmp_path: Path
+) -> None:
+    """save_format=False routes to transactions but skips app.pdf_formats save.
+
+    Mirrors the tabular ``--no-save-format`` semantics: rows still land,
+    but no layout fingerprint persists, so the same statement format
+    will re-derive from scratch on every future import. The corresponding
+    import_log row carries format_source='detected' (auto-derive ran)
+    but format_name=NULL (no persistence to point at).
+    """
+    doc = _standard_doc()
+    svc, fake_pdf = _service_with_fake_pdf(db, doc, tmp_path)
+
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+        return_value=doc,
+    ):
+        result = svc.import_file(fake_pdf, refresh=False, save_format=False)
+
+    assert result.file_type == "pdf"
+    assert result.transactions > 0
+    # Rows landed in raw.tabular_transactions
+    rows = db.execute(
+        "SELECT COUNT(*) FROM raw.tabular_transactions WHERE import_id = ?",
+        [result.import_id],
+    ).fetchone()
+    assert rows is not None
+    assert rows[0] == result.transactions
+
+    # No format saved
+    formats = db.execute("SELECT COUNT(*) FROM app.pdf_formats").fetchone()
+    assert formats is not None
+    assert formats[0] == 0
+
+    # Import_log format columns reflect "ran auto-derive but did not persist"
+    log = db.execute(
+        "SELECT format_name, format_source FROM raw.import_log WHERE import_id = ?",
+        [result.import_id],
+    ).fetchone()
+    assert log is not None
+    assert log[0] is None
+    assert log[1] == "detected"
+
+
+# ---------------------------------------------------------------------------
+# Test 11: Broken-recipe ConstraintException — auto-derive succeeds, save_new skipped
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_pdf_replay_invalid_recipe_falls_back_without_replacing_format(
+    db: Database, tmp_path: Path
+) -> None:
+    """Service still imports rows when the saved recipe fails model_validate.
+
+    This pins the documented Phase 2a behaviour: routing falls through to
+    auto-derive (test_replay_invalid_recipe_falls_through_to_auto_derive
+    covers that side), and the service-side save_new attempt collides
+    with the broken row on the fingerprint-derived primary key and
+    swallows the ConstraintException with a warning. The broken row in
+    app.pdf_formats is NOT replaced — Phase 2b's bump_version is what
+    recovers it.
+    """
+    # Insert a broken-recipe row whose layout_fingerprint matches the
+    # standard_doc fixture: Chase issuer, headers ["Date", "Description",
+    # "Amount"] (insertion order), page_bucket="1". The recipe dict is
+    # intentionally missing required fields so Recipe.model_validate fails.
+    broken_recipe: dict[str, Any] = {
+        "row_region": {
+            "start_anchor": _ROW_REGION_START,
+            "end_anchor": _ROW_REGION_END,
+        },
+        # Missing row_split / fields / sign_convention / routing — fails validate
+    }
+    _save_chase_format(db, recipe=broken_recipe)
+
+    doc = _standard_doc()
+    svc, fake_pdf = _service_with_fake_pdf(db, doc, tmp_path)
+
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+        return_value=doc,
+    ):
+        result = svc.import_file(fake_pdf, refresh=False)
+
+    # Import still landed rows via auto-derive
+    assert result.file_type == "pdf"
+    assert result.transactions > 0
+
+    # The broken row is still present, unreplaced
+    formats = db.execute(
+        "SELECT extraction_recipe FROM app.pdf_formats WHERE name = ?",
+        ["chase_checking_pdf"],
+    ).fetchone()
+    assert formats is not None
+    # extraction_recipe is stored as JSON; deserialize and check it's still
+    # the broken stub (missing fields), not the auto-derived recipe.
+    import json as _json
+
+    stored_recipe = _json.loads(formats[0])
+    assert "row_split" not in stored_recipe  # broken stub didn't have it
+    assert "fields" not in stored_recipe

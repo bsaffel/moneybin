@@ -781,7 +781,7 @@ List available import formats (tabular + PDF).
 - **Sensitivity:** `low`
 - **Unique parameters:** None.
 - **Behavior:** Returns two arrays in one envelope. `formats` carries tabular formats (CSV/Excel/Parquet/etc.): `{name, institution_name, file_type, sign_convention, date_format, number_format, multi_account, header_signature}`. `pdf_formats` (Phase 2a) carries auto-derived PDF recipes keyed by layout fingerprint: `{name, institution_name, document_kind, routing, front_end, version, times_used, last_used_at}`. Both built-in and user-saved tabular formats appear; PDF formats are always system-derived.
-- **Service:** `ImportService.list_formats() -> list[FormatSummary]`
+- **Service:** `import_tools.import_formats() -> ResponseEnvelope[ImportFormatsPayload]` (returns `formats` + `pdf_formats` arrays as described above)
 - **CLI:** `moneybin import formats list [--type tabular|pdf|all]` — CLI offers a `--type` filter; the MCP tool returns the union (agent filters by reading the relevant array).
 
 ### `import_ai_preview`
