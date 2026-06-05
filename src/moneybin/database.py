@@ -217,8 +217,13 @@ def check_core_schema_drift(db: "Database") -> dict[str, list[str]]:
 def _attach_encrypted(conn: "duckdb.DuckDBPyConnection", sql: str) -> None:
     """Execute an ATTACH statement, mapping lock/config errors to DatabaseLockError.
 
-    Closes `conn` and raises `DatabaseLockError` if DuckDB reports a conflicting
-    lock or configuration mismatch. Re-raises other DuckDB exceptions unchanged.
+    Closes ``conn`` and raises ``DatabaseLockError`` if DuckDB reports a
+    lock-contention condition. Re-raises other DuckDB exceptions unchanged.
+
+    DuckDB 1.5.3 unified previously-distinct messages (``"Conflicting lock"``
+    IO error + ``"different configuration"`` catalog error in 1.5.2) into a
+    single ``"Could not set lock on file"`` IO error. Both phrasings are
+    matched for belt-and-suspenders coverage across environments.
     """
     try:
         conn.execute(sql)
@@ -229,8 +234,9 @@ def _attach_encrypted(conn: "duckdb.DuckDBPyConnection", sql: str) -> None:
         raise
     except duckdb.IOException as e:
         conn.close()
-        if "Conflicting lock" in str(e):
-            raise DatabaseLockError(str(e)) from e
+        msg = str(e)
+        if "Could not set lock on file" in msg or "Conflicting lock" in msg:
+            raise DatabaseLockError(msg) from e
         raise
 
 
