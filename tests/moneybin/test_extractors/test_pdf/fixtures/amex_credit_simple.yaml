@@ -1,0 +1,28 @@
+file: amex_credit_simple.pdf
+expected_outcome: transactions
+expected_metadata:
+  account_id: "5678"
+  period_start: "2024-02-01"
+  period_end: "2024-02-29"
+  opening_balance: "500.00"
+  closing_balance: "252.50"
+expected_format:
+  institution_name: American Express
+  document_kind: transactions
+  front_end: pdfplumber
+  routing: transactions
+expected_transactions:
+  - date: "2024-02-03"
+    description: "AMAZON.COM"
+    amount: "-89.99"
+  - date: "2024-02-10"
+    description: "NETFLIX SUBSCRIPT"
+    amount: "-15.99"
+  - date: "2024-02-18"
+    description: "WHOLE FOODS"
+    amount: "-141.52"
+expected_reconciliation:
+  passed: true
+  # closing - opening = 252.50 - 500.00 = -247.50; row sum = -89.99-15.99-141.52 = -247.50
+  observed_delta: "-247.50"
+  expected_delta: "-247.50"

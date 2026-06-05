@@ -31,7 +31,10 @@ class PDFExtractor:
         with pdfplumber.open(path) as pdf:
             page_count = len(pdf.pages)
             for page_no, page in enumerate(pdf.pages, start=1):
-                page_text = page.extract_text() or ""
+                # layout=True preserves horizontal column gaps as spaces, enabling
+                # the recipe executor's \s{2,} row-splitter to separate columns
+                # (e.g. "01/02/2024   COFFEE SHOP   -4.50" → 3 tokens).
+                page_text = page.extract_text(layout=True) or ""
                 text_lines.extend(
                     line.strip() for line in page_text.splitlines() if line.strip()
                 )

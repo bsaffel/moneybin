@@ -30,7 +30,7 @@ Tier derivation summary:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Annotated, Any
 
 from moneybin.privacy.taxonomy import DataClass
@@ -171,10 +171,25 @@ class ImportFormatRow:
 
 
 @dataclass(frozen=True, slots=True)
+class ImportPdfFormatRow:
+    """One PDF format entry in ImportFormatsPayload.pdf_formats (Phase 2a)."""
+
+    name: Annotated[str, DataClass.RECORD_ID]
+    institution_name: Annotated[str, DataClass.INSTITUTION]
+    document_kind: Annotated[str, DataClass.TXN_TYPE]
+    routing: Annotated[str, DataClass.TXN_TYPE]
+    front_end: Annotated[str, DataClass.TXN_TYPE]
+    version: Annotated[int, DataClass.AGGREGATE]
+    times_used: Annotated[int, DataClass.AGGREGATE]
+    last_used_at: Annotated[str | None, DataClass.TIMESTAMP_OBSERVABILITY]
+
+
+@dataclass(frozen=True, slots=True)
 class ImportFormatsPayload:
-    """Payload for ``import_formats`` — list of available tabular formats."""
+    """Payload for ``import_formats`` — list of available tabular + PDF formats."""
 
     formats: list[ImportFormatRow]
+    pdf_formats: list[ImportPdfFormatRow] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

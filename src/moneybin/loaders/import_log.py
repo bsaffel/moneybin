@@ -52,7 +52,12 @@ REVERT_TABLES: dict[str, list[TableRef]] = {
     "pipe": _TABULAR_RAW_TABLES,
     "ofx": [OFX_TRANSACTIONS, OFX_ACCOUNTS, OFX_BALANCES, OFX_INSTITUTIONS],
     "manual": [MANUAL_TRANSACTIONS],
-    "pdf": [PDF_SEEDS],
+    # Phase 2a: PDF imports can land in either pdf_seeds (Phase 1 fallback) or
+    # tabular_transactions + tabular_accounts (deterministic path). All three
+    # are listed so revert clears whichever tables the import wrote to. The
+    # revert logic filters by import_id, so non-PDF rows in the tabular tables
+    # are never touched.
+    "pdf": [PDF_SEEDS, TABULAR_TRANSACTIONS, TABULAR_ACCOUNTS],
 }
 
 
@@ -110,6 +115,33 @@ def begin_import(
     )
     logger.info(f"Created import batch: {import_id[:8]}...")
     return import_id
+
+
+def update_format(
+    db: Database,
+    import_id: str,
+    *,
+    format_name: str | None,
+    format_source: str | None,
+) -> None:
+    """Backfill the format columns on an in-flight import_log row.
+
+    Tabular imports know the format before calling ``begin_import`` and pass
+    it in there. PDFs route AFTER ``begin_import`` so the format is unknown
+    at that point — this helper closes the observability gap by stamping
+    ``format_name`` and ``format_source`` once the routing decision is in.
+    Without it every PDF entry in ``raw.import_log`` has NULL format
+    columns and users can't tell whether a replay or auto-derive served
+    that import.
+    """
+    db.execute(
+        f"""
+        UPDATE {IMPORT_LOG.full_name}
+        SET format_name = ?, format_source = ?
+        WHERE import_id = ?
+        """,
+        [format_name, format_source, import_id],
+    )
 
 
 def finalize_import(

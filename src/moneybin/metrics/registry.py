@@ -72,12 +72,34 @@ OFX_IMPORT_BATCHES = Counter(
     labelnames=("status",),
 )
 
-# Phase 1 outcomes: "seed" (success), "failed" (extraction error OR zero rows).
-# Spec also declares "declined" (recipe rejection) — added when Phase 2 ships routing.
+# Outcomes: "transactions" (routed deterministic), "seed" (Phase 1 fallback), "failed"
+# (extraction error or zero rows).
 PDF_IMPORT_TOTAL = Counter(
     "moneybin_pdf_import_total",
     "PDF imports by outcome and rung.",
     ["outcome", "rung"],
+)
+
+PDF_EXTRACTION_CONFIDENCE = Histogram(
+    "moneybin_pdf_extraction_confidence",
+    "Confidence score from PDF recipe execution (0.0–1.0).",
+    buckets=(0.1, 0.3, 0.5, 0.7, 0.85, 0.95, 1.0),
+)
+
+# Label values bounded to two: replay_success and replay_failed.
+# Keeping cardinality low ensures dashboards + alerts stay stable as user recipe
+# counts grow.
+PDF_RECIPE_HIT_TOTAL = Counter(
+    "moneybin_pdf_recipe_hit_total",
+    "PDF imports where a saved format matched the layout fingerprint.",
+    ["outcome"],  # values: "replay_success", "replay_failed"
+)
+
+# Separate counter (no label) so a Prometheus alert can fire on raw replay
+# failures without depending on label cardinality or label filtering.
+PDF_REPLAY_GUARD_FAILURE_TOTAL = Counter(
+    "moneybin_pdf_replay_guard_failure_total",
+    "Saved PDF format matched but reconciliation failed (recipe drift signal).",
 )
 
 # Phase 1: cardinality bounded by distinct PDF aliases per user (~dozens).
