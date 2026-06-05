@@ -31,7 +31,7 @@ from typing import Any, Literal
 
 import duckdb
 
-from moneybin.db_lock._types import OperationType
+from moneybin.db_lock._types import CheckpointReason, OperationType
 
 # SQLMesh resolves MAX_FORK_WORKERS at import via os.sched_getaffinity, which
 # does not exist on macOS — falling through to ProcessPoolExecutor's default
@@ -407,6 +407,11 @@ class Database:
 
                 if result.applied_count > 0:
                     logger.info(f"  ✅ {result.applied_count} migration(s) applied")
+                    # Checkpoint at the durable boundary so a crash after
+                    # migrations apply cannot lose the schema change. Only on
+                    # actually-applied migrations — a no-op open must not
+                    # increment the counter.
+                    self.checkpoint("post_migration")
 
                 # Record MoneyBin version
                 record_version(self, "moneybin", current_pkg_version)
@@ -682,6 +687,22 @@ class Database:
             DuckDB relation with query results.
         """
         return self.conn.sql(query)
+
+    def checkpoint(self, reason: "CheckpointReason") -> None:
+        """Execute CHECKPOINT at a durable boundary and record observability.
+
+        Per ``docs/specs/database-writer-coordination.md`` § "PR B hardening
+        pass", CHECKPOINT calls are emitted intentionally at named boundaries
+        (post-migration, post-transform-apply, etc.) — not on every app-state
+        mutation. The ``reason`` argument identifies the boundary for the
+        ``moneybin_db_checkpoint_total{reason=...}`` counter and the
+        structured log line.
+        """
+        from moneybin.metrics.registry import DB_CHECKPOINT_TOTAL
+
+        self.conn.execute("CHECKPOINT")
+        DB_CHECKPOINT_TOTAL.labels(reason=reason).inc()
+        logger.info(f"checkpoint: reason={reason}")
 
     def __enter__(self) -> "Database":  # noqa: D105
         return self

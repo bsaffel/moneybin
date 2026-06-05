@@ -124,6 +124,12 @@ class TransformService:
                 ctx.plan(auto_apply=True, no_prompts=True)
             # Full plan rebuilds seeds.* too, so refresh the views that read them.
             refresh_views(self._db)
+            # Durable boundary: a crash after a full transform apply must not
+            # lose the rebuilt core/app state. CHECKPOINT runs after SQLMesh's
+            # own context tears down (outside the with-block above) so DuckDB
+            # sees no in-flight statements. Per docs/specs/database-writer-
+            # coordination.md § "PR B hardening pass".
+            self._db.checkpoint("post_transform")
             elapsed = time.monotonic() - t0
             logger.info(f"SQLMesh transforms completed in {elapsed:.2f}s")
             return ApplyResult(applied=True, duration_seconds=elapsed)
