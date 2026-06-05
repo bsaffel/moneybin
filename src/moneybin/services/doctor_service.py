@@ -28,6 +28,7 @@ from moneybin.tables import (
     INT_TRANSACTIONS_UNIONED,
     MANUAL_TRANSACTIONS,
     MATCH_DECISIONS,
+    PDF_FORMATS,
     PROPOSED_RULES,
     TABULAR_FORMATS,
     TRANSACTION_CATEGORIES,
@@ -222,6 +223,10 @@ class DoctorService:
                 full=full,
             ),
             self._run_app_audit_coverage(IMPORTS, "import_id", full=full),
+            self._run_app_audit_coverage(PDF_FORMATS, "name", full=full),
+            self._run_pdf_formats_recipe_validity(),
+            self._run_pdf_formats_bounds(),
+            self._run_pdf_formats_fingerprint_shape(),
             self._run_user_categories_uniqueness(),
             self._run_user_merchants_orphans(),
             self._run_proposed_rules_rule_fk(),
@@ -793,6 +798,151 @@ class DoctorService:
                 detail=(
                     f"{len(affected)} budgets row(s) reference a "
                     "category_id absent from core.dim_categories"
+                ),
+                affected_ids=affected,
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _run_pdf_formats_recipe_validity(self) -> InvariantResult:
+        """Flag ``app.pdf_formats.extraction_recipe`` rows that fail Recipe schema.
+
+        Every stored recipe is replayed by the deterministic executor on later
+        imports, so a row whose JSON no longer round-trips through
+        ``Recipe.model_validate`` is a silent landmine — it survives until the
+        next matching fingerprint arrives, then the replay raises and the file
+        falls back to the seed path. Surfacing it at doctor time lets an operator
+        either re-derive (delete + replay first contact) or restore from
+        ``app.audit_log`` undo before the next import.
+        """
+        name = "app_pdf_formats_recipe_validity"
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT name, CAST(extraction_recipe AS VARCHAR)
+                FROM {PDF_FORMATS.full_name}
+                ORDER BY name
+                """  # noqa: S608  # TableRef constant, no user input
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — table may not exist before first write
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"recipe validity check unavailable: {e}",
+                affected_ids=[],
+            )
+        # Imported lazily — extractors.pdf.recipe pulls in pydantic + the `regex`
+        # package, which is unnecessary cost for doctor runs against installs
+        # whose pdf_formats table is empty (the no-rows branch above returns
+        # early).
+        from moneybin.extractors.pdf.recipe import Recipe  # noqa: PLC0415
+
+        bad: list[str] = []
+        for name_, recipe_json in rows:
+            try:
+                Recipe.model_validate_json(recipe_json)
+            except Exception:  # noqa: BLE001 — pydantic ValidationError + JSONDecodeError + bound-validator ValueErrors
+                bad.append(str(name_))
+        if bad:
+            return InvariantResult(
+                name=name,
+                status="fail",
+                detail=(
+                    f"{len(bad)} pdf_formats row(s) carry an extraction_recipe "
+                    "that no longer validates against Recipe"
+                ),
+                affected_ids=bad,
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _run_pdf_formats_bounds(self) -> InvariantResult:
+        """Flag ``app.pdf_formats`` rows that violate numeric/temporal bounds.
+
+        Three invariants the schema cannot express as cheap CHECK constraints
+        (``last_used_at >= created_at`` cuts across two columns, and a CHECK
+        on a defaulted INTEGER doesn't catch raw bypass writes that supply an
+        explicit out-of-range value):
+
+        - ``version >= 1`` — ``save_new`` inserts at 1; ``bump_version`` only
+          increments. A row at 0 or negative is corruption.
+        - ``times_used >= 0`` — monotonically incremented by ``record_use``.
+          Negative counts are corruption.
+        - ``last_used_at >= created_at`` when ``last_used_at`` is set —
+          last-use can never precede creation by the table's own clock.
+        """
+        name = "app_pdf_formats_bounds"
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT name
+                FROM {PDF_FORMATS.full_name}
+                WHERE version < 1
+                   OR times_used < 0
+                   OR (last_used_at IS NOT NULL AND last_used_at < created_at)
+                ORDER BY name
+                """  # noqa: S608  # TableRef constant, no user input
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — table may not exist before first write
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"bounds check unavailable: {e}",
+                affected_ids=[],
+            )
+        if rows:
+            affected = [str(r[0]) for r in rows]
+            return InvariantResult(
+                name=name,
+                status="fail",
+                detail=(
+                    f"{len(affected)} pdf_formats row(s) violate version/"
+                    "times_used/timestamp ordering bounds"
+                ),
+                affected_ids=affected,
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _run_pdf_formats_fingerprint_shape(self) -> InvariantResult:
+        """Flag ``app.pdf_formats.layout_fingerprint`` rows missing required keys.
+
+        The replay path indexes formats by fingerprint (issuer + ordered headers
+        + page_bucket) — a row whose fingerprint is missing any of those three
+        keys, or whose ``headers`` is not a JSON array, can never match a future
+        import and stays dead in the table. Surfacing it at doctor time lets an
+        operator delete or re-derive before the format silently rots.
+        """
+        name = "app_pdf_formats_fingerprint_shape"
+        # DuckDB JSON probes: json_extract returns NULL for absent keys, and
+        # json_type names the type of the value at a path ("ARRAY", "VARCHAR",
+        # etc.). The three required keys + headers-is-array are checked in one
+        # SQL pass per row.
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT name
+                FROM {PDF_FORMATS.full_name}
+                WHERE json_extract(layout_fingerprint, '$.issuer') IS NULL
+                   OR json_extract(layout_fingerprint, '$.headers') IS NULL
+                   OR json_extract(layout_fingerprint, '$.page_bucket') IS NULL
+                   OR json_type(layout_fingerprint, '$.headers') != 'ARRAY'
+                ORDER BY name
+                """  # noqa: S608  # TableRef constant, no user input
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — table may not exist before first write
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"fingerprint shape check unavailable: {e}",
+                affected_ids=[],
+            )
+        if rows:
+            affected = [str(r[0]) for r in rows]
+            return InvariantResult(
+                name=name,
+                status="fail",
+                detail=(
+                    f"{len(affected)} pdf_formats row(s) carry a "
+                    "layout_fingerprint missing issuer/headers/page_bucket "
+                    "or whose headers is not an array"
                 ),
                 affected_ids=affected,
             )

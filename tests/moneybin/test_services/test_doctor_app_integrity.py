@@ -11,8 +11,10 @@ check added with the repository layer. Uses the function-scoped ``db`` fixture
 # pyright: reportPrivateUsage=false
 from __future__ import annotations
 
+import json
 from datetime import date
 from decimal import Decimal
+from typing import Any
 
 import pytest
 
@@ -23,6 +25,7 @@ from moneybin.repositories.budgets_repo import BudgetsRepo
 from moneybin.repositories.categorization_rules_repo import CategorizationRulesRepo
 from moneybin.repositories.imports_repo import ImportsRepo
 from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
+from moneybin.repositories.pdf_formats_repo import PdfFormatsRepo
 from moneybin.repositories.proposed_rules_repo import ProposedRulesRepo
 from moneybin.repositories.tabular_formats_repo import TabularFormatsRepo
 from moneybin.repositories.transaction_categories_repo import (
@@ -41,6 +44,7 @@ from moneybin.tables import (
     CATEGORIZATION_RULES,
     IMPORTS,
     MATCH_DECISIONS,
+    PDF_FORMATS,
     PROPOSED_RULES,
     TABULAR_FORMATS,
     TRANSACTION_CATEGORIES,
@@ -525,6 +529,10 @@ def test_run_all_includes_app_integrity_invariants(db: Database) -> None:
     assert "app_balance_assertions_account_fk" in names
     assert "app_budgets_category_fk" in names
     assert "app_match_decisions_account_fk" in names
+    assert "app_audit_coverage_pdf_formats" in names
+    assert "app_pdf_formats_recipe_validity" in names
+    assert "app_pdf_formats_bounds" in names
+    assert "app_pdf_formats_fingerprint_shape" in names
 
 
 # ---------------------------------------------------------------------------
@@ -666,4 +674,203 @@ def test_budgets_category_fk_passes_for_resolved_and_null(db: Database) -> None:
         actor="cli",
     )
     result = DoctorService(db)._run_budgets_category_fk()
+    assert result.status == "pass"
+
+
+# ---------------------------------------------------------------------------
+# Batch D: pdf_formats (Invariant 10 PR 12 — Phase 2a follow-up)
+# ---------------------------------------------------------------------------
+
+_VALID_RECIPE: dict[str, Any] = {
+    "row_region": {"start_anchor": "Date", "end_anchor": "Total:"},
+    "row_split": r"\s{2,}",
+    "fields": [
+        {
+            "name": "date",
+            "pattern": r"\d{2}/\d{2}",
+            "cast": "date",
+            "date_format": "%m/%d",
+        },
+        {"name": "amount", "pattern": r"-?\d+\.\d{2}", "cast": "decimal"},
+    ],
+    "sign_convention": "negative_is_expense",
+    "routing": "transactions",
+}
+
+_VALID_FINGERPRINT: dict[str, Any] = {
+    "issuer": "chase",
+    "headers": ["Date", "Description", "Amount"],
+    "page_bucket": "2-3",
+}
+
+
+def _bypass_pdf_format(
+    db: Database,
+    *,
+    name: str,
+    extraction_recipe: dict[str, Any] | str = _VALID_RECIPE,
+    layout_fingerprint: dict[str, Any] | str | None = None,
+    version: int = 1,
+    times_used: int = 1,
+    last_used_at: str | None = None,
+    created_offset_seconds: int = 0,
+    days_ago: int = 0,
+) -> None:
+    """Insert an app.pdf_formats row WITHOUT an audit row (simulated bypass).
+
+    ``extraction_recipe`` / ``layout_fingerprint`` accept dicts (JSON-encoded
+    here) or pre-built JSON strings (lets tests inject malformed payloads).
+    ``last_used_at`` is an ISO timestamp literal or ``None``.
+    ``created_offset_seconds`` lets a test push ``last_used_at`` before
+    ``created_at`` for the bounds check.
+    """
+    recipe_json = (
+        extraction_recipe
+        if isinstance(extraction_recipe, str)
+        else json.dumps(extraction_recipe)
+    )
+    fp = layout_fingerprint if layout_fingerprint is not None else _VALID_FINGERPRINT
+    fp_json = fp if isinstance(fp, str) else json.dumps(fp)
+    last_used_sql = f"TIMESTAMP '{last_used_at}'" if last_used_at else "NULL"
+    db.execute(
+        f"INSERT INTO app.pdf_formats "  # noqa: S608  # test input, not executing user SQL
+        f"(name, institution_name, document_kind, layout_fingerprint, front_end, "
+        f" extraction_recipe, routing, number_format, source, version, times_used, "
+        f" last_used_at, created_at, updated_at) "
+        f"VALUES (?, ?, ?, ?::JSON, ?, ?::JSON, ?, ?, ?, ?, ?, "
+        f" {last_used_sql}, "
+        f" now()::TIMESTAMP - (? * INTERVAL 1 DAY) "
+        f"   + ({created_offset_seconds} * INTERVAL 1 SECOND), "
+        f" now()::TIMESTAMP - (? * INTERVAL 1 DAY))",
+        [
+            name,
+            "Issuer",
+            "checking_statement",
+            fp_json,
+            "text",
+            recipe_json,
+            "transactions",
+            "us",
+            "detected",
+            version,
+            times_used,
+            days_ago,
+            days_ago,
+        ],
+    )
+
+
+def _save_pdf_format(repo: PdfFormatsRepo, *, name: str) -> None:
+    repo.save_new(
+        name,
+        _VALID_RECIPE,
+        fingerprint=_VALID_FINGERPRINT,
+        institution_name="Chase",
+        document_kind="checking_statement",
+        front_end="text",
+        routing="transactions",
+        actor="cli",
+    )
+
+
+def test_audit_coverage_passes_for_repo_mutated_pdf_format(db: Database) -> None:
+    _save_pdf_format(PdfFormatsRepo(db), name="chase_checking")
+    result = DoctorService(db)._run_app_audit_coverage(PDF_FORMATS, "name")
+    assert result.status == "pass"
+
+
+def test_audit_coverage_flags_bypass_pdf_format(db: Database) -> None:
+    _bypass_pdf_format(db, name="bypass_pdf")
+    result = DoctorService(db)._run_app_audit_coverage(PDF_FORMATS, "name")
+    assert result.status == "fail"
+    assert "bypass_pdf" in result.affected_ids
+
+
+def test_pdf_formats_recipe_validity_flags_corrupt_recipe(db: Database) -> None:
+    # extraction_recipe that's missing every required Recipe field —
+    # Recipe.model_validate(json.loads(...)) must reject it.
+    _bypass_pdf_format(db, name="corrupt_recipe", extraction_recipe={"oops": True})
+    result = DoctorService(db)._run_pdf_formats_recipe_validity()
+    assert result.status == "fail"
+    assert "corrupt_recipe" in result.affected_ids
+
+
+def test_pdf_formats_recipe_validity_passes_for_valid_recipe(db: Database) -> None:
+    _save_pdf_format(PdfFormatsRepo(db), name="valid_recipe")
+    result = DoctorService(db)._run_pdf_formats_recipe_validity()
+    assert result.status == "pass"
+
+
+def test_pdf_formats_bounds_flags_zero_version(db: Database) -> None:
+    _bypass_pdf_format(db, name="bad_version", version=0)
+    result = DoctorService(db)._run_pdf_formats_bounds()
+    assert result.status == "fail"
+    assert "bad_version" in result.affected_ids
+
+
+def test_pdf_formats_bounds_flags_negative_times_used(db: Database) -> None:
+    _bypass_pdf_format(db, name="bad_count", times_used=-1)
+    result = DoctorService(db)._run_pdf_formats_bounds()
+    assert result.status == "fail"
+    assert "bad_count" in result.affected_ids
+
+
+def test_pdf_formats_bounds_flags_last_used_before_created(db: Database) -> None:
+    # last_used_at literal in 2020 + created_at = now() → last_used_at < created_at.
+    _bypass_pdf_format(db, name="time_reversed", last_used_at="2020-01-01 00:00:00")
+    result = DoctorService(db)._run_pdf_formats_bounds()
+    assert result.status == "fail"
+    assert "time_reversed" in result.affected_ids
+
+
+def test_pdf_formats_bounds_passes_for_repo_saved_row(db: Database) -> None:
+    _save_pdf_format(PdfFormatsRepo(db), name="sane_bounds")
+    result = DoctorService(db)._run_pdf_formats_bounds()
+    assert result.status == "pass"
+
+
+def test_pdf_formats_fingerprint_shape_flags_missing_page_bucket(
+    db: Database,
+) -> None:
+    _bypass_pdf_format(
+        db,
+        name="no_bucket",
+        layout_fingerprint={"issuer": "x", "headers": ["A"]},  # page_bucket missing
+    )
+    result = DoctorService(db)._run_pdf_formats_fingerprint_shape()
+    assert result.status == "fail"
+    assert "no_bucket" in result.affected_ids
+
+
+def test_pdf_formats_fingerprint_shape_flags_missing_issuer(db: Database) -> None:
+    _bypass_pdf_format(
+        db,
+        name="no_issuer",
+        layout_fingerprint={"headers": ["A"], "page_bucket": "1"},
+    )
+    result = DoctorService(db)._run_pdf_formats_fingerprint_shape()
+    assert result.status == "fail"
+    assert "no_issuer" in result.affected_ids
+
+
+def test_pdf_formats_fingerprint_shape_flags_non_array_headers(db: Database) -> None:
+    _bypass_pdf_format(
+        db,
+        name="bad_headers",
+        layout_fingerprint={
+            "issuer": "x",
+            "headers": "Date,Amount",  # string instead of array
+            "page_bucket": "1",
+        },
+    )
+    result = DoctorService(db)._run_pdf_formats_fingerprint_shape()
+    assert result.status == "fail"
+    assert "bad_headers" in result.affected_ids
+
+
+def test_pdf_formats_fingerprint_shape_passes_for_repo_saved_row(
+    db: Database,
+) -> None:
+    _save_pdf_format(PdfFormatsRepo(db), name="good_fp")
+    result = DoctorService(db)._run_pdf_formats_fingerprint_shape()
     assert result.status == "pass"
