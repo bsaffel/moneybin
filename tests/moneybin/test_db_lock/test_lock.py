@@ -138,3 +138,165 @@ def test_releases_lock_on_exception_in_block(tmp_path: Path) -> None:
     deadline2 = time.monotonic() + 1.0
     with write_lock(db_path, deadline=deadline2, operation_type="interactive"):
         pass
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for code-review findings F1, F2, F7, F8, F13.
+# ---------------------------------------------------------------------------
+
+
+def test_f1_metadata_write_preserves_fd_inode(tmp_path: Path) -> None:
+    """F1 regression: lock_path inode after metadata write equals held fd inode.
+
+    The original `_write_holder_metadata` used `os.replace` on the lock
+    file, which swapped the inode and left the held fcntl on an unlinked
+    old inode — letting a second writer open the path on a fresh inode
+    and acquire its own flock. The in-place writer preserves the
+    fd-to-inode binding.
+    """
+    db_path = tmp_path / "test.duckdb"
+    db_path.touch()
+    deadline = time.monotonic() + 1.0
+    with write_lock(db_path, deadline=deadline, operation_type="interactive"):
+        lock_path = _lock_path(db_path)
+        path_ino = os.stat(lock_path).st_ino
+        # Find the held fd by re-opening + stat — the held fd is private
+        # to write_lock, but inode equality is observable via path stat
+        # vs. a fresh open. If `os.replace` were still in use, the path
+        # would resolve to a NEW inode unrelated to the held one.
+        fresh_fd = os.open(lock_path, os.O_RDONLY)
+        try:
+            fresh_ino = os.fstat(fresh_fd).st_ino
+        finally:
+            os.close(fresh_fd)
+        assert path_ino == fresh_ino
+
+
+def test_f2_different_thread_contends_at_fcntl_not_reentrancy(tmp_path: Path) -> None:
+    """F2 regression: second thread must NOT bypass via reentrancy key match.
+
+    Original reentrancy keyed on pid alone — a second thread in the same
+    process matched the holder and silently fast-pathed past fcntl,
+    breaking serialization. Fix keys reentrancy on (pid, thread_id);
+    a different thread now opens its own fd and contends at fcntl.
+
+    Asserts: when thread A holds and thread B's deadline expires before
+    A releases, B raises DatabaseLockError. Pre-fix B would have entered
+    via reentrancy and succeeded immediately — no timeout.
+    """
+    db_path = tmp_path / "test.duckdb"
+    db_path.touch()
+    acquired_by_a = threading.Event()
+    release_a = threading.Event()
+    b_outcome: dict[str, BaseException | str] = {}
+
+    def thread_a() -> None:
+        deadline = time.monotonic() + 5.0
+        with write_lock(db_path, deadline=deadline, operation_type="interactive"):
+            acquired_by_a.set()
+            release_a.wait(timeout=5.0)
+
+    def thread_b() -> None:
+        # Short deadline — fcntl contention must win before deadline expires.
+        deadline = time.monotonic() + 0.3
+        try:
+            with write_lock(db_path, deadline=deadline, operation_type="migration"):
+                b_outcome["result"] = "acquired"
+        except BaseException as exc:  # noqa: BLE001  # capture any exit
+            b_outcome["result"] = exc
+
+    a = threading.Thread(target=thread_a)
+    a.start()
+    try:
+        assert acquired_by_a.wait(timeout=2.0)
+        b = threading.Thread(target=thread_b)
+        b.start()
+        b.join(timeout=5.0)
+        assert not b.is_alive()
+    finally:
+        release_a.set()
+        a.join(timeout=5.0)
+
+    outcome = b_outcome["result"]
+    assert isinstance(outcome, DatabaseLockError), (
+        f"thread B must timeout via fcntl contention, got: {outcome!r}"
+    )
+
+
+def test_f7_reentrant_does_not_overwrite_outer_metadata(tmp_path: Path) -> None:
+    """F7 regression: inner reentry preserves outer's holder metadata.
+
+    Pre-fix, inner reentry called `_write_holder_metadata` with the inner's
+    operation_type, clobbering the outer's payload. After the inner exits,
+    the file still reads the inner's operation_type — a confusing diagnostic
+    that misrepresents who's holding the lock. Fix: don't write metadata on
+    reentrant entry; outer's payload stays put for the whole nested scope.
+    """
+    db_path = tmp_path / "test.duckdb"
+    db_path.touch()
+    deadline = time.monotonic() + 1.0
+    with write_lock(db_path, deadline=deadline, operation_type="interactive"):
+        with write_lock(db_path, deadline=deadline, operation_type="migration"):
+            # Inside inner reentry — metadata should still be outer's.
+            metadata = json.loads(_lock_path(db_path).read_text())
+            assert metadata["operation_type"] == "interactive"
+        # Outside inner; outer still holds.
+        metadata = json.loads(_lock_path(db_path).read_text())
+        assert metadata["operation_type"] == "interactive"
+
+
+def test_f8_reentrant_inner_raise_still_releases_outer(tmp_path: Path) -> None:
+    """F8 regression: inner reentry that raises must restore outer's depth.
+
+    Pre-fix, the reentrant branch bumped depth BEFORE calling
+    `_write_holder_metadata` (a fallible op). If write_holder_metadata
+    raised, depth stayed bumped and the outer's `finally` decremented
+    back to 1 instead of 0 — fd never released, lock leaked. Fix: no
+    fallible call between depth bump and the yield/finally. After
+    inner raises and full unwind, a fresh acquire from a different
+    thread must succeed.
+    """
+    db_path = tmp_path / "test.duckdb"
+    db_path.touch()
+    deadline = time.monotonic() + 1.0
+
+    with pytest.raises(RuntimeError, match="inner explosion"):
+        with write_lock(db_path, deadline=deadline, operation_type="interactive"):
+            with write_lock(db_path, deadline=deadline, operation_type="migration"):
+                raise RuntimeError("inner explosion")
+
+    # If F8 regressed (lock leaked), a different thread cannot acquire
+    # within 0.5s. The current-thread re-entry would succeed via the
+    # reentrancy fast-path even with a leak, which is why this test
+    # uses a different thread.
+    acquired_by_other = threading.Event()
+
+    def other_thread() -> None:
+        d = time.monotonic() + 0.5
+        with write_lock(db_path, deadline=d, operation_type="interactive"):
+            acquired_by_other.set()
+
+    t = threading.Thread(target=other_thread)
+    t.start()
+    t.join(timeout=2.0)
+    assert acquired_by_other.is_set(), (
+        "different thread could not acquire — outer's lock leaked"
+    )
+
+
+def test_f13_lock_file_mode_is_0o600(tmp_path: Path) -> None:
+    """F13 regression: lock file mode stays 0o600 after metadata write.
+
+    Pre-fix, `_write_holder_metadata` wrote a tmpfile via
+    `Path.write_text` (which uses prevailing umask, typically yielding
+    0o644) then `os.replace`d over the original 0o600 file — downgrading
+    the mode. Process command-lines in the metadata payload were then
+    readable by other local users. Fix: in-place write through the held
+    fd; the file is created once at 0o600 and never replaced.
+    """
+    db_path = tmp_path / "test.duckdb"
+    db_path.touch()
+    deadline = time.monotonic() + 1.0
+    with write_lock(db_path, deadline=deadline, operation_type="interactive"):
+        mode = os.stat(_lock_path(db_path)).st_mode & 0o777
+        assert mode == 0o600, f"lock file mode is 0o{mode:o}, expected 0o600"

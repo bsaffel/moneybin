@@ -40,13 +40,17 @@ class _Holder:
     """Reentrancy tracking entry."""
 
     pid: int
+    thread_id: int
     depth: int
     fd: int
 
 
 # Guards _held_by mutation. Each Database file_path resolves to a single
 # entry; the fd is held open for the duration of the outermost acquire so
-# OS-level fcntl semantics serialize cross-process attempts.
+# OS-level fcntl semantics serialize cross-process attempts. Reentrancy is
+# keyed on (pid, thread_id) — different threads in the same process each
+# open their own fd and contend at fcntl (POSIX flock contends per
+# open-file-description on Linux and macOS).
 _held_by: dict[Path, _Holder] = {}
 _held_by_lock = threading.Lock()
 
@@ -67,8 +71,17 @@ def _process_command(pid: int) -> str:
     return result.stdout.strip() or f"pid {pid}"
 
 
-def _write_holder_metadata(lock_path: Path, operation_type: OperationType) -> None:
-    """Atomically write the lock-file metadata payload."""
+def _write_holder_metadata(fd: int, operation_type: OperationType) -> None:
+    """Write the lock holder metadata in-place via the held fd.
+
+    Writes through the SAME fd that holds the fcntl lock — never
+    replaces the file. A tmpfile + os.replace would swap the inode and
+    leave the fcntl on the unlinked old inode; a second writer opening
+    lock_path would then bind to the new inode and acquire its own
+    flock. Diagnostic readers (system_status) may observe a partial
+    JSON write window; this is acceptable because the lock authority
+    is the held fcntl, not the file contents.
+    """
     pid = os.getpid()
     payload = {
         "pid": pid,
@@ -76,9 +89,10 @@ def _write_holder_metadata(lock_path: Path, operation_type: OperationType) -> No
         "started_at": datetime.now(UTC).isoformat(),
         "operation_type": operation_type,
     }
-    tmp = lock_path.with_suffix(lock_path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload))
-    os.replace(tmp, lock_path)
+    encoded = json.dumps(payload).encode()
+    os.ftruncate(fd, 0)
+    os.lseek(fd, 0, os.SEEK_SET)
+    os.write(fd, encoded)
 
 
 def _build_timeout_error(db_path: Path, operation_type: OperationType) -> Exception:
@@ -133,26 +147,39 @@ def write_lock(
     key = db_path.resolve()
     lock_path = key.parent / (key.name + _LOCK_SUFFIX)
     pid = os.getpid()
+    thread_id = threading.get_ident()
 
-    # Reentrancy path: same-pid holder bumps depth and exits without touching
-    # fcntl, then decrements on unwind. No fd is opened here, so the outer
-    # BaseException handler below is unreachable from this branch.
+    # Reentrancy: only same-pid AND same-thread bumps depth. A different
+    # thread in this process opens its own fd and contends at fcntl —
+    # POSIX flock contends per open-file-description on Linux and macOS,
+    # so cross-thread serialization is correct via the backoff loop below.
     with _held_by_lock:
         existing = _held_by.get(key)
-        if existing is not None and existing.pid == pid:
+        if (
+            existing is not None
+            and existing.pid == pid
+            and existing.thread_id == thread_id
+        ):
             existing.depth += 1
             reentered = True
         else:
             reentered = False
 
     if reentered:
-        _write_holder_metadata(lock_path, operation_type)
+        # Outer holder owns the metadata payload. Inner reentry leaves it
+        # untouched — "process P is in operation X" stays true for the
+        # whole nested scope. No fallible operation between the depth
+        # bump (above) and yield, so finally always restores depth.
         try:
             yield
         finally:
             with _held_by_lock:
                 holder = _held_by.get(key)
-                if holder is not None and holder.pid == pid:
+                if (
+                    holder is not None
+                    and holder.pid == pid
+                    and holder.thread_id == thread_id
+                ):
                     holder.depth -= 1
         return
 
@@ -176,16 +203,20 @@ def write_lock(
                     raise _build_timeout_error(db_path, operation_type) from None
                 time.sleep(delay)
                 delay = min(delay * _BACKOFF_MULTIPLIER, _BACKOFF_CAP_SECONDS)
-        _write_holder_metadata(lock_path, operation_type)
+        _write_holder_metadata(fd, operation_type)
         with _held_by_lock:
-            _held_by[key] = _Holder(pid=pid, depth=1, fd=fd)
+            _held_by[key] = _Holder(pid=pid, thread_id=thread_id, depth=1, fd=fd)
             registered = True
         try:
             yield
         finally:
             with _held_by_lock:
                 holder = _held_by.get(key)
-                if holder is not None and holder.pid == pid:
+                if (
+                    holder is not None
+                    and holder.pid == pid
+                    and holder.thread_id == thread_id
+                ):
                     holder.depth -= 1
                     if holder.depth <= 0:
                         _held_by.pop(key, None)
