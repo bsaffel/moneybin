@@ -1346,11 +1346,17 @@ class ImportService:
                 if decision.reason == "replay_reconciliation_failed"
                 else "propose_recipe"
             )
+            # For replay failures, surface both the saved format name AND the
+            # actual recipe patterns the agent needs to inspect and propose a
+            # refreshed version. Carrying only the name forces a first-contact
+            # parse, defeating the point of the replay path.
             saved_recipe = (
-                # The matched recipe is available on the decision when a saved
-                # format was the source of the failure; for first-contact
-                # paths it's None.
-                {"name": decision.matched_format_name}
+                {
+                    "name": decision.matched_format_name,
+                    "recipe": decision.recipe.model_dump()
+                    if decision.recipe is not None
+                    else None,
+                }
                 if request_kind == "replay_failed_re_derive"
                 and decision.matched_format_name
                 else None
@@ -1360,9 +1366,7 @@ class ImportService:
                 request_kind=request_kind,
                 saved_recipe_for_re_derive=saved_recipe,
             )
-            from dataclasses import asdict
-
-            payload = BridgePayload(payload=asdict(bridge_request))
+            payload = BridgePayload(payload=dataclasses.asdict(bridge_request))
             self._audit.record_audit_event(
                 action="smart_import_parse",
                 target=("raw", "pdf_seeds", str(canonical)),

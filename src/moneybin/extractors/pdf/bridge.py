@@ -135,6 +135,8 @@ def parse_bridge_response(payload: object) -> BridgeResponse:
     raw_rows = payload["rows"]
     if not isinstance(raw_rows, list):
         raise ValueError("bridge response 'rows' must be a list")
+    if not all(isinstance(r, dict) for r in raw_rows):
+        raise ValueError("bridge response 'rows' must be a list of dicts")
     # raw_recipe / raw_rows pass isinstance checks above; cast for pyright since
     # the source dict (untrusted JSON) types its values as object.
     typed_recipe = cast(dict[str, Any], raw_recipe)

@@ -21,6 +21,7 @@ import pytest
 
 from moneybin.database import Database
 from moneybin.extractors.pdf.ir import PdfDocument, PdfTable
+from moneybin.extractors.pdf.recipe import Recipe
 from moneybin.extractors.pdf.routing import RouteDecision
 from moneybin.metrics.registry import PDF_BRIDGE_EGRESS_TOTAL
 from moneybin.services.import_confirmation import (
@@ -28,6 +29,26 @@ from moneybin.services.import_confirmation import (
     ImportConfirmationRequiredError,
 )
 from moneybin.services.import_service import ImportService, PdfPreviewResult
+
+
+def _make_recipe() -> Recipe:
+    """Build a minimal valid Recipe for replay-payload assertions."""
+    return Recipe.model_validate({
+        "metadata_anchors": [],
+        "row_region": {"start_anchor": "TRANSACTIONS", "end_anchor": "TOTAL"},
+        "row_split": r"\s{2,}",
+        "fields": [
+            {
+                "name": "date",
+                "pattern": r"\d{2}/\d{2}/\d{4}",
+                "cast": "date",
+                "date_format": "%m/%d/%Y",
+            },
+            {"name": "amount", "pattern": r"-?\d+\.\d{2}", "cast": "decimal"},
+        ],
+        "sign_convention": "negative_is_expense",
+        "routing": "transactions",
+    })
 
 
 def _doc() -> PdfDocument:
@@ -56,12 +77,13 @@ def _decision(
     confidence: float = 0.55,
     rows: list[dict[str, Any]] | None = None,
     matched_format_name: str | None = None,
+    recipe: Recipe | None = None,
 ) -> RouteDecision:
     from moneybin.extractors.pdf.metadata import StatementMetadata
 
     return RouteDecision(
         outcome=outcome,  # type: ignore[arg-type]
-        recipe=None,
+        recipe=recipe,
         rows=rows or [],
         metadata=StatementMetadata(
             account_id=None,
@@ -168,11 +190,13 @@ def test_pdf_preview_replay_failed_uses_replay_request_kind(
 ) -> None:
     decisions, docs = stub_pdf_pipeline
     docs.append(_doc())
+    recipe = _make_recipe()
     decisions.append(
         _decision(
             reason="replay_reconciliation_failed",
             confidence=0.9,
             matched_format_name="chase_checking_pdf",
+            recipe=recipe,
         )
     )
 
@@ -184,7 +208,54 @@ def test_pdf_preview_replay_failed_uses_replay_request_kind(
     assert isinstance(outcome.proposed, BridgePayload)
     payload = outcome.proposed.payload
     assert payload["request_kind"] == "replay_failed_re_derive"
-    assert payload["saved_recipe_for_re_derive"] == {"name": "chase_checking_pdf"}
+    # The replay payload carries both the saved format name AND the actual
+    # recipe patterns the agent needs to diagnose and refresh the failed match.
+    assert payload["saved_recipe_for_re_derive"] == {
+        "name": "chase_checking_pdf",
+        "recipe": recipe.model_dump(),
+    }
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "low_confidence",
+        "replay_reconciliation_failed",
+        "reconciliation_failed",
+        "metadata_incomplete",
+    ],
+)
+def test_pdf_preview_all_bridge_eligible_reasons_escalate(
+    db: Database,
+    tmp_path: Path,
+    reason: str,
+    stub_pdf_pipeline: tuple[list[RouteDecision], list[PdfDocument]],
+) -> None:
+    """Every entry in `_BRIDGE_ELIGIBLE_REASONS` must trigger bridge escalation.
+
+    Without parametrize coverage, `reconciliation_failed` and
+    `metadata_incomplete` would silently regress to the non-escalating
+    fallback if either were removed from the frozenset.
+    """
+    decisions, docs = stub_pdf_pipeline
+    docs.append(_doc())
+    decisions.append(
+        _decision(
+            reason=reason,
+            confidence=0.4,
+            matched_format_name=(
+                "chase_checking_pdf"
+                if reason == "replay_reconciliation_failed"
+                else None
+            ),
+            recipe=(
+                _make_recipe() if reason == "replay_reconciliation_failed" else None
+            ),
+        )
+    )
+
+    with pytest.raises(ImportConfirmationRequiredError):
+        ImportService(db).pdf_preview(_make_pdf_path(tmp_path))
 
 
 def test_pdf_preview_escalation_writes_smart_import_parse_audit_row(
