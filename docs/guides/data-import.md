@@ -260,7 +260,7 @@ moneybin import files ~/Downloads/*.pdf
 - The first-pass extraction confidence on column types is low (typically scanned-then-OCR'd PDFs with brittle column boundaries).
 - The PDF has no balance-summary metadata to reconcile against.
 - The transaction table extracts zero rows.
-- The PDF's number format isn't one MoneyBin recognizes (`us`, `european`, `swiss_french`, `zero_decimal`).
+- The PDF's number format is anything other than `us`. The executor today only routes `us`-format statements to `raw.tabular_transactions`; `european`, `swiss_french`, and `zero_decimal` are recognized at the recipe level but always fall back to the seed path until executor support lands.
 
 In every fallback case the recipe is NOT saved — MoneyBin only persists recipes that round-trip cleanly. Re-imports of the same statement either replay the saved recipe (no derivation cost) or fall back again to the seed path.
 
@@ -270,18 +270,18 @@ In every fallback case the recipe is NOT saved — MoneyBin only persists recipe
 
 ```bash
 moneybin import formats list --type=pdf
-moneybin import formats show chase_credit__v1   # works across tabular and PDF formats
+moneybin import formats show chase_a1b2c3d4e5f6   # works across tabular and PDF formats
 ```
 
-The list view shows institution, routing (debit / credit), front-end (statement / activity), recipe version, times-used, and last-used date.
+PDF format names are `{issuer_slug}_{12-char SHA-256 hex of the layout fingerprint}` — the exact name appears in `formats list`. Recipe version is a separate column, not part of the name. The list view shows institution, routing (debit / credit), front-end (statement / activity), recipe version, times-used, and last-used date.
 
-**Re-import safety.** Each imported transaction carries a content hash that includes the statement period — re-running the same PDF (or a re-saved copy with identical content) is a no-op. The import log also tracks file-content hashes; `--force` overrides the log and creates a new batch.
+**Re-import safety.** Each transaction's `transaction_id` is a content hash over date, amount, description, account, and row position. Re-running the same PDF from the same path produces zero net new transaction rows — the `(transaction_id, account_id, source_file)` primary key on `raw.tabular_transactions` rejects the duplicates. Each call does still open a fresh `raw.import_log` entry, and re-importing the same content from a *different* path will write a new set of raw rows (because `source_file` is part of the dedup key). `--force` does not currently apply to PDFs — it is an OFX-only flag.
 
 **Reverting.** Every PDF import — routed-transactions path or seed-path fallback — is reversible by `import_id`:
 
 ```bash
 # Capture import_id, then back it out:
-moneybin import files ~/Downloads/chase_statement.pdf --output json | jq -r .data.import_id
+moneybin import files ~/Downloads/chase_statement.pdf --output json | jq -r '.data.files[0].import_id'
 moneybin import revert <import_id>
 ```
 
