@@ -830,6 +830,10 @@ class DoctorService:
                 detail=f"recipe validity check unavailable: {e}",
                 affected_ids=[],
             )
+        if not rows:
+            return InvariantResult(
+                name=name, status="pass", detail=None, affected_ids=[]
+            )
         # Imported lazily — extractors.pdf.recipe pulls in pydantic + the `regex`
         # package, which is unnecessary cost for doctor runs against installs
         # whose pdf_formats table is empty (the no-rows branch above returns
@@ -906,15 +910,19 @@ class DoctorService:
 
         The replay path indexes formats by fingerprint (issuer + ordered headers
         + page_bucket) — a row whose fingerprint is missing any of those three
-        keys, or whose ``headers`` is not a JSON array, can never match a future
-        import and stays dead in the table. Surfacing it at doctor time lets an
+        keys, whose ``headers`` is not a JSON array, or whose ``issuer`` or
+        ``page_bucket`` is not a JSON string, can never match a future import
+        and stays dead in the table. Surfacing it at doctor time lets an
         operator delete or re-derive before the format silently rots.
         """
         name = "app_pdf_formats_fingerprint_shape"
         # DuckDB JSON probes: json_extract returns NULL for absent keys, and
         # json_type names the type of the value at a path ("ARRAY", "VARCHAR",
-        # etc.). The three required keys + headers-is-array are checked in one
-        # SQL pass per row.
+        # etc.). The three required keys, headers-is-array, and the two string
+        # keys' VARCHAR types are checked in one SQL pass per row —
+        # compute_fingerprint() always emits string issuer/page_bucket, so a
+        # bypass row with e.g. {"issuer": ["Chase"]} could never match a future
+        # import and stays dead in the table.
         try:
             rows = self._db.execute(
                 f"""
@@ -924,6 +932,8 @@ class DoctorService:
                    OR json_extract(layout_fingerprint, '$.headers') IS NULL
                    OR json_extract(layout_fingerprint, '$.page_bucket') IS NULL
                    OR json_type(layout_fingerprint, '$.headers') != 'ARRAY'
+                   OR json_type(layout_fingerprint, '$.issuer') != 'VARCHAR'
+                   OR json_type(layout_fingerprint, '$.page_bucket') != 'VARCHAR'
                 ORDER BY name
                 """  # noqa: S608  # TableRef constant, no user input
             ).fetchall()
@@ -941,8 +951,9 @@ class DoctorService:
                 status="fail",
                 detail=(
                     f"{len(affected)} pdf_formats row(s) carry a "
-                    "layout_fingerprint missing issuer/headers/page_bucket "
-                    "or whose headers is not an array"
+                    "layout_fingerprint missing issuer/headers/page_bucket, "
+                    "whose headers is not an array, or whose issuer/"
+                    "page_bucket is not a string"
                 ),
                 affected_ids=affected,
             )

@@ -868,6 +868,38 @@ def test_pdf_formats_fingerprint_shape_flags_non_array_headers(db: Database) -> 
     assert "bad_headers" in result.affected_ids
 
 
+def test_pdf_formats_fingerprint_shape_flags_non_string_issuer(db: Database) -> None:
+    _bypass_pdf_format(
+        db,
+        name="bad_issuer",
+        layout_fingerprint={
+            "issuer": ["Chase"],  # array instead of string — can never match
+            "headers": ["A"],
+            "page_bucket": "1",
+        },
+    )
+    result = DoctorService(db)._run_pdf_formats_fingerprint_shape()
+    assert result.status == "fail"
+    assert "bad_issuer" in result.affected_ids
+
+
+def test_pdf_formats_fingerprint_shape_flags_non_string_page_bucket(
+    db: Database,
+) -> None:
+    _bypass_pdf_format(
+        db,
+        name="bad_bucket",
+        layout_fingerprint={
+            "issuer": "x",
+            "headers": ["A"],
+            "page_bucket": 1,  # number instead of string — can never match
+        },
+    )
+    result = DoctorService(db)._run_pdf_formats_fingerprint_shape()
+    assert result.status == "fail"
+    assert "bad_bucket" in result.affected_ids
+
+
 def test_pdf_formats_fingerprint_shape_passes_for_repo_saved_row(
     db: Database,
 ) -> None:
