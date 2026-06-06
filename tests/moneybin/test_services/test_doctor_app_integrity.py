@@ -951,6 +951,25 @@ def test_pdf_formats_fingerprint_shape_flags_object_header_element(
     assert "bad_hdr_obj" in result.affected_ids
 
 
+def test_pdf_formats_fingerprint_shape_flags_extra_keys(db: Database) -> None:
+    # canonical 3 keys + an extra key — get_by_fingerprint serializes the
+    # match key with exactly 3 fields, so canonical JSON equality misses
+    # this row even though every required field is well-formed.
+    _bypass_pdf_format(
+        db,
+        name="extra_key",
+        layout_fingerprint={
+            "issuer": "x",
+            "headers": ["A"],
+            "page_bucket": "1",
+            "extra": "junk",
+        },
+    )
+    result = DoctorService(db)._run_pdf_formats_fingerprint_shape()
+    assert result.status == "fail"
+    assert "extra_key" in result.affected_ids
+
+
 def test_pdf_formats_fingerprint_shape_passes_for_repo_saved_row(
     db: Database,
 ) -> None:

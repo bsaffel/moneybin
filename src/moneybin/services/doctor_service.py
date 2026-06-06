@@ -906,26 +906,27 @@ class DoctorService:
         return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
 
     def _run_pdf_formats_fingerprint_shape(self) -> InvariantResult:
-        """Flag ``app.pdf_formats.layout_fingerprint`` rows missing required keys.
+        """Flag ``app.pdf_formats.layout_fingerprint`` rows that can never match.
 
         The replay path indexes formats by fingerprint (issuer + ordered headers
-        + page_bucket) — a row whose fingerprint is missing any of those three
-        keys, whose ``headers`` is not a JSON array of strings, or whose
-        ``issuer`` or ``page_bucket`` is not a JSON string, can never match a
-        future import and stays dead in the table. Surfacing it at doctor time
-        lets an operator delete or re-derive before the format silently rots.
+        + page_bucket) using canonical JSON equality. A row whose fingerprint
+        is missing any of those three keys, carries any extra key, has
+        ``headers`` not a JSON array of strings, or whose ``issuer`` or
+        ``page_bucket`` is not a JSON string, can never match a future import
+        and stays dead in the table. Surfacing it at doctor time lets an
+        operator delete or re-derive before the format silently rots.
         """
         name = "app_pdf_formats_fingerprint_shape"
         # DuckDB JSON probes: json_extract returns NULL for absent keys, and
         # json_type names the type of the value at a path ("ARRAY", "VARCHAR",
-        # etc.). The required keys, the two string-typed keys, and headers
-        # being a string-only array are checked in one SQL pass per row —
-        # compute_fingerprint() emits string issuer/page_bucket and a string
-        # headers list, so a bypass row with any other type in those positions
-        # (e.g. {"issuer": ["Chase"]} or {"headers": [1]}) could never match a
-        # future import and stays dead in the table. The headers per-element
-        # check uses TRY_CAST so a non-array headers value (already caught by
-        # the prior json_type guard) doesn't error here.
+        # etc.). The required keys, the two string-typed keys, headers being
+        # a string-only array, and the key set being exactly three keys are
+        # checked in one SQL pass per row — compute_fingerprint() returns a
+        # dict with exactly {issuer, headers, page_bucket}, and the match path
+        # uses canonical JSON equality, so any extra key, missing key, wrong
+        # type, or non-string header element makes the row dead in the table.
+        # The headers per-element check uses TRY_CAST so a non-array headers
+        # value (already caught by the prior json_type guard) doesn't error.
         try:
             rows = self._db.execute(
                 f"""
@@ -937,6 +938,7 @@ class DoctorService:
                    OR json_type(layout_fingerprint, '$.headers') != 'ARRAY'
                    OR json_type(layout_fingerprint, '$.issuer') != 'VARCHAR'
                    OR json_type(layout_fingerprint, '$.page_bucket') != 'VARCHAR'
+                   OR json_array_length(json_keys(layout_fingerprint)) != 3
                    OR list_aggregate(
                         list_transform(
                           TRY_CAST(layout_fingerprint -> '$.headers' AS JSON[]),
@@ -962,8 +964,8 @@ class DoctorService:
                 detail=(
                     f"{len(affected)} pdf_formats row(s) carry a "
                     "layout_fingerprint missing issuer/headers/page_bucket, "
-                    "whose headers is not an array of strings, or whose "
-                    "issuer/page_bucket is not a string"
+                    "carrying extra keys, whose headers is not an array of "
+                    "strings, or whose issuer/page_bucket is not a string"
                 ),
                 affected_ids=affected,
             )
