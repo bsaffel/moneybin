@@ -900,6 +900,57 @@ def test_pdf_formats_fingerprint_shape_flags_non_string_page_bucket(
     assert "bad_bucket" in result.affected_ids
 
 
+def test_pdf_formats_fingerprint_shape_flags_numeric_header_element(
+    db: Database,
+) -> None:
+    _bypass_pdf_format(
+        db,
+        name="bad_hdr_int",
+        layout_fingerprint={
+            "issuer": "x",
+            "headers": [1, "B"],  # numeric element — can never match list[str]
+            "page_bucket": "1",
+        },
+    )
+    result = DoctorService(db)._run_pdf_formats_fingerprint_shape()
+    assert result.status == "fail"
+    assert "bad_hdr_int" in result.affected_ids
+
+
+def test_pdf_formats_fingerprint_shape_flags_null_header_element(
+    db: Database,
+) -> None:
+    _bypass_pdf_format(
+        db,
+        name="bad_hdr_null",
+        layout_fingerprint={
+            "issuer": "x",
+            "headers": [None],  # null element — can never match list[str]
+            "page_bucket": "1",
+        },
+    )
+    result = DoctorService(db)._run_pdf_formats_fingerprint_shape()
+    assert result.status == "fail"
+    assert "bad_hdr_null" in result.affected_ids
+
+
+def test_pdf_formats_fingerprint_shape_flags_object_header_element(
+    db: Database,
+) -> None:
+    _bypass_pdf_format(
+        db,
+        name="bad_hdr_obj",
+        layout_fingerprint={
+            "issuer": "x",
+            "headers": [{"k": 1}],  # object element — can never match
+            "page_bucket": "1",
+        },
+    )
+    result = DoctorService(db)._run_pdf_formats_fingerprint_shape()
+    assert result.status == "fail"
+    assert "bad_hdr_obj" in result.affected_ids
+
+
 def test_pdf_formats_fingerprint_shape_passes_for_repo_saved_row(
     db: Database,
 ) -> None:

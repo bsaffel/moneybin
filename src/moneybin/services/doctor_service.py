@@ -910,19 +910,22 @@ class DoctorService:
 
         The replay path indexes formats by fingerprint (issuer + ordered headers
         + page_bucket) — a row whose fingerprint is missing any of those three
-        keys, whose ``headers`` is not a JSON array, or whose ``issuer`` or
-        ``page_bucket`` is not a JSON string, can never match a future import
-        and stays dead in the table. Surfacing it at doctor time lets an
-        operator delete or re-derive before the format silently rots.
+        keys, whose ``headers`` is not a JSON array of strings, or whose
+        ``issuer`` or ``page_bucket`` is not a JSON string, can never match a
+        future import and stays dead in the table. Surfacing it at doctor time
+        lets an operator delete or re-derive before the format silently rots.
         """
         name = "app_pdf_formats_fingerprint_shape"
         # DuckDB JSON probes: json_extract returns NULL for absent keys, and
         # json_type names the type of the value at a path ("ARRAY", "VARCHAR",
-        # etc.). The three required keys, headers-is-array, and the two string
-        # keys' VARCHAR types are checked in one SQL pass per row —
-        # compute_fingerprint() always emits string issuer/page_bucket, so a
-        # bypass row with e.g. {"issuer": ["Chase"]} could never match a future
-        # import and stays dead in the table.
+        # etc.). The required keys, the two string-typed keys, and headers
+        # being a string-only array are checked in one SQL pass per row —
+        # compute_fingerprint() emits string issuer/page_bucket and a string
+        # headers list, so a bypass row with any other type in those positions
+        # (e.g. {"issuer": ["Chase"]} or {"headers": [1]}) could never match a
+        # future import and stays dead in the table. The headers per-element
+        # check uses TRY_CAST so a non-array headers value (already caught by
+        # the prior json_type guard) doesn't error here.
         try:
             rows = self._db.execute(
                 f"""
@@ -934,6 +937,13 @@ class DoctorService:
                    OR json_type(layout_fingerprint, '$.headers') != 'ARRAY'
                    OR json_type(layout_fingerprint, '$.issuer') != 'VARCHAR'
                    OR json_type(layout_fingerprint, '$.page_bucket') != 'VARCHAR'
+                   OR list_aggregate(
+                        list_transform(
+                          TRY_CAST(layout_fingerprint -> '$.headers' AS JSON[]),
+                          h -> json_type(h) IS DISTINCT FROM 'VARCHAR'
+                        ),
+                        'bool_or'
+                      ) = TRUE
                 ORDER BY name
                 """  # noqa: S608  # TableRef constant, no user input
             ).fetchall()
@@ -952,8 +962,8 @@ class DoctorService:
                 detail=(
                     f"{len(affected)} pdf_formats row(s) carry a "
                     "layout_fingerprint missing issuer/headers/page_bucket, "
-                    "whose headers is not an array, or whose issuer/"
-                    "page_bucket is not a string"
+                    "whose headers is not an array of strings, or whose "
+                    "issuer/page_bucket is not a string"
                 ),
                 affected_ids=affected,
             )
