@@ -9,7 +9,7 @@ implemented
 
 ## Goal
 
-Implement [ADR-010](../decisions/010-writer-coordination.md): replace the long-lived read-write singleton in `database.py` with short-lived, purpose-declared connections. Every caller acquires a connection, does its work, and releases it. Read-only connections skip `init_schemas()` and `refresh_views()` (~14 ms overhead) and coexist across processes. Write connections are exclusive (~79 ms) and retry on lock contention up to 5 seconds.
+Implement [ADR-010](../decisions/010-writer-coordination.md): replace the long-lived read-write singleton in `database.py` with short-lived, purpose-declared connections. Every caller acquires a connection, does its work, and releases it. Read-only connections skip `init_schemas()` and `refresh_views()` (~14 ms overhead) and coexist across processes. Write connections are exclusive (~79 ms) and retry on lock contention up to a 10-second policy ceiling.
 
 ## Background
 
@@ -130,6 +130,13 @@ with _active_write_lock:
 
 **`get_database()` — new signature**
 
+> **Superseded by PR B.** The signature and `max_wait=5.0` default sketched
+> below are the original ADR-010 design. PR B raised the default to
+> `max_wait=10.0` (the 10-second policy ceiling), added the `operation_type`
+> parameter, and wrapped the open in the `write_lock` file-lock primitive.
+> See "PR B hardening pass" → "Shared-deadline invariant" below for the
+> current signature.
+
 Migrations run on the **first write-mode open** of the process, then skipped for all subsequent opens (read or write). This preserves correct upgrade behaviour without re-running the migration check on every short-lived write connection.
 
 ```python
@@ -215,13 +222,13 @@ Match the full command-line string in priority order (first match wins):
 Example messages:
 
 ```
-❌ Could not acquire write lock after 5s (held by: MCP server).
+❌ Could not acquire write lock after 10s (held by: MCP server).
    Run 'moneybin db ps' for details.
 
-❌ Could not acquire write lock after 5s (held by: transform pipeline, DuckDB shell).
+❌ Could not acquire write lock after 10s (held by: transform pipeline, DuckDB shell).
    Run 'moneybin db ps' for details.
 
-❌ Could not acquire write lock after 5s (held by: Plaid sync).
+❌ Could not acquire write lock after 10s (held by: Plaid sync).
    Run 'moneybin db ps' for details.
 ```
 
@@ -641,13 +648,22 @@ def write_lock(
 
 - **Read-mode opens never call this.** The file lock is exclusively a
   write-write coordination primitive.
-- **Reentrant within a process.** Re-entry from the same PID returns
-  immediately without re-acquiring the OS lock; depth is tracked.
+- **Reentrant within a thread.** Re-entry from the same `(pid, thread_id)`
+  returns immediately without re-acquiring the OS lock; depth is tracked.
+  A *different* thread in the same process opens its own descriptor and
+  contends at `fcntl` (flock conflicts are per-open-file-description), so
+  cross-thread writers serialize correctly rather than aliasing the holder.
 - **Released on crash.** `fcntl` semantics reclaim the lock on process
   death — no stale-lockfile cleanup required.
-- **Holder metadata atomic.** Written to `<db_path>.write.lock` via
-  write-then-rename so a partial write from a killed process never
-  leaves garbled JSON.
+- **Holder metadata written in place.** The JSON payload is written
+  through the *held* descriptor (`ftruncate` + `write`), never via a
+  temp-file-then-rename. A rename would swap the lock file's inode and
+  strand the `fcntl` lock on the old, unlinked inode — a second writer
+  opening the path would then bind a fresh inode and acquire its own lock.
+  A diagnostic reader (`system_status`) may observe a partial-write window;
+  that is acceptable because lock authority is the held `fcntl`, not the
+  file contents. The file is created once at `0o600` and never replaced,
+  so its mode is not downgraded by a rename.
 - **Lifetime bound to the returned Database, not to ATTACH.**
   `get_database()` enters the `write_lock` context via an
   `ExitStack` and stashes the stack's `close` on the returned
@@ -725,8 +741,13 @@ Payload classes follow the existing `payloads/system.py` convention:
 `@dataclass(frozen=True, slots=True)` with `Annotated[T, DataClass.X]`
 sensitivity tags — not Pydantic. Data sources:
 
-- **Writers** — read the file lock metadata at `<db_path>.write.lock`.
-  At most one entry (lock is exclusive).
+- **Writers** — read the file lock metadata at `<db_path>.write.lock`,
+  but only after a non-blocking `flock(LOCK_SH)` probe confirms a process
+  actually holds the lock. The metadata file outlives its holder (it is
+  never unlinked, so `fcntl` can auto-release on crash), so the file's mere
+  existence is not proof of a live writer — probing the lock is. At most
+  one entry (lock is exclusive). `db_path` is resolved first so a symlinked
+  or relative path finds the same lock file `write_lock` keyed on.
 - **Readers** — enumerate via the existing
   `moneybin.utils.db_processes.find_blocking_processes` (`lsof` + `ps`).
   The writer's pid is filtered out to avoid double-listing.
@@ -735,12 +756,13 @@ The `database_connections` section is the target of the recovery
 action injected by `classify_user_error` when wrapping a
 `DatabaseLockError`. The lock primitive itself raises a plain
 `DatabaseLockError(msg)`; the structured `RecoveryAction`
-(`tool="system_status"`, `arguments={"section": "database_connections"}`,
-`confidence="certain"`, `idempotent=True`) is added at the CLI/MCP
-boundary, matching how every other error in `src/moneybin/errors.py`
-is enriched. This keeps the lock primitive a stdlib-only module and
-avoids a parallel `recovery_actions` attribute on bare `Exception`
-subclasses.
+(`tool="system_status"`, no arguments — the tool takes none and its
+`database_connections` block is always present — `confidence="suggested"`
+because `system_status` diagnoses the contention but does not resolve it,
+`idempotent=True`) is added at the CLI/MCP boundary, matching how every
+other error in `src/moneybin/errors.py` is enriched. This keeps the lock
+primitive a stdlib-only module and avoids a parallel `recovery_actions`
+attribute on bare `Exception` subclasses.
 
 ### Observability
 

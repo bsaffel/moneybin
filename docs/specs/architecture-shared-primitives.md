@@ -108,7 +108,7 @@ When adding a table, add a `TableRef` constant in the same change. Without one, 
 
 ### Short-lived, purpose-declared connections
 
-Per [ADR-010](../decisions/010-writer-coordination.md) (settled in [§(a)](#a-writer-coordination--settled-by-adr-010) below), every caller acquires a connection, does its work, and releases it via the context manager. `get_database(read_only=True)` attaches DuckDB with the `READ_ONLY` flag, skips `init_schemas()` / `refresh_views()` (~14 ms), and **coexists across any number of processes**. `get_database()` (write mode) is exclusive (~79 ms) and retries on lock contention with exponential backoff up to `max_wait` (default 5 s) before raising `DatabaseLockError`.
+Per [ADR-010](../decisions/010-writer-coordination.md) (settled in [§(a)](#a-writer-coordination--settled-by-adr-010) below), every caller acquires a connection, does its work, and releases it via the context manager. `get_database(read_only=True)` attaches DuckDB with the `READ_ONLY` flag, skips `init_schemas()` / `refresh_views()` (~14 ms), and **coexists across any number of processes**. `get_database()` (write mode) is exclusive (~79 ms) and retries on lock contention with exponential backoff up to `max_wait` (default 10 s) before raising `DatabaseLockError`.
 
 **Concurrency consequences (honest list):**
 

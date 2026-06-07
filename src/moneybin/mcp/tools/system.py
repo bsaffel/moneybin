@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -115,19 +117,56 @@ def _gsheet_action_hints(needs_attention: list[dict[str, Any]]) -> list[str]:
     return hints
 
 
+def _writer_is_live(lock_path: Path) -> bool:
+    """Return True iff a process currently holds the write lock.
+
+    The ``.write.lock`` metadata file is never unlinked — unlinking races
+    with the next opener, and ``fcntl`` auto-releases on crash — so the file
+    persists after a clean release carrying the *last* holder's pid, which may
+    still be a live process that is no longer writing. The mere existence of
+    the file (or a live pid in it) therefore does NOT mean a writer is active.
+
+    The only authoritative test is to try the lock ourselves, non-blocking. A
+    shared (``LOCK_SH``) probe is used rather than exclusive so two concurrent
+    ``system_status`` / ``db ps`` probes don't block each other and misreport a
+    peer prober as a writer; ``LOCK_SH`` still conflicts with a writer's
+    ``LOCK_EX``.
+    """
+    try:
+        fd = os.open(lock_path, os.O_RDONLY)
+    except OSError:
+        return False
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True  # a writer holds LOCK_EX
+        # Acquired — nobody holds an exclusive lock; release immediately.
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return False
+    finally:
+        os.close(fd)
+
+
 def _database_connections_block(db_path: Path) -> dict[str, Any]:
     """Merge file-lock writer metadata with lsof-derived reader enumeration.
 
     Returns the empty-shape ``{"writers": [], "readers": []}`` when neither
-    source reports anything. Tolerates a corrupted lock file by treating it
-    as no-writer-info — the lock-file payload is best-effort observability,
-    not a correctness contract. The writer's pid is filtered out of the
-    reader list to avoid double-listing the writer process.
+    source reports anything. A writer is reported only when a process actually
+    holds the file lock (``_writer_is_live``) — the persisted metadata file
+    alone is not enough, since it outlives the holder. Tolerates a corrupted
+    lock file by treating it as no-writer-info — the lock-file payload is
+    best-effort observability, not a correctness contract. The writer's pid is
+    filtered out of the reader list to avoid double-listing the writer process.
     """
     writers: list[dict[str, Any]] = []
     writer_pid: int | None = None
-    lock_path = db_path.parent / (db_path.name + _LOCK_SUFFIX)
-    if lock_path.exists():
+    # Resolve before building the lock path: write_lock keys the lock file on
+    # db_path.resolve(), so an unresolved symlink or relative path here would
+    # point at a different (nonexistent) lock file and miss a live writer.
+    resolved = db_path.resolve()
+    lock_path = resolved.parent / (resolved.name + _LOCK_SUFFIX)
+    if lock_path.exists() and _writer_is_live(lock_path):
         try:
             metadata = json.loads(lock_path.read_text())
             writer_pid = int(metadata["pid"])
@@ -137,8 +176,10 @@ def _database_connections_block(db_path: Path) -> dict[str, Any]:
                 "started_at": str(metadata["started_at"]),
                 "operation_type": str(metadata["operation_type"]),
             })
-        except (OSError, ValueError, KeyError):
-            # Corrupted metadata or partial write — treat as no writer.
+        except (OSError, ValueError, KeyError, TypeError):
+            # Corrupted metadata, partial write, or non-dict JSON (null, list,
+            # scalar — which makes metadata["pid"] raise TypeError) — treat as
+            # no writer.
             writers = []
             writer_pid = None
 
