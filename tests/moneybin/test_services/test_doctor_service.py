@@ -700,16 +700,18 @@ def test_run_all_returns_expected_invariants(
     monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
     svc = DoctorService(doctor_db)
     report = svc.run_all()
-    # 3 sqlmesh audits + dedup_reconciliation + categorization + 21 app.* integrity
+    # 3 sqlmesh audits + dedup_reconciliation + categorization + 25 app.* integrity
     # checks (audit coverage for user_categories / category_overrides /
     # gsheet_connections / user_merchants / categorization_rules / proposed_rules /
     # transaction_categories / account_settings / balance_assertions / budgets /
-    # tabular_formats / match_decisions / imports + user_categories uniqueness +
-    # user_merchants orphans + proposed_rules->rule FK + transaction_categories->fct
-    # FK + account_settings->dim_accounts FK + balance_assertions->dim_accounts FK +
-    # budgets->dim_categories FK + match_decisions->dim_accounts FK) +
-    # orphan_app_state (PR4: scans transaction_notes / transaction_tags vs core).
-    assert len(report.invariants) == 27
+    # tabular_formats / match_decisions / imports / pdf_formats + user_categories
+    # uniqueness + user_merchants orphans + proposed_rules->rule FK +
+    # transaction_categories->fct FK + account_settings->dim_accounts FK +
+    # balance_assertions->dim_accounts FK + budgets->dim_categories FK +
+    # match_decisions->dim_accounts FK + pdf_formats recipe-validity / bounds /
+    # fingerprint-shape) + orphan_app_state (PR4: scans transaction_notes /
+    # transaction_tags vs core).
+    assert len(report.invariants) == 31
     names = [r.name for r in report.invariants]
     assert "fct_transactions_fk_integrity" in names
     assert "fct_transactions_sign_convention" in names
