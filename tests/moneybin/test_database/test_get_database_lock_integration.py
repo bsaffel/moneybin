@@ -16,6 +16,7 @@ from collections.abc import Generator
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import duckdb
 import pytest
 
 import moneybin.database as db_module
@@ -142,3 +143,135 @@ def test_shared_deadline_caps_total_writer_wait(configured_db: Path) -> None:
         elapsed = time.monotonic() - start
         assert elapsed < 10.0
         db.execute("INSERT INTO t VALUES (4)")
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for code-review findings F4, F6, F10.
+# ---------------------------------------------------------------------------
+
+
+def test_f4_close_closes_conn_before_releasing_lock(configured_db: Path) -> None:
+    """F4 regression: ``close()`` tears down the DuckDB conn before the lock.
+
+    Our DuckDB connection holds DuckDB's own OS-level lock on the file until
+    it closes. Releasing the process file lock first opens a window where a
+    peer acquires the file lock and hits a raw IOException at ATTACH. This
+    pins the order by observing that ``self._conn`` is already closed
+    (``None``) at the moment the lock-release callable runs. Pre-fix, release
+    ran first and would observe a still-open conn.
+    """
+    observed: dict[str, bool] = {}
+    with get_database(read_only=False) as db:
+        original_release = db._lock_release  # pyright: ignore[reportPrivateUsage]
+
+        def recording_release() -> None:
+            observed["conn_closed_at_release"] = db._conn is None  # pyright: ignore[reportPrivateUsage]
+            if original_release is not None:
+                original_release()
+
+        db._lock_release = recording_release  # pyright: ignore[reportPrivateUsage]
+        db.execute("INSERT INTO t VALUES (1)")
+
+    assert observed["conn_closed_at_release"] is True
+
+
+def test_f6_failure_after_bind_closes_db_not_just_lock(
+    configured_db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F6 regression: a post-bind ``get_database`` failure closes the conn too.
+
+    If bookkeeping after the Database is bound raises (here: a simulated
+    failure in ``_migration_check_done.add``), the ``except`` handler must
+    close the bound Database — tearing down its DuckDB connection — not merely
+    release the lock stack. Pre-fix it called ``stack.close()`` alone, leaking
+    the open connection.
+    """
+    import moneybin.db_lock.lock as lock_module
+
+    captured: list[Database] = []
+    real_open = db_module._open_with_attach_retry  # pyright: ignore[reportPrivateUsage]
+
+    def capturing_open(**kwargs: object) -> Database:
+        db = real_open(**kwargs)  # type: ignore[arg-type]
+        captured.append(db)
+        return db
+
+    class _RaisingSet:
+        def __contains__(self, item: object) -> bool:
+            return False
+
+        def add(self, item: object) -> None:
+            raise RuntimeError("boom during post-bind bookkeeping")
+
+    monkeypatch.setattr(db_module, "_open_with_attach_retry", capturing_open)
+    monkeypatch.setattr(db_module, "_migration_check_done", _RaisingSet())
+
+    with pytest.raises(RuntimeError, match="boom during post-bind bookkeeping"):
+        get_database(read_only=False)
+
+    assert captured, "Database was never bound — test setup is wrong"
+    bound = captured[0]
+    # The bound Database was closed: conn torn down AND lock released.
+    assert bound._conn is None  # pyright: ignore[reportPrivateUsage]
+    assert bound._closed is True  # pyright: ignore[reportPrivateUsage]
+    assert configured_db.resolve() not in lock_module._held_by  # pyright: ignore[reportPrivateUsage]
+
+
+def test_f10_write_init_failure_rolls_back_conn(
+    configured_db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F10 regression: a write ``__init__`` failure after conn-open closes it.
+
+    ``Database.__init__`` opens ``self._conn`` then runs attach, schema init,
+    migrations, ``checkpoint``, and ``refresh_views`` — any can raise, and on
+    failure no Database is returned for anyone to close. The ExitStack guard
+    must close the orphaned conn. Triggered here via ``refresh_views`` (same
+    guarded region as the ``checkpoint`` call the finding named).
+    """
+    captured: list[Database] = []
+
+    def boom_refresh(db: Database) -> None:
+        captured.append(db)
+        raise RuntimeError("refresh boom")
+
+    monkeypatch.setattr("moneybin.seeds.refresh_views", boom_refresh)
+
+    with pytest.raises(RuntimeError, match="refresh boom"):
+        get_database(read_only=False)
+
+    assert captured, "refresh_views was never reached — test setup is wrong"
+    conn = captured[0]._conn  # pyright: ignore[reportPrivateUsage]
+    assert conn is not None
+    with pytest.raises(duckdb.Error):
+        conn.execute("SELECT 1")  # closed connection rejects use
+
+
+def test_f10_read_init_failure_rolls_back_conn(
+    configured_db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F10 regression: a read ``__init__`` failure after conn-open closes it.
+
+    Mirror of the write-path guard for the read-only branch: if
+    ``_attach_encrypted`` raises after ``duckdb.connect()``, the ExitStack
+    guard closes the orphaned conn.
+    """
+    captured: list[duckdb.DuckDBPyConnection] = []
+    real_connect = duckdb.connect
+
+    def capturing_connect(*args: object, **kwargs: object) -> duckdb.DuckDBPyConnection:
+        conn = real_connect(*args, **kwargs)  # type: ignore[arg-type]
+        captured.append(conn)
+        return conn
+
+    def boom_attach(conn: object, sql: str) -> None:
+        raise RuntimeError("attach boom")
+
+    monkeypatch.setattr(db_module.duckdb, "connect", capturing_connect)
+    monkeypatch.setattr(db_module, "_attach_encrypted", boom_attach)
+
+    with pytest.raises(RuntimeError, match="attach boom"):
+        get_database(read_only=True)
+
+    assert captured, "duckdb.connect was never called — test setup is wrong"
+    with pytest.raises(duckdb.Error):
+        captured[0].execute("SELECT 1")  # closed connection rejects use

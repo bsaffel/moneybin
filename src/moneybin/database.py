@@ -25,7 +25,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Generator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any, Literal
 
@@ -329,10 +329,17 @@ class Database:
 
         if read_only:
             self._conn = duckdb.connect()
-            _attach_encrypted(
-                self._conn, build_attach_sql(db_path, encryption_key, read_only=True)
-            )
-            self._conn.execute(f"USE {_DATABASE_ALIAS}")
+            # Construct-or-rollback: if ATTACH or USE raises, close the conn we
+            # just opened — __init__ never returns a Database, so nobody else
+            # can. pop_all() disarms the cleanup once construction succeeds.
+            with ExitStack() as stack:
+                stack.callback(self._conn.close)
+                _attach_encrypted(
+                    self._conn,
+                    build_attach_sql(db_path, encryption_key, read_only=True),
+                )
+                self._conn.execute(f"USE {_DATABASE_ALIAS}")
+                stack.pop_all()
             return
 
         # Ensure parent directory exists — parents=False so we don't
@@ -343,101 +350,112 @@ class Database:
         is_new = not db_path.exists()
 
         self._conn = duckdb.connect()
-        _attach_encrypted(self._conn, build_attach_sql(db_path, encryption_key))
-        self._conn.execute(f"USE {_DATABASE_ALIAS}")
+        # Construct-or-rollback: arm a cleanup that closes the conn we just
+        # opened if any step below raises. __init__ returns no Database on
+        # failure, so nobody else could close it. pop_all() disarms the
+        # cleanup once construction succeeds and the conn becomes owned by
+        # this instance (released later via close()). Same ExitStack idiom
+        # get_database() uses to manage the write-lock lifetime.
+        with ExitStack() as stack:
+            stack.callback(self._conn.close)
+            _attach_encrypted(self._conn, build_attach_sql(db_path, encryption_key))
+            self._conn.execute(f"USE {_DATABASE_ALIAS}")
 
-        if is_new and sys.platform != "win32":
-            try:
-                db_path.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0600
-            except OSError:
-                logger.warning(f"Could not set file permissions on {db_path}")
+            if is_new and sys.platform != "win32":
+                try:
+                    db_path.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0600
+                except OSError:
+                    logger.warning(f"Could not set file permissions on {db_path}")
 
-        if not is_new and sys.platform != "win32":
-            self._check_permissions(db_path)
+            if not is_new and sys.platform != "win32":
+                self._check_permissions(db_path)
 
-        from moneybin.schema import init_schemas
+            from moneybin.schema import init_schemas
 
-        init_schemas(self._conn)
+            init_schemas(self._conn)
 
-        from moneybin.migrations import (
-            MigrationError,
-            MigrationRunner,
-            get_current_versions,
-            record_version,
-        )
+            from moneybin.migrations import (
+                MigrationError,
+                MigrationRunner,
+                get_current_versions,
+                record_version,
+            )
 
-        skip_upgrade = no_auto_upgrade
-        if skip_upgrade is None:
-            settings = get_settings()
-            skip_upgrade = settings.database.no_auto_upgrade
-        if not skip_upgrade:
-            current_pkg_version = importlib.metadata.version("moneybin")
-            stored_versions = get_current_versions(self)
-            stored_pkg_version = stored_versions.get("moneybin")
+            skip_upgrade = no_auto_upgrade
+            if skip_upgrade is None:
+                settings = get_settings()
+                skip_upgrade = settings.database.no_auto_upgrade
+            if not skip_upgrade:
+                current_pkg_version = importlib.metadata.version("moneybin")
+                stored_versions = get_current_versions(self)
+                stored_pkg_version = stored_versions.get("moneybin")
 
-            # Gate on pending migrations, not pkg version. The version string in
-            # pyproject.toml is bumped by hand and was previously the only
-            # trigger — so a DB opened pre-V003 stayed pre-V003 forever if the
-            # version hadn't moved between releases. Any unapplied migration
-            # (or a version mismatch) drives the runner.
-            runner = MigrationRunner(self)
-            pending = runner.pending()
-            if pending or stored_pkg_version != current_pkg_version:
-                if stored_pkg_version is None:
-                    # First-ever open of this DB — schema initialization.
-                    logger.info("⚙️  Initializing MoneyBin schema...")
-                elif stored_pkg_version != current_pkg_version:
-                    logger.info(
-                        f"⚙️  MoneyBin upgraded ({stored_pkg_version} → {current_pkg_version}). "
-                        f"Applying updates..."
-                    )
-                else:
-                    logger.info(
-                        f"⚙️  {len(pending)} pending migration(s) detected. Applying..."
-                    )
+                # Gate on pending migrations, not pkg version. The version
+                # string in pyproject.toml is bumped by hand and was previously
+                # the only trigger — so a DB opened pre-V003 stayed pre-V003
+                # forever if the version hadn't moved between releases. Any
+                # unapplied migration (or a version mismatch) drives the runner.
+                runner = MigrationRunner(self)
+                pending = runner.pending()
+                if pending or stored_pkg_version != current_pkg_version:
+                    if stored_pkg_version is None:
+                        # First-ever open of this DB — schema initialization.
+                        logger.info("⚙️  Initializing MoneyBin schema...")
+                    elif stored_pkg_version != current_pkg_version:
+                        logger.info(
+                            f"⚙️  MoneyBin upgraded ({stored_pkg_version} → {current_pkg_version}). "
+                            f"Applying updates..."
+                        )
+                    else:
+                        logger.info(
+                            f"⚙️  {len(pending)} pending migration(s) detected. Applying..."
+                        )
 
-                result = runner.apply_all()
+                    result = runner.apply_all()
 
-                if result.failed:
-                    result.log_failure()
-                    raise MigrationError(
-                        f"Migration failed: {result.failed_migration or 'stuck migration'}. "
-                        f"See logs for details."
-                    )
+                    if result.failed:
+                        result.log_failure()
+                        raise MigrationError(
+                            f"Migration failed: {result.failed_migration or 'stuck migration'}. "
+                            f"See logs for details."
+                        )
 
-                if result.applied_count > 0:
-                    logger.info(f"  ✅ {result.applied_count} migration(s) applied")
-                    # Checkpoint at the durable boundary so a crash after
-                    # migrations apply cannot lose the schema change. Only on
-                    # actually-applied migrations — a no-op open must not
-                    # increment the counter.
-                    self.checkpoint("post_migration")
+                    if result.applied_count > 0:
+                        logger.info(f"  ✅ {result.applied_count} migration(s) applied")
+                        # Checkpoint at the durable boundary so a crash after
+                        # migrations apply cannot lose the schema change. Only
+                        # on actually-applied migrations — a no-op open must
+                        # not increment the counter.
+                        self.checkpoint("post_migration")
 
-                # Record MoneyBin version
-                record_version(self, "moneybin", current_pkg_version)
+                    # Record MoneyBin version
+                    record_version(self, "moneybin", current_pkg_version)
 
-            # Check SQLMesh version independently — a SQLMesh upgrade
-            # without a MoneyBin upgrade still needs `sqlmesh migrate`.
-            try:
-                sqlmesh_version = importlib.metadata.version("sqlmesh")
-                stored_sqlmesh = stored_versions.get("sqlmesh")
-                if stored_sqlmesh != sqlmesh_version:
-                    if self._run_sqlmesh_migrate():
-                        record_version(self, "sqlmesh", sqlmesh_version)
-                        if stored_sqlmesh is not None:
-                            logger.info("  ✅ SQLMesh state updated")
-            except importlib.metadata.PackageNotFoundError:
-                pass  # SQLMesh not installed — skip
+                # Check SQLMesh version independently — a SQLMesh upgrade
+                # without a MoneyBin upgrade still needs `sqlmesh migrate`.
+                try:
+                    sqlmesh_version = importlib.metadata.version("sqlmesh")
+                    stored_sqlmesh = stored_versions.get("sqlmesh")
+                    if stored_sqlmesh != sqlmesh_version:
+                        if self._run_sqlmesh_migrate():
+                            record_version(self, "sqlmesh", sqlmesh_version)
+                            if stored_sqlmesh is not None:
+                                logger.info("  ✅ SQLMesh state updated")
+                except importlib.metadata.PackageNotFoundError:
+                    pass  # SQLMesh not installed — skip
 
-        # Build core.dim_* views AFTER migrations. Order matters on the
-        # upgrade path: V006 must drop the legacy `app.merchants` TABLE
-        # before refresh_views can create the replacement view structure.
-        # _ensure_seed_tables_exist creates empty seeds.* tables if SQLMesh
-        # hasn't populated them yet (tests, fresh installs) so the dim
-        # views can resolve.
-        from moneybin.seeds import refresh_views
+            # Build core.dim_* views AFTER migrations. Order matters on the
+            # upgrade path: V006 must drop the legacy `app.merchants` TABLE
+            # before refresh_views can create the replacement view structure.
+            # _ensure_seed_tables_exist creates empty seeds.* tables if SQLMesh
+            # hasn't populated them yet (tests, fresh installs) so the dim
+            # views can resolve.
+            from moneybin.seeds import refresh_views
 
-        refresh_views(self)
+            refresh_views(self)
+
+            # Construction succeeded — transfer conn ownership to this instance.
+            stack.pop_all()
 
         logger.debug(f"Database connection established: {db_path}")
 
@@ -713,23 +731,23 @@ class Database:
     def close(self) -> None:
         """Close the database connection and release resources.
 
-        Releases the process file lock (acquired by ``get_database()`` on
-        write-mode opens) before tearing down the DuckDB connection so that
-        a DuckDB-side close failure cannot leak the file lock — fcntl OS
-        semantics would eventually reclaim it on process death, but explicit
-        release keeps the holder-metadata file accurate for any peer
-        inspecting it via ``system_status`` while close runs. The release
-        callable is nulled before invocation so a re-entrant close raised
-        from an exception handler cannot double-release.
+        Closes the DuckDB connection FIRST, then releases the process file
+        lock (acquired by ``get_database()`` on write-mode opens). Order is
+        load-bearing: our DuckDB connection holds DuckDB's own OS-level lock
+        on the database file until it closes. If we released the file lock
+        first, a peer could acquire the file lock and attempt its ATTACH
+        while our connection still owns that OS lock — surfacing a raw
+        IOException. Releasing in dependency order (conn, then file lock)
+        closes that window. The release runs in a ``finally`` so a DuckDB
+        close failure still drops the file lock. The release callable is
+        nulled before invocation so a re-entrant close raised from an
+        exception handler cannot double-release.
         """
         global _active_write_conn  # noqa: PLW0603
 
         release = self._lock_release
         self._lock_release = None
         try:
-            if release is not None:
-                release()
-        finally:
             with _active_write_lock:
                 if _active_write_conn is self:
                     _active_write_conn = None
@@ -741,6 +759,9 @@ class Database:
                     pass
                 self._conn = None
             self._closed = True
+        finally:
+            if release is not None:
+                release()
             logger.debug(f"Database connection closed: {self._db_path}")
 
     def interrupt_and_reset(self) -> None:
@@ -863,8 +884,6 @@ def get_database(
 
     # Lazy import: db_lock.lock imports DatabaseLockError from this module,
     # so deferring the import past module-load time breaks the cycle.
-    from contextlib import ExitStack
-
     from moneybin.db_lock import write_lock
 
     settings = get_settings()
@@ -892,6 +911,7 @@ def get_database(
     # lifetime (not just during ATTACH) is what prevents a second writer
     # from slipping in between get_database() returning and
     # Database.close() running and surfacing a raw IOException at ATTACH.
+    db: Database | None = None
     stack = ExitStack()
     try:
         stack.enter_context(
@@ -922,9 +942,15 @@ def get_database(
             _holder[0] = db
         return db
     except BaseException:
-        # ATTACH retry exhausted, Database init raised, or any other failure
-        # after the file lock was acquired — release the lock so the next
-        # caller can proceed.
+        # Failure after the file lock was acquired (ATTACH retry exhausted,
+        # Database init raised, bookkeeping interrupted). If a Database was
+        # bound, close it so its DuckDB connection is torn down too —
+        # closing only the lock stack would leak the open connection. The
+        # trailing stack.close() is idempotent: it covers the narrow window
+        # where db is bound but _lock_release was not yet wired, and is a
+        # no-op once db.close() has already exited the context.
+        if db is not None:
+            db.close()
         stack.close()
         raise
 
