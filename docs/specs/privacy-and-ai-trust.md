@@ -91,7 +91,7 @@ The user confirms, declines, or switches backend each time. No persistent consen
 
 ### Bridge-to-driving-agent (smart-import-pdf, Phase 2b)
 
-**Examples:** Native-text PDF whose deterministic recipe extraction can't reconcile, or whose saved recipe broke — the document is handed to the same agent the user is *already* driving MoneyBin with, the agent proposes a Recipe + rows, and `import_confirm` ratifies. See `smart-import-pdf.md` Reqs 14–16.
+**Examples:** Native-text PDF whose deterministic recipe extraction can't reconcile, or whose saved recipe broke — the document is handed to the same agent the user is *already* driving MoneyBin with, the agent proposes a Recipe + rows, and `import_confirm` ratifies (apply arm in follow-up PR). See `smart-import-pdf.md` Reqs 14–16.
 
 **Trust model — distinct from Tier 3.** The recipient is not a new third-party backend MoneyBin chose to send data to; it is the LLM host already running the user's MoneyBin session. The user established trust with that host at session start (by typing into it, granting MCP tool access, etc.). The bridge surfaces the document *to that same host* — no new egress relationship is created, and no new privacy stance applies. Tier 3's per-invocation consent-with-redacted-preview is the wrong shape: there is nothing to redact *against*, because the host is already the user's trusted agent.
 

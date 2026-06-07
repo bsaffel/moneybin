@@ -1313,6 +1313,8 @@ class ImportService:
         This is a read-mostly path: side effects are the audit row on
         escalation (Req 14) and the metric bump. No ``raw.*`` rows land.
         """
+        from moneybin.config import get_settings as _get_settings
+        from moneybin.extractors.confidence import Confidence, tier_for
         from moneybin.extractors.pdf.bridge import build_bridge_request
         from moneybin.extractors.pdf.extractor import PDFExtractor
         from moneybin.extractors.pdf.routing import route_pdf_import
@@ -1341,11 +1343,17 @@ class ImportService:
             # Bridge escalation. The driving agent gets the payload; whether
             # it ratifies is a follow-up call to import_confirm. We audit the
             # egress regardless (Req 14): the hand-off happened.
-            request_kind = (
-                "replay_failed_re_derive"
-                if decision.reason == "replay_reconciliation_failed"
-                else "propose_recipe"
+            #
+            # Routing guarantees matched_format_name is non-None for
+            # replay_reconciliation_failed, but its annotation allows None —
+            # falling back to propose_recipe when it's missing avoids ever
+            # emitting a replay envelope with no saved recipe to show, which
+            # would contradict the BridgeRequest contract.
+            is_replay = (
+                decision.reason == "replay_reconciliation_failed"
+                and decision.matched_format_name is not None
             )
+            request_kind = "replay_failed_re_derive" if is_replay else "propose_recipe"
             # For replay failures, surface both the saved format name AND the
             # actual recipe patterns the agent needs to inspect and propose a
             # refreshed version. Carrying only the name forces a first-contact
@@ -1357,8 +1365,7 @@ class ImportService:
                     if decision.recipe is not None
                     else None,
                 }
-                if request_kind == "replay_failed_re_derive"
-                and decision.matched_format_name
+                if is_replay
                 else None
             )
             bridge_request = build_bridge_request(
@@ -1378,12 +1385,15 @@ class ImportService:
                     "decision_reason": decision.reason,
                 },
                 actor="system",
-                context={"confidence": decision.confidence},
+                # Req 14: context carries routing reason + confidence so
+                # analytics can filter bridge egress by either dimension via
+                # json_extract on app.audit_log.context_json.
+                context={
+                    "decision_reason": decision.reason,
+                    "confidence": decision.confidence,
+                },
             )
             PDF_BRIDGE_EGRESS_TOTAL.labels(outcome="proposed").inc()
-            from moneybin.config import get_settings as _get_settings
-            from moneybin.extractors.confidence import Confidence, tier_for
-
             bands = _get_settings().import_.confidence
             confidence_obj = Confidence(
                 score=decision.confidence,

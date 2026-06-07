@@ -282,7 +282,9 @@ def test_pdf_preview_escalation_writes_smart_import_parse_audit_row(
     after_json = json.loads(after)
     assert after_json["request_kind"] == "propose_recipe"
     assert after_json["decision_reason"] == "low_confidence"
-    assert json.loads(context)["confidence"] == 0.4
+    context_json = json.loads(context)
+    assert context_json["confidence"] == 0.4
+    assert context_json["decision_reason"] == "low_confidence"
 
 
 def test_pdf_preview_escalation_increments_egress_metric(
@@ -337,5 +339,4 @@ def test_pdf_preview_non_bridge_reason_does_not_write_audit_row(
     rows = db.conn.execute(
         "SELECT COUNT(*) FROM app.audit_log WHERE action = 'smart_import_parse'"
     ).fetchone()
-    assert rows is not None
-    assert rows[0] == 0
+    assert rows[0] == 0  # type: ignore[index]  # COUNT(*) always returns a 1-tuple
