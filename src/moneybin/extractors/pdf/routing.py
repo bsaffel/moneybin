@@ -277,6 +277,45 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
                 fp=fp,
             )
 
+    # Steps 2-5 (execute → reconcile) are shared with the Phase 2b
+    # bridge-apply path; see _run_recipe_pipeline.
+    matched_name = saved_format.name if saved_format is not None else None
+    return _run_recipe_pipeline(
+        recipe,
+        document_text,
+        fp,
+        is_replay=is_replay,
+        matched_format_name=matched_name,
+    )
+
+
+def _run_recipe_pipeline(
+    recipe: Recipe,
+    document_text: str,
+    fp: dict[str, Any],
+    *,
+    is_replay: bool,
+    matched_format_name: str | None,
+) -> RouteDecision:
+    """Execute a recipe and apply the confidence + reconciliation gates.
+
+    Shared engine downstream of recipe *selection*: given a recipe and the
+    document text, run execute → canonicalize → confidence → metadata →
+    reconcile and return the routing decision. Both ``route_pdf_import``
+    (after fingerprint lookup / auto-derive) and the Phase 2b bridge-apply
+    path feed this, so a bridge-authored recipe passes the *same* gate as a
+    saved one — a persisted recipe is always proven to reconcile before the
+    service loads it.
+
+    Args:
+        recipe: Recipe to execute (from replay, auto-derive, or bridge).
+        document_text: The document's text lines joined by newlines.
+        fp: Layout fingerprint, threaded onto every returned decision.
+        is_replay: True only when replaying a *saved* recipe — drives the
+            replay metrics and use of the recipe's own ``metadata_anchors``.
+        matched_format_name: Saved format name on replay; None otherwise
+            (signals first-contact save to the service).
+    """
     # ------------------------------------------------------------------
     # 2. Execute recipe → rows
     # ------------------------------------------------------------------
@@ -304,7 +343,7 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
             ),
             confidence=0.0,
             reason="unsupported_number_format",
-            matched_format_name=saved_format.name if saved_format is not None else None,
+            matched_format_name=matched_format_name,
             fp=fp,
         )
     rows = _canonicalize_rows(recipe, extracted.rows)
@@ -323,7 +362,7 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
             ),
             confidence=0.0,
             reason="no_rows",
-            matched_format_name=saved_format.name if saved_format is not None else None,
+            matched_format_name=matched_format_name,
             fp=fp,
         )
 
@@ -348,7 +387,7 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
             ),
             confidence=conf,
             reason="low_confidence",
-            matched_format_name=saved_format.name if saved_format is not None else None,
+            matched_format_name=matched_format_name,
             fp=fp,
         )
 
@@ -385,7 +424,7 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
             metadata=metadata,
             confidence=conf,
             reason="metadata_incomplete",
-            matched_format_name=saved_format.name if saved_format is not None else None,
+            matched_format_name=matched_format_name,
             fp=fp,
         )
 
@@ -408,7 +447,7 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
             metadata=metadata,
             confidence=conf,
             reason="passed",
-            matched_format_name=saved_format.name if saved_format is not None else None,
+            matched_format_name=matched_format_name,
             fp=fp,
         )
 
@@ -418,7 +457,7 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
         PDF_REPLAY_GUARD_FAILURE_TOTAL.inc()
         # Balance values intentionally omitted — `.claude/rules/security.md`
         # forbids logging financial values; the reason code suffices.
-        _format_name = saved_format.name if saved_format is not None else "unknown"
+        _format_name = matched_format_name or "unknown"
         logger.warning(
             f"Replay recipe for format {_format_name!r} failed reconciliation "
             f"(reason={recon.reason}) — falling back to seed"
@@ -431,7 +470,7 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
             confidence=conf,
             reason="replay_reconciliation_failed",
             replay_guard_failed=True,
-            matched_format_name=saved_format.name if saved_format is not None else None,
+            matched_format_name=matched_format_name,
             fp=fp,
         )
 

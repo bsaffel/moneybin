@@ -1578,10 +1578,14 @@ class ImportService:
         doc: "PdfDocument",
         save_format: bool = True,
         account_id_override: str | None = None,
+        rung: str = "deterministic",
     ) -> ImportResult:
-        """Write deterministic PDF rows to raw.tabular_transactions.
+        """Write PDF transaction rows to raw.tabular_transactions.
 
-        Called by _import_pdf when the routing decision is 'transactions'.
+        Called by _import_pdf when the routing decision is 'transactions'
+        (rung="deterministic") and by apply_pdf_bridge_response after a
+        bridge-authored recipe reconciles (rung="bridge"). ``rung`` only
+        labels the PDF_IMPORT_TOTAL metric — the load path is identical.
         Saves a new format recipe on first contact (decision.matched_format_name is None),
         unless ``save_format`` is False — mirrors the tabular ``--no-save-format``
         semantics so a user/agent importing a one-off or sensitive statement can
@@ -1842,7 +1846,7 @@ class ImportService:
                     f"PDF finalize_import(failed) raised for import_id={import_id[:8]}...",
                     exc_info=True,
                 )
-            PDF_IMPORT_TOTAL.labels(outcome="failed", rung="deterministic").inc()
+            PDF_IMPORT_TOTAL.labels(outcome="failed", rung=rung).inc()
             raise
 
         # Format save + record_use happen AFTER the data-write try/except so a
@@ -1965,7 +1969,7 @@ class ImportService:
             rows_total=len(rows_list),
             rows_imported=rows_inserted,
         )
-        PDF_IMPORT_TOTAL.labels(outcome="transactions", rung="deterministic").inc()
+        PDF_IMPORT_TOTAL.labels(outcome="transactions", rung=rung).inc()
 
         result.transactions = rows_inserted
         result.accounts = 1
