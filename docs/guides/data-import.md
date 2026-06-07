@@ -238,6 +238,53 @@ moneybin import preview ~/Downloads/report.xlsx --sheet Sheet2
 
 Full flag list (institution overrides, date format, encoding, sheet, delimiter, safety-limit toggles, format-save toggles): [CLI reference](cli-reference.md).
 
+### PDF (native-text)
+
+Bank-statement PDFs with selectable text. Drop them into `moneybin import files` or the watched inbox.
+
+```bash
+moneybin import files ~/Downloads/chase_statement.pdf
+moneybin import files ~/Downloads/*.pdf
+```
+
+**What the smart importer saves you from:** writing a layout recipe by hand. On first contact MoneyBin reads the PDF locally with `pdfplumber`, derives a recipe (column positions, header names, date format, sign convention, number format, and the start/end anchors that bound the transaction table), validates the extracted rows by reconciling their sum against the statement's reported balance delta (±1¢ tolerance), and persists the recipe to `app.pdf_formats` keyed by a fingerprint of the layout (issuer + ordered column headers + page bucket). The next statement from the same institution skips derivation entirely — the saved recipe replays in milliseconds.
+
+**What happens to your data:**
+
+- **Transaction-shaped PDFs** (statements with a date / description / amount table) land in `raw.tabular_transactions` (`source_type='pdf'`) and flow through the SQLMesh pipeline to `core.fct_transactions` like any other source. Categorization, search, reports — all work the same. *Caveat for inbox-routed PDFs:* `moneybin import inbox` does not yet trigger the SQLMesh refresh for `file_type='pdf'`, so raw rows land but core/reports won't see them until a `moneybin transform apply` runs. Inbox-routed OFX and tabular files refresh automatically; the inbox refresh gate will be extended to PDFs in a follow-up.
+- **Non-transaction PDFs**, and transaction PDFs that don't reconcile cleanly, fall back to the seed path: the extracted tables land as queryable JSON in `raw.pdf_seeds` with an auto-generated typed view (`raw.pdf_<alias>`). You can `SELECT` against the view via `moneybin sql query` or `db query`, but the rows do not flow to `core.fct_transactions`.
+
+**When the fallback triggers** (any one of):
+
+- The statement's reported balance delta and the extracted-transaction sum disagree by more than 1¢ (often a missed footer total row, a column-header misclassification, or a statement that splits transactions across multiple tables MoneyBin's derivation didn't merge).
+- The first-pass extraction confidence on column types is low (typically scanned-then-OCR'd PDFs with brittle column boundaries).
+- The PDF has no balance-summary metadata to reconcile against.
+- The transaction table extracts zero rows.
+- The PDF's number format is anything other than `us`. The executor today only routes `us`-format statements to `raw.tabular_transactions`; `european`, `swiss_french`, and `zero_decimal` are recognized at the recipe level but always fall back to the seed path until executor support lands.
+
+In every fallback case the recipe is NOT saved — MoneyBin only persists recipes that round-trip cleanly. Re-imports of the same statement either replay the saved recipe (no derivation cost) or fall back again to the seed path.
+
+**Privacy posture.** PDF content stays local — no network egress, no LLM. The deterministic recipe ladder handles the column-shapes statements typically use; an opt-in agent-bridge rung that escalates harder layouts to the LLM agent you're already driving MoneyBin with is the next phase (Phase 2b, in flight).
+
+**Listing saved PDF formats:**
+
+```bash
+moneybin import formats list --type=pdf
+moneybin import formats show chase_a1b2c3d4e5f6   # works across tabular and PDF formats
+```
+
+PDF format names are `{issuer_slug}_{12-char SHA-256 hex of the layout fingerprint}` — the exact name appears in `formats list`. Recipe version is a separate column, not part of the name. The list view shows name, institution, routing (`transactions` / `seed`), front-end (`pdfplumber` / `vision`), recipe version, times-used, and last-used date.
+
+**Re-import safety.** Each transaction's `transaction_id` is a content hash over the statement period, transaction date, raw amount, description, and account — row position is deliberately excluded so a recipe tweak that shifts row order doesn't renumber every following `transaction_id`. Re-running the same PDF from the same path produces zero net new transaction rows: the `(transaction_id, account_id, source_file)` primary key on `raw.tabular_transactions` rejects the duplicates. Each call does still open a fresh `raw.import_log` entry, and re-importing the same content from a *different* path will write a new set of raw rows (because `source_file` is part of the dedup key). `--force` does not currently apply to PDFs — it is an OFX-only flag.
+
+**Reverting.** Every PDF import — routed-transactions path or seed-path fallback — is reversible by `import_id`:
+
+```bash
+# Capture import_id, then back it out:
+moneybin import files ~/Downloads/chase_statement.pdf --output json | jq -r '.data.files[0].import_id'
+moneybin import revert <import_id>
+```
+
 ## Live banking sync (Plaid)
 
 Plaid-connected sync pulls transactions, balances, and accounts directly from supported US banks. The connection brokers through `moneybin-server` (the Plaid integration backend you can self-host).
@@ -403,8 +450,7 @@ The honest gap list. See the [roadmap](../roadmap.md) for current sequencing.
 - **Automated migration from Monarch or Copilot.** No API pull; CSV-only.
 - **Broker / investment statements.** Plaid investment accounts load if exposed, but holdings, cost basis, and FIFO lot tracking land with the investments milestone.
 - **Multi-currency at import time.** Today MoneyBin treats every amount as USD. Original-currency preservation and FX gain/loss are planned.
-- **Native-text PDF (seed path).** Drop a PDF into `moneybin import files` or the watched inbox; tables land as a queryable JSON seed in `raw.pdf_seeds` with an auto-generated typed view (`raw.pdf_<alias>`). Reversible via `moneybin import revert <import_id>`. Phase 2 will add recipe-driven routing of PDF rows to canonical transactions.
-- **Scanned / image-only PDF.** PDFs without selectable text (scanned pages, fax-quality images) are not supported — text extraction yields no rows and the import fails with a zero-row error. Use a document scanner with OCR to produce a native-text PDF first.
+- **Scanned / image-only PDF.** PDFs without selectable text (scanned pages, fax-quality images) are not supported — text extraction yields no rows and the import fails with a zero-row error. Use a document scanner with OCR to produce a native-text PDF first. The Phase 2b agent-bridge rung will not change this — vision-capable extraction is a separate milestone.
 - **General-purpose row-level updates.** No `transactions update` command; use notes, tags, splits, categorize subcommands or revert and re-import.
 - **`--watch` mode for the inbox.** Cron or `launchd`/`systemd` is the supported pattern today.
 - **Bulk manual transaction entry.** One row at a time via `moneybin transactions create`; for batches, build a CSV and import it.
