@@ -986,6 +986,21 @@ def test_pdf_formats_fingerprint_shape_flags_non_canonical_serialization(
     assert "non_canonical" in result.affected_ids
 
 
+def test_pdf_formats_fingerprint_shape_flags_out_of_domain_page_bucket(
+    db: Database,
+) -> None:
+    # Structurally valid and canonically serialized, but page_bucket is not one
+    # of compute_fingerprint's buckets ({"1","2-3","4+"}), so no real import can
+    # ever produce this fingerprint — it is dead in the table.
+    canonical = json.dumps(
+        {"issuer": "x", "headers": ["A"], "page_bucket": "0"}, sort_keys=True
+    )
+    _bypass_pdf_format(db, name="bad_bucket_value", layout_fingerprint=canonical)
+    result = DoctorService(db)._run_pdf_formats_fingerprint_shape()
+    assert result.status == "fail"
+    assert "bad_bucket_value" in result.affected_ids
+
+
 def test_pdf_formats_fingerprint_shape_passes_for_canonical_bypass_row(
     db: Database,
 ) -> None:

@@ -13,7 +13,7 @@ from moneybin.audits import recipes as recipe_registry
 from moneybin.config import get_settings
 from moneybin.database import Database, sqlmesh_context
 from moneybin.errors import RecoveryAction
-from moneybin.extractors.pdf.fingerprint import serialize_fingerprint
+from moneybin.extractors.pdf.fingerprint import PAGE_BUCKETS, serialize_fingerprint
 from moneybin.tables import (
     ACCOUNT_SETTINGS,
     AUDIT_LOG,
@@ -67,8 +67,9 @@ def _is_live_fingerprint(raw: str | None) -> bool:
     """Return whether ``raw`` is a fingerprint the replay path could match.
 
     A live fingerprint is both structurally what ``compute_fingerprint``
-    produces (exactly ``issuer``/``headers``/``page_bucket`` with string
-    ``issuer``/``page_bucket`` and a string-only ``headers`` list) and
+    produces (exactly ``issuer``/``headers``/``page_bucket`` with a string
+    ``issuer``, a string-only ``headers`` list, and a ``page_bucket`` drawn
+    from ``PAGE_BUCKETS`` — the only values the producer emits) and
     byte-for-byte the canonical encoding ``serialize_fingerprint`` emits — the
     lookup compares it textually. See ``_run_pdf_formats_fingerprint_shape``
     for why both halves are required.
@@ -84,7 +85,7 @@ def _is_live_fingerprint(raw: str | None) -> bool:
     fp = cast("dict[str, Any]", loaded)
     if frozenset(fp) != _FINGERPRINT_KEYS:
         return False
-    if not isinstance(fp["issuer"], str) or not isinstance(fp["page_bucket"], str):
+    if not isinstance(fp["issuer"], str) or fp["page_bucket"] not in PAGE_BUCKETS:
         return False
     headers = fp["headers"]
     if not isinstance(headers, list) or not all(isinstance(h, str) for h in headers):
@@ -945,12 +946,13 @@ class DoctorService:
         which DuckDB evaluates as a *textual* match against the canonical string
         ``serialize_fingerprint`` emits. A stored fingerprint is therefore live
         only if it is both (1) structurally what ``compute_fingerprint``
-        produces — exactly ``issuer``/``headers``/``page_bucket``, with string
-        ``issuer``/``page_bucket`` and a string-only ``headers`` list — and (2)
-        byte-for-byte that canonical serialization. Any other shape (missing or
-        extra key, wrong value type) or any non-canonical encoding (different
-        key order, extra whitespace) is dead in the table and can never match a
-        future import. Validating against ``serialize_fingerprint`` itself ties
+        produces — exactly ``issuer``/``headers``/``page_bucket``, with a string
+        ``issuer``, a string-only ``headers`` list, and a ``page_bucket`` from
+        the producer's closed ``PAGE_BUCKETS`` set — and (2) byte-for-byte that
+        canonical serialization. Any other shape (missing or extra key, wrong
+        value type, out-of-domain ``page_bucket``) or any non-canonical encoding
+        (different key order, extra whitespace) is dead in the table and can
+        never match a future import. Validating against ``serialize_fingerprint`` itself ties
         this invariant to the one encoding the replay path actually searches
         for, instead of re-enumerating corruption modes one SQL predicate at a
         time. Surfacing a dead row at doctor time lets an operator delete or

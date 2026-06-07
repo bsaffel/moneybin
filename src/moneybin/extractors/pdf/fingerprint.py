@@ -115,13 +115,21 @@ def _unique_table_headers(doc: PdfDocument) -> list[str]:
     return list(dict.fromkeys(target.header))
 
 
+# The complete, closed set of page-count buckets ``_page_bucket`` can emit, in
+# ascending order. Public because consumers that validate a stored fingerprint
+# against what ``compute_fingerprint`` could produce (e.g. the doctor
+# ``app_pdf_formats_fingerprint_shape`` invariant) must check ``page_bucket``
+# membership against this exact vocabulary — keep it the single source of truth.
+PAGE_BUCKETS: tuple[str, str, str] = ("1", "2-3", "4+")
+
+
 def _page_bucket(n: int) -> str:
-    """Map a page count to a coarse bucket string."""
+    """Map a page count to a coarse bucket string from ``PAGE_BUCKETS``."""
     if n <= 1:
-        return "1"
+        return PAGE_BUCKETS[0]
     if n <= 3:
-        return "2-3"
-    return "4+"
+        return PAGE_BUCKETS[1]
+    return PAGE_BUCKETS[2]
 
 
 def compute_fingerprint(doc: PdfDocument) -> dict[str, Any]:
