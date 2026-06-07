@@ -133,13 +133,19 @@ def classify_user_error(exc: BaseException) -> UserError | None:
             recovery_actions=[
                 RecoveryAction(
                     tool="system_status",
-                    arguments={"section": "database_connections"},
+                    # No arguments: system_status takes none, and its
+                    # database_connections block (always present) names the
+                    # holder. A section filter would return a subset of an
+                    # already-cheap payload.
                     rationale=(
-                        "Identify the process holding the database so the agent "
-                        "can decide whether to wait, retry, or surface to the "
-                        "user."
+                        "Inspect the database_connections block of system_status "
+                        "to identify the process holding the database, then decide "
+                        "whether to wait, retry, or surface to the user."
                     ),
-                    confidence="certain",
+                    # "suggested", not "certain": system_status diagnoses the
+                    # contention but does not resolve it — the agent still has to
+                    # choose wait/retry/surface from what it learns.
+                    confidence="suggested",
                     idempotent=True,
                 ),
             ],

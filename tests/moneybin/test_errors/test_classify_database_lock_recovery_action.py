@@ -19,8 +19,13 @@ def test_database_lock_error_classified_with_system_status_recovery_action() -> 
     assert len(user_err.recovery_actions) == 1
     action = user_err.recovery_actions[0]
     assert action.tool == "system_status"
-    assert action.arguments == {"section": "database_connections"}
-    assert action.confidence == "certain"
+    # system_status takes no parameters — the action carries no arguments and
+    # the agent reads the holder from the always-present database_connections
+    # block of the full payload.
+    assert action.arguments == {}
+    # "suggested", not "certain": system_status diagnoses the contention but
+    # does not resolve it.
+    assert action.confidence == "suggested"
     assert action.idempotent is True
 
 

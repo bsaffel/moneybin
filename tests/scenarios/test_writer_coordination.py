@@ -340,8 +340,8 @@ def test_scenario_5_writer_timeout_produces_envelope_not_raw_ioexception(
     assert len(actions) >= 1, f"envelope missing recovery_actions: {payload!r}"
     first = actions[0]
     assert first["tool"] == "system_status"
-    assert first["arguments"] == {"section": "database_connections"}
-    assert first["confidence"] == "certain"
+    assert first["arguments"] == {}
+    assert first["confidence"] == "suggested"
     assert first["idempotent"] is True
 
     # Holder eventually finishes its own write cycle.

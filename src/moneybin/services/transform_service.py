@@ -115,33 +115,47 @@ class TransformService:
 
         t0 = time.monotonic()
         try:
-            # Seed first so int_transactions__merged can resolve per-field
-            # winners. Inside the try block so a seed failure (write error,
-            # stale catalog) returns the structured ApplyResult envelope
-            # instead of propagating raw to MCP/CLI callers.
-            MatchingService(self._db).seed_priority()
-            with sqlmesh_context(self._db) as ctx:
-                ctx.plan(auto_apply=True, no_prompts=True)
-            # Full plan rebuilds seeds.* too, so refresh the views that read them.
-            refresh_views(self._db)
+            try:
+                # Seed first so int_transactions__merged can resolve per-field
+                # winners. Inside the try block so a seed failure (write error,
+                # stale catalog) returns the structured ApplyResult envelope
+                # instead of propagating raw to MCP/CLI callers.
+                MatchingService(self._db).seed_priority()
+                with sqlmesh_context(self._db) as ctx:
+                    ctx.plan(auto_apply=True, no_prompts=True)
+                # Full plan rebuilds seeds.* too, so refresh views that read them.
+                refresh_views(self._db)
+            except Exception as e:  # noqa: BLE001 — surface SQLMesh failure as structured result
+                elapsed = time.monotonic() - t0
+                error_type = type(e).__name__
+                logger.warning(
+                    f"SQLMesh transforms failed after {elapsed:.2f}s: {error_type}"
+                )
+                return ApplyResult(
+                    applied=False, duration_seconds=elapsed, error=error_type
+                )
+
             # Durable boundary: a crash after a full transform apply must not
             # lose the rebuilt core/app state. CHECKPOINT runs after SQLMesh's
             # own context tears down (outside the with-block above) so DuckDB
             # sees no in-flight statements. Per docs/specs/database-writer-
             # coordination.md § "PR B hardening pass".
-            self._db.checkpoint("post_transform")
+            #
+            # Deliberately OUTSIDE the SQLMesh try/except: the transforms have
+            # already committed, so a CHECKPOINT failure (a durability hint, not
+            # correctness) must NOT flip the result to applied=False and make the
+            # caller think the apply failed and re-run it. Log and continue.
+            try:
+                self._db.checkpoint("post_transform")
+            except Exception as e:  # noqa: BLE001 — checkpoint is best-effort durability, not correctness
+                logger.warning(
+                    f"post_transform checkpoint failed (transforms applied): "
+                    f"{type(e).__name__}"
+                )
+
             elapsed = time.monotonic() - t0
             logger.info(f"SQLMesh transforms completed in {elapsed:.2f}s")
             return ApplyResult(applied=True, duration_seconds=elapsed)
-        except Exception as e:  # noqa: BLE001 — surface SQLMesh failure as structured result
-            elapsed = time.monotonic() - t0
-            error_type = type(e).__name__
-            logger.warning(
-                f"SQLMesh transforms failed after {elapsed:.2f}s: {error_type}"
-            )
-            return ApplyResult(
-                applied=False, duration_seconds=elapsed, error=error_type
-            )
         finally:
             SQLMESH_RUN_DURATION_SECONDS.labels(model="transform_apply").observe(
                 time.monotonic() - t0

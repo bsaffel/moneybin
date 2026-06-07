@@ -15,10 +15,13 @@ on the underlying ``get_database`` call) is exercised separately by
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from moneybin.services.transform_service import TransformService
 
@@ -45,6 +48,38 @@ def test_transform_apply_emits_post_transform_checkpoint() -> None:
         result = TransformService(db).apply()
     assert result.applied is True
     db.checkpoint.assert_called_once_with("post_transform")
+
+
+def test_transform_apply_checkpoint_failure_still_reports_applied(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A post_transform checkpoint failure must not flip applied to False.
+
+    The transforms have already committed by the time the checkpoint runs.
+    A CHECKPOINT failure is a durability hint, not a correctness signal — it
+    must be logged and swallowed, leaving applied=True so the caller doesn't
+    think the apply failed and re-run it.
+    """
+    db = MagicMock()
+    db.checkpoint.side_effect = RuntimeError("CHECKPOINT blew up")
+    with (
+        patch(
+            "moneybin.services.transform_service.sqlmesh_context",
+            _fake_sqlmesh_context,
+        ),
+        patch("moneybin.services.transform_service.MatchingService") as mock_matching,
+        patch("moneybin.services.transform_service.refresh_views") as mock_refresh,
+        caplog.at_level(logging.WARNING, logger="moneybin.services.transform_service"),
+    ):
+        mock_matching.return_value.seed_priority.return_value = None
+        mock_refresh.return_value = None
+        result = TransformService(db).apply()
+    assert result.applied is True
+    assert result.error is None
+    db.checkpoint.assert_called_once_with("post_transform")
+    assert any("checkpoint failed" in record.message for record in caplog.records), (
+        "expected a warning that the post_transform checkpoint failed"
+    )
 
 
 def test_transform_apply_does_not_checkpoint_on_failure() -> None:
