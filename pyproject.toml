@@ -152,8 +152,10 @@ dev = [
     "sqlparse>=0.5.3",
     # Security auditing
     "pip-audit>=2.10.0",
-    # Security: CVE-2026-6357 (pip 26.0.1) — fixed in 26.1 (transitive via pip-audit → pip-api)
-    "pip>=26.1",
+    # Security floor for pip (transitive via pip-audit → pip-api): bump as new
+    # CVEs land. CVE-2026-6357 (pip 26.0.1) fixed in 26.1; CVE-2026-8643 /
+    # PYSEC-2026-196 (entry points installed outside the install dir) fixed in 26.1.2.
+    "pip>=26.1.2",
     # Testing framework and tools
     "pytest>=9.0.3",
     "pytest-cov>=7.1.0",

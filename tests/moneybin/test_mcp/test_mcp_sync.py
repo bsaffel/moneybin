@@ -89,7 +89,7 @@ async def test_sync_link_returns_link_url_with_medium_sensitivity(
     # link_url is a one-time bearer credential → medium sensitivity per design
     assert envelope.summary.sensitivity == "medium"
     assert envelope.data.session_id == "sess_abc"
-    assert envelope.data.link_url.startswith("https://hosted.plaid.com")
+    assert envelope.data.link_url == "https://hosted.plaid.com/link/xyz"
     # Agent should know about expiration to decide when to give up polling
     assert envelope.data.expiration is not None
 
@@ -157,7 +157,7 @@ async def test_sync_connect_alias_warns_and_forwards(
     # returns the same typed SyncConnectPayload (link_url: DESCRIPTION → MEDIUM).
     assert envelope.summary.sensitivity == "medium"
     assert envelope.data.session_id == "sess_abc"
-    assert envelope.data.link_url.startswith("https://hosted.plaid.com")
+    assert envelope.data.link_url == "https://hosted.plaid.com/link/xyz"
     # Agent should know about expiration to decide when to give up polling.
     assert envelope.data.expiration is not None
     # Deprecation warning fires via module logger; assert against the patched
