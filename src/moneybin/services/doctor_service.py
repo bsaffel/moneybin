@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, replace
-from typing import Literal
+from typing import Any, Literal, cast
 
 from sqlglot import exp
 
@@ -12,6 +13,7 @@ from moneybin.audits import recipes as recipe_registry
 from moneybin.config import get_settings
 from moneybin.database import Database, sqlmesh_context
 from moneybin.errors import RecoveryAction
+from moneybin.extractors.pdf.fingerprint import serialize_fingerprint
 from moneybin.tables import (
     ACCOUNT_SETTINGS,
     AUDIT_LOG,
@@ -57,6 +59,37 @@ _BALANCE_ASSERTIONS_PK_EXPR = (
 # dynamic SQL), closing the door before a future caller passes a tainted value.
 _ALLOWED_UPDATED_EXPRS = frozenset({"GREATEST(decided_at, reversed_at)"})
 _ALLOWED_PK_EXPRS = frozenset({_BALANCE_ASSERTIONS_PK_EXPR})
+
+_FINGERPRINT_KEYS = frozenset({"issuer", "headers", "page_bucket"})
+
+
+def _is_live_fingerprint(raw: str | None) -> bool:
+    """Return whether ``raw`` is a fingerprint the replay path could match.
+
+    A live fingerprint is both structurally what ``compute_fingerprint``
+    produces (exactly ``issuer``/``headers``/``page_bucket`` with string
+    ``issuer``/``page_bucket`` and a string-only ``headers`` list) and
+    byte-for-byte the canonical encoding ``serialize_fingerprint`` emits — the
+    lookup compares it textually. See ``_run_pdf_formats_fingerprint_shape``
+    for why both halves are required.
+    """
+    if raw is None:
+        return False
+    try:
+        loaded = json.loads(raw)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(loaded, dict):
+        return False
+    fp = cast("dict[str, Any]", loaded)
+    if frozenset(fp) != _FINGERPRINT_KEYS:
+        return False
+    if not isinstance(fp["issuer"], str) or not isinstance(fp["page_bucket"], str):
+        return False
+    headers = fp["headers"]
+    if not isinstance(headers, list) or not all(isinstance(h, str) for h in headers):
+        return False
+    return serialize_fingerprint(fp) == raw
 
 
 @dataclass(frozen=True)
@@ -908,44 +941,27 @@ class DoctorService:
     def _run_pdf_formats_fingerprint_shape(self) -> InvariantResult:
         """Flag ``app.pdf_formats.layout_fingerprint`` rows that can never match.
 
-        The replay path indexes formats by fingerprint (issuer + ordered headers
-        + page_bucket) using canonical JSON equality. A row whose fingerprint
-        is missing any of those three keys, carries any extra key, has
-        ``headers`` not a JSON array of strings, or whose ``issuer`` or
-        ``page_bucket`` is not a JSON string, can never match a future import
-        and stays dead in the table. Surfacing it at doctor time lets an
-        operator delete or re-derive before the format silently rots.
+        The replay path looks a format up with ``layout_fingerprint = ?::JSON``,
+        which DuckDB evaluates as a *textual* match against the canonical string
+        ``serialize_fingerprint`` emits. A stored fingerprint is therefore live
+        only if it is both (1) structurally what ``compute_fingerprint``
+        produces — exactly ``issuer``/``headers``/``page_bucket``, with string
+        ``issuer``/``page_bucket`` and a string-only ``headers`` list — and (2)
+        byte-for-byte that canonical serialization. Any other shape (missing or
+        extra key, wrong value type) or any non-canonical encoding (different
+        key order, extra whitespace) is dead in the table and can never match a
+        future import. Validating against ``serialize_fingerprint`` itself ties
+        this invariant to the one encoding the replay path actually searches
+        for, instead of re-enumerating corruption modes one SQL predicate at a
+        time. Surfacing a dead row at doctor time lets an operator delete or
+        re-derive before the format silently rots.
         """
         name = "app_pdf_formats_fingerprint_shape"
-        # DuckDB JSON probes: json_extract returns NULL for absent keys, and
-        # json_type names the type of the value at a path ("ARRAY", "VARCHAR",
-        # etc.). The required keys, the two string-typed keys, headers being
-        # a string-only array, and the key set being exactly three keys are
-        # checked in one SQL pass per row — compute_fingerprint() returns a
-        # dict with exactly {issuer, headers, page_bucket}, and the match path
-        # uses canonical JSON equality, so any extra key, missing key, wrong
-        # type, or non-string header element makes the row dead in the table.
-        # The headers per-element check uses TRY_CAST so a non-array headers
-        # value (already caught by the prior json_type guard) doesn't error.
         try:
             rows = self._db.execute(
                 f"""
-                SELECT name
+                SELECT name, CAST(layout_fingerprint AS VARCHAR)
                 FROM {PDF_FORMATS.full_name}
-                WHERE json_extract(layout_fingerprint, '$.issuer') IS NULL
-                   OR json_extract(layout_fingerprint, '$.headers') IS NULL
-                   OR json_extract(layout_fingerprint, '$.page_bucket') IS NULL
-                   OR json_type(layout_fingerprint, '$.headers') != 'ARRAY'
-                   OR json_type(layout_fingerprint, '$.issuer') != 'VARCHAR'
-                   OR json_type(layout_fingerprint, '$.page_bucket') != 'VARCHAR'
-                   OR json_array_length(json_keys(layout_fingerprint)) != 3
-                   OR list_aggregate(
-                        list_transform(
-                          TRY_CAST(layout_fingerprint -> '$.headers' AS JSON[]),
-                          h -> json_type(h) IS DISTINCT FROM 'VARCHAR'
-                        ),
-                        'bool_or'
-                      ) = TRUE
                 ORDER BY name
                 """  # noqa: S608  # TableRef constant, no user input
             ).fetchall()
@@ -956,18 +972,17 @@ class DoctorService:
                 detail=f"fingerprint shape check unavailable: {e}",
                 affected_ids=[],
             )
-        if rows:
-            affected = [str(r[0]) for r in rows]
+        bad = [str(name_) for name_, raw in rows if not _is_live_fingerprint(raw)]
+        if bad:
             return InvariantResult(
                 name=name,
                 status="fail",
                 detail=(
-                    f"{len(affected)} pdf_formats row(s) carry a "
-                    "layout_fingerprint missing issuer/headers/page_bucket, "
-                    "carrying extra keys, whose headers is not an array of "
-                    "strings, or whose issuer/page_bucket is not a string"
+                    f"{len(bad)} pdf_formats row(s) carry a layout_fingerprint "
+                    "that is malformed or is not the canonical serialization "
+                    "the replay path matches on"
                 ),
-                affected_ids=affected,
+                affected_ids=bad,
             )
         return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
 

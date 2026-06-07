@@ -970,6 +970,36 @@ def test_pdf_formats_fingerprint_shape_flags_extra_keys(db: Database) -> None:
     assert "extra_key" in result.affected_ids
 
 
+def test_pdf_formats_fingerprint_shape_flags_non_canonical_serialization(
+    db: Database,
+) -> None:
+    # Structurally valid (3 string keys, string headers) but keys are NOT in
+    # serialize_fingerprint's sorted order, so the textual `layout_fingerprint
+    # = ?::JSON` lookup the replay path uses can never match this row.
+    _bypass_pdf_format(
+        db,
+        name="non_canonical",
+        layout_fingerprint='{"page_bucket": "1", "issuer": "x", "headers": ["A"]}',
+    )
+    result = DoctorService(db)._run_pdf_formats_fingerprint_shape()
+    assert result.status == "fail"
+    assert "non_canonical" in result.affected_ids
+
+
+def test_pdf_formats_fingerprint_shape_passes_for_canonical_bypass_row(
+    db: Database,
+) -> None:
+    # Negative control: a bypass row whose fingerprint IS the canonical
+    # serialization is shape-valid (audit-coverage flags the bypass, not the
+    # fingerprint-shape check) — the round-trip check must not over-flag it.
+    canonical = json.dumps(
+        {"issuer": "x", "headers": ["A", "B"], "page_bucket": "1"}, sort_keys=True
+    )
+    _bypass_pdf_format(db, name="canonical_bypass", layout_fingerprint=canonical)
+    result = DoctorService(db)._run_pdf_formats_fingerprint_shape()
+    assert result.status == "pass"
+
+
 def test_pdf_formats_fingerprint_shape_passes_for_repo_saved_row(
     db: Database,
 ) -> None:
