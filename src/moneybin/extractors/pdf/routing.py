@@ -83,6 +83,10 @@ _Reason = Literal[
 # the router logs a warning and falls through to auto-derive, then reports the
 # auto-derive outcome via the appropriate reason above.
 
+# Where the recipe the pipeline executes came from. Drives metadata-anchor use
+# and replay-metric/reason semantics in _run_recipe_pipeline (see its docstring).
+RecipeSource = Literal["replay", "auto_derive", "bridge"]
+
 
 @dataclass(frozen=True)
 class RouteDecision:
@@ -284,8 +288,35 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
         recipe,
         document_text,
         fp,
-        is_replay=is_replay,
+        recipe_source="replay" if is_replay else "auto_derive",
         matched_format_name=matched_name,
+    )
+
+
+def route_forced_recipe(doc: PdfDocument, recipe: Recipe) -> RouteDecision:
+    """Route a PDF through a caller-supplied (bridge-authored) recipe.
+
+    The Phase 2b bridge apply entry point. The driving agent proposed this
+    recipe; rather than trust the agent's returned rows, the service re-runs
+    the recipe here through the same execute → confidence → reconcile gate a
+    replay uses, so the persisted recipe is proven to reconcile against the
+    document before any rows load. Skips fingerprint lookup and auto-derive —
+    the recipe is given, not selected.
+
+    ``matched_format_name`` stays None: a bridge apply is first contact, so the
+    service persists the recipe via ``save_new``. The replay metrics never
+    fire (this is not a replay of a *saved* recipe); a reconciliation failure
+    reports ``reconciliation_failed`` (an invalid proposal), not
+    ``replay_reconciliation_failed`` (a drifted saved recipe).
+    """
+    document_text = "\n".join(doc.text_lines)
+    fp = compute_fingerprint(doc)
+    return _run_recipe_pipeline(
+        recipe,
+        document_text,
+        fp,
+        recipe_source="bridge",
+        matched_format_name=None,
     )
 
 
@@ -294,28 +325,40 @@ def _run_recipe_pipeline(
     document_text: str,
     fp: dict[str, Any],
     *,
-    is_replay: bool,
+    recipe_source: RecipeSource,
     matched_format_name: str | None,
 ) -> RouteDecision:
     """Execute a recipe and apply the confidence + reconciliation gates.
 
     Shared engine downstream of recipe *selection*: given a recipe and the
     document text, run execute → canonicalize → confidence → metadata →
-    reconcile and return the routing decision. Both ``route_pdf_import``
-    (after fingerprint lookup / auto-derive) and the Phase 2b bridge-apply
-    path feed this, so a bridge-authored recipe passes the *same* gate as a
-    saved one — a persisted recipe is always proven to reconcile before the
-    service loads it.
+    reconcile and return the routing decision. All three recipe sources feed
+    this — fingerprint ``replay``, first-contact ``auto_derive``, and the
+    Phase 2b ``bridge`` apply — so a bridge-authored recipe passes the *same*
+    gate as a saved one; a persisted recipe is always proven to reconcile
+    before the service loads it.
+
+    ``recipe_source`` drives two source-specific behaviors:
+
+    - **metadata anchors** — ``replay`` and ``bridge`` recipes carry their own
+      ``metadata_anchors`` (non-default balance/account labels); ``auto_derive``
+      has none and falls back to ``DEFAULT_ANCHORS``.
+    - **replay metrics + reason** — only a true ``replay`` of a *saved* recipe
+      trips the replay guard (``PDF_REPLAY_GUARD_FAILURE_TOTAL``,
+      ``replay_reconciliation_failed``). A ``bridge`` proposal that doesn't tie
+      out is just an invalid proposal (``reconciliation_failed``), not a drift
+      signal.
 
     Args:
         recipe: Recipe to execute (from replay, auto-derive, or bridge).
         document_text: The document's text lines joined by newlines.
         fp: Layout fingerprint, threaded onto every returned decision.
-        is_replay: True only when replaying a *saved* recipe — drives the
-            replay metrics and use of the recipe's own ``metadata_anchors``.
+        recipe_source: Where the recipe came from — see behaviors above.
         matched_format_name: Saved format name on replay; None otherwise
             (signals first-contact save to the service).
     """
+    use_recipe_anchors = recipe_source in ("replay", "bridge")
+    is_saved_replay = recipe_source == "replay"
     # ------------------------------------------------------------------
     # 2. Execute recipe → rows
     # ------------------------------------------------------------------
@@ -410,7 +453,7 @@ def _run_recipe_pipeline(
     #                    (Phase 2b bridge-authored recipes for statement
     #                    formats with no balance lines)
     anchors_dict: dict[str, list[str]] | None = None
-    if is_replay and recipe.metadata_anchors is not None:
+    if use_recipe_anchors and recipe.metadata_anchors is not None:
         anchors_dict = {}
         for f in recipe.metadata_anchors:
             anchors_dict.setdefault(f.name, []).append(f.pattern)
@@ -438,7 +481,7 @@ def _run_recipe_pipeline(
     recon = reconcile(rows, metadata, recipe.sign_convention)
 
     if recon.passed:
-        if is_replay:
+        if is_saved_replay:
             PDF_RECIPE_HIT_TOTAL.labels(outcome="replay_success").inc()
         return RouteDecision(
             outcome="transactions",
@@ -452,7 +495,7 @@ def _run_recipe_pipeline(
         )
 
     # Reconciliation failed.
-    if is_replay:
+    if is_saved_replay:
         PDF_RECIPE_HIT_TOTAL.labels(outcome="replay_failed").inc()
         PDF_REPLAY_GUARD_FAILURE_TOTAL.inc()
         # Balance values intentionally omitted — `.claude/rules/security.md`
