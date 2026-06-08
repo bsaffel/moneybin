@@ -10,7 +10,7 @@ _FAKE_DB_PATH = "/tmp/x.duckdb"  # noqa: S108  # static test fixture string, not
 
 def test_database_lock_error_classified_with_system_status_recovery_action() -> None:
     err = DatabaseLockError(
-        f"Could not acquire write lock for {_FAKE_DB_PATH} after the deadline "
+        f"Could not acquire write lock for {_FAKE_DB_PATH} after 10s "
         "(operation_type=interactive)."
     )
     user_err = classify_user_error(err)

@@ -167,7 +167,10 @@ def _database_connections_block(db_path: Path) -> dict[str, Any]:
     # and readers against different inodes.
     resolved = db_path.resolve()
     lock_path = lock_path_for(resolved)
-    if lock_path.exists() and _writer_is_live(lock_path):
+    # No separate exists() check: _writer_is_live opens the lock file and
+    # returns False if it is absent, so an exists() guard would be a redundant,
+    # TOCTOU-prone stat.
+    if _writer_is_live(lock_path):
         try:
             metadata = json.loads(lock_path.read_text(encoding="utf-8"))
             writer_pid = int(metadata["pid"])

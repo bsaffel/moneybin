@@ -112,9 +112,13 @@ def _write_holder_metadata(fd: int, operation_type: OperationType) -> None:
 
 
 def _build_timeout_error(
-    db_path: Path, operation_type: OperationType
+    db_path: Path, operation_type: OperationType, waited_seconds: float
 ) -> DatabaseLockError:
     """Construct a plain DatabaseLockError carrying the diagnostic message.
+
+    The message names the elapsed wait (``waited_seconds``) so the user has a
+    concrete benchmark, matching the ATTACH-retry timeout message in
+    ``database.py`` ("after Ns") rather than a vague "after the deadline".
 
     Recovery actions are NOT attached here. ``classify_user_error`` in
     ``src/moneybin/errors.py`` injects the structured ``RecoveryAction`` when
@@ -126,7 +130,7 @@ def _build_timeout_error(
     from moneybin.database import DatabaseLockError
 
     message = (
-        f"Could not acquire write lock for {db_path} after the deadline "
+        f"Could not acquire write lock for {db_path} after {waited_seconds:.0f}s "
         f"(operation_type={operation_type})."
     )
     return DatabaseLockError(message)
@@ -203,6 +207,7 @@ def write_lock(
     fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
     registered = False
     delay = _BACKOFF_INITIAL_SECONDS
+    wait_start = time.monotonic()
     try:
         while True:
             try:
@@ -217,7 +222,9 @@ def write_lock(
                         f"write_lock timeout: db_path={db_path} "
                         f"operation_type={operation_type}"
                     )
-                    raise _build_timeout_error(db_path, operation_type) from None
+                    raise _build_timeout_error(
+                        db_path, operation_type, time.monotonic() - wait_start
+                    ) from None
                 time.sleep(delay)
                 delay = min(delay * _BACKOFF_MULTIPLIER, _BACKOFF_CAP_SECONDS)
         _write_holder_metadata(fd, operation_type)
