@@ -38,7 +38,7 @@ from moneybin.privacy.payloads.system import (
     SystemStatusWriter,
 )
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
-from moneybin.utils.db_processes import find_blocking_processes
+from moneybin.utils.db_processes import describe_process, find_blocking_processes
 
 _HEALTHY_STATUSES = frozenset({"healthy"})
 _DISCONNECTED_STATUSES = frozenset({"disconnected"})
@@ -161,16 +161,23 @@ def _database_connections_block(db_path: Path) -> dict[str, Any]:
     """
     writers: list[dict[str, Any]] = []
     writer_pid: int | None = None
-    # lock_path_for resolves db_path the same way write_lock keys the lock file,
-    # so a symlinked or relative path still finds the live writer's lock.
-    lock_path = lock_path_for(db_path)
+    # Resolve once and use the resolved path for BOTH the lock file (via
+    # lock_path_for, which resolves the same way write_lock keys it) and the
+    # lsof reader scan, so a symlinked or relative path can't report writers
+    # and readers against different inodes.
+    resolved = db_path.resolve()
+    lock_path = lock_path_for(resolved)
     if lock_path.exists() and _writer_is_live(lock_path):
         try:
             metadata = json.loads(lock_path.read_text(encoding="utf-8"))
             writer_pid = int(metadata["pid"])
             writers.append({
                 "pid": writer_pid,
-                "command": str(metadata["command"]),
+                # describe_process strips path prefixes and maps argv to a
+                # friendly name ("transform pipeline", "MCP server"), so the
+                # LOW-sensitivity payload never leaks a raw command line
+                # carrying local paths, usernames, or filename arguments.
+                "command": describe_process(str(metadata["command"])),
                 "started_at": str(metadata["started_at"]),
                 "operation_type": str(metadata["operation_type"]),
             })
@@ -182,12 +189,14 @@ def _database_connections_block(db_path: Path) -> dict[str, Any]:
             writer_pid = None
 
     readers: list[dict[str, Any]] = []
-    for proc in find_blocking_processes(db_path):
+    for proc in find_blocking_processes(resolved):
         if writer_pid is not None and proc["pid"] == writer_pid:
             continue  # Avoid double-listing the writer as a reader
         readers.append({
             "pid": int(proc["pid"]),
-            "command": str(proc.get("cmdline") or proc.get("command", "")),
+            "command": describe_process(
+                str(proc.get("cmdline") or proc.get("command", ""))
+            ),
         })
 
     return {"writers": writers, "readers": readers}

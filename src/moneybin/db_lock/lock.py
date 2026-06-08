@@ -58,15 +58,15 @@ class _Holder:
     pid: int
     thread_id: int
     depth: int
-    fd: int
 
 
 # Guards _held_by mutation. Each Database file_path resolves to a single
-# entry; the fd is held open for the duration of the outermost acquire so
-# OS-level fcntl semantics serialize cross-process attempts. Reentrancy is
-# keyed on (pid, thread_id) — different threads in the same process each
-# open their own fd and contend at fcntl (POSIX flock contends per
-# open-file-description on Linux and macOS).
+# entry. The lock fd is held open for the duration of the outermost acquire
+# (via the local closure in write_lock, which owns release) so OS-level fcntl
+# semantics serialize cross-process attempts. Reentrancy is keyed on
+# (pid, thread_id) — different threads in the same process each open their own
+# fd and contend at fcntl (POSIX flock contends per open-file-description on
+# Linux and macOS).
 _held_by: dict[Path, _Holder] = {}
 _held_by_lock = threading.Lock()
 
@@ -222,7 +222,7 @@ def write_lock(
                 delay = min(delay * _BACKOFF_MULTIPLIER, _BACKOFF_CAP_SECONDS)
         _write_holder_metadata(fd, operation_type)
         with _held_by_lock:
-            _held_by[key] = _Holder(pid=pid, thread_id=thread_id, depth=1, fd=fd)
+            _held_by[key] = _Holder(pid=pid, thread_id=thread_id, depth=1)
             registered = True
         try:
             yield

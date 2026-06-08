@@ -11,7 +11,10 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 from moneybin.database import Database
+from moneybin.db_lock import CheckpointReason
 from moneybin.metrics.registry import DB_CHECKPOINT_TOTAL
 
 
@@ -68,3 +71,40 @@ def test_checkpoint_does_not_fire_when_no_migrations_pending(
         assert after == before
     finally:
         db2.close()
+
+
+def test_checkpoint_failure_during_init_does_not_fail_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A post_migration checkpoint failure is logged, not propagated.
+
+    The migrations have already committed by the time the checkpoint runs, so a
+    CHECKPOINT failure must not tear down the connection and surface a spurious
+    migration-failed error to the caller — same durability-hint contract as
+    TransformService.apply.
+    """
+    mock_store = MagicMock()
+    mock_store.get_key.return_value = "mig-checkpoint-key"
+
+    real_checkpoint = Database.checkpoint
+
+    def flaky_checkpoint(self: Database, reason: CheckpointReason) -> None:
+        if reason == "post_migration":
+            raise RuntimeError("CHECKPOINT blew up")
+        real_checkpoint(self, reason)
+
+    monkeypatch.setattr(Database, "checkpoint", flaky_checkpoint)
+
+    # no_auto_upgrade=False -> migrations run -> post_migration checkpoint fires
+    # and raises -> the failure must be swallowed so init still returns a usable
+    # connection rather than raising.
+    database = Database(
+        tmp_path / "mig.duckdb",
+        read_only=False,
+        secret_store=mock_store,
+        no_auto_upgrade=False,
+    )
+    try:
+        assert database.execute("SELECT 1").fetchone() == (1,)
+    finally:
+        database.close()

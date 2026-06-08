@@ -426,7 +426,20 @@ class Database:
                         # migrations apply cannot lose the schema change. Only
                         # on actually-applied migrations — a no-op open must
                         # not increment the counter.
-                        self.checkpoint("post_migration")
+                        #
+                        # A checkpoint failure is a durability hint, not a
+                        # correctness signal (same contract as
+                        # TransformService.apply): the migrations already
+                        # committed, so log and continue rather than letting the
+                        # ExitStack tear down the connection and surface a
+                        # spurious migration-failed error to the caller.
+                        try:
+                            self.checkpoint("post_migration")
+                        except Exception as e:  # noqa: BLE001 — checkpoint is best-effort durability, not correctness
+                            logger.warning(
+                                f"post_migration checkpoint failed "
+                                f"(migrations applied): {type(e).__name__}"
+                            )
 
                     # Record MoneyBin version
                     record_version(self, "moneybin", current_pkg_version)
