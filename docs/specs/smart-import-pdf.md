@@ -14,6 +14,10 @@ in-progress
 
 **Phase 2b (bridge + LLM rung + auto-bump)** — in-progress. Adds the export/apply seam to the user's driving agent for layouts the deterministic rung can't crack, plus automatic `PdfFormatsRepo.bump_version` on replay-guard reconciliation failure so a saved recipe whose layout drifted can be re-derived through the bridge and re-installed without manual intervention.
 
+- **Bridge egress** (shipped) — `extractors/pdf/bridge.py` builds the typed `BridgeRequest`/`BridgeResponse`; `ImportService.pdf_preview` escalates bridge-eligible layouts with the Req 14 transparency notice + `smart_import_parse` audit row + `pdf_bridge_egress_total` metric.
+- **Bridge apply round-trip** (shipped) — `route_forced_recipe` runs an agent-authored recipe through the shared execute → confidence → reconcile engine; `ImportService.apply_pdf_bridge_response` re-executes the recipe (the reconciliation gate on the re-executed rows is the authority; the agent's returned rows are verified against them and a row-count divergence is surfaced), persists via `save_new`, and loads to `raw.tabular_transactions`. MCP: `import_files`/`import_preview` escalate to the driving agent (gated on `actor_kind="agent"`) and `import_confirm(bridge_response=...)` applies; the CLI keeps the Phase 2a seed fallback until its agent-aware escalation signal lands.
+- **Remaining** — automatic `bump_version` on replay-guard failure (Req 9a auto-bump) and the explicit no-agent scanned-PDF degradation outcome (Req 5).
+
 ## Goal
 
 Turn an arbitrary PDF into one of two outcomes, reusing existing machinery for both:
