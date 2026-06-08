@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Any
+
 import pytest
 from fastmcp import FastMCP
 
@@ -397,3 +400,40 @@ async def test_register_undo_tools() -> None:
     register_system_tools(srv)
     names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
     assert {"system_audit_undo", "system_audit_history", "system_audit_get"} <= names
+
+
+@pytest.mark.unit
+async def test_system_status_degraded_when_db_locked(
+    mcp_db: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A writer holding the lock yields a degraded snapshot, not an error.
+
+    The DatabaseLockError recovery action points the agent at system_status to
+    identify the lock holder, but system_status opens the DB read-only — which
+    fails under contention. The connection view is collected before the DB open
+    now, and a lock failure returns a degraded envelope still carrying
+    database_connections instead of looping to another lock error.
+    """
+    import moneybin.database as db_module
+    from moneybin.database import DatabaseLockError
+
+    def locked_get_database(**_kwargs: object) -> object:
+        raise DatabaseLockError("held by another process")
+
+    def no_blockers(_db_path: Path) -> list[dict[str, Any]]:
+        return []
+
+    monkeypatch.setattr(db_module, "get_database", locked_get_database)
+    monkeypatch.setattr(
+        "moneybin.mcp.tools.system.find_blocking_processes", no_blockers
+    )
+
+    result = await system_status()
+    parsed = result.to_dict()
+    assert parsed["summary"]["degraded"] is True
+    assert "lock" in parsed["summary"]["degraded_reason"].lower()
+    # database_connections is still present (read from the lock file + lsof, no
+    # DB needed); the inventory fields are zero-filled under the degraded flag.
+    assert "database_connections" in parsed["data"]
+    assert parsed["data"]["accounts"]["count"] == 0
+    assert parsed["data"]["transactions"]["count"] == 0

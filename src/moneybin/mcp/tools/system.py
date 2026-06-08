@@ -11,7 +11,7 @@ from typing import Any
 import duckdb
 from fastmcp import FastMCP
 
-from moneybin.db_lock.lock import _LOCK_SUFFIX  # type: ignore[reportPrivateUsage]
+from moneybin.db_lock import lock_path_for
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.privacy.payloads.system import (
@@ -161,14 +161,12 @@ def _database_connections_block(db_path: Path) -> dict[str, Any]:
     """
     writers: list[dict[str, Any]] = []
     writer_pid: int | None = None
-    # Resolve before building the lock path: write_lock keys the lock file on
-    # db_path.resolve(), so an unresolved symlink or relative path here would
-    # point at a different (nonexistent) lock file and miss a live writer.
-    resolved = db_path.resolve()
-    lock_path = resolved.parent / (resolved.name + _LOCK_SUFFIX)
+    # lock_path_for resolves db_path the same way write_lock keys the lock file,
+    # so a symlinked or relative path still finds the live writer's lock.
+    lock_path = lock_path_for(db_path)
     if lock_path.exists() and _writer_is_live(lock_path):
         try:
-            metadata = json.loads(lock_path.read_text())
+            metadata = json.loads(lock_path.read_text(encoding="utf-8"))
             writer_pid = int(metadata["pid"])
             writers.append({
                 "pid": writer_pid,
@@ -195,6 +193,45 @@ def _database_connections_block(db_path: Path) -> dict[str, Any]:
     return {"writers": writers, "readers": readers}
 
 
+def _locked_status_envelope(
+    db_connections: SystemStatusDatabaseConnectionsInfo,
+) -> ResponseEnvelope[SystemStatusPayload]:
+    """Degraded ``system_status`` for when a writer holds the database lock.
+
+    A read-only open cannot attach while a writer holds the lock, so the data
+    inventory is unavailable — but ``database_connections`` (read from the lock
+    file + lsof, no DB needed) still names the holder, which is exactly what the
+    ``DatabaseLockError`` recovery action needs. The inventory fields are
+    zero-filled and the envelope is flagged ``degraded`` so the agent trusts
+    only ``database_connections``.
+    """
+    return build_envelope(
+        data=SystemStatusPayload(
+            accounts=SystemStatusAccountsInfo(count=0),
+            transactions=SystemStatusTransactionsInfo(
+                count=0, date_range=[None, None], last_import_at=None
+            ),
+            matches=SystemStatusMatchesInfo(pending_review=0),
+            categorization=SystemStatusCategorizationInfo(uncategorized=0),
+            transforms=SystemStatusTransformsInfo(pending=False, last_apply_at=None),
+            schema_drift=None,
+            gsheet=SystemStatusGsheetInfo(
+                total_connections=0, by_status={}, needs_attention=[]
+            ),
+            database_connections=db_connections,
+        ),
+        degraded=True,
+        degraded_reason=(
+            "A writer holds the database lock; the data inventory is unavailable "
+            "until it releases. See database_connections for the holder."
+        ),
+        actions=[
+            "Inspect database_connections for the writer holding the lock, then "
+            "wait and retry or surface the contention to the user",
+        ],
+    )
+
+
 @mcp_tool()
 def system_status() -> ResponseEnvelope[SystemStatusPayload]:
     """Return data inventory, pending review queue counts, and transforms freshness.
@@ -205,13 +242,27 @@ def system_status() -> ResponseEnvelope[SystemStatusPayload]:
     connections surface a paired ``gsheet_reconnect`` hint in ``actions[]``.
     """
     from moneybin.config import get_settings
-    from moneybin.database import get_database
+    from moneybin.database import DatabaseLockError, get_database
     from moneybin.services.system_service import SystemService
 
-    with get_database(read_only=True) as db:
-        status = SystemService(db).status()
-        gsheet = _gsheet_block(db)
-        db_connections = _database_connections_block(get_settings().database.path)
+    # Collect the file-lock / lsof connection view BEFORE opening the DB: it
+    # reads the lock file and lsof (no DB connection needed) and must stay
+    # reachable when a writer holds the lock — the DatabaseLockError recovery
+    # action points here precisely to identify that holder. Opening the DB
+    # first would let a read-only open retry-then-fail under contention, so the
+    # diagnostic would time out exactly when it is needed.
+    block = _database_connections_block(get_settings().database.path)
+    db_connections = SystemStatusDatabaseConnectionsInfo(
+        writers=[SystemStatusWriter(**w) for w in block["writers"]],
+        readers=[SystemStatusReader(**r) for r in block["readers"]],
+    )
+
+    try:
+        with get_database(read_only=True) as db:
+            status = SystemService(db).status()
+            gsheet = _gsheet_block(db)
+    except DatabaseLockError:
+        return _locked_status_envelope(db_connections)
 
     min_date, max_date = status.transactions_date_range
 
@@ -281,10 +332,7 @@ def system_status() -> ResponseEnvelope[SystemStatusPayload]:
                     for r in gsheet["needs_attention"]
                 ],
             ),
-            database_connections=SystemStatusDatabaseConnectionsInfo(
-                writers=[SystemStatusWriter(**w) for w in db_connections["writers"]],
-                readers=[SystemStatusReader(**r) for r in db_connections["readers"]],
-            ),
+            database_connections=db_connections,
         ),
         actions=actions,
     )

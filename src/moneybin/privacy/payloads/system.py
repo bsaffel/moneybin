@@ -251,7 +251,10 @@ class SystemStatusPayload:
     transforms: SystemStatusTransformsInfo
     schema_drift: SystemStatusSchemaDrift | None
     gsheet: SystemStatusGsheetInfo
-    database_connections: SystemStatusDatabaseConnectionsInfo | None = None
+    # Always populated — system_status reports it on both the normal path and
+    # the degraded "database locked" path (it reads the lock file + lsof, no DB
+    # connection required).
+    database_connections: SystemStatusDatabaseConnectionsInfo
 
 
 # ---------------------------------------------------------------------------

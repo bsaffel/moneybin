@@ -22,9 +22,13 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from moneybin.db_lock._types import OperationType
 from moneybin.metrics.registry import DB_WRITE_LOCK_TIMEOUT_TOTAL
+
+if TYPE_CHECKING:
+    from moneybin.database import DatabaseLockError
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +37,18 @@ _LOCK_SUFFIX = ".write.lock"
 _BACKOFF_INITIAL_SECONDS = 0.05
 _BACKOFF_MULTIPLIER = 1.5
 _BACKOFF_CAP_SECONDS = 0.5
+
+
+def lock_path_for(db_path: Path) -> Path:
+    """Return the write-lock metadata path for ``db_path``.
+
+    Resolves ``db_path`` first, mirroring ``write_lock``, so a symlinked or
+    relative path maps to the same lock file the primitive keys on. This is
+    the public contract for locating the lock file; the ``_LOCK_SUFFIX``
+    naming detail stays private to this module.
+    """
+    resolved = db_path.resolve()
+    return resolved.parent / (resolved.name + _LOCK_SUFFIX)
 
 
 @dataclass
@@ -95,7 +111,9 @@ def _write_holder_metadata(fd: int, operation_type: OperationType) -> None:
     os.write(fd, encoded)
 
 
-def _build_timeout_error(db_path: Path, operation_type: OperationType) -> Exception:
+def _build_timeout_error(
+    db_path: Path, operation_type: OperationType
+) -> DatabaseLockError:
     """Construct a plain DatabaseLockError carrying the diagnostic message.
 
     Recovery actions are NOT attached here. ``classify_user_error`` in
@@ -103,9 +121,8 @@ def _build_timeout_error(db_path: Path, operation_type: OperationType) -> Except
     it wraps ``DatabaseLockError`` into ``UserError`` at the CLI/MCP boundary,
     matching the pattern used by every other error in that classifier.
     """
-    # Local import to avoid the circular dep between database.py (which will
-    # import from db_lock once get_database integrates the primitive in Task 4)
-    # and this module (which raises database.py's error type).
+    # Local import to avoid the circular dep between database.py (which imports
+    # from db_lock) and this module (which raises database.py's error type).
     from moneybin.database import DatabaseLockError
 
     message = (

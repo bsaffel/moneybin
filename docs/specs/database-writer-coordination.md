@@ -764,6 +764,15 @@ other error in `src/moneybin/errors.py` is enriched. This keeps the lock
 primitive a stdlib-only module and avoids a parallel `recovery_actions`
 attribute on bare `Exception` subclasses.
 
+For that recovery action to be usable, `system_status` must work *while* a
+writer holds the lock — otherwise it would loop into another `DatabaseLockError`
+exactly when the agent needs it. So it collects the `database_connections`
+block (lock file + `lsof`, no DB connection needed) **before** opening the
+read-only DB, and if that read open fails with `DatabaseLockError` it returns a
+**degraded** envelope (`summary.degraded=true`) carrying `database_connections`
+with the inventory fields zero-filled — the holder is still named, the rest is
+explicitly untrustworthy.
+
 ### Observability
 
 Two new counters (no histogram — the 10 s binary ceiling makes the
