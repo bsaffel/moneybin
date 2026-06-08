@@ -115,9 +115,9 @@ Now that the engine and the analysis layer are complete and self-testable, make 
 
 | Address | Area | Status | Notes |
 |---|---|---|---|
-| **M3A** | Evaluator/testing surface (**pulled forward**) | 🗓️ | `moneybin demo` preset + first-run wizard + a **narrow** Web review console (categorization/import/doctor/lineage). Ships early as a *testing/trust* surface so the M1 core is legible — but it's productization, hence M3. |
+| **M3A** | Evaluator/testing surface (**pulled forward**) | 🗓️ | `moneybin demo` preset + first-run wizard + a **narrow** Web review console (categorization/import/doctor/lineage), **built on M3L**. Ships early as a *testing/trust* surface so the M1 core is legible — but it's productization, hence M3. |
 | **M3B** | Install & packaging | 🗓️ | PyPI Trusted Publishing + Homebrew formula + `.mcpb` bundle. |
-| **M3C** | Full Web UI | 🗓️ | Extends the M3A console to the complete dashboard surface, backed by real domains. Same UI at `moneybin ui` (local) and the hosted tier. |
+| **M3C** | Full Web UI | 🗓️ | Extends the M3A console to the complete dashboard surface, backed by real domains; **built on M3L**. Same UI at `moneybin ui` (local) and the hosted tier. |
 | **M3D** | Remote / HTTP MCP transport + auth | 🗓️ | Unlocks ChatGPT web + mobile; identity via Auth0/OIDC, MoneyBin-owned authorization/consent. |
 | **M3E** | Migration guides | 🗓️ | Mint/Tiller/YNAB/Actual/Maybe/OFX; each gated on its import path being real. |
 | **M3F** | Doc polish + landing + screenshots + demo video | 🚧 | Earned positioning — after the core is real. [`user-facing-doc-polish.md`](specs/user-facing-doc-polish.md). |

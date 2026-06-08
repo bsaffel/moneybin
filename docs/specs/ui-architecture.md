@@ -86,6 +86,7 @@ flowchart TB
         hooks["data hooks (useTransactions, useReportSpending)"]
         comps["domain components (TransactionTable, NetWorthChart)"]
         prims["primitives (shadcn / Tremor) + RegistrySlot"]
+        wall["⊘ the wall: ui-core imports NO transport"]
         prims --> comps --> hooks --> iface
     end
 
@@ -94,15 +95,12 @@ flowchart TB
     appmcp["apps/mcp-app"]
     appweb["apps/web"]
 
-    tmcp -. depends on .-> core
-    thttp -. depends on .-> core
-    appmcp --> core
+    tmcp -. implements .-> iface
+    thttp -. implements .-> iface
+    appmcp --> comps
     appmcp --> tmcp
-    appweb --> core
+    appweb --> comps
     appweb --> thttp
-
-    note["ui-core does NOT depend on either transport — the wall"]
-    note -.-> core
 ```
 
 Three enforcement layers, strongest first:

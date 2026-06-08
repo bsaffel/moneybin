@@ -1,6 +1,6 @@
 # ADR-014: One shared UI core behind two surface shells
 
-**Status:** Accepted
+**Status:** Proposed (decision approved in design; flips to Accepted when [`ui-architecture.md`](../specs/ui-architecture.md) is promoted from `draft` → `ready`)
 
 ## Context
 
