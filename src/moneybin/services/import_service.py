@@ -214,6 +214,34 @@ class PdfPreviewResult:
 
 
 @dataclass(frozen=True)
+class BridgeApplyResult:
+    """Outcome of applying a bridge response via ``apply_pdf_bridge_response``.
+
+    ``outcome`` is ``applied`` when the agent's recipe re-executed and the
+    re-executed rows passed the reconciliation gate (Req 9), or ``invalid``
+    when they did not — in which case nothing loads and ``reject_reason``
+    carries the routing reason (e.g. ``reconciliation_failed``).
+
+    The divergence fields verify the agent's *expectation* against the
+    *actual* re-execution (per the bridge trust model): ``expected_row_count``
+    is how many rows the agent returned; ``actual_row_count`` is how many the
+    recipe reproduced against the document; ``rows_diverged`` is True when they
+    differ. Divergence does not block a load that reconciles — reconciliation
+    on the re-executed rows is the authority — but it is surfaced so the caller
+    can flag a recipe that doesn't reproduce its author's own extraction.
+    """
+
+    outcome: Literal["applied", "invalid"]
+    import_id: str | None
+    rows_loaded: int
+    format_name: str | None
+    expected_row_count: int
+    actual_row_count: int
+    rows_diverged: bool
+    reject_reason: str | None = None
+
+
+@dataclass(frozen=True)
 class ResolvedMapping:
     """Final per-import mapping from the matched format or auto-detection.
 
@@ -267,6 +295,26 @@ def _pdf_alias(file_path: Path) -> str:
         suffix = hashlib.sha256(slug.encode()).hexdigest()[:4]
         slug = f"{slug[:54]}_{suffix}"
     return slug
+
+
+def _pdf_format_name(fp: dict[str, Any]) -> str:
+    """Deterministic first-contact format name: issuer slug + fingerprint hash.
+
+    Single source of truth for the ``app.pdf_formats.name`` of an auto-derived
+    or bridge-authored recipe on first contact. Both ``_import_pdf_transactions``
+    (deterministic) and ``apply_pdf_bridge_response`` (bridge) derive the name
+    this way — the hash is built from ``serialize_fingerprint(fp)`` so it stays
+    byte-for-byte identical to the JSON the repo stores and looks up by; any
+    drift between call sites would silently break duplicate detection.
+    """
+    import hashlib
+
+    from moneybin.extractors.pdf.fingerprint import serialize_fingerprint
+    from moneybin.utils import slugify
+
+    issuer_slug = slugify(fp.get("issuer", "unknown"))
+    digest = hashlib.sha256(serialize_fingerprint(fp).encode()).hexdigest()[:12]
+    return f"{issuer_slug}_{digest}"
 
 
 _ACCOUNT_MASK_PREFIXES: tuple[str, ...] = ("****", "xxxx", "XXXX")
@@ -1426,6 +1474,149 @@ class ImportService:
             fingerprint=decision.fp,
         )
 
+    def apply_pdf_bridge_response(
+        self,
+        file_path: Path,
+        bridge_response: dict[str, Any],
+        *,
+        save_format: bool = True,
+        account_id: str | None = None,
+    ) -> BridgeApplyResult:
+        """Apply a driving agent's bridge response: validate, reconcile, load.
+
+        Terminal step of the Phase 2b bridge round-trip (Reqs 8, 9). The agent
+        previewed a PDF (``pdf_preview`` raised the bridge payload), extracted
+        rows per the recipe it authored, and returns ``{recipe, rows}`` here.
+
+        Trust model — re-execute, don't trust returned rows. The agent's rows
+        are the *expectation*; we re-extract the document and re-run the agent's
+        recipe ourselves (``route_forced_recipe``) to get the *actual* rows,
+        then:
+
+        - **Reconciliation gate (Req 9) is the authority.** It runs on the
+          re-executed rows. Any non-``transactions`` outcome (reconciliation
+          failure, low confidence, missing balances, …) is an invalid proposal:
+          nothing loads, ``outcome="invalid"``, ``reject_reason`` carries the
+          routing reason, and the egress metric records ``invalid``.
+        - **Persist the recipe, load the re-executed rows.** On pass, save the
+          recipe to ``app.pdf_formats`` (first contact → ``save_new``; audited,
+          Invariant 10) unless ``save_format=False``, then load the re-executed
+          rows to ``raw.tabular_transactions`` (``source_type='pdf'``) with a
+          reversible ``raw.import_log`` row (Req 17).
+        - **Verify expectation vs actual.** If the agent's row count differs
+          from the re-executed count, ``rows_diverged=True`` is surfaced (and
+          logged) — the saved recipe does not reproduce the agent's own
+          extraction. This does not block a load that reconciles; the gate
+          already proved the re-executed rows correct.
+
+        Args:
+            file_path: Path to the PDF the agent previewed.
+            bridge_response: The agent's ``{recipe, rows}`` reply. Validated by
+                ``parse_bridge_response`` — a malformed shape or a recipe that
+                fails the security bounds (Req 9b) raises ``ValueError``.
+            save_format: Persist the recipe for future deterministic replay.
+                False mirrors ``--no-save-format`` (one-off / sensitive
+                statement; layout fingerprint never lands in ``app.pdf_formats``).
+            account_id: Pin the rows to an existing ``dim_accounts`` row when
+                the statement carries no account anchor (mirrors the tabular
+                and deterministic-PDF ``account_id`` semantics).
+        """
+        from moneybin.extractors.pdf.bridge import parse_bridge_response
+        from moneybin.extractors.pdf.extractor import PDFExtractor
+        from moneybin.extractors.pdf.routing import route_forced_recipe
+        from moneybin.loaders import import_log
+        from moneybin.metrics.registry import PDF_BRIDGE_EGRESS_TOTAL
+
+        # 1. Validate the agent's response. Raises ValueError on a bad shape or
+        #    a recipe that fails the security bounds (Req 9b) — the caller
+        #    (CLI / MCP) maps it to a user-facing error.
+        response = parse_bridge_response(bridge_response)
+        expected_row_count = len(response.rows)
+
+        # 2. Re-extract + re-execute the recipe ourselves. The agent's rows are
+        #    the expectation; these re-executed rows are what we reconcile and
+        #    load — so the persisted recipe is proven to reproduce them.
+        canonical = file_path.resolve()
+        doc = PDFExtractor().extract(canonical)
+        decision = route_forced_recipe(doc, response.recipe)
+        actual_row_count = len(decision.rows)
+        rows_diverged = expected_row_count != actual_row_count
+
+        # 3. Reconciliation gate decides (Req 9). Anything other than a clean
+        #    transactions route is an invalid proposal — nothing loads.
+        if decision.outcome != "transactions":
+            PDF_BRIDGE_EGRESS_TOTAL.labels(outcome="invalid").inc()
+            logger.info(
+                f"PDF bridge apply rejected: reason={decision.reason} "
+                f"expected_rows={expected_row_count} "
+                f"actual_rows={actual_row_count}"
+            )
+            return BridgeApplyResult(
+                outcome="invalid",
+                import_id=None,
+                rows_loaded=0,
+                format_name=None,
+                expected_row_count=expected_row_count,
+                actual_row_count=actual_row_count,
+                rows_diverged=rows_diverged,
+                reject_reason=decision.reason,
+            )
+
+        # 4. Load + persist via the shared transactions path (rung="bridge").
+        #    begin_import only here: the invalid path above writes nothing, so
+        #    it needs no import_log row.
+        resolved_alias = _pdf_alias(canonical)
+        result = ImportResult(file_path=str(canonical), file_type="pdf")
+        import_id = import_log.begin_import(
+            self._db,
+            source_file=str(canonical),
+            source_type="pdf",
+            source_origin=resolved_alias,
+            account_names=[resolved_alias],
+        )
+        result.import_id = import_id
+
+        self._import_pdf_transactions(
+            canonical=canonical,
+            resolved_alias=resolved_alias,
+            import_id=import_id,
+            result=result,
+            decision=decision,
+            doc=doc,
+            save_format=save_format,
+            account_id_override=account_id,
+            rung="bridge",
+        )
+
+        PDF_BRIDGE_EGRESS_TOTAL.labels(outcome="applied").inc()
+        if rows_diverged:
+            logger.warning(
+                f"PDF bridge apply divergence: agent returned "
+                f"{expected_row_count} rows but the recipe reproduced "
+                f"{actual_row_count} (import_id={import_id[:8]}...). Loaded the "
+                f"re-executed rows; the saved recipe does not reproduce the "
+                f"agent's claimed extraction."
+            )
+
+        # decision.fp is non-None on every route_forced_recipe outcome; the
+        # format name matches what _import_pdf_transactions persisted (both via
+        # _pdf_format_name). None when save_format suppressed the save.
+        format_name = (
+            _pdf_format_name(decision.fp)
+            if save_format and decision.fp is not None
+            else None
+        )
+        return BridgeApplyResult(
+            outcome="applied",
+            import_id=import_id,
+            rows_loaded=result.transactions,
+            format_name=format_name,
+            expected_row_count=expected_row_count,
+            actual_row_count=actual_row_count,
+            rows_diverged=rows_diverged,
+            reject_reason=None,
+        )
+
     def _import_pdf(
         self,
         file_path: Path,
@@ -1602,7 +1793,6 @@ class ImportService:
 
         import polars as pl
 
-        from moneybin.extractors.pdf.fingerprint import serialize_fingerprint
         from moneybin.loaders import import_log
         from moneybin.metrics.registry import PDF_IMPORT_TOTAL
         from moneybin.tables import TABULAR_ACCOUNTS, TABULAR_TRANSACTIONS
@@ -1853,15 +2043,10 @@ class ImportService:
         # bookkeeping failure (schema mismatch on app.pdf_formats, etc.) can't
         # trigger the cleanup DELETE on rows that already landed successfully.
         # Both are best-effort: the import succeeds either way.
-        # Derive the first-contact format name once: it's needed both for
-        # backfilling import_log (next block) and for save_new below. The
-        # name is deterministic over the fingerprint and the issuer slug,
-        # so computing it twice would always agree but invites drift if
-        # one site ever changes its hashing — keep it single-source.
-        first_contact_format_name = (
-            f"{issuer_slug}_"
-            + (hashlib.sha256(serialize_fingerprint(fp).encode()).hexdigest()[:12])
-        )
+        # First-contact format name (issuer slug + fingerprint hash). Shared
+        # with apply_pdf_bridge_response via _pdf_format_name so the two paths
+        # can never drift on the naming scheme — see that helper.
+        first_contact_format_name = _pdf_format_name(fp)
 
         # Backfill format columns on raw.import_log now that routing has
         # decided. Tabular knows its format before begin_import; PDFs only
