@@ -4,7 +4,7 @@
 
 - **Type:** Architecture
 - **Status:** draft
-- **Address:** M3L (proposed — foundation for M3A/M3C; registration in [`docs/roadmap.md`](../roadmap.md) is deferred to the separate strategy reconciliation that revisits MCP Apps sequencing).
+- **Address:** M3L — foundation for M3A/M3C and the M3M MCP App surface; registered in [`docs/roadmap.md`](../roadmap.md). The *broader* public-positioning propagation (features/comparison copy) and the MCP-App-vs-Web-UI sequencing decision remain tracked as separate follow-up work.
 - **Authority:** Establishes the pattern every MoneyBin visual surface inherits. This spec defines the **shared frontend architecture** — package layout, framework, component library, type-sharing, and the transport-agnostic data layer — that both the MCP App (`apps/mcp-app`) and the Web UI (`apps/web`) build on. It does **not** design any specific dashboard or screen; those are consumer specs (`web-ui-prototype.md`, `spending-dashboard-mcp-app.md`, `portfolio-dashboard-mcp-app.md` — all planned, not yet written). The pattern-establishing decisions are recorded in [ADR-014](../decisions/014-shared-ui-architecture.md).
 
 ## Goal
@@ -74,7 +74,7 @@ moneybin/                          (repo root)
 │   ├── package.json
 │   ├── pnpm-workspace.yaml
 │   └── tsconfig.base.json
-└── pyproject.toml                 force-include ui/dist → wheel
+└── pyproject.toml                 force-include src/moneybin/ui/dist → wheel
 ```
 
 ### The discipline contract
