@@ -904,6 +904,17 @@ def get_database(
             max_wait=max_wait,
         )
 
+    # write_lock places its lock file at <db_path>.write.lock inside the
+    # profile directory, so that directory must exist before it runs. Pre-PR-B
+    # Database.__init__ created it (mkdir parents=False) as the first
+    # filesystem touch; write_lock now runs first, so the creation moves ahead
+    # of it — otherwise os.open raises FileNotFoundError on a write open that
+    # is the first thing to touch a fresh profile (e.g. `synthetic generate`).
+    # parents=False preserves the invariant that the profile root already
+    # exists (created by ProfileService.create): we create only the leaf
+    # profile directory, never a deleted tree.
+    db_path.parent.mkdir(parents=False, exist_ok=True)
+
     # Write path: enter the write_lock context manager into an ExitStack and
     # stash stack.close on the returned Database. The lock outlives this
     # function — Database.close() invokes stack.close() to exit the context

@@ -275,3 +275,41 @@ def test_f10_read_init_failure_rolls_back_conn(
     assert captured, "duckdb.connect was never called — test setup is wrong"
     with pytest.raises(duckdb.Error):
         captured[0].execute("SELECT 1")  # closed connection rejects use
+
+
+def test_write_open_creates_missing_profile_dir_before_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A write open creates the leaf profile dir before write_lock runs.
+
+    Regression: write_lock places its lock file inside the profile directory
+    and runs before Database.__init__'s mkdir. On a fresh profile (e.g. the
+    first write from `synthetic generate`), the directory did not exist yet
+    and os.open(<db_path>.write.lock, O_CREAT) raised FileNotFoundError.
+    get_database must create the leaf profile directory first, restoring the
+    pre-PR-B behaviour where Database.__init__ was the first filesystem touch.
+    """
+    profiles_root = tmp_path / "profiles"
+    profiles_root.mkdir()  # the profile *root* exists (per ProfileService)...
+    profile_dir = profiles_root / "freshprofile"  # ...but this leaf does not
+    db_path = profile_dir / "moneybin.duckdb"
+    assert not profile_dir.exists()
+
+    mock_store = MagicMock()
+    mock_store.get_key.return_value = "fresh-profile-dir-regression-key"
+    mock_settings = MagicMock()
+    mock_settings.database.path = db_path
+    mock_settings.database.no_auto_upgrade = True
+
+    monkeypatch.setattr(db_module, "get_settings", lambda: mock_settings)
+    monkeypatch.setattr(db_module, "SecretStore", lambda: mock_store)
+    monkeypatch.setattr(db_module, "_cached_encryption_key", None)
+    monkeypatch.setattr(db_module, "_migration_check_done", set[Path]())
+    monkeypatch.setattr(db_module, "_active_write_conn", None)
+
+    with get_database(read_only=False) as db:
+        db.execute("CREATE TABLE t (x INTEGER)")
+        db.execute("INSERT INTO t VALUES (1)")
+
+    assert profile_dir.is_dir()
+    assert db_path.exists()
