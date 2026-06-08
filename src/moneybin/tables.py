@@ -52,6 +52,7 @@ GSHEET_SEEDS = TableRef("raw", "gsheet_seeds")
 PDF_SEEDS = TableRef("raw", "pdf_seeds")
 
 # -- App tables (application-managed data) --
+PDF_FORMATS = TableRef("app", "pdf_formats")
 ACCOUNT_SETTINGS = TableRef("app", "account_settings", audience="interface")
 BALANCE_ASSERTIONS = TableRef("app", "balance_assertions", audience="interface")
 TRANSACTION_CATEGORIES = TableRef("app", "transaction_categories", audience="interface")

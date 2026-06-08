@@ -1,0 +1,5 @@
+file: fidelity_positions.pdf
+expected_outcome: seed
+# Symbol/Shares/Price/Value table fails _is_transaction_shaped: first header "Symbol"
+# does not match _DATE_COL_RE (^(date|trans.*date|posting.*date)$).
+expected_reason: no_transaction_table

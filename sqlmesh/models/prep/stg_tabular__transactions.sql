@@ -61,7 +61,7 @@ SELECT
   currency, /* ISO 4217 currency code */
   member_name, /* Account holder name */
   source_file, /* Path to source file */
-  source_type, /* Import pathway: csv, tsv, excel, parquet, feather, pipe */
+  source_type, /* Import pathway: csv, tsv, excel, parquet, feather, pipe, pdf */
   source_origin, /* Institution/format that produced this data */
   import_id, /* UUID linking to import batch */
   row_number, /* 1-based source file row number */

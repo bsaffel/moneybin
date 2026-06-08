@@ -138,14 +138,15 @@ class TestOFXImportPipeline:
         assert count > 0, f"Expected rows after OFX import, got {count}"
 
 
-_PDF_FIXTURE = (
+_PDF_FIXTURE_DIR = (
     Path(__file__).parent.parent
     / "moneybin"
     / "test_extractors"
     / "test_pdf"
     / "fixtures"
-    / "simple_statement.pdf"
 )
+_PDF_FIXTURE = _PDF_FIXTURE_DIR / "simple_statement.pdf"
+_PDF_FIXTURE_CHASE = _PDF_FIXTURE_DIR / "chase_checking_simple.pdf"
 
 
 class TestPDFImportPipeline:
@@ -182,6 +183,74 @@ class TestPDFImportPipeline:
         count = int(result.stdout.strip().split("\n")[-1].strip())
         assert count > 0, (
             f"Expected rows in raw.pdf_seeds after PDF import, got {count}"
+        )
+
+    def test_pdf_import_routes_to_transactions(
+        self, _mutating_profile_template: Path, e2e_home: Path
+    ) -> None:
+        """Reconciling transaction-shaped PDF lands in tabular_transactions.
+
+        Phase 2a: auto-derived recipe persisted to app.pdf_formats.
+        """
+        if not _PDF_FIXTURE_CHASE.exists():
+            pytest.skip(f"fixture missing: {_PDF_FIXTURE_CHASE} (run _make_fixture.py)")
+
+        env = make_workflow_env_fast(e2e_home, "wf-pdf-tx", _mutating_profile_template)
+
+        result = run_cli(
+            "import",
+            "files",
+            str(_PDF_FIXTURE_CHASE),
+            "--no-refresh",
+            env=env,
+        )
+        result.assert_success()
+
+        # Rows landed in raw.tabular_transactions with source_type='pdf'
+        result = run_cli(
+            "db",
+            "query",
+            "SELECT COUNT(*) AS n FROM raw.tabular_transactions "
+            "WHERE source_type = 'pdf'",
+            "--output",
+            "csv",
+            env=env,
+        )
+        result.assert_success()
+        tx_count = int(result.stdout.strip().split("\n")[-1].strip())
+        assert tx_count == 5, (
+            f"Expected 5 rows in raw.tabular_transactions (source_type='pdf'), "
+            f"got {tx_count}"
+        )
+
+        # Auto-derived recipe persisted to app.pdf_formats
+        result = run_cli(
+            "db",
+            "query",
+            "SELECT COUNT(*) AS n FROM app.pdf_formats",
+            "--output",
+            "csv",
+            env=env,
+        )
+        result.assert_success()
+        fmt_count = int(result.stdout.strip().split("\n")[-1].strip())
+        assert fmt_count == 1, (
+            f"Expected 1 row in app.pdf_formats after first import, got {fmt_count}"
+        )
+
+        # Seed table is empty — the transactions path doesn't write to pdf_seeds
+        result = run_cli(
+            "db",
+            "query",
+            "SELECT COUNT(*) AS n FROM raw.pdf_seeds",
+            "--output",
+            "csv",
+            env=env,
+        )
+        result.assert_success()
+        seed_count = int(result.stdout.strip().split("\n")[-1].strip())
+        assert seed_count == 0, (
+            f"Expected 0 rows in raw.pdf_seeds (transactions path), got {seed_count}"
         )
 
 
