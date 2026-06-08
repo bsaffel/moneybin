@@ -2467,7 +2467,10 @@ class ImportService:
                 # Distinct from generic failure: the file's detector formed
                 # a proposal (or surfaced low-tier with no proposal); the
                 # caller needs the payload to ratify or override per file.
-                from moneybin.services.import_confirmation import ProposedMapping
+                from moneybin.services.import_confirmation import (
+                    BridgePayload,
+                    ProposedMapping,
+                )
 
                 proposed_mapping = (
                     e.outcome.proposed.field_mapping
@@ -2478,6 +2481,15 @@ class ImportService:
                     list(e.outcome.proposed.unmapped_columns)
                     if isinstance(e.outcome.proposed, ProposedMapping)
                     else []
+                )
+                # PDF bridge channel: the proposal is a BridgePayload (document
+                # text + table preview + transparency notice + request_kind),
+                # not a column mapping. Carry it so the agent can extract and
+                # ratify via import_confirm(bridge_response=...).
+                bridge_payload = (
+                    e.outcome.proposed.payload
+                    if isinstance(e.outcome.proposed, BridgePayload)
+                    else None
                 )
                 logger.info(
                     f"Import requires confirmation for {path}: "
@@ -2501,6 +2513,7 @@ class ImportService:
                                 e.outcome.confidence.missing_required
                             ),
                             "unmapped_columns": unmapped,
+                            "bridge_payload": bridge_payload,
                         },
                     )
                 )
