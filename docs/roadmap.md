@@ -115,9 +115,9 @@ Now that the engine and the analysis layer are complete and self-testable, make 
 
 | Address | Area | Status | Notes |
 |---|---|---|---|
-| **M3A** | Evaluator/testing surface (**pulled forward**) | 🗓️ | `moneybin demo` preset + first-run wizard + a **narrow** Web review console (categorization/import/doctor/lineage). Ships early as a *testing/trust* surface so the M1 core is legible — but it's productization, hence M3. |
+| **M3A** | Evaluator/testing surface (**pulled forward**) | 🗓️ | `moneybin demo` preset + first-run wizard + a **narrow** Web review console (categorization/import/doctor/lineage), **built on M3L**. Ships early as a *testing/trust* surface so the M1 core is legible — but it's productization, hence M3. |
 | **M3B** | Install & packaging | 🗓️ | PyPI Trusted Publishing + Homebrew formula + `.mcpb` bundle. |
-| **M3C** | Full Web UI | 🗓️ | Extends the M3A console to the complete dashboard surface, backed by real domains. Same UI at `moneybin ui` (local) and the hosted tier. |
+| **M3C** | Full Web UI | 🗓️ | Extends the M3A console to the complete dashboard surface, backed by real domains; **built on M3L**. Same UI at `moneybin ui` (local) and the hosted tier. |
 | **M3D** | Remote / HTTP MCP transport + auth | 🗓️ | Unlocks ChatGPT web + mobile; identity via Auth0/OIDC, MoneyBin-owned authorization/consent. |
 | **M3E** | Migration guides | 🗓️ | Mint/Tiller/YNAB/Actual/Maybe/OFX; each gated on its import path being real. |
 | **M3F** | Doc polish + landing + screenshots + demo video | 🚧 | Earned positioning — after the core is real. [`user-facing-doc-polish.md`](specs/user-facing-doc-polish.md). |
@@ -126,6 +126,8 @@ Now that the engine and the analysis layer are complete and self-testable, make 
 | **M3I** | Extension contributor UX | 🗓️ | Scaffolders, validator, plugin bundle; in-tree provider Platinum sweep. |
 | **M3J** | Self-host / headless operations | 🗓️ | Gated on `moneybin-server`. Operator guides + any build specs. |
 | **M3K** | CLI / MCP UX standards | 🗓️ | Interaction patterns, output formatting, prompt/resource conventions. |
+| **M3L** | Shared UI architecture (foundation) | 📐 | One `ui-core` (React + shadcn/Tailwind/Tremor) behind two shells — Web UI and MCP App; transport-agnostic `MoneyBinClient`; bundle embedded in the Python wheel. Prerequisite for M3A/M3C/M3M. [`ui-architecture.md`](specs/ui-architecture.md) + [ADR-014](decisions/014-shared-ui-architecture.md). |
+| **M3M** | MCP App surface | 🗓️ | MoneyBin's own dashboards rendered inside an MCP host (Claude, ChatGPT, …), built on M3L's `ui-core`. Enabled by MCP Apps becoming a ratified standard (`2026-01-26`); sequencing vs. the Web UI is under review. |
 
 > **Pre-Distribution gate.** M3 work proceeds once the full suite is green, the anonymized real-data parity check passes, `system doctor` is clean on a real profile, and privacy/PII/security checks pass. **Hosted launch (M3H) = v1.**
 
@@ -142,7 +144,6 @@ Designed or noted, but not gating launch. Listed without commitment.
 - **AI-assisted parsing of non-PDF file types** — the smart-import bridge (shipped first for PDF in M1I) applied to other formats.
 - **ML-powered categorization + merchant entity resolution.** Needs accumulated labeled data from real users.
 - **FIRE / retirement projection** (Monte Carlo, Roth conversions, RMDs). A wealth analysis package on top of M1J — built only after the investment ledger is correct, never as a shallow dashboard.
-- **MCP Apps** (interactive UI inside Claude Desktop, VS Code). Revisit when client support widens.
 - **Multi-account-holder sharing / household ownership.** Single-user is the v1 posture; if adopted, modeled as core ownership bridges, not app-only filters.
 - **EU Open Banking / SimpleFIN** sync providers. After Plaid + one additional provider validate the sync framework.
 

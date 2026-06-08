@@ -134,4 +134,4 @@ These are visible gaps a migrant or agent author will notice. See [Roadmap](road
 - **Native mobile apps** — Not on the roadmap.
 - **Household / shared budgets** — Multi-user accounts within one profile. Not on the roadmap.
 
-Post-launch candidates (PDF data extraction, ML-powered categorization, MCP Apps, mobile read-only viewer, expanded privacy tiers) live on the same page.
+Post-launch candidates (PDF data extraction, ML-powered categorization, mobile read-only viewer, expanded privacy tiers) live on the same page.
