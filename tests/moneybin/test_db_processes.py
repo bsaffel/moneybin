@@ -42,7 +42,20 @@ class TestDescribeProcess:
     def test_duckdb_shell(self) -> None:
         assert self._desc("duckdb /path/to/db.duckdb") == "DuckDB shell"
 
-    def test_fallback(self) -> None:
-        result = self._desc("python /some/random/script.py with args here")
-        assert len(result) <= 40
-        assert result == "python /some/random/script.py with args"
+    def test_fallback_returns_basename_only_no_path_leak(self) -> None:
+        # Unrecognized argv must NOT leak absolute paths, usernames, or
+        # argument values into the LOW-sensitivity database_connections
+        # payload — only the program basename is returned.
+        assert self._desc("python /some/random/script.py with args here") == "python"
+        assert (
+            self._desc("/home/alice/.venv/bin/weird-tool --secret /home/alice/x")
+            == "weird-tool"
+        )
+        result = self._desc("/home/alice/private/run.sh --token abc123")
+        assert result == "run.sh"
+        assert "/home/alice" not in result
+        assert "abc123" not in result
+
+    def test_fallback_empty(self) -> None:
+        assert self._desc("") == "unknown process"
+        assert self._desc("   ") == "unknown process"

@@ -109,4 +109,13 @@ def describe_process(cmdline: str) -> str:
         return "DuckDB UI"
     if c.startswith("duckdb"):
         return "DuckDB shell"
-    return c[:40].rstrip()
+    # Fallback for unrecognized commands: the program basename only — never the
+    # raw argv, which can carry absolute paths, usernames, or secret-bearing
+    # arguments into the LOW-sensitivity database_connections payload (where
+    # this value lands unmasked). describe_process's contract is a
+    # human-readable NAME, not a command line, so dropping the path and args is
+    # correct, not lossy.
+    tokens = c.split()
+    if not tokens:
+        return "unknown process"
+    return Path(tokens[0]).name or "unknown process"
