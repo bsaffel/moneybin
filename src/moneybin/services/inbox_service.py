@@ -417,16 +417,26 @@ class InboxService:
             ImportConfirmationRequiredError,
         )
 
+        # Inbox sync is an unattended background path — the caller is the
+        # scheduler/agent, not a human at a CLI. actor_kind=agent lets tabular
+        # self-accept (gated by ImportSettings) and surfaces unknown tabular
+        # layouts to the recoverable pending bucket.
+        #
+        # PDF is the exception: the bridge needs a *live* agent to actively
+        # extract the document, which a background drain doesn't have. So a
+        # bridge-eligible PDF here keeps the Phase 2a seed fallback
+        # (actor_kind=human) rather than escalating to a pending bucket nothing
+        # can fulfill. Routing inbox-discovered bridge PDFs to failed/ with a
+        # "needs extraction" sidecar (Req 18) is deferred follow-up work.
+        actor_kind: Literal["human", "agent"] = (
+            "human" if src.suffix.lower() == ".pdf" else "agent"
+        )
         try:
             import_result = importer.import_file(
                 str(src),
                 refresh=False,
                 account_name=account_hint if isinstance(account_hint, str) else None,
-                # Inbox sync is an unattended background path — the caller is
-                # the scheduler/agent, not a human at a CLI. actor_kind=agent
-                # also lets self-accept (gated separately by ImportSettings)
-                # take effect for inbox-discovered files.
-                actor_kind="agent",
+                actor_kind=actor_kind,
             )
         except ImportConfirmationRequiredError as e:
             self._handle_pending(
