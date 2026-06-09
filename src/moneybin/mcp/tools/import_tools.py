@@ -91,6 +91,24 @@ def _confirmation_actions(file_path: str, outcome: ConfirmationRequired) -> list
     return actions
 
 
+def _bridge_confirm_action(file_path: str, *, payload_ref: str) -> str:
+    """The agent-facing hint for a PDF bridge confirmation_required.
+
+    Shared by the `import_files` actions builder and `_import_preview_pdf` so the
+    bridge workflow instruction stays identical across both entry points.
+    `payload_ref` names where the bridge payload sits in *that* envelope —
+    nested under `confirmation_payload.bridge_payload` for `import_files`,
+    top-level `bridge_payload` for the preview envelope.
+    """
+    return (
+        f"This PDF needs agent extraction. Read {payload_ref} (note its "
+        "transparency_notice — proceeding surfaces the document to you), "
+        "propose a recipe + rows, then call import_confirm("
+        f"file_path='{file_path}', bridge_response={{'recipe': ..., "
+        "'rows': [...]}) to reconcile and load."
+    )
+
+
 @mcp_tool(read_only=False, idempotent=False)
 def import_files(
     paths: list[str], refresh: bool = True, force: bool = False
@@ -122,10 +140,7 @@ def import_files(
         positive=income; transfers exempt. Display currency is set
         in summary.display_currency.
     """
-    from moneybin.services.import_confirmation import (
-        ImportConfirmationRequiredError,
-        ProposedMapping,
-    )
+    from moneybin.services.import_confirmation import ImportConfirmationRequiredError
     from moneybin.services.import_service import ImportService
 
     # Validate all paths upfront so a bad path fails before any service call.
@@ -190,44 +205,17 @@ def import_files(
             # with status="confirmation_required" and the proposal in
             # confirmation_payload. Callers parse data.files[i].status
             # regardless of path count.
-            from moneybin.services.import_confirmation import BridgePayload
+            from moneybin.services.import_confirmation import (
+                confirmation_payload_dict,
+            )
             from moneybin.services.import_service import (
                 BatchImportResult,
                 PerFileResult,
             )
 
             file_path = str(validated[0])
-            proposed_mapping = (
-                e.outcome.proposed.field_mapping
-                if isinstance(e.outcome.proposed, ProposedMapping)
-                else {}
-            )
-            unmapped = (
-                list(e.outcome.proposed.unmapped_columns)
-                if isinstance(e.outcome.proposed, ProposedMapping)
-                else []
-            )
-            # PDF bridge channel: the proposal is a BridgePayload, not a column
-            # mapping. Carry it so the agent can extract rows per the recipe
-            # request and ratify via import_confirm(bridge_response=...).
-            bridge_payload = (
-                e.outcome.proposed.payload
-                if isinstance(e.outcome.proposed, BridgePayload)
-                else None
-            )
-            confirmation_payload: dict[str, object] = {
-                "channel": e.outcome.channel,
-                "tier": e.outcome.confidence.tier,
-                "score": e.outcome.confidence.score,
-                "reason": e.outcome.reason,
-                "error_message": e.outcome.error_message,
-                "proposed_mapping": proposed_mapping,
-                "samples": e.outcome.samples,
-                "flagged": list(e.outcome.confidence.flagged),
-                "missing_required": list(e.outcome.confidence.missing_required),
-                "unmapped_columns": unmapped,
-                "bridge_payload": bridge_payload,
-            }
+            # Same shape as the batch service path — see confirmation_payload_dict.
+            confirmation_payload = confirmation_payload_dict(e.outcome)
             batch = BatchImportResult(
                 per_file=[
                     PerFileResult(
@@ -350,12 +338,9 @@ def import_files(
         # no column mapping to accept/override.
         if payload.get("channel") == "pdf":
             actions.append(
-                f"This PDF needs agent extraction. Read "
-                f"confirmation_payload.bridge_payload (note its "
-                f"transparency_notice — proceeding surfaces the document to "
-                f"you), propose a recipe + rows, then call import_confirm("
-                f"file_path='{pending.path}', bridge_response={{'recipe': ..., "
-                f"'rows': [...]}}) to reconcile and load."
+                _bridge_confirm_action(
+                    pending.path, payload_ref="confirmation_payload.bridge_payload"
+                )
             )
             continue
         if tier != "low":
@@ -434,13 +419,7 @@ def _import_preview_pdf(path: Path) -> ResponseEnvelope[ImportPreviewPayload]:
                 "reason": e.outcome.reason,
                 "bridge_payload": bridge_payload,
             },
-            actions=[
-                "This PDF needs agent extraction. Read bridge_payload (note its "
-                "transparency_notice — proceeding surfaces the document to "
-                "you), propose a recipe + rows, then call "
-                f"import_confirm(file_path='{path}', bridge_response="
-                "{'recipe': ..., 'rows': [...]}) to reconcile and load.",
-            ],
+            actions=[_bridge_confirm_action(str(path), payload_ref="bridge_payload")],
         )
 
     return build_envelope(

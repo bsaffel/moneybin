@@ -1803,7 +1803,7 @@ class ImportService:
         doc: "PdfDocument",
         save_format: bool = True,
         account_id_override: str | None = None,
-        rung: str = "deterministic",
+        rung: Literal["deterministic", "bridge"] = "deterministic",
     ) -> ImportResult:
         """Write PDF transaction rows to raw.tabular_transactions.
 
@@ -2468,29 +2468,9 @@ class ImportService:
                 # a proposal (or surfaced low-tier with no proposal); the
                 # caller needs the payload to ratify or override per file.
                 from moneybin.services.import_confirmation import (
-                    BridgePayload,
-                    ProposedMapping,
+                    confirmation_payload_dict,
                 )
 
-                proposed_mapping = (
-                    e.outcome.proposed.field_mapping
-                    if isinstance(e.outcome.proposed, ProposedMapping)
-                    else {}
-                )
-                unmapped = (
-                    list(e.outcome.proposed.unmapped_columns)
-                    if isinstance(e.outcome.proposed, ProposedMapping)
-                    else []
-                )
-                # PDF bridge channel: the proposal is a BridgePayload (document
-                # text + table preview + transparency notice + request_kind),
-                # not a column mapping. Carry it so the agent can extract and
-                # ratify via import_confirm(bridge_response=...).
-                bridge_payload = (
-                    e.outcome.proposed.payload
-                    if isinstance(e.outcome.proposed, BridgePayload)
-                    else None
-                )
                 logger.info(
                     f"Import requires confirmation for {path}: "
                     f"tier={e.outcome.confidence.tier} reason={e.outcome.reason}"
@@ -2500,21 +2480,7 @@ class ImportService:
                         path=str(path),
                         status="confirmation_required",
                         source_type=None,
-                        confirmation_payload={
-                            "channel": e.outcome.channel,
-                            "tier": e.outcome.confidence.tier,
-                            "score": e.outcome.confidence.score,
-                            "reason": e.outcome.reason,
-                            "error_message": e.outcome.error_message,
-                            "proposed_mapping": dict(proposed_mapping),
-                            "samples": dict(e.outcome.samples),
-                            "flagged": list(e.outcome.confidence.flagged),
-                            "missing_required": list(
-                                e.outcome.confidence.missing_required
-                            ),
-                            "unmapped_columns": unmapped,
-                            "bridge_payload": bridge_payload,
-                        },
+                        confirmation_payload=confirmation_payload_dict(e.outcome),
                     )
                 )
             except Exception as e:  # noqa: BLE001 — per-file failure must not abort batch
