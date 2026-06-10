@@ -295,10 +295,14 @@ def test_apply_row_count_divergence_reported_but_still_loads(
 # ---------------------------------------------------------------------------
 
 
-def test_apply_malformed_response_raises_valueerror(
+def test_apply_malformed_response_raises_bridge_response_error(
     db: Database, tmp_path: Path, stub_extract: list[PdfDocument]
 ) -> None:
-    with pytest.raises(ValueError, match="recipe"):
+    from moneybin.extractors.pdf.bridge import BridgeResponseError
+
+    # Pin the exact type — parse_bridge_response raises BridgeResponseError, not
+    # a bare ValueError, so a regression at the raise site is caught.
+    with pytest.raises(BridgeResponseError, match="recipe"):
         ImportService(db).apply_pdf_bridge_response(_pdf_path(tmp_path), {"rows": []})
 
 

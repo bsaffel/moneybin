@@ -809,9 +809,12 @@ class TestImportConfirmBridge:
                 file_path=str(pdf),
                 bridge_response={"recipe": {}, "rows": []},
             )
-        # Either surfaced as a non-bridge error code or re-raised/masked — the
-        # one outcome we forbid is the misleading bridge_response_invalid.
-        assert result.error is None or result.error.code != "bridge_response_invalid"
+        # classify_user_error maps every ValueError to a non-None error
+        # envelope, so an error IS surfaced — assert that (no unreachable
+        # is-None arm that would hide a classification regression). The one
+        # outcome we forbid is the misleading bridge_response_invalid.
+        assert result.error is not None
+        assert result.error.code != "bridge_response_invalid"
 
     async def test_account_name_with_bridge_raises(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
