@@ -173,3 +173,16 @@ def test_parse_bridge_response_raises_bridge_response_error_subtype() -> None:
 
     with pytest.raises(BridgeResponseError):
         parse_bridge_response({"rows": []})
+
+
+def test_parse_bridge_response_rejects_uncompilable_regex() -> None:
+    """Reject an uncompilable recipe regex at parse time, not at execution.
+
+    Surfaces as ``BridgeResponseError`` (→ ``bridge_response_invalid``) instead
+    of a cryptic ``regex.error`` raised later inside ``route_forced_recipe``.
+    """
+    from moneybin.extractors.pdf.bridge import BridgeResponseError
+
+    bad = {**_VALID_RECIPE_DICT, "row_split": "["}  # unterminated character class
+    with pytest.raises(BridgeResponseError, match="invalid regex"):
+        parse_bridge_response({"recipe": bad, "rows": []})

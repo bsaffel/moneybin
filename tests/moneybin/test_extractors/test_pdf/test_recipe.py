@@ -90,6 +90,30 @@ def test_recipe_save_bounds_apply_to_row_split() -> None:
         Recipe.model_validate(recipe)
 
 
+def test_recipe_rejects_uncompilable_field_pattern() -> None:
+    # Passes the length + nested-quantifier bounds but isn't a compilable regex
+    # — must be rejected at validation, not left to raise deep in execute_recipe.
+    recipe = _make_recipe_with_pattern("(unterminated")
+    with pytest.raises(ValueError, match="invalid regex"):
+        Recipe.model_validate(recipe)
+
+
+def test_recipe_rejects_uncompilable_row_split() -> None:
+    recipe = _make_recipe(row_split="[")  # unterminated character class
+    with pytest.raises(ValueError, match="invalid regex"):
+        Recipe.model_validate(recipe)
+
+
+def test_recipe_accepts_anchor_with_regex_metacharacters() -> None:
+    # Anchors are matched literally (str.find), NOT compiled as regexes, so a
+    # special-char anchor like "Balance ($)" must validate fine.
+    recipe = _make_recipe(
+        row_region={"start_anchor": "Balance ($)", "end_anchor": "Total ["}
+    )
+    result = Recipe.model_validate(recipe)
+    assert result.row_region.start_anchor == "Balance ($)"
+
+
 def test_recipe_model_dump_round_trips() -> None:
     raw = _make_recipe()
     r1 = Recipe.model_validate(raw)

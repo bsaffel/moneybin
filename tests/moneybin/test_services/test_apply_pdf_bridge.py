@@ -306,6 +306,21 @@ def test_apply_malformed_response_raises_bridge_response_error(
         ImportService(db).apply_pdf_bridge_response(_pdf_path(tmp_path), {"rows": []})
 
 
+def test_apply_uncompilable_regex_raises_bridge_response_error(
+    db: Database, tmp_path: Path, stub_extract: list[PdfDocument]
+) -> None:
+    from moneybin.extractors.pdf.bridge import BridgeResponseError
+
+    # An uncompilable regex is rejected at parse (→ bridge_response_invalid at
+    # the MCP boundary), not left to raise a cryptic regex.error inside
+    # route_forced_recipe after being counted as a failed PDF import.
+    bad = {**_valid_recipe_dict(), "row_split": "["}
+    with pytest.raises(BridgeResponseError, match="invalid regex"):
+        ImportService(db).apply_pdf_bridge_response(
+            _pdf_path(tmp_path), _bridge_response(recipe=bad)
+        )
+
+
 # ---------------------------------------------------------------------------
 # Format-name honesty + extraction-failure metric
 # ---------------------------------------------------------------------------
