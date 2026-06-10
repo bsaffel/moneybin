@@ -306,6 +306,45 @@ def test_f13_lock_file_mode_is_0o600(tmp_path: Path) -> None:
         assert mode == 0o600, f"lock file mode is 0o{mode:o}, expected 0o600"
 
 
+def test_process_command_runs_before_lock_acquired(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ps subprocess runs BEFORE the exclusive flock, not under LOCK_EX.
+
+    Resolving the holder's argv via _process_command shells out to ps (up to a
+    3 s timeout). Running that while holding LOCK_EX would stall every competing
+    writer, so the command is resolved outside the critical section.
+    """
+    import fcntl
+
+    import moneybin.db_lock.lock as lock_module
+
+    events: list[str] = []
+    real_process_command = lock_module._process_command  # type: ignore[reportPrivateUsage]
+
+    def spy_process_command(pid: int) -> str:
+        events.append("process_command")
+        return real_process_command(pid)
+
+    real_flock = fcntl.flock
+
+    def spy_flock(fd: int, op: int) -> None:
+        if op & fcntl.LOCK_EX:
+            events.append("flock_ex")
+        real_flock(fd, op)
+
+    monkeypatch.setattr(lock_module, "_process_command", spy_process_command)
+    monkeypatch.setattr(fcntl, "flock", spy_flock)
+
+    db_path = tmp_path / "test.duckdb"
+    db_path.touch()
+    deadline = time.monotonic() + 1.0
+    with write_lock(db_path, deadline=deadline, operation_type="interactive"):
+        pass
+
+    assert events.index("process_command") < events.index("flock_ex"), events
+
+
 def test_out_of_lifo_reentrant_close_releases_lock(tmp_path: Path) -> None:
     """Closing reentrant write handles out of LIFO order still releases the lock.
 

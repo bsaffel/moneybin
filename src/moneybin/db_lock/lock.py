@@ -112,7 +112,9 @@ def _process_command(pid: int) -> str:
     return result.stdout.strip() or f"pid {pid}"
 
 
-def _write_holder_metadata(fd: int, operation_type: OperationType) -> None:
+def _write_holder_metadata(
+    fd: int, operation_type: OperationType, command: str
+) -> None:
     """Write the lock holder metadata in-place via the held fd.
 
     Writes through the SAME fd that holds the fcntl lock — never
@@ -122,11 +124,14 @@ def _write_holder_metadata(fd: int, operation_type: OperationType) -> None:
     flock. Diagnostic readers (system_status) may observe a partial
     JSON write window; this is acceptable because the lock authority
     is the held fcntl, not the file contents.
+
+    ``command`` is resolved by the caller BEFORE the lock is held (see
+    write_lock) so the ``ps`` subprocess never runs under LOCK_EX. This
+    function does only fast in-place I/O.
     """
-    pid = os.getpid()
     payload = {
-        "pid": pid,
-        "command": _process_command(pid),
+        "pid": os.getpid(),
+        "command": command,
         "started_at": datetime.now(UTC).isoformat(),
         "operation_type": operation_type,
     }
@@ -227,6 +232,12 @@ def write_lock(
     fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
     registered = False
     delay = _BACKOFF_INITIAL_SECONDS
+    # Resolve this process's own argv BEFORE acquiring the lock. _process_command
+    # shells out to `ps` (up to a 3 s timeout); running it under LOCK_EX would
+    # stall every competing writer for that duration. The command is fixed for
+    # this process, so compute it outside the critical section and write only
+    # the fast in-place metadata under the lock.
+    command = _process_command(pid)
     wait_start = time.monotonic()
     try:
         while True:
@@ -247,7 +258,7 @@ def write_lock(
                     ) from None
                 time.sleep(delay)
                 delay = min(delay * _BACKOFF_MULTIPLIER, _BACKOFF_CAP_SECONDS)
-        _write_holder_metadata(fd, operation_type)
+        _write_holder_metadata(fd, operation_type, command)
         with _held_by_lock:
             _held_by[key] = _Holder(pid=pid, thread_id=thread_id, depth=1, fd=fd)
             registered = True
