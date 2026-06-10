@@ -304,3 +304,43 @@ def test_f13_lock_file_mode_is_0o600(tmp_path: Path) -> None:
     with write_lock(db_path, deadline=deadline, operation_type="interactive"):
         mode = os.stat(_lock_path(db_path)).st_mode & 0o777
         assert mode == 0o600, f"lock file mode is 0o{mode:o}, expected 0o600"
+
+
+def test_out_of_lifo_reentrant_close_releases_lock(tmp_path: Path) -> None:
+    """Closing reentrant write handles out of LIFO order still releases the lock.
+
+    Regression: the lock fd was released by whichever write_lock frame's
+    closure owned it, which assumed LIFO close order. A caller holding two
+    write handles on one thread and closing the outer (first-acquired) before
+    the inner stranded the fd and the OS lock — every later writer then timed
+    out until the process exited. Release is now keyed to depth reaching 0 via
+    the holder's fd, independent of close order.
+    """
+    db_path = tmp_path / "test.duckdb"
+    db_path.touch()
+    deadline = time.monotonic() + 1.0
+
+    # Drive two reentrant contexts manually and close out of LIFO order.
+    outer = write_lock(db_path, deadline=deadline, operation_type="interactive")
+    inner = write_lock(db_path, deadline=deadline, operation_type="migration")
+    outer.__enter__()
+    inner.__enter__()
+    outer.__exit__(None, None, None)  # close the first-acquired handle first
+    inner.__exit__(None, None, None)
+
+    # A different thread must now acquire quickly — it would time out (and
+    # leave acquired unset) if the fd / OS lock had leaked.
+    acquired = threading.Event()
+
+    def other() -> None:
+        d = time.monotonic() + 1.0
+        try:
+            with write_lock(db_path, deadline=d, operation_type="interactive"):
+                acquired.set()
+        except BaseException:  # noqa: BLE001, S110 — a leak surfaces via the assert below
+            pass
+
+    t = threading.Thread(target=other)
+    t.start()
+    t.join(timeout=3.0)
+    assert acquired.is_set(), "lock leaked after out-of-LIFO reentrant close"

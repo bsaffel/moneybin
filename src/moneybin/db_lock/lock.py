@@ -58,17 +58,42 @@ class _Holder:
     pid: int
     thread_id: int
     depth: int
+    # The single lock fd, owned by the holder (not by any one write_lock
+    # frame's closure). Whichever frame drives depth to 0 releases it via the
+    # holder, so reentrant release is order-independent — a caller closing two
+    # write handles out of LIFO order no longer strands the fd and OS lock.
+    fd: int
 
 
 # Guards _held_by mutation. Each Database file_path resolves to a single
-# entry. The lock fd is held open for the duration of the outermost acquire
-# (via the local closure in write_lock, which owns release) so OS-level fcntl
-# semantics serialize cross-process attempts. Reentrancy is keyed on
-# (pid, thread_id) — different threads in the same process each open their own
-# fd and contend at fcntl (POSIX flock contends per open-file-description on
-# Linux and macOS).
+# entry; the holder owns the lock fd for the lifetime of the outermost acquire
+# so OS-level fcntl semantics serialize cross-process attempts. Reentrancy is
+# keyed on (pid, thread_id) — different threads in the same process each open
+# their own fd and contend at fcntl (POSIX flock contends per
+# open-file-description on Linux and macOS).
 _held_by: dict[Path, _Holder] = {}
 _held_by_lock = threading.Lock()
+
+
+def _release_one(key: Path, pid: int, thread_id: int) -> None:
+    """Decrement the holder's depth; release the OS lock + fd when it hits 0.
+
+    Called from BOTH the reentrant and non-reentrant exit paths so that
+    whichever write_lock frame drives depth to 0 — regardless of the order the
+    caller closes its handles — releases the single fd stored on the holder.
+    This is what makes reentrant release order-independent.
+    """
+    with _held_by_lock:
+        holder = _held_by.get(key)
+        if holder is None or holder.pid != pid or holder.thread_id != thread_id:
+            return
+        holder.depth -= 1
+        if holder.depth <= 0:
+            _held_by.pop(key, None)
+            try:
+                fcntl.flock(holder.fd, fcntl.LOCK_UN)
+            finally:
+                os.close(holder.fd)
 
 
 def _process_command(pid: int) -> str:
@@ -190,18 +215,13 @@ def write_lock(
         # Outer holder owns the metadata payload. Inner reentry leaves it
         # untouched — "process P is in operation X" stays true for the
         # whole nested scope. No fallible operation between the depth
-        # bump (above) and yield, so finally always restores depth.
+        # bump (above) and yield, so finally always runs the release. If this
+        # frame happens to drive depth to 0 (the caller closed the outer
+        # handle first), _release_one releases the holder's fd here.
         try:
             yield
         finally:
-            with _held_by_lock:
-                holder = _held_by.get(key)
-                if (
-                    holder is not None
-                    and holder.pid == pid
-                    and holder.thread_id == thread_id
-                ):
-                    holder.depth -= 1
+            _release_one(key, pid, thread_id)
         return
 
     fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
@@ -229,25 +249,14 @@ def write_lock(
                 delay = min(delay * _BACKOFF_MULTIPLIER, _BACKOFF_CAP_SECONDS)
         _write_holder_metadata(fd, operation_type)
         with _held_by_lock:
-            _held_by[key] = _Holder(pid=pid, thread_id=thread_id, depth=1)
+            _held_by[key] = _Holder(pid=pid, thread_id=thread_id, depth=1, fd=fd)
             registered = True
         try:
             yield
         finally:
-            with _held_by_lock:
-                holder = _held_by.get(key)
-                if (
-                    holder is not None
-                    and holder.pid == pid
-                    and holder.thread_id == thread_id
-                ):
-                    holder.depth -= 1
-                    if holder.depth <= 0:
-                        _held_by.pop(key, None)
-                        try:
-                            fcntl.flock(fd, fcntl.LOCK_UN)
-                        finally:
-                            os.close(fd)
+            # Release via the holder (not the closure fd) so the frame that
+            # drives depth to 0 owns the release regardless of close order.
+            _release_one(key, pid, thread_id)
     except BaseException:
         # Error path before the outer holder was registered: release the OS
         # lock and close fd. If we already registered, the finally block
