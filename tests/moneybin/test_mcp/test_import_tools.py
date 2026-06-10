@@ -771,9 +771,12 @@ class TestImportConfirmBridge:
     async def test_malformed_response_maps_to_user_error(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
     ) -> None:
+        from moneybin.extractors.pdf.bridge import BridgeResponseError
+
         pdf = self._patch(monkeypatch, tmp_path)
         mock_service = MagicMock()
-        mock_service.apply_pdf_bridge_response.side_effect = ValueError(
+        # parse_bridge_response raises BridgeResponseError on a bad shape.
+        mock_service.apply_pdf_bridge_response.side_effect = BridgeResponseError(
             "bridge response missing 'recipe' key"
         )
         with patch(
@@ -786,3 +789,41 @@ class TestImportConfirmBridge:
             )
         assert result.error is not None
         assert result.error.code == "bridge_response_invalid"
+
+    async def test_non_parse_value_error_not_labeled_bridge_invalid(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        # A plain ValueError raised after parsing (e.g. malformed PDF in
+        # extract, or the load) must NOT be mislabeled bridge_response_invalid —
+        # the narrowed catch lets it propagate to the generic error boundary.
+        pdf = self._patch(monkeypatch, tmp_path)
+        mock_service = MagicMock()
+        mock_service.apply_pdf_bridge_response.side_effect = ValueError(
+            "could not extract text from PDF"
+        )
+        with patch(
+            "moneybin.services.import_service.ImportService",
+            return_value=mock_service,
+        ):
+            result = await import_confirm(
+                file_path=str(pdf),
+                bridge_response={"recipe": {}, "rows": []},
+            )
+        # Either surfaced as a non-bridge error code or re-raised/masked — the
+        # one outcome we forbid is the misleading bridge_response_invalid.
+        assert result.error is None or result.error.code != "bridge_response_invalid"
+
+    async def test_account_name_with_bridge_raises(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        # PDF rows resolve the account from the statement; account_name is a
+        # tabular-only signal. Passing it with bridge_response must error loudly
+        # rather than being silently dropped (the bridge path takes account_id).
+        pdf = self._patch(monkeypatch, tmp_path)
+        result = await import_confirm(
+            file_path=str(pdf),
+            bridge_response={"recipe": {}, "rows": []},
+            account_name="Chase Checking",
+        )
+        assert result.error is not None
+        assert result.error.code == "bridge_account_name_unsupported"

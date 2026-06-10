@@ -525,6 +525,9 @@ def _run_recipe_pipeline(
         confidence=conf,
         reason="reconciliation_failed",
         replay_guard_failed=False,
-        matched_format_name=None,  # auto-derive path, never a replay
+        # Reached by first-contact auto-derive and by route_forced_recipe
+        # (bridge); neither is a saved-recipe replay, so there is no matched
+        # format to carry.
+        matched_format_name=None,
         fp=fp,
     )

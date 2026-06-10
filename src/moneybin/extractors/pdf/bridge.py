@@ -47,6 +47,16 @@ _TABLE_PREVIEW_ROW_CAP = 5
 RequestKind = Literal["propose_recipe", "replay_failed_re_derive"]
 
 
+class BridgeResponseError(ValueError):
+    """The agent's bridge response is malformed or fails the recipe bounds.
+
+    A ``ValueError`` subtype so existing broad catches keep working, but typed
+    so the confirm path can catch *parse* failures narrowly — a ValueError
+    raised later by PDF extraction or the load must not be mislabeled as an
+    invalid bridge response.
+    """
+
+
 @dataclass(frozen=True)
 class BridgeRequest:
     """Typed payload contents the bridge ships to the driving agent."""
@@ -112,7 +122,7 @@ def build_bridge_request(
 
 
 def parse_bridge_response(payload: object) -> BridgeResponse:
-    """Validate an agent's response; raise ``ValueError`` on any bad shape.
+    """Validate an agent's response; raise ``BridgeResponseError`` on bad shape.
 
     Expected payload shape::
 
@@ -124,19 +134,19 @@ def parse_bridge_response(payload: object) -> BridgeResponse:
     bypass those guards by going through this seam.
     """
     if not isinstance(payload, dict):
-        raise ValueError("bridge response must be a dict")
+        raise BridgeResponseError("bridge response must be a dict")
     if "recipe" not in payload:
-        raise ValueError("bridge response missing 'recipe' key")
+        raise BridgeResponseError("bridge response missing 'recipe' key")
     if "rows" not in payload:
-        raise ValueError("bridge response missing 'rows' key")
+        raise BridgeResponseError("bridge response missing 'rows' key")
     raw_recipe = payload["recipe"]
     if not isinstance(raw_recipe, dict):
-        raise ValueError("bridge response 'recipe' must be a dict")
+        raise BridgeResponseError("bridge response 'recipe' must be a dict")
     raw_rows = payload["rows"]
     if not isinstance(raw_rows, list):
-        raise ValueError("bridge response 'rows' must be a list")
+        raise BridgeResponseError("bridge response 'rows' must be a list")
     if not all(isinstance(r, dict) for r in raw_rows):
-        raise ValueError("bridge response 'rows' must be a list of dicts")
+        raise BridgeResponseError("bridge response 'rows' must be a list of dicts")
     # raw_recipe / raw_rows pass isinstance checks above; cast for pyright since
     # the source dict (untrusted JSON) types its values as object.
     typed_recipe = cast(dict[str, Any], raw_recipe)
@@ -144,5 +154,5 @@ def parse_bridge_response(payload: object) -> BridgeResponse:
     try:
         recipe = Recipe.model_validate(typed_recipe)
     except Exception as e:  # noqa: BLE001 — pydantic ValidationError + bound-validator ValueErrors
-        raise ValueError(f"bridge recipe invalid: {e}") from e
+        raise BridgeResponseError(f"bridge recipe invalid: {e}") from e
     return BridgeResponse(recipe=recipe, rows=typed_rows)

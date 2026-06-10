@@ -116,10 +116,17 @@ def _import_log_count(db: Database, source_file: Path) -> int:
 # ---------------------------------------------------------------------------
 
 
+# First-contact bridge-eligible reasons (matched_format_name=None). The
+# replay-failure reason carries a saved format and a different request_kind, so
+# it is exercised separately by the apply-path tests.
+@pytest.mark.parametrize(
+    "reason",
+    ["low_confidence", "metadata_incomplete", "reconciliation_failed"],
+)
 def test_agent_bridge_eligible_escalates(
-    db: Database, tmp_path: Path, stub_pipeline: list[RouteDecision]
+    db: Database, tmp_path: Path, reason: str, stub_pipeline: list[RouteDecision]
 ) -> None:
-    stub_pipeline.append(_decision(reason="low_confidence"))
+    stub_pipeline.append(_decision(reason=reason))
     path = _pdf_path(tmp_path)
 
     with pytest.raises(ImportConfirmationRequiredError) as excinfo:

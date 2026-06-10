@@ -6,6 +6,7 @@ MCP tools call this same service — no duplication.
 """
 
 import dataclasses
+import hashlib
 import logging
 import time
 from dataclasses import dataclass, field
@@ -307,8 +308,6 @@ def _pdf_format_name(fp: dict[str, Any]) -> str:
     byte-for-byte identical to the JSON the repo stores and looks up by; any
     drift between call sites would silently break duplicate detection.
     """
-    import hashlib
-
     from moneybin.extractors.pdf.fingerprint import serialize_fingerprint
     from moneybin.utils import slugify
 
@@ -1529,7 +1528,7 @@ class ImportService:
             file_path: Path to the PDF the agent previewed.
             bridge_response: The agent's ``{recipe, rows}`` reply. Validated by
                 ``parse_bridge_response`` — a malformed shape or a recipe that
-                fails the security bounds (Req 9b) raises ``ValueError``.
+                fails the security bounds (Req 9b) raises ``BridgeResponseError``.
             save_format: Persist the recipe for future deterministic replay.
                 False mirrors ``--no-save-format`` (one-off / sensitive
                 statement; layout fingerprint never lands in ``app.pdf_formats``).
@@ -1541,11 +1540,14 @@ class ImportService:
         from moneybin.extractors.pdf.extractor import PDFExtractor
         from moneybin.extractors.pdf.routing import route_forced_recipe
         from moneybin.loaders import import_log
-        from moneybin.metrics.registry import PDF_BRIDGE_EGRESS_TOTAL
+        from moneybin.metrics.registry import (
+            PDF_BRIDGE_EGRESS_TOTAL,
+            PDF_IMPORT_TOTAL,
+        )
 
-        # 1. Validate the agent's response. Raises ValueError on a bad shape or
-        #    a recipe that fails the security bounds (Req 9b) — the caller
-        #    (CLI / MCP) maps it to a user-facing error.
+        # 1. Validate the agent's response. Raises BridgeResponseError on a bad
+        #    shape or a recipe that fails the security bounds (Req 9b) — the
+        #    caller (CLI / MCP) maps it to a user-facing error.
         response = parse_bridge_response(bridge_response)
         expected_row_count = len(response.rows)
 
@@ -1553,8 +1555,15 @@ class ImportService:
         #    the expectation; these re-executed rows are what we reconcile and
         #    load — so the persisted recipe is proven to reproduce them.
         canonical = file_path.resolve()
-        doc = PDFExtractor().extract(canonical)
-        decision = route_forced_recipe(doc, response.recipe)
+        try:
+            doc = PDFExtractor().extract(canonical)
+            decision = route_forced_recipe(doc, response.recipe)
+        except Exception:
+            # Mirror _import_pdf: a failed extraction/route is a failed PDF
+            # import. Bump the metric (rung="bridge") before propagating so the
+            # bridge path doesn't silently diverge from the deterministic one.
+            PDF_IMPORT_TOTAL.labels(outcome="failed", rung="bridge").inc()
+            raise
         actual_row_count = len(decision.rows)
         rows_diverged = expected_row_count != actual_row_count
 
@@ -1586,6 +1595,19 @@ class ImportService:
         #    fire here: we already gated on outcome=="transactions" above, and
         #    route_forced_recipe attaches both recipe and fp on that outcome —
         #    so begin_import's row can't be stranded in "importing".
+        # Whether this fingerprint already has a saved format. If it does, the
+        # save_new inside _import_pdf_transactions hits a ConstraintException and
+        # skips — the replay-failure bridge case, where the stale broken recipe
+        # is NOT updated. We must not then report a format_name as if the recipe
+        # were persisted: the agent (which can't read the warning log) would
+        # conclude the layout is fixed when the next import re-escalates.
+        # Updating the broken saved recipe is #40 (auto-bump_version).
+        format_preexisted = (
+            save_format
+            and decision.fp is not None
+            and self._pdf_formats.get_by_fingerprint(decision.fp) is not None
+        )
+
         resolved_alias = _pdf_alias(canonical)
         result = ImportResult(file_path=str(canonical), file_type="pdf")
         import_id = import_log.begin_import(
@@ -1622,12 +1644,13 @@ class ImportService:
                 f"agent's claimed extraction."
             )
 
-        # decision.fp is non-None on every route_forced_recipe outcome; the
-        # format name matches what _import_pdf_transactions persisted (both via
-        # _pdf_format_name). None when save_format suppressed the save.
+        # Report the format name only when this call actually persisted a new
+        # recipe: save_format on, fp present, and no pre-existing row that
+        # save_new would have skipped (see format_preexisted above). None
+        # otherwise so the result never claims a save that didn't happen.
         format_name = (
             _pdf_format_name(decision.fp)
-            if save_format and decision.fp is not None
+            if save_format and decision.fp is not None and not format_preexisted
             else None
         )
         return BridgeApplyResult(
@@ -1830,7 +1853,6 @@ class ImportService:
         attached to an existing ``dim_accounts`` row rather than the
         filename-derived alias.
         """
-        import hashlib
         from decimal import Decimal
 
         import polars as pl

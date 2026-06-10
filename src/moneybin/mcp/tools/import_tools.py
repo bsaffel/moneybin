@@ -2,8 +2,8 @@
 """Import namespace tools — file import, preview, status, revert, format listing.
 
 Tools:
-    - import_files — Import one or more financial data files (low sensitivity)
-    - import_preview — Preview a tabular file without importing (low sensitivity)
+    - import_files — Import one or more financial data files (medium sensitivity)
+    - import_preview — Preview a file's structure without importing (medium sensitivity)
     - import_status — List past import batches (low sensitivity)
     - import_revert — Undo an import batch by import_id (low sensitivity)
     - import_formats — List available tabular import formats (low sensitivity)
@@ -405,11 +405,18 @@ def _import_preview_pdf(path: Path) -> ResponseEnvelope[ImportPreviewPayload]:
         with get_database(read_only=False) as db:
             preview = ImportService(db).pdf_preview(path)
     except ImportConfirmationRequiredError as e:
-        bridge_payload = (
-            e.outcome.proposed.payload
-            if isinstance(e.outcome.proposed, BridgePayload)
-            else None
-        )
+        # pdf_preview only escalates via _raise_pdf_bridge_escalation, which
+        # always constructs a BridgePayload — so proposed is never the tabular
+        # ProposedMapping here. Fail loudly on a contract break rather than carry
+        # a dead `else None` that would emit bridge_payload=null while actions[]
+        # still tells the agent to "Read bridge_payload".
+        proposed = e.outcome.proposed
+        if not isinstance(proposed, BridgePayload):
+            raise RuntimeError(
+                "pdf_preview escalation must carry a BridgePayload, "
+                f"got {type(proposed).__name__}"
+            ) from e
+        bridge_payload = proposed.payload
         return build_envelope(
             sensitivity="medium",
             data={
@@ -510,6 +517,9 @@ def import_preview(file_path: str) -> ResponseEnvelope[ImportPreviewPayload]:
             rows_read=len(read_result.df),
             rows_skipped_trailing=read_result.rows_skipped_trailing,
         ),
+        # Consistent with the PDF branches; the @mcp_tool decorator also stamps
+        # medium from ImportPreviewPayload (sample_values is row-level content).
+        sensitivity="medium",
         actions=[
             "Use import_files to import after reviewing the preview",
             "Use import_formats for available named formats",
@@ -665,6 +675,7 @@ def _import_confirm_bridge(
     carrying the reject reason) when they don't. A malformed response or a
     recipe that fails the security bounds raises ``UserError``.
     """
+    from moneybin.extractors.pdf.bridge import BridgeResponseError
     from moneybin.services.import_service import ImportService
 
     path = _validate_file_path(file_path)
@@ -676,8 +687,10 @@ def _import_confirm_bridge(
                 save_format=save_format,
                 account_id=account_id,
             )
-    except ValueError as e:
-        # parse_bridge_response rejects a bad shape or an out-of-bounds recipe.
+    except BridgeResponseError as e:
+        # Only a bad response shape / out-of-bounds recipe is bridge_response_
+        # invalid. A ValueError raised later (PDF extraction, load) is NOT
+        # caught here so it isn't mislabeled — it surfaces as a generic error.
         raise UserError(str(e), code="bridge_response_invalid") from e
 
     if result.outcome == "invalid":
@@ -797,6 +810,16 @@ def import_confirm(
                 "bridge_response cannot be combined with accept= or mapping= "
                 "(those are the tabular column-mapping channel).",
                 code="confirm_channel_conflict",
+            )
+        if account_name is not None:
+            # PDF rows resolve their account from the statement; account_name is
+            # a tabular-only signal. Reject it explicitly so it isn't silently
+            # dropped — pin a no-anchor PDF with account_id instead.
+            raise UserError(
+                "account_name is not supported with bridge_response — PDF rows "
+                "resolve the account from the statement; pass account_id to pin "
+                "rows to an existing account when there is no anchor.",
+                code="bridge_account_name_unsupported",
             )
         return _import_confirm_bridge(
             file_path,

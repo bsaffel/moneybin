@@ -123,6 +123,16 @@ ADAPTER_LAYERING_ALLOWLIST: frozenset[tuple[str, str, str]] = frozenset({
         "moneybin.extractors.tabular.formats",
         "TabularFormat",
     ),
+    # BridgeResponseError is a pure exception type (ValueError subclass) caught
+    # at the import_confirm boundary so a malformed bridge response maps to a
+    # clean bridge_response_invalid UserError — without also swallowing a
+    # ValueError raised later by extraction/load. No DB or extractor logic
+    # crosses the layer.
+    (
+        "mcp/tools/import_tools.py",
+        "moneybin.extractors.pdf.bridge",
+        "BridgeResponseError",
+    ),
     # --- Pure utility functions (parsing / detection, no DB) ------------
     # detect_format / map_columns / read_file are stateless transforms
     # over file content. They produce dataframes/structs that services

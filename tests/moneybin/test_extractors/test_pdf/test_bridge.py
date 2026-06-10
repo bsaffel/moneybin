@@ -160,3 +160,16 @@ def test_parse_bridge_response_rejects_invalid_recipe_shape() -> None:
     bad: dict[str, Any] = {"oops": True}
     with pytest.raises(ValueError, match="recipe invalid"):
         parse_bridge_response({"recipe": bad, "rows": []})
+
+
+def test_parse_bridge_response_raises_bridge_response_error_subtype() -> None:
+    """Parse failures raise ``BridgeResponseError`` (a ``ValueError`` subtype).
+
+    Lets the confirm path catch a bad agent response narrowly without also
+    swallowing unrelated ValueErrors raised later by extraction/load — those
+    would mislabel a malformed-PDF failure as ``bridge_response_invalid``.
+    """
+    from moneybin.extractors.pdf.bridge import BridgeResponseError
+
+    with pytest.raises(BridgeResponseError):
+        parse_bridge_response({"rows": []})

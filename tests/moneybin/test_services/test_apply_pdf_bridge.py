@@ -300,3 +300,50 @@ def test_apply_malformed_response_raises_valueerror(
 ) -> None:
     with pytest.raises(ValueError, match="recipe"):
         ImportService(db).apply_pdf_bridge_response(_pdf_path(tmp_path), {"rows": []})
+
+
+# ---------------------------------------------------------------------------
+# Format-name honesty + extraction-failure metric
+# ---------------------------------------------------------------------------
+
+
+def test_apply_format_name_none_when_format_preexists(
+    db: Database, tmp_path: Path, stub_extract: list[PdfDocument]
+) -> None:
+    # First apply persists the format. A second apply of the same layout
+    # fingerprint can't save_new again (ConstraintException → skipped); the
+    # stale recipe is not updated, so format_name must be None rather than
+    # claiming a persist that didn't happen (the replay-failure bridge case;
+    # the actual recipe refresh is #40's auto-bump_version).
+    svc = ImportService(db)
+    first = svc.apply_pdf_bridge_response(_pdf_path(tmp_path), _bridge_response())
+    assert first.format_name is not None
+
+    second = svc.apply_pdf_bridge_response(_pdf_path(tmp_path), _bridge_response())
+    assert second.outcome == "applied"
+    assert second.format_name is None
+
+
+def test_apply_extraction_failure_bumps_failed_metric(
+    db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An extraction failure on the bridge path bumps PDF_IMPORT_TOTAL with
+    # rung="bridge", mirroring the deterministic _import_pdf path.
+    from moneybin.metrics.registry import PDF_IMPORT_TOTAL
+
+    class _BoomExtractor:
+        def extract(self, _path: Path) -> PdfDocument:
+            raise ValueError("could not extract text from PDF")
+
+    monkeypatch.setattr(
+        "moneybin.extractors.pdf.extractor.PDFExtractor", _BoomExtractor
+    )
+    before = PDF_IMPORT_TOTAL.labels(outcome="failed", rung="bridge")._value.get()  # type: ignore[reportPrivateUsage]
+
+    with pytest.raises(ValueError, match="extract"):
+        ImportService(db).apply_pdf_bridge_response(
+            _pdf_path(tmp_path), _bridge_response()
+        )
+
+    after = PDF_IMPORT_TOTAL.labels(outcome="failed", rung="bridge")._value.get()  # type: ignore[reportPrivateUsage]
+    assert after == before + 1
