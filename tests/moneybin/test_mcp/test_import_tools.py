@@ -12,6 +12,7 @@ from pytest import MonkeyPatch
 from moneybin.errors import UserError
 from moneybin.extractors.confidence import Confidence
 from moneybin.mcp.tools.import_tools import (
+    _bridge_confirm_action,  # pyright: ignore[reportPrivateUsage]
     _validate_file_path,  # pyright: ignore[reportPrivateUsage]
     import_confirm,
     import_files,
@@ -68,6 +69,23 @@ def test_symlink_escaping_home_raises_user_error(
         _validate_file_path(str(link))
 
     assert excinfo.value.code == "invalid_file_path"
+
+
+def test_bridge_confirm_action_quotes_path_with_apostrophe() -> None:
+    """Embed a single-quote path via ``repr``, not raw interpolation.
+
+    Keeps the suggested ``import_confirm`` call in the action hint a
+    syntactically valid string literal even when the path contains a quote.
+    """
+    path = "/home/alice/O'Brien/statement.pdf"
+
+    hint = _bridge_confirm_action(path, payload_ref="bridge_payload")
+
+    # repr-quoted form: file_path="/home/alice/O'Brien/statement.pdf" — valid.
+    assert f"file_path={path!r}" in hint
+    # The buggy form file_path='/home/alice/O'Brien/...' is an unterminated
+    # literal and must not appear.
+    assert f"file_path='{path}'" not in hint
 
 
 # ---------------------------------------------------------------------------

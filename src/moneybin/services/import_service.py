@@ -1580,7 +1580,12 @@ class ImportService:
 
         # 4. Load + persist via the shared transactions path (rung="bridge").
         #    begin_import only here: the invalid path above writes nothing, so
-        #    it needs no import_log row.
+        #    it needs no import_log row. The two ValueError guards inside
+        #    _import_pdf_transactions (decision.recipe / decision.fp is None)
+        #    fire before its own finalize_import try/except, but neither can
+        #    fire here: we already gated on outcome=="transactions" above, and
+        #    route_forced_recipe attaches both recipe and fp on that outcome —
+        #    so begin_import's row can't be stranded in "importing".
         resolved_alias = _pdf_alias(canonical)
         result = ImportResult(file_path=str(canonical), file_type="pdf")
         import_id = import_log.begin_import(
@@ -1592,7 +1597,10 @@ class ImportService:
         )
         result.import_id = import_id
 
-        self._import_pdf_transactions(
+        # Assign the return value (it mutates `result` in place and returns it)
+        # so rows_loaded below doesn't silently depend on the mutation contract
+        # — matches the _import_pdf call site.
+        result = self._import_pdf_transactions(
             canonical=canonical,
             resolved_alias=resolved_alias,
             import_id=import_id,

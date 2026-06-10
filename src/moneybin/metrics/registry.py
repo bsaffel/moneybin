@@ -118,7 +118,10 @@ PDF_SEED_ROWS_TOTAL = Counter(
 # dashboards.
 PDF_BRIDGE_EGRESS_TOTAL = Counter(
     "moneybin_pdf_bridge_egress_total",
-    "PDF bridge hand-offs to the driving agent by outcome.",
+    # Unit is tool invocations, NOT unique documents: "proposed" bumps once per
+    # escalating call, so one document previewed then imported emits two
+    # "proposed" increments. Do not normalize as a per-document count.
+    "PDF bridge hand-offs (per escalating tool call) to the driving agent by outcome.",
     ["outcome"],  # values: "proposed", "applied", "declined", "invalid"
 )
 

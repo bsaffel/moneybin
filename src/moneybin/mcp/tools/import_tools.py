@@ -104,7 +104,9 @@ def _bridge_confirm_action(file_path: str, *, payload_ref: str) -> str:
         f"This PDF needs agent extraction. Read {payload_ref} (note its "
         "transparency_notice — proceeding surfaces the document to you), "
         "propose a recipe + rows, then call import_confirm("
-        f"file_path='{file_path}', bridge_response={{'recipe': ..., "
+        # repr() so a path containing a quote stays a valid string literal in
+        # the suggested call (e.g. /home/alice/O'Brien/statement.pdf).
+        f"file_path={file_path!r}, bridge_response={{'recipe': ..., "
         "'rows': [...]}) to reconcile and load."
     )
 
