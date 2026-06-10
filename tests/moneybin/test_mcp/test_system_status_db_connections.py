@@ -68,42 +68,31 @@ def test_block_reports_writer_while_lock_is_held(tmp_path: Path) -> None:
     assert block["readers"] == []
 
 
-def test_block_sanitizes_writer_command_to_friendly_name(tmp_path: Path) -> None:
-    """The reported command is a path-free friendly name, not raw argv.
+def test_block_sanitizes_reader_command_to_friendly_name(tmp_path: Path) -> None:
+    """Reader commands (from lsof, raw argv) are sanitized to friendly names.
 
-    Process command lines can carry local paths, usernames, and filename
-    arguments. Routing them through describe_process keeps the LOW-sensitivity
-    database_connections payload free of that PII while still identifying the
-    holder.
+    Writer commands are sanitized at write time (write_lock stores a friendly
+    name on disk); reader commands come from lsof at read time and must be
+    sanitized here so the LOW-sensitivity database_connections payload never
+    leaks a raw command line carrying local paths, usernames, or arguments.
     """
     db_path = tmp_path / "status.duckdb"
     db_path.touch()
-    lock_path = tmp_path / ("status.duckdb" + _LOCK_SUFFIX)
-    with (
-        _holding_write_lock(db_path),
-        patch(
-            "moneybin.mcp.tools.system.find_blocking_processes",
-            return_value=[],
-        ),
+    with patch(
+        "moneybin.mcp.tools.system.find_blocking_processes",
+        return_value=[
+            {
+                "pid": 9999,
+                "command": "python",
+                "cmdline": "/home/alice/secret/run.py --token abc123",
+            }
+        ],
     ):
-        # Overwrite the held lock file's metadata (same inode, holder's fcntl
-        # unaffected) with a command carrying absolute local paths.
-        lock_path.write_text(
-            json.dumps({
-                "pid": os.getpid(),
-                "command": (
-                    "/Users/bob/.venv/bin/moneybin transform apply "
-                    "/Users/bob/data/moneybin.duckdb"
-                ),
-                "started_at": "2026-06-04T15:22:14+00:00",
-                "operation_type": "transform_apply",
-            })
-        )
         block = _database_connections_block(db_path)
-    assert len(block["writers"]) == 1
-    assert block["writers"][0]["command"] == "transform pipeline"
-    # No absolute path / username leaked into the LOW payload.
-    assert "/Users/bob" not in block["writers"][0]["command"]
+    assert len(block["readers"]) == 1
+    assert block["readers"][0]["command"] == "run.py"
+    assert "/home/alice" not in block["readers"][0]["command"]
+    assert "abc123" not in block["readers"][0]["command"]
 
 
 def test_block_omits_stale_lock_file_when_no_writer_holds(tmp_path: Path) -> None:

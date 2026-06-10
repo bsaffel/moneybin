@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import fcntl
+import fcntl  # POSIX-only: project targets macOS/Linux
 import json
 import os
 from pathlib import Path
@@ -176,11 +176,11 @@ def _database_connections_block(db_path: Path) -> dict[str, Any]:
             writer_pid = int(metadata["pid"])
             writers.append({
                 "pid": writer_pid,
-                # describe_process strips path prefixes and maps argv to a
-                # friendly name ("transform pipeline", "MCP server"), so the
-                # LOW-sensitivity payload never leaks a raw command line
-                # carrying local paths, usernames, or filename arguments.
-                "command": describe_process(str(metadata["command"])),
+                # The writer command is already a sanitized friendly name —
+                # write_lock runs it through describe_process before storing it,
+                # so the on-disk lock file never holds a raw argv. Pass it
+                # through as-is (re-sanitizing would mangle the friendly name).
+                "command": str(metadata["command"]),
                 "started_at": str(metadata["started_at"]),
                 "operation_type": str(metadata["operation_type"]),
             })

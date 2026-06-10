@@ -10,7 +10,7 @@ the design doc at
 
 from __future__ import annotations
 
-import fcntl
+import fcntl  # POSIX-only: project targets macOS/Linux
 import json
 import logging
 import os
@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING
 
 from moneybin.db_lock._types import OperationType
 from moneybin.metrics.registry import DB_WRITE_LOCK_TIMEOUT_TOTAL
+from moneybin.utils.db_processes import describe_process
 
 if TYPE_CHECKING:
     from moneybin.database import DatabaseLockError
@@ -236,8 +237,12 @@ def write_lock(
     # shells out to `ps` (up to a 3 s timeout); running it under LOCK_EX would
     # stall every competing writer for that duration. The command is fixed for
     # this process, so compute it outside the critical section and write only
-    # the fast in-place metadata under the lock.
-    command = _process_command(pid)
+    # the fast in-place metadata under the lock. describe_process strips the
+    # path + args to a friendly name so the persistent on-disk lock file never
+    # stores a raw command line (local paths, usernames, statement filenames)
+    # next to the encrypted database — the same sanitization system_status
+    # applies to its diagnostic surface, so on-disk and display stay consistent.
+    command = describe_process(_process_command(pid))
     wait_start = time.monotonic()
     try:
         while True:

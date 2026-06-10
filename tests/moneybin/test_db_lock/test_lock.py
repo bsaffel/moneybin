@@ -383,3 +383,27 @@ def test_out_of_lifo_reentrant_close_releases_lock(tmp_path: Path) -> None:
     t.start()
     t.join(timeout=3.0)
     assert acquired.is_set(), "lock leaked after out-of-LIFO reentrant close"
+
+
+def test_write_lock_sanitizes_command_stored_on_disk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The on-disk lock metadata stores a path-free friendly name, not raw argv.
+
+    The .write.lock file persists at 0o600 next to the encrypted database, so a
+    raw command line (local paths, statement filenames, usernames) must never
+    land in it. write_lock runs the argv through describe_process before storing.
+    """
+    import moneybin.db_lock.lock as lock_module
+
+    def fake_process_command(_pid: int) -> str:
+        return "/Users/bob/.venv/bin/moneybin transform apply /Users/bob/db.duckdb"
+
+    monkeypatch.setattr(lock_module, "_process_command", fake_process_command)
+    db_path = tmp_path / "test.duckdb"
+    db_path.touch()
+    deadline = time.monotonic() + 1.0
+    with write_lock(db_path, deadline=deadline, operation_type="transform_apply"):
+        metadata = json.loads(_lock_path(db_path).read_text())
+    assert metadata["command"] == "transform pipeline"
+    assert "/Users/bob" not in metadata["command"]

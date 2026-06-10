@@ -345,6 +345,11 @@ class Database:
         # Ensure parent directory exists — parents=False so we don't
         # recreate a deleted profile's directory tree. The profile root
         # must already exist (created by ProfileService.create).
+        #
+        # Not redundant with get_database()'s identical mkdir: that one runs
+        # ahead of write_lock for the get_database() path, but direct
+        # Database() construction (tests, embedded callers) reaches here
+        # without it. Keep both — exist_ok=True makes the second a no-op.
         db_path.parent.mkdir(parents=False, exist_ok=True)
 
         is_new = not db_path.exists()
