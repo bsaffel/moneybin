@@ -351,9 +351,14 @@ def test_apply_format_name_none_when_format_preexists(
     svc = ImportService(db)
     first = svc.apply_pdf_bridge_response(_pdf_path(tmp_path), _bridge_response())
     assert first.format_name is not None
+    assert first.rows_loaded == 2  # happy-path load works (not silently failing)
 
     second = svc.apply_pdf_bridge_response(_pdf_path(tmp_path), _bridge_response())
     assert second.outcome == "applied"
+    # The second apply still ran its load path (import_id set); format_name=None
+    # reflects the skipped save, not a silently-failed apply. (Its rows are
+    # content-hash duplicates of the first import, so no new rows are inserted.)
+    assert second.import_id is not None
     assert second.format_name is None
 
 

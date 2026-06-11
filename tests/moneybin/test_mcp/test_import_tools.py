@@ -831,6 +831,21 @@ class TestImportConfirmBridge:
         assert result.error is not None
         assert result.error.code == "bridge_account_name_unsupported"
 
+    async def test_invalid_path_precedes_account_name_guard(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        # A bad path must surface as invalid_file_path even when account_name is
+        # also (mis)used with bridge_response — path validation runs first, so
+        # the path error isn't masked by the account_name guard.
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+        result = await import_confirm(
+            file_path="/etc/passwd",
+            bridge_response={"recipe": {}, "rows": []},
+            account_name="Chase Checking",
+        )
+        assert result.error is not None
+        assert result.error.code == "invalid_file_path"
+
     async def test_pdf_with_accept_rejected_not_looped(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
     ) -> None:

@@ -161,8 +161,8 @@ def is_amount_field(field: FieldExtraction) -> bool:
     alone and a zero-delta statement reconciles all-zero rows). Public because
     ``bridge.parse_bridge_response`` imports it for that gate.
     """
-    return field.cast in ("decimal", "int") and _canonical_key(field) in (
-        _AMOUNT_FIELD_KEYS
+    return (
+        field.cast in ("decimal", "int") and _canonical_key(field) in _AMOUNT_FIELD_KEYS
     )
 
 

@@ -802,6 +802,11 @@ def import_confirm(
     )
     from moneybin.services.import_service import ImportService
 
+    # Validate the path up front so an invalid path surfaces as
+    # invalid_file_path before any channel/argument guard below (otherwise a
+    # bad path combined with e.g. account_name would mask the path error).
+    path = _validate_file_path(file_path)
+
     # PDF bridge channel — apply the agent's recipe + rows. Mutually exclusive
     # with the tabular accept/mapping signals.
     if bridge_response is not None:
@@ -822,13 +827,11 @@ def import_confirm(
                 code="bridge_account_name_unsupported",
             )
         return _import_confirm_bridge(
-            file_path,
+            str(path),
             bridge_response,
             save_format=save_format,
             account_id=account_id,
         )
-
-    path = _validate_file_path(file_path)
 
     if path.suffix.lower() == ".pdf":
         # A PDF reached the tabular confirm channel (bridge_response is None here
