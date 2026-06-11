@@ -149,6 +149,23 @@ def _canonical_key(field: FieldExtraction) -> str:
     return name.lower()
 
 
+_AMOUNT_FIELD_KEYS: frozenset[str] = frozenset({"amount", "debit", "credit"})
+
+
+def is_amount_field(field: FieldExtraction) -> bool:
+    """True if the field extracts a numeric transaction amount.
+
+    The single definition of "amount field", shared by the confidence model
+    (required-fields gate) and the Phase 2b bridge parser (which rejects an
+    agent recipe lacking one — otherwise confidence passes on the date field
+    alone and a zero-delta statement reconciles all-zero rows). Public because
+    ``bridge.parse_bridge_response`` imports it for that gate.
+    """
+    return field.cast in ("decimal", "int") and _canonical_key(field) in (
+        _AMOUNT_FIELD_KEYS
+    )
+
+
 def _canonicalize_rows(
     recipe: Recipe, rows: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
@@ -179,14 +196,10 @@ def _compute_confidence(recipe: Recipe, rows: list[dict[str, Any]]) -> float:
         # `f.name` carries the original PDF column header ("Transaction
         # Amount", "Withdrawals", "Deposits", "Post Date" …); a literal
         # lowercase compare against {"amount","debit","credit"} would never
-        # match those, defeating the required-fields gate. Use _canonical_key
-        # so the same canonicalisation that maps row keys also drives the
-        # confidence model.
-        is_amount = f.cast in ("decimal", "int") and _canonical_key(f) in (
-            "amount",
-            "debit",
-            "credit",
-        )
+        # match those, defeating the required-fields gate. is_amount_field uses
+        # _canonical_key so the same canonicalisation that maps row keys also
+        # drives the confidence model.
+        is_amount = is_amount_field(f)
         if is_date or is_amount:
             required_total += 1
         else:

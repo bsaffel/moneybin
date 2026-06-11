@@ -155,4 +155,16 @@ def parse_bridge_response(payload: object) -> BridgeResponse:
         recipe = Recipe.model_validate(typed_recipe)
     except Exception as e:  # noqa: BLE001 — pydantic ValidationError + bound-validator ValueErrors
         raise BridgeResponseError(f"bridge recipe invalid: {e}") from e
+    # The bridge exists to extract transactions, which have amounts. Reject a
+    # recipe with no amount/debit/credit field: confidence would still pass on
+    # the date field alone, and a zero-balance-delta statement would reconcile,
+    # loading all-zero rows. is_amount_field is the same predicate the
+    # confidence model uses (routing imports nothing from bridge — no cycle).
+    from moneybin.extractors.pdf.routing import is_amount_field
+
+    if not any(is_amount_field(f) for f in recipe.fields):
+        raise BridgeResponseError(
+            "bridge recipe must contain at least one amount, debit, or credit "
+            "field — without it, extracted rows have no transaction amount"
+        )
     return BridgeResponse(recipe=recipe, rows=typed_rows)

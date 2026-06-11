@@ -186,3 +186,26 @@ def test_parse_bridge_response_rejects_uncompilable_regex() -> None:
     bad = {**_VALID_RECIPE_DICT, "row_split": "["}  # unterminated character class
     with pytest.raises(BridgeResponseError, match="invalid regex"):
         parse_bridge_response({"recipe": bad, "rows": []})
+
+
+def test_parse_bridge_response_rejects_recipe_without_amount_field() -> None:
+    """A recipe with no amount/debit/credit field is rejected at parse time.
+
+    Without one, confidence passes on the date field alone and a zero-delta
+    statement reconciles — loading all-zero rows. Reject as BridgeResponseError.
+    """
+    from moneybin.extractors.pdf.bridge import BridgeResponseError
+
+    no_amount = {
+        **_VALID_RECIPE_DICT,
+        "fields": [
+            {
+                "name": "date",
+                "pattern": r"\d{2}/\d{2}",
+                "cast": "date",
+                "date_format": "%m/%d",
+            },
+        ],
+    }
+    with pytest.raises(BridgeResponseError, match="amount"):
+        parse_bridge_response({"recipe": no_amount, "rows": []})
