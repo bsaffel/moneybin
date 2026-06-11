@@ -306,6 +306,20 @@ def test_apply_malformed_response_raises_bridge_response_error(
         ImportService(db).apply_pdf_bridge_response(_pdf_path(tmp_path), {"rows": []})
 
 
+def test_apply_malformed_response_bumps_invalid_metric(
+    db: Database, tmp_path: Path, stub_extract: list[PdfDocument]
+) -> None:
+    from moneybin.extractors.pdf.bridge import BridgeResponseError
+
+    # A parse/validation failure is an "invalid" bridge egress per the metric's
+    # documented semantics — it must bump the counter even though it raises
+    # before the reconciliation gate's own invalid bump.
+    before = _invalid_count()
+    with pytest.raises(BridgeResponseError):
+        ImportService(db).apply_pdf_bridge_response(_pdf_path(tmp_path), {"rows": []})
+    assert _invalid_count() == before + 1
+
+
 def test_apply_uncompilable_regex_raises_bridge_response_error(
     db: Database, tmp_path: Path, stub_extract: list[PdfDocument]
 ) -> None:

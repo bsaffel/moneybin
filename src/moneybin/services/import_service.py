@@ -1540,7 +1540,10 @@ class ImportService:
                 the statement carries no account anchor (mirrors the tabular
                 and deterministic-PDF ``account_id`` semantics).
         """
-        from moneybin.extractors.pdf.bridge import parse_bridge_response
+        from moneybin.extractors.pdf.bridge import (
+            BridgeResponseError,
+            parse_bridge_response,
+        )
         from moneybin.extractors.pdf.extractor import PDFExtractor
         from moneybin.extractors.pdf.routing import route_forced_recipe
         from moneybin.loaders import import_log
@@ -1551,8 +1554,14 @@ class ImportService:
 
         # 1. Validate the agent's response. Raises BridgeResponseError on a bad
         #    shape or a recipe that fails the security bounds (Req 9b) — the
-        #    caller (CLI / MCP) maps it to a user-facing error.
-        response = parse_bridge_response(bridge_response)
+        #    caller (CLI / MCP) maps it to a user-facing error. A parse failure
+        #    is an "invalid" egress per the metric's documented semantics, so
+        #    bump it here (it raises before the reconciliation gate's own bump).
+        try:
+            response = parse_bridge_response(bridge_response)
+        except BridgeResponseError:
+            PDF_BRIDGE_EGRESS_TOTAL.labels(outcome="invalid").inc()
+            raise
         expected_row_count = len(response.rows)
 
         # 2. Re-extract + re-execute the recipe ourselves. The agent's rows are

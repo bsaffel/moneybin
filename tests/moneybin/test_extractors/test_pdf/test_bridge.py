@@ -229,3 +229,23 @@ def test_parse_bridge_response_rejects_recipe_without_primary_date_field() -> No
     }
     with pytest.raises(BridgeResponseError, match="date"):
         parse_bridge_response({"recipe": no_date, "rows": []})
+
+
+def test_parse_bridge_response_rejects_non_date_cast_primary_date() -> None:
+    """A 'Date'-named field that isn't ``cast='date'`` doesn't satisfy the gate.
+
+    ``_canonical_key`` maps it to ``date`` via its fallback, but ``execute_recipe``
+    won't parse it, so the loader would write an unparsed string into the DATE
+    ``transaction_date`` column. The gate must also require ``cast == 'date'``.
+    """
+    from moneybin.extractors.pdf.bridge import BridgeResponseError
+
+    bad = {
+        **_VALID_RECIPE_DICT,
+        "fields": [
+            {"name": "Date", "pattern": r"\d{2}/\d{2}", "cast": "str"},
+            {"name": "amount", "pattern": r"-?\d+\.\d{2}", "cast": "decimal"},
+        ],
+    }
+    with pytest.raises(BridgeResponseError, match="date"):
+        parse_bridge_response({"recipe": bad, "rows": []})

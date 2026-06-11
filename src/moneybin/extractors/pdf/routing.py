@@ -174,8 +174,13 @@ def is_primary_date_field(field: FieldExtraction) -> bool:
     a primary date field to reject an amount-only/post-date-only recipe with a
     clean error rather than a downstream DB constraint failure. Public because
     ``bridge.parse_bridge_response`` imports it for that gate.
+
+    Requires ``cast == "date"`` (mirroring ``is_amount_field``'s cast check):
+    ``_canonical_key`` maps a non-date-cast field named "Date" to ``date`` via
+    its fallback, but ``execute_recipe`` only date-parses ``cast == "date"``
+    fields, so a str/int "Date" would write an unparsed value to the column.
     """
-    return _canonical_key(field) == "date"
+    return field.cast == "date" and _canonical_key(field) == "date"
 
 
 def _canonicalize_rows(
