@@ -1,5 +1,5 @@
 ---
-description: "Post-implementation checklist: CHANGELOG, roadmap, features, README updates, pre-push /simplify pass"
+description: "Post-implementation checklist: CHANGELOG, roadmap, features, README updates, pre-push /code-review pass"
 paths: ["CHANGELOG.md", "README.md", "docs/roadmap.md", "docs/features.md", "docs/specs/INDEX.md"]
 ---
 
@@ -24,7 +24,7 @@ Cite PR numbers. Keep entries to one or two sentences each.
 
 **What does NOT need a CHANGELOG entry:**
 
-- Internal refactors with no behavior change (`/simplify` passes)
+- Internal refactors with no behavior change (`/code-review` cleanup passes)
 - CI tweaks
 - Code-style changes (formatting, lint rules)
 - Test-only PRs (unless they unblock something)
@@ -88,9 +88,11 @@ When all sub-milestones in a tier close (e.g., M2A + M2B + M2C + M2D + M2E all s
 
 Before marking a spec as `implemented`, verify the feature has tests at every applicable layer (see testing.md "Test Coverage by Layer"). Unit tests alone are not sufficient for features that add CLI commands or cross subsystem boundaries.
 
-## Pre-Push Quality Pass
+## Pre-Push Review Pass
 
-After implementation is complete and documentation is updated, run `/simplify` **before the final commit and push**. This reviews the changed code for reuse opportunities, quality issues, and efficiency problems — then fixes what it finds. The goal is to catch copy-paste patterns, redundant state, missing validations, and other issues that accumulate during implementation before they land on `main`.
+After implementation is complete and documentation is updated, run `/code-review medium --fix` **before the final commit and push**. At `medium` effort this surfaces high-confidence findings — correctness bugs alongside reuse, simplification, and efficiency cleanups — and applies the fixes. The goal is to catch copy-paste patterns, redundant state, missing validations, and other issues that accumulate during implementation before they land on `main`.
+
+Keep this pass at `medium`: it stays in the high-confidence band, so auto-applying its fixes unattended is safe. Broader, lower-confidence review (`high`/`max`, or `/code-review ultra` for a deep cloud sweep) belongs **post-push**, where findings are triaged rather than blindly applied.
 
 ## Principle
 
