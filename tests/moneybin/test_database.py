@@ -668,6 +668,23 @@ class TestGetDatabaseNew:
         monkeypatch.setattr("moneybin.database.get_settings", lambda: mock_settings)
         monkeypatch.setattr("moneybin.database.SecretStore", lambda: mock_secret_store)
 
+        # write_lock resolves the holder's command via `_process_command`, which
+        # runs `subprocess.run(["ps", ...], timeout=3)`. With a timeout, CPython
+        # reaps the child in `Popen._wait()` by polling `time.sleep(delay)`
+        # (doubling from 0.001) against a REAL monotonic deadline. Because the
+        # test below monkeypatches the *global* `time.sleep` into a no-op
+        # recorder, that reap loop spins without delay and records one sleep per
+        # iteration until the OS reaps `ps` — 0 locally (instant reap) but tens
+        # on a loaded CI runner, which inflated `sleep_calls` and made this test
+        # flake (`assert 28/53/78 == 2`). Stub `_process_command` so no
+        # subprocess runs and only the attach-retry loop's sleeps are recorded.
+        def fake_process_command(_pid: int) -> str:
+            return "pytest"
+
+        monkeypatch.setattr(
+            "moneybin.db_lock.lock._process_command", fake_process_command
+        )
+
         call_count = 0
         original_database_cls = Database
 

@@ -138,7 +138,7 @@ def check_schema_at_boot() -> None:
     # changes (see sqlmesh.core.context.Context.plan_builder
     # `always_include_local_changes` docstring), so it would no-op against
     # the very drift we need to fix.
-    with get_database(read_only=False) as db:
+    with get_database(read_only=False, operation_type="transform_apply") as db:
         result = TransformService(db).apply()
     if not result.applied:
         # apply() soft-fails by returning applied=False with the SQLMesh

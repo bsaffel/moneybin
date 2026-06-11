@@ -3,6 +3,16 @@
 Spawns real subprocesses to test cross-process DuckDB write coordination.
 Uses a module-scoped initialized database (created once, shared across tests).
 
+Scope: this file exercises **DuckDB's native ATTACH-layer** locking by opening
+``Database(...)`` directly (read-read coexistence, write-write contention,
+read-blocks-write). It deliberately bypasses ``get_database()`` /
+``write_lock`` to probe the underlying engine behavior the coordination layer
+sits on top of. The **MoneyBin ``write_lock`` critical-section primitive** is
+tested cross-process — real subprocesses, real encrypted DuckDB, via
+``get_database(read_only=False)`` → ``write_lock`` — in
+``tests/scenarios/test_writer_coordination.py`` (the ``_lock_workers/``
+holder + contender workers). The two files cover the two layers.
+
 Marked @pytest.mark.e2e — run via:
   uv run pytest tests/e2e/test_concurrent_access.py -m e2e -v
 """

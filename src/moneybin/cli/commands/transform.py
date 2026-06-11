@@ -96,7 +96,10 @@ def transform_apply(
     from moneybin.protocol.envelope import build_envelope  # noqa: PLC0415
     from moneybin.services.transform_service import TransformService  # noqa: PLC0415
 
-    with handle_cli_errors(), get_database(read_only=False) as db:
+    with (
+        handle_cli_errors(),
+        get_database(read_only=False, operation_type="transform_apply") as db,
+    ):
         result = TransformService(db).apply()
 
     if output == OutputFormat.JSON:

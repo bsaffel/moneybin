@@ -24,6 +24,9 @@ Tier derivation summary:
   - ``SystemStatusAccountsInfo``    → Tier.LOW (AGGREGATE only)
   - ``SystemStatusTransactionsInfo``→ Tier.LOW (AGGREGATE + TIMESTAMP_OBSERVABILITY only)
   - ``SchemaDriftTable``            → Tier.LOW (RECORD_ID + TXN_TYPE)
+  - ``SystemStatusWriter``          → Tier.LOW (RECORD_ID + TXN_TYPE + TIMESTAMP_OBSERVABILITY)
+  - ``SystemStatusReader``          → Tier.LOW (RECORD_ID + TXN_TYPE)
+  - ``SystemStatusDatabaseConnectionsInfo`` → Tier.LOW (composition only)
   - ``SystemStatusPayload``         → Tier.LOW (no DESCRIPTION fields)
   - ``InvariantResultPayload``      → Tier.MEDIUM (detail = DESCRIPTION, affected_ids = RECORD_ID)
   - ``SystemDoctorPayload``         → Tier.MEDIUM (via InvariantResultPayload)
@@ -201,6 +204,43 @@ class SystemStatusGsheetInfo:
 
 
 @dataclass(frozen=True, slots=True)
+class SystemStatusWriter:
+    """One active writer holding the per-profile write critical-section file lock.
+
+    Populated from the lock-file metadata payload written by
+    ``moneybin.db_lock.lock.write_lock``. At most one writer is present at a
+    time — the file lock is exclusive.
+    """
+
+    pid: Annotated[int, DataClass.RECORD_ID]
+    command: Annotated[str, DataClass.TXN_TYPE]
+    started_at: Annotated[str, DataClass.TIMESTAMP_OBSERVABILITY]
+    operation_type: Annotated[str, DataClass.TXN_TYPE]
+
+
+@dataclass(frozen=True, slots=True)
+class SystemStatusReader:
+    """One concurrent reader process identified via lsof + ps enumeration."""
+
+    pid: Annotated[int, DataClass.RECORD_ID]
+    command: Annotated[str, DataClass.TXN_TYPE]
+
+
+@dataclass(frozen=True, slots=True)
+class SystemStatusDatabaseConnectionsInfo:
+    """Per-profile inventory of active database connections.
+
+    Writers come from the file-lock metadata (rich: ``started_at``,
+    ``operation_type``). Readers come from lsof + ps (best-effort; pid +
+    cmdline only). At most one writer is present at a time — the file lock
+    is exclusive.
+    """
+
+    writers: list[SystemStatusWriter]
+    readers: list[SystemStatusReader]
+
+
+@dataclass(frozen=True, slots=True)
 class SystemStatusPayload:
     """Payload for ``system_status`` — data inventory snapshot."""
 
@@ -211,6 +251,10 @@ class SystemStatusPayload:
     transforms: SystemStatusTransformsInfo
     schema_drift: SystemStatusSchemaDrift | None
     gsheet: SystemStatusGsheetInfo
+    # Always populated — system_status reports it on both the normal path and
+    # the degraded "database locked" path (it reads the lock file + lsof, no DB
+    # connection required).
+    database_connections: SystemStatusDatabaseConnectionsInfo
 
 
 # ---------------------------------------------------------------------------

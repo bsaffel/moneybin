@@ -44,7 +44,7 @@ The engine room — the generic substrate every later milestone builds on. No do
 | Address | Area | Status | Notes |
 |---|---|---|---|
 | **M0A** | Encryption at rest (AES-256-GCM), secret store, multi-profile isolation | ✅ | Passphrase or OS keychain. [`privacy-data-protection.md`](specs/privacy-data-protection.md). |
-| **M0B** | Database engine: connection factory, migrations, writer coordination | ✅ | Short-lived per-call connections (ADR-010). |
+| **M0B** | Database engine: connection factory, migrations, writer coordination | ✅ | Short-lived per-call connections; writer coordination hardened (ADR-010 + 2026-Q2 hardening pass). |
 | **M0C** | Observability: metrics + sanitized logging | ✅ | No PII or financial data in logs. |
 | **M0D** | Shared primitives + `core.updated_at` convention | ✅ | The internal contract later features inherit. [`architecture.md`](architecture.md). |
 | **M0E** | MCP framework: scaffold, v2 taxonomy, schema discoverability, timeouts | ✅ | `moneybin://schema`, 30s dispatch cap, response envelope. v2 naming ongoing. |

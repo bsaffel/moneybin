@@ -67,6 +67,22 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   `confirmations_total{channel,tier,outcome}` (outcomes: `accepted|overridden|declined`),
   `detection_score` histogram, `self_accept_total{channel}`, `override_total{channel}`,
   `known_format_reuse_total{channel}`, `revalidation_failure_total{channel}`.
+- **`DatabaseLockError` is now emitted consistently on cross-process database
+  contention.** A new MoneyBin-owned write critical-section lock coordinates
+  before DuckDB's own ATTACH layer, identifying the holder and timing out at
+  10 seconds with a `system_status` recovery action. Fixes a regression where
+  DuckDB 1.5.3's unified lock-error string (`"Could not set lock on file"`)
+  was no longer matched by the classifier, causing raw `duckdb.IOException`
+  to leak to MCP, CLI, and Web UI callers. See
+  [`docs/specs/database-writer-coordination.md`](docs/specs/database-writer-coordination.md)
+  § "PR B hardening pass" and [ADR-010](docs/decisions/010-writer-coordination.md).
+- **`Database.checkpoint(reason)` helper** at durable boundaries — wired now
+  at post-migration and post-transform-apply; pre-backup / post-compact /
+  post-large-import sites land when those features ship. Emits
+  `moneybin_db_checkpoint_total{reason=...}`.
+- **`system_status` `database_connections` section** identifies the active
+  writer (via the lock file) and concurrent readers (via `lsof`). Powers the
+  `DatabaseLockError` recovery action.
 
 ### Changed
 - **`Database.__init__()` and `get_database()` now require `read_only` as a
@@ -119,6 +135,11 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   belonging to the same N-way cluster share one `component_key`; the CLI groups them
   into one display block per cluster. Transfer rows are ungrouped (`component_key =
   match_id`). The `actions[]` summary hint reports the edge-to-group ratio.
+- **The lock-error string classifier in `_attach_encrypted`** now matches DuckDB
+  1.5.3's `"Could not set lock on file"` in addition to the legacy 1.5.2
+  `"Conflicting lock"` and `"different configuration"` strings.
+- **The default `max_wait` on `get_database()` is now `10.0` seconds** (was 5.0)
+  to match the policy ceiling documented in `database-writer-coordination.md`.
 
 ### Removed
 - **`reports_budget` MCP tool and `reports budget` CLI command.** They
