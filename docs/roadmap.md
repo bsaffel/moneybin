@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-05-30 -->
+<!-- Last reviewed: 2026-06-10 -->
 # Roadmap
 
 Pre-v1 roadmap. Each milestone is a coherent slice of work, not a calendar date — we don't commit dates pre-v1. Statuses below reflect what's merged to `main` today; the dated record of individual changes lives in [`CHANGELOG.md`](../CHANGELOG.md). For "is this for me?" see [`audience.md`](audience.md); for where MoneyBin fits and who to use instead, [`comparison.md`](comparison.md); for shipped capability detail, [`features.md`](features.md).
@@ -44,7 +44,7 @@ The engine room — the generic substrate every later milestone builds on. No do
 | Address | Area | Status | Notes |
 |---|---|---|---|
 | **M0A** | Encryption at rest (AES-256-GCM), secret store, multi-profile isolation | ✅ | Passphrase or OS keychain. [`privacy-data-protection.md`](specs/privacy-data-protection.md). |
-| **M0B** | Database engine: connection factory, migrations, writer coordination | ✅ | Short-lived per-call connections (ADR-010). |
+| **M0B** | Database engine: connection factory, migrations, writer coordination | ✅ | Short-lived per-call connections; writer coordination hardened (ADR-010 + 2026-Q2 hardening pass). |
 | **M0C** | Observability: metrics + sanitized logging | ✅ | No PII or financial data in logs. |
 | **M0D** | Shared primitives + `core.updated_at` convention | ✅ | The internal contract later features inherit. [`architecture.md`](architecture.md). |
 | **M0E** | MCP framework: scaffold, v2 taxonomy, schema discoverability, timeouts | ✅ | `moneybin://schema`, 30s dispatch cap, response envelope. v2 naming ongoing. |
@@ -68,7 +68,7 @@ Every planned way your money gets in lands cleanly — with the *ergonomics* (co
 | **M1E** | Transaction curation: notes, tags, splits, manual entry, audit log | ✅ | [`transaction-curation.md`](specs/transaction-curation.md). |
 | **M1F** | Google Sheets connect (live tabular source via direct OAuth) | ✅ | Airtable/Smartsheet siblings planned. [`connect-gsheet.md`](specs/connect-gsheet.md). |
 | **M1G** | Plaid sync | 🚧 | Phase 1 (cash + credit) ✅. Remaining: Production approval, real-user round-trip; SimpleFIN + Plaid-Investments planned. [`sync-plaid.md`](specs/sync-plaid.md). |
-| **M1H** | Confirm-the-columns confidence layer | 📐 | One `import_preview`→`import_confirm` flow across tabular/gsheet/PDF; saved layouts reuse silently. [`smart-import-confirmation.md`](specs/smart-import-confirmation.md). |
+| **M1H** | Confirm-the-columns confidence layer | 🚧 | Confirmation & confidence contract + cross-channel `import_preview`→`import_confirm` implementation ✅ (PR #227); saved layouts reuse silently. Remaining channels wire in as M1I/M1Q land. [`smart-import-confirmation.md`](specs/smart-import-confirmation.md). |
 | **M1I** | Native PDF import | 🚧 | Phase 1 seed path ✅ (PR #228). Phase 2a deterministic recipe ladder + replay + transactions routing ✅ (PR #233): auto-derived recipes persist to `app.pdf_formats` keyed by layout fingerprint and replay for free on the next statement; reconciliation gate (±1¢) routes transaction-shaped PDFs to `raw.tabular_transactions`. Phase 2b bridge round-trip ✅: a layout the deterministic rung can't crack escalates to the driving agent (`import_files`/`import_preview` return a bridge payload), and `import_confirm(bridge_response=…)` re-runs the agent's recipe, reconciles, persists, and loads (MCP-only; gated on the agent caller). Auto-`bump_version` on replay-guard failure + the no-agent scanned-PDF outcome 📐. [`smart-import-pdf.md`](specs/smart-import-pdf.md). |
 | **M1J** | Investments core | 📐 | Securities, ledger, lots, realized gain/loss, holdings; Decimal precision. **🔒 closes only when cost basis ties to a real broker 1099-B for a full tax year.** [`investments-data-model.md`](specs/investments-data-model.md). |
 | **M1K** | Multi-currency schema wave | 🗓️ | Currency at every grain; auditable FX rate provenance; realized FX gain/loss. |
@@ -115,9 +115,9 @@ Now that the engine and the analysis layer are complete and self-testable, make 
 
 | Address | Area | Status | Notes |
 |---|---|---|---|
-| **M3A** | Evaluator/testing surface (**pulled forward**) | 🗓️ | `moneybin demo` preset + first-run wizard + a **narrow** Web review console (categorization/import/doctor/lineage). Ships early as a *testing/trust* surface so the M1 core is legible — but it's productization, hence M3. |
+| **M3A** | Evaluator/testing surface (**pulled forward**) | 🗓️ | `moneybin demo` preset + first-run wizard + a **narrow** Web review console (categorization/import/doctor/lineage), **built on M3L**. Ships early as a *testing/trust* surface so the M1 core is legible — but it's productization, hence M3. |
 | **M3B** | Install & packaging | 🗓️ | PyPI Trusted Publishing + Homebrew formula + `.mcpb` bundle. |
-| **M3C** | Full Web UI | 🗓️ | Extends the M3A console to the complete dashboard surface, backed by real domains. Same UI at `moneybin ui` (local) and the hosted tier. |
+| **M3C** | Full Web UI | 🗓️ | Extends the M3A console to the complete dashboard surface, backed by real domains; **built on M3L**. Same UI at `moneybin ui` (local) and the hosted tier. |
 | **M3D** | Remote / HTTP MCP transport + auth | 🗓️ | Unlocks ChatGPT web + mobile; identity via Auth0/OIDC, MoneyBin-owned authorization/consent. |
 | **M3E** | Migration guides | 🗓️ | Mint/Tiller/YNAB/Actual/Maybe/OFX; each gated on its import path being real. |
 | **M3F** | Doc polish + landing + screenshots + demo video | 🚧 | Earned positioning — after the core is real. [`user-facing-doc-polish.md`](specs/user-facing-doc-polish.md). |
@@ -126,6 +126,8 @@ Now that the engine and the analysis layer are complete and self-testable, make 
 | **M3I** | Extension contributor UX | 🗓️ | Scaffolders, validator, plugin bundle; in-tree provider Platinum sweep. |
 | **M3J** | Self-host / headless operations | 🗓️ | Gated on `moneybin-server`. Operator guides + any build specs. |
 | **M3K** | CLI / MCP UX standards | 🗓️ | Interaction patterns, output formatting, prompt/resource conventions. |
+| **M3L** | Shared UI architecture (foundation) | 📐 | One `ui-core` (React + shadcn/Tailwind/Tremor) behind two shells — Web UI and MCP App; transport-agnostic `MoneyBinClient`; bundle embedded in the Python wheel. Prerequisite for M3A/M3C/M3M. [`ui-architecture.md`](specs/ui-architecture.md) + [ADR-014](decisions/014-shared-ui-architecture.md). |
+| **M3M** | MCP App surface | 🗓️ | MoneyBin's own dashboards rendered inside an MCP host (Claude, ChatGPT, …), built on M3L's `ui-core`. Enabled by MCP Apps becoming a ratified standard (`2026-01-26`); sequencing vs. the Web UI is under review. |
 
 > **Pre-Distribution gate.** M3 work proceeds once the full suite is green, the anonymized real-data parity check passes, `system doctor` is clean on a real profile, and privacy/PII/security checks pass. **Hosted launch (M3H) = v1.**
 
@@ -139,10 +141,9 @@ Designed or noted, but not gating launch. Listed without commitment.
 
 - **Privacy tiers + consent model** deepening. Framework spec at [`privacy-and-ai-trust.md`](specs/privacy-and-ai-trust.md).
 - **Connect: more live sources** — Airtable, Smartsheet, and Notion connectors under the same connection-lifecycle pattern as Google Sheets (M1F).
-- **AI-assisted parsing of non-PDF file types** — the smart-import bridge (shipped first for PDF in M1I) applied to other formats.
+- **AI-assisted parsing of non-PDF file types** — the smart-import bridge (ships first for PDF in M1I) applied to other formats.
 - **ML-powered categorization + merchant entity resolution.** Needs accumulated labeled data from real users.
 - **FIRE / retirement projection** (Monte Carlo, Roth conversions, RMDs). A wealth analysis package on top of M1J — built only after the investment ledger is correct, never as a shallow dashboard.
-- **MCP Apps** (interactive UI inside Claude Desktop, VS Code). Revisit when client support widens.
 - **Multi-account-holder sharing / household ownership.** Single-user is the v1 posture; if adopted, modeled as core ownership bridges, not app-only filters.
 - **EU Open Banking / SimpleFIN** sync providers. After Plaid + one additional provider validate the sync framework.
 

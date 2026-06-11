@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import fcntl  # POSIX-only: project targets macOS/Linux
+import json
+import os
+from pathlib import Path
 from typing import Any
 
 import duckdb
 from fastmcp import FastMCP
 
+from moneybin.db_lock import lock_path_for
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.privacy.payloads.system import (
@@ -21,15 +26,19 @@ from moneybin.privacy.payloads.system import (
     SystemDoctorPayload,
     SystemStatusAccountsInfo,
     SystemStatusCategorizationInfo,
+    SystemStatusDatabaseConnectionsInfo,
     SystemStatusGsheetInfo,
     SystemStatusGsheetRow,
     SystemStatusMatchesInfo,
     SystemStatusPayload,
+    SystemStatusReader,
     SystemStatusSchemaDrift,
     SystemStatusTransactionsInfo,
     SystemStatusTransformsInfo,
+    SystemStatusWriter,
 )
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.utils.db_processes import describe_process, find_blocking_processes
 
 _HEALTHY_STATUSES = frozenset({"healthy"})
 _DISCONNECTED_STATUSES = frozenset({"disconnected"})
@@ -108,6 +117,172 @@ def _gsheet_action_hints(needs_attention: list[dict[str, Any]]) -> list[str]:
     return hints
 
 
+def _writer_is_live(lock_path: Path) -> bool:
+    """Return True iff a process currently holds the write lock.
+
+    The ``.write.lock`` metadata file is never unlinked — unlinking races
+    with the next opener, and ``fcntl`` auto-releases on crash — so the file
+    persists after a clean release carrying the *last* holder's pid, which may
+    still be a live process that is no longer writing. The mere existence of
+    the file (or a live pid in it) therefore does NOT mean a writer is active.
+
+    The only authoritative test is to try the lock ourselves, non-blocking. A
+    shared (``LOCK_SH``) probe is used rather than exclusive so two concurrent
+    ``system_status`` / ``db ps`` probes don't block each other and misreport a
+    peer prober as a writer; ``LOCK_SH`` still conflicts with a writer's
+    ``LOCK_EX``.
+
+    Conversely, this probe's brief ``LOCK_SH`` hold can make a writer's
+    concurrent ``LOCK_EX`` attempt fail once and take a single backoff retry
+    (~50 ms). That is harmless and expected — a spurious retry here is the probe
+    doing its job, not a symptom of deeper contention.
+    """
+    try:
+        fd = os.open(lock_path, os.O_RDONLY)
+    except OSError:
+        return False
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True  # a writer holds LOCK_EX
+        # Acquired — nobody holds an exclusive lock; release immediately.
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return False
+    finally:
+        os.close(fd)
+
+
+_METADATA_READ_ATTEMPTS = 3
+
+
+def _read_writer_metadata(lock_path: Path) -> dict[str, Any] | None:
+    """Read + parse the writer metadata, tolerating the brief rewrite window.
+
+    write_lock rewrites the metadata in place — ``ftruncate(0)`` then
+    ``write(payload)`` — so a diagnostic reader can momentarily observe an empty
+    or partial file and fail to parse it. That window is only a couple of
+    syscalls wide, so retry a few times before giving up; without the retry a
+    live writer would be reported with no metadata exactly while it is acquiring
+    the lock — the contention the DatabaseLockError recovery action sends the
+    agent here to diagnose. Returns the normalized writer dict, or None if the
+    file is absent or genuinely unparseable after the retries.
+    """
+    for _ in range(_METADATA_READ_ATTEMPTS):
+        try:
+            metadata = json.loads(lock_path.read_text(encoding="utf-8"))
+            return {
+                "pid": int(metadata["pid"]),
+                # The writer command is already a sanitized friendly name —
+                # write_lock runs it through describe_process before storing it,
+                # so the on-disk lock file never holds a raw argv. Pass it
+                # through as-is (re-sanitizing would mangle the friendly name).
+                "command": str(metadata["command"]),
+                "started_at": str(metadata["started_at"]),
+                "operation_type": str(metadata["operation_type"]),
+            }
+        except (OSError, ValueError, KeyError, TypeError):
+            # Empty/partial file (mid-rewrite), corrupted JSON, or non-dict JSON
+            # (null/list/scalar makes metadata["pid"] raise TypeError). Retry —
+            # the next read likely catches the completed write.
+            continue
+    return None
+
+
+def _database_connections_info(db_path: Path) -> SystemStatusDatabaseConnectionsInfo:
+    """Build the typed database_connections payload from the lock + lsof view."""
+    block = _database_connections_block(db_path)
+    return SystemStatusDatabaseConnectionsInfo(
+        writers=[SystemStatusWriter(**w) for w in block["writers"]],
+        readers=[SystemStatusReader(**r) for r in block["readers"]],
+    )
+
+
+def _database_connections_block(db_path: Path) -> dict[str, Any]:
+    """Merge file-lock writer metadata with lsof-derived reader enumeration.
+
+    Returns the empty-shape ``{"writers": [], "readers": []}`` when neither
+    source reports anything. A writer is reported only when a process actually
+    holds the file lock (``_writer_is_live``) — the persisted metadata file
+    alone is not enough, since it outlives the holder. Tolerates a corrupted
+    lock file by treating it as no-writer-info — the lock-file payload is
+    best-effort observability, not a correctness contract. The writer's pid is
+    filtered out of the reader list to avoid double-listing the writer process.
+    """
+    writers: list[dict[str, Any]] = []
+    writer_pid: int | None = None
+    # Resolve once and use the resolved path for BOTH the lock file (via
+    # lock_path_for, which resolves the same way write_lock keys it) and the
+    # lsof reader scan, so a symlinked or relative path can't report writers
+    # and readers against different inodes.
+    resolved = db_path.resolve()
+    lock_path = lock_path_for(resolved)
+    # No separate exists() check: _writer_is_live opens the lock file and
+    # returns False if it is absent, so an exists() guard would be a redundant,
+    # TOCTOU-prone stat.
+    if _writer_is_live(lock_path):
+        metadata = _read_writer_metadata(lock_path)
+        if metadata is not None:
+            writer_pid = metadata["pid"]
+            writers.append(metadata)
+        # If a live writer's metadata is still unreadable after the retries in
+        # _read_writer_metadata (genuinely corrupt, not just mid-rewrite), fall
+        # back to no writer entry — the lock-file payload is best-effort
+        # observability, not a correctness contract.
+
+    readers: list[dict[str, Any]] = []
+    for proc in find_blocking_processes(resolved):
+        if writer_pid is not None and proc["pid"] == writer_pid:
+            continue  # Avoid double-listing the writer as a reader
+        readers.append({
+            "pid": int(proc["pid"]),
+            "command": describe_process(
+                str(proc.get("cmdline") or proc.get("command", ""))
+            ),
+        })
+
+    return {"writers": writers, "readers": readers}
+
+
+def _locked_status_envelope(
+    db_connections: SystemStatusDatabaseConnectionsInfo,
+) -> ResponseEnvelope[SystemStatusPayload]:
+    """Degraded ``system_status`` for when a writer holds the database lock.
+
+    A read-only open cannot attach while a writer holds the lock, so the data
+    inventory is unavailable — but ``database_connections`` (read from the lock
+    file + lsof, no DB needed) still names the holder, which is exactly what the
+    ``DatabaseLockError`` recovery action needs. The inventory fields are
+    zero-filled and the envelope is flagged ``degraded`` so the agent trusts
+    only ``database_connections``.
+    """
+    return build_envelope(
+        data=SystemStatusPayload(
+            accounts=SystemStatusAccountsInfo(count=0),
+            transactions=SystemStatusTransactionsInfo(
+                count=0, date_range=[None, None], last_import_at=None
+            ),
+            matches=SystemStatusMatchesInfo(pending_review=0),
+            categorization=SystemStatusCategorizationInfo(uncategorized=0),
+            transforms=SystemStatusTransformsInfo(pending=False, last_apply_at=None),
+            schema_drift=None,
+            gsheet=SystemStatusGsheetInfo(
+                total_connections=0, by_status={}, needs_attention=[]
+            ),
+            database_connections=db_connections,
+        ),
+        degraded=True,
+        degraded_reason=(
+            "A writer holds the database lock; the data inventory is unavailable "
+            "until it releases. See database_connections for the holder."
+        ),
+        actions=[
+            "Inspect database_connections for the writer holding the lock, then "
+            "wait and retry or surface the contention to the user",
+        ],
+    )
+
+
 @mcp_tool()
 def system_status() -> ResponseEnvelope[SystemStatusPayload]:
     """Return data inventory, pending review queue counts, and transforms freshness.
@@ -117,12 +292,35 @@ def system_status() -> ResponseEnvelope[SystemStatusPayload]:
     ``gsheet`` block summarizes Google Sheets connection health: drift-detected
     connections surface a paired ``gsheet_reconnect`` hint in ``actions[]``.
     """
-    from moneybin.database import get_database
+    from moneybin.config import get_settings
+    from moneybin.database import DatabaseLockError, get_database
     from moneybin.services.system_service import SystemService
 
-    with get_database(read_only=True) as db:
-        status = SystemService(db).status()
-        gsheet = _gsheet_block(db)
+    # Collect the file-lock / lsof connection view BEFORE opening the DB: it
+    # reads the lock file and lsof (no DB connection needed) and must stay
+    # reachable when a writer holds the lock — the DatabaseLockError recovery
+    # action points here precisely to identify that holder. Opening the DB
+    # first would let a read-only open retry-then-fail under contention, so the
+    # diagnostic would time out exactly when it is needed.
+    db_path = get_settings().database.path
+    db_connections = _database_connections_info(db_path)
+
+    try:
+        # Short max_wait: this is the DatabaseLockError recovery tool, so under
+        # contention it must degrade fast rather than burn a third of the 30 s
+        # MCP dispatch budget retrying the read. The diagnostic does not need the
+        # read to succeed — db_connections is captured before the open and
+        # recomputed in the except branch below.
+        with get_database(read_only=True, max_wait=2.0) as db:
+            status = SystemService(db).status()
+            gsheet = _gsheet_block(db)
+    except DatabaseLockError:
+        # Re-snapshot before degrading: a writer can acquire the lock between the
+        # preflight snapshot above and this read failing, so the preflight view
+        # may predate the writer and report no holder. Recomputing here names the
+        # writer that actually caused the lock — exactly what the
+        # DatabaseLockError recovery action sends the agent to system_status for.
+        return _locked_status_envelope(_database_connections_info(db_path))
 
     min_date, max_date = status.transactions_date_range
 
@@ -192,6 +390,7 @@ def system_status() -> ResponseEnvelope[SystemStatusPayload]:
                     for r in gsheet["needs_attention"]
                 ],
             ),
+            database_connections=db_connections,
         ),
         actions=actions,
     )

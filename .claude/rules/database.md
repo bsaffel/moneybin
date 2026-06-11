@@ -26,8 +26,15 @@ with get_database(read_only=False) as db:
 ```
 
 **Lock contention** (`DatabaseLockError`) is raised after `max_wait` seconds
-(default 5 s). The error message identifies the blocking process when `lsof`
+(default 10 s). The error message identifies the blocking process when `lsof`
 is available. `get_database()` retries automatically with exponential backoff.
+
+Write opens additionally acquire a per-profile process file lock around
+the DuckDB ATTACH; reads do not. The lock identifies the holder via
+metadata at `<db_path>.write.lock` and emits a classified
+`DatabaseLockError` envelope on timeout (default 10 s). See
+[`database-writer-coordination.md`](../../docs/specs/database-writer-coordination.md)
+§ "PR B hardening pass".
 
 **`DatabaseNotInitializedError`** is raised by `get_database(read_only=True)`
 when the database file does not exist. Both exceptions are caught by

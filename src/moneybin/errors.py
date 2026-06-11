@@ -130,6 +130,25 @@ def classify_user_error(exc: BaseException) -> UserError | None:
             str(exc),
             code=error_codes.INFRA_DATABASE_LOCKED,
             hint="💡 Run 'moneybin db ps' for details or wait and retry",
+            recovery_actions=[
+                RecoveryAction(
+                    tool="system_status",
+                    # No arguments: system_status takes none, and its
+                    # database_connections block (always present) names the
+                    # holder. A section filter would return a subset of an
+                    # already-cheap payload.
+                    rationale=(
+                        "Inspect the database_connections block of system_status "
+                        "to identify the process holding the database, then decide "
+                        "whether to wait, retry, or surface to the user."
+                    ),
+                    # "suggested", not "certain": system_status diagnoses the
+                    # contention but does not resolve it — the agent still has to
+                    # choose wait/retry/surface from what it learns.
+                    confidence="suggested",
+                    idempotent=True,
+                ),
+            ],
         )
     if isinstance(exc, DatabaseKeyError):
         return UserError(

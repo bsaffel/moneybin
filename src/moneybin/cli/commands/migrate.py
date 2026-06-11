@@ -30,7 +30,7 @@ def migrate_apply(
 ) -> None:
     """Apply pending database migrations."""
     with handle_cli_errors():
-        with get_database(read_only=False) as db:
+        with get_database(read_only=False, operation_type="migration") as db:
             runner = MigrationRunner(db)
 
             if dry_run:

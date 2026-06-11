@@ -3,6 +3,15 @@
 ## Status
 accepted
 
+> **Amended by PR B (M0B hardening pass).** The original decision below
+> specifies a 5-second writer-wait default and a DuckDB 1.5.2 lock matrix.
+> PR B raised the default to a 10-second policy ceiling, added a per-profile
+> `write_lock` file-lock primitive in front of the DuckDB ATTACH, and
+> re-confirmed the cross-process matrix on DuckDB 1.5.3. The decision text
+> below is preserved as the historical record; for current behaviour see
+> [`database-writer-coordination.md`](../specs/database-writer-coordination.md)
+> § "PR B hardening pass".
+
 ## Context
 
 MoneyBin's storage layer is a single encrypted DuckDB file opened via

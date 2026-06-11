@@ -363,6 +363,25 @@ DB_QUERY_DURATION_SECONDS = Histogram(
     ["operation"],
 )
 
+# Per-operation_type cardinality bounded by the OperationType Literal vocabulary
+# (interactive | migration | transform_apply | backup). A new operation class
+# requires a typed update at both call sites — pyright catches mis-spellings.
+DB_WRITE_LOCK_TIMEOUT_TOTAL = Counter(
+    "moneybin_db_write_lock_timeout_total",
+    "Write-lock acquisitions that exhausted the 10s timeout, by operation type.",
+    ["operation_type"],
+)
+
+# Per-reason cardinality bounded by CheckpointReason Literal vocabulary
+# (post_migration | post_transform | pre_backup | post_compact |
+# post_large_import). New boundaries require updating both this label vocab
+# and the typed Literal in src/moneybin/db_lock/_types.py.
+DB_CHECKPOINT_TOTAL = Counter(
+    "moneybin_db_checkpoint_total",
+    "CHECKPOINT calls at durable boundaries, by reason.",
+    ["reason"],
+)
+
 # ── Audit log ────────────────────────────────────────────────────────────────
 
 audit_events_emitted_total = Counter(

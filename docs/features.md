@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-05-24 -->
+<!-- Last reviewed: 2026-06-10 -->
 # What Works Today
 
 What MoneyBin can do today. Each capability links to its guide; the [roadmap](roadmap.md) covers what's planned and the [CHANGELOG](../CHANGELOG.md) carries the dated record.
@@ -46,7 +46,7 @@ What MoneyBin can do today. Each capability links to its guide; the [roadmap](ro
 
 - **Notes** — Free-text notes on transactions.
 - **Tags** — Multi-tag table with rename semantics.
-- **Splits via annotation** — Annotation-based splits today; first-class split rows planned (see [roadmap](roadmap.md)).
+- **Splits via annotation** — Annotation-based splits today; first-class split rows are parked (see [roadmap](roadmap.md)).
 - **Import-batch labels** — Group imported rows under a human label.
 - **Edit-history audit log** — Per-row history of every curation edit.
 - **Reversible edits** — Every protected `app.*` mutation (notes, tags, splits, categories, rules, account settings) is audit-paired and undoable as a unit keyed on `operation_id`. `moneybin system audit undo|history|get` (and `system_audit_undo` / `system_audit_history` / `system_audit_get` on MCP) reverse a change from its full before/after image; the undo is itself audited and undoable. Undo refuses (rather than silently cascading) when a later operation touched the same rows. -> [CLI reference](guides/cli-reference.md)
@@ -119,7 +119,7 @@ MoneyBin is built on the assumption that you'll want to track your money your wa
 These are visible gaps a migrant or agent author will notice. See [Roadmap](roadmap.md) for the full milestone view.
 
 - **Plaintext export** — `moneybin export` (CSV / Excel / Sheets) for data exit. Planned, not shipped.
-- **Budgeting** — Envelopes, rollovers, period-over-period burn. Planned.
+- **Budgeting** — Monthly budgets, target-vs-actual, rollovers. Planned.
 - **Investment tracking** — Holdings, FIFO lots, cost basis, 1099-B reconciliation. Planned (core, not a package).
 - **Multi-currency** — FX gain/loss and non-USD accounts. Planned.
 - **Web UI dashboard** — Local web UI plus Streamable HTTP MCP transport (so remote clients like ChatGPT web can reach MoneyBin). Planned.
@@ -129,9 +129,9 @@ These are visible gaps a migrant or agent author will notice. See [Roadmap](road
 - **Extension contract** — The contributor-facing surface for reports, analysis packages, and providers (see [Extensibility](#extensibility)). In flight; ships at v1 with two reference packages at Platinum quality.
 - **Reference package: `assets`** — Real estate, vehicles, and valuables. First reference package; demonstrates the package contract.
 - **Reference package: `us_tax`** — Locale-specific tax reporting helpers (realized gain/loss summaries, cost-basis snapshots). Built on top of investment tracking; not Schedule D generation.
-- **First-class split rows** — Today splits are annotations on the parent row; first-class split lines arrive with the curation polish work. Planned.
+- **First-class split rows** — Splits ship as annotations on the parent row; that's the intended shape. First-class split lines are parked, revisited only if budgeting needs or real-data feedback force them.
 - **Subscription-cancellation workflow** — `reports.recurring_subscriptions` surfaces the candidates; a "mark cancelled / paused" tracking surface is planned.
 - **Native mobile apps** — Not on the roadmap.
 - **Household / shared budgets** — Multi-user accounts within one profile. Not on the roadmap.
 
-Post-launch candidates (PDF data extraction, ML-powered categorization, MCP Apps, mobile read-only viewer, expanded privacy tiers) live on the same page.
+Post-launch candidates (AI-assisted parsing of non-PDF file types, ML-powered categorization, mobile read-only viewer, expanded privacy tiers) live on the same page.

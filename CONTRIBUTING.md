@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-05-17 -->
+<!-- Last reviewed: 2026-06-10 -->
 # Contributing to MoneyBin
 
 Thanks for helping out. This file gets you to a landed change without a reading
@@ -172,7 +172,7 @@ tier signals what gates merge vs what's worth doing vs what's polish:
   one, file a followup and call out the override in the PR description.
 - 🟡 **CONSIDER** — substantive quality: design, refactoring, potential
   bugs, missing edge cases. Your call per finding: fix in this PR (when
-  bounded) or defer to `private/followups.md` (when fixing would
+  bounded) or defer as a follow-up noted in the PR (when fixing would
   meaningfully expand scope). Either resolution closes the PR cleanly.
 - 🔵 **NIT** — small consistency issues: docstring formatting, naming
   drift, minor style. Worth fixing on early iterations to keep the

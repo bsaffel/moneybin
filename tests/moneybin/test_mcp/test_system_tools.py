@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Any
+
 import pytest
 from fastmcp import FastMCP
 
@@ -397,3 +400,126 @@ async def test_register_undo_tools() -> None:
     register_system_tools(srv)
     names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
     assert {"system_audit_undo", "system_audit_history", "system_audit_get"} <= names
+
+
+@pytest.mark.unit
+async def test_system_status_degraded_when_db_locked(
+    mcp_db: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A writer holding the lock yields a degraded snapshot, not an error.
+
+    The DatabaseLockError recovery action points the agent at system_status to
+    identify the lock holder, but system_status opens the DB read-only — which
+    fails under contention. The connection view is collected before the DB open
+    now, and a lock failure returns a degraded envelope still carrying
+    database_connections instead of looping to another lock error.
+    """
+    import moneybin.database as db_module
+    from moneybin.database import DatabaseLockError
+
+    def locked_get_database(**_kwargs: object) -> object:
+        raise DatabaseLockError("held by another process")
+
+    def no_blockers(_db_path: Path) -> list[dict[str, Any]]:
+        return []
+
+    monkeypatch.setattr(db_module, "get_database", locked_get_database)
+    monkeypatch.setattr(
+        "moneybin.mcp.tools.system.find_blocking_processes", no_blockers
+    )
+
+    result = await system_status()
+    parsed = result.to_dict()
+    assert parsed["summary"]["degraded"] is True
+    assert "lock" in parsed["summary"]["degraded_reason"].lower()
+    # database_connections is still present (read from the lock file + lsof, no
+    # DB needed); the inventory fields are zero-filled under the degraded flag.
+    assert "database_connections" in parsed["data"]
+    assert parsed["data"]["accounts"]["count"] == 0
+    assert parsed["data"]["transactions"]["count"] == 0
+
+
+@pytest.mark.unit
+async def test_system_status_recomputes_connections_after_lock_error(
+    mcp_db: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The degraded envelope re-snapshots connections after the read fails.
+
+    A writer can acquire the lock between the preflight connection snapshot and
+    the read-only open failing under contention. system_status recomputes the
+    connection block in the DatabaseLockError path, so the degraded envelope
+    names the writer that actually caused the lock rather than the (empty)
+    preflight view — which is exactly what the recovery action sends the agent
+    to system_status to find.
+    """
+    import moneybin.database as db_module
+    from moneybin.database import DatabaseLockError
+
+    def locked_get_database(**_kwargs: object) -> object:
+        raise DatabaseLockError("held by another process")
+
+    # First block call (preflight) sees no writer; the second (except-path
+    # recompute) sees the writer that appeared in between.
+    blocks: list[dict[str, Any]] = [
+        {"writers": [], "readers": []},
+        {
+            "writers": [
+                {
+                    "pid": 4242,
+                    "command": "moneybin transform apply",
+                    "started_at": "2026-06-10T00:00:00+00:00",
+                    "operation_type": "transform_apply",
+                }
+            ],
+            "readers": [],
+        },
+    ]
+    block_results = iter(blocks)
+
+    def next_block(_db_path: Path) -> dict[str, Any]:
+        return next(block_results)
+
+    monkeypatch.setattr(db_module, "get_database", locked_get_database)
+    monkeypatch.setattr(
+        "moneybin.mcp.tools.system._database_connections_block", next_block
+    )
+
+    result = await system_status()
+    parsed = result.to_dict()
+    assert parsed["summary"]["degraded"] is True
+    writers = parsed["data"]["database_connections"]["writers"]
+    assert len(writers) == 1
+    assert writers[0]["pid"] == 4242
+    assert writers[0]["operation_type"] == "transform_apply"
+
+
+@pytest.mark.unit
+async def test_system_status_opens_with_short_max_wait(
+    mcp_db: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """system_status (the lock-recovery tool) opens read-only with a short wait.
+
+    Canary: it must degrade fast under contention rather than burn a third of
+    the 30 s MCP dispatch budget retrying the read — the diagnostic data is
+    collected from the lock file, not the read. Pins max_wait so a refactor
+    can't regress it back to the 10 s default.
+    """
+    import moneybin.database as db_module
+    from moneybin.database import DatabaseLockError
+
+    captured: dict[str, Any] = {}
+
+    def capturing_get_database(*, read_only: bool, **kwargs: object) -> object:
+        captured["max_wait"] = kwargs.get("max_wait")
+        raise DatabaseLockError("held by another process")
+
+    def no_blockers(_db_path: Path) -> list[dict[str, Any]]:
+        return []
+
+    monkeypatch.setattr(db_module, "get_database", capturing_get_database)
+    monkeypatch.setattr(
+        "moneybin.mcp.tools.system.find_blocking_processes", no_blockers
+    )
+
+    await system_status()
+    assert captured["max_wait"] == 2.0
