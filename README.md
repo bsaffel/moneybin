@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-05-24 -->
+<!-- Last reviewed: 2026-06-10 -->
 <!-- markdownlint-disable MD033 MD041 -->
 <div align="center">
   <img src="docs/assets/moneybin-icon.png" alt="MoneyBin" width="300">
@@ -32,7 +32,7 @@ As easy as Mint was. As powerful as the tools data engineers actually use. Ask y
 
 - **You own it, end to end.** Local-first by default — one encrypted DuckDB file per profile under `~/.moneybin/`, AES-256-GCM at rest. No vendor account required, no data resale, no lock-in. The same code powers an optional hosted tier; switching deployments is moving one file. → [Architecture](docs/architecture.md) · [Threat model](docs/guides/threat-model.md)
 
-- **Your history comes with you.** Import from bank files (CSV/OFX/QFX/QBO/Excel/Parquet), sync from Plaid, or connect a live Google Sheet — your categories migrate with you and auto-rules learn from them. Cross-source dedup means re-importing overlapping months never double-counts. → [Data import](docs/guides/data-import.md)
+- **Your history comes with you.** Import from bank files (CSV/OFX/QFX/QBO/Excel/Parquet/PDF), sync from Plaid, or connect a live Google Sheet — your categories migrate with you and auto-rules learn from them. Cross-source dedup means re-importing overlapping months never double-counts. → [Data import](docs/guides/data-import.md)
 
 ## How it works
 
@@ -94,9 +94,9 @@ moneybin sql query "SELECT category, SUM(amount) FROM core.fct_transactions GROU
 
 **MoneyBin is pre-v1.** It's in daily use by the author, and the foundation is built to last rather than built to demo.
 
-**Working today:** the CLI and MCP server (≈70 tools across nine AI clients), encrypted multi-profile storage, file imports (CSV/OFX/QFX/QBO/Excel/Parquet) and a watched-folder inbox, Plaid sync (cash + credit cards), live Google Sheets sync, cross-source dedup and transfer detection, rule-based categorization with an opt-in LLM-assist step, eight curated reports, privacy-safe ad-hoc SQL, reversible edits with a full audit trail, and `moneybin system doctor` integrity checks.
+**Working today:** the CLI and MCP server (≈70 tools across nine AI clients), encrypted multi-profile storage, file imports (CSV/OFX/QFX/QBO/Excel/Parquet), native-text PDF statement import with saved replayable per-format recipes, a watched-folder inbox, Plaid sync (cash + credit cards), live Google Sheets sync, cross-source dedup and transfer detection, rule-based categorization with an opt-in LLM-assist step, eight curated reports, privacy-safe ad-hoc SQL, reversible edits with a full audit trail, and `moneybin system doctor` integrity checks.
 
-**In flight:** a `brew install` path and first-run onboarding, drop-any-PDF import (AI-assisted extraction), an extensible report framework, Plaid production approval, and the contributor extension contract.
+**In flight:** a `brew install` path and first-run onboarding, AI-assisted import for scanned and other hard-to-parse PDFs, an extensible report framework, Plaid production approval, and the contributor extension contract.
 
 **Planned:** investment & cost-basis tracking, multi-currency, budgets, a web UI dashboard, and an opt-in hosted tier — same code you can self-host.
 

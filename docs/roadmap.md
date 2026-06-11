@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-05-30 -->
+<!-- Last reviewed: 2026-06-10 -->
 # Roadmap
 
 Pre-v1 roadmap. Each milestone is a coherent slice of work, not a calendar date — we don't commit dates pre-v1. Statuses below reflect what's merged to `main` today; the dated record of individual changes lives in [`CHANGELOG.md`](../CHANGELOG.md). For "is this for me?" see [`audience.md`](audience.md); for where MoneyBin fits and who to use instead, [`comparison.md`](comparison.md); for shipped capability detail, [`features.md`](features.md).
@@ -68,8 +68,8 @@ Every planned way your money gets in lands cleanly — with the *ergonomics* (co
 | **M1E** | Transaction curation: notes, tags, splits, manual entry, audit log | ✅ | [`transaction-curation.md`](specs/transaction-curation.md). |
 | **M1F** | Google Sheets connect (live tabular source via direct OAuth) | ✅ | Airtable/Smartsheet siblings planned. [`connect-gsheet.md`](specs/connect-gsheet.md). |
 | **M1G** | Plaid sync | 🚧 | Phase 1 (cash + credit) ✅. Remaining: Production approval, real-user round-trip; SimpleFIN + Plaid-Investments planned. [`sync-plaid.md`](specs/sync-plaid.md). |
-| **M1H** | Confirm-the-columns confidence layer | 📐 | One `import_preview`→`import_confirm` flow across tabular/gsheet/PDF; saved layouts reuse silently. [`smart-import-confirmation.md`](specs/smart-import-confirmation.md). |
-| **M1I** | Native PDF import | 🚧 | Phase 1 seed path ✅ (PR #228). Phase 2a deterministic recipe ladder + replay + transactions routing ✅ (PR #233): auto-derived recipes persist to `app.pdf_formats` keyed by layout fingerprint and replay for free on the next statement; reconciliation gate (±1¢) routes transaction-shaped PDFs to `raw.tabular_transactions`. Phase 2b bridge + LLM rung + auto-`bump_version` on replay-guard failure 📐. [`smart-import-pdf.md`](specs/smart-import-pdf.md). |
+| **M1H** | Confirm-the-columns confidence layer | 🚧 | Confirmation & confidence contract + cross-channel `import_preview`→`import_confirm` implementation ✅ (PR #227); saved layouts reuse silently. Remaining channels wire in as M1I/M1Q land. [`smart-import-confirmation.md`](specs/smart-import-confirmation.md). |
+| **M1I** | Native PDF import | 🚧 | Phase 1 seed path ✅ (PR #228). Phase 2a deterministic recipe ladder + replay + transactions routing ✅ (PR #233): auto-derived recipes persist to `app.pdf_formats` keyed by layout fingerprint and replay for free on the next statement; reconciliation gate (±1¢) routes transaction-shaped PDFs to `raw.tabular_transactions`. Phase 2b 🚧 — bridge egress shipped (PR #237); apply round-trip, LLM rung + auto-`bump_version` remaining. [`smart-import-pdf.md`](specs/smart-import-pdf.md). |
 | **M1J** | Investments core | 📐 | Securities, ledger, lots, realized gain/loss, holdings; Decimal precision. **🔒 closes only when cost basis ties to a real broker 1099-B for a full tax year.** [`investments-data-model.md`](specs/investments-data-model.md). |
 | **M1K** | Multi-currency schema wave | 🗓️ | Currency at every grain; auditable FX rate provenance; realized FX gain/loss. |
 | **M1L** | Engine integrity & recovery completion | 🚧 | Paired audit writes + doctor coverage + undo consumer. [`app-integrity-invariant.md`](specs/app-integrity-invariant.md), [`data-recovery-contract.md`](specs/data-recovery-contract.md). |
@@ -141,7 +141,7 @@ Designed or noted, but not gating launch. Listed without commitment.
 
 - **Privacy tiers + consent model** deepening. Framework spec at [`privacy-and-ai-trust.md`](specs/privacy-and-ai-trust.md).
 - **Connect: more live sources** — Airtable, Smartsheet, and Notion connectors under the same connection-lifecycle pattern as Google Sheets (M1F).
-- **AI-assisted parsing of non-PDF file types** — the smart-import bridge (shipped first for PDF in M1I) applied to other formats.
+- **AI-assisted parsing of non-PDF file types** — the smart-import bridge (ships first for PDF in M1I) applied to other formats.
 - **ML-powered categorization + merchant entity resolution.** Needs accumulated labeled data from real users.
 - **FIRE / retirement projection** (Monte Carlo, Roth conversions, RMDs). A wealth analysis package on top of M1J — built only after the investment ledger is correct, never as a shallow dashboard.
 - **Multi-account-holder sharing / household ownership.** Single-user is the v1 posture; if adopted, modeled as core ownership bridges, not app-only filters.

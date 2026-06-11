@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-05-24 -->
+<!-- Last reviewed: 2026-06-10 -->
 # Who MoneyBin Is For
 
 MoneyBin is built for a specific set of people. This page tells you whether you're one of them — honestly, including who you should use instead if you're not.
@@ -90,7 +90,7 @@ These are the people MoneyBin is being built for but doesn't fully serve yet. No
 
 **Partner sharing:** MoneyBin is single-user. There's no household-shared budget on the v1 roadmap — if joint finances with a partner are a hard requirement, Monarch or Tiller is the right answer.
 
-**What's still rough:** No production web UI yet. A narrow review-queue prototype exists for the AI-categorization workflow, but it isn't a tracker dashboard. **Stay on Monarch or Copilot until the web UI ships.**
+**What's still rough:** No production web UI yet. A CLI/MCP review queue exists for the AI-categorization workflow; there is no web surface yet. **Stay on Monarch or Copilot until the web UI ships.**
 
 ### The FIRE / wealth-builder
 
