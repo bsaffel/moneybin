@@ -166,6 +166,18 @@ def is_amount_field(field: FieldExtraction) -> bool:
     )
 
 
+def is_primary_date_field(field: FieldExtraction) -> bool:
+    """True if the field is the primary transaction date (canonical ``date``).
+
+    A ``post_date``-only recipe does NOT qualify: the loader writes ``row['date']``
+    into the NOT NULL ``transaction_date`` column, so the bridge parser requires
+    a primary date field to reject an amount-only/post-date-only recipe with a
+    clean error rather than a downstream DB constraint failure. Public because
+    ``bridge.parse_bridge_response`` imports it for that gate.
+    """
+    return _canonical_key(field) == "date"
+
+
 def _canonicalize_rows(
     recipe: Recipe, rows: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:

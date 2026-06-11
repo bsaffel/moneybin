@@ -209,3 +209,23 @@ def test_parse_bridge_response_rejects_recipe_without_amount_field() -> None:
     }
     with pytest.raises(BridgeResponseError, match="amount"):
         parse_bridge_response({"recipe": no_amount, "rows": []})
+
+
+def test_parse_bridge_response_rejects_recipe_without_primary_date_field() -> None:
+    """A recipe with an amount but no primary ``date`` field is rejected.
+
+    The load writes ``row['date']`` into ``transaction_date`` (NOT NULL); a
+    recipe with only an amount (or only ``post_date``) passes confidence +
+    reconciliation, then fails with a generic DB constraint error instead of a
+    clean ``bridge_response_invalid``.
+    """
+    from moneybin.extractors.pdf.bridge import BridgeResponseError
+
+    no_date = {
+        **_VALID_RECIPE_DICT,
+        "fields": [
+            {"name": "amount", "pattern": r"-?\d+\.\d{2}", "cast": "decimal"},
+        ],
+    }
+    with pytest.raises(BridgeResponseError, match="date"):
+        parse_bridge_response({"recipe": no_date, "rows": []})

@@ -155,16 +155,27 @@ def parse_bridge_response(payload: object) -> BridgeResponse:
         recipe = Recipe.model_validate(typed_recipe)
     except Exception as e:  # noqa: BLE001 — pydantic ValidationError + bound-validator ValueErrors
         raise BridgeResponseError(f"bridge recipe invalid: {e}") from e
-    # The bridge exists to extract transactions, which have amounts. Reject a
-    # recipe with no amount/debit/credit field: confidence would still pass on
-    # the date field alone, and a zero-balance-delta statement would reconcile,
-    # loading all-zero rows. is_amount_field is the same predicate the
-    # confidence model uses (routing imports nothing from bridge — no cycle).
-    from moneybin.extractors.pdf.routing import is_amount_field
+    # A bridge recipe must extract the two required fields — a primary date and
+    # an amount. Without them, confidence + reconciliation can still pass on the
+    # field that IS present, but the load then either writes all-zero amounts
+    # (no amount field) or NULL into the NOT NULL transaction_date (no date
+    # field). Reject here as bridge_response_invalid rather than surfacing a
+    # downstream DB error. Same predicates the confidence model and loader use
+    # (routing imports nothing from bridge — no cycle).
+    from moneybin.extractors.pdf.routing import (
+        is_amount_field,
+        is_primary_date_field,
+    )
 
     if not any(is_amount_field(f) for f in recipe.fields):
         raise BridgeResponseError(
             "bridge recipe must contain at least one amount, debit, or credit "
             "field — without it, extracted rows have no transaction amount"
+        )
+    if not any(is_primary_date_field(f) for f in recipe.fields):
+        raise BridgeResponseError(
+            "bridge recipe must contain a primary transaction date field — "
+            "without it, loaded rows have no transaction_date (a post_date "
+            "field alone does not qualify)"
         )
     return BridgeResponse(recipe=recipe, rows=typed_rows)
