@@ -63,6 +63,10 @@ class ImportResult:
     """True if running balance suggests sign inversion; amounts were NOT auto-corrected."""
     import_id: str | None = None
     """UUID of the raw.import_log row this import created."""
+    pdf_format_name: str | None = None
+    """Name a PDF recipe was actually persisted under, or None if not saved
+    (save_format off, or save_new skipped/failed). Set only on a confirmed
+    save_new so apply_pdf_bridge_response never claims a save that didn't land."""
     field_mapping: dict[str, str] | None = None
     """Authoritative destination → source column mapping the load used.
 
@@ -1595,19 +1599,6 @@ class ImportService:
         #    fire here: we already gated on outcome=="transactions" above, and
         #    route_forced_recipe attaches both recipe and fp on that outcome —
         #    so begin_import's row can't be stranded in "importing".
-        # Whether this fingerprint already has a saved format. If it does, the
-        # save_new inside _import_pdf_transactions hits a ConstraintException and
-        # skips — the replay-failure bridge case, where the stale broken recipe
-        # is NOT updated. We must not then report a format_name as if the recipe
-        # were persisted: the agent (which can't read the warning log) would
-        # conclude the layout is fixed when the next import re-escalates.
-        # Updating the broken saved recipe is #40 (auto-bump_version).
-        format_preexisted = (
-            save_format
-            and decision.fp is not None
-            and self._pdf_formats.get_by_fingerprint(decision.fp) is not None
-        )
-
         resolved_alias = _pdf_alias(canonical)
         result = ImportResult(file_path=str(canonical), file_type="pdf")
         import_id = import_log.begin_import(
@@ -1644,20 +1635,17 @@ class ImportService:
                 f"agent's claimed extraction."
             )
 
-        # Report the format name only when this call actually persisted a new
-        # recipe: save_format on, fp present, and no pre-existing row that
-        # save_new would have skipped (see format_preexisted above). None
-        # otherwise so the result never claims a save that didn't happen.
-        format_name = (
-            _pdf_format_name(decision.fp)
-            if save_format and decision.fp is not None and not format_preexisted
-            else None
-        )
+        # Report the name _import_pdf_transactions actually persisted (set only
+        # on a confirmed save_new). None when save_format is off, when save_new
+        # skipped a pre-existing fingerprint (the replay-failure bridge case —
+        # stale recipe untouched until #40's bump_version), or when the save
+        # failed for any other reason — so the result never claims a save that
+        # didn't land. Agents can't read the warning log; this is their signal.
         return BridgeApplyResult(
             outcome="applied",
             import_id=import_id,
             rows_loaded=result.transactions,
-            format_name=format_name,
+            format_name=result.pdf_format_name,
             expected_row_count=expected_row_count,
             actual_row_count=actual_row_count,
             rows_diverged=rows_diverged,
@@ -2186,6 +2174,11 @@ class ImportService:
                     source="detected",
                     actor="system",  # auto-detected: system-driven (Invariant 10)
                 )
+                # Record the actually-persisted name so callers
+                # (apply_pdf_bridge_response) report format_name only after a
+                # confirmed save — set inside the try, so a ConstraintException
+                # (pre-existing) or any swallowed save failure below leaves it None.
+                result.pdf_format_name = format_name
                 logger.info(
                     f"PDF format saved: name={format_name!r} "
                     f"import_id={import_id[:8]}..."

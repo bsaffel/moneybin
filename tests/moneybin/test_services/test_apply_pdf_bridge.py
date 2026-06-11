@@ -343,6 +343,31 @@ def test_apply_format_name_none_when_format_preexists(
     assert second.format_name is None
 
 
+def test_apply_format_name_none_when_save_fails(
+    db: Database, tmp_path: Path, stub_extract: list[PdfDocument]
+) -> None:
+    # save_new is best-effort and swallows failures. If it fails for a
+    # non-preexisting reason (DB unavailable, concurrent race), the rows still
+    # load but format_name must be None — the result must not claim a recipe
+    # was persisted when it wasn't (the agent can't read the warning log).
+    import pytest as _pytest
+
+    def _boom(self: object, **_kw: object) -> None:
+        raise RuntimeError("app.pdf_formats unavailable")
+
+    with _pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            "moneybin.repositories.pdf_formats_repo.PdfFormatsRepo.save_new", _boom
+        )
+        result = ImportService(db).apply_pdf_bridge_response(
+            _pdf_path(tmp_path), _bridge_response()
+        )
+
+    assert result.outcome == "applied"
+    assert result.rows_loaded == 2
+    assert result.format_name is None
+
+
 def test_apply_extraction_failure_bumps_failed_metric(
     db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

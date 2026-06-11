@@ -830,6 +830,21 @@ def import_confirm(
 
     path = _validate_file_path(file_path)
 
+    if path.suffix.lower() == ".pdf":
+        # A PDF reached the tabular confirm channel (bridge_response is None here
+        # but accept=/mapping= may be set). There is no valid tabular confirm for
+        # a PDF: re-importing with actor_kind="agent" would re-raise the bridge
+        # escalation, but this tool's catch below only serializes ProposedMapping
+        # — the agent would get accept/mapping actions again and loop. Direct it
+        # to the bridge channel instead of running the tabular path.
+        raise UserError(
+            "PDF confirmations use the bridge channel, not accept=/mapping=. "
+            "Read the confirmation_required bridge_payload and call "
+            "import_confirm(file_path=..., bridge_response={'recipe': ..., "
+            "'rows': [...]}).",
+            code="confirm_channel_conflict",
+        )
+
     if not accept and not mapping:
         raise UserError(
             "import_confirm requires accept=True to ratify the proposed mapping, "

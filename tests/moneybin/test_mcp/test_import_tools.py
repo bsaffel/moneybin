@@ -830,3 +830,15 @@ class TestImportConfirmBridge:
         )
         assert result.error is not None
         assert result.error.code == "bridge_account_name_unsupported"
+
+    async def test_pdf_with_accept_rejected_not_looped(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        # A PDF confirmed via the tabular channel (accept=True, no
+        # bridge_response) must be rejected with channel guidance — NOT run
+        # through the tabular import path, which would re-raise the bridge
+        # escalation that this tool's catch can't serialize, looping the agent.
+        pdf = self._patch(monkeypatch, tmp_path)
+        result = await import_confirm(file_path=str(pdf), accept=True)
+        assert result.error is not None
+        assert result.error.code == "confirm_channel_conflict"
