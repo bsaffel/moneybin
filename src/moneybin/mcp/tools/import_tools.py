@@ -979,8 +979,15 @@ def register_import_tools(mcp: FastMCP) -> None:
         mcp,
         import_preview,
         "import_preview",
-        "Preview a tabular file's structure and detected column "
-        "mapping without importing.",
+        "Preview a file's structure without importing. Tabular files: detected "
+        "format, column mapping, and sample values. PDF files: the deterministic "
+        "extraction outcome, or — for a bridge-eligible layout (low confidence, "
+        "failed reconciliation, …) — a confirmation_required envelope carrying "
+        "the bridge_payload (document text + table preview) for you to propose a "
+        "recipe + rows and ratify via import_confirm(bridge_response=...). The "
+        "PDF bridge branch writes an app.audit_log egress row (not "
+        "side-effect-free) and can return row-level document content (medium "
+        "sensitivity).",
     )
     register(
         mcp,
@@ -1006,14 +1013,19 @@ def register_import_tools(mcp: FastMCP) -> None:
         mcp,
         import_confirm,
         "import_confirm",
-        "Confirm or override a proposed column mapping and load the tabular file. "
-        "Terminal step of the propose->review->confirm workflow: call after "
-        "import_files returns confirmation_required. Pass accept=True to ratify "
-        "the proposal as-is, or mapping={'<dest_field>': '<source_column>'} for a "
-        "partial override (unspecified fields fall back to the detected proposal). "
-        "Writes raw.tabular_transactions (data load) and app.tabular_formats "
-        "(when save_format=True). Data load is reversible via import_revert; "
-        "format save can be undone via system_audit_undo. "
+        "Confirm or override a proposed column mapping, or apply a PDF bridge "
+        "response. Terminal step of the propose->review->confirm workflow: call "
+        "after import_files / import_preview returns confirmation_required. "
+        "Tabular: pass accept=True to ratify the proposal as-is, or "
+        "mapping={'<dest_field>': '<source_column>'} for a partial override "
+        "(unspecified fields fall back to the detected proposal); writes "
+        "raw.tabular_transactions + app.tabular_formats (when save_format=True). "
+        "PDF bridge: pass bridge_response={'recipe': ..., 'rows': [...]} — "
+        "MoneyBin re-runs your recipe against the document, reconciles, and "
+        "loads, writing raw.tabular_transactions + app.pdf_formats (when "
+        "save_format=True); a response that fails reconciliation is rejected and "
+        "nothing loads. Data load is reversible via import_revert; format save "
+        "can be undone via system_audit_undo. "
         "Amounts use the accounting convention: negative=expense, "
         "positive=income; transfers exempt.",
     )
