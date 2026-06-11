@@ -434,9 +434,10 @@ class Database:
                     # checkpoint ran first; a crash between it and record_version
                     # left migrations applied but unversioned, so the next open
                     # re-ran the runner and emitted a redundant checkpoint before
-                    # recording the version.) record_version runs on every open —
-                    # it is the source of truth for "already upgraded" — so it
-                    # stays outside the applied_count guard.
+                    # recording the version.) This runs whenever the upgrade path
+                    # runs (pending migrations or a version change), independent of
+                    # applied_count — so a version-only bump still records the new
+                    # version even when no migration was applied.
                     record_version(self, "moneybin", current_pkg_version)
 
                     if result.applied_count > 0:

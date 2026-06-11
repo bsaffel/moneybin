@@ -491,3 +491,35 @@ async def test_system_status_recomputes_connections_after_lock_error(
     assert len(writers) == 1
     assert writers[0]["pid"] == 4242
     assert writers[0]["operation_type"] == "transform_apply"
+
+
+@pytest.mark.unit
+async def test_system_status_opens_with_short_max_wait(
+    mcp_db: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """system_status (the lock-recovery tool) opens read-only with a short wait.
+
+    Canary: it must degrade fast under contention rather than burn a third of
+    the 30 s MCP dispatch budget retrying the read — the diagnostic data is
+    collected from the lock file, not the read. Pins max_wait so a refactor
+    can't regress it back to the 10 s default.
+    """
+    import moneybin.database as db_module
+    from moneybin.database import DatabaseLockError
+
+    captured: dict[str, Any] = {}
+
+    def capturing_get_database(*, read_only: bool, **kwargs: object) -> object:
+        captured["max_wait"] = kwargs.get("max_wait")
+        raise DatabaseLockError("held by another process")
+
+    def no_blockers(_db_path: Path) -> list[dict[str, Any]]:
+        return []
+
+    monkeypatch.setattr(db_module, "get_database", capturing_get_database)
+    monkeypatch.setattr(
+        "moneybin.mcp.tools.system.find_blocking_processes", no_blockers
+    )
+
+    await system_status()
+    assert captured["max_wait"] == 2.0

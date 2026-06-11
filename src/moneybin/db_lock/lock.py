@@ -237,6 +237,11 @@ def write_lock(
     fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
     registered = False
     delay = _BACKOFF_INITIAL_SECONDS
+    # Start the wait clock before resolving the command: _process_command shells
+    # out to `ps` (up to 3 s) and the timeout message reports
+    # monotonic() - wait_start, so starting it here keeps that from
+    # underreporting the caller's total wait by the ps duration.
+    wait_start = time.monotonic()
     # Resolve this process's own argv BEFORE acquiring the lock. _process_command
     # shells out to `ps` (up to a 3 s timeout); running it under LOCK_EX would
     # stall every competing writer for that duration. The command is fixed for
@@ -247,7 +252,6 @@ def write_lock(
     # next to the encrypted database — the same sanitization system_status
     # applies to its diagnostic surface, so on-disk and display stay consistent.
     command = describe_process(_process_command(pid))
-    wait_start = time.monotonic()
     try:
         while True:
             try:
@@ -288,5 +292,8 @@ def write_lock(
                 fcntl.flock(fd, fcntl.LOCK_UN)
             except OSError:
                 pass
-            os.close(fd)
+            try:
+                os.close(fd)
+            except OSError:
+                pass
         raise

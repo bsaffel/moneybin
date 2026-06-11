@@ -131,6 +131,11 @@ def _writer_is_live(lock_path: Path) -> bool:
     ``system_status`` / ``db ps`` probes don't block each other and misreport a
     peer prober as a writer; ``LOCK_SH`` still conflicts with a writer's
     ``LOCK_EX``.
+
+    Conversely, this probe's brief ``LOCK_SH`` hold can make a writer's
+    concurrent ``LOCK_EX`` attempt fail once and take a single backoff retry
+    (~50 ms). That is harmless and expected — a spurious retry here is the probe
+    doing its job, not a symptom of deeper contention.
     """
     try:
         fd = os.open(lock_path, os.O_RDONLY)
@@ -301,7 +306,12 @@ def system_status() -> ResponseEnvelope[SystemStatusPayload]:
     db_connections = _database_connections_info(db_path)
 
     try:
-        with get_database(read_only=True) as db:
+        # Short max_wait: this is the DatabaseLockError recovery tool, so under
+        # contention it must degrade fast rather than burn a third of the 30 s
+        # MCP dispatch budget retrying the read. The diagnostic does not need the
+        # read to succeed — db_connections is captured before the open and
+        # recomputed in the except branch below.
+        with get_database(read_only=True, max_wait=2.0) as db:
             status = SystemService(db).status()
             gsheet = _gsheet_block(db)
     except DatabaseLockError:

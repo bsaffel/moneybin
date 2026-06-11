@@ -606,9 +606,10 @@ The PR B hardening pass adds:
   via stdlib `fcntl.flock(LOCK_EX | LOCK_NB)` around write-mode
   `get_database()` opens. Identifies the holder via a JSON metadata
   payload (pid, command, started_at, operation_type).
-- A 10-second policy ceiling on writer waits, configurable via
-  `MoneyBinSettings.database.write_lock_timeout_seconds`. Any operation
-  exceeding 10 s is an alarm, not a knob.
+- A 10-second policy ceiling on writer waits — the hard-coded `max_wait`
+  default in `get_database()`, not a configuration field. Any operation
+  exceeding 10 s is an alarm, not a knob, so the ceiling is intentionally
+  not exposed as a setting.
 - Updated string classification in `_attach_encrypted` to match
   DuckDB 1.5.3's unified message while preserving the 1.5.2 matchers.
 - A `Database.checkpoint(reason)` helper that emits `CHECKPOINT` +
