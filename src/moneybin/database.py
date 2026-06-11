@@ -427,13 +427,24 @@ class Database:
 
                     if result.applied_count > 0:
                         logger.info(f"  ✅ {result.applied_count} migration(s) applied")
-                        # Checkpoint at the durable boundary so a crash after
-                        # migrations apply cannot lose the schema change. Only
-                        # on actually-applied migrations — a no-op open must
-                        # not increment the counter.
-                        #
-                        # A checkpoint failure is a durability hint, not a
-                        # correctness signal (same contract as
+
+                    # Record the MoneyBin version BEFORE the post-migration
+                    # checkpoint so the single durable boundary flushes the schema
+                    # change AND the version record together. (Previously the
+                    # checkpoint ran first; a crash between it and record_version
+                    # left migrations applied but unversioned, so the next open
+                    # re-ran the runner and emitted a redundant checkpoint before
+                    # recording the version.) record_version runs on every open —
+                    # it is the source of truth for "already upgraded" — so it
+                    # stays outside the applied_count guard.
+                    record_version(self, "moneybin", current_pkg_version)
+
+                    if result.applied_count > 0:
+                        # Checkpoint last, at the durable boundary, so it covers
+                        # the version record too. Only on actually-applied
+                        # migrations — a no-op open must not increment the
+                        # counter. A checkpoint failure is a durability hint, not
+                        # a correctness signal (same contract as
                         # TransformService.apply): the migrations already
                         # committed, so log and continue rather than letting the
                         # ExitStack tear down the connection and surface a
@@ -445,9 +456,6 @@ class Database:
                                 f"post_migration checkpoint failed "
                                 f"(migrations applied): {type(e).__name__}"
                             )
-
-                    # Record MoneyBin version
-                    record_version(self, "moneybin", current_pkg_version)
 
                 # Check SQLMesh version independently — a SQLMesh upgrade
                 # without a MoneyBin upgrade still needs `sqlmesh migrate`.
@@ -766,16 +774,21 @@ class Database:
         release = self._lock_release
         self._lock_release = None
         try:
-            with _active_write_lock:
-                if _active_write_conn is self:
-                    _active_write_conn = None
-
             if self._conn is not None:
                 try:
                     self._conn.close()
                 except Exception:  # noqa: BLE001 S110  # intentional broad catch on close; pass is correct here
                     pass
                 self._conn = None
+            # Clear the global write-conn slot AFTER closing the connection.
+            # Clearing it first leaves a window where the connection is still
+            # open yet interrupt_and_reset_database()'s global-slot fallback
+            # finds None and no-ops, missing a live connection. Clearing after
+            # close means that fallback either interrupts the still-open conn
+            # (before this point) or finds _conn already None and safely no-ops.
+            with _active_write_lock:
+                if _active_write_conn is self:
+                    _active_write_conn = None
             self._closed = True
         finally:
             if release is not None:

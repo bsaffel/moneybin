@@ -1,8 +1,6 @@
 """Tests for Database class — centralized encrypted connection management."""
 
 import sys
-import threading
-import time
 from collections.abc import Generator
 from pathlib import Path
 from typing import Any
@@ -670,6 +668,23 @@ class TestGetDatabaseNew:
         monkeypatch.setattr("moneybin.database.get_settings", lambda: mock_settings)
         monkeypatch.setattr("moneybin.database.SecretStore", lambda: mock_secret_store)
 
+        # write_lock resolves the holder's command via `_process_command`, which
+        # runs `subprocess.run(["ps", ...], timeout=3)`. With a timeout, CPython
+        # reaps the child in `Popen._wait()` by polling `time.sleep(delay)`
+        # (doubling from 0.001) against a REAL monotonic deadline. Because the
+        # test below monkeypatches the *global* `time.sleep` into a no-op
+        # recorder, that reap loop spins without delay and records one sleep per
+        # iteration until the OS reaps `ps` — 0 locally (instant reap) but tens
+        # on a loaded CI runner, which inflated `sleep_calls` and made this test
+        # flake (`assert 28/53/78 == 2`). Stub `_process_command` so no
+        # subprocess runs and only the attach-retry loop's sleeps are recorded.
+        def fake_process_command(_pid: int) -> str:
+            return "pytest"
+
+        monkeypatch.setattr(
+            "moneybin.db_lock.lock._process_command", fake_process_command
+        )
+
         call_count = 0
         original_database_cls = Database
 
@@ -681,33 +696,14 @@ class TestGetDatabaseNew:
             return original_database_cls(*args, **kwargs)  # pyright: ignore[reportArgumentType]
 
         monkeypatch.setattr("moneybin.database.Database", mock_database_cls)
-
-        # These monkeypatches target attributes on the shared ``time`` module,
-        # so the stand-ins are visible to EVERY thread in the process — not just
-        # this test's main thread. Under ``pytest-xdist`` a background thread
-        # leaked by an earlier test on the same worker can call ``time.sleep``
-        # concurrently; a process-global recorder would capture those calls and
-        # inflate the count (observed as a ``len(sleep_calls) == 53`` CI flake),
-        # and a cross-thread ``time.monotonic`` would drain the finite iterator
-        # below into ``StopIteration``. Scope both stand-ins to the main thread
-        # and serve the real builtins to any other thread.
-        main_tid = threading.get_ident()
-        real_monotonic = time.monotonic
         sleep_calls: list[float] = []
-
-        def record_main_sleep(delay: float) -> None:
-            if threading.get_ident() == main_tid:
-                sleep_calls.append(delay)
-
-        monotonic_values = iter([0.0, 0.1, 0.2, 1.0]).__next__
-
-        def main_monotonic() -> float:
-            if threading.get_ident() == main_tid:
-                return monotonic_values()
-            return real_monotonic()
-
-        monkeypatch.setattr("moneybin.database.time.sleep", record_main_sleep)
-        monkeypatch.setattr("moneybin.database.time.monotonic", main_monotonic)
+        monkeypatch.setattr(
+            "moneybin.database.time.sleep",
+            lambda d: sleep_calls.append(d),  # pyright: ignore[reportUnknownArgumentType, reportUnknownLambdaType]
+        )
+        monkeypatch.setattr(
+            "moneybin.database.time.monotonic", iter([0.0, 0.1, 0.2, 1.0]).__next__
+        )
 
         db = get_database(read_only=False, max_wait=5.0)
         assert call_count == 3
@@ -715,82 +711,6 @@ class TestGetDatabaseNew:
         # Exponential backoff: 0.05 then 0.075
         assert abs(sleep_calls[0] - 0.05) < 0.001
         assert abs(sleep_calls[1] - 0.075) < 0.001
-        db.close()
-
-    def test_retry_sleep_count_ignores_other_thread_sleeps(
-        self,
-        tmp_path: Path,
-        mock_secret_store: MagicMock,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """A concurrent thread's time.sleep must not inflate the backoff count.
-
-        Regression guard for a CI flake (``assert 53 == 2``): the retry test
-        patches the shared ``time`` module, so a background thread leaked onto
-        the same ``pytest-xdist`` worker could push its own ``time.sleep`` calls
-        into the recorder. The recorder is scoped to the main thread, so even
-        while another thread hammers the patched ``time.sleep``, only the two
-        main-thread backoff sleeps are counted.
-        """
-        import moneybin.database as db_module
-
-        db_path = tmp_path / "retry-mt.duckdb"
-        monkeypatch.setattr(db_module, "_migration_check_done", {db_path})
-        monkeypatch.setattr(db_module, "_database_accessed", False)
-        monkeypatch.setattr(db_module, "_cached_encryption_key", None)
-        mock_settings = MagicMock()
-        mock_settings.database.path = db_path
-        monkeypatch.setattr("moneybin.database.get_settings", lambda: mock_settings)
-        monkeypatch.setattr("moneybin.database.SecretStore", lambda: mock_secret_store)
-
-        call_count = 0
-        original_database_cls = Database
-
-        def mock_database_cls(*args: object, **kwargs: object) -> Database:
-            nonlocal call_count
-            call_count += 1
-            if call_count < 3:
-                raise DatabaseLockError("lock")
-            return original_database_cls(*args, **kwargs)  # pyright: ignore[reportArgumentType]
-
-        monkeypatch.setattr("moneybin.database.Database", mock_database_cls)
-
-        # Same main-thread-scoped stand-ins as the single-threaded retry test.
-        main_tid = threading.get_ident()
-        real_monotonic = time.monotonic
-        sleep_calls: list[float] = []
-
-        def record_main_sleep(delay: float) -> None:
-            if threading.get_ident() == main_tid:
-                sleep_calls.append(delay)
-
-        monotonic_values = iter([0.0, 0.1, 0.2, 1.0]).__next__
-
-        def main_monotonic() -> float:
-            if threading.get_ident() == main_tid:
-                return monotonic_values()
-            return real_monotonic()
-
-        monkeypatch.setattr("moneybin.database.time.sleep", record_main_sleep)
-        monkeypatch.setattr("moneybin.database.time.monotonic", main_monotonic)
-
-        # A leaked background sleeper: 50 bounded cross-thread calls to the
-        # patched time.sleep. Without main-thread scoping these would land in
-        # sleep_calls (count 52, not 2). The thread runs concurrently with the
-        # retry; the bound keeps the test deterministic.
-        def background_sleeper() -> None:
-            for _ in range(50):
-                time.sleep(0.0)
-
-        bg = threading.Thread(target=background_sleeper, daemon=True)
-        bg.start()
-        try:
-            db = get_database(read_only=False, max_wait=5.0)
-        finally:
-            bg.join(timeout=2.0)
-
-        assert call_count == 3
-        assert len(sleep_calls) == 2
         db.close()
 
     def test_exhausts_max_wait_and_raises_lock_error(

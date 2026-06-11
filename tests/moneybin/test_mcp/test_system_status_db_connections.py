@@ -11,12 +11,15 @@ from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from moneybin.db_lock import write_lock
 from moneybin.db_lock.lock import (
     _LOCK_SUFFIX,  # type: ignore[reportPrivateUsage]  # test-only access to the canonical lock-file suffix
 )
 from moneybin.mcp.tools.system import (
     _database_connections_block,  # type: ignore[reportPrivateUsage]  # test-only access to the private helper
+    _read_writer_metadata,  # type: ignore[reportPrivateUsage]  # test-only access to the private helper
 )
 
 
@@ -235,3 +238,44 @@ def test_block_tolerates_non_dict_json_while_held(tmp_path: Path) -> None:
         lock_path.write_text("null")
         block = _database_connections_block(db_path)
     assert block["writers"] == []
+
+
+def test_read_writer_metadata_retries_transient_empty_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A mid-rewrite empty read is retried, not reported as missing metadata.
+
+    write_lock rewrites the lock file in place (ftruncate(0) then write), so a
+    reader can momentarily see an empty file. _read_writer_metadata must retry
+    rather than drop a live writer that is merely mid-rewrite.
+    """
+    lock_path = tmp_path / ("status.duckdb" + _LOCK_SUFFIX)
+    valid = json.dumps({
+        "pid": 7,
+        "command": "moneybin transform apply",
+        "started_at": "2026-06-10T00:00:00+00:00",
+        "operation_type": "transform_apply",
+    })
+    reads = iter(["", valid])  # first read empty (truncation window), then written
+
+    def fake_read(_self: Path, **_kwargs: object) -> str:
+        return next(reads)
+
+    monkeypatch.setattr(Path, "read_text", fake_read)
+    metadata = _read_writer_metadata(lock_path)
+    assert metadata is not None
+    assert metadata["pid"] == 7
+    assert metadata["operation_type"] == "transform_apply"
+
+
+def test_read_writer_metadata_returns_none_when_persistently_unparseable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Genuinely corrupt metadata (not a transient window) yields None."""
+    lock_path = tmp_path / ("status.duckdb" + _LOCK_SUFFIX)
+
+    def fake_read(_self: Path, **_kwargs: object) -> str:
+        return "not-json{{"
+
+    monkeypatch.setattr(Path, "read_text", fake_read)
+    assert _read_writer_metadata(lock_path) is None

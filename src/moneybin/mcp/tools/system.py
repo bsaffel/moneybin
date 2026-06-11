@@ -148,6 +148,51 @@ def _writer_is_live(lock_path: Path) -> bool:
         os.close(fd)
 
 
+_METADATA_READ_ATTEMPTS = 3
+
+
+def _read_writer_metadata(lock_path: Path) -> dict[str, Any] | None:
+    """Read + parse the writer metadata, tolerating the brief rewrite window.
+
+    write_lock rewrites the metadata in place — ``ftruncate(0)`` then
+    ``write(payload)`` — so a diagnostic reader can momentarily observe an empty
+    or partial file and fail to parse it. That window is only a couple of
+    syscalls wide, so retry a few times before giving up; without the retry a
+    live writer would be reported with no metadata exactly while it is acquiring
+    the lock — the contention the DatabaseLockError recovery action sends the
+    agent here to diagnose. Returns the normalized writer dict, or None if the
+    file is absent or genuinely unparseable after the retries.
+    """
+    for _ in range(_METADATA_READ_ATTEMPTS):
+        try:
+            metadata = json.loads(lock_path.read_text(encoding="utf-8"))
+            return {
+                "pid": int(metadata["pid"]),
+                # The writer command is already a sanitized friendly name —
+                # write_lock runs it through describe_process before storing it,
+                # so the on-disk lock file never holds a raw argv. Pass it
+                # through as-is (re-sanitizing would mangle the friendly name).
+                "command": str(metadata["command"]),
+                "started_at": str(metadata["started_at"]),
+                "operation_type": str(metadata["operation_type"]),
+            }
+        except (OSError, ValueError, KeyError, TypeError):
+            # Empty/partial file (mid-rewrite), corrupted JSON, or non-dict JSON
+            # (null/list/scalar makes metadata["pid"] raise TypeError). Retry —
+            # the next read likely catches the completed write.
+            continue
+    return None
+
+
+def _database_connections_info(db_path: Path) -> SystemStatusDatabaseConnectionsInfo:
+    """Build the typed database_connections payload from the lock + lsof view."""
+    block = _database_connections_block(db_path)
+    return SystemStatusDatabaseConnectionsInfo(
+        writers=[SystemStatusWriter(**w) for w in block["writers"]],
+        readers=[SystemStatusReader(**r) for r in block["readers"]],
+    )
+
+
 def _database_connections_block(db_path: Path) -> dict[str, Any]:
     """Merge file-lock writer metadata with lsof-derived reader enumeration.
 
@@ -171,25 +216,14 @@ def _database_connections_block(db_path: Path) -> dict[str, Any]:
     # returns False if it is absent, so an exists() guard would be a redundant,
     # TOCTOU-prone stat.
     if _writer_is_live(lock_path):
-        try:
-            metadata = json.loads(lock_path.read_text(encoding="utf-8"))
-            writer_pid = int(metadata["pid"])
-            writers.append({
-                "pid": writer_pid,
-                # The writer command is already a sanitized friendly name —
-                # write_lock runs it through describe_process before storing it,
-                # so the on-disk lock file never holds a raw argv. Pass it
-                # through as-is (re-sanitizing would mangle the friendly name).
-                "command": str(metadata["command"]),
-                "started_at": str(metadata["started_at"]),
-                "operation_type": str(metadata["operation_type"]),
-            })
-        except (OSError, ValueError, KeyError, TypeError):
-            # Corrupted metadata, partial write, or non-dict JSON (null, list,
-            # scalar — which makes metadata["pid"] raise TypeError) — treat as
-            # no writer.
-            writers = []
-            writer_pid = None
+        metadata = _read_writer_metadata(lock_path)
+        if metadata is not None:
+            writer_pid = metadata["pid"]
+            writers.append(metadata)
+        # If a live writer's metadata is still unreadable after the retries in
+        # _read_writer_metadata (genuinely corrupt, not just mid-rewrite), fall
+        # back to no writer entry — the lock-file payload is best-effort
+        # observability, not a correctness contract.
 
     readers: list[dict[str, Any]] = []
     for proc in find_blocking_processes(resolved):
@@ -263,18 +297,20 @@ def system_status() -> ResponseEnvelope[SystemStatusPayload]:
     # action points here precisely to identify that holder. Opening the DB
     # first would let a read-only open retry-then-fail under contention, so the
     # diagnostic would time out exactly when it is needed.
-    block = _database_connections_block(get_settings().database.path)
-    db_connections = SystemStatusDatabaseConnectionsInfo(
-        writers=[SystemStatusWriter(**w) for w in block["writers"]],
-        readers=[SystemStatusReader(**r) for r in block["readers"]],
-    )
+    db_path = get_settings().database.path
+    db_connections = _database_connections_info(db_path)
 
     try:
         with get_database(read_only=True) as db:
             status = SystemService(db).status()
             gsheet = _gsheet_block(db)
     except DatabaseLockError:
-        return _locked_status_envelope(db_connections)
+        # Re-snapshot before degrading: a writer can acquire the lock between the
+        # preflight snapshot above and this read failing, so the preflight view
+        # may predate the writer and report no holder. Recomputing here names the
+        # writer that actually caused the lock — exactly what the
+        # DatabaseLockError recovery action sends the agent to system_status for.
+        return _locked_status_envelope(_database_connections_info(db_path))
 
     min_date, max_date = status.transactions_date_range
 

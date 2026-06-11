@@ -160,8 +160,12 @@ def _build_timeout_error(
     # from db_lock) and this module (which raises database.py's error type).
     from moneybin.database import DatabaseLockError
 
+    # No db_path in the message: it surfaces to MCP/CLI users via
+    # classify_user_error, and a profile path embeds the OS username (PII per
+    # the no-PII-in-output rule). operation_type + waited_seconds is enough to
+    # diagnose, and matches database.py's _lock_error_message (also path-free).
     message = (
-        f"Could not acquire write lock for {db_path} after {waited_seconds:.0f}s "
+        f"Could not acquire write lock after {waited_seconds:.0f}s "
         f"(operation_type={operation_type})."
     )
     return DatabaseLockError(message)
@@ -254,8 +258,10 @@ def write_lock(
                     DB_WRITE_LOCK_TIMEOUT_TOTAL.labels(
                         operation_type=operation_type
                     ).inc()
+                    # Log the file name only, never the full path — a profile
+                    # path embeds the OS username (no-PII-in-logs rule).
                     logger.warning(
-                        f"write_lock timeout: db_path={db_path} "
+                        f"write_lock timeout: db={db_path.name} "
                         f"operation_type={operation_type}"
                     )
                     raise _build_timeout_error(

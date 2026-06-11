@@ -95,14 +95,16 @@ def test_raises_on_blocking_io_after_deadline(
         with write_lock(db_path, deadline=deadline, operation_type="interactive"):
             pass
     # write_lock raises a plain DatabaseLockError — recovery_actions are
-    # added by classify_user_error at the CLI/MCP boundary, not here.
-    # Verify the message names the path, operation_type, and the elapsed wait
-    # duration (an actionable benchmark, not a vague "after the deadline").
+    # added by classify_user_error at the CLI/MCP boundary, not here. The
+    # message names operation_type and the elapsed wait duration (an actionable
+    # benchmark, not a vague "after the deadline") but NOT the db path: it
+    # surfaces to users via classify_user_error and a profile path embeds the OS
+    # username (no-PII-in-output rule).
     import re
 
     msg = str(excinfo.value)
     assert "interactive" in msg
-    assert str(db_path) in msg
+    assert str(db_path) not in msg  # no PII (path/username) in user-facing error
     assert re.search(r"after \d+s", msg), msg
     assert "deadline" not in msg
 
