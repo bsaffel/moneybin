@@ -28,9 +28,9 @@ _VALID_RECIPE_DICT: dict[str, Any] = {
     "fields": [
         {
             "name": "date",
-            "pattern": r"\d{2}/\d{2}",
+            "pattern": r"\d{2}/\d{2}/\d{4}",
             "cast": "date",
-            "date_format": "%m/%d",
+            "date_format": "%m/%d/%Y",
         },
         {"name": "amount", "pattern": r"-?\d+\.\d{2}", "cast": "decimal"},
     ],
@@ -229,6 +229,31 @@ def test_parse_bridge_response_rejects_recipe_without_primary_date_field() -> No
     }
     with pytest.raises(BridgeResponseError, match="date"):
         parse_bridge_response({"recipe": no_date, "rows": []})
+
+
+def test_parse_bridge_response_rejects_yearless_date_format() -> None:
+    """A date field whose explicit ``date_format`` has no year directive is rejected.
+
+    ``%m/%d`` (no ``%Y``/``%y``) makes ``strptime`` default to year 1900;
+    reconciliation only checks amount totals, so the wrong dates would load
+    silently. Reject at parse time as ``bridge_response_invalid``.
+    """
+    from moneybin.extractors.pdf.bridge import BridgeResponseError
+
+    yearless = {
+        **_VALID_RECIPE_DICT,
+        "fields": [
+            {
+                "name": "date",
+                "pattern": r"\d{2}/\d{2}",
+                "cast": "date",
+                "date_format": "%m/%d",
+            },
+            {"name": "amount", "pattern": r"-?\d+\.\d{2}", "cast": "decimal"},
+        ],
+    }
+    with pytest.raises(BridgeResponseError, match="year"):
+        parse_bridge_response({"recipe": yearless, "rows": []})
 
 
 def test_parse_bridge_response_rejects_non_date_cast_primary_date() -> None:

@@ -178,4 +178,20 @@ def parse_bridge_response(payload: object) -> BridgeResponse:
             "without it, loaded rows have no transaction_date (a post_date "
             "field alone does not qualify)"
         )
+    # An explicit date_format must carry a year directive. Without one, strptime
+    # defaults to year 1900 and the loader silently writes wrong dates —
+    # reconciliation only checks amount totals, not the date range. No
+    # date_format → execute_recipe's default parsing handles years.
+    for f in recipe.fields:
+        if (
+            f.cast == "date"
+            and f.date_format
+            and "%Y" not in f.date_format
+            and "%y" not in f.date_format
+        ):
+            raise BridgeResponseError(
+                f"bridge recipe field {f.name!r} has date_format "
+                f"{f.date_format!r} with no year directive (%Y or %y) — dates "
+                "would silently load as year 1900"
+            )
     return BridgeResponse(recipe=recipe, rows=typed_rows)
