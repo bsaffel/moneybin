@@ -54,10 +54,17 @@ class FirstRunSetupMiddleware(Middleware):
     through.
     """
 
-    def __init__(self) -> None:
-        """Initialize the middleware with unconfigured state."""
+    def __init__(self, *, verbose: bool = False) -> None:
+        """Initialize the middleware with unconfigured state.
+
+        ``verbose`` mirrors the serve command's --verbose flag so the
+        observability re-init during bootstrap preserves the log level the
+        operator launched with, rather than silently reverting to the
+        profile's configured default.
+        """
         super().__init__()
         self._configured = False
+        self._verbose = verbose
 
     async def on_call_tool(
         self,
@@ -77,7 +84,7 @@ class FirstRunSetupMiddleware(Middleware):
             return _setup_required_result()
 
         try:
-            _bootstrap_profile(name)
+            _bootstrap_profile(name, verbose=self._verbose)
         except Exception:  # noqa: BLE001 — middleware must not raise; bootstrap touches DB/keychain/FS
             logger.error(
                 "First-run profile bootstrap failed; returning setup envelope",
@@ -122,7 +129,7 @@ async def _elicit_profile_name(ctx: Context) -> str | None:
     return None
 
 
-def _bootstrap_profile(name: str) -> None:
+def _bootstrap_profile(name: str, *, verbose: bool = False) -> None:
     """Create-or-adopt the profile and activate it in-process and on disk."""
     normalized = normalize_profile_name(name)
     try:
@@ -131,7 +138,7 @@ def _bootstrap_profile(name: str) -> None:
         logger.info("First-run name matches an existing profile; adopting it")
     set_default_profile(normalized)
     set_current_profile(normalized)
-    setup_observability(stream="mcp", profile=normalized)
+    setup_observability(stream="mcp", verbose=verbose, profile=normalized)
 
 
 def _setup_required_result() -> ToolResult:

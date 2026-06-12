@@ -94,10 +94,26 @@ async def test_bootstrap_and_proceed_on_accept() -> None:
     with patch("moneybin.mcp.first_run._bootstrap_profile") as boot:
         result = await mw.on_call_tool(_fake_mw_context(ctx), call_next)
 
-    boot.assert_called_once_with("Brandon")
+    boot.assert_called_once_with("Brandon", verbose=False)
     call_next.assert_awaited_once()
     assert result == "tool-result"
     assert mw._configured is True  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.asyncio
+async def test_verbose_flag_threads_to_bootstrap() -> None:
+    """The serve --verbose flag is preserved through the bootstrap re-init."""
+    mw = FirstRunSetupMiddleware(verbose=True)
+    call_next = AsyncMock(return_value="ok")
+    ctx = _fake_ctx(
+        supports_elicit=True,
+        elicit_result=AcceptedElicitation(data="Brandon"),
+    )
+
+    with patch("moneybin.mcp.first_run._bootstrap_profile") as boot:
+        await mw.on_call_tool(_fake_mw_context(ctx), call_next)
+
+    boot.assert_called_once_with("Brandon", verbose=True)
 
 
 @pytest.mark.asyncio
@@ -140,7 +156,7 @@ async def test_invalid_name_retries_once_then_succeeds() -> None:
         result = await mw.on_call_tool(_fake_mw_context(ctx), call_next)
 
     assert ctx.elicit.await_count == 2
-    boot.assert_called_once_with("Brandon")
+    boot.assert_called_once_with("Brandon", verbose=False)
     assert result == "ok"
 
 
@@ -233,7 +249,7 @@ def test_bootstrap_creates_and_activates_profile() -> None:
     svc.return_value.create.assert_called_once_with("brandon")
     set_default.assert_called_once_with("brandon")
     set_current.assert_called_once_with("brandon")
-    obs.assert_called_once_with(stream="mcp", profile="brandon")
+    obs.assert_called_once_with(stream="mcp", verbose=False, profile="brandon")
 
 
 def test_unconfigured_predicate(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -243,11 +259,9 @@ def test_unconfigured_predicate(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
     monkeypatch.delenv("MONEYBIN_PROFILE", raising=False)
-    fake_cfg = MagicMock()
-    fake_cfg.active_profile = None
     with (
         patch("moneybin.cli.commands.mcp._flags") as flags,
-        patch("moneybin.cli.commands.mcp.load_user_config", return_value=fake_cfg),
+        patch("moneybin.cli.commands.mcp.get_default_profile", return_value=None),
     ):
         flags.profile = None
         assert _is_unconfigured() is True
@@ -257,20 +271,18 @@ def test_unconfigured_predicate(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MONEYBIN_PROFILE", "alice")
     with (
         patch("moneybin.cli.commands.mcp._flags") as flags,
-        patch("moneybin.cli.commands.mcp.load_user_config", return_value=fake_cfg),
+        patch("moneybin.cli.commands.mcp.get_default_profile", return_value=None),
     ):
         flags.profile = None
         assert _is_unconfigured() is False
 
     # No flag, no env, but config.yaml carries an active_profile → configured.
     monkeypatch.delenv("MONEYBIN_PROFILE", raising=False)
-    configured_cfg = MagicMock()
-    configured_cfg.active_profile = "default"
     with (
         patch("moneybin.cli.commands.mcp._flags") as flags,
         patch(
-            "moneybin.cli.commands.mcp.load_user_config",
-            return_value=configured_cfg,
+            "moneybin.cli.commands.mcp.get_default_profile",
+            return_value="default",
         ),
     ):
         flags.profile = None

@@ -28,7 +28,7 @@ from moneybin.cli.output import (
 from moneybin.cli.utils import _flags  # pyright: ignore[reportPrivateUsage]
 from moneybin.config import find_repo_root, get_base_dir
 from moneybin.protocol.envelope import build_envelope
-from moneybin.utils.user_config import load_user_config
+from moneybin.utils.user_config import get_default_profile
 
 app = typer.Typer(help="MCP server for AI assistant integration", no_args_is_help=True)
 logger = logging.getLogger(__name__)
@@ -698,7 +698,7 @@ def _is_unconfigured() -> bool:
         return False
     if os.environ.get("MONEYBIN_PROFILE"):
         return False
-    return load_user_config().active_profile is None
+    return get_default_profile() is None
 
 
 @app.command("serve")
@@ -768,14 +768,15 @@ def serve(
         # tools + first-run middleware; setup happens on the first tool call.
         from moneybin.mcp.first_run import FirstRunSetupMiddleware
 
-        setup_observability(stream="mcp", verbose=get_verbose_flag())
-        init_db()
-        mcp.add_middleware(FirstRunSetupMiddleware())
+        verbose = get_verbose_flag()
+        setup_observability(stream="mcp", verbose=verbose)
         logger.info(
             f"MCP server starting unconfigured "
             f"(transport={transport}); awaiting first-run setup"
         )
         try:
+            init_db()
+            mcp.add_middleware(FirstRunSetupMiddleware(verbose=verbose))
             mcp.run(transport=validated_transport)
         except KeyboardInterrupt:
             logger.info("MCP server stopped by user")
