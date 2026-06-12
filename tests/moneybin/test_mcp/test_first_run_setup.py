@@ -171,6 +171,32 @@ async def test_two_invalid_names_returns_envelope() -> None:
     )
 
 
+@pytest.mark.asyncio
+async def test_setup_envelope_when_bootstrap_raises() -> None:
+    """A bootstrap failure (DB/FS error) returns the envelope, stays unconfigured."""
+    mw = FirstRunSetupMiddleware()
+    call_next = AsyncMock()
+    ctx = _fake_ctx(
+        supports_elicit=True,
+        elicit_result=AcceptedElicitation(data="Brandon"),
+    )
+
+    with patch(
+        "moneybin.mcp.first_run._bootstrap_profile",
+        side_effect=OSError("disk full"),
+    ):
+        result = await mw.on_call_tool(_fake_mw_context(ctx), call_next)
+
+    assert isinstance(result, ToolResult)
+    assert result.structured_content is not None
+    assert (
+        result.structured_content["error"]["code"] == error_codes.INFRA_SETUP_REQUIRED
+    )
+    call_next.assert_not_called()
+    # Stays unconfigured so the next call retries setup (transient failures self-heal).
+    assert mw._configured is False  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+
+
 def test_bootstrap_adopts_existing_profile_on_collision() -> None:
     """A name that already exists is adopted, not errored."""
     from moneybin.mcp.first_run import (

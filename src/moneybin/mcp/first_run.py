@@ -76,7 +76,14 @@ class FirstRunSetupMiddleware(Middleware):
         if name is None:
             return _setup_required_result()
 
-        _bootstrap_profile(name)
+        try:
+            _bootstrap_profile(name)
+        except Exception:  # noqa: BLE001 — middleware must not raise; bootstrap touches DB/keychain/FS
+            logger.error(
+                "First-run profile bootstrap failed; returning setup envelope",
+                exc_info=True,
+            )
+            return _setup_required_result()
         self._configured = True
         logger.info("First-run setup complete; profile configured in-process")
         return await call_next(context)
