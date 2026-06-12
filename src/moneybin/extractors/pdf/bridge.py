@@ -156,21 +156,31 @@ def parse_bridge_response(payload: object) -> BridgeResponse:
     except Exception as e:  # noqa: BLE001 — pydantic ValidationError + bound-validator ValueErrors
         raise BridgeResponseError(f"bridge recipe invalid: {e}") from e
     # A bridge recipe must extract the two required fields — a primary date and
-    # an amount. Without them, confidence + reconciliation can still pass on the
-    # field that IS present, but the load then either writes all-zero amounts
-    # (no amount field) or NULL into the NOT NULL transaction_date (no date
-    # field). Reject here as bridge_response_invalid rather than surfacing a
-    # downstream DB error. Same predicates the confidence model and loader use
-    # (routing imports nothing from bridge — no cycle).
+    # an amount of the shape the declared sign_convention reconciles against.
+    # Without them, confidence + reconciliation can still pass on the field that
+    # IS present, but the load then either writes all-zero amounts or NULL into
+    # the NOT NULL transaction_date (no date field). Reject here as
+    # bridge_response_invalid rather than surfacing a downstream DB error. Same
+    # predicates the confidence model and loader use (routing imports nothing
+    # from bridge — no cycle).
     from moneybin.extractors.pdf.routing import (
-        is_amount_field,
+        amount_shape_matches_sign_convention,
         is_primary_date_field,
     )
 
-    if not any(is_amount_field(f) for f in recipe.fields):
+    # The amount field must match what reconcile() reads for this sign_convention:
+    # `amount` for negative_is_*, `credit`/`debit` for split_debit_credit. A
+    # mismatch sums absent keys to 0, so a zero-delta statement reconciles and the
+    # loader writes every amount as 0. (Subsumes the generic "has any amount
+    # field" check — every recipe carries a sign_convention.)
+    if not amount_shape_matches_sign_convention(recipe.fields, recipe.sign_convention):
         raise BridgeResponseError(
-            "bridge recipe must contain at least one amount, debit, or credit "
-            "field — without it, extracted rows have no transaction amount"
+            "bridge recipe's amount fields do not match its declared "
+            f"sign_convention {recipe.sign_convention!r}: "
+            "negative_is_expense/negative_is_income require an 'amount' field; "
+            "split_debit_credit requires a 'debit' and/or 'credit' field. Without "
+            "the matching field, reconciliation reads absent keys as 0 and a "
+            "zero-delta statement loads every amount as 0"
         )
     if not any(is_primary_date_field(f) for f in recipe.fields):
         raise BridgeResponseError(

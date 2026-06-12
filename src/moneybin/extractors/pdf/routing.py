@@ -183,6 +183,33 @@ def is_primary_date_field(field: FieldExtraction) -> bool:
     return field.cast == "date" and _canonical_key(field) == "date"
 
 
+def amount_shape_matches_sign_convention(
+    fields: list[FieldExtraction], sign_convention: str
+) -> bool:
+    """True if the recipe's amount fields match the keys ``reconcile`` reads for the convention.
+
+    ``reconciliation._sum_pre_normalization`` reads convention-specific canonical
+    keys: only ``amount`` for ``negative_is_expense``/``negative_is_income``, only
+    ``credit``/``debit`` for ``split_debit_credit``. A recipe that declares one
+    convention but supplies the other shape (e.g. ``negative_is_expense`` with only
+    debit/credit, or ``split_debit_credit`` with only ``amount``) sums absent keys
+    to 0, so a zero-delta statement reconciles and the loader writes every amount as
+    0. The bridge parser rejects such a mismatch up front. Kept beside
+    ``_canonical_key`` (the canonical-key authority ``reconcile`` also reads by) so
+    the two cannot drift. Public because ``bridge.parse_bridge_response`` imports it.
+    """
+    if sign_convention in ("negative_is_expense", "negative_is_income"):
+        return any(
+            f.cast in ("decimal", "int") and _canonical_key(f) == "amount"
+            for f in fields
+        )
+    # split_debit_credit — reconcile reads the credit/debit keys, not amount.
+    return any(
+        f.cast in ("decimal", "int") and _canonical_key(f) in ("debit", "credit")
+        for f in fields
+    )
+
+
 def _canonicalize_rows(
     recipe: Recipe, rows: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:

@@ -39,6 +39,17 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   row-count divergence. Every hand-off writes a `smart_import_parse` privacy
   audit row and bumps `moneybin_pdf_bridge_egress_total{outcome}`. MCP-only
   for now (gated on `actor_kind="agent"`); a bare CLI keeps the seed fallback.
+- **Smart-import-pdf Phase 2b complete — recipe auto-recovery + scanned-PDF
+  degradation.** A saved PDF recipe that stops serving its layout (fails
+  validation on replay, or stops reconciling) is now re-derived and installed
+  as a new audited, undo-reversible version on the next import, instead of
+  stranding the broken recipe so every future statement re-escalates. A
+  scanned / image-only PDF with no selectable text layer now returns an
+  explicit unsupported outcome (a clear "needs a vision-capable backend"
+  message, error code `import_pdf_no_text_layer`) rather than a generic
+  "no tables extracted" failure. The bridge parser also rejects an agent
+  recipe whose amount fields don't match its declared sign convention. See
+  [`docs/specs/smart-import-pdf.md`](docs/specs/smart-import-pdf.md).
 - **`moneybin import formats list --type {tabular,pdf,all}`** (default
   `all`) filters by format kind and renders tabular + PDF sections in
   text; JSON output is a uniform list with a `type` discriminator per

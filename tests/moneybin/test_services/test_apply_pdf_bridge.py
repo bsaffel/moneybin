@@ -340,14 +340,16 @@ def test_apply_uncompilable_regex_raises_bridge_response_error(
 # ---------------------------------------------------------------------------
 
 
-def test_apply_format_name_none_when_format_preexists(
+def test_apply_bumps_version_when_format_preexists(
     db: Database, tmp_path: Path, stub_extract: list[PdfDocument]
 ) -> None:
-    # First apply persists the format. A second apply of the same layout
-    # fingerprint can't save_new again (ConstraintException → skipped); the
-    # stale recipe is not updated, so format_name must be None rather than
-    # claiming a persist that didn't happen (the replay-failure bridge case;
-    # the actual recipe refresh is #40's auto-bump_version).
+    # First apply persists the format at version 1. A second apply of the same
+    # layout fingerprint can't save_new again (ConstraintException); instead of
+    # leaving the stale recipe untouched (the old replay-failure dead end), it
+    # bumps the recipe to a new version (Req 9a auto-bump) so the next
+    # same-fingerprint statement replays the corrected recipe rather than
+    # re-escalating. format_name is reported (the bump persisted) and version
+    # increments.
     svc = ImportService(db)
     first = svc.apply_pdf_bridge_response(_pdf_path(tmp_path), _bridge_response())
     assert first.format_name is not None
@@ -355,11 +357,48 @@ def test_apply_format_name_none_when_format_preexists(
 
     second = svc.apply_pdf_bridge_response(_pdf_path(tmp_path), _bridge_response())
     assert second.outcome == "applied"
-    # The second apply still ran its load path (import_id set); format_name=None
-    # reflects the skipped save, not a silently-failed apply. (Its rows are
-    # content-hash duplicates of the first import, so no new rows are inserted.)
     assert second.import_id is not None
-    assert second.format_name is None
+    # The bump persisted a new recipe version, so format_name is reported (not
+    # None) — and it's the same fingerprint-derived name as the first save.
+    assert second.format_name == first.format_name
+
+    row = db.conn.execute(
+        f"SELECT version FROM {PDF_FORMATS.full_name} WHERE name = ?",  # noqa: S608  # TableRef constant, not user input
+        [first.format_name],
+    ).fetchone()
+    assert row is not None and row[0] == 2
+
+
+def test_apply_bump_updates_stored_recipe(
+    db: Database, tmp_path: Path, stub_extract: list[PdfDocument]
+) -> None:
+    # The replay-failure bridge case: a saved recipe stopped serving the layout
+    # and the agent returns a corrected recipe. The bump must replace the stored
+    # extraction_recipe with the new one (not just increment version), so the
+    # next replay uses the corrected recipe.
+    import json
+
+    svc = ImportService(db)
+    svc.apply_pdf_bridge_response(_pdf_path(tmp_path), _bridge_response())
+
+    # A detectable, still-reconciling change to the Description field pattern.
+    # Date + Amount (what reconciliation reads) are unchanged, so the corrected
+    # recipe still ties out and reaches the save branch.
+    corrected = _valid_recipe_dict()
+    corrected["fields"][1]["pattern"] = r"\S.*"
+    result = svc.apply_pdf_bridge_response(
+        _pdf_path(tmp_path), _bridge_response(recipe=corrected)
+    )
+    assert result.format_name is not None
+
+    stored = db.conn.execute(
+        f"SELECT extraction_recipe FROM {PDF_FORMATS.full_name} WHERE name = ?",  # noqa: S608  # TableRef constant, not user input
+        [result.format_name],
+    ).fetchone()
+    assert stored is not None
+    recipe_json = json.loads(stored[0])
+    desc_field = next(f for f in recipe_json["fields"] if f["name"] == "Description")
+    assert desc_field["pattern"] == r"\S.*"
 
 
 def test_apply_format_name_none_when_save_fails(
