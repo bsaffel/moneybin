@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-06-10 -->
+<!-- Last reviewed: 2026-06-11 -->
 # Roadmap
 
 Pre-v1 roadmap. Each milestone is a coherent slice of work, not a calendar date — we don't commit dates pre-v1. Statuses below reflect what's merged to `main` today; the dated record of individual changes lives in [`CHANGELOG.md`](../CHANGELOG.md). For "is this for me?" see [`audience.md`](audience.md); for where MoneyBin fits and who to use instead, [`comparison.md`](comparison.md); for shipped capability detail, [`features.md`](features.md).
@@ -9,7 +9,7 @@ Pre-v1 roadmap. Each milestone is a coherent slice of work, not a calendar date 
 
 ## How we sequence — depth before storefront
 
-MoneyBin is built to be the option a serious user converges on because the foundation is rock-solid. So we finish the engine before we polish the storefront. Work is organized into four milestones, each closed by a **test-functionality gate** — a concrete, falsifiable bar the whole milestone must pass before the next one starts:
+MoneyBin is built to be the option a serious user converges on because the foundation is rock-solid. So we finish the engine before we polish the storefront. Work is organized into four milestones, each closed by a **test-functionality gate** — a concrete, falsifiable bar the whole milestone must pass before the next one starts (with one deliberate exception: the first public release, below):
 
 | Milestone | What it means | Closes when (the gate) |
 |---|---|---|
@@ -19,6 +19,19 @@ MoneyBin is built to be the option a serious user converges on because the found
 | **M3 — Productization & Distribution** | The approachable, delightful surface — Web UI, migration guides, packaging, and the opt-in hosted tier — now that there's a complete, hardened app underneath. | **Pre-Distribution:** the full suite is green; the anonymized real-data parity check passes; `system doctor` is clean on a real profile; privacy/security checks pass. **M3 close (hosted launch) = v1.** |
 
 Deliberately, the **front end is sequenced after the engine and the reports**. A narrow review console ships earlier (M3A, pulled forward) — but as a *testing and trust* surface, not a user-acquisition play. We'd rather be complete and correct than first.
+
+### The first public release (pulled forward, deliberately small)
+
+A quiet first public release precedes the milestone gates above. Its bar is deliberately narrower than Ingestion-Complete — it makes MoneyBin *installable* without declaring the engine *done*:
+
+1. **Imports validated** — every shipped import format driven end-to-end against real data.
+2. **Plaid round-trip** — link → sync → reconciled balances on a real account.
+3. **A minimal MCP-app surface (M3M)** — the product can be seen and interacted with inside an MCP host, not only queried.
+4. **Quiet distribution** — PyPI publish (that half of M3B) plus the first-run wizard and `moneybin demo` preset (from M3A). Availability, not promotion.
+
+The full test suite, `system doctor`, and privacy/security checks must be green for the release artifacts. **Distribution is not launch**: no announcement, no landing push — marketing waits until the product proves itself in daily use.
+
+Immediately after the first public release, the next wave is **investments (M1J) → multi-currency (M1K) → budgets (M2C)**. Those still close the Ingestion-Complete and Analysis-Complete gates and still gate v1 (M3H); they no longer gate first availability.
 
 ### How to read the addresses
 
@@ -115,8 +128,8 @@ Now that the engine and the analysis layer are complete and self-testable, make 
 
 | Address | Area | Status | Notes |
 |---|---|---|---|
-| **M3A** | Evaluator/testing surface (**pulled forward**) | 🗓️ | `moneybin demo` preset + first-run wizard + a **narrow** Web review console (categorization/import/doctor/lineage), **built on M3L**. Ships early as a *testing/trust* surface so the M1 core is legible — but it's productization, hence M3. |
-| **M3B** | Install & packaging | 🗓️ | PyPI Trusted Publishing + Homebrew formula + `.mcpb` bundle. |
+| **M3A** | Evaluator/testing surface (**pulled forward**) | 🗓️ | `moneybin demo` preset + first-run wizard + a **narrow** Web review console (categorization/import/doctor/lineage), **built on M3L**. Ships early as a *testing/trust* surface so the M1 core is legible — but it's productization, hence M3. Demo preset + wizard are first-public-release items (see above). |
+| **M3B** | Install & packaging | 🗓️ | PyPI Trusted Publishing + Homebrew formula + `.mcpb` bundle. The PyPI half is a first-public-release item; brew + `.mcpb` follow later. |
 | **M3C** | Full Web UI | 🗓️ | Extends the M3A console to the complete dashboard surface, backed by real domains; **built on M3L**. Same UI at `moneybin ui` (local) and the hosted tier. |
 | **M3D** | Remote / HTTP MCP transport + auth | 🗓️ | Unlocks ChatGPT web + mobile; identity via Auth0/OIDC, MoneyBin-owned authorization/consent. |
 | **M3E** | Migration guides | 🗓️ | Mint/Tiller/YNAB/Actual/Maybe/OFX; each gated on its import path being real. |
@@ -127,9 +140,9 @@ Now that the engine and the analysis layer are complete and self-testable, make 
 | **M3J** | Self-host / headless operations | 🗓️ | Gated on `moneybin-server`. Operator guides + any build specs. |
 | **M3K** | CLI / MCP UX standards | 🗓️ | Interaction patterns, output formatting, prompt/resource conventions. |
 | **M3L** | Shared UI architecture (foundation) | 📐 | One `ui-core` (React + shadcn/Tailwind/Tremor) behind two shells — Web UI and MCP App; transport-agnostic `MoneyBinClient`; bundle embedded in the Python wheel. Prerequisite for M3A/M3C/M3M. [`ui-architecture.md`](specs/ui-architecture.md) + [ADR-014](decisions/014-shared-ui-architecture.md). |
-| **M3M** | MCP App surface | 🗓️ | MoneyBin's own dashboards rendered inside an MCP host (Claude, ChatGPT, …), built on M3L's `ui-core`. Enabled by MCP Apps becoming a ratified standard (`2026-01-26`); sequencing vs. the Web UI is under review. |
+| **M3M** | MCP App surface | 🗓️ | MoneyBin's own dashboards rendered inside an MCP host (Claude, ChatGPT, …), built on M3L's `ui-core`. Enabled by MCP Apps becoming a ratified standard (`2026-01-26`). A minimal slice is a first-public-release item (see above); the MCP App precedes the full Web UI (M3C). |
 
-> **Pre-Distribution gate.** M3 work proceeds once the full suite is green, the anonymized real-data parity check passes, `system doctor` is clean on a real profile, and privacy/PII/security checks pass. **Hosted launch (M3H) = v1.**
+> **Pre-Distribution gate.** M3 work proceeds once the full suite is green, the anonymized real-data parity check passes, `system doctor` is clean on a real profile, and privacy/PII/security checks pass. The first-public-release items (M3A demo/wizard, M3B PyPI, minimal M3M) deliberately precede this gate — see "The first public release" above; the rest of M3 waits. **Hosted launch (M3H) = v1.**
 
 **A note on extensibility.** The contributor surface — adding reports, analysis packages, and providers — is a stated differentiator, deliberately narrower than a general plugin SDK. The framework is M1 engine work (M1Q); the reference packages (`assets`, `us_tax`) are M2 (M2M); the contributor-facing tooling and docs are M3 (M3I). Contract specified in [`extension-contracts.md`](specs/extension-contracts.md).
 
