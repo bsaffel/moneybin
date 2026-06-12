@@ -28,9 +28,9 @@ _VALID_RECIPE_DICT: dict[str, Any] = {
     "fields": [
         {
             "name": "date",
-            "pattern": r"\d{2}/\d{2}",
+            "pattern": r"\d{2}/\d{2}/\d{4}",
             "cast": "date",
-            "date_format": "%m/%d",
+            "date_format": "%m/%d/%Y",
         },
         {"name": "amount", "pattern": r"-?\d+\.\d{2}", "cast": "decimal"},
     ],
@@ -159,4 +159,118 @@ def test_parse_bridge_response_rejects_invalid_recipe_shape() -> None:
     # as ValueError so callers have one exception type to catch.
     bad: dict[str, Any] = {"oops": True}
     with pytest.raises(ValueError, match="recipe invalid"):
+        parse_bridge_response({"recipe": bad, "rows": []})
+
+
+def test_parse_bridge_response_raises_bridge_response_error_subtype() -> None:
+    """Parse failures raise ``BridgeResponseError`` (a ``ValueError`` subtype).
+
+    Lets the confirm path catch a bad agent response narrowly without also
+    swallowing unrelated ValueErrors raised later by extraction/load — those
+    would mislabel a malformed-PDF failure as ``bridge_response_invalid``.
+    """
+    from moneybin.extractors.pdf.bridge import BridgeResponseError
+
+    with pytest.raises(BridgeResponseError):
+        parse_bridge_response({"rows": []})
+
+
+def test_parse_bridge_response_rejects_uncompilable_regex() -> None:
+    """Reject an uncompilable recipe regex at parse time, not at execution.
+
+    Surfaces as ``BridgeResponseError`` (→ ``bridge_response_invalid``) instead
+    of a cryptic ``regex.error`` raised later inside ``route_forced_recipe``.
+    """
+    from moneybin.extractors.pdf.bridge import BridgeResponseError
+
+    bad = {**_VALID_RECIPE_DICT, "row_split": "["}  # unterminated character class
+    with pytest.raises(BridgeResponseError, match="invalid regex"):
+        parse_bridge_response({"recipe": bad, "rows": []})
+
+
+def test_parse_bridge_response_rejects_recipe_without_amount_field() -> None:
+    """A recipe with no amount/debit/credit field is rejected at parse time.
+
+    Without one, confidence passes on the date field alone and a zero-delta
+    statement reconciles — loading all-zero rows. Reject as BridgeResponseError.
+    """
+    from moneybin.extractors.pdf.bridge import BridgeResponseError
+
+    no_amount = {
+        **_VALID_RECIPE_DICT,
+        "fields": [
+            {
+                "name": "date",
+                "pattern": r"\d{2}/\d{2}",
+                "cast": "date",
+                "date_format": "%m/%d",
+            },
+        ],
+    }
+    with pytest.raises(BridgeResponseError, match="amount"):
+        parse_bridge_response({"recipe": no_amount, "rows": []})
+
+
+def test_parse_bridge_response_rejects_recipe_without_primary_date_field() -> None:
+    """A recipe with an amount but no primary ``date`` field is rejected.
+
+    The load writes ``row['date']`` into ``transaction_date`` (NOT NULL); a
+    recipe with only an amount (or only ``post_date``) passes confidence +
+    reconciliation, then fails with a generic DB constraint error instead of a
+    clean ``bridge_response_invalid``.
+    """
+    from moneybin.extractors.pdf.bridge import BridgeResponseError
+
+    no_date = {
+        **_VALID_RECIPE_DICT,
+        "fields": [
+            {"name": "amount", "pattern": r"-?\d+\.\d{2}", "cast": "decimal"},
+        ],
+    }
+    with pytest.raises(BridgeResponseError, match="date"):
+        parse_bridge_response({"recipe": no_date, "rows": []})
+
+
+def test_parse_bridge_response_rejects_yearless_date_format() -> None:
+    """A date field whose explicit ``date_format`` has no year directive is rejected.
+
+    ``%m/%d`` (no ``%Y``/``%y``) makes ``strptime`` default to year 1900;
+    reconciliation only checks amount totals, so the wrong dates would load
+    silently. Reject at parse time as ``bridge_response_invalid``.
+    """
+    from moneybin.extractors.pdf.bridge import BridgeResponseError
+
+    yearless = {
+        **_VALID_RECIPE_DICT,
+        "fields": [
+            {
+                "name": "date",
+                "pattern": r"\d{2}/\d{2}",
+                "cast": "date",
+                "date_format": "%m/%d",
+            },
+            {"name": "amount", "pattern": r"-?\d+\.\d{2}", "cast": "decimal"},
+        ],
+    }
+    with pytest.raises(BridgeResponseError, match="year"):
+        parse_bridge_response({"recipe": yearless, "rows": []})
+
+
+def test_parse_bridge_response_rejects_non_date_cast_primary_date() -> None:
+    """A 'Date'-named field that isn't ``cast='date'`` doesn't satisfy the gate.
+
+    ``_canonical_key`` maps it to ``date`` via its fallback, but ``execute_recipe``
+    won't parse it, so the loader would write an unparsed string into the DATE
+    ``transaction_date`` column. The gate must also require ``cast == 'date'``.
+    """
+    from moneybin.extractors.pdf.bridge import BridgeResponseError
+
+    bad = {
+        **_VALID_RECIPE_DICT,
+        "fields": [
+            {"name": "Date", "pattern": r"\d{2}/\d{2}", "cast": "str"},
+            {"name": "amount", "pattern": r"-?\d+\.\d{2}", "cast": "decimal"},
+        ],
+    }
+    with pytest.raises(BridgeResponseError, match="date"):
         parse_bridge_response({"recipe": bad, "rows": []})

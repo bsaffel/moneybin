@@ -110,6 +110,17 @@ class Recipe(BaseModel):
                 f"nested unbounded quantifier in {label} — "
                 "pattern rejected to prevent catastrophic backtracking"
             )
+        # Reject patterns that won't compile, using the same `regex` engine the
+        # executor runs. An agent-authored recipe with a malformed regex then
+        # fails validation here — wrapped to BridgeResponseError →
+        # bridge_response_invalid — instead of raising a cryptic regex.error
+        # deep in execute_recipe. Only row_split + field patterns reach this
+        # (the row_region anchors are matched literally via str.find, never
+        # compiled, so a special-char anchor like "Balance ($)" is valid).
+        try:
+            _re.compile(pattern)
+        except _re.error as exc:
+            raise ValueError(f"invalid regex in {label}: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------

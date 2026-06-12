@@ -83,6 +83,10 @@ _Reason = Literal[
 # the router logs a warning and falls through to auto-derive, then reports the
 # auto-derive outcome via the appropriate reason above.
 
+# Where the recipe the pipeline executes came from. Drives metadata-anchor use
+# and replay-metric/reason semantics in _run_recipe_pipeline (see its docstring).
+RecipeSource = Literal["replay", "auto_derive", "bridge"]
+
 
 @dataclass(frozen=True)
 class RouteDecision:
@@ -145,6 +149,40 @@ def _canonical_key(field: FieldExtraction) -> str:
     return name.lower()
 
 
+_AMOUNT_FIELD_KEYS: frozenset[str] = frozenset({"amount", "debit", "credit"})
+
+
+def is_amount_field(field: FieldExtraction) -> bool:
+    """True if the field extracts a numeric transaction amount.
+
+    The single definition of "amount field", shared by the confidence model
+    (required-fields gate) and the Phase 2b bridge parser (which rejects an
+    agent recipe lacking one — otherwise confidence passes on the date field
+    alone and a zero-delta statement reconciles all-zero rows). Public because
+    ``bridge.parse_bridge_response`` imports it for that gate.
+    """
+    return (
+        field.cast in ("decimal", "int") and _canonical_key(field) in _AMOUNT_FIELD_KEYS
+    )
+
+
+def is_primary_date_field(field: FieldExtraction) -> bool:
+    """True if the field is the primary transaction date (canonical ``date``).
+
+    A ``post_date``-only recipe does NOT qualify: the loader writes ``row['date']``
+    into the NOT NULL ``transaction_date`` column, so the bridge parser requires
+    a primary date field to reject an amount-only/post-date-only recipe with a
+    clean error rather than a downstream DB constraint failure. Public because
+    ``bridge.parse_bridge_response`` imports it for that gate.
+
+    Requires ``cast == "date"`` (mirroring ``is_amount_field``'s cast check):
+    ``_canonical_key`` maps a non-date-cast field named "Date" to ``date`` via
+    its fallback, but ``execute_recipe`` only date-parses ``cast == "date"``
+    fields, so a str/int "Date" would write an unparsed value to the column.
+    """
+    return field.cast == "date" and _canonical_key(field) == "date"
+
+
 def _canonicalize_rows(
     recipe: Recipe, rows: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
@@ -175,14 +213,10 @@ def _compute_confidence(recipe: Recipe, rows: list[dict[str, Any]]) -> float:
         # `f.name` carries the original PDF column header ("Transaction
         # Amount", "Withdrawals", "Deposits", "Post Date" …); a literal
         # lowercase compare against {"amount","debit","credit"} would never
-        # match those, defeating the required-fields gate. Use _canonical_key
-        # so the same canonicalisation that maps row keys also drives the
-        # confidence model.
-        is_amount = f.cast in ("decimal", "int") and _canonical_key(f) in (
-            "amount",
-            "debit",
-            "credit",
-        )
+        # match those, defeating the required-fields gate. is_amount_field uses
+        # _canonical_key so the same canonicalisation that maps row keys also
+        # drives the confidence model.
+        is_amount = is_amount_field(f)
         if is_date or is_amount:
             required_total += 1
         else:
@@ -277,6 +311,84 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
                 fp=fp,
             )
 
+    # Steps 2-5 (execute → reconcile) are shared with the Phase 2b
+    # bridge-apply path; see _run_recipe_pipeline.
+    matched_name = saved_format.name if saved_format is not None else None
+    return _run_recipe_pipeline(
+        recipe,
+        document_text,
+        fp,
+        recipe_source="replay" if is_replay else "auto_derive",
+        matched_format_name=matched_name,
+    )
+
+
+def route_forced_recipe(doc: PdfDocument, recipe: Recipe) -> RouteDecision:
+    """Route a PDF through a caller-supplied (bridge-authored) recipe.
+
+    The Phase 2b bridge apply entry point. The driving agent proposed this
+    recipe; rather than trust the agent's returned rows, the service re-runs
+    the recipe here through the same execute → confidence → reconcile gate a
+    replay uses, so the persisted recipe is proven to reconcile against the
+    document before any rows load. Skips fingerprint lookup and auto-derive —
+    the recipe is given, not selected.
+
+    ``matched_format_name`` stays None: a bridge apply is first contact, so the
+    service persists the recipe via ``save_new``. The replay metrics never
+    fire (this is not a replay of a *saved* recipe); a reconciliation failure
+    reports ``reconciliation_failed`` (an invalid proposal), not
+    ``replay_reconciliation_failed`` (a drifted saved recipe).
+    """
+    document_text = "\n".join(doc.text_lines)
+    fp = compute_fingerprint(doc)
+    return _run_recipe_pipeline(
+        recipe,
+        document_text,
+        fp,
+        recipe_source="bridge",
+        matched_format_name=None,
+    )
+
+
+def _run_recipe_pipeline(
+    recipe: Recipe,
+    document_text: str,
+    fp: dict[str, Any],
+    *,
+    recipe_source: RecipeSource,
+    matched_format_name: str | None,
+) -> RouteDecision:
+    """Execute a recipe and apply the confidence + reconciliation gates.
+
+    Shared engine downstream of recipe *selection*: given a recipe and the
+    document text, run execute → canonicalize → confidence → metadata →
+    reconcile and return the routing decision. All three recipe sources feed
+    this — fingerprint ``replay``, first-contact ``auto_derive``, and the
+    Phase 2b ``bridge`` apply — so a bridge-authored recipe passes the *same*
+    gate as a saved one; a persisted recipe is always proven to reconcile
+    before the service loads it.
+
+    ``recipe_source`` drives two source-specific behaviors:
+
+    - **metadata anchors** — ``replay`` and ``bridge`` recipes carry their own
+      ``metadata_anchors`` (non-default balance/account labels); ``auto_derive``
+      has none and falls back to ``DEFAULT_ANCHORS``.
+    - **replay metrics + reason** — only a true ``replay`` of a *saved* recipe
+      trips the replay guard (``PDF_REPLAY_GUARD_FAILURE_TOTAL``,
+      ``replay_reconciliation_failed``). A ``bridge`` proposal that doesn't tie
+      out is just an invalid proposal (``reconciliation_failed``), not a drift
+      signal.
+
+    Args:
+        recipe: Recipe to execute (from replay, auto-derive, or bridge).
+        document_text: The document's text lines joined by newlines.
+        fp: Layout fingerprint, threaded onto every returned decision.
+        recipe_source: Where the recipe came from — see behaviors above.
+        matched_format_name: Saved format name on replay; None otherwise
+            (signals first-contact save to the service).
+    """
+    use_recipe_anchors = recipe_source in ("replay", "bridge")
+    is_saved_replay = recipe_source == "replay"
     # ------------------------------------------------------------------
     # 2. Execute recipe → rows
     # ------------------------------------------------------------------
@@ -304,7 +416,7 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
             ),
             confidence=0.0,
             reason="unsupported_number_format",
-            matched_format_name=saved_format.name if saved_format is not None else None,
+            matched_format_name=matched_format_name,
             fp=fp,
         )
     rows = _canonicalize_rows(recipe, extracted.rows)
@@ -323,7 +435,7 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
             ),
             confidence=0.0,
             reason="no_rows",
-            matched_format_name=saved_format.name if saved_format is not None else None,
+            matched_format_name=matched_format_name,
             fp=fp,
         )
 
@@ -348,7 +460,7 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
             ),
             confidence=conf,
             reason="low_confidence",
-            matched_format_name=saved_format.name if saved_format is not None else None,
+            matched_format_name=matched_format_name,
             fp=fp,
         )
 
@@ -371,7 +483,7 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
     #                    (Phase 2b bridge-authored recipes for statement
     #                    formats with no balance lines)
     anchors_dict: dict[str, list[str]] | None = None
-    if is_replay and recipe.metadata_anchors is not None:
+    if use_recipe_anchors and recipe.metadata_anchors is not None:
         anchors_dict = {}
         for f in recipe.metadata_anchors:
             anchors_dict.setdefault(f.name, []).append(f.pattern)
@@ -385,7 +497,7 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
             metadata=metadata,
             confidence=conf,
             reason="metadata_incomplete",
-            matched_format_name=saved_format.name if saved_format is not None else None,
+            matched_format_name=matched_format_name,
             fp=fp,
         )
 
@@ -399,7 +511,7 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
     recon = reconcile(rows, metadata, recipe.sign_convention)
 
     if recon.passed:
-        if is_replay:
+        if is_saved_replay:
             PDF_RECIPE_HIT_TOTAL.labels(outcome="replay_success").inc()
         return RouteDecision(
             outcome="transactions",
@@ -408,17 +520,17 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
             metadata=metadata,
             confidence=conf,
             reason="passed",
-            matched_format_name=saved_format.name if saved_format is not None else None,
+            matched_format_name=matched_format_name,
             fp=fp,
         )
 
     # Reconciliation failed.
-    if is_replay:
+    if is_saved_replay:
         PDF_RECIPE_HIT_TOTAL.labels(outcome="replay_failed").inc()
         PDF_REPLAY_GUARD_FAILURE_TOTAL.inc()
         # Balance values intentionally omitted — `.claude/rules/security.md`
         # forbids logging financial values; the reason code suffices.
-        _format_name = saved_format.name if saved_format is not None else "unknown"
+        _format_name = matched_format_name or "unknown"
         logger.warning(
             f"Replay recipe for format {_format_name!r} failed reconciliation "
             f"(reason={recon.reason}) — falling back to seed"
@@ -431,7 +543,7 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
             confidence=conf,
             reason="replay_reconciliation_failed",
             replay_guard_failed=True,
-            matched_format_name=saved_format.name if saved_format is not None else None,
+            matched_format_name=matched_format_name,
             fp=fp,
         )
 
@@ -443,6 +555,9 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
         confidence=conf,
         reason="reconciliation_failed",
         replay_guard_failed=False,
-        matched_format_name=None,  # auto-derive path, never a replay
+        # Reached by first-contact auto-derive and by route_forced_recipe
+        # (bridge); neither is a saved-recipe replay, so there is no matched
+        # format to carry.
+        matched_format_name=None,
         fp=fp,
     )

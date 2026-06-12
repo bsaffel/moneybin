@@ -100,6 +100,41 @@ class ConfirmationRequired:
     error_message: str = ""
 
 
+def confirmation_payload_dict(outcome: ConfirmationRequired) -> dict[str, object]:
+    """Serialize a ConfirmationRequired to the transport-neutral payload dict.
+
+    Single source for the per-file ``confirmation_payload`` carried by both the
+    batch service path (``ImportService.import_files``) and the single-file MCP
+    path (``import_files`` tool) — they must produce the identical shape, and a
+    new channel field (e.g. ``bridge_payload``) should land in one place. The
+    tabular fields (``proposed_mapping``, ``unmapped_columns``) are populated
+    from a ``ProposedMapping`` proposal; ``bridge_payload`` from a
+    ``BridgePayload`` proposal; the unused side is empty/None for the channel.
+    """
+    proposed = outcome.proposed
+    proposed_mapping: dict[str, str] = {}
+    unmapped: list[str] = []
+    bridge_payload: dict[str, Any] | None = None
+    if isinstance(proposed, ProposedMapping):
+        proposed_mapping = dict(proposed.field_mapping)
+        unmapped = list(proposed.unmapped_columns)
+    else:
+        bridge_payload = proposed.payload
+    return {
+        "channel": outcome.channel,
+        "tier": outcome.confidence.tier,
+        "score": outcome.confidence.score,
+        "reason": outcome.reason,
+        "error_message": outcome.error_message,
+        "proposed_mapping": proposed_mapping,
+        "samples": dict(outcome.samples),
+        "flagged": list(outcome.confidence.flagged),
+        "missing_required": list(outcome.confidence.missing_required),
+        "unmapped_columns": unmapped,
+        "bridge_payload": bridge_payload,
+    }
+
+
 class ImportConfirmationRequiredError(Exception):
     """Raised when an import cannot proceed without explicit confirmation.
 

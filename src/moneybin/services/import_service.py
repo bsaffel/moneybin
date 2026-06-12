@@ -6,12 +6,13 @@ MCP tools call this same service — no duplication.
 """
 
 import dataclasses
+import hashlib
 import logging
 import time
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
 
 import duckdb
 
@@ -62,6 +63,10 @@ class ImportResult:
     """True if running balance suggests sign inversion; amounts were NOT auto-corrected."""
     import_id: str | None = None
     """UUID of the raw.import_log row this import created."""
+    pdf_format_name: str | None = None
+    """Name a PDF recipe was actually persisted under, or None if not saved
+    (save_format off, or save_new skipped/failed). Set only on a confirmed
+    save_new so apply_pdf_bridge_response never claims a save that didn't land."""
     field_mapping: dict[str, str] | None = None
     """Authoritative destination → source column mapping the load used.
 
@@ -214,6 +219,34 @@ class PdfPreviewResult:
 
 
 @dataclass(frozen=True)
+class BridgeApplyResult:
+    """Outcome of applying a bridge response via ``apply_pdf_bridge_response``.
+
+    ``outcome`` is ``applied`` when the agent's recipe re-executed and the
+    re-executed rows passed the reconciliation gate (Req 9), or ``invalid``
+    when they did not — in which case nothing loads and ``reject_reason``
+    carries the routing reason (e.g. ``reconciliation_failed``).
+
+    The divergence fields verify the agent's *expectation* against the
+    *actual* re-execution (per the bridge trust model): ``expected_row_count``
+    is how many rows the agent returned; ``actual_row_count`` is how many the
+    recipe reproduced against the document; ``rows_diverged`` is True when they
+    differ. Divergence does not block a load that reconciles — reconciliation
+    on the re-executed rows is the authority — but it is surfaced so the caller
+    can flag a recipe that doesn't reproduce its author's own extraction.
+    """
+
+    outcome: Literal["applied", "invalid"]
+    import_id: str | None
+    rows_loaded: int
+    format_name: str | None
+    expected_row_count: int
+    actual_row_count: int
+    rows_diverged: bool
+    reject_reason: str | None = None
+
+
+@dataclass(frozen=True)
 class ResolvedMapping:
     """Final per-import mapping from the matched format or auto-detection.
 
@@ -267,6 +300,24 @@ def _pdf_alias(file_path: Path) -> str:
         suffix = hashlib.sha256(slug.encode()).hexdigest()[:4]
         slug = f"{slug[:54]}_{suffix}"
     return slug
+
+
+def _pdf_format_name(fp: dict[str, Any]) -> str:
+    """Deterministic first-contact format name: issuer slug + fingerprint hash.
+
+    Single source of truth for the ``app.pdf_formats.name`` of an auto-derived
+    or bridge-authored recipe on first contact. Both ``_import_pdf_transactions``
+    (deterministic) and ``apply_pdf_bridge_response`` (bridge) derive the name
+    this way — the hash is built from ``serialize_fingerprint(fp)`` so it stays
+    byte-for-byte identical to the JSON the repo stores and looks up by; any
+    drift between call sites would silently break duplicate detection.
+    """
+    from moneybin.extractors.pdf.fingerprint import serialize_fingerprint
+    from moneybin.utils import slugify
+
+    issuer_slug = slugify(fp.get("issuer", "unknown"))
+    digest = hashlib.sha256(serialize_fingerprint(fp).encode()).hexdigest()[:12]
+    return f"{issuer_slug}_{digest}"
 
 
 _ACCOUNT_MASK_PREFIXES: tuple[str, ...] = ("****", "xxxx", "XXXX")
@@ -1285,6 +1336,101 @@ class ImportService:
 
         return result
 
+    def _raise_pdf_bridge_escalation(
+        self,
+        canonical: Path,
+        doc: "PdfDocument",
+        decision: "RouteDecision",
+    ) -> NoReturn:
+        """Hand a bridge-eligible PDF to the driving agent. Always raises.
+
+        Builds the bridge payload, writes the ``smart_import_parse`` egress
+        audit row (Req 14), bumps ``PDF_BRIDGE_EGRESS_TOTAL{outcome="proposed"}``,
+        and raises ``ImportConfirmationRequiredError`` carrying the payload.
+        Shared by ``pdf_preview`` (inspection) and ``_import_pdf`` (import) so
+        both surface the identical hand-off — the egress is the audited event
+        regardless of whether the agent later ratifies via ``import_confirm``.
+        """
+        from moneybin.config import get_settings
+        from moneybin.extractors.confidence import Confidence, tier_for
+        from moneybin.extractors.pdf.bridge import build_bridge_request
+        from moneybin.metrics.registry import PDF_BRIDGE_EGRESS_TOTAL
+        from moneybin.services.import_confirmation import (
+            BridgePayload,
+            ConfirmationRequired,
+            ImportConfirmationRequiredError,
+        )
+
+        # Routing guarantees matched_format_name is non-None for
+        # replay_reconciliation_failed, but its annotation allows None —
+        # falling back to propose_recipe when it's missing avoids ever emitting
+        # a replay envelope with no saved recipe to show, which would
+        # contradict the BridgeRequest contract.
+        is_replay = (
+            decision.reason == "replay_reconciliation_failed"
+            and decision.matched_format_name is not None
+        )
+        request_kind = "replay_failed_re_derive" if is_replay else "propose_recipe"
+        # For replay failures, surface both the saved format name AND the actual
+        # recipe patterns the agent needs to inspect and propose a refreshed
+        # version. Carrying only the name forces a first-contact parse,
+        # defeating the point of the replay path.
+        saved_recipe = (
+            {
+                "name": decision.matched_format_name,
+                "recipe": decision.recipe.model_dump()
+                if decision.recipe is not None
+                else None,
+            }
+            if is_replay
+            else None
+        )
+        bridge_request = build_bridge_request(
+            doc,
+            request_kind=request_kind,
+            saved_recipe_for_re_derive=saved_recipe,
+        )
+        payload = BridgePayload(payload=dataclasses.asdict(bridge_request))
+        self._audit.record_audit_event(
+            action="smart_import_parse",
+            target=("raw", "pdf_seeds", str(canonical)),
+            before=None,
+            after={
+                "request_kind": request_kind,
+                "fingerprint": bridge_request.fingerprint,
+                "source_file": bridge_request.source_file,
+                "decision_reason": decision.reason,
+            },
+            actor="system",
+            # Req 14: context carries routing reason + confidence so analytics
+            # can filter bridge egress by either dimension via json_extract on
+            # app.audit_log.context_json.
+            context={
+                "decision_reason": decision.reason,
+                "confidence": decision.confidence,
+            },
+        )
+        PDF_BRIDGE_EGRESS_TOTAL.labels(outcome="proposed").inc()
+        bands = get_settings().import_.confidence
+        confidence_obj = Confidence(
+            score=decision.confidence,
+            tier=tier_for(decision.confidence, t_high=bands.t_high, t_med=bands.t_med),
+            flagged=(),
+            missing_required=(),
+        )
+        raise ImportConfirmationRequiredError(
+            ConfirmationRequired(
+                channel="pdf",
+                confidence=confidence_obj,
+                proposed=payload,
+                reason=(
+                    "validation_failure"
+                    if request_kind == "replay_failed_re_derive"
+                    else "unknown_layout"
+                ),
+            )
+        )
+
     def pdf_preview(self, file_path: Path) -> PdfPreviewResult:
         """Run the Phase 2a routing state machine on a PDF without importing.
 
@@ -1313,17 +1459,8 @@ class ImportService:
         This is a read-mostly path: side effects are the audit row on
         escalation (Req 14) and the metric bump. No ``raw.*`` rows land.
         """
-        from moneybin.config import get_settings as _get_settings
-        from moneybin.extractors.confidence import Confidence, tier_for
-        from moneybin.extractors.pdf.bridge import build_bridge_request
         from moneybin.extractors.pdf.extractor import PDFExtractor
         from moneybin.extractors.pdf.routing import route_pdf_import
-        from moneybin.metrics.registry import PDF_BRIDGE_EGRESS_TOTAL
-        from moneybin.services.import_confirmation import (
-            BridgePayload,
-            ConfirmationRequired,
-            ImportConfirmationRequiredError,
-        )
 
         canonical = file_path.resolve()
         doc = PDFExtractor().extract(canonical)
@@ -1340,81 +1477,11 @@ class ImportService:
             )
 
         if decision.reason in _BRIDGE_ELIGIBLE_REASONS:
-            # Bridge escalation. The driving agent gets the payload; whether
-            # it ratifies is a follow-up call to import_confirm. We audit the
-            # egress regardless (Req 14): the hand-off happened.
-            #
-            # Routing guarantees matched_format_name is non-None for
-            # replay_reconciliation_failed, but its annotation allows None —
-            # falling back to propose_recipe when it's missing avoids ever
-            # emitting a replay envelope with no saved recipe to show, which
-            # would contradict the BridgeRequest contract.
-            is_replay = (
-                decision.reason == "replay_reconciliation_failed"
-                and decision.matched_format_name is not None
-            )
-            request_kind = "replay_failed_re_derive" if is_replay else "propose_recipe"
-            # For replay failures, surface both the saved format name AND the
-            # actual recipe patterns the agent needs to inspect and propose a
-            # refreshed version. Carrying only the name forces a first-contact
-            # parse, defeating the point of the replay path.
-            saved_recipe = (
-                {
-                    "name": decision.matched_format_name,
-                    "recipe": decision.recipe.model_dump()
-                    if decision.recipe is not None
-                    else None,
-                }
-                if is_replay
-                else None
-            )
-            bridge_request = build_bridge_request(
-                doc,
-                request_kind=request_kind,
-                saved_recipe_for_re_derive=saved_recipe,
-            )
-            payload = BridgePayload(payload=dataclasses.asdict(bridge_request))
-            self._audit.record_audit_event(
-                action="smart_import_parse",
-                target=("raw", "pdf_seeds", str(canonical)),
-                before=None,
-                after={
-                    "request_kind": request_kind,
-                    "fingerprint": bridge_request.fingerprint,
-                    "source_file": bridge_request.source_file,
-                    "decision_reason": decision.reason,
-                },
-                actor="system",
-                # Req 14: context carries routing reason + confidence so
-                # analytics can filter bridge egress by either dimension via
-                # json_extract on app.audit_log.context_json.
-                context={
-                    "decision_reason": decision.reason,
-                    "confidence": decision.confidence,
-                },
-            )
-            PDF_BRIDGE_EGRESS_TOTAL.labels(outcome="proposed").inc()
-            bands = _get_settings().import_.confidence
-            confidence_obj = Confidence(
-                score=decision.confidence,
-                tier=tier_for(
-                    decision.confidence, t_high=bands.t_high, t_med=bands.t_med
-                ),
-                flagged=(),
-                missing_required=(),
-            )
-            raise ImportConfirmationRequiredError(
-                ConfirmationRequired(
-                    channel="pdf",
-                    confidence=confidence_obj,
-                    proposed=payload,
-                    reason=(
-                        "validation_failure"
-                        if request_kind == "replay_failed_re_derive"
-                        else "unknown_layout"
-                    ),
-                )
-            )
+            # Bridge escalation — hand the document to the driving agent.
+            # Always raises ImportConfirmationRequiredError after auditing the
+            # egress (Req 14) and bumping the metric. Shared with _import_pdf
+            # so preview and import surface the identical bridge payload.
+            self._raise_pdf_bridge_escalation(canonical, doc, decision)
 
         # Non-bridge-eligible seed fallback — return the honest gap.
         return PdfPreviewResult(
@@ -1426,12 +1493,181 @@ class ImportService:
             fingerprint=decision.fp,
         )
 
+    def apply_pdf_bridge_response(
+        self,
+        file_path: Path,
+        bridge_response: dict[str, Any],
+        *,
+        save_format: bool = True,
+        account_id: str | None = None,
+    ) -> BridgeApplyResult:
+        """Apply a driving agent's bridge response: validate, reconcile, load.
+
+        Terminal step of the Phase 2b bridge round-trip (Reqs 8, 9). The agent
+        previewed a PDF (``pdf_preview`` raised the bridge payload), extracted
+        rows per the recipe it authored, and returns ``{recipe, rows}`` here.
+
+        Trust model — re-execute, don't trust returned rows. The agent's rows
+        are the *expectation*; we re-extract the document and re-run the agent's
+        recipe ourselves (``route_forced_recipe``) to get the *actual* rows,
+        then:
+
+        - **Reconciliation gate (Req 9) is the authority.** It runs on the
+          re-executed rows. Any non-``transactions`` outcome (reconciliation
+          failure, low confidence, missing balances, …) is an invalid proposal:
+          nothing loads, ``outcome="invalid"``, ``reject_reason`` carries the
+          routing reason, and the egress metric records ``invalid``.
+        - **Persist the recipe, load the re-executed rows.** On pass, save the
+          recipe to ``app.pdf_formats`` (first contact → ``save_new``; audited,
+          Invariant 10) unless ``save_format=False``, then load the re-executed
+          rows to ``raw.tabular_transactions`` (``source_type='pdf'``) with a
+          reversible ``raw.import_log`` row (Req 17).
+        - **Verify expectation vs actual.** If the agent's row count differs
+          from the re-executed count, ``rows_diverged=True`` is surfaced (and
+          logged) — the saved recipe does not reproduce the agent's own
+          extraction. This does not block a load that reconciles; the gate
+          already proved the re-executed rows correct.
+
+        Args:
+            file_path: Path to the PDF the agent previewed.
+            bridge_response: The agent's ``{recipe, rows}`` reply. Validated by
+                ``parse_bridge_response`` — a malformed shape or a recipe that
+                fails the security bounds (Req 9b) raises ``BridgeResponseError``.
+            save_format: Persist the recipe for future deterministic replay.
+                False mirrors ``--no-save-format`` (one-off / sensitive
+                statement; layout fingerprint never lands in ``app.pdf_formats``).
+            account_id: Pin the rows to an existing ``dim_accounts`` row when
+                the statement carries no account anchor (mirrors the tabular
+                and deterministic-PDF ``account_id`` semantics).
+        """
+        from moneybin.extractors.pdf.bridge import (
+            BridgeResponseError,
+            parse_bridge_response,
+        )
+        from moneybin.extractors.pdf.extractor import PDFExtractor
+        from moneybin.extractors.pdf.routing import route_forced_recipe
+        from moneybin.loaders import import_log
+        from moneybin.metrics.registry import (
+            PDF_BRIDGE_EGRESS_TOTAL,
+            PDF_IMPORT_TOTAL,
+        )
+
+        # 1. Validate the agent's response. Raises BridgeResponseError on a bad
+        #    shape or a recipe that fails the security bounds (Req 9b) — the
+        #    caller (CLI / MCP) maps it to a user-facing error. A parse failure
+        #    is an "invalid" egress per the metric's documented semantics, so
+        #    bump it here (it raises before the reconciliation gate's own bump).
+        try:
+            response = parse_bridge_response(bridge_response)
+        except BridgeResponseError:
+            PDF_BRIDGE_EGRESS_TOTAL.labels(outcome="invalid").inc()
+            raise
+        expected_row_count = len(response.rows)
+
+        # 2. Re-extract + re-execute the recipe ourselves. The agent's rows are
+        #    the expectation; these re-executed rows are what we reconcile and
+        #    load — so the persisted recipe is proven to reproduce them.
+        canonical = file_path.resolve()
+        try:
+            doc = PDFExtractor().extract(canonical)
+            decision = route_forced_recipe(doc, response.recipe)
+        except Exception:
+            # Mirror _import_pdf: a failed extraction/route is a failed PDF
+            # import. Bump the metric (rung="bridge") before propagating so the
+            # bridge path doesn't silently diverge from the deterministic one.
+            PDF_IMPORT_TOTAL.labels(outcome="failed", rung="bridge").inc()
+            raise
+        actual_row_count = len(decision.rows)
+        rows_diverged = expected_row_count != actual_row_count
+
+        # 3. Reconciliation gate decides (Req 9). Anything other than a clean
+        #    transactions route is an invalid proposal — nothing loads.
+        if decision.outcome != "transactions":
+            PDF_BRIDGE_EGRESS_TOTAL.labels(outcome="invalid").inc()
+            logger.info(
+                f"PDF bridge apply rejected: reason={decision.reason} "
+                f"expected_rows={expected_row_count} "
+                f"actual_rows={actual_row_count}"
+            )
+            return BridgeApplyResult(
+                outcome="invalid",
+                import_id=None,
+                rows_loaded=0,
+                format_name=None,
+                expected_row_count=expected_row_count,
+                actual_row_count=actual_row_count,
+                rows_diverged=rows_diverged,
+                reject_reason=decision.reason,
+            )
+
+        # 4. Load + persist via the shared transactions path (rung="bridge").
+        #    begin_import only here: the invalid path above writes nothing, so
+        #    it needs no import_log row. The two ValueError guards inside
+        #    _import_pdf_transactions (decision.recipe / decision.fp is None)
+        #    fire before its own finalize_import try/except, but neither can
+        #    fire here: we already gated on outcome=="transactions" above, and
+        #    route_forced_recipe attaches both recipe and fp on that outcome —
+        #    so begin_import's row can't be stranded in "importing".
+        resolved_alias = _pdf_alias(canonical)
+        result = ImportResult(file_path=str(canonical), file_type="pdf")
+        import_id = import_log.begin_import(
+            self._db,
+            source_file=str(canonical),
+            source_type="pdf",
+            source_origin=resolved_alias,
+            account_names=[resolved_alias],
+        )
+        result.import_id = import_id
+
+        # Assign the return value (it mutates `result` in place and returns it)
+        # so rows_loaded below doesn't silently depend on the mutation contract
+        # — matches the _import_pdf call site.
+        result = self._import_pdf_transactions(
+            canonical=canonical,
+            resolved_alias=resolved_alias,
+            import_id=import_id,
+            result=result,
+            decision=decision,
+            doc=doc,
+            save_format=save_format,
+            account_id_override=account_id,
+            rung="bridge",
+        )
+
+        PDF_BRIDGE_EGRESS_TOTAL.labels(outcome="applied").inc()
+        if rows_diverged:
+            logger.warning(
+                f"PDF bridge apply divergence: agent returned "
+                f"{expected_row_count} rows but the recipe reproduced "
+                f"{actual_row_count} (import_id={import_id[:8]}...). Loaded the "
+                f"re-executed rows; the saved recipe does not reproduce the "
+                f"agent's claimed extraction."
+            )
+
+        # Report the name _import_pdf_transactions actually persisted (set only
+        # on a confirmed save_new). None when save_format is off, when save_new
+        # skipped a pre-existing fingerprint (the replay-failure bridge case —
+        # stale recipe untouched until #40's bump_version), or when the save
+        # failed for any other reason — so the result never claims a save that
+        # didn't land. Agents can't read the warning log; this is their signal.
+        return BridgeApplyResult(
+            outcome="applied",
+            import_id=import_id,
+            rows_loaded=result.transactions,
+            format_name=result.pdf_format_name,
+            expected_row_count=expected_row_count,
+            actual_row_count=actual_row_count,
+            rows_diverged=rows_diverged,
+            reject_reason=None,
+        )
+
     def _import_pdf(
         self,
         file_path: Path,
         *,
         save_format: bool = True,
         account_id: str | None = None,
+        actor_kind: "ActorKind" = "human",
     ) -> ImportResult:
         """Import a native-text PDF via the Phase 2a routing state machine.
 
@@ -1439,9 +1675,17 @@ class ImportService:
         and save their auto-derived recipe to app.pdf_formats (first contact) or
         reuse the saved recipe (replay). These rows feed SQLMesh's
         stg_tabular__transactions model; refresh runs when import_file or
-        import_files detect file_type="pdf". PDFs that route to the seed path
-        fall back to raw.pdf_seeds and are excluded from the refresh pipeline
-        (no tabular rows to transform).
+        import_files detect file_type="pdf".
+
+        Bridge escalation (Phase 2b, Option B): when a driving agent is present
+        (``actor_kind="agent"``) and the deterministic rung can't crack a
+        bridge-eligible layout, the document is handed to the agent
+        (``ImportConfirmationRequiredError``) instead of silently seeding — the
+        agent can extract real transactions and ratify via ``import_confirm``.
+        With no agent (bare CLI / inbox drain), it falls through to the Phase 2a
+        seed path (raw.pdf_seeds); the agent-aware CLI signal is tracked as
+        follow-up work. Non-bridge-eligible failures (no transaction table, no
+        rows) always seed.
 
         Args:
             file_path: Path to the PDF file.
@@ -1458,6 +1702,9 @@ class ImportService:
                 without this, the import falls back to the filename-derived
                 alias and creates a new ``dim_accounts`` row. Mirrors the
                 tabular path's ``account_id`` semantics.
+            actor_kind: 'agent' when a driving agent that can fulfill a bridge
+                extraction is present (MCP, agent-driven CLI) — enables bridge
+                escalation. 'human'/default keeps the Phase 2a seed fallback.
         """
         from moneybin.extractors.pdf.extractor import PDFExtractor
         from moneybin.extractors.pdf.routing import route_pdf_import
@@ -1470,6 +1717,28 @@ class ImportService:
         result = ImportResult(file_path=str(canonical), file_type="pdf")
         resolved_alias = _pdf_alias(canonical)
 
+        # Extract + route BEFORE opening an import_log row. A bridge escalation
+        # and an extraction failure both load nothing, so neither should leave
+        # a dangling import row — begin_import below marks the commitment to a
+        # write (transactions or seed).
+        try:
+            doc = PDFExtractor().extract(canonical)
+            decision = route_pdf_import(doc, self._db)
+        except Exception:
+            PDF_IMPORT_TOTAL.labels(outcome="failed", rung="deterministic").inc()
+            raise
+
+        # Bridge escalation (Option B): with a driving agent present, hand a
+        # bridge-eligible layout to the agent instead of silently seeding.
+        # Always raises. No agent → fall through to the Phase 2a seed path.
+        if (
+            actor_kind == "agent"
+            and decision.outcome != "transactions"
+            and decision.reason in _BRIDGE_ELIGIBLE_REASONS
+        ):
+            self._raise_pdf_bridge_escalation(canonical, doc, decision)
+
+        # Committing to a write — open the import_log row now.
         import_id = import_log.begin_import(
             self._db,
             source_file=str(canonical),
@@ -1478,22 +1747,6 @@ class ImportService:
             account_names=[resolved_alias],
         )
         result.import_id = import_id
-
-        try:
-            doc = PDFExtractor().extract(canonical)
-            decision = route_pdf_import(doc, self._db)
-        except Exception:
-            try:
-                import_log.finalize_import(
-                    self._db, import_id, status="failed", rows_total=0, rows_imported=0
-                )
-            except Exception:  # noqa: BLE001 — failure-path finalize is best-effort
-                logger.warning(
-                    f"PDF finalize_import(failed) raised for import_id={import_id[:8]}...",
-                    exc_info=True,
-                )
-            PDF_IMPORT_TOTAL.labels(outcome="failed", rung="deterministic").inc()
-            raise
 
         # ------------------------------------------------------------------
         # Dispatch on routing decision
@@ -1578,10 +1831,14 @@ class ImportService:
         doc: "PdfDocument",
         save_format: bool = True,
         account_id_override: str | None = None,
+        rung: Literal["deterministic", "bridge"] = "deterministic",
     ) -> ImportResult:
-        """Write deterministic PDF rows to raw.tabular_transactions.
+        """Write PDF transaction rows to raw.tabular_transactions.
 
-        Called by _import_pdf when the routing decision is 'transactions'.
+        Called by _import_pdf when the routing decision is 'transactions'
+        (rung="deterministic") and by apply_pdf_bridge_response after a
+        bridge-authored recipe reconciles (rung="bridge"). ``rung`` only
+        labels the PDF_IMPORT_TOTAL metric — the load path is identical.
         Saves a new format recipe on first contact (decision.matched_format_name is None),
         unless ``save_format`` is False — mirrors the tabular ``--no-save-format``
         semantics so a user/agent importing a one-off or sensitive statement can
@@ -1593,12 +1850,10 @@ class ImportService:
         attached to an existing ``dim_accounts`` row rather than the
         filename-derived alias.
         """
-        import hashlib
         from decimal import Decimal
 
         import polars as pl
 
-        from moneybin.extractors.pdf.fingerprint import serialize_fingerprint
         from moneybin.loaders import import_log
         from moneybin.metrics.registry import PDF_IMPORT_TOTAL
         from moneybin.tables import TABULAR_ACCOUNTS, TABULAR_TRANSACTIONS
@@ -1842,22 +2097,17 @@ class ImportService:
                     f"PDF finalize_import(failed) raised for import_id={import_id[:8]}...",
                     exc_info=True,
                 )
-            PDF_IMPORT_TOTAL.labels(outcome="failed", rung="deterministic").inc()
+            PDF_IMPORT_TOTAL.labels(outcome="failed", rung=rung).inc()
             raise
 
         # Format save + record_use happen AFTER the data-write try/except so a
         # bookkeeping failure (schema mismatch on app.pdf_formats, etc.) can't
         # trigger the cleanup DELETE on rows that already landed successfully.
         # Both are best-effort: the import succeeds either way.
-        # Derive the first-contact format name once: it's needed both for
-        # backfilling import_log (next block) and for save_new below. The
-        # name is deterministic over the fingerprint and the issuer slug,
-        # so computing it twice would always agree but invites drift if
-        # one site ever changes its hashing — keep it single-source.
-        first_contact_format_name = (
-            f"{issuer_slug}_"
-            + (hashlib.sha256(serialize_fingerprint(fp).encode()).hexdigest()[:12])
-        )
+        # First-contact format name (issuer slug + fingerprint hash). Shared
+        # with apply_pdf_bridge_response via _pdf_format_name so the two paths
+        # can never drift on the naming scheme — see that helper.
+        first_contact_format_name = _pdf_format_name(fp)
 
         # Backfill format columns on raw.import_log now that routing has
         # decided. Tabular knows its format before begin_import; PDFs only
@@ -1933,6 +2183,11 @@ class ImportService:
                     source="detected",
                     actor="system",  # auto-detected: system-driven (Invariant 10)
                 )
+                # Record the actually-persisted name so callers
+                # (apply_pdf_bridge_response) report format_name only after a
+                # confirmed save — set inside the try, so a ConstraintException
+                # (pre-existing) or any swallowed save failure below leaves it None.
+                result.pdf_format_name = format_name
                 logger.info(
                     f"PDF format saved: name={format_name!r} "
                     f"import_id={import_id[:8]}..."
@@ -1965,7 +2220,7 @@ class ImportService:
             rows_total=len(rows_list),
             rows_imported=rows_inserted,
         )
-        PDF_IMPORT_TOTAL.labels(outcome="transactions", rung="deterministic").inc()
+        PDF_IMPORT_TOTAL.labels(outcome="transactions", rung=rung).inc()
 
         result.transactions = rows_inserted
         result.accounts = 1
@@ -2169,7 +2424,10 @@ class ImportService:
             )
         if file_type == "pdf":
             return self._import_pdf(
-                path, save_format=save_format, account_id=account_id
+                path,
+                save_format=save_format,
+                account_id=account_id,
+                actor_kind=actor_kind,
             )
         raise ValueError(f"Unsupported file type: {file_type}")
 
@@ -2241,18 +2499,10 @@ class ImportService:
                 # Distinct from generic failure: the file's detector formed
                 # a proposal (or surfaced low-tier with no proposal); the
                 # caller needs the payload to ratify or override per file.
-                from moneybin.services.import_confirmation import ProposedMapping
+                from moneybin.services.import_confirmation import (
+                    confirmation_payload_dict,
+                )
 
-                proposed_mapping = (
-                    e.outcome.proposed.field_mapping
-                    if isinstance(e.outcome.proposed, ProposedMapping)
-                    else {}
-                )
-                unmapped = (
-                    list(e.outcome.proposed.unmapped_columns)
-                    if isinstance(e.outcome.proposed, ProposedMapping)
-                    else []
-                )
                 logger.info(
                     f"Import requires confirmation for {path}: "
                     f"tier={e.outcome.confidence.tier} reason={e.outcome.reason}"
@@ -2262,20 +2512,7 @@ class ImportService:
                         path=str(path),
                         status="confirmation_required",
                         source_type=None,
-                        confirmation_payload={
-                            "channel": e.outcome.channel,
-                            "tier": e.outcome.confidence.tier,
-                            "score": e.outcome.confidence.score,
-                            "reason": e.outcome.reason,
-                            "error_message": e.outcome.error_message,
-                            "proposed_mapping": dict(proposed_mapping),
-                            "samples": dict(e.outcome.samples),
-                            "flagged": list(e.outcome.confidence.flagged),
-                            "missing_required": list(
-                                e.outcome.confidence.missing_required
-                            ),
-                            "unmapped_columns": unmapped,
-                        },
+                        confirmation_payload=confirmation_payload_dict(e.outcome),
                     )
                 )
             except Exception as e:  # noqa: BLE001 — per-file failure must not abort batch

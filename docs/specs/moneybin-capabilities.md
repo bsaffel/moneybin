@@ -108,6 +108,7 @@ not-yet-built.
 | 45| Import a file and handle unknown layout via confirmation flow      | `import_files` *(returns `confirmation_required` envelope on first-encounter unknown layouts; `actions[]` contains `import_confirm` hint)* | `import files PATHS... [--confirm/--no-confirm] [--mapping field=col]` *(TTY: interactive prompt; non-TTY/`--output json`: envelope + exit 0)* | —          | live                  |
 | 46| Confirm a proposed import column mapping                          | `import_confirm` *(`file_path`, `accept=True`, `mapping={...}`)* | `import confirm <file> --accept` / `--mapping field=column` | —          | live                  |
 | 47| List available import formats (tabular + PDF) for selection / introspection | `import_formats` *(returns `formats` + `pdf_formats` arrays)* | `import formats list [--type tabular\|pdf\|all]` *(text or JSON; agent can also `import formats show <name>` for either kind)* | —          | live                  |
+| 48| Import a native-text PDF an agent must help extract (bridge round-trip) | `import_preview`/`import_files` *(return `confirmation_required` with a `bridge_payload` when the deterministic rung can't crack the layout)* → `import_confirm` *(`bridge_response={recipe, rows}`; re-runs the recipe, reconciles, persists, loads)* | *deferred — the CLI keeps the seed fallback until the agent-aware CLI escalation signal lands* | —          | live (MCP)            |
 
 *(Bootstrap rows only; full table populates incrementally as
 follow-up work closes the parity backlog. A prior row covering
@@ -140,7 +141,15 @@ step for ratifying proposed column mappings.
 Row 47 added 2026-05-31 with the smart-import-pdf Phase 2a PR: `import_formats`
 gains a `pdf_formats` array surfacing auto-derived PDF recipes (layout fingerprint,
 routing, replay statistics); CLI adds `--type {tabular,pdf,all}` filter and PDF
-namespace fallthrough on `import formats show`.)*
+namespace fallthrough on `import formats show`.
+Row 48 added 2026-06-07 with the smart-import-pdf Phase 2b bridge round-trip:
+a native-text PDF the deterministic rung can't crack escalates to the driving
+agent (`import_preview`/`import_files` return a `bridge_payload`), and
+`import_confirm(bridge_response=...)` re-runs the agent's recipe, reconciles the
+re-executed rows against the statement balances, persists the recipe, and loads
+the transactions. MCP-only for now — escalation is gated on the agent caller
+(`actor_kind="agent"`); the CLI keeps the Phase 2a seed fallback until its
+agent-aware escalation signal lands as follow-up work.)*
 
 ## Exemption categories
 

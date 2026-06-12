@@ -31,7 +31,12 @@ import pytest
 
 from moneybin.database import Database
 from moneybin.extractors.pdf.ir import PdfDocument, PdfTable
-from moneybin.extractors.pdf.routing import route_pdf_import
+from moneybin.extractors.pdf.recipe import Recipe
+from moneybin.extractors.pdf.routing import route_forced_recipe, route_pdf_import
+from moneybin.metrics.registry import (
+    PDF_RECIPE_HIT_TOTAL,
+    PDF_REPLAY_GUARD_FAILURE_TOTAL,
+)
 from moneybin.repositories.pdf_formats_repo import PdfFormatsRepo
 
 # ---------------------------------------------------------------------------
@@ -456,3 +461,64 @@ def test_low_confidence_routes_to_seed(
     assert decision.recipe is not None  # recipe was derived; just didn't score
     assert decision.rows  # rows were extracted before the score check fired
     assert decision.metadata.opening_balance is None  # metadata not captured yet
+
+
+# ---------------------------------------------------------------------------
+# route_forced_recipe — Phase 2b bridge apply path
+# ---------------------------------------------------------------------------
+# A caller-supplied (bridge-authored) recipe runs through the SAME execute →
+# confidence → reconcile engine as replay, but it is NOT a replay of a saved
+# recipe: matched_format_name stays None (signals first-contact save), the
+# replay metrics never fire, and a reconciliation failure reports the
+# non-replay reason "reconciliation_failed".
+
+
+def test_forced_recipe_reconciles_routes_to_transactions(db: Database) -> None:
+    """A bridge recipe that reconciles → outcome=transactions, no saved name."""
+    recipe = Recipe.model_validate(_valid_recipe_dict())
+    doc = _standard_doc()
+
+    decision = route_forced_recipe(doc, recipe)
+
+    assert decision.outcome == "transactions"
+    assert decision.reason == "passed"
+    assert decision.recipe is recipe
+    assert decision.matched_format_name is None  # first contact, not a replay
+    assert decision.replay_guard_failed is False
+    assert len(decision.rows) > 0
+    assert decision.fp is not None
+
+
+def test_forced_recipe_does_not_emit_replay_metrics(db: Database) -> None:
+    """A successful bridge apply is not a replay — replay KPIs must not move."""
+    recipe = Recipe.model_validate(_valid_recipe_dict())
+    doc = _standard_doc()
+
+    hit_before = PDF_RECIPE_HIT_TOTAL.labels(outcome="replay_success")._value.get()  # type: ignore[reportPrivateUsage]
+    route_forced_recipe(doc, recipe)
+    hit_after = PDF_RECIPE_HIT_TOTAL.labels(outcome="replay_success")._value.get()  # type: ignore[reportPrivateUsage]
+
+    assert hit_after == hit_before
+
+
+def test_forced_recipe_reconcile_fail_is_not_replay_guard(db: Database) -> None:
+    """A bridge recipe that fails reconciliation reports the non-replay reason.
+
+    A replay failure (saved recipe drifted) is a different signal than a
+    bridge proposal that doesn't tie out: the former trips the replay guard
+    and its metric, the latter is just an invalid proposal. route_forced_recipe
+    must report ``reconciliation_failed`` (not ``replay_reconciliation_failed``)
+    and leave the replay-guard counter untouched.
+    """
+    recipe = Recipe.model_validate(_valid_recipe_dict())
+    # opening=1000, closing=9999 → expected_delta 8999, rows net 100 → mismatch.
+    doc = _standard_doc(opening="1000.00", closing="9999.00")
+
+    guard_before = PDF_REPLAY_GUARD_FAILURE_TOTAL._value.get()  # type: ignore[reportPrivateUsage]
+    decision = route_forced_recipe(doc, recipe)
+    guard_after = PDF_REPLAY_GUARD_FAILURE_TOTAL._value.get()  # type: ignore[reportPrivateUsage]
+
+    assert decision.outcome == "seed"
+    assert decision.reason == "reconciliation_failed"
+    assert decision.replay_guard_failed is False
+    assert guard_after == guard_before

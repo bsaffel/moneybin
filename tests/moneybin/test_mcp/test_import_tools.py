@@ -12,11 +12,14 @@ from pytest import MonkeyPatch
 from moneybin.errors import UserError
 from moneybin.extractors.confidence import Confidence
 from moneybin.mcp.tools.import_tools import (
+    _bridge_confirm_action,  # pyright: ignore[reportPrivateUsage]
     _validate_file_path,  # pyright: ignore[reportPrivateUsage]
     import_confirm,
     import_files,
+    import_preview,
 )
 from moneybin.services.import_confirmation import (
+    BridgePayload,
     ConfirmationRequired,
     ImportConfirmationRequiredError,
     ProposedMapping,
@@ -66,6 +69,23 @@ def test_symlink_escaping_home_raises_user_error(
         _validate_file_path(str(link))
 
     assert excinfo.value.code == "invalid_file_path"
+
+
+def test_bridge_confirm_action_quotes_path_with_apostrophe() -> None:
+    """Embed a single-quote path via ``repr``, not raw interpolation.
+
+    Keeps the suggested ``import_confirm`` call in the action hint a
+    syntactically valid string literal even when the path contains a quote.
+    """
+    path = "/home/alice/O'Brien/statement.pdf"
+
+    hint = _bridge_confirm_action(path, payload_ref="bridge_payload")
+
+    # repr-quoted form: file_path="/home/alice/O'Brien/statement.pdf" — valid.
+    assert f"file_path={path!r}" in hint
+    # The buggy form file_path='/home/alice/O'Brien/...' is an unterminated
+    # literal and must not appear.
+    assert f"file_path='{path}'" not in hint
 
 
 # ---------------------------------------------------------------------------
@@ -479,3 +499,361 @@ class TestImportConfirmTool:
         joined = " ".join(result.actions)
         assert "import_revert" in joined
         assert "revert-001" in joined
+
+
+# ---------------------------------------------------------------------------
+# PDF bridge wire-in: import_files escalation, import_preview, import_confirm
+# ---------------------------------------------------------------------------
+
+
+def _bridge_error(reason: str = "unknown_layout") -> ImportConfirmationRequiredError:
+    """A confirmation error whose proposal is a PDF BridgePayload."""
+    payload = BridgePayload(
+        payload={
+            "transparency_notice": "Proceeding surfaces this PDF to the agent.",
+            "source_file": "chase.pdf",
+            "document_text": "Chase Bank\nDate Description Amount\n...",
+            "tables_preview": [{"page": 1, "header": ["Date"], "rows": [["05/01"]]}],
+            "fingerprint": {"issuer": "chase", "headers": ["Date"], "page_bucket": "1"},
+            "request_kind": "propose_recipe",
+            "saved_recipe_for_re_derive": None,
+        }
+    )
+    outcome = ConfirmationRequired(
+        channel="pdf",
+        confidence=_make_confidence(score=0.4, tier="low"),
+        proposed=payload,
+        reason=reason,  # type: ignore[arg-type]
+    )
+    return ImportConfirmationRequiredError(outcome)
+
+
+class TestImportFilesPdfBridge:
+    """import_files surfaces the bridge payload when a PDF escalates."""
+
+    async def test_pdf_escalation_returns_bridge_payload(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        pdf = tmp_path / "statements" / "chase.pdf"
+        pdf.parent.mkdir(parents=True)
+        pdf.touch()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database", _fake_database
+        )
+
+        mock_service = MagicMock()
+        mock_service.import_file.side_effect = _bridge_error()
+        with patch(
+            "moneybin.services.import_service.ImportService",
+            return_value=mock_service,
+        ):
+            result = await import_files(paths=[str(pdf)])
+
+        from moneybin.privacy.payloads.imports import ImportFilesPayload
+
+        data = result.data
+        assert isinstance(data, ImportFilesPayload)
+        row = data.files[0]
+        assert row.status == "confirmation_required"
+        payload = row.confirmation_payload
+        assert payload is not None
+        assert payload["channel"] == "pdf"
+        bridge = payload["bridge_payload"]
+        assert isinstance(bridge, dict)
+        assert bridge["request_kind"] == "propose_recipe"
+        assert "transparency_notice" in bridge
+
+    async def test_pdf_escalation_action_points_at_bridge_response(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        pdf = tmp_path / "statements" / "chase.pdf"
+        pdf.parent.mkdir(parents=True)
+        pdf.touch()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database", _fake_database
+        )
+
+        mock_service = MagicMock()
+        mock_service.import_file.side_effect = _bridge_error()
+        with patch(
+            "moneybin.services.import_service.ImportService",
+            return_value=mock_service,
+        ):
+            result = await import_files(paths=[str(pdf)])
+
+        assert any("bridge_response" in a for a in result.actions)
+        # The tabular accept/mapping hint must NOT appear for a PDF bridge.
+        assert not any("mapping={" in a for a in result.actions)
+
+
+class TestImportPreviewPdf:
+    """import_preview dispatches .pdf to the deterministic rung / bridge."""
+
+    async def test_pdf_deterministic_preview(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        from moneybin.services.import_service import PdfPreviewResult
+
+        pdf = tmp_path / "statements" / "chase.pdf"
+        pdf.parent.mkdir(parents=True)
+        pdf.touch()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database", _fake_database
+        )
+
+        mock_service = MagicMock()
+        mock_service.pdf_preview.return_value = PdfPreviewResult(
+            file_path=str(pdf),
+            deterministic=True,
+            decision_reason="passed",
+            confidence=0.95,
+            row_count=12,
+            fingerprint={"issuer": "chase"},
+        )
+        with patch(
+            "moneybin.services.import_service.ImportService",
+            return_value=mock_service,
+        ):
+            result = await import_preview(file_path=str(pdf))
+
+        data = result.data
+        assert isinstance(data, dict)
+        assert data["status"] == "preview"
+        assert data["deterministic"] is True
+        assert data["row_count"] == 12
+        assert result.summary.sensitivity == "medium"
+
+    async def test_pdf_bridge_escalation_returns_payload(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        pdf = tmp_path / "statements" / "chase.pdf"
+        pdf.parent.mkdir(parents=True)
+        pdf.touch()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database", _fake_database
+        )
+
+        mock_service = MagicMock()
+        mock_service.pdf_preview.side_effect = _bridge_error()
+        with patch(
+            "moneybin.services.import_service.ImportService",
+            return_value=mock_service,
+        ):
+            result = await import_preview(file_path=str(pdf))
+
+        data = result.data
+        assert isinstance(data, dict)
+        assert data["status"] == "confirmation_required"
+        assert data["channel"] == "pdf"
+        assert data["bridge_payload"]["request_kind"] == "propose_recipe"
+
+
+class TestImportConfirmBridge:
+    """import_confirm(bridge_response=...) applies a PDF bridge response."""
+
+    def _patch(self, monkeypatch: MonkeyPatch, tmp_path: Path) -> Path:
+        pdf = tmp_path / "statements" / "chase.pdf"
+        pdf.parent.mkdir(parents=True)
+        pdf.touch()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database", _fake_database
+        )
+        return pdf
+
+    async def test_applied(self, tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+        from moneybin.services.import_service import BridgeApplyResult
+
+        pdf = self._patch(monkeypatch, tmp_path)
+        mock_service = MagicMock()
+        mock_service.apply_pdf_bridge_response.return_value = BridgeApplyResult(
+            outcome="applied",
+            import_id="imp123",
+            rows_loaded=12,
+            format_name="chase_abc123",
+            expected_row_count=12,
+            actual_row_count=12,
+            rows_diverged=False,
+        )
+        with patch(
+            "moneybin.services.import_service.ImportService",
+            return_value=mock_service,
+        ):
+            result = await import_confirm(
+                file_path=str(pdf),
+                bridge_response={"recipe": {}, "rows": []},
+            )
+
+        data = result.data
+        assert isinstance(data, dict)
+        assert data["status"] == "applied"
+        assert data["import_id"] == "imp123"
+        assert data["rows_loaded"] == 12
+        assert any("import_revert" in a for a in result.actions)
+
+    async def test_invalid_reconciliation(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        from moneybin.services.import_service import BridgeApplyResult
+
+        pdf = self._patch(monkeypatch, tmp_path)
+        mock_service = MagicMock()
+        mock_service.apply_pdf_bridge_response.return_value = BridgeApplyResult(
+            outcome="invalid",
+            import_id=None,
+            rows_loaded=0,
+            format_name=None,
+            expected_row_count=10,
+            actual_row_count=8,
+            rows_diverged=True,
+            reject_reason="reconciliation_failed",
+        )
+        with patch(
+            "moneybin.services.import_service.ImportService",
+            return_value=mock_service,
+        ):
+            result = await import_confirm(
+                file_path=str(pdf),
+                bridge_response={"recipe": {}, "rows": []},
+            )
+
+        data = result.data
+        assert isinstance(data, dict)
+        assert data["status"] == "invalid"
+        assert data["reject_reason"] == "reconciliation_failed"
+        assert "import_id" not in data  # nothing loaded
+
+    async def test_divergence_surfaced_in_actions(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        from moneybin.services.import_service import BridgeApplyResult
+
+        pdf = self._patch(monkeypatch, tmp_path)
+        mock_service = MagicMock()
+        mock_service.apply_pdf_bridge_response.return_value = BridgeApplyResult(
+            outcome="applied",
+            import_id="imp123",
+            rows_loaded=11,
+            format_name="chase_abc123",
+            expected_row_count=12,
+            actual_row_count=11,
+            rows_diverged=True,
+        )
+        with patch(
+            "moneybin.services.import_service.ImportService",
+            return_value=mock_service,
+        ):
+            result = await import_confirm(
+                file_path=str(pdf),
+                bridge_response={"recipe": {}, "rows": []},
+            )
+
+        assert any("12" in a and "11" in a for a in result.actions)
+
+    async def test_conflict_with_accept_returns_error_envelope(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        # UserError raised inside the tool is caught by @mcp_tool and surfaced
+        # as result.error (the decorator never lets it propagate).
+        pdf = self._patch(monkeypatch, tmp_path)
+        result = await import_confirm(
+            file_path=str(pdf),
+            accept=True,
+            bridge_response={"recipe": {}, "rows": []},
+        )
+        assert result.error is not None
+        assert result.error.code == "confirm_channel_conflict"
+
+    async def test_malformed_response_maps_to_user_error(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        from moneybin.extractors.pdf.bridge import BridgeResponseError
+
+        pdf = self._patch(monkeypatch, tmp_path)
+        mock_service = MagicMock()
+        # parse_bridge_response raises BridgeResponseError on a bad shape.
+        mock_service.apply_pdf_bridge_response.side_effect = BridgeResponseError(
+            "bridge response missing 'recipe' key"
+        )
+        with patch(
+            "moneybin.services.import_service.ImportService",
+            return_value=mock_service,
+        ):
+            result = await import_confirm(
+                file_path=str(pdf),
+                bridge_response={"rows": []},
+            )
+        assert result.error is not None
+        assert result.error.code == "bridge_response_invalid"
+
+    async def test_non_parse_value_error_not_labeled_bridge_invalid(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        # A plain ValueError raised after parsing (e.g. malformed PDF in
+        # extract, or the load) must NOT be mislabeled bridge_response_invalid —
+        # the narrowed catch lets it propagate to the generic error boundary.
+        pdf = self._patch(monkeypatch, tmp_path)
+        mock_service = MagicMock()
+        mock_service.apply_pdf_bridge_response.side_effect = ValueError(
+            "could not extract text from PDF"
+        )
+        with patch(
+            "moneybin.services.import_service.ImportService",
+            return_value=mock_service,
+        ):
+            result = await import_confirm(
+                file_path=str(pdf),
+                bridge_response={"recipe": {}, "rows": []},
+            )
+        # classify_user_error maps every ValueError to a non-None error
+        # envelope, so an error IS surfaced — assert that (no unreachable
+        # is-None arm that would hide a classification regression). The one
+        # outcome we forbid is the misleading bridge_response_invalid.
+        assert result.error is not None
+        assert result.error.code != "bridge_response_invalid"
+
+    async def test_account_name_with_bridge_raises(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        # PDF rows resolve the account from the statement; account_name is a
+        # tabular-only signal. Passing it with bridge_response must error loudly
+        # rather than being silently dropped (the bridge path takes account_id).
+        pdf = self._patch(monkeypatch, tmp_path)
+        result = await import_confirm(
+            file_path=str(pdf),
+            bridge_response={"recipe": {}, "rows": []},
+            account_name="Chase Checking",
+        )
+        assert result.error is not None
+        assert result.error.code == "bridge_account_name_unsupported"
+
+    async def test_invalid_path_precedes_account_name_guard(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        # A bad path must surface as invalid_file_path even when account_name is
+        # also (mis)used with bridge_response — path validation runs first, so
+        # the path error isn't masked by the account_name guard.
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+        result = await import_confirm(
+            file_path="/etc/passwd",
+            bridge_response={"recipe": {}, "rows": []},
+            account_name="Chase Checking",
+        )
+        assert result.error is not None
+        assert result.error.code == "invalid_file_path"
+
+    async def test_pdf_with_accept_rejected_not_looped(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        # A PDF confirmed via the tabular channel (accept=True, no
+        # bridge_response) must be rejected with channel guidance — NOT run
+        # through the tabular import path, which would re-raise the bridge
+        # escalation that this tool's catch can't serialize, looping the agent.
+        pdf = self._patch(monkeypatch, tmp_path)
+        result = await import_confirm(file_path=str(pdf), accept=True)
+        assert result.error is not None
+        assert result.error.code == "confirm_channel_conflict"

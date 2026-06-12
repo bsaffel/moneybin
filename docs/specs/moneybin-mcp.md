@@ -681,7 +681,10 @@ Import one or more financial data files into MoneyBin. Format detected automatic
 - **Unique parameters:** `paths: list[str]` (required, each path must be within the user's home directory), `refresh: bool = True`, `force: bool = False`.
 - **Behavior:** Validates each path, delegates to `ImportService.import_files()`. On success, returns envelope with `data.{imported_count, failed_count, total_count, transforms_applied, transforms_duration_seconds, files: list[{path, status, source_type, rows_loaded, import_id, error?}]}`. Amounts use accounting convention: negative=expense, positive=income; transfers exempt.
 
-  **`confirmation_required` state (first-encounter unknown layout):** instead of importing, returns a `ResponseEnvelope` with `status="ok"`, `summary.status="confirmation_required"`, and `data.{proposed_mapping, samples, flagged, missing_required, unmapped_columns}`. The `actions[]` field contains concrete invocation hints for `import_confirm`. The caller inspects the proposal (optionally via `import_preview`) and calls `import_confirm` to ratify. Sensitivity is `medium` for this state because the envelope contains sample row values.
+  **`confirmation_required` state (first-encounter unknown layout):** instead of importing, returns a `ResponseEnvelope` with `status="ok"`, `summary.status="confirmation_required"`, and per-file `confirmation_payload`. The `actions[]` field contains concrete invocation hints for `import_confirm`. The caller inspects the proposal (optionally via `import_preview`) and calls `import_confirm` to ratify. Sensitivity is `medium` for this state because the envelope contains row-level content.
+
+  - **Tabular** unknown layout: `confirmation_payload.{proposed_mapping, samples, flagged, missing_required, unmapped_columns}`; ratify with `accept=True` / `mapping={...}`.
+  - **PDF bridge** (Phase 2b): a native-text PDF the deterministic rung can't crack escalates to the driving agent instead of silently seeding (gated on the agent caller — `actor_kind="agent"`). `confirmation_payload.{channel="pdf", bridge_payload}` carries the document text + table preview + layout fingerprint + transparency notice + `request_kind`; the agent proposes a recipe + rows and ratifies via `import_confirm(bridge_response=...)`. With no agent present, the PDF falls back to the Phase 2a seed path.
 - **Service:** `ImportService.import_files() -> BatchImportResult | ConfirmationRequiredResult`
 - **CLI:** `moneybin import files PATHS... [--confirm/--no-confirm] [--mapping field=column] [--no-refresh] [--output json]`
 
@@ -689,25 +692,30 @@ Per-file overrides (`account_name`, `institution`, `format_name`) are not expose
 
 ### `import_confirm`
 
-Terminal `_confirm` step of the propose→review→confirm workflow for tabular imports.
-`import_files` returns a `confirmation_required` envelope on a first-encounter unknown
-layout; the agent inspects the proposal (optionally via `import_preview`) and calls
-`import_confirm` to ratify with `accept=True` or a partial `mapping={...}` override.
+Terminal `_confirm` step of the propose→review→confirm workflow. Two channels —
+**tabular** (ratify a detected column mapping) and **PDF bridge** (apply an
+agent-authored extraction recipe). `import_files`/`import_preview` returns a
+`confirmation_required` envelope; the agent inspects the proposal and calls
+`import_confirm` to ratify.
 
-- **Sensitivity:** `medium` — returns row-shaped sample values and the merged mapping.
+- **Sensitivity:** `medium` — returns row-shaped sample values / row counts.
 - **Annotations:** `read_only=False`, `destructive=False`, `idempotent=False`.
 - **Unique parameters:**
 
   | Parameter | Type | Notes |
   |---|---|---|
   | `file_path` | `str` | Path to the file to import. Must match the path from the `confirmation_required` envelope. |
-  | `accept` | `bool` | Accept the detected mapping as-is. Default `False`. |
-  | `mapping` | `dict[str, str] \| None` | Partial-merge override: dest field → source column. Unspecified fields fall back to the detected mapping. |
-  | `save_format` | `bool` | Pin the merged mapping as a saved `app.tabular_formats` entry for silent reuse on future imports. Default `True`. |
+  | `accept` | `bool` | **Tabular:** accept the detected mapping as-is. Default `False`. |
+  | `mapping` | `dict[str, str] \| None` | **Tabular:** partial-merge override, dest field → source column. |
+  | `bridge_response` | `dict \| None` | **PDF:** the agent's `{recipe, rows}` reply. Mutually exclusive with `accept`/`mapping` (conflict → `confirm_channel_conflict` error). |
+  | `save_format` | `bool` | Pin the merged mapping / recipe as a saved `app.tabular_formats` / `app.pdf_formats` entry. Default `True`. |
+  | `account_id` | `str \| None` | Pin rows to an existing account (single-account tabular; PDF with no account anchor). |
 
-- **Behavior:** Merges `mapping` (if supplied) over the detected proposal, validates the result, and executes the import. Returns standard `ImportResult` envelope. Amounts use accounting convention: negative=expense, positive=income; transfers exempt.
-- **Mutation surface:** `raw.tabular_transactions` (load), `app.tabular_formats` (when `save_format=True`). Revertible via `import_revert` (data rows) and `system_audit_undo` (format save).
-- **Service:** `ImportService.confirm_import() -> ImportResult`
+- **Behavior (tabular):** Merges `mapping` over the detected proposal, validates, and executes the import.
+- **Behavior (PDF bridge):** Delegates to `ImportService.apply_pdf_bridge_response()` — re-runs the agent's recipe against the document, reconciles the **re-executed** rows against the statement balances (the authority; the agent's returned rows are verified against them and a row-count divergence is reported back), persists the recipe, and loads the transactions. Returns `data.{status="applied", import_id, rows_loaded, format_name, expected_row_count, actual_row_count, rows_diverged}`. A response whose re-executed rows fail reconciliation is rejected: `data.{status="invalid", reject_reason, …}` and **nothing loads**. A malformed response or an out-of-bounds recipe (Req 9b) returns a `bridge_response_invalid` error envelope.
+- Amounts use accounting convention: negative=expense, positive=income; transfers exempt.
+- **Mutation surface:** `raw.tabular_transactions` (load), `app.tabular_formats` / `app.pdf_formats` (when `save_format=True`). Revertible via `import_revert` (data rows) and `system_audit_undo` (format save).
+- **Service:** `ImportService.confirm_import()` (tabular) / `ImportService.apply_pdf_bridge_response()` (PDF).
 - **CLI:** `moneybin import confirm <file> [--accept] [--mapping field=column] [--save-format/--no-save-format] [--account-name NAME] [--account-id ID] [--output text|json]`
 
 ### `import_status`
@@ -766,12 +774,16 @@ Show inbox status: files awaiting sync, archive contents, last-sync timestamp.
 
 ### `import_preview`
 
-Preview a tabular file's headers and sample rows before importing. Format-agnostic (CSV, Excel, etc.).
+Preview a file's structure before importing. Tabular (CSV, Excel, etc.) and PDF.
 
-- **Sensitivity:** `low` — structural metadata only.
+- **Sensitivity:** `medium` — the response carries row-level sample content (tabular `sample_values`; PDF deterministic row counts and, on escalation, the bridge payload's document text).
+- **Annotations:** `read_only=False`, `idempotent=False` — the **PDF escalation branch writes a `smart_import_parse` egress audit row** (Req 14), so the tool is no longer side-effect-free. Tabular previews remain effectively read-only.
 - **Unique parameters:** `file_path: str` (required).
-- **Behavior:** Returns `{file_name, headers, column_count, sample_rows}` with 3 sample rows as dicts keyed by header. Does not import or modify anything.
-- **Service:** `ImportService.file_preview() -> FilePreview`
+- **Behavior (tabular):** Runs detect → read → map and returns the format info, column mapping, sample values, and confidence.
+- **Behavior (PDF):** Runs the deterministic extraction rung via `ImportService.pdf_preview()`.
+  - **Deterministic / non-escalating** — returns `data.{status="preview", channel="pdf", deterministic, decision_reason, confidence, row_count, fingerprint}`. `deterministic=True` means the rung cleanly structured the PDF as transactions; `deterministic=False` (e.g. `no_transaction_table`) means `import_files` would seed it.
+  - **Bridge escalation** (low confidence, failed reconciliation, …) — returns `data.{status="confirmation_required", channel="pdf", reason, bridge_payload}` and writes the egress audit row. `bridge_payload` carries the document text + table preview + layout fingerprint + a **transparency notice** (proceeding surfaces the document's content to the agent) + a `request_kind`. The agent proposes a recipe + rows and ratifies via `import_confirm(bridge_response=...)`.
+- **Service:** `ImportService.pdf_preview() -> PdfPreviewResult` (PDF); tabular detect/read/map (tabular).
 - **CLI:** `moneybin import file-preview PATH`
 
 ### `import_formats`

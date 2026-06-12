@@ -25,6 +25,20 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   Reconciliation gate enforces pre-sign-normalization sum identity with
   the statement's reported balance delta within 1¢. See
   [`docs/specs/smart-import-pdf.md`](docs/specs/smart-import-pdf.md).
+- **Smart-import-pdf Phase 2b — bridge round-trip to the driving agent.**
+  A native-text PDF the deterministic rung can't crack (low confidence,
+  failed reconciliation, missing balances) now hands the document to the AI
+  agent already driving MoneyBin instead of silently seeding:
+  `import_files`/`import_preview` return a `confirmation_required` envelope
+  carrying the document text, a table preview, the layout fingerprint, and a
+  plain transparency notice (proceeding surfaces the document to the agent),
+  and `import_confirm(bridge_response={recipe, rows})` ratifies. MoneyBin
+  re-runs the agent's recipe and reconciles the re-executed rows against the
+  statement balances — the authority — before any transactions load, verifies
+  the agent's returned rows against the re-execution, and reports any
+  row-count divergence. Every hand-off writes a `smart_import_parse` privacy
+  audit row and bumps `moneybin_pdf_bridge_egress_total{outcome}`. MCP-only
+  for now (gated on `actor_kind="agent"`); a bare CLI keeps the seed fallback.
 - **`moneybin import formats list --type {tabular,pdf,all}`** (default
   `all`) filters by format kind and renders tabular + PDF sections in
   text; JSON output is a uniform list with a `type` discriminator per
