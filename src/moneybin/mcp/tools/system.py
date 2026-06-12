@@ -211,12 +211,12 @@ def _database_connections_block(db_path: Path) -> dict[str, Any]:
     """
     writers: list[dict[str, Any]] = []
     writer_pid: int | None = None
-    # Resolve once and use the resolved path for BOTH the lock file
-    # (lock_path_for takes the already-resolved path — no second resolve) and
-    # the lsof reader scan, so a symlinked or relative path can't report writers
-    # and readers against different inodes.
+    # Resolve once for the lsof reader scan; lock_path_for resolves db_path
+    # itself for the lock file. Both resolve the same db_path, so the writer
+    # probe and the reader scan stay on one inode even for a symlinked or
+    # relative path — and neither re-resolves an already-resolved path.
     resolved = db_path.resolve()
-    lock_path = lock_path_for(resolved)
+    lock_path = lock_path_for(db_path)
     # No separate exists() check: _writer_is_live opens the lock file and
     # returns False if it is absent, so an exists() guard would be a redundant,
     # TOCTOU-prone stat.

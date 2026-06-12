@@ -524,6 +524,13 @@ def mcp_tool(
                 # fall back to interrupt_and_reset_database()'s process-global
                 # slot, which would interrupt a *different* call's healthy active
                 # writer.
+                #
+                # This relies on get_database registering the acquired conn in
+                # the per-call holder, which it does for sync tool bodies (run
+                # via asyncio.to_thread with conn_holder set). There are no async
+                # write tools today; one would need the same holder wiring to be
+                # interrupted on timeout (otherwise [0] stays None and we skip —
+                # the latent gap is a missed reset, never a collateral one).
                 if _conn_for_this_call[0] is not None:
                     try:
                         interrupt_and_reset_database(_conn_for_this_call[0])

@@ -339,13 +339,14 @@ def test_concurrent_write_opens_serialize_across_threads(configured_db: Path) ->
             a_release.wait(timeout=10.0)
 
     def thread_b() -> None:
-        if not a_holding.wait(timeout=5.0):
-            return  # A never acquired; main asserts on the empty outcome
+        # main asserts a_holding before starting this thread, so A already holds.
         try:
             with get_database(read_only=False, max_wait=0.5):
                 b_outcome["result"] = "acquired"
         except DatabaseLockError:
             b_outcome["result"] = "blocked"
+        except Exception as exc:  # noqa: BLE001 — surface unexpected errors for diagnosis
+            b_outcome["result"] = f"error:{type(exc).__name__}"
 
     ta = threading.Thread(target=thread_a)
     ta.start()

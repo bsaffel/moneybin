@@ -194,6 +194,10 @@ def test_scenario_2_reader_blocks_writer_writer_succeeds_after_release(
     assert reader.returncode == 0, (
         f"reader failed: stdout={reader_out!r} stderr={reader_err!r}"
     )
+    # Isolation during contention: the reader's SELECT ran before the blocked
+    # writer could commit, so it saw only the bootstrap row (count 1), not the
+    # writer's later INSERT — the complement of the verifier's count-2 check.
+    assert "READER_CLOSED:1" in reader_out
     # Critical: writer's ATTACH retry must have caught and classified the
     # DuckDB lock error rather than letting it surface raw.
     assert "Could not set lock" not in writer_err
