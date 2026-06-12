@@ -18,6 +18,29 @@ def test_mcp_tool_timeout_must_be_positive() -> None:
 
 
 @pytest.mark.unit
+def test_mcp_tool_timeout_below_write_lock_wait_rejected() -> None:
+    """A tool_timeout under the write-lock wait reopens the late-write window.
+
+    Below the wait, a write tool can time out while its uncancellable worker is
+    still queued at the lock; the worker may later acquire and commit after the
+    caller already received a timeout envelope. The validator forbids it.
+    """
+    from moneybin.config import DEFAULT_WRITE_LOCK_MAX_WAIT_SECONDS
+
+    with pytest.raises(ValueError, match="write-lock wait"):
+        MCPConfig(tool_timeout_seconds=DEFAULT_WRITE_LOCK_MAX_WAIT_SECONDS - 1.0)
+
+
+@pytest.mark.unit
+def test_mcp_tool_timeout_at_write_lock_wait_accepted() -> None:
+    """tool_timeout equal to the write-lock wait is the boundary and allowed."""
+    from moneybin.config import DEFAULT_WRITE_LOCK_MAX_WAIT_SECONDS
+
+    cfg = MCPConfig(tool_timeout_seconds=DEFAULT_WRITE_LOCK_MAX_WAIT_SECONDS)
+    assert cfg.tool_timeout_seconds == DEFAULT_WRITE_LOCK_MAX_WAIT_SECONDS
+
+
+@pytest.mark.unit
 def test_mcp_max_items_default() -> None:
     """max_items defaults to 500 — collection-cap convention."""
     cfg = MCPConfig()

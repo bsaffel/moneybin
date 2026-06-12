@@ -528,14 +528,15 @@ def mcp_tool(
                 # interrupted on timeout (otherwise [0] stays None and we skip —
                 # the latent gap is a missed reset, never a collateral one).
                 #
-                # Caveat: a sync tool body runs in a thread-pool worker we cannot
-                # cancel, so a tool that timed out while still queued at the lock
-                # may later acquire and commit its write after the caller already
-                # received the timeout envelope. The guard prevents a collateral
-                # reset; it does not cancel that worker. This is reachable only
-                # when the tool timeout is configured below the write-lock wait;
-                # the default 30s cap >> 10s wait keeps the worker's deadline
-                # ahead of the lock's, so it never commits post-timeout.
+                # A sync tool body runs in a thread-pool worker we cannot cancel.
+                # The one way that worker could commit after the caller gave up
+                # is to still be queued at the write lock when the tool times
+                # out, then acquire and commit afterward — which requires the
+                # tool timeout to be shorter than the write-lock wait. MCPConfig
+                # forbids that (tool_timeout_seconds >= the write-lock wait), so
+                # the worker has always stopped queuing (acquired or errored) by
+                # the time the caller times out. The guard here still only resets
+                # this call's own connection, never a different call's.
                 if _conn_for_this_call[0] is not None:
                     logger.warning(
                         f"Tool {fn.__name__} timed out after {elapsed:.2f}s "
