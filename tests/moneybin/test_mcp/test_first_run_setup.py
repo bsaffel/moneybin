@@ -234,3 +234,30 @@ def test_bootstrap_creates_and_activates_profile() -> None:
     set_default.assert_called_once_with("brandon")
     set_current.assert_called_once_with("brandon")
     obs.assert_called_once_with(stream="mcp", profile="brandon")
+
+
+def test_unconfigured_predicate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_is_unconfigured is True only with no flag, no env, no active_profile."""
+    from moneybin.cli.commands.mcp import (
+        _is_unconfigured,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    monkeypatch.delenv("MONEYBIN_PROFILE", raising=False)
+    fake_cfg = MagicMock()
+    fake_cfg.active_profile = None
+    with (
+        patch("moneybin.cli.commands.mcp._flags") as flags,
+        patch("moneybin.cli.commands.mcp.load_user_config", return_value=fake_cfg),
+    ):
+        flags.profile = None
+        assert _is_unconfigured() is True
+        flags.profile = "brandon"
+        assert _is_unconfigured() is False
+
+    monkeypatch.setenv("MONEYBIN_PROFILE", "alice")
+    with (
+        patch("moneybin.cli.commands.mcp._flags") as flags,
+        patch("moneybin.cli.commands.mcp.load_user_config", return_value=fake_cfg),
+    ):
+        flags.profile = None
+        assert _is_unconfigured() is False
