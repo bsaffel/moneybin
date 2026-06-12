@@ -142,6 +142,29 @@ Length budget: ~150–300 tokens. The text is loaded once per session, so the co
 
 Keep the text in sync with the spec. Renames and new top-level groups must update both.
 
+### First-run setup (elicitation)
+
+When `moneybin mcp serve` starts with no configured profile (no `--profile`, no
+`MONEYBIN_PROFILE`, no `active_profile` in `config.yaml`), it boots **anyway** —
+it must never trigger the interactive first-run wizard, whose stdout prompts
+would corrupt the stdio JSON-RPC stream. The server registers its tools plus
+`FirstRunSetupMiddleware` and waits for the first tool call.
+
+On that first call:
+- **Elicitation-capable clients** (e.g. Claude Desktop) are asked for a profile
+  name via `ctx.elicit`. MoneyBin creates the profile (encrypted DB + schema via
+  `ProfileService.create`, key generated server-side into the keychain),
+  activates it in-process, and proceeds with the original call — no restart.
+- **Tools-only clients** (capability probed via
+  `session.check_client_capability`) receive a single structured error envelope
+  with `error.code = "infra_setup_required"`, directing the user to run
+  `moneybin profile create <name>` and reconnect.
+
+Only the profile **name** crosses the LLM context; the encryption key never
+does, so the `profile_*`-is-CLI-only policy (above) is preserved — first-run is
+startup/middleware behavior, not a new MCP tool. See
+[`mcp-first-run-setup.md`](mcp-first-run-setup.md).
+
 ### Protocol-standard capability coverage matrix
 
 MoneyBin layers its own primitives (sensitivity tiers, `ResponseEnvelope`, exposure principle) on top of the standard MCP capabilities. Both layers are first-class — clients consume the protocol-standard fields directly for confirmation UI, capability negotiation, and context injection, while MoneyBin's layer governs data exposure. **Every PR that adds tools, prompts, or resources is reviewed against this matrix; reject changes that ship a new surface without explicitly accounting for each capability.**
@@ -161,7 +184,7 @@ The matrix is intentionally exhaustive — including capabilities MoneyBin defer
 | **Progress notifications** | core | ⏳ not used | Required for the job-handle pattern; `sync-plaid.md` rewrite is the first surface that needs it. |
 | **Sampling** | optional | ⏳ deliberate defer | Server requesting LLM completions back from the client. No current use case; consider only if MoneyBin needs to delegate categorization to the host LLM (today this is an explicit non-goal — categorization runs locally). |
 | **Roots** | optional | ⏳ deliberate defer | Filesystem scope advertisement from the client. Inbox-watching uses MoneyBin-side configuration today. Revisit if a future tool needs to ask the agent for the user's working directory. |
-| **Elicitation** | optional | ⏳ deliberate defer | Server requesting structured user input mid-tool-call. Spec mentions it as an alternative to `confirm` parameters for destructive ops; we use the parameter pattern for now. Revisit when destructive write-tool count > 5. |
+| **Elicitation** | optional | ✅ shipped (first-run setup) | First use: `FirstRunSetupMiddleware` elicits a profile name on the first tool call when the server booted unconfigured (see "First-run setup" above). Capability probed via `session.check_client_capability`; tools-only clients get the `infra_setup_required` envelope fallback. Still NOT used for destructive-write confirmation — that stays on the `confirm` parameter pattern (revisit when destructive write-tool count > 5). |
 | **Logging level negotiation** | optional | ⏳ not used | Server-side log level honors `MoneyBinSettings.logging.level`; not negotiated per session. |
 | **Pagination cursors** | core | ⏳ partial | `summary.has_more` + `summary.total_count` flag truncation; `offset` parameter handles paging. No opaque cursor pattern; revisit if any tool needs server-side iteration state. |
 | **Server `instructions`** | core | ✅ shipped | `FastMCP(instructions=...)` in `src/moneybin/mcp/server.py`. See above subsection. |
