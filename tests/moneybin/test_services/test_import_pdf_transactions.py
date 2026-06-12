@@ -576,60 +576,74 @@ def test_pdf_first_contact_save_format_false_suppresses_recipe(
 
 
 # ---------------------------------------------------------------------------
-# Test 11: Broken-recipe ConstraintException — auto-derive succeeds, save_new skipped
+# Test 11: Broken-recipe ConstraintException — auto-derive re-derives + auto-bumps
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
-def test_pdf_replay_invalid_recipe_falls_back_without_replacing_format(
+def test_pdf_replay_invalid_recipe_auto_bumps_format(
     db: Database, tmp_path: Path
 ) -> None:
-    """Service still imports rows when the saved recipe fails model_validate.
+    """A saved recipe that fails model_validate is re-derived and auto-bumped (Req 9a).
 
-    This pins the documented Phase 2a behaviour: routing falls through to
-    auto-derive (test_replay_invalid_recipe_falls_through_to_auto_derive
-    covers that side), and the service-side save_new attempt collides
-    with the broken row on the fingerprint-derived primary key and
-    swallows the ConstraintException with a warning. The broken row in
-    app.pdf_formats is NOT replaced — Phase 2b's bump_version is what
-    recovers it.
+    Routing falls through to auto-derive (the saved recipe can't validate;
+    test_replay_invalid_recipe_falls_through_to_auto_derive covers that side),
+    the re-derived recipe reconciles, and save_new collides with the stale row
+    on its fingerprint-derived primary key. Instead of leaving the broken recipe
+    stuck (the old Phase 2a dead end), the service bumps it to a new version so
+    the next statement of this layout replays the corrected recipe rather than
+    re-deriving forever.
     """
-    # Insert a broken-recipe row whose layout_fingerprint matches the
-    # standard_doc fixture: Chase issuer, headers ["Date", "Description",
-    # "Amount"] (insertion order), page_bucket="1". The recipe dict is
-    # intentionally missing required fields so Recipe.model_validate fails.
-    broken_recipe: dict[str, Any] = {
-        "row_region": {
-            "start_anchor": _ROW_REGION_START,
-            "end_anchor": _ROW_REGION_END,
-        },
-        # Missing row_split / fields / sign_convention / routing — fails validate
-    }
-    _save_chase_format(db, recipe=broken_recipe)
-
-    doc = _standard_doc()
-    svc, fake_pdf = _service_with_fake_pdf(db, doc, tmp_path)
-
-    with patch(
-        "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
-        return_value=doc,
-    ):
-        result = svc.import_file(fake_pdf, refresh=False)
-
-    # Import still landed rows via auto-derive
-    assert result.file_type == "pdf"
-    assert result.transactions > 0
-
-    # The broken row is still present, unreplaced
-    formats = db.execute(
-        "SELECT extraction_recipe FROM app.pdf_formats WHERE name = ?",
-        ["chase_checking_pdf"],
-    ).fetchone()
-    assert formats is not None
-    # extraction_recipe is stored as JSON; deserialize and check it's still
-    # the broken stub (missing fields), not the auto-derived recipe.
     import json as _json
 
-    stored_recipe = _json.loads(formats[0])
-    assert "row_split" not in stored_recipe  # broken stub didn't have it
-    assert "fields" not in stored_recipe
+    from moneybin.extractors.pdf.fingerprint import compute_fingerprint
+    from moneybin.repositories.pdf_formats_repo import PdfFormatsRepo
+
+    # First contact: auto-derive persists a valid format (version 1) under its
+    # fingerprint-derived name.
+    doc = _standard_doc()
+    svc, fake_pdf = _service_with_fake_pdf(db, doc, tmp_path)
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract", return_value=doc
+    ):
+        svc.import_file(fake_pdf, refresh=False)
+
+    fp = compute_fingerprint(doc)
+    saved = PdfFormatsRepo(db).get_by_fingerprint(fp)
+    assert saved is not None
+    format_name = saved.name
+
+    # Simulate recipe drift: corrupt the stored recipe so the next replay fails
+    # model_validate (missing required fields), routing back through auto-derive.
+    db.execute(
+        "UPDATE app.pdf_formats SET extraction_recipe = ?::JSON WHERE name = ?",
+        [
+            _json.dumps({
+                "row_region": {
+                    "start_anchor": _ROW_REGION_START,
+                    "end_anchor": _ROW_REGION_END,
+                }
+            }),
+            format_name,
+        ],
+    )
+
+    # Re-import the same layout: replay loads the broken recipe → model_validate
+    # fails → auto-derive → save_new collides → bump restores a valid recipe.
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract", return_value=doc
+    ):
+        result = svc.import_file(fake_pdf, refresh=False)
+    assert result.file_type == "pdf"  # import did not dead-end
+
+    row = db.execute(
+        "SELECT version, extraction_recipe FROM app.pdf_formats WHERE name = ?",
+        [format_name],
+    ).fetchone()
+    assert row is not None
+    assert row[0] == 2  # bumped from the version-1 stale row
+    stored_recipe = _json.loads(row[1])
+    # The stored recipe is now the valid auto-derived one (has the fields the
+    # corrupted stub lacked), not the broken stub.
+    assert "row_split" in stored_recipe
+    assert "fields" in stored_recipe

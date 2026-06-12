@@ -2193,19 +2193,39 @@ class ImportService:
                     f"import_id={import_id[:8]}..."
                 )
             except duckdb.ConstraintException:
-                # A format with this fingerprint-derived name already exists.
-                # The common cause is a previously-saved recipe that failed
-                # model_validate on replay and now permanently routes through
-                # auto-derive without ever updating the stored recipe. Warn so
-                # the stuck-format state is observable until Phase 2b adds
-                # bump_version.
-                logger.warning(
-                    f"PDF format {format_name!r} already exists — save_new "
-                    f"skipped. If the saved recipe is broken (e.g. failed "
-                    f"model_validate on prior replay), it will keep auto-"
-                    f"deriving without updating the stored recipe until "
-                    f"Phase 2b bump_version lands."
-                )
+                # A format with this fingerprint-derived name already exists,
+                # yet routing did not match it (matched_format_name is None) —
+                # the saved recipe stopped serving this layout: it failed
+                # model_validate on replay (→ auto-derive) or stopped
+                # reconciling (→ bridge re-derive). The recipe we just ran
+                # reconciled, so install it as a NEW version (Req 9a auto-bump):
+                # audited + reversible via undo (Invariant 11), never a silent
+                # overwrite. This closes the stuck-recipe loop where every future
+                # statement of this layout would re-derive/re-escalate forever.
+                try:
+                    self._pdf_formats.bump_version(
+                        name=format_name,
+                        new_recipe=decision.recipe.model_dump(),
+                        reason=(
+                            "replay-guard reconciliation failure — re-derived "
+                            f"recipe reconciled (rung={rung})"
+                        ),
+                        actor="system",  # auto-bump: system-driven (Invariant 10)
+                    )
+                    # Record the actually-persisted name so callers
+                    # (apply_pdf_bridge_response) report format_name only after a
+                    # confirmed persist — the bump landed a new recipe version.
+                    result.pdf_format_name = format_name
+                    logger.info(
+                        f"PDF format {format_name!r} recipe re-derived and "
+                        f"bumped to a new version (import_id={import_id[:8]}...)"
+                    )
+                except Exception:  # noqa: BLE001 — format bump is bookkeeping; data is committed
+                    logger.warning(
+                        f"PDF bump_version failed for format {format_name!r} "
+                        f"(import_id={import_id[:8]}...) — stale recipe persists",
+                        exc_info=True,
+                    )
             except Exception:  # noqa: BLE001 — format save is bookkeeping; data is committed
                 logger.warning(
                     f"PDF save_new failed for format {format_name!r} "
