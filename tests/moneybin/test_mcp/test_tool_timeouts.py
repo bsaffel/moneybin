@@ -71,9 +71,12 @@ async def test_sync_tool_over_cap_returns_timeout_envelope(
     assert result.error.details["tool"] == "slow_tool"
     assert result.error.details["timeout_s"] == 0.05
     assert result.error.details["elapsed_s"] >= 0.05
-    # slow_tool never opened a DB connection, so the timeout cleanup has nothing
-    # of its own to reset — and it must NOT fall back to the global active writer
-    # (which would collaterally interrupt a different call's healthy connection).
+    # Collateral-kill regression guard: slow_tool never opened a DB connection,
+    # so the timeout cleanup must call NOTHING. Asserting interrupt_and_reset
+    # is not called proves it can't reach the process-global slot to interrupt a
+    # *concurrent* call's healthy writer (the original bug) — a weakened guard
+    # would call it with None and fail here. (Stronger than a live two-writer
+    # test, which would add real-DB thread timing without catching more.)
     reset_mock.assert_not_called()
 
 

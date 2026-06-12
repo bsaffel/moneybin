@@ -207,7 +207,12 @@ def test_scenario_2_reader_blocks_writer_writer_succeeds_after_release(
     # committed, so it cannot assert this — a fresh reader after both released
     # confirms the contended write actually landed.
     verifier = _spawn(_READER, str(bootstrapped_db), "0.0")
-    verify_out, verify_err = _drain(verifier)
+    try:
+        verify_out, verify_err = _drain(verifier)
+    finally:
+        if verifier.poll() is None:
+            verifier.kill()
+            verifier.wait(timeout=5.0)
     assert verifier.returncode == 0, (
         f"verifier failed: stdout={verify_out!r} stderr={verify_err!r}"
     )

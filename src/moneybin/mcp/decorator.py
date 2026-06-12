@@ -513,10 +513,6 @@ def mcp_tool(
                     await _emit_privacy_event(err_env)
                     return err_env
                 elapsed = time.monotonic() - started
-                logger.warning(
-                    f"Tool {fn.__name__} timed out after {elapsed:.2f}s "
-                    f"(cap {timeout_s:.1f}s); interrupting DB and resetting connection"
-                )
                 # Only reset THIS call's own connection. If the call timed out
                 # before acquiring one (e.g. queued behind another writer when
                 # tool_timeout < the write-lock wait), _conn_for_this_call[0] is
@@ -531,7 +527,20 @@ def mcp_tool(
                 # write tools today; one would need the same holder wiring to be
                 # interrupted on timeout (otherwise [0] stays None and we skip —
                 # the latent gap is a missed reset, never a collateral one).
+                #
+                # Caveat: a sync tool body runs in a thread-pool worker we cannot
+                # cancel, so a tool that timed out while still queued at the lock
+                # may later acquire and commit its write after the caller already
+                # received the timeout envelope. The guard prevents a collateral
+                # reset; it does not cancel that worker. This is reachable only
+                # when the tool timeout is configured below the write-lock wait;
+                # the default 30s cap >> 10s wait keeps the worker's deadline
+                # ahead of the lock's, so it never commits post-timeout.
                 if _conn_for_this_call[0] is not None:
+                    logger.warning(
+                        f"Tool {fn.__name__} timed out after {elapsed:.2f}s "
+                        f"(cap {timeout_s:.1f}s); interrupting DB and resetting connection"
+                    )
                     try:
                         interrupt_and_reset_database(_conn_for_this_call[0])
                     except Exception as cleanup_exc:  # noqa: BLE001 — cleanup must not raise
@@ -539,6 +548,14 @@ def mcp_tool(
                             f"interrupt_and_reset_database failed during {fn.__name__} "
                             f"timeout cleanup: {type(cleanup_exc).__name__}"
                         )
+                else:
+                    # Timed out before acquiring a connection — nothing of ours to
+                    # reset. Log accurately so a post-mortem doesn't chase a reset
+                    # that never happened.
+                    logger.warning(
+                        f"Tool {fn.__name__} timed out after {elapsed:.2f}s "
+                        f"(cap {timeout_s:.1f}s); no connection acquired, nothing to reset"
+                    )
                 # Brief grace period: the surviving sync-tool thread needs a
                 # tick to see the closed DuckDB connection, raise, and unwind
                 # any per-tool resources (e.g. InboxService.acquire_lock's
