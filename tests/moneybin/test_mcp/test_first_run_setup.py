@@ -66,6 +66,22 @@ async def test_setup_envelope_when_elicitation_unsupported() -> None:
 
 
 @pytest.mark.asyncio
+async def test_setup_envelope_when_ctx_is_none() -> None:
+    """No fastmcp_context (ctx is None) returns the envelope, no call_next."""
+    mw = FirstRunSetupMiddleware()
+    call_next = AsyncMock()
+
+    result = await mw.on_call_tool(_fake_mw_context(None), call_next)
+
+    assert isinstance(result, ToolResult)
+    assert result.structured_content is not None
+    assert (
+        result.structured_content["error"]["code"] == error_codes.INFRA_SETUP_REQUIRED
+    )
+    call_next.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_bootstrap_and_proceed_on_accept() -> None:
     """Elicit-accept with a valid name creates the profile and proceeds."""
     mw = FirstRunSetupMiddleware()
@@ -126,6 +142,33 @@ async def test_invalid_name_retries_once_then_succeeds() -> None:
     assert ctx.elicit.await_count == 2
     boot.assert_called_once_with("Brandon")
     assert result == "ok"
+
+
+@pytest.mark.asyncio
+async def test_two_invalid_names_returns_envelope() -> None:
+    """Two invalid answers exhaust the single retry and return the envelope."""
+    mw = FirstRunSetupMiddleware()
+    call_next = AsyncMock()
+    ctx = MagicMock()
+    ctx.session.check_client_capability.return_value = True
+    ctx.elicit = AsyncMock(
+        side_effect=[
+            AcceptedElicitation(data="   "),  # invalid → ValueError
+            AcceptedElicitation(data="!!!"),  # invalid → ValueError (no usable chars)
+        ]
+    )
+
+    with patch("moneybin.mcp.first_run._bootstrap_profile") as boot:
+        result = await mw.on_call_tool(_fake_mw_context(ctx), call_next)
+
+    assert ctx.elicit.await_count == 2
+    boot.assert_not_called()
+    call_next.assert_not_called()
+    assert isinstance(result, ToolResult)
+    assert result.structured_content is not None
+    assert (
+        result.structured_content["error"]["code"] == error_codes.INFRA_SETUP_REQUIRED
+    )
 
 
 def test_bootstrap_adopts_existing_profile_on_collision() -> None:
