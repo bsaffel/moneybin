@@ -71,7 +71,40 @@ async def test_sync_tool_over_cap_returns_timeout_envelope(
     assert result.error.details["tool"] == "slow_tool"
     assert result.error.details["timeout_s"] == 0.05
     assert result.error.details["elapsed_s"] >= 0.05
-    reset_mock.assert_called_once()
+    # slow_tool never opened a DB connection, so the timeout cleanup has nothing
+    # of its own to reset — and it must NOT fall back to the global active writer
+    # (which would collaterally interrupt a different call's healthy connection).
+    reset_mock.assert_not_called()
+
+
+@pytest.mark.unit
+async def test_timed_out_tool_resets_only_its_own_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A timed-out tool that acquired a write conn resets THAT conn, not the global slot."""
+    monkeypatch.setattr("moneybin.mcp.decorator._get_timeout_seconds", lambda: 0.05)
+    reset_mock = MagicMock()
+    monkeypatch.setattr(
+        "moneybin.mcp.decorator.interrupt_and_reset_database", reset_mock
+    )
+    sentinel = object()  # stands in for this call's acquired Database
+
+    @mcp_tool(dynamic_classification=True)
+    def slow_tool() -> ResponseEnvelope[Any]:
+        from moneybin.database import (
+            _write_conn_thread_local,  # type: ignore[reportPrivateUsage]  # test-only: simulate get_database registering its conn
+        )
+
+        # The decorator points conn_holder at this call's per-call list before
+        # running the sync body; mirror get_database registering its connection.
+        holder = getattr(_write_conn_thread_local, "conn_holder", None)
+        assert holder is not None
+        holder[0] = sentinel
+        time.sleep(0.5)
+        return _ok_envelope()
+
+    await slow_tool()
+    reset_mock.assert_called_once_with(sentinel)
 
 
 @pytest.mark.unit
@@ -211,6 +244,16 @@ async def test_back_to_back_call_after_timeout_succeeds(
         if not read_only:
             with db_module._active_write_lock:  # pyright: ignore[reportPrivateUsage]
                 db_module._active_write_conn = conn  # pyright: ignore[reportPrivateUsage]
+            # Mirror real get_database: register the per-call holder so the
+            # decorator's timeout cleanup resets THIS connection (rather than
+            # finding [0]=None and skipping, which the guarded cleanup now does).
+            holder = getattr(
+                db_module._write_conn_thread_local,  # pyright: ignore[reportPrivateUsage]
+                "conn_holder",
+                None,
+            )
+            if holder is not None:
+                holder[0] = conn
         try:
             yield conn
         finally:

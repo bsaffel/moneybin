@@ -517,13 +517,21 @@ def mcp_tool(
                     f"Tool {fn.__name__} timed out after {elapsed:.2f}s "
                     f"(cap {timeout_s:.1f}s); interrupting DB and resetting connection"
                 )
-                try:
-                    interrupt_and_reset_database(_conn_for_this_call[0])
-                except Exception as cleanup_exc:  # noqa: BLE001 — cleanup must not raise
-                    logger.error(
-                        f"interrupt_and_reset_database failed during {fn.__name__} "
-                        f"timeout cleanup: {type(cleanup_exc).__name__}"
-                    )
+                # Only reset THIS call's own connection. If the call timed out
+                # before acquiring one (e.g. queued behind another writer when
+                # tool_timeout < the write-lock wait), _conn_for_this_call[0] is
+                # None and there is nothing of ours to reset — and we must NOT
+                # fall back to interrupt_and_reset_database()'s process-global
+                # slot, which would interrupt a *different* call's healthy active
+                # writer.
+                if _conn_for_this_call[0] is not None:
+                    try:
+                        interrupt_and_reset_database(_conn_for_this_call[0])
+                    except Exception as cleanup_exc:  # noqa: BLE001 — cleanup must not raise
+                        logger.error(
+                            f"interrupt_and_reset_database failed during {fn.__name__} "
+                            f"timeout cleanup: {type(cleanup_exc).__name__}"
+                        )
                 # Brief grace period: the surviving sync-tool thread needs a
                 # tick to see the closed DuckDB connection, raise, and unwind
                 # any per-tool resources (e.g. InboxService.acquire_lock's

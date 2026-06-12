@@ -198,6 +198,16 @@ def test_scenario_2_reader_blocks_writer_writer_succeeds_after_release(
     # DuckDB lock error rather than letting it surface raw.
     assert "Could not set lock" not in writer_err
     assert "duckdb.IOException" not in writer_err
+    # Self-contained durability check: the writer's INSERT(99) bumped the row
+    # count from 1 to 2. The in-test reader above released before the writer
+    # committed, so it cannot assert this — a fresh reader after both released
+    # confirms the contended write actually landed.
+    verifier = _spawn(_READER, str(bootstrapped_db), "0.0")
+    verify_out, verify_err = _drain(verifier)
+    assert verifier.returncode == 0, (
+        f"verifier failed: stdout={verify_out!r} stderr={verify_err!r}"
+    )
+    assert "READER_CLOSED:2" in verify_out
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +229,15 @@ def test_scenario_3_writer_blocks_reader_reader_succeeds_after_release(
         _wait_for_marker(writer, "HOLDER_OPEN")
         # Launch the reader while the writer still holds. Reader must retry
         # at the ATTACH layer until the writer closes.
+        #
+        # The reader hold is 0.0 s ON PURPOSE: contention is guaranteed by the
+        # HOLDER_OPEN barrier above (the writer provably holds the write attach
+        # before the reader spawns), so the reader must wait regardless of how
+        # long it then holds. The hold is time-AFTER-acquire, irrelevant to
+        # whether the reader contends; the READER_CLOSED:2 assertion below
+        # positively proves the reader acquired only after the writer committed
+        # its INSERT. (Do not "fix" this to a non-zero hold — it would test the
+        # reader's post-acquire dwell, not the writer-blocks-reader path.)
         reader = _spawn(_READER, str(bootstrapped_db), "0.0")
         try:
             reader_out, reader_err = _drain(reader)

@@ -40,16 +40,17 @@ _BACKOFF_MULTIPLIER = 1.5
 _BACKOFF_CAP_SECONDS = 0.5
 
 
-def lock_path_for(db_path: Path) -> Path:
-    """Return the write-lock metadata path for ``db_path``.
+def lock_path_for(resolved_db_path: Path) -> Path:
+    """Return the write-lock metadata path for an already-resolved db path.
 
-    Resolves ``db_path`` first, mirroring ``write_lock``, so a symlinked or
-    relative path maps to the same lock file the primitive keys on. This is
-    the public contract for locating the lock file; the ``_LOCK_SUFFIX``
-    naming detail stays private to this module.
+    Pass a resolved/canonical path (``db_path.resolve()``) — the form
+    ``write_lock`` keys the lock on — so a symlinked or relative original maps
+    to the one lock file the primitive uses. Resolving is the caller's job: the
+    sole caller already resolves once for its lsof scan, so resolving again here
+    would be a redundant syscall. This is the public way to locate the lock
+    file; the ``_LOCK_SUFFIX`` naming detail stays private to this module.
     """
-    resolved = db_path.resolve()
-    return resolved.parent / (resolved.name + _LOCK_SUFFIX)
+    return resolved_db_path.parent / (resolved_db_path.name + _LOCK_SUFFIX)
 
 
 @dataclass
@@ -94,7 +95,13 @@ def _release_one(key: Path, pid: int, thread_id: int) -> None:
             try:
                 fcntl.flock(holder.fd, fcntl.LOCK_UN)
             finally:
-                os.close(holder.fd)
+                # Guard os.close like the flock release: in this finally an
+                # os.close error (e.g. EBADF) would otherwise mask a flock
+                # exception. os.close on a held fd essentially never raises.
+                try:
+                    os.close(holder.fd)
+                except OSError:
+                    pass
 
 
 def _process_command(pid: int) -> str:
