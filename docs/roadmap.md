@@ -128,6 +128,7 @@ Now that the engine and the analysis layer are complete and self-testable, make 
 | **M3K** | CLI / MCP UX standards | 🗓️ | Interaction patterns, output formatting, prompt/resource conventions. |
 | **M3L** | Shared UI architecture (foundation) | 📐 | One `ui-core` (React + shadcn/Tailwind/Tremor) behind two shells — Web UI and MCP App; transport-agnostic `MoneyBinClient`; bundle embedded in the Python wheel. Prerequisite for M3A/M3C/M3M. [`ui-architecture.md`](specs/ui-architecture.md) + [ADR-014](decisions/014-shared-ui-architecture.md). |
 | **M3M** | MCP App surface | 🗓️ | MoneyBin's own dashboards rendered inside an MCP host (Claude, ChatGPT, …), built on M3L's `ui-core`. Enabled by MCP Apps becoming a ratified standard (`2026-01-26`); sequencing vs. the Web UI is under review. |
+| **M3N** | MCP first-run setup (**pulled forward**) | 📐 | `mcp serve` always boots with no profile; first tool call drives elicitation-based profile creation on capable clients (Claude Desktop), one structured `setup_required` envelope on tools-only clients. Fixes the interactive wizard corrupting the JSON-RPC stream. Pulled forward for the near-term MCP-app distribution surface. [`mcp-first-run-setup.md`](specs/mcp-first-run-setup.md). |
 
 > **Pre-Distribution gate.** M3 work proceeds once the full suite is green, the anonymized real-data parity check passes, `system doctor` is clean on a real profile, and privacy/PII/security checks pass. **Hosted launch (M3H) = v1.**
 
