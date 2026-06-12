@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+from typing import Any
 
 import pytest
 
@@ -527,6 +528,8 @@ class TestMCPFirstRunSetup:
                 # gracefully handles a fresh DB without SQLMesh transforms.
                 result = await session.call_tool("system_status", {})
 
+        # Assert after the session closes: a clean shutdown is itself evidence the
+        # JSON-RPC stream stayed intact end to end (the original-bug regression).
         # Middleware returned a ToolResult (not raised), so isError is False.
         assert not result.isError, f"Unexpected MCP-level error: {result.content}"
         content = result.content[0]
@@ -547,8 +550,6 @@ class TestMCPFirstRunSetup:
         in-process, and re-executes the original tool call. The second call proves
         the middleware is no longer active (self._configured is True).
         """
-        from typing import Any
-
         from mcp import ClientSession, types
         from mcp.client.stdio import StdioServerParameters, stdio_client
         from mcp.shared.context import RequestContext
@@ -581,6 +582,7 @@ class TestMCPFirstRunSetup:
                 first = await session.call_tool("system_status", {})
                 second = await session.call_tool("system_status", {})
 
+        # Assert after the session closes (clean shutdown = stream stayed intact).
         # Wire format is pydantic_core serialization of ResponseEnvelope — the
         # "status" field only appears in to_dict(), not in the Pydantic model
         # itself. Success is indicated by error: null + data present.
