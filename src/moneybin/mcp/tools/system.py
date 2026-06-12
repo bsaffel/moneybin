@@ -42,6 +42,9 @@ from moneybin.utils.db_processes import describe_process, find_blocking_processe
 
 _HEALTHY_STATUSES = frozenset({"healthy"})
 _DISCONNECTED_STATUSES = frozenset({"disconnected"})
+# Re-reads of the write-lock metadata file to ride out write_lock's brief
+# in-place rewrite (ftruncate-then-write) window before treating it as absent.
+_METADATA_READ_ATTEMPTS = 3
 
 
 def _gsheet_block(db: Any) -> dict[str, Any]:
@@ -153,9 +156,6 @@ def _writer_is_live(lock_path: Path) -> bool:
         os.close(fd)
 
 
-_METADATA_READ_ATTEMPTS = 3
-
-
 def _read_writer_metadata(lock_path: Path) -> dict[str, Any] | None:
     """Read + parse the writer metadata, tolerating the brief rewrite window.
 
@@ -211,12 +211,12 @@ def _database_connections_block(db_path: Path) -> dict[str, Any]:
     """
     writers: list[dict[str, Any]] = []
     writer_pid: int | None = None
-    # Resolve once and use the resolved path for BOTH the lock file (via
-    # lock_path_for, which resolves the same way write_lock keys it) and the
-    # lsof reader scan, so a symlinked or relative path can't report writers
-    # and readers against different inodes.
+    # Resolve once for the lsof reader scan; lock_path_for resolves db_path
+    # itself for the lock file. Both resolve the same db_path, so the writer
+    # probe and the reader scan stay on one inode even for a symlinked or
+    # relative path — and neither re-resolves an already-resolved path.
     resolved = db_path.resolve()
-    lock_path = lock_path_for(resolved)
+    lock_path = lock_path_for(db_path)
     # No separate exists() check: _writer_is_live opens the lock file and
     # returns False if it is absent, so an exists() guard would be a redundant,
     # TOCTOU-prone stat.

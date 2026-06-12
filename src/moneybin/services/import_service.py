@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from moneybin.extractors.pdf.ir import PdfDocument
     from moneybin.extractors.pdf.routing import RouteDecision
 
+from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.extractors.tabular.formats import (
@@ -1728,6 +1729,30 @@ class ImportService:
             PDF_IMPORT_TOTAL.labels(outcome="failed", rung="deterministic").inc()
             raise
 
+        # Scanned / image-only PDF: no selectable text layer. Nothing for the
+        # deterministic rung to structure, nothing to seed, and the text bridge
+        # carries document text, not page images — so even a driving agent can't
+        # read it (vision backends are out of scope, Req 5). Surface an explicit,
+        # actionable unsupported outcome — for agent and human callers alike,
+        # hence before the bridge-escalation gate below — instead of a generic
+        # "No tables extracted" failure or a silent empty seed. Raised before
+        # begin_import, so no dangling import_log row is left behind.
+        if not doc.text_lines and not doc.tables:
+            PDF_IMPORT_TOTAL.labels(outcome="unsupported", rung="deterministic").inc()
+            raise UserError(
+                "This PDF has no selectable text layer — it looks scanned or "
+                "image-only. Extracting transactions from it needs a "
+                "vision-capable backend (an agent or bridge that can read the "
+                "page image), which MoneyBin does not yet provide. Re-import a "
+                "PDF that has a selectable text layer, or run the file through "
+                "OCR first.",
+                code=error_codes.IMPORT_PDF_NO_TEXT_LAYER,
+                hint=(
+                    "💡 Scanned PDFs need OCR or a vision-capable agent backend "
+                    "(not yet supported)."
+                ),
+            )
+
         # Bridge escalation (Option B): with a driving agent present, hand a
         # bridge-eligible layout to the agent instead of silently seeding.
         # Always raises. No agent → fall through to the Phase 2a seed path.
@@ -1772,9 +1797,12 @@ class ImportService:
                 self._db, doc, alias=resolved_alias, import_id=import_id
             )
             if extracted == 0:
+                # A scanned / no-text-layer PDF is caught earlier with a clearer
+                # unsupported error; reaching here means the document HAS a text
+                # layer but no table structure the seed extractor could parse.
                 raise ValueError(
-                    "No tables extracted from PDF. Verify the file contains "
-                    "selectable text (image-only / scanned PDFs are not supported)."
+                    "No tables extracted from PDF. The document has a text layer "
+                    "but no table structure the importer could parse into rows."
                 )
         except Exception:
             try:
@@ -2193,19 +2221,39 @@ class ImportService:
                     f"import_id={import_id[:8]}..."
                 )
             except duckdb.ConstraintException:
-                # A format with this fingerprint-derived name already exists.
-                # The common cause is a previously-saved recipe that failed
-                # model_validate on replay and now permanently routes through
-                # auto-derive without ever updating the stored recipe. Warn so
-                # the stuck-format state is observable until Phase 2b adds
-                # bump_version.
-                logger.warning(
-                    f"PDF format {format_name!r} already exists — save_new "
-                    f"skipped. If the saved recipe is broken (e.g. failed "
-                    f"model_validate on prior replay), it will keep auto-"
-                    f"deriving without updating the stored recipe until "
-                    f"Phase 2b bump_version lands."
-                )
+                # A format with this fingerprint-derived name already exists,
+                # yet routing did not match it (matched_format_name is None) —
+                # the saved recipe stopped serving this layout: it failed
+                # model_validate on replay (→ auto-derive) or stopped
+                # reconciling (→ bridge re-derive). The recipe we just ran
+                # reconciled, so install it as a NEW version (Req 9a auto-bump):
+                # audited + reversible via undo (Invariant 11), never a silent
+                # overwrite. This closes the stuck-recipe loop where every future
+                # statement of this layout would re-derive/re-escalate forever.
+                try:
+                    self._pdf_formats.bump_version(
+                        name=format_name,
+                        new_recipe=decision.recipe.model_dump(),
+                        reason=(
+                            "replay-guard reconciliation failure — re-derived "
+                            f"recipe reconciled (rung={rung})"
+                        ),
+                        actor="system",  # auto-bump: system-driven (Invariant 10)
+                    )
+                    # Record the actually-persisted name so callers
+                    # (apply_pdf_bridge_response) report format_name only after a
+                    # confirmed persist — the bump landed a new recipe version.
+                    result.pdf_format_name = format_name
+                    logger.info(
+                        f"PDF format {format_name!r} recipe re-derived and "
+                        f"bumped to a new version (import_id={import_id[:8]}...)"
+                    )
+                except Exception:  # noqa: BLE001 — format bump is bookkeeping; data is committed
+                    logger.warning(
+                        f"PDF bump_version failed for format {format_name!r} "
+                        f"(import_id={import_id[:8]}...) — stale recipe persists",
+                        exc_info=True,
+                    )
             except Exception:  # noqa: BLE001 — format save is bookkeeping; data is committed
                 logger.warning(
                     f"PDF save_new failed for format {format_name!r} "

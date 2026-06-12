@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from collections.abc import Generator
 from pathlib import Path
@@ -20,7 +21,7 @@ import duckdb
 import pytest
 
 import moneybin.database as db_module
-from moneybin.database import Database, get_database
+from moneybin.database import Database, DatabaseLockError, get_database
 from moneybin.db_lock.lock import (
     _LOCK_SUFFIX,  # type: ignore[reportPrivateUsage]  # test-only access to the canonical lock-file suffix
 )
@@ -313,3 +314,54 @@ def test_write_open_creates_missing_profile_dir_before_lock(
 
     assert profile_dir.is_dir()
     assert db_path.exists()
+
+
+@pytest.mark.integration
+def test_concurrent_write_opens_serialize_across_threads(configured_db: Path) -> None:
+    """Two in-process threads opening get_database(write) serialize at the lock.
+
+    The primary in-process concurrency case (concurrent MCP write tools running
+    on separate threads): while one thread holds the write lock, a second
+    thread's write open must block at write_lock — under a short max_wait it
+    times out rather than acquiring concurrently. write_lock contends per
+    open-file-description, so different threads do not share a reentrancy entry;
+    this exercises that end to end through get_database (not just the primitive,
+    which tests/moneybin/test_db_lock/test_lock.py covers directly).
+    """
+    a_holding = threading.Event()
+    a_release = threading.Event()
+    b_outcome: dict[str, str] = {}
+
+    def thread_a() -> None:
+        with get_database(read_only=False) as db:
+            db.execute("INSERT INTO t VALUES (1)")
+            a_holding.set()
+            a_release.wait(timeout=10.0)
+
+    def thread_b() -> None:
+        # main asserts a_holding before starting this thread, so A already holds.
+        try:
+            with get_database(read_only=False, max_wait=0.5):
+                b_outcome["result"] = "acquired"
+        except DatabaseLockError:
+            b_outcome["result"] = "blocked"
+        except Exception as exc:  # noqa: BLE001 — surface unexpected errors for diagnosis
+            b_outcome["result"] = f"error:{type(exc).__name__}"
+
+    ta = threading.Thread(target=thread_a)
+    ta.start()
+    try:
+        assert a_holding.wait(timeout=5.0), "thread A never acquired the write lock"
+        tb = threading.Thread(target=thread_b)
+        tb.start()
+        # B attempts while A still holds; with max_wait=0.5 s (well under A's
+        # hold), B must block at write_lock and time out — proving it could not
+        # acquire concurrently.
+        tb.join(timeout=10.0)
+        assert not tb.is_alive(), "thread B did not finish in time"
+        assert b_outcome.get("result") == "blocked", (
+            f"second writer was not serialized behind the first: {b_outcome}"
+        )
+    finally:
+        a_release.set()
+        ta.join(timeout=5.0)

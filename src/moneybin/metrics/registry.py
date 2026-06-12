@@ -72,8 +72,9 @@ OFX_IMPORT_BATCHES = Counter(
     labelnames=("status",),
 )
 
-# Outcomes: "transactions" (routed deterministic), "seed" (Phase 1 fallback), "failed"
-# (extraction error or zero rows).
+# Outcomes: "transactions" (routed deterministic), "seed" (Phase 1 fallback),
+# "failed" (extraction error or zero rows), "unsupported" (scanned / image-only
+# PDF with no text layer — needs a vision-capable backend, Req 5).
 PDF_IMPORT_TOTAL = Counter(
     "moneybin_pdf_import_total",
     "PDF imports by outcome and rung.",

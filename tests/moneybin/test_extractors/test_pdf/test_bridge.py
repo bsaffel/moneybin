@@ -274,3 +274,88 @@ def test_parse_bridge_response_rejects_non_date_cast_primary_date() -> None:
     }
     with pytest.raises(BridgeResponseError, match="date"):
         parse_bridge_response({"recipe": bad, "rows": []})
+
+
+def test_parse_bridge_response_rejects_negative_convention_with_only_debit_credit() -> (
+    None
+):
+    """``negative_is_expense`` with only debit/credit fields (no ``amount``) is rejected.
+
+    ``reconcile``/``_sum_pre_normalization`` reads the canonical ``amount`` key for
+    the ``negative_is_*`` conventions; a recipe supplying only debit/credit sums an
+    absent key to 0, so a zero-delta statement reconciles and the loader writes every
+    amount as 0. The amount-field shape must match the declared ``sign_convention``.
+    """
+    from moneybin.extractors.pdf.bridge import BridgeResponseError
+
+    mismatched = {
+        **_VALID_RECIPE_DICT,
+        "sign_convention": "negative_is_expense",
+        "fields": [
+            {
+                "name": "date",
+                "pattern": r"\d{2}/\d{2}/\d{4}",
+                "cast": "date",
+                "date_format": "%m/%d/%Y",
+            },
+            {"name": "debit", "pattern": r"\d+\.\d{2}", "cast": "decimal"},
+            {"name": "credit", "pattern": r"\d+\.\d{2}", "cast": "decimal"},
+        ],
+    }
+    with pytest.raises(BridgeResponseError, match="sign_convention"):
+        parse_bridge_response({"recipe": mismatched, "rows": []})
+
+
+def test_parse_bridge_response_rejects_split_convention_with_only_amount() -> None:
+    """``split_debit_credit`` with only an ``amount`` field (no debit/credit) is rejected.
+
+    ``reconcile`` reads the ``credit``/``debit`` keys for ``split_debit_credit``; a
+    recipe supplying only ``amount`` sums absent keys to 0, reconciling a zero-delta
+    statement and loading all-zero amounts.
+    """
+    from moneybin.extractors.pdf.bridge import BridgeResponseError
+
+    mismatched = {
+        **_VALID_RECIPE_DICT,
+        "sign_convention": "split_debit_credit",
+        "fields": [
+            {
+                "name": "date",
+                "pattern": r"\d{2}/\d{2}/\d{4}",
+                "cast": "date",
+                "date_format": "%m/%d/%Y",
+            },
+            {"name": "amount", "pattern": r"-?\d+\.\d{2}", "cast": "decimal"},
+        ],
+    }
+    with pytest.raises(BridgeResponseError, match="sign_convention"):
+        parse_bridge_response({"recipe": mismatched, "rows": []})
+
+
+def test_parse_bridge_response_accepts_split_convention_with_debit_credit() -> None:
+    """A ``split_debit_credit`` recipe with debit + credit fields passes the gate.
+
+    Regression guard: the convention-aware shape gate must not over-reject the
+    legitimate split layout (the keys ``reconcile`` actually reads for this
+    convention).
+    """
+    rows: list[dict[str, Any]] = [
+        {"date": "2026-05-01", "debit": "4.50", "credit": "0.00"},
+    ]
+    recipe = {
+        **_VALID_RECIPE_DICT,
+        "sign_convention": "split_debit_credit",
+        "fields": [
+            {
+                "name": "date",
+                "pattern": r"\d{2}/\d{2}/\d{4}",
+                "cast": "date",
+                "date_format": "%m/%d/%Y",
+            },
+            {"name": "debit", "pattern": r"\d+\.\d{2}", "cast": "decimal"},
+            {"name": "credit", "pattern": r"\d+\.\d{2}", "cast": "decimal"},
+        ],
+    }
+    response = parse_bridge_response({"recipe": recipe, "rows": rows})
+    assert isinstance(response, BridgeResponse)
+    assert response.recipe.sign_convention == "split_debit_credit"

@@ -24,6 +24,10 @@ IMPORT_FILE_NOT_FOUND = "import_file_not_found"
 IMPORT_FORMAT_UNKNOWN = "import_format_unknown"
 IMPORT_INVALID_FILE_PATH = "import_invalid_file_path"
 IMPORT_PARSE_ERROR = "import_parse_error"
+# A scanned / image-only PDF with no selectable text layer: the deterministic
+# rung has nothing to structure, nothing to seed, and the text bridge can't read
+# a page image — extraction needs a vision-capable backend (Req 5, smart-import-pdf).
+IMPORT_PDF_NO_TEXT_LAYER = "import_pdf_no_text_layer"
 IMPORT_SUPERSEDED = "import_superseded"
 
 

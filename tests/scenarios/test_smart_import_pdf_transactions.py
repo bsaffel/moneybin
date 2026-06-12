@@ -274,3 +274,103 @@ def test_fidelity_positions_falls_back_to_seed(tmp_path: Path) -> None:
             f"Expected 0 rows in app.pdf_formats for seed-path import, "
             f"got {_count_pdf_formats(db)}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Test 4: Bridge ladder — agent recipe applied, persisted, then deterministically replayed
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.scenarios
+@pytest.mark.slow
+def test_bridge_apply_round_trip_persists_and_replays(tmp_path: Path) -> None:
+    """The Phase 2b bridge apply round-trip lands rows, persists, and replays.
+
+    Simulates the driving agent's response with a recipe sourced from the
+    deterministic auto-derive (a real agent would propose an equivalent one;
+    the apply path re-runs whichever recipe through the reconciliation gate, so
+    the assertions below judge the loaded rows against the independently derived
+    YAML ground truth — not the recipe). Exercises ``apply_pdf_bridge_response``
+    end-to-end through a real encrypted DB + real PDF bytes:
+
+    - apply loads the 5 ground-truth rows to raw.tabular_transactions
+    - the agent's recipe persists to app.pdf_formats (one row)
+    - a subsequent deterministic import of the same layout REPLAYS the
+      bridge-persisted recipe (matched_format_name set) — closing the ladder
+    """
+    from moneybin.extractors.pdf.extractor import PDFExtractor
+    from moneybin.extractors.pdf.routing import route_pdf_import
+
+    gt = _load_yaml("chase_checking_simple")
+    expected_txns = gt["expected_transactions"]
+    expected_count = len(expected_txns)  # 5, hand-derived from the fixture
+
+    pdf_src = _pdf_path("chase_checking_simple")
+    pdf_apply = tmp_path / "chase_bridge.pdf"
+    pdf_replay = tmp_path / "chase_replay.pdf"
+    shutil.copy(pdf_src, pdf_apply)
+    shutil.copy(pdf_src, pdf_replay)
+
+    with scenario_env(_minimal_scenario("chase-bridge")) as (db, _tmp, _env):
+        svc = ImportService(db)
+
+        # Source a valid recipe (the simulated agent proposal) from the
+        # deterministic auto-derive — route_pdf_import is pure routing, no save.
+        doc = PDFExtractor().extract(pdf_apply.resolve())
+        decision = route_pdf_import(doc, db)
+        assert decision.outcome == "transactions"
+        assert decision.recipe is not None
+
+        bridge_response = {
+            "recipe": decision.recipe.model_dump(),
+            # The agent's claimed rows: only the COUNT is used by apply (the
+            # re-executed rows are what load); pass the YAML rows for realism.
+            "rows": [dict(t) for t in expected_txns],
+        }
+
+        result = svc.apply_pdf_bridge_response(pdf_apply, bridge_response)
+
+        assert result.outcome == "applied"
+        assert result.rows_loaded == expected_count
+        assert result.format_name is not None
+        assert result.import_id is not None
+
+        # Rows landed in raw.tabular_transactions matching the YAML ground truth.
+        rows = _fetch_tabular_rows(db, result.import_id)
+        assert len(rows) == expected_count
+        for i, (row, expected) in enumerate(zip(rows, expected_txns, strict=True)):
+            assert row["date"] == expected["date"], f"Row {i} date mismatch"
+            assert row["amount"] == Decimal(expected["amount"]), (
+                f"Row {i} amount mismatch"
+            )
+            assert row["description"] == expected["description"], (
+                f"Row {i} description mismatch"
+            )
+
+        # The agent's recipe persisted exactly once.
+        assert _count_pdf_formats(db) == 1
+
+        # Close the ladder: a deterministic import of the same layout replays
+        # the bridge-persisted recipe instead of re-escalating.
+        from moneybin.extractors.pdf.routing import route_pdf_import as _real_route
+
+        captured: list[Any] = []
+
+        def _capturing(doc_: Any, db_: Any) -> Any:
+            decision_ = _real_route(doc_, db_)
+            captured.append(decision_)
+            return decision_
+
+        with patch(
+            "moneybin.extractors.pdf.routing.route_pdf_import",
+            side_effect=_capturing,
+        ):
+            replay_result = svc.import_file(pdf_replay, refresh=False)
+
+        assert replay_result.import_id is not None
+        assert len(captured) == 1
+        assert captured[0].matched_format_name is not None, (
+            "deterministic replay should match the bridge-persisted format"
+        )
+        # Still exactly one format row — replay reuses, never re-saves.
+        assert _count_pdf_formats(db) == 1
