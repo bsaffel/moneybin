@@ -54,7 +54,7 @@ Full design, diagrams, and testing strategy: [`ui-architecture.md`](../specs/ui-
 
 - **Frontend toolchain in the repo.** A `ui/` workspace, Node 20+/pnpm for frontend contributors, and Node in the release/CI build. Python-only contributors are unaffected; users never see it.
 - **A new thin FastAPI surface** over the existing service layer for the Web UI transport. No business logic — routes delegate to existing services.
-- **Server-side MCP Apps support** must be verified: declaring `_meta.ui.resourceUri` on tools and serving `ui://` resources from the Python (FastMCP) server. Flagged as an open risk in the spec; the Web UI path does not depend on it.
+- **Server-side MCP Apps support** must be verified: declaring `_meta.ui.resourceUri` on tools and serving `ui://` resources from the Python (FastMCP) server. Flagged as an open risk in the spec; the Web UI path does not depend on it. *Update 2026-06-12: verified by a walking-skeleton spike — FastMCP 3.3.1 supports both first-class. The blocker moved host-side: shipping hosts don't render MCP Apps yet (open upstream bugs), so the mcp-app shell is paused and the web shell ships first. Verdict: [`ui-architecture.md`](../specs/ui-architecture.md) open question #1.*
 
 ### Boundaries deliberately left open
 

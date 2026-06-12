@@ -150,6 +150,7 @@ The MCP description string passed to `register(mcp, fn, name, description)` is t
 - **Sign convention** — for tools accepting or returning amount-shaped data: "Amounts use the accounting convention: negative = expense, positive = income; transfers exempt." Tools that intentionally flip the convention (e.g., presentation aggregations that show expenses as positive values) MUST state the override explicitly.
 - **Currency** — for tools returning currency-bearing data: amounts are in the currency named by `summary.display_currency`, never inferred from context (per `architecture-shared-primitives.md` Invariant 7).
 - **Mutation surface** — for tools with `read_only=False`: the `app.*` table written and the revert path (audit log reference, paired undo tool, or "permanent — no revert").
+- **Presentation hint** — for tools returning series or breakdown data: the natural chart shape and display-sign handling (e.g., "suitable for a stacked monthly bar; for display charts flip sign — negative = expense"). The driving agent is the renderer in every shipping host; conventions in [`agent-visualization.md`](../../docs/specs/agent-visualization.md) (draft, M3K.1).
 
 Reviewer responsibility on every PR adding or modifying an `@mcp_tool` decoration. The `.claude/rules/database.md` and `AGENTS.md` files document these invariants for human contributors, but the agent never sees those — invariants the agent must apply correctly belong in the tool description itself.
 

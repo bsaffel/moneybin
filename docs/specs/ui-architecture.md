@@ -4,7 +4,7 @@
 
 - **Type:** Architecture
 - **Status:** draft
-- **Address:** M3L — foundation for M3A/M3C and the M3M MCP App surface; registered in [`docs/roadmap.md`](../roadmap.md). The *broader* public-positioning propagation (features/comparison copy) and the MCP-App-vs-Web-UI sequencing decision remain tracked as separate follow-up work.
+- **Address:** M3L — foundation for M3A/M3C and the M3M MCP App surface; registered in [`docs/roadmap.md`](../roadmap.md). The *broader* public-positioning propagation (features/comparison copy) remains tracked as separate follow-up work. Shell sequencing was resolved 2026-06-12 by the spike verdict in [Open questions](#open-questions--risks) #1: **web shell first; M3M paused on an upstream host-rendering fix.**
 - **Authority:** Establishes the pattern every MoneyBin visual surface inherits. This spec defines the **shared frontend architecture** — package layout, framework, component library, type-sharing, and the transport-agnostic data layer — that both the MCP App (`apps/mcp-app`) and the Web UI (`apps/web`) build on. It does **not** design any specific dashboard or screen; those are consumer specs (`web-ui-prototype.md`, `spending-dashboard-mcp-app.md`, `portfolio-dashboard-mcp-app.md` — all planned, not yet written). The pattern-establishing decisions are recorded in [ADR-014](../decisions/014-shared-ui-architecture.md).
 
 ## Goal
@@ -20,6 +20,7 @@ The single load-bearing requirement: **transport-specific code (MCP postMessage 
 Two facts make a shared UI architecture the right foundation today:
 
 1. **MCP Apps is a ratified standard.** As of the `2026-01-26` dated specification (SEP-1865, co-authored by Anthropic, OpenAI, and the mcp-ui maintainers; maintained under the Linux Foundation), interactive UI inside MCP hosts is an official MCP extension with shipped client support across Claude, Claude Desktop, ChatGPT, VS Code GitHub Copilot, Goose, Postman, and others. The earlier "client support is too thin" posture that deferred MCP Apps post-launch no longer holds.
+   > **Correction (2026-06-12):** "official support" ≠ "working rendering." A walking-skeleton spike proved MoneyBin's server side end-to-end, but shipping Claude Desktop / claude.ai do not render MCP Apps today due to open host bugs ([ext-apps #671](https://github.com/modelcontextprotocol/ext-apps/issues/671), [claude-ai-mcp #165](https://github.com/anthropics/claude-ai-mcp/issues/165)). See [Open questions](#open-questions--risks) #1 for the full verdict. The shared-core architecture is unaffected; shell sequencing changed to web-first.
 2. **Both surfaces consume the same data through the same service layer.** MoneyBin's architecture already separates data (DuckDB) from presentation via a service layer. Every visual surface is a thin layer over those services. Building the MCP App and Web UI as one codebase with two shells is therefore the coherent choice, not a forced merger.
 
 ### The reuse thesis
@@ -230,7 +231,10 @@ In-app AI (an agent chat panel inside the Web UI) is **out of scope** for this a
 
 ## Open questions / risks
 
-1. **FastMCP `_meta.ui` + resource serving.** MoneyBin's MCP server is Python (FastMCP). The MCP App requires declaring `_meta.ui.resourceUri` on tools and serving `ui://` binary resources. Verify FastMCP supports tool-level `_meta` and binary resource serving before committing the MCP App shell; resolve in the implementation plan. The Web UI path does not depend on this.
+1. **FastMCP `_meta.ui` + resource serving.** ~~Verify FastMCP supports tool-level `_meta` and `ui://` resource serving before committing the MCP App shell.~~ **Resolved 2026-06-12 by a throwaway walking-skeleton spike — split verdict:**
+   - **Server side: verified, first-class.** FastMCP 3.3.1 ships typed MCP Apps support (`fastmcp.apps.AppConfig`): `@mcp.tool(app=AppConfig(resourceUri="ui://..."))` emits spec-correct `_meta.ui.resourceUri` (plus `visibility: ["app"]` for iframe-only tools), and `@mcp.resource(uri, mime_type=UI_MIME_TYPE)` serves `ui://` HTML as `text/html;profile=mcp-app`. A fully self-contained (zero-external-network) vanilla-JS bundle riding MoneyBin's real server passed an in-memory client check 10/10, and the spec explicitly blesses SDK-free views.
+   - **Host side: blocked upstream.** Shipping Claude Desktop (confirmed live on 1.12603.1, 2026-06-12) and claude.ai complete capability negotiation and `resources/read`, inject the "rendered an interactive widget" placeholder, but never answer the iframe's `ui/initialize` — nothing paints. Known open bugs: [ext-apps #671](https://github.com/modelcontextprotocol/ext-apps/issues/671), [claude-ai-mcp #165](https://github.com/anthropics/claude-ai-mcp/issues/165). No documented flag or tier fixes it.
+   - **Consequence:** don't bet near-term distribution on MCP App rendering (same lesson as "MCP resources aren't universal," extended to MCP Apps). The `apps/web` shell ships first; `apps/mcp-app` (M3M) is paused pending the upstream fix and a re-run of the render test. The Web UI path was never dependent on this question.
 2. **Build-hook integration** depends on the Python build backend; confirm the `force-include` + pre-build hook mechanism at plan time.
 3. **MCP Apps SDK choice** — `@modelcontextprotocol/ext-apps` (official) vs. `@mcp-ui/client` for the app side. Both target React; pick at plan time based on maturity.
 
