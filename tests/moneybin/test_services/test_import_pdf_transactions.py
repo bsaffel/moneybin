@@ -647,3 +647,54 @@ def test_pdf_replay_invalid_recipe_auto_bumps_format(
     # corrupted stub lacked), not the broken stub.
     assert "row_split" in stored_recipe
     assert "fields" in stored_recipe
+
+
+# ---------------------------------------------------------------------------
+# Test 12: Scanned / image-only PDF (no text layer) — explicit unsupported (Req 5)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_pdf_scanned_no_text_layer_raises_unsupported(
+    db: Database, tmp_path: Path
+) -> None:
+    """A scanned/image-only PDF (no text layer) raises an explicit unsupported error.
+
+    Nothing to structure, nothing to seed, and the text bridge can't read a page
+    image — so the import surfaces a clear 'needs a vision-capable backend'
+    UserError (Req 5 no-agent degradation) rather than a generic 'No tables
+    extracted' failure or a silent empty seed. Raised before begin_import, so no
+    import_log row or orphan seed view is left behind.
+    """
+    from moneybin import error_codes
+    from moneybin.errors import UserError
+    from moneybin.metrics.registry import PDF_IMPORT_TOTAL
+
+    scanned = _make_doc()  # text_lines=[] and tables=[] → no extractable text layer
+    svc, fake_pdf = _service_with_fake_pdf(db, scanned, tmp_path)
+
+    before = PDF_IMPORT_TOTAL.labels(
+        outcome="unsupported", rung="deterministic"
+    )._value.get()  # type: ignore[reportPrivateUsage]
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+        return_value=scanned,
+    ):
+        with pytest.raises(UserError) as exc_info:
+            svc.import_file(fake_pdf, refresh=False)
+
+    assert exc_info.value.code == error_codes.IMPORT_PDF_NO_TEXT_LAYER
+    assert "vision-capable" in exc_info.value.message
+    after = PDF_IMPORT_TOTAL.labels(
+        outcome="unsupported", rung="deterministic"
+    )._value.get()  # type: ignore[reportPrivateUsage]
+    assert after == before + 1
+
+    # Raised before begin_import — no import_log row, no orphan seed view.
+    log_rows = db.execute("SELECT COUNT(*) FROM raw.import_log").fetchone()
+    assert log_rows is not None and log_rows[0] == 0
+    views = db.execute(
+        "SELECT COUNT(*) FROM duckdb_views() "
+        "WHERE schema_name = 'raw' AND view_name LIKE 'pdf_%'"
+    ).fetchone()
+    assert views is not None and views[0] == 0
