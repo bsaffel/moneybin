@@ -283,7 +283,13 @@ async def test_back_to_back_call_after_timeout_succeeds(
     monkeypatch.setattr(
         "moneybin.mcp.decorator.interrupt_and_reset_database", _interrupt_and_signal
     )
-    monkeypatch.setattr("moneybin.mcp.decorator._get_timeout_seconds", lambda: 0.1)
+    # Cap must exceed the fake's real-Database open time. The decorator's
+    # timeout-reset guard reads the per-call holder, which get_database (and this
+    # fake) registers only AFTER the connection opens. Too short a cap lets the
+    # timeout fire mid-open — before the holder is set — so the reset is skipped
+    # and hang_tool never releases. Production caps (30 s) dwarf the open, so
+    # this only bites the test; 1 s gives ample headroom under loaded CI.
+    monkeypatch.setattr("moneybin.mcp.decorator._get_timeout_seconds", lambda: 1.0)
 
     @mcp_tool(dynamic_classification=True)
     def hang_tool() -> ResponseEnvelope[Any]:
@@ -297,8 +303,11 @@ async def test_back_to_back_call_after_timeout_succeeds(
     @mcp_tool(dynamic_classification=True)
     def quick_tool() -> ResponseEnvelope[Any]:
         # Wait until hang_tool's background thread has closed its connection
-        # before opening a new one to the same file.
-        _conn_released.wait(timeout=5.0)
+        # before opening a new one to the same file. Assert the wait so a
+        # missed release is reported as such, not as a downstream lock error.
+        assert _conn_released.wait(timeout=5.0), (
+            "hang_tool never released its connection"
+        )
         with _fake_get_database() as db:
             rows = db.execute("SELECT 42 AS x").fetchall()
         return ResponseEnvelope(
