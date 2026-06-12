@@ -513,16 +513,49 @@ def mcp_tool(
                     await _emit_privacy_event(err_env)
                     return err_env
                 elapsed = time.monotonic() - started
-                logger.warning(
-                    f"Tool {fn.__name__} timed out after {elapsed:.2f}s "
-                    f"(cap {timeout_s:.1f}s); interrupting DB and resetting connection"
-                )
-                try:
-                    interrupt_and_reset_database(_conn_for_this_call[0])
-                except Exception as cleanup_exc:  # noqa: BLE001 — cleanup must not raise
-                    logger.error(
-                        f"interrupt_and_reset_database failed during {fn.__name__} "
-                        f"timeout cleanup: {type(cleanup_exc).__name__}"
+                # Only reset THIS call's own connection. If the call timed out
+                # before acquiring one (e.g. queued behind another writer when
+                # tool_timeout < the write-lock wait), _conn_for_this_call[0] is
+                # None and there is nothing of ours to reset — and we must NOT
+                # fall back to interrupt_and_reset_database()'s process-global
+                # slot, which would interrupt a *different* call's healthy active
+                # writer.
+                #
+                # This relies on get_database registering the acquired conn in
+                # the per-call holder, which it does for sync tool bodies (run
+                # via asyncio.to_thread with conn_holder set). There are no async
+                # write tools today; one would need the same holder wiring to be
+                # interrupted on timeout (otherwise [0] stays None and we skip —
+                # the latent gap is a missed reset, never a collateral one).
+                #
+                # A sync tool body runs in a thread-pool worker we cannot cancel.
+                # The one way that worker could commit after the caller gave up
+                # is to still be queued at the write lock when the tool times
+                # out, then acquire and commit afterward — which requires the
+                # tool timeout to be shorter than the write-lock wait. MCPConfig
+                # forbids that (tool_timeout_seconds >= the write-lock wait), so
+                # the worker has always stopped queuing (acquired or errored) by
+                # the time the caller times out. The guard here still only resets
+                # this call's own connection, never a different call's.
+                if _conn_for_this_call[0] is not None:
+                    logger.warning(
+                        f"Tool {fn.__name__} timed out after {elapsed:.2f}s "
+                        f"(cap {timeout_s:.1f}s); interrupting DB and resetting connection"
+                    )
+                    try:
+                        interrupt_and_reset_database(_conn_for_this_call[0])
+                    except Exception as cleanup_exc:  # noqa: BLE001 — cleanup must not raise
+                        logger.error(
+                            f"interrupt_and_reset_database failed during {fn.__name__} "
+                            f"timeout cleanup: {type(cleanup_exc).__name__}"
+                        )
+                else:
+                    # Timed out before acquiring a connection — nothing of ours to
+                    # reset. Log accurately so a post-mortem doesn't chase a reset
+                    # that never happened.
+                    logger.warning(
+                        f"Tool {fn.__name__} timed out after {elapsed:.2f}s "
+                        f"(cap {timeout_s:.1f}s); no connection acquired, nothing to reset"
                     )
                 # Brief grace period: the surviving sync-tool thread needs a
                 # tick to see the closed DuckDB connection, raise, and unwind

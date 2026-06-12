@@ -228,6 +228,14 @@ class MetricsConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
 
+# Default seconds get_database() blocks for the per-profile write lock before
+# raising DatabaseLockError. Lives here (not database.py) so MCPConfig's
+# tool-timeout validator can reference it without an import cycle — database
+# imports config, never the reverse. get_database's max_wait default imports
+# this value back. See database-writer-coordination.md.
+DEFAULT_WRITE_LOCK_MAX_WAIT_SECONDS: float = 10.0
+
+
 class MCPConfig(BaseModel):
     """MCP server runtime configuration."""
 
@@ -263,9 +271,28 @@ class MCPConfig(BaseModel):
         description=(
             "Hard wall-clock cap for any single MCP tool dispatch. On timeout, "
             "the active DuckDB statement is interrupted and the connection is "
-            "reset so subsequent calls aren't wedged behind a stale write lock."
+            "reset so subsequent calls aren't wedged behind a stale write lock. "
+            "Must be >= the write-lock wait so a timed-out write tool's worker "
+            "can never acquire the lock and commit after the caller gave up."
         ),
     )
+
+    @field_validator("tool_timeout_seconds")
+    @classmethod
+    def _timeout_covers_write_lock_wait(cls, v: float) -> float:
+        # A sync write tool runs in an uncancellable thread-pool worker. If the
+        # tool timeout is shorter than the write-lock wait, the caller can time
+        # out while the worker is still queued at the lock; the worker may then
+        # acquire and commit after the timeout envelope was already returned.
+        # Requiring timeout >= the wait guarantees the worker has stopped
+        # queuing (acquired or errored) by the time the caller gives up.
+        if v < DEFAULT_WRITE_LOCK_MAX_WAIT_SECONDS:
+            raise ValueError(
+                f"tool_timeout_seconds ({v}s) must be >= the write-lock wait "
+                f"({DEFAULT_WRITE_LOCK_MAX_WAIT_SECONDS}s); a shorter cap lets a "
+                f"timed-out write tool's worker commit after the caller gave up."
+            )
+        return v
 
 
 class AIConfig(BaseModel):

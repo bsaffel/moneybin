@@ -44,9 +44,12 @@ def lock_path_for(db_path: Path) -> Path:
     """Return the write-lock metadata path for ``db_path``.
 
     Resolves ``db_path`` first, mirroring ``write_lock``, so a symlinked or
-    relative path maps to the same lock file the primitive keys on. This is
-    the public contract for locating the lock file; the ``_LOCK_SUFFIX``
-    naming detail stays private to this module.
+    relative path maps to the same lock file the primitive keys on. Resolving
+    stays *inside* this public helper rather than becoming the caller's job: an
+    unresolved input would otherwise silently key the wrong lock file (a
+    different inode than ``write_lock``), and a caller wanting to skip the
+    syscall can pass an already-resolved path — ``Path.resolve()`` is idempotent
+    on one. The ``_LOCK_SUFFIX`` naming detail stays private to this module.
     """
     resolved = db_path.resolve()
     return resolved.parent / (resolved.name + _LOCK_SUFFIX)
@@ -94,7 +97,13 @@ def _release_one(key: Path, pid: int, thread_id: int) -> None:
             try:
                 fcntl.flock(holder.fd, fcntl.LOCK_UN)
             finally:
-                os.close(holder.fd)
+                # Guard os.close like the flock release: in this finally an
+                # os.close error (e.g. EBADF) would otherwise mask a flock
+                # exception. os.close on a held fd essentially never raises.
+                try:
+                    os.close(holder.fd)
+                except OSError:
+                    pass
 
 
 def _process_command(pid: int) -> str:

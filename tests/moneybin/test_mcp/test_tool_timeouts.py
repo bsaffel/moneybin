@@ -71,7 +71,43 @@ async def test_sync_tool_over_cap_returns_timeout_envelope(
     assert result.error.details["tool"] == "slow_tool"
     assert result.error.details["timeout_s"] == 0.05
     assert result.error.details["elapsed_s"] >= 0.05
-    reset_mock.assert_called_once()
+    # Collateral-kill regression guard: slow_tool never opened a DB connection,
+    # so the timeout cleanup must call NOTHING. Asserting interrupt_and_reset
+    # is not called proves it can't reach the process-global slot to interrupt a
+    # *concurrent* call's healthy writer (the original bug) — a weakened guard
+    # would call it with None and fail here. (Stronger than a live two-writer
+    # test, which would add real-DB thread timing without catching more.)
+    reset_mock.assert_not_called()
+
+
+@pytest.mark.unit
+async def test_timed_out_tool_resets_only_its_own_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A timed-out tool that acquired a write conn resets THAT conn, not the global slot."""
+    monkeypatch.setattr("moneybin.mcp.decorator._get_timeout_seconds", lambda: 0.05)
+    reset_mock = MagicMock()
+    monkeypatch.setattr(
+        "moneybin.mcp.decorator.interrupt_and_reset_database", reset_mock
+    )
+    sentinel = object()  # stands in for this call's acquired Database
+
+    @mcp_tool(dynamic_classification=True)
+    def slow_tool() -> ResponseEnvelope[Any]:
+        from moneybin.database import (
+            _write_conn_thread_local,  # type: ignore[reportPrivateUsage]  # test-only: simulate get_database registering its conn
+        )
+
+        # The decorator points conn_holder at this call's per-call list before
+        # running the sync body; mirror get_database registering its connection.
+        holder = getattr(_write_conn_thread_local, "conn_holder", None)
+        assert holder is not None
+        holder[0] = sentinel
+        time.sleep(0.5)
+        return _ok_envelope()
+
+    await slow_tool()
+    reset_mock.assert_called_once_with(sentinel)
 
 
 @pytest.mark.unit
@@ -211,6 +247,16 @@ async def test_back_to_back_call_after_timeout_succeeds(
         if not read_only:
             with db_module._active_write_lock:  # pyright: ignore[reportPrivateUsage]
                 db_module._active_write_conn = conn  # pyright: ignore[reportPrivateUsage]
+            # Mirror real get_database: register the per-call holder so the
+            # decorator's timeout cleanup resets THIS connection (rather than
+            # finding [0]=None and skipping, which the guarded cleanup now does).
+            holder = getattr(
+                db_module._write_conn_thread_local,  # pyright: ignore[reportPrivateUsage]
+                "conn_holder",
+                None,
+            )
+            if holder is not None:
+                holder[0] = conn
         try:
             yield conn
         finally:
@@ -240,7 +286,13 @@ async def test_back_to_back_call_after_timeout_succeeds(
     monkeypatch.setattr(
         "moneybin.mcp.decorator.interrupt_and_reset_database", _interrupt_and_signal
     )
-    monkeypatch.setattr("moneybin.mcp.decorator._get_timeout_seconds", lambda: 0.1)
+    # Cap must exceed the fake's real-Database open time. The decorator's
+    # timeout-reset guard reads the per-call holder, which get_database (and this
+    # fake) registers only AFTER the connection opens. Too short a cap lets the
+    # timeout fire mid-open — before the holder is set — so the reset is skipped
+    # and hang_tool never releases. Production caps (30 s) dwarf the open, so
+    # this only bites the test; 1 s gives ample headroom under loaded CI.
+    monkeypatch.setattr("moneybin.mcp.decorator._get_timeout_seconds", lambda: 1.0)
 
     @mcp_tool(dynamic_classification=True)
     def hang_tool() -> ResponseEnvelope[Any]:
@@ -254,8 +306,11 @@ async def test_back_to_back_call_after_timeout_succeeds(
     @mcp_tool(dynamic_classification=True)
     def quick_tool() -> ResponseEnvelope[Any]:
         # Wait until hang_tool's background thread has closed its connection
-        # before opening a new one to the same file.
-        _conn_released.wait(timeout=5.0)
+        # before opening a new one to the same file. Assert the wait so a
+        # missed release is reported as such, not as a downstream lock error.
+        assert _conn_released.wait(timeout=5.0), (
+            "hang_tool never released its connection"
+        )
         with _fake_get_database() as db:
             rows = db.execute("SELECT 42 AS x").fetchall()
         return ResponseEnvelope(
