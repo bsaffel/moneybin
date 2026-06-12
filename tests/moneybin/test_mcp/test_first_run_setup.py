@@ -261,3 +261,17 @@ def test_unconfigured_predicate(monkeypatch: pytest.MonkeyPatch) -> None:
     ):
         flags.profile = None
         assert _is_unconfigured() is False
+
+    # No flag, no env, but config.yaml carries an active_profile → configured.
+    monkeypatch.delenv("MONEYBIN_PROFILE", raising=False)
+    configured_cfg = MagicMock()
+    configured_cfg.active_profile = "default"
+    with (
+        patch("moneybin.cli.commands.mcp._flags") as flags,
+        patch(
+            "moneybin.cli.commands.mcp.load_user_config",
+            return_value=configured_cfg,
+        ),
+    ):
+        flags.profile = None
+        assert _is_unconfigured() is False
