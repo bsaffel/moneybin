@@ -113,9 +113,10 @@ Numbered, testable. Tagged by phase.
 2. **The union stops hardcoding `'USD'`.** `int_transactions__unioned.sql` reads the
    captured currency for the OFX and Plaid arms and leaves it `NULL` when the source omits
    it — it does **not** `COALESCE` to a literal `'USD'`, which would relabel a non-USD
-   account's rows before account-currency inheritance (Req 3) can run. The same blind-`'USD'`
-   fallback on the tabular/manual arms is the identical latent bug and is dropped in the same
-   pass; account/home resolution (Req 3, Req 8) fills any still-`NULL` currency, never a guess.
+   account's rows before account-currency inheritance (Req 3) can run. The tabular/manual
+   arms' blind-`'USD'` fallback is the same class of bug (they do read source currency when
+   present) and is dropped in the same pass; account inheritance (Req 3) fills currency where
+   known, and anything still unknown is segmented, not guessed (Req 8).
 3. **Currency at every core monetary grain.** `core.fct_balances` **and the derived
    `core.fct_balances_daily`** (the model `reports.net_worth` actually aggregates) gain a
    `currency_code`; `core.fct_transactions` and `core.dim_accounts` already carry it
@@ -123,15 +124,19 @@ Numbered, testable. Tagged by phase.
    currency, it inherits the account's `currency_code`, never a blind `'USD'`.
 4. **Home currency setting.** A profile-level `home_currency` (ISO 4217), **mutable**,
    defaulted by **locale auto-detection with explicit user confirmation** in the
-   first-run wizard. Distinct from per-account currency.
+   [first-run wizard](mcp-first-run-setup.md). Distinct from per-account currency. It is
+   **`app.*` state (DB-resident)**, not YAML config — the no-blend guard and report views
+   are SQLMesh models that must read it to segment home vs. foreign — so it is written
+   through a `*Repo` (Invariant 10), not the generic YAML `profile set`.
 5. **No-silent-blend invariant.** An aggregation across rows of differing
    `currency_code` MUST NOT emit a single combined figure unless an explicit
    conversion with recorded rate provenance is applied. Absent conversion (all of
    M1K.1), results are **segmented per currency** (a sub-total per currency), never
    blended.
 6. **Doctor check.** `system doctor` reports when a profile holds more than one
-   distinct currency across transactions/accounts/balances, and flags any report path
-   that would violate Requirement 5.
+   distinct currency across transactions/accounts/balances, **flags accounts/rows whose
+   currency is unknown (`NULL`) so the user can assign one before it can blend**, and flags
+   any report path that would violate Requirement 5.
 7. **Report guard.** Report views that sum money detect mixed currency and either
    segment (default) or return an explicit "cross-currency total unavailable until
    conversion ships" signal — never a silent blend. Single-currency profiles (the
@@ -139,8 +144,10 @@ Numbered, testable. Tagged by phase.
 8. **Migration is additive.** New currency columns are nullable additions to raw tables;
    core is rebuilt from raw (no in-place core patch). The migration does **not** depend on
    `home_currency` (also introduced in M1K.1): a row with no captured currency inherits its
-   account's `currency_code` (Req 3), and any still-NULL value resolves to the home currency
-   at presentation time — never backfilled to a guessed literal. `home_currency` itself is
+   account's `currency_code` (Req 3); a value still `NULL` after that is treated as
+   **unknown currency** — never silently resolved to the home currency (that would be a guess
+   the no-blend guard couldn't see). Unknown-currency rows are segmented out (Req 5) and
+   surfaced by `system doctor` (Req 6) for the user to assign. `home_currency` itself is
    established by the first-run wizard (Req 4), not the migration. Versioned migration under
    `src/moneybin/sql/migrations/`.
 
@@ -170,7 +177,11 @@ Numbered, testable. Tagged by phase.
     lives in `app.*` (e.g. `app.exchange_rate_overrides`), mutated only via a `*Repo` with
     paired audit (Invariant 10) — **not** in `raw.exchange_rates` (the immutable provider
     cache). The conversion layer prefers an app override over the cached provider rate, and a
-    later provider refresh never silently overwrites it.
+    later provider refresh never silently overwrites it. **Scope:** an override is a daily
+    reference-rate correction — one per `(from, to, rate_date)`, matching the
+    `app.exchange_rate_overrides` key — *not* a per-transaction bank-spread capture. Two
+    same-day transactions at different effective rates (spreads/fees) are out of scope here; a
+    genuine per-transaction rate belongs on the conversion-pair model (M1K.3).
 15. **Segmentation becomes the fallback.** For currency pairs the source can't provide
     (exotics, crypto-as-currency) or while offline, reports fall back to M1K.1
     segmentation rather than guessing.
@@ -207,11 +218,12 @@ ALTER TABLE ... ADD COLUMN currency_code VARCHAR;   -- ISO 4217; inherits accoun
 -- raw OFX/Plaid transaction + balance tables: capture original currency
 --   OFX: CURDEF;  Plaid: iso_currency_code / unofficial_currency_code
 -- prep.int_transactions__unioned: every arm reads captured currency and leaves NULL when
---   the source omits it (no COALESCE to literal 'USD'); inheritance/home resolution fills NULL
+--   the source omits it (no COALESCE to literal 'USD'); account inheritance fills where known,
+--   anything still unknown stays NULL (segmented, not guessed)
 
--- profile-level home currency. If a profile-settings primitive already exists,
--- add the field there; otherwise this spec introduces app.settings (profile-scoped).
--- (Confirm against the current app schema during planning.)
+-- profile-level home currency: app.* state (DB-resident so SQLMesh guard/views can read it
+-- to segment home vs. foreign), mutated via a *Repo (Invariant 10). If a profile-settings
+-- app table already exists, add the field there; otherwise introduce app.profile_settings.
 --   home_currency VARCHAR NOT NULL  -- ISO 4217, mutable, ISO-validated
 ```
 
@@ -273,10 +285,11 @@ flowchart LR
 
 ## CLI Interface
 
-- `moneybin profile set home_currency <ISO>` / `profile show` (M1K.1) — home currency is
-  profile-scoped config, so it uses the existing `profile set` / `profile show` taxonomy
-  (`moneybin-cli.md`), not a new `settings` group; locale-detected default in the first-run
-  wizard; mutable.
+- Set/adjust the home currency (M1K.1) — locale-detected default confirmed in the first-run
+  wizard, mutable thereafter. Surfaced through the existing `profile` command group (alongside
+  `profile show`), not a new `settings` group; exact invocation settles with `moneybin-cli.md`.
+  Because `home_currency` is `app.*` state, the command routes through a `*Repo`, **not** the
+  generic YAML `profile set` (whose `section.field` keys don't write `app.*`).
 - Reports accept `--display-currency <ISO>` (M1K.2; default home).
 - `moneybin fx rate <FROM> <TO> [DATE]` (M1K.2) — inspect/seed a cached rate.
 - `moneybin fx override <FROM> <TO> <DATE> <RATE>` (M1K.2) — auditable user override.
@@ -342,11 +355,15 @@ realized FX gain/loss on the conversion pairs.
    for review).* Three names exist today: `currency_code` (`fct_transactions`),
    `iso_currency_code` (`dim_accounts`), `currency` (investments spec, unbuilt).
    Recommend standardizing on **`currency_code`** (it's on the central fact and is the
-   most explicit). Alignment cost: a small rename migration for `dim_accounts`
-   (`iso_currency_code` → `currency_code`) and a free edit to the unbuilt
-   investments-data-model spec. Per the coherence principle, pick one and fix it
-   everywhere rather than adding a fourth. **Confirm before implementing** — it touches
-   a shipped column and a sibling spec.
+   most explicit). Alignment cost is **not** small: `iso_currency_code` appears ~35× across
+   `src/` — `app.account_settings` (schema + repo), `AccountService`, the `accounts_set` MCP
+   tool **including its public agent-facing parameter name**, and the privacy taxonomy — plus
+   a free edit to the unbuilt investments-data-model spec. Renaming the MCP parameter is a
+   **public-contract change** under the design-principles deprecation protocol (ship the new
+   name alongside the old for one minor release, then remove). The cost isn't disqualifying —
+   `currency_code` is still the right call — but per the coherence principle, pick one and fix
+   it everywhere rather than adding a fourth. **Confirm before implementing** — it touches a
+   shipped public MCP parameter and a sibling spec.
 
 ## Out of Scope
 
