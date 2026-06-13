@@ -605,3 +605,36 @@ class TestMCPFirstRunSetup:
         assert "data" in second_payload, (
             f"Second call missing data key — expected real tool response: {second_payload}"
         )
+
+    async def test_resource_read_unconfigured_does_not_invoke_wizard(
+        self, unconfigured_env: dict[str, str]
+    ) -> None:
+        """Reading moneybin://schema with no profile fails cleanly, not via the wizard.
+
+        The schema resource reaches get_database() directly, bypassing
+        FirstRunSetupMiddleware (which only guards tool calls). Clearing the
+        profile resolver on the unconfigured boot path makes get_settings()
+        raise a clean MCP error instead of running the stdout-writing wizard.
+        Regression signal: read_resource raises a normal McpError AND the
+        session stays responsive afterward — a corrupted stdio stream would
+        hang or kill the transport, not return an error.
+        """
+        from mcp import ClientSession
+        from mcp.client.stdio import StdioServerParameters, stdio_client
+        from mcp.shared.exceptions import McpError
+        from pydantic import AnyUrl
+
+        server_params = StdioServerParameters(
+            command="uv",  # noqa: S607 — uv is on PATH in dev environments
+            args=["run", "moneybin", "mcp", "serve"],
+            env=unconfigured_env,
+        )
+        async with stdio_client(server_params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                with pytest.raises(McpError):
+                    await session.read_resource(AnyUrl("moneybin://schema"))
+                # Stream survived the failed read: the session still answers.
+                # A wizard write would have corrupted the JSON-RPC channel.
+                tools = await session.list_tools()
+                assert any(t.name == "system_status" for t in tools.tools)

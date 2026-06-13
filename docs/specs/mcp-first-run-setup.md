@@ -108,11 +108,24 @@ load_user_config().active_profile is None`.
 
 - **Configured** → unchanged: resolve profile, `setup_observability`,
   `check_schema_at_boot()`, `mcp.run()`.
-- **Unconfigured** → `register_core_tools()`, set up observability without a
-  profile (default/no-profile log target), skip `get_database_path()` /
-  `get_current_profile()` / `check_schema_at_boot()`, register
-  `FirstRunSetupMiddleware`, and `mcp.run()`. The server waits for the first
-  tool call.
+- **Unconfigured** → **clear the process-wide profile resolver**
+  (`register_profile_resolver(None)`), `register_core_tools()`, set up
+  observability without a profile (default/no-profile log target), skip
+  `get_database_path()` / `get_current_profile()` / `check_schema_at_boot()`,
+  register `FirstRunSetupMiddleware`, and `mcp.run()`. The server waits for
+  the first tool call.
+
+  Clearing the resolver is what makes requirement 1 hold for **every** MCP
+  entry point, not just tool calls. The resolver (registered in
+  `main_callback`) is the single chokepoint that runs the interactive wizard;
+  `FirstRunSetupMiddleware` only guards `on_call_tool`, so a **resource read**
+  (e.g. `moneybin://schema`) or prompt fetch would otherwise reach
+  `get_database()` → `get_settings()` → the resolver → wizard → stdout
+  corruption. With the resolver cleared, `get_settings()` raises a clean
+  `RuntimeError` (surfaced by FastMCP as an MCP error, no stdout write); the
+  middleware does the real elicitation-based setup, calling
+  `set_current_profile()` directly, so the happy path never needs the
+  resolver.
 
 ### Component 2 — `FirstRunSetupMiddleware.on_call_tool`
 

@@ -720,7 +720,10 @@ def serve(
     by default, which is the standard transport for local MCP integrations.
 
     The server uses the currently active profile to determine which
-    database to connect to.
+    database to connect to. With no profile configured, it still boots —
+    in an unconfigured mode that defers profile setup to the first tool
+    call (see docs/specs/mcp-first-run-setup.md), rather than running the
+    interactive wizard (which would corrupt the stdio JSON-RPC stream).
 
     Examples:
         # Start MCP server with default profile
@@ -766,8 +769,20 @@ def serve(
         # No profile yet: boot without resolving one (resolving would run the
         # interactive wizard and corrupt the stdio JSON-RPC stream). Register
         # tools + first-run middleware; setup happens on the first tool call.
+        from moneybin.config import register_profile_resolver
         from moneybin.mcp.first_run import FirstRunSetupMiddleware
 
+        # The lazy profile resolver (registered process-wide in main_callback)
+        # runs the interactive wizard, which writes to stdout. In unconfigured
+        # mode the wizard must be unreachable from EVERY MCP entry point — not
+        # just tool calls (guarded by FirstRunSetupMiddleware) but also
+        # resource/prompt reads (e.g. moneybin://schema), which reach
+        # get_database() → get_settings() directly, bypassing the middleware.
+        # Clearing the resolver makes get_settings() raise a clean error
+        # instead of prompting; the middleware does the real elicitation-based
+        # setup on the first tool call, calling set_current_profile() directly
+        # so the happy path never needs the resolver.
+        register_profile_resolver(None)
         verbose = get_verbose_flag()
         setup_observability(stream="mcp", verbose=verbose)
         logger.info(
