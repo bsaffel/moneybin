@@ -280,12 +280,16 @@ flowchart LR
 - Reports accept `--display-currency <ISO>` (M1K.2; default home).
 - `moneybin fx rate <FROM> <TO> [DATE]` (M1K.2) — inspect/seed a cached rate.
 - `moneybin fx override <FROM> <TO> <DATE> <RATE>` (M1K.2) — auditable user override.
+  The `fx` group is a **new top-level CLI namespace**; like the MCP names above, its exact
+  shape settles with the surface specs — `moneybin-cli.md` and the capabilities map must
+  register it when M1K.2 is planned, not be invented standalone from this spec.
 - `system doctor` gains the mixed-currency integrity checks (M1K.1).
 
 ## MCP Interface
 
 - `ResponseEnvelope.summary.display_currency` populated whenever money is returned
-  (USD for single-currency profiles; the requested/home currency under conversion).
+  (the profile's home currency for single-currency profiles — never a hardcoded `USD`,
+  which would mislabel a EUR/GBP-only user; the requested/home currency under conversion).
 - M1K.2 rate / conversion / exposure operations follow the existing MCP taxonomy —
   multi-currency is a **crosscutting service-layer concern, not its own tool namespace**
   (`mcp-architecture.md`), and tool names use the noun=query / path-prefix-verb-suffix
