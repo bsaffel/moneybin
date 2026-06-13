@@ -23,7 +23,7 @@ Today amounts are *implicitly* USD, inconsistently:
 
 - `prep.int_transactions__unioned` already carries a `currency_code`, but only the
   tabular and manual sources populate it (`COALESCE(..., 'USD')`); the **OFX and
-  Plaid arms hardcode `'USD'`** (`int_transactions__unioned.sql:30,123`), discarding
+  Plaid arms hardcode `'USD'`** in `int_transactions__unioned.sql`, discarding
   OFX `CURDEF` and Plaid's `iso_currency_code` at the union.
 - `core.fct_transactions` exposes `currency_code`; `core.dim_accounts` has
   `iso_currency_code` — but **balances carry no currency at all** (`core.fct_balances`,
@@ -55,8 +55,9 @@ Related specs:
 - [`smart-import-financial.md`](smart-import-financial.md),
   [`smart-import-tabular.md`](smart-import-tabular.md), [`sync-plaid.md`](sync-plaid.md) —
   the capture points where currency must stop being dropped.
-- [`identifiers.md`](../../.claude/rules/identifiers.md) — content hashes / surrogate keys
-  for the rate cache.
+- [`identifiers.md`](../../.claude/rules/identifiers.md) (agent rules, not a spec) — the
+  surrogate-key guideline for the M1K.3 conversion-pair identity; `raw.exchange_rates`
+  itself keys naturally on `(from_currency, to_currency, rate_date, source)`.
 
 ## The core decision (one-way door)
 
@@ -131,9 +132,13 @@ Numbered, testable. Tagged by phase.
    segment (default) or return an explicit "cross-currency total unavailable until
    conversion ships" signal — never a silent blend. Single-currency profiles (the
    common case, including USD-only users) see **zero behavior change**.
-8. **Migration is additive.** New currency columns are nullable/defaulted additions to
-   raw tables; core is rebuilt from raw (no in-place core patch). Existing rows default
-   to the profile home currency. Versioned migration under `src/moneybin/sql/migrations/`.
+8. **Migration is additive.** New currency columns are nullable additions to raw tables;
+   core is rebuilt from raw (no in-place core patch). The migration does **not** depend on
+   `home_currency` (also introduced in M1K.1): a row with no captured currency inherits its
+   account's `currency_code` (Req 3), and any still-NULL value resolves to the home currency
+   at presentation time — never backfilled to a guessed literal. `home_currency` itself is
+   established by the first-run wizard (Req 4), not the migration. Versioned migration under
+   `src/moneybin/sql/migrations/`.
 
 ### M1K.2 — Display conversion
 
@@ -177,7 +182,8 @@ Numbered, testable. Tagged by phase.
     lots. Realized FX gain/loss on a foreign-denominated *security* sale is the same
     engine applied to the currency leg.
 19. **Decimal throughout.** All amounts and rates are `DECIMAL`, never `FLOAT`
-    (`DECIMAL(18,2)` amounts; rates at a precision the spec fixes during M1K.2).
+    (`DECIMAL(18,2)` amounts; `DECIMAL(18,8)` rates per the `database.md` precision
+    convention).
 
 ## Data Model
 
@@ -208,10 +214,10 @@ CREATE TABLE raw.exchange_rates (
     from_currency  VARCHAR NOT NULL,   -- ISO 4217
     to_currency    VARCHAR NOT NULL,   -- ISO 4217
     rate_date      DATE    NOT NULL,   -- resolved trading day
-    rate           DECIMAL NOT NULL,   -- from->to multiplier
+    rate           DECIMAL(18,8) NOT NULL,  -- from->to multiplier; precision per database.md
     source         VARCHAR NOT NULL,   -- 'frankfurter' | 'user_override' | ...
     fetched_at     TIMESTAMP NOT NULL,
-    -- UNIQUE (from_currency, to_currency, rate_date, source)
+    UNIQUE (from_currency, to_currency, rate_date, source)
 );
 ```
 
@@ -244,8 +250,10 @@ flowchart LR
 
 ## CLI Interface
 
-- `moneybin settings set-home-currency <ISO>` (M1K.1) — locale-detected default in the
-  first-run wizard; mutable.
+- `moneybin profile set home_currency <ISO>` / `profile show` (M1K.1) — home currency is
+  profile-scoped config, so it uses the existing `profile set` / `profile show` taxonomy
+  (`moneybin-cli.md`), not a new `settings` group; locale-detected default in the first-run
+  wizard; mutable.
 - Reports accept `--display-currency <ISO>` (M1K.2; default home).
 - `moneybin fx rate <FROM> <TO> [DATE]` (M1K.2) — inspect/seed a cached rate.
 - `moneybin fx override <FROM> <TO> <DATE> <RATE>` (M1K.2) — auditable user override.
@@ -255,9 +263,11 @@ flowchart LR
 
 - `ResponseEnvelope.summary.display_currency` populated whenever money is returned
   (USD for single-currency profiles; the requested/home currency under conversion).
-- M1K.2: `get_exchange_rate`, `record_currency_conversion`/override, `get_fx_exposure`
-  as the surface matures; same envelope, sensitivity, audit, and confirmation rules as
-  every other tool.
+- M1K.2 rate / conversion / exposure operations follow the existing MCP taxonomy —
+  multi-currency is a **crosscutting service-layer concern, not its own tool namespace**
+  (`mcp-architecture.md`), and tool names use the noun=query / path-prefix-verb-suffix
+  contract (no verb-first `get_*` / `record_*`); exact names settle with the surface specs.
+  Same envelope, sensitivity, audit, and confirmation rules as every other tool.
 - Per-currency segmentation surfaces in report tool output under M1K.1 (so an agent
   can see *why* there is no single total yet).
 
