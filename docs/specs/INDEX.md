@@ -82,7 +82,7 @@ Single source of truth for spec status. Update this table when a spec's status c
 
 | Spec | Type | Status | Summary |
 |---|---|---|---|
-| `multi-currency.md` | Feature | planned | M1K foundational schema wave, not display polish. Every monetary grain carries explicit currency semantics: original amount/currency, home/display amount/currency, rate source, rate date, exchange-rate value, and conversion-pair identity where applicable. Raw remains source-of-truth; core is rebuilt rather than patched in place. Must design realized FX gain/loss, auditable rate provenance, `ResponseEnvelope.summary.display_currency`, report rollup semantics, and the investment-currency bridge from `investments-data-model.md`. If a currency field looks one-way, treat it as one-way. |
+| [Multi-Currency](multi-currency.md) | Feature | draft | M1K foundational schema wave, not display polish. **Original currency is canonical at every grain; conversion is presentation-time** (never mutates stored originals). Phased: **M1K.1** capture + integrity + home currency + no-silent-blend guard (independent of investments; may precede the first public release); **M1K.2** display conversion via auditable Frankfurter rates (after investments); **M1K.3** realized FX gain/loss (reuses the investments cost-basis engine). Raw stays source-of-truth; core rebuilt, not patched. Resolves the core currency design questions inline; flags one coherence call (canonical `currency_code` naming). |
 
 ## Privacy & Security
 
