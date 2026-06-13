@@ -44,7 +44,7 @@ from moneybin.db_lock._types import CheckpointReason, OperationType
 # overhead anyway. Must be set before sqlmesh is first imported.
 os.environ.setdefault("MAX_FORK_WORKERS", "1")
 
-from moneybin.config import get_settings
+from moneybin.config import DEFAULT_WRITE_LOCK_MAX_WAIT_SECONDS, get_settings
 from moneybin.secrets import (
     SecretNotFoundError,
     SecretStorageUnavailableError,
@@ -886,7 +886,7 @@ def database_was_written() -> bool:
 def get_database(
     *,
     read_only: bool,
-    max_wait: float = 10.0,
+    max_wait: float = DEFAULT_WRITE_LOCK_MAX_WAIT_SECONDS,
     operation_type: OperationType = "interactive",
 ) -> "Database":
     """Create and return a new short-lived Database connection.

@@ -30,7 +30,7 @@ Related code: `src/moneybin/mcp/` (tool registration and dispatch), `src/moneybi
 
 No schema changes. One new configuration field:
 
-- `MoneyBinSettings.mcp.tool_timeout_seconds: float = 30.0` (env: `MONEYBIN_MCP__TOOL_TIMEOUT_SECONDS`)
+- `MoneyBinSettings.mcp.tool_timeout_seconds: float = 30.0` (env: `MONEYBIN_MCP__TOOL_TIMEOUT_SECONDS`). Validated to be `>=` the write-lock wait (`config.DEFAULT_WRITE_LOCK_MAX_WAIT_SECONDS`, the `get_database` `max_wait` default). A shorter cap would let a timed-out write tool's uncancellable thread-pool worker acquire the lock and commit after the caller already received the timeout envelope; requiring `timeout >= wait` guarantees the worker has stopped queuing by the time the caller gives up. See [`database-writer-coordination.md`](database-writer-coordination.md).
 
 ## Implementation Plan
 
