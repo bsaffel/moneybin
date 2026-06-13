@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+from typing import Any
 
 import pytest
 
@@ -474,3 +475,166 @@ class TestMatchesTools:
                 tools = {t.name for t in (await session.list_tools()).tools}
                 assert "transactions_matches_run" in tools
                 assert "transactions_matches_history" in tools
+
+
+class TestMCPFirstRunSetup:
+    """First-run setup over real stdio with no pre-existing profile.
+
+    These tests drive `moneybin mcp serve` with an empty MONEYBIN_HOME and no
+    MONEYBIN_PROFILE. The regression being locked: interactive wizard output
+    on stdout corrupted the JSON-RPC stream, making initialize() fail.
+    Completing the JSON-RPC handshake (initialize + call_tool) is the
+    assertion — a corrupted stream would blow up the SDK transport layer.
+    """
+
+    @pytest.fixture
+    def unconfigured_env(
+        self, tmp_path_factory: pytest.TempPathFactory
+    ) -> dict[str, str]:
+        """Server env pointing at an empty MONEYBIN_HOME, no profile set."""
+        home = tmp_path_factory.mktemp("e2e_first_run")
+        env = {**os.environ, **FAST_ARGON2_ENV, "MONEYBIN_HOME": str(home)}
+        env.pop("MONEYBIN_PROFILE", None)
+        # Remove any inherited encryption key — ProfileService generates one
+        # in-process and stores it in the MemoryKeyring. A conflicting env-var
+        # key would shadow the generated key and open a different database.
+        env.pop("MONEYBIN_DATABASE__ENCRYPTION_KEY", None)
+        return env
+
+    async def test_tools_only_client_gets_setup_envelope(
+        self, unconfigured_env: dict[str, str]
+    ) -> None:
+        """No elicitation capability → structured setup_required, stream intact.
+
+        The client does not pass elicitation_callback, so initialize() omits
+        the elicitation capability. FirstRunSetupMiddleware sees no capability
+        and returns the setup_required envelope instead of eliciting. The key
+        assertion is that the JSON-RPC handshake completes at all — a corrupted
+        stdout stream would blow up the SDK transport before call_tool() returns.
+        """
+        from mcp import ClientSession
+        from mcp.client.stdio import StdioServerParameters, stdio_client
+        from mcp.types import TextContent
+
+        server_params = StdioServerParameters(
+            command="uv",  # noqa: S607 — uv is on PATH in dev environments
+            args=["run", "moneybin", "mcp", "serve"],
+            env=unconfigured_env,
+        )
+        async with stdio_client(server_params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                # system_status is used (not accounts_summary) because it
+                # gracefully handles a fresh DB without SQLMesh transforms.
+                result = await session.call_tool("system_status", {})
+
+        # Assert after the session closes: a clean shutdown is itself evidence the
+        # JSON-RPC stream stayed intact end to end (the original-bug regression).
+        # Middleware returned a ToolResult (not raised), so isError is False.
+        assert not result.isError, f"Unexpected MCP-level error: {result.content}"
+        content = result.content[0]
+        assert isinstance(content, TextContent)
+        payload = json.loads(content.text)
+        assert payload["error"]["code"] == "infra_setup_required", (
+            f"Expected infra_setup_required error envelope, got: {payload}"
+        )
+
+    async def test_elicitation_client_creates_profile_and_proceeds(
+        self, unconfigured_env: dict[str, str]
+    ) -> None:
+        """Elicitation-capable client supplies a name → profile created, call works.
+
+        ClientSession passes elicitation_callback so initialize() declares the
+        elicitation capability. FirstRunSetupMiddleware elicits the profile name,
+        creates the encrypted DB (via ProfileService.create), activates the profile
+        in-process, and re-executes the original tool call. The second call proves
+        the middleware is no longer active (self._configured is True).
+        """
+        from mcp import ClientSession, types
+        from mcp.client.stdio import StdioServerParameters, stdio_client
+        from mcp.shared.context import RequestContext
+        from mcp.types import TextContent
+
+        # FastMCP wraps response_type=str as ScalarElicitationType[str], sending a
+        # schema with a single "value" property. The accept content must match:
+        # {"value": "<profile_name>"}. "e2e-first-run" normalizes to itself.
+        async def elicit_cb(
+            context: RequestContext[ClientSession, Any],
+            params: types.ElicitRequestParams,
+        ) -> types.ElicitResult:
+            return types.ElicitResult(
+                action="accept", content={"value": "e2e-first-run"}
+            )
+
+        server_params = StdioServerParameters(
+            command="uv",  # noqa: S607 — uv is on PATH in dev environments
+            args=["run", "moneybin", "mcp", "serve"],
+            env=unconfigured_env,
+        )
+        async with stdio_client(server_params) as (read, write):
+            async with ClientSession(
+                read, write, elicitation_callback=elicit_cb
+            ) as session:
+                await session.initialize()
+                # system_status is used (not accounts_summary): it works on a fresh
+                # DB without SQLMesh transforms; accounts_summary queries
+                # core.dim_accounts which doesn't exist until transforms run.
+                first = await session.call_tool("system_status", {})
+                second = await session.call_tool("system_status", {})
+
+        # Assert after the session closes (clean shutdown = stream stayed intact).
+        # Wire format is pydantic_core serialization of ResponseEnvelope — the
+        # "status" field only appears in to_dict(), not in the Pydantic model
+        # itself. Success is indicated by error: null + data present.
+        first_content = first.content[0]
+        assert isinstance(first_content, TextContent)
+        first_payload = json.loads(first_content.text)
+        assert first_payload.get("error") is None, (
+            f"First call after elicitation returned error: {first_payload}"
+        )
+        assert "data" in first_payload, (
+            f"First call missing data key — expected real tool response: {first_payload}"
+        )
+
+        second_content = second.content[0]
+        assert isinstance(second_content, TextContent)
+        second_payload = json.loads(second_content.text)
+        assert second_payload.get("error") is None, (
+            f"Second call (already configured) returned error: {second_payload}"
+        )
+        assert "data" in second_payload, (
+            f"Second call missing data key — expected real tool response: {second_payload}"
+        )
+
+    async def test_resource_read_unconfigured_does_not_invoke_wizard(
+        self, unconfigured_env: dict[str, str]
+    ) -> None:
+        """Reading moneybin://schema with no profile fails cleanly, not via the wizard.
+
+        The schema resource reaches get_database() directly, bypassing
+        FirstRunSetupMiddleware (which only guards tool calls). Clearing the
+        profile resolver on the unconfigured boot path makes get_settings()
+        raise a clean MCP error instead of running the stdout-writing wizard.
+        Regression signal: read_resource raises a normal McpError AND the
+        session stays responsive afterward — a corrupted stdio stream would
+        hang or kill the transport, not return an error.
+        """
+        from mcp import ClientSession
+        from mcp.client.stdio import StdioServerParameters, stdio_client
+        from mcp.shared.exceptions import McpError
+        from pydantic import AnyUrl
+
+        server_params = StdioServerParameters(
+            command="uv",  # noqa: S607 — uv is on PATH in dev environments
+            args=["run", "moneybin", "mcp", "serve"],
+            env=unconfigured_env,
+        )
+        async with stdio_client(server_params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                with pytest.raises(McpError):
+                    await session.read_resource(AnyUrl("moneybin://schema"))
+                # Stream survived the failed read: the session still answers.
+                # A wizard write would have corrupted the JSON-RPC channel.
+                tools = await session.list_tools()
+                assert any(t.name == "system_status" for t in tools.tools)

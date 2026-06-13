@@ -25,8 +25,10 @@ from moneybin.cli.output import (
     quiet_option,
     render_or_json,
 )
+from moneybin.cli.utils import _flags  # pyright: ignore[reportPrivateUsage]
 from moneybin.config import find_repo_root, get_base_dir
 from moneybin.protocol.envelope import build_envelope
+from moneybin.utils.user_config import get_default_profile
 
 app = typer.Typer(help="MCP server for AI assistant integration", no_args_is_help=True)
 logger = logging.getLogger(__name__)
@@ -684,6 +686,21 @@ def mcp_list_prompts(
 # ── serve ────────────────────────────────────────────────────────────────────
 
 
+def _is_unconfigured() -> bool:
+    """True when no profile is resolvable without the interactive wizard.
+
+    The MCP serve path must never trigger the first-run wizard — its stdout
+    prompts corrupt the stdio JSON-RPC stream. When this returns True, the
+    server boots unconfigured and FirstRunSetupMiddleware handles setup on the
+    first tool call. See docs/specs/mcp-first-run-setup.md.
+    """
+    if _flags.profile is not None:
+        return False
+    if os.environ.get("MONEYBIN_PROFILE"):
+        return False
+    return get_default_profile() is None
+
+
 @app.command("serve")
 def serve(
     transport: Annotated[
@@ -703,7 +720,10 @@ def serve(
     by default, which is the standard transport for local MCP integrations.
 
     The server uses the currently active profile to determine which
-    database to connect to.
+    database to connect to. With no profile configured, it still boots —
+    in an unconfigured mode that defers profile setup to the first tool
+    call (see docs/specs/mcp-first-run-setup.md), rather than running the
+    interactive wizard (which would corrupt the stdio JSON-RPC stream).
 
     Examples:
         # Start MCP server with default profile
@@ -714,9 +734,9 @@ def serve(
 
         # Typically invoked by AI clients, not run manually
     """
-    from moneybin.cli.utils import handle_cli_errors
-    from moneybin.config import get_database_path
+    from moneybin.cli.utils import get_verbose_flag, handle_cli_errors
     from moneybin.mcp.server import check_schema_at_boot, close_db, init_db, mcp
+    from moneybin.observability import setup_observability
 
     # Import resources/prompts to register their decorators with the server.
     # Tools are registered via register_core_tools() in init_db().
@@ -725,18 +745,6 @@ def serve(
         "moneybin.mcp.prompts",
     ):
         importlib.import_module(module)
-
-    db_path = get_database_path()
-
-    from moneybin.cli.utils import get_verbose_flag
-    from moneybin.config import get_current_profile
-    from moneybin.observability import setup_observability
-
-    setup_observability(
-        stream="mcp", verbose=get_verbose_flag(), profile=get_current_profile()
-    )
-
-    logger.info(f"Starting MCP server with database: {db_path}")
 
     if transport not in _VALID_TRANSPORTS:
         logger.error(
@@ -756,6 +764,48 @@ def serve(
         raise SystemExit(0)
 
     signal.signal(signal.SIGTERM, _on_sigterm)
+
+    if _is_unconfigured():
+        # No profile yet: boot without resolving one (resolving would run the
+        # interactive wizard and corrupt the stdio JSON-RPC stream). Register
+        # tools + first-run middleware; setup happens on the first tool call.
+        from moneybin.config import register_profile_resolver
+        from moneybin.mcp.first_run import FirstRunSetupMiddleware
+
+        # The lazy profile resolver (registered process-wide in main_callback)
+        # runs the interactive wizard, which writes to stdout. In unconfigured
+        # mode the wizard must be unreachable from EVERY MCP entry point — not
+        # just tool calls (guarded by FirstRunSetupMiddleware) but also
+        # resource/prompt reads (e.g. moneybin://schema), which reach
+        # get_database() → get_settings() directly, bypassing the middleware.
+        # Clearing the resolver makes get_settings() raise a clean error
+        # instead of prompting; the middleware does the real elicitation-based
+        # setup on the first tool call, calling set_current_profile() directly
+        # so the happy path never needs the resolver.
+        register_profile_resolver(None)
+        verbose = get_verbose_flag()
+        setup_observability(stream="mcp", verbose=verbose)
+        logger.info(
+            f"MCP server starting unconfigured "
+            f"(transport={transport}); awaiting first-run setup"
+        )
+        try:
+            init_db()
+            mcp.add_middleware(FirstRunSetupMiddleware(verbose=verbose))
+            mcp.run(transport=validated_transport)
+        except KeyboardInterrupt:
+            logger.info("MCP server stopped by user")
+        finally:
+            close_db()
+        return
+
+    from moneybin.config import get_current_profile, get_database_path
+
+    db_path = get_database_path()
+    setup_observability(
+        stream="mcp", verbose=get_verbose_flag(), profile=get_current_profile()
+    )
+    logger.info(f"Starting MCP server with database: {db_path}")
 
     try:
         with handle_cli_errors():
