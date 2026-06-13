@@ -48,6 +48,25 @@ class TestCSVReader:
         assert len(result.df) == 2
         assert result.rows_skipped_trailing >= 1
 
+    def test_headerless_csv_keeps_first_data_row(self, tmp_path: Path) -> None:
+        """Headerless bank CSV (e.g. Wells Fargo) must not lose row 0.
+
+        WF exports are headerless: ``Date,Amount,*,,Description`` with no
+        header line. A real transaction row leads with a date and carries a
+        description, so it has a low numeric ratio and the old header
+        heuristic mistook row 0 for a header — silently dropping the most
+        recent transaction. Regression: all three rows must survive.
+        """
+        f = _write_csv(
+            tmp_path / "wf.csv",
+            '"04/16/2026","150.00","*","","RECURRING TRANSFER FROM ACME"\n'
+            '"04/15/2026","-150.00","*","","RECURRING TRANSFER TO ACME"\n'
+            '"04/14/2026","-50.00","*","","BILL PAY ACME 8230"\n',
+        )
+        info = FormatInfo(file_type="csv", delimiter=",", encoding="utf-8")
+        result = read_file(f, info)
+        assert len(result.df) == 3
+
     def test_bom_handled(self, tmp_path: Path) -> None:
         f = tmp_path / "bom.csv"
         f.write_bytes(b"\xef\xbb\xbfDate,Amount\n2026-01-01,42.50\n")

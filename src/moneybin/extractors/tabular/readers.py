@@ -12,6 +12,7 @@ from pathlib import Path
 
 import polars as pl
 
+from moneybin.extractors.tabular.date_detection import detect_date_format
 from moneybin.extractors.tabular.format_detector import FormatInfo
 
 logger = logging.getLogger(__name__)
@@ -121,15 +122,18 @@ def _read_text(
     encoding = info.encoding
     delimiter = info.delimiter or ","
 
+    # Explicit skip_rows implies a header at that row; auto-detection both
+    # locates the header and decides whether the file has one at all.
+    has_header = True
     if skip_rows is None:
-        skip_rows = _detect_header_row(path, encoding, delimiter)
+        skip_rows, has_header = _detect_header(path, encoding, delimiter)
 
     df = pl.read_csv(
         path,
         separator=delimiter,
         encoding=encoding if encoding != "utf-8-sig" else "utf8",
         skip_rows=skip_rows,
-        has_header=True,
+        has_header=has_header,
         infer_schema_length=0,
         truncate_ragged_lines=True,
     )
@@ -151,8 +155,19 @@ def _read_text(
     )
 
 
-def _detect_header_row(path: Path, encoding: str, delimiter: str) -> int:
-    """Find the header row by scanning for the first row with multiple non-numeric column-like strings.
+def _detect_header(path: Path, encoding: str, delimiter: str) -> tuple[int, bool]:
+    """Locate the header row, or determine the file is headerless.
+
+    Scans the first content row (after any preamble) and classifies it:
+
+    - If it already parses as a data record — a real date plus a numeric
+      amount — the file is **headerless**. Returns ``(row_index, False)`` so
+      the reader keeps that row instead of consuming it as a header. This is
+      the Wells Fargo case: ``Date,Amount,*,,Description`` with no header
+      line, where row 0 leads with a date and carries a description (low
+      numeric ratio) and was previously mistaken for a header.
+    - Otherwise the first row with a low numeric ratio is the **header**.
+      Returns ``(row_index, True)``.
 
     Args:
         path: File path.
@@ -160,7 +175,9 @@ def _detect_header_row(path: Path, encoding: str, delimiter: str) -> int:
         delimiter: Column delimiter.
 
     Returns:
-        Zero-based index of the header row (number of rows to skip before it).
+        ``(skip_rows, has_header)`` — rows to skip before the header (or
+        before the first data row when headerless), and whether a header
+        row is present.
     """
     enc = encoding if encoding != "utf-8-sig" else "utf-8"
     lines: list[str] = []
@@ -171,7 +188,7 @@ def _detect_header_row(path: Path, encoding: str, delimiter: str) -> int:
                     break
                 lines.append(line.rstrip("\n\r"))
     except OSError:
-        return 0
+        return 0, True
 
     for i, line in enumerate(lines):
         if not line.strip():
@@ -182,12 +199,34 @@ def _detect_header_row(path: Path, encoding: str, delimiter: str) -> int:
         non_empty = [p.strip().strip('"').strip("'") for p in parts if p.strip()]
         if not non_empty:
             continue
+        if _looks_like_data_row(non_empty):
+            return i, False
         numeric_count = sum(1 for p in non_empty if _is_numeric(p))
         numeric_ratio = numeric_count / len(non_empty) if non_empty else 1.0
         if numeric_ratio < 0.5 and len(non_empty) >= 2:
-            return i
+            return i, True
 
-    return 0
+    return 0, True
+
+
+def _looks_like_data_row(cells: list[str]) -> bool:
+    """Return True if a row already parses as a transaction record.
+
+    A genuine data row carries both a parseable date and a numeric amount; a
+    header row carries neither (``Date``/``Amount`` are labels, not values).
+    Used to detect headerless files before the first row is consumed as a
+    header. Reuses ``detect_date_format`` so date recognition stays coherent
+    with the rest of the tabular pipeline.
+
+    Args:
+        cells: Non-empty, unquoted cell strings from one row.
+
+    Returns:
+        True when at least one cell is a date and at least one is numeric.
+    """
+    has_date = any(detect_date_format([c])[0] is not None for c in cells)
+    has_amount = any(_is_numeric(c) for c in cells)
+    return has_date and has_amount
 
 
 def _is_numeric(s: str) -> bool:
