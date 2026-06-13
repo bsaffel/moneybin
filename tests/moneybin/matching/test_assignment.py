@@ -279,6 +279,117 @@ def _edge(
     )
 
 
+def _edge_f(  # noqa: PLR0913  # explicit per-side fields keep the fixture readable
+    st_a: str,
+    stid_a: str,
+    sf_a: str,
+    st_b: str,
+    stid_b: str,
+    sf_b: str,
+    score: float,
+    acct: str = "acct1",
+) -> CandidatePair:
+    """Like _edge but carries source_file per side (for the cardinality guard)."""
+    return CandidatePair(
+        source_transaction_id_a=stid_a,
+        source_type_a=st_a,
+        source_origin_a="o",
+        source_transaction_id_b=stid_b,
+        source_type_b=st_b,
+        source_origin_b="o",
+        account_id=acct,
+        date_distance_days=0,
+        description_similarity=score,
+        confidence_score=score,
+        description_a="",
+        description_b="",
+        source_file_a=sf_a,
+        source_file_b=sf_b,
+    )
+
+
+def _component_count(added: list[CandidatePair]) -> int:
+    """Count connected components formed by the returned edges."""
+    parent: dict[tuple[str, str], tuple[str, str]] = {}
+
+    def find(x: tuple[str, str]) -> tuple[str, str]:
+        parent.setdefault(x, x)
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    nodes: set[tuple[str, str]] = set()
+    for p in added:
+        a = (p.source_type_a, p.source_transaction_id_a)
+        b = (p.source_type_b, p.source_transaction_id_b)
+        nodes |= {a, b}
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+    return len({find(n) for n in nodes})
+
+
+class TestCardinalityGuard:
+    """The source_file guard prevents over-collapsing N true duplicates.
+
+    Two distinct transactions sharing (account, amount, date) — each exported by
+    both formats — must stay TWO components, not collapse into one. Within a file
+    every row is a distinct transaction, so two rows from the same source_file
+    must never land in the same dedup component.
+    """
+
+    def test_n_duplicates_pair_one_to_one_by_description(self) -> None:
+        # T1 and T2 are distinct $5 charges, same day; each in stmt.ofx + stmt.csv.
+        # True twins score higher; cross (bridge) pairs score lower but are still
+        # above the exact-key floor. Correct result: 2 components, NOT 1.
+        pairs = [
+            _edge_f("csv", "csv_T1", "stmt.csv", "ofx", "ofx_T1", "stmt.ofx", 0.99),
+            _edge_f("csv", "csv_T2", "stmt.csv", "ofx", "ofx_T2", "stmt.ofx", 0.99),
+            _edge_f("csv", "csv_T1", "stmt.csv", "ofx", "ofx_T2", "stmt.ofx", 0.96),
+            _edge_f("csv", "csv_T2", "stmt.csv", "ofx", "ofx_T1", "stmt.ofx", 0.96),
+        ]
+        added = assign_components(pairs, seed_edges=[])
+        assert _component_count(added) == 2
+        kept = {(p.source_transaction_id_a, p.source_transaction_id_b) for p in added}
+        assert kept == {("csv_T1", "ofx_T1"), ("csv_T2", "ofx_T2")}
+
+    def test_n_duplicates_pair_one_to_one_with_equal_scores(self) -> None:
+        # Identical descriptions → all bridge pairs score equally. The file guard
+        # alone (no description signal) must still yield 2 components, never 1 —
+        # the money-loss case must not depend on description.
+        pairs = [
+            _edge_f("csv", "csv_T1", "stmt.csv", "ofx", "ofx_T1", "stmt.ofx", 0.97),
+            _edge_f("csv", "csv_T1", "stmt.csv", "ofx", "ofx_T2", "stmt.ofx", 0.97),
+            _edge_f("csv", "csv_T2", "stmt.csv", "ofx", "ofx_T1", "stmt.ofx", 0.97),
+            _edge_f("csv", "csv_T2", "stmt.csv", "ofx", "ofx_T2", "stmt.ofx", 0.97),
+        ]
+        added = assign_components(pairs, seed_edges=[])
+        assert _component_count(added) == 2
+
+    def test_distinct_files_still_collapse_n_way(self) -> None:
+        # One real txn in three sources, three different files → still ONE
+        # component. The guard only blocks SAME-file co-membership.
+        pairs = [
+            _edge_f("csv", "X", "a.csv", "ofx", "X", "x.ofx", 0.99),
+            _edge_f("csv", "X", "a.csv", "manual", "X", "m.json", 0.95),
+            _edge_f("ofx", "X", "x.ofx", "manual", "X", "m.json", 0.95),
+        ]
+        added = assign_components(pairs, seed_edges=[])
+        assert _component_count(added) == 1
+        assert len(added) == 2  # spanning tree of 3 nodes
+
+    def test_missing_source_file_does_not_trigger_guard(self) -> None:
+        # Unit fixtures with no source_file (None) keep the legacy spanning-forest
+        # behavior — the guard only fires on a known shared file.
+        pairs = [
+            _edge("csv", "X", "ofx", "X", 0.96),
+            _edge("csv", "X", "manual", "X", 0.90),
+        ]
+        added = assign_components(pairs, seed_edges=[])
+        assert _component_count(added) == 1
+
+
 class TestAssignComponents:
     """Tests for the assign_components union-find spanning-forest assignment."""
 

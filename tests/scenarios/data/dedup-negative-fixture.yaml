@@ -23,8 +23,8 @@ assertions:
     fn: assert_row_count_exact
     args:
       table: core.fct_transactions
-      # Hand-counted: 3 CSV rows + 3 OFX rows, none should collapse.
-      expected: 6
+      # Hand-counted: 2 CSV rows + 2 OFX rows, none should collapse.
+      expected: 4
 
 expectations:
   - kind: match_decision
@@ -43,14 +43,14 @@ expectations:
       - source_transaction_id: NEG_OFX_2024-04-11_TJ
         source_type: ofx
     expected: not_matched
-  - kind: match_decision
-    description: "STARBUCKS vs DUNKIN same day same amount must NOT match"
-    transactions:
-      - source_transaction_id: NEG_CSV_2024-04-15_SB_5.75
-        source_type: csv
-      - source_transaction_id: NEG_OFX_2024-04-15_DUNKIN
-        source_type: ofx
-    expected: not_matched
+
+# NOTE: a former third case (STARBUCKS csv vs DUNKIN ofx — different merchants,
+# same account/amount/day) was removed when exact-key auto-merge landed
+# (2026-06-13). A *lone* exact-key cross-source pair is indistinguishable from a
+# true cross-format duplicate and now auto-merges by design (accepted precision
+# tradeoff). The realistic version of that precision concern — both merchants
+# present in BOTH formats (4 rows) — is guarded 1:1 and lives in the
+# `dedup-overmerge-guard` scenario.
 
 gates:
   required_assertions: all

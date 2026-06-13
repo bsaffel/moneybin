@@ -4,6 +4,7 @@
 > Status: implemented
 > Parent: [`matching-overview.md`](matching-overview.md) (pillars A + C)
 > Enhances: [`matching-same-record-dedup.md`](matching-same-record-dedup.md) — supersedes its Requirement 3 (1:1 bipartite assignment)
+> Refined by: [`matching-exact-key-dedup.md`](matching-exact-key-dedup.md) — adds a `(source_type, source_origin, source_file)` cardinality guard to the Requirement 2 / Algorithm edge-add rule, and the cross-source exact-key confidence floor supersedes the "No change to scoring" out-of-scope note for Tier 3
 > Prerequisites (merged): matching-model reconciliation (#204, activated the `dedup_reconciliation` doctor check) and agent-callable match accept/reject (#209, the `transactions_matches_set` / `_pending` surface Req 11–12 build on)
 > Companions: `CLAUDE.md` "Architecture: Data Layers", `.claude/rules/database.md` (recursive CTE syntax, column naming), `.claude/rules/surface-design.md` (review-surface shapes), `docs/specs/moneybin-doctor.md` (`dedup_reconciliation`)
 
