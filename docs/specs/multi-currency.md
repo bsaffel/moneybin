@@ -111,9 +111,13 @@ Numbered, testable. Tagged by phase.
    `src/moneybin/connectors/sync_models.py`) and to moneybin-server's mapping — an
    **additive, optional** contract change (one-way door: additive only).
 2. **The union stops hardcoding `'USD'`.** `int_transactions__unioned.sql` reads the
-   captured currency for the OFX and Plaid arms (`COALESCE(..., 'USD')` like the
-   tabular/manual arms), so a non-USD source is no longer silently relabeled.
-3. **Currency at every core monetary grain.** `core.fct_balances` gains a
+   captured currency for the OFX and Plaid arms and leaves it `NULL` when the source omits
+   it — it does **not** `COALESCE` to a literal `'USD'`, which would relabel a non-USD
+   account's rows before account-currency inheritance (Req 3) can run. The same blind-`'USD'`
+   fallback on the tabular/manual arms is the identical latent bug and is dropped in the same
+   pass; account/home resolution (Req 3, Req 8) fills any still-`NULL` currency, never a guess.
+3. **Currency at every core monetary grain.** `core.fct_balances` **and the derived
+   `core.fct_balances_daily`** (the model `reports.net_worth` actually aggregates) gain a
    `currency_code`; `core.fct_transactions` and `core.dim_accounts` already carry it
    (see naming decision in §Key Decisions). Where a grain genuinely cannot know its
    currency, it inherits the account's `currency_code`, never a blind `'USD'`.
@@ -146,11 +150,11 @@ Numbered, testable. Tagged by phase.
    currency (default: home currency) and convert original amounts to it on
    presentation, populating `ResponseEnvelope.summary.display_currency`. Original
    amounts remain available for drilldown.
-10. **Auditable rate provenance.** Every converted figure traces to a stored rate:
-    `(from_currency, to_currency, rate_date, rate, source, fetched_at)` in
-    `raw.exchange_rates`, unique on `(from_currency, to_currency, rate_date, source)`.
-    A "show me the rate" path exposes the exact rate behind any converted number
-    (consistent with the lineage promise).
+10. **Auditable rate provenance.** Every converted figure traces to a stored rate — a
+    provider rate in `raw.exchange_rates` (`(from_currency, to_currency, rate_date, rate,
+    source, fetched_at)`, unique on `(from_currency, to_currency, rate_date, source)`) or a
+    user override in `app.*` (Req 14). A "show me the rate" path exposes the exact rate
+    behind any converted number (consistent with the lineage promise).
 11. **Free reference-rate source.** Rates fetch lazily on first need from **Frankfurter**
     (ECB-backed, no auth, historical to 1999), cached in `raw.exchange_rates`.
     `ExchangeRate.host`/`open.er-api.com` are documented fallbacks. **Only currency
@@ -161,9 +165,12 @@ Numbered, testable. Tagged by phase.
     today's rate or `1.0`.
 13. **Weekend/holiday handling.** A non-trading date resolves to the ECB last-published
     business day; the resolution is recorded in `rate_date` provenance, not hidden.
-14. **User rate override.** A user may override an auto-fetched rate (the bank's actual
-    rate differs from the ECB mid-rate); overrides are auditable and **not** silently
-    overwritten by a later refresh.
+14. **User rate override.** A user may override an auto-fetched rate (the bank's actual rate
+    differs from the ECB mid-rate). An override is **mutable user-authored state**, so it
+    lives in `app.*` (e.g. `app.exchange_rate_overrides`), mutated only via a `*Repo` with
+    paired audit (Invariant 10) — **not** in `raw.exchange_rates` (the immutable provider
+    cache). The conversion layer prefers an app override over the cached provider rate, and a
+    later provider refresh never silently overwrites it.
 15. **Segmentation becomes the fallback.** For currency pairs the source can't provide
     (exotics, crypto-as-currency) or while offline, reports fall back to M1K.1
     segmentation rather than guessing.
@@ -194,11 +201,13 @@ Sketch; exact DDL settled per phase during implementation planning.
 ```sql
 -- core.fct_balances: add original currency (mirrors fct_transactions)
 ALTER TABLE ... ADD COLUMN currency_code VARCHAR;   -- ISO 4217; inherits account currency
+-- core.fct_balances_daily (Python model feeding reports.net_worth): propagate currency_code
+--   through the daily rollup so net_worth can segment/convert per currency
 
 -- raw OFX/Plaid transaction + balance tables: capture original currency
 --   OFX: CURDEF;  Plaid: iso_currency_code / unofficial_currency_code
--- prep.int_transactions__unioned: OFX + Plaid arms read captured currency
---   (COALESCE(currency_code, 'USD')) instead of literal 'USD'
+-- prep.int_transactions__unioned: every arm reads captured currency and leaves NULL when
+--   the source omits it (no COALESCE to literal 'USD'); inheritance/home resolution fills NULL
 
 -- profile-level home currency. If a profile-settings primitive already exists,
 -- add the field there; otherwise this spec introduces app.settings (profile-scoped).
@@ -209,15 +218,29 @@ ALTER TABLE ... ADD COLUMN currency_code VARCHAR;   -- ISO 4217; inherits accoun
 ### M1K.2
 
 ```sql
--- raw.exchange_rates: the auditable rate cache
+-- raw.exchange_rates: the auditable provider rate cache (immutable; overrides live in app.*)
 CREATE TABLE raw.exchange_rates (
     from_currency  VARCHAR NOT NULL,   -- ISO 4217
     to_currency    VARCHAR NOT NULL,   -- ISO 4217
     rate_date      DATE    NOT NULL,   -- resolved trading day
     rate           DECIMAL(18,8) NOT NULL,  -- from->to multiplier; precision per database.md
-    source         VARCHAR NOT NULL,   -- 'frankfurter' | 'user_override' | ...
+    source         VARCHAR NOT NULL,   -- provider only: 'frankfurter' | 'exchangerate_host' | ...
     fetched_at     TIMESTAMP NOT NULL,
     UNIQUE (from_currency, to_currency, rate_date, source)
+);
+
+-- app.exchange_rate_overrides: user-authored overrides (mutable user state, NOT raw).
+-- Mutated only via a *Repo with paired audit (Invariant 10); the conversion layer prefers
+-- an override here over the cached provider rate above.
+CREATE TABLE app.exchange_rate_overrides (
+    from_currency  VARCHAR NOT NULL,           -- ISO 4217
+    to_currency    VARCHAR NOT NULL,           -- ISO 4217
+    rate_date      DATE    NOT NULL,
+    rate           DECIMAL(18,8) NOT NULL,     -- user-entered; precision per database.md
+    note           VARCHAR,                    -- why the user overrode the provider rate
+    created_at     TIMESTAMP NOT NULL,
+    updated_at     TIMESTAMP NOT NULL,
+    UNIQUE (from_currency, to_currency, rate_date)
 );
 ```
 
