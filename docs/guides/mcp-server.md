@@ -11,6 +11,15 @@ The server is built on [FastMCP](https://github.com/jlowin/fastmcp) and register
 
 There is no `mcp uninstall` command today. To turn the integration off, remove the `moneybin` entry from your MCP client's config file (Claude Desktop's `claude_desktop_config.json`, Cursor's `mcp.json`, etc.) and restart the client.
 
+## First run (no profile yet)
+
+You don't have to create a profile in a terminal before connecting. If the server starts with no profile configured, it boots normally and sets up on your first tool call:
+
+- **Clients that support elicitation** (e.g. Claude Desktop) — the agent asks "what would you like to name your profile?", and MoneyBin creates the encrypted profile in place and continues with your request. No restart.
+- **Tools-only clients** — the first tool call returns a single message asking you to run `moneybin profile create <name>` in a terminal and reconnect.
+
+Only the profile name is sent to the model; the encryption key is generated locally and stored in your OS keychain — it never crosses the agent conversation.
+
 ## Privacy: where does my data go?
 
 The most common question from people coming from a CLI-only workflow. Plain answer:
