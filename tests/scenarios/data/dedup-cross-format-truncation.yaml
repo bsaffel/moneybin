@@ -1,0 +1,91 @@
+scenario: dedup-cross-format-truncation
+description: "Cross-format dedup: OFX-truncated descriptions auto-merge with their CSV twins on exact key (same account + exact amount + same day), despite low description similarity."
+
+setup:
+  persona: family
+  seed: 42
+  years: 1
+  fixtures:
+    - path: dedup-cross-format/wf_truncated_csv.csv
+      account: wf-checking
+      source_type: csv
+    - path: dedup-cross-format/wf_truncated_ofx.csv
+      account: wf-checking
+      source_type: ofx
+
+pipeline:
+  - load_fixtures
+  - transform
+  - match
+
+assertions:
+  - name: no_duplicate_gold_records
+    fn: assert_no_duplicates
+    args:
+      table: core.fct_transactions
+      columns: [transaction_id]
+  - name: provenance_complete
+    fn: assert_no_orphans
+    args:
+      parent: core.fct_transactions
+      parent_column: transaction_id
+      child: meta.fct_transaction_provenance
+      child_column: transaction_id
+
+expectations:
+  - kind: match_decision
+    description: "transfer-midword-truncation: must auto-merge on exact key"
+    transactions:
+      - source_transaction_id: OFX_TRANSFER_150
+        source_type: ofx
+      - source_transaction_id: TBL_TRANSFER_150
+        source_type: csv
+    expected: matched
+    expected_match_type: dedup
+    expected_confidence_min: 0.95
+  - kind: match_decision
+    description: "billpay-tail-truncation: must auto-merge on exact key"
+    transactions:
+      - source_transaction_id: OFX_BILLPAY_2868
+        source_type: ofx
+      - source_transaction_id: TBL_BILLPAY_2868
+        source_type: csv
+    expected: matched
+    expected_match_type: dedup
+    expected_confidence_min: 0.95
+  - kind: match_decision
+    description: "merchant-name-only: must auto-merge on exact key"
+    transactions:
+      - source_transaction_id: OFX_TASKAPP_29
+        source_type: ofx
+      - source_transaction_id: TBL_TASKAPP_29
+        source_type: csv
+    expected: matched
+    expected_match_type: dedup
+    expected_confidence_min: 0.95
+  - kind: match_decision
+    description: "ampersand-double-encoded: must auto-merge on exact key"
+    transactions:
+      - source_transaction_id: OFX_TELCO_105
+        source_type: ofx
+      - source_transaction_id: TBL_TELCO_105
+        source_type: csv
+    expected: matched
+    expected_match_type: dedup
+    expected_confidence_min: 0.95
+  - kind: gold_record_count
+    description: "Four cross-format twin pairs collapse to four gold records, not eight"
+    fixture_source_ids:
+      - TBL_TRANSFER_150
+      - OFX_TRANSFER_150
+      - TBL_BILLPAY_2868
+      - OFX_BILLPAY_2868
+      - TBL_TASKAPP_29
+      - OFX_TASKAPP_29
+      - TBL_TELCO_105
+      - OFX_TELCO_105
+    expected_collapsed_count: 4
+
+gates:
+  required_assertions: all
+  required_expectations: all

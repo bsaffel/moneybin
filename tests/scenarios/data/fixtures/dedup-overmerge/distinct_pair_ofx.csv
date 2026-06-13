@@ -1,0 +1,3 @@
+source_transaction_id,date,amount,payee,transaction_type
+OFX_COFFEE_5,2026-03-10,-5.00,COFFEE ROAS,DEBIT
+OFX_BOOK_5,2026-03-10,-5.00,CITY BOOK,DEBIT

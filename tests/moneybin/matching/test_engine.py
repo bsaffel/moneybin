@@ -604,6 +604,86 @@ class TestNWayDedup:
         )
 
 
+class TestExactKeyCrossSourceAutoMerge:
+    """Exact-key (same account + exact amount + same day) cross-source auto-merge.
+
+    Brandon, 2026-06-13: a cross-source pair with date_distance=0 is a near-certain
+    duplicate; auto-merge it regardless of description similarity. Description is a
+    tiebreaker for *which* rows pair, never a gate on *whether* they merge.
+    """
+
+    def test_low_description_similarity_still_auto_merges(self, db: Database) -> None:
+        """Same account/amount/day but divergent descriptions → auto-merge, not review.
+
+        This is the OFX-vs-CSV truncation case: jaro_winkler is low, so the
+        weighted score (0.40 + 0.60*low) lands below the review threshold and the
+        pair was previously dropped. Exact-key auto-merge accepts it.
+        """
+        _create_test_table(db)
+        _insert(
+            db,
+            "csv_a",
+            "acct1",
+            "2026-03-15",
+            "-42.50",
+            "AMAZON MARKETPLACE PURCHASE SEATTLE WA",
+            "csv",
+            "chase",
+            sfile="march.csv",
+        )
+        _insert(
+            db,
+            "ofx_b",
+            "acct1",
+            "2026-03-15",
+            "-42.50",
+            "ACH DEBIT",
+            "ofx",
+            "chase_ofx",
+            sfile="march.ofx",
+        )
+        settings = MatchingSettings()
+        matcher = TransactionMatcher(db, settings, table="main._test_unioned")
+        result = matcher.run()
+        assert result.auto_merged == 1
+        assert result.pending_review == 0
+
+        # Persisted confidence reflects exact-key certainty, not the low jaro score.
+        matches = get_active_matches(db, match_type="dedup")
+        assert len(matches) == 1
+        assert float(matches[0]["confidence_score"]) >= 0.95
+
+    def test_two_distinct_same_key_txns_stay_separate(self, db: Database) -> None:
+        """Negative/precision: two genuinely-distinct $5 charges, same account/day.
+
+        Each is exported by both formats (4 rows). The exact-key path must pair
+        1:1 — T1↔T1 and T2↔T2 — yielding TWO components (source_count=2 each),
+        never collapsing all four into one (which would silently delete a real $5
+        charge). The two ofx rows share one file and the two csv rows share one
+        file, so the cardinality guard blocks the cross "bridge" edges.
+        """
+        _create_test_table(db)
+        for stid, desc, stype, sfile in [
+            ("ofx_T1", "MERCHANT ALPHA", "ofx", "stmt.ofx"),
+            ("ofx_T2", "MERCHANT BETA", "ofx", "stmt.ofx"),
+            ("csv_T1", "MERCHANT ALPHA", "csv", "stmt.csv"),
+            ("csv_T2", "MERCHANT BETA", "csv", "stmt.csv"),
+        ]:
+            _insert(
+                db, stid, "acct1", "2026-03-15", "-5.00", desc, stype, "chase", sfile
+            )
+
+        settings = MatchingSettings()
+        matcher = TransactionMatcher(db, settings, table="main._test_unioned")
+        matcher.run()
+
+        edges = _active_dedup_edges(db)
+        assert _node_count(edges) == 4, f"all four rows should be matched, got {edges}"
+        assert _component_count(edges) == 2, (
+            f"two distinct txns must stay two components, not collapse, got {edges}"
+        )
+
+
 class TestTransferDetection:
     """Tests for Tier 4 transfer detection."""
 

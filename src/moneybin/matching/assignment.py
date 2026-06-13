@@ -85,6 +85,12 @@ def assign_greedy[T: _Matchable](candidates: list[T]) -> list[T]:
 # compute identical components. Stripping source_type would silently diverge.
 type NodeKey = tuple[str, str, str]
 
+# (source_type, source_origin, source_file) — identifies one physical import
+# source. The cardinality unit for assign_components: two rows sharing this key
+# came from the same file and are therefore distinct transactions, never
+# duplicates of each other.
+type SourceKey = tuple[str, str, str]
+
 
 def _node_a(pair: "CandidatePair") -> NodeKey:
     return (pair.source_type_a, pair.source_transaction_id_a, pair.account_id)
@@ -162,10 +168,47 @@ def assign_components(
     component and redundant edges are never re-proposed. Processes candidates
     best-confidence-first with a deterministic tiebreak; keeps an edge only when
     it joins two distinct components (N-1 edges per group, no cycles).
+
+    Cardinality guard: an edge is rejected when it would put two rows from the
+    same physical source — keyed on ``(source_type, source_origin, source_file)``
+    — into one component. Within a single import file every row is a distinct
+    transaction (distinct FITID / content-hash; within-source dedup only ever
+    pairs across *different* files), so two rows from one file can never be
+    duplicates of each other. Keying on the full triple (not the file string
+    alone) keeps two *different* sources distinct even if their file strings
+    collide, e.g. a ``march.csv`` and a ``march.ofx`` of the same account. The
+    guard makes exact-key auto-merge pair N true duplicates 1:1 instead of
+    collapsing all-to-all and silently deleting a real transaction. Nodes with an
+    unknown file (None — e.g. seed-only nodes or unit fixtures) impose no
+    constraint.
     """
     uf = UnionFind()
     for a, b in seed_edges:
         uf.union(a, b)
+
+    # Physical sources present in each component, keyed by current union-find
+    # root. Seeded from candidate nodes (seed-only nodes contribute nothing and
+    # never block). A source key is (source_type, source_origin, source_file).
+    comp_sources: dict[NodeKey, set[SourceKey]] = {}
+
+    def _register(node: NodeKey, source_key: SourceKey | None) -> None:
+        if source_key is not None:
+            comp_sources.setdefault(uf.find(node), set()).add(source_key)
+
+    def _source_key_a(pair: "CandidatePair") -> SourceKey | None:
+        if pair.source_file_a is None:
+            return None
+        return (pair.source_type_a, pair.source_origin_a, pair.source_file_a)
+
+    def _source_key_b(pair: "CandidatePair") -> SourceKey | None:
+        if pair.source_file_b is None:
+            return None
+        return (pair.source_type_b, pair.source_origin_b, pair.source_file_b)
+
+    for pair in candidates:
+        _register(_node_a(pair), _source_key_a(pair))
+        _register(_node_b(pair), _source_key_b(pair))
+
     ordered = sorted(
         candidates,
         key=lambda c: (
@@ -178,6 +221,14 @@ def assign_components(
     )
     added: list[CandidatePair] = []
     for pair in ordered:
-        if uf.union(_node_a(pair), _node_b(pair)):
-            added.append(pair)
+        root_a, root_b = uf.find(_node_a(pair)), uf.find(_node_b(pair))
+        if root_a == root_b:
+            continue  # already connected — redundant edge
+        sources_a = comp_sources.get(root_a, set())
+        sources_b = comp_sources.get(root_b, set())
+        if sources_a & sources_b:
+            continue  # would co-locate two rows from one source — distinct txns
+        uf.union(_node_a(pair), _node_b(pair))
+        comp_sources[uf.find(_node_a(pair))] = sources_a | sources_b
+        added.append(pair)
     return added

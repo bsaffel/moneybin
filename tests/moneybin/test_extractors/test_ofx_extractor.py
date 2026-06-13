@@ -12,7 +12,11 @@ import polars as pl
 import pytest
 
 from moneybin.extractors.ofx import OFXExtractor, OFXProviderConfig
-from moneybin.extractors.ofx.extractor import OFXTransactionSchema, extract_ofx_file
+from moneybin.extractors.ofx.extractor import (
+    OFXTransactionSchema,
+    _decode_text_field,  # pyright: ignore[reportPrivateUsage]
+    extract_ofx_file,
+)
 
 # Path to test fixtures directory
 FIXTURES_DIR = Path(__file__).parent.parent.parent / "fixtures"
@@ -41,6 +45,38 @@ def extractor_config(tmp_path: Path) -> OFXProviderConfig:
         preserve_source_files=True,
         validate_balances=True,
     )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        # Plain text passes through untouched.
+        ("Coffee Shop", "Coffee Shop"),
+        ("BILL PAY Megabank - Rewards", "BILL PAY Megabank - Rewards"),
+        # Already-clean ampersand is left alone (unescape is idempotent here).
+        ("AT&T", "AT&T"),
+        # Single SGML entity escape → decoded once.
+        ("AT&amp;T", "AT&T"),
+        # Double escape (notably Wells Fargo) → the repeated-unescape loop must
+        # fully decode it; a single html.unescape would leave "AT&amp;T".
+        ("AT&amp;amp;T", "AT&T"),
+        ("BILL PAY Telco &amp;amp; Cable Internet", "BILL PAY Telco & Cable Internet"),
+        # Non-string sentinels.
+        (None, None),
+        ("", ""),
+    ],
+)
+def test_decode_text_field_unescapes_double_encoded_entities(
+    raw: str | None, expected: str | None
+) -> None:
+    """OFX payee/memo entities are fully decoded, including double escapes.
+
+    Guards the fix for banks that emit already-escaped SGML content which
+    ofxparse decodes only one level (`AT&amp;amp;T` → `AT&amp;T`), leaving stale
+    entities in the description the matcher and reports read.
+    """
+    assert _decode_text_field(raw) == expected
 
 
 @pytest.mark.unit

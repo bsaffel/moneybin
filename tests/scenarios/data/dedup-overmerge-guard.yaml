@@ -1,0 +1,72 @@
+scenario: dedup-overmerge-guard
+description: "Precision guard: two genuinely-distinct same-key txns, each present in both formats, must stay TWO gold records (source_count=2 each) — never over-collapse to one (source_count=4)."
+
+setup:
+  persona: family
+  seed: 42
+  years: 1
+  fixtures:
+    - path: dedup-overmerge/distinct_pair_csv.csv
+      account: wf-checking
+      source_type: csv
+    - path: dedup-overmerge/distinct_pair_ofx.csv
+      account: wf-checking
+      source_type: ofx
+
+pipeline:
+  - load_fixtures
+  - transform
+  - match
+
+assertions:
+  - name: no_overcollapse_row_count
+    fn: assert_row_count_exact
+    args:
+      table: core.fct_transactions
+      # Hand-counted: 2 distinct txns, each in both formats (4 rows) → 2 records.
+      expected: 2
+  - name: no_duplicate_gold_records
+    fn: assert_no_duplicates
+    args:
+      table: core.fct_transactions
+      columns: [transaction_id]
+
+expectations:
+  - kind: match_decision
+    description: "coffee csv twin must match coffee ofx twin (dedup)"
+    transactions:
+      - source_transaction_id: OFX_COFFEE_5
+        source_type: ofx
+      - source_transaction_id: TBL_COFFEE_5
+        source_type: csv
+    expected: matched
+    expected_match_type: dedup
+  - kind: match_decision
+    description: "bookshop csv twin must match bookshop ofx twin (dedup)"
+    transactions:
+      - source_transaction_id: OFX_BOOK_5
+        source_type: ofx
+      - source_transaction_id: TBL_BOOK_5
+        source_type: csv
+    expected: matched
+    expected_match_type: dedup
+  - kind: match_decision
+    description: "coffee csv must NOT match bookshop ofx (distinct txns, same key)"
+    transactions:
+      - source_transaction_id: TBL_COFFEE_5
+        source_type: csv
+      - source_transaction_id: OFX_BOOK_5
+        source_type: ofx
+    expected: not_matched
+  - kind: gold_record_count
+    description: "Four rows (2 csv + 2 ofx) collapse to TWO gold records, not one"
+    fixture_source_ids:
+      - TBL_COFFEE_5
+      - OFX_COFFEE_5
+      - TBL_BOOK_5
+      - OFX_BOOK_5
+    expected_collapsed_count: 2
+
+gates:
+  required_assertions: all
+  required_expectations: all
