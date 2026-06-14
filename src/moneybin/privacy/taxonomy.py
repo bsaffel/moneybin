@@ -95,6 +95,42 @@ _TIER_BY_CLASS: dict[DataClass, Tier] = {
 # this. Judgment calls are documented in
 # docs/specs/privacy-data-classification.md ("Classification Audit").
 CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
+    ("app", "account_link_decisions"): {
+        "candidate_account_id": DataClass.RECORD_ID,
+        "confidence_score": DataClass.AGGREGATE,
+        "decided_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "decided_by": DataClass.TXN_TYPE,
+        "decision_id": DataClass.RECORD_ID,
+        "match_reason": DataClass.USER_NOTE,
+        # Unlike match_decisions.match_signals (scores), this carries weak-signal
+        # values that include account digits (institution_last4) — masked, not the
+        # LOW-tier AGGREGATE passthrough. JSON masking is coarse here; the typed
+        # accounts_links surface (M1S.5) presents signals with structured masking.
+        "match_signals": DataClass.ACCOUNT_IDENTIFIER,
+        "provisional_account_id": DataClass.RECORD_ID,
+        "reversed_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "reversed_by": DataClass.TXN_TYPE,
+        "status": DataClass.TXN_TYPE,
+    },
+    ("app", "account_links"): {
+        # Opaque minted canonical handle (spec D1/D6) — a record id, not PII; it
+        # passes through so agents/users can read it back as a parameter. (Legacy
+        # account_id columns elsewhere flip to RECORD_ID in M1S.3.)
+        "account_id": DataClass.RECORD_ID,
+        "decided_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "decided_by": DataClass.TXN_TYPE,
+        "link_id": DataClass.RECORD_ID,
+        "ref_kind": DataClass.TXN_TYPE,
+        # Conservative (M1S.1): ref_value can be a full account number for
+        # full_number/source_native, so it is masked by default. Per-ref_kind
+        # un-masking of opaque persistent_tokens is an M1S.5 read-surface concern.
+        "ref_value": DataClass.ACCOUNT_IDENTIFIER,
+        "reversed_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "reversed_by": DataClass.TXN_TYPE,
+        "source_origin": DataClass.TXN_TYPE,
+        "source_type": DataClass.TXN_TYPE,
+        "status": DataClass.TXN_TYPE,
+    },
     ("app", "account_settings"): {
         "account_id": DataClass.ACCOUNT_IDENTIFIER,
         "account_subtype": DataClass.TXN_TYPE,
@@ -315,6 +351,11 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "rule_id": DataClass.RECORD_ID,
         "subcategory": DataClass.CATEGORY,
         "transaction_id": DataClass.RECORD_ID,
+    },
+    ("app", "transaction_id_aliases"): {
+        "created_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "new_transaction_id": DataClass.RECORD_ID,
+        "old_transaction_id": DataClass.RECORD_ID,
     },
     ("app", "transaction_notes"): {
         "author": DataClass.TXN_TYPE,
