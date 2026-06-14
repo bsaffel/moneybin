@@ -193,14 +193,14 @@ in the same transaction (Invariant 10,
 link_id          TEXT     PRIMARY KEY,   -- uuid4[:12]
 account_id       TEXT     NOT NULL,      -- canonical account this ref attaches to
 ref_kind         TEXT     NOT NULL,      -- closed vocab (below)
-ref_value        TEXT     NOT NULL,      -- the native identifier; CRITICAL tier
-                                         --   when number-bearing (encrypted at rest,
-                                         --   masked/omitted on read surfaces)
+ref_value        TEXT     NOT NULL,      -- the native identifier; read-surface
+                                         --   sensitivity is per-ref_kind (see note)
 source_type      TEXT     NOT NULL,      -- provenance: ofx | csv | pdf | plaid | ...
                                          --   (routing tag, NOT part of identity)
 confidence_score DOUBLE,                 -- resolution confidence [0,1]
-match_signals    TEXT,                   -- JSON: signals used; for pending rows,
-                                         --   the candidate list [{account_id, conf, signal}]
+match_signals    TEXT,                   -- JSON-encoded TEXT (per app.match_decisions
+                                         --   convention): signals used; for pending
+                                         --   rows, candidates [{account_id, conf, signal}]
 status           TEXT     NOT NULL,      -- accepted | pending | rejected | reversed
 decided_by       TEXT     NOT NULL,      -- auto | user | system
                                          --   ('user' = human OR agent ratification;
@@ -210,6 +210,16 @@ decided_at       TIMESTAMP NOT NULL,
 reversed_at      TIMESTAMP,
 reversed_by      TEXT
 ```
+
+**`ref_value` sensitivity is per-`ref_kind`, and is a read-surface concern, not a
+storage one.** DB-level AES-256-GCM covers every column uniformly (not a
+per-field decision — see [`privacy-data-protection.md`](privacy-data-protection.md)),
+so no extra at-rest encryption is added here. What *is* per-`ref_kind` is
+**read-surface masking** (`mcp.md` tiers): a `full_number` / number-bearing
+`source_native` `ref_value` is CRITICAL → masked like an account number; a Plaid
+`persistent_token` is an opaque, non-PII token → low; `institution_last4` (only
+in `match_signals`) is already a last-4. The middleware masks by `ref_kind`; do
+not apply uniform masking to already-safe values.
 
 **`ref_kind` closed vocabulary** (strength-ordered; extensible per the
 `source_type`/`match_type` closed-discriminator convention in `identifiers.md`
@@ -280,8 +290,15 @@ the transform layer via a JOIN** — keeping `raw.*` "untouched data from loader
    `_resolve_account_via_matcher`) consults/writes `app.account_links` and mints
    canonical ids.
 3. **Staging** (`stg_{ofx,tabular,plaid}__{accounts,transactions}`) **LEFT JOINs
-   `app.account_links`** on `(source_type, ref_kind='source_native', ref_value =
-   native key)` and projects the canonical `account_id`.
+   the *active* `app.account_links`** on `(source_type, ref_kind='source_native',
+   ref_value = native key)`, where **active** = `status IN ('accepted','pending')
+   AND reversed_at IS NULL`, and projects the canonical `account_id`. The schema
+   must guarantee **exactly one active `source_native` mapping per
+   `(source_type, ref_value)`** (filtered unique index / `AccountLinksRepo`
+   guard) — otherwise an undo+rebind could leave a stale `reversed` row beside
+   the new one and a key-only join would duplicate every translated row.
+   (`pending`-provisional mappings are active so their transactions still
+   resolve — see the lifecycle note below.)
 4. **`core.dim_accounts`** is keyed on the canonical id (Decision 4);
    `core.fct_transactions.account_id` is canonical, so cross-source dedup's
    `a.account_id = b.account_id` join finally fires.
@@ -296,13 +313,15 @@ recompute** — no `raw` mutation.
 > re-point/merge; reject = confirm standalone). This keeps everything in one
 > table and never blocks an import.
 >
-> **Provisional lifecycle after accept:** on accept, the provisional account `X`'s
-> links re-point to the target `Y`, so **no accepted `source_native` link
-> references `X` anymore**. Because `dim_accounts` is built only from accepted
-> links (the translation JOIN, Decision 4), `X` **drops out of the dimension on
-> the next transform recompute** — no ghost row. Its full history survives in
-> `app.account_links` (the superseded/reversed rows) and `app.audit_log`; the
-> dimension is derived state, so nothing is lost by `X` vanishing from it.
+> **Provisional lifecycle.** A pending `source_native` link is **active** (above),
+> so its provisional account `X` **is present in `dim_accounts` while awaiting
+> review** — its transactions are never orphaned (dim is built from *active*
+> links, accepted + pending, not accepted-only). On **accept(target Y)**, `X`'s
+> links re-point to `Y` and the pending row resolves to `accepted`; no active link
+> references `X`, so `X` **drops from the dimension on the next recompute** — no
+> ghost row. On **reject / confirm-standalone**, the pending row resolves to
+> `accepted` standalone and `X` persists as its own account. History survives in
+> `app.account_links` + `app.audit_log` (the dimension is derived state).
 >
 > The one modeling subtlety to confirm at the
 > `ready` promotion: a `pending` `source_native` row carries a *provisional*
@@ -397,8 +416,11 @@ on **every future merge**.
 **Decision: re-key `transaction_id` to the immutable source identity.** Replace
 `account_id` in the hash input with the **source-native account key** (e.g.
 `source_type | source_origin | source_native_key | source_transaction_id`) — the
-same immutable per-source value `app.account_links` translates from.
-`source_native_key` supplies the account scope the hash needs (a raw
+same immutable per-source value `app.account_links` translates from. (`source_origin`
+is the **existing `raw.*` column** — the institution / connection / format that
+produced the data, e.g. `chase_credit`, `tiller`, a Plaid item id — already on
+every raw row; it disambiguates same-`source_native_key` collisions across
+origins.) `source_native_key` supplies the account scope the hash needs (a raw
 `source_transaction_id` is only unique *within* an account) but, unlike the
 canonical `account_id`, never changes when sources merge onto one canonical
 account. Canonical re-mints and merges then no longer churn `transaction_id`, and
@@ -418,14 +440,30 @@ filters):
 | Operation | CLI | MCP |
 |---|---|---|
 | List pending links (grouped by candidate cluster) | `accounts links pending` | `accounts_links_pending` |
-| Accept / reject one by id | `accounts links set <id> --status accepted\|rejected` | `accounts_links_set(link_id, status)` |
-| Reverse a decision | `accounts links undo <id>` | (CLI-only, matching today's `matches undo`) |
+| Resolve one — **merge** into a chosen candidate, or keep **standalone** | `accounts links set <id> --into <account_id>` / `--standalone` | `accounts_links_set(link_id, target_account_id=…\|None)` |
+| Reverse a prior decision | `accounts links undo <id>` | (CLI-only, matching today's `matches undo`) |
 | Decision history | `accounts links history` | `accounts_links_history` |
 | Run resolution over unlinked accounts (backfill) | `accounts links run` | `accounts_links_run` |
 
-- **Decision verb is `set --status`** + `undo`, identical to matches. The
-  response envelope, sensitivity tier (low — no PII in the link envelope; the
-  PII `ref_value` is masked/omitted), and `actions[]` hints follow `mcp.md`.
+- **Decide step takes a merge target.** This mirrors the matches review
+  *pattern* (list → decide → undo) but **not** its exact signature: an account
+  link has *N* candidate accounts, where a transaction match is pairwise. So
+  accepting needs to say *which* canonical account to merge the provisional into —
+  `accounts_links_set(link_id, target_account_id=Y)` re-points the provisional
+  onto `Y`; `target_account_id=None` confirms **standalone** (not a duplicate).
+  `undo` reverses a prior decision. The response envelope, sensitivity tier (low
+  — no PII in the link envelope; the PII `ref_value` is masked/omitted), and
+  `actions[]` hints follow `mcp.md`.
+- **Link status lifecycle.** `pending` — a provisional `source_native` row with
+  `match_signals.candidates`, *active* (translates + appears in the dimension),
+  awaiting review. `accepted` — the authoritative mapping (minted-standalone,
+  strong-auto-adopted, or merged onto a chosen target). `rejected` — a *candidate
+  pairing* the user declined ("provisional X is **not** candidate Y"), recorded so
+  the resolver won't re-propose that pair (cf. `get_rejected_pairs`) while X
+  itself resolves to `accepted` standalone. `reversed` — an `accepted` link undone
+  via `accounts links undo` (`reversed_at`/`reversed_by` set); re-resolution
+  re-proposes from scratch. Only `accepted`/`pending` are **active**;
+  `rejected`/`reversed` are inactive (excluded from the staging join).
 - **Inline discovery.** `import_confirm` / sync results report
   *"N account-link(s) need review"* and point at the queue — exactly how
   `matches run` ends with *"Run review when ready."* This is the primary,
@@ -489,10 +527,12 @@ flowchart TD
 `confirmation_required` outcome that now includes the **proposed account binding**
 — the matched canonical account (or "new account") plus ranked candidates — which
 the user ratifies or overrides (`import_confirm`, or `--account-id` /
-`--account-name` to pin up front). Auto-resolved accounts (remembered ref, strong
-confirmer, exact format-carried name) are **not** surfaced — only genuine
-ambiguity interrupts, exactly like Firefly's "blank-means-auto" and GnuCash's
-suppressed-on-rematch dialog. After ratification the binding is remembered
+`--account-name` to pin up front). Only **remembered `source_native` links and
+strong scoped refs** (full number+routing, persistent token) bypass the confirm
+silently — a **name match never auto-resolves** (common names like "Checking" /
+"Savings" would silently bind to the wrong account); genuine ambiguity always
+interrupts, like Firefly's "blank-means-auto" and GnuCash's suppressed-on-rematch
+dialog. After ratification the binding is remembered
 (`source_native` link), so re-imports are silent.
 
 **AX (agent).** The same envelope is the agent's structured contract: an
@@ -502,7 +542,9 @@ display_name, confidence, signal}]}`) plus `actions[]` hints. The agent either
 preferred path, using the opaque non-PII handle from Decision 6; (b) self-accepts
 **only a strong-confirmer adoption** (scoped full number / persistent token /
 remembered `source_native` ref) when `self_accept` is enabled for its
-`actor_kind`; or (c) leaves it for the `accounts_links` queue. The agent **never**
+`actor_kind` (both defined in M1H —
+[`smart-import-confirmation.md`](smart-import-confirmation.md) §"Agent autonomy &
+recovery"); or (c) leaves it for the `accounts_links` queue. The agent **never**
 has to disambiguate a masked `****4267` — it gets stable ids and explicit
 candidates.
 
@@ -583,20 +625,28 @@ clean re-mint (no backward-compat shim — none requested, none built):
    canonical id, write its `source_native` (+ strong) accepted links, then run
    `AccountResolver` over the set so cross-source twins collapse (5 ofx + 5 csv →
    5 canonical with pending/accepted links per Decision 3).
-3. **Re-point `app.*` FKs** keyed on the old source `account_id`, in one
-   transaction via the old→new mapping:
-   `app.account_settings.account_id`, `app.balance_assertions.account_id`,
-   `app.match_decisions.account_id` / `account_id_b`. (Budgets key on category —
-   unaffected.)
+3. **Re-point every `app.*` `account_id` FK** keyed on the old source
+   `account_id`, in one transaction via the old→new mapping:
+   `app.account_settings`, `app.balance_assertions`, `app.match_decisions`
+   (`account_id` **and** `account_id_b`), `app.categorization_rules`
+   (account-scoped rules), and `app.gsheet_connections` (transactions-adapter
+   connections). (Budgets key on category — unaffected. Verify the full set
+   against the live schema at implementation — grep `account_id` across
+   `src/moneybin/repositories/` — rather than trusting this list.)
 4. **Remap transaction-keyed curation.** Transaction curation
    (`app.transaction_categories`, `_notes`, `_tags`, `_splits`, and their audit
    targets) keys on `transaction_id`, which today hashes `account_id` and so
    changes when account ids re-mint — these would orphan if left alone. Re-key the
    `transaction_id` hash to the immutable source identity (see
    [§`transaction_id` stability](#transaction_id-stability-under-a-mutable-account_id)),
-   compute the deterministic old→new `transaction_id` mapping
-   (`old = hash(...|old_account_id)`, `new = hash(...|source_native_key)`), and
-   rewrite these FKs in the same migration transaction. After this one-time
+   then compute the deterministic old→new `transaction_id` mapping **by replaying
+   the actual hash both ways** — and crucially **for both paths**: matched
+   (deduped) rows use the *group gold key*
+   (`SHA256(LISTAGG(sorted source_type|source_transaction_id|account_id))`), while
+   unmatched rows use the single-row hash. The remap must reproduce each row's
+   real old hash and its new (source-native) equivalent — a per-source single-row
+   recipe alone would miss curation attached to already-deduped transactions.
+   Rewrite the curation FKs in the same migration transaction. After this one-time
    re-key, the hash no longer depends on `account_id`, so future merges don't
    recur the problem.
 5. Loaders stop stamping resolved ids on `raw`; staging adds the
