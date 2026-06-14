@@ -217,7 +217,7 @@ reversed_by      TEXT
 |---|---|---|---|
 | `source_native` | — | every source account | the source's own account key (OFX number, CSV slug, Plaid token); the **translation + idempotency** key staging joins on |
 | `persistent_token` | strong | Plaid `persistent_account_id`; SnapTrade `institution_account_id` | cross-re-link / cross-connection auto-adopt |
-| `full_number` | strong | OFX always; CSV/PDF when present | cross-source auto-adopt confirmer |
+| `full_number` | strong **only when scoped** | OFX always (`BANKID`+`ACCTID`); CSV/PDF when present | cross-source auto-adopt confirmer — `ref_value` MUST be the **institution/routing-scoped** number (see below) |
 | `institution_last4` | weak | all (OFX `RIGHT(number,4)`, Plaid `mask`, tabular `account_number_masked`) | **candidate only** — never an accepted auto-link key |
 | `account_name` | weakest | all | candidate only |
 
@@ -225,6 +225,15 @@ reversed_by      TEXT
 - **Strong-ref uniqueness** — `(ref_kind, ref_value)` is unique among
   `status='accepted'` rows where `ref_kind ∈ {full_number, persistent_token}`:
   one strong ref maps to exactly one canonical account.
+- **Account numbers are not globally unique — scope `full_number` by
+  institution/routing.** A bank account number is unique only *within* an
+  institution; two institutions can issue the same number. So a `full_number`
+  ref's `ref_value` MUST be the routing/institution-scoped composite
+  (OFX: `BANKID` + `ACCTID`; otherwise `institution_slug` + number) — never the
+  bare number. A number arriving **without** a routing/institution scope (e.g. a
+  CSV with a number column but unknown institution) is **demoted to a candidate**
+  (review), never a global auto-adopt key. `persistent_token` is already
+  globally unique by construction and needs no scoping.
 - **Idempotency** — one accepted `source_native` row per `(source_type,
   ref_value)`: re-importing the same source account resolves to the same
   canonical id (the "remembered mapping" of GnuCash / Actual / Firefly).
@@ -343,6 +352,32 @@ transactions, lifted to the account grain. `display_name`'s
 becomes `institution_name || ' ' || account_type || ' …' || last_four` sourced
 from `app.account_settings.last_four` / the `institution_last4` ref.
 
+## `transaction_id` stability under a mutable `account_id`
+
+Making `account_id` a *mutable* canonical surrogate (re-pointed on merge /
+correction) collides with how `transaction_id` is minted today:
+`prep.int_transactions__matched` hashes
+`SHA256(source_type | source_transaction_id | account_id)` for **both** the
+matched gold key and the unmatched fallback. If `transaction_id` keeps depending
+on `account_id`, then **every account re-mint or merge re-hashes every affected
+`transaction_id`**, orphaning all `app.*` curation keyed on it
+(`transaction_categories`, `transaction_notes`, `transaction_tags`,
+`transaction_splits`, and their audit targets) — not just once at migration, but
+on **every future merge**.
+
+**Decision: re-key `transaction_id` to the immutable source identity.** Replace
+`account_id` in the hash input with the **source-native account key** (e.g.
+`source_type | source_origin | source_native_key | source_transaction_id`) — the
+same immutable per-source value `app.account_links` translates from.
+`source_native_key` supplies the account scope the hash needs (a raw
+`source_transaction_id` is only unique *within* an account) but, unlike the
+canonical `account_id`, never changes when sources merge onto one canonical
+account. Canonical re-mints and merges then no longer churn `transaction_id`, and
+curation stays attached. This restores `identifiers.md`'s own rule — *content
+hashes key on immutable inputs* — which the canonical-id change would otherwise
+violate. One-time hash change at migration (curation remapped once, see below);
+stable forever after.
+
 ## Decision 5 — Surfaces: `accounts_links_*` + top-level `review`
 
 The object reviewed is an **account link** (an accounts-domain entity), so it
@@ -436,10 +471,24 @@ suppressed-on-rematch dialog. After ratification the binding is remembered
 display_name, confidence, signal}]}`) plus `actions[]` hints. The agent either
 (a) passes `account_id` to `import_confirm` to bind deterministically — the
 preferred path, using the opaque non-PII handle from Decision 6; (b) self-accepts
-a high-confidence proposal when `self_accept` is enabled for its `actor_kind`
-(the existing tiered-autonomy mechanism); or (c) leaves it for the
-`accounts_links` queue. The agent **never** has to disambiguate a masked
-`****4267` — it gets stable ids and explicit candidates.
+**only a strong-confirmer adoption** (scoped full number / persistent token /
+remembered `source_native` ref) when `self_accept` is enabled for its
+`actor_kind`; or (c) leaves it for the `accounts_links` queue. The agent **never**
+has to disambiguate a masked `****4267` — it gets stable ids and explicit
+candidates.
+
+**Surfacing rule — magic stays visible.** A live-testing finding drove this: the
+column-mapping confirm M1H already built went *unseen* because the agent path
+self-accepted high-confidence layouts silently. Account identity must not repeat
+that. **Silent adoption (auto / agent self-accept) is allowed only on a strong
+confirmer** — a scoped full number, a persistent token, or a remembered
+`source_native` ref. **A weak-signal link (`institution+last4` or name) ALWAYS
+surfaces** — at the import confirm when interactive, else the `accounts_links`
+queue — and is **never** eligible for agent self-accept, regardless of confidence
+tier. A silent account *merge* is unrecoverable-by-surprise in a way a silent
+column guess is not. This applies the project rule *match every increment of magic
+with a visible, dismissible confirm* (`design-principles.md` → "Magic stays
+visible").
 
 **Institution determination (best-effort).** Generalize the OFX-only
 `institution_resolution` chain (`src/moneybin/extractors/institution_resolution.py`)
@@ -449,6 +498,19 @@ format's `institution_name`) → **filename heuristic** → **`--institution` fl
 `institution+last4` candidate signal and the `display_name` default; it is never a
 hard requirement (Decision 3). This removes the asymmetry where only OFX resolves
 an institution.
+
+**New-account metadata capture.** Minting a new canonical account is the one
+moment we can collect what a file-imported account otherwise never gets — today a
+minted account is a bare slug with no type, currency, or real name. When the
+confirm outcome is **"new account,"** capture alongside the binding: **account
+type / subtype** (checking / savings / **credit** — drives sign convention and
+net-worth inclusion; schema owned by
+[`account-subtype-detail.md`](account-subtype-detail.md)), **currency** (defaults
+USD silently today; owned by [`multi-currency.md`](multi-currency.md)), and a
+**display name**. M1S does not own those schemas — it adds the *capture point* so
+we stop minting bare accounts and bolting metadata on later. Inferred defaults
+(subtype from the account name, currency from a Tiller column / OFX `CURDEF`)
+pre-fill the confirm; the user adjusts.
 
 **Catch-all.** The post-hoc `accounts_links` review queue (Decision 5) handles
 everything that bypassed the confirm step — agent-deferred proposals,
@@ -495,10 +557,20 @@ clean re-mint (no backward-compat shim — none requested, none built):
 3. **Re-point `app.*` FKs** keyed on the old source `account_id`, in one
    transaction via the old→new mapping:
    `app.account_settings.account_id`, `app.balance_assertions.account_id`,
-   `app.match_decisions.account_id` / `account_id_b`. (Transaction curation —
-   notes/tags/splits — keys on `transaction_id`, not `account_id`; budgets key on
-   category; both unaffected.)
-4. Loaders stop stamping resolved ids on `raw`; staging adds the
+   `app.match_decisions.account_id` / `account_id_b`. (Budgets key on category —
+   unaffected.)
+4. **Remap transaction-keyed curation.** Transaction curation
+   (`app.transaction_categories`, `_notes`, `_tags`, `_splits`, and their audit
+   targets) keys on `transaction_id`, which today hashes `account_id` and so
+   changes when account ids re-mint — these would orphan if left alone. Re-key the
+   `transaction_id` hash to the immutable source identity (see
+   [§`transaction_id` stability](#transaction_id-stability-under-a-mutable-account_id)),
+   compute the deterministic old→new `transaction_id` mapping
+   (`old = hash(...|old_account_id)`, `new = hash(...|source_native_key)`), and
+   rewrite these FKs in the same migration transaction. After this one-time
+   re-key, the hash no longer depends on `account_id`, so future merges don't
+   recur the problem.
+5. Loaders stop stamping resolved ids on `raw`; staging adds the
    `account_links` translation JOIN; `dim_accounts` switches to the canonical
    grain + COALESCE merge.
 
