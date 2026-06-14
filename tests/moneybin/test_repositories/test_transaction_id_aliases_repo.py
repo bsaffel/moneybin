@@ -91,6 +91,23 @@ def test_insert_rejects_duplicate_old_id(db: Database) -> None:
         _insert(repo, new_transaction_id="newtxn0002")
 
 
+def test_alias_insert_is_not_undoable(db: Database) -> None:
+    """Append-only: undoing an alias insert orphans its forward pointer.
+
+    BaseRepo.undo_event reverses an INSERT with a DELETE, so the repo refuses the
+    undo instead of silently orphaning old_transaction_id.
+    """
+    repo = TransactionIdAliasesRepo(db)
+    event = _insert(repo)
+    with pytest.raises(ValueError, match="append-only"):
+        repo.undo_event(event, actor="system")
+    row = db.conn.execute(
+        "SELECT COUNT(*) FROM app.transaction_id_aliases WHERE old_transaction_id = ?",
+        ["oldtxn0001"],
+    ).fetchone()
+    assert row is not None and row[0] == 1  # the alias survives the refused undo
+
+
 def test_insert_rolls_back_when_audit_raises(db: Database) -> None:
     audit = MagicMock()
     audit.record_audit_event.side_effect = RuntimeError("simulated audit failure")

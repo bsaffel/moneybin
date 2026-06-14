@@ -34,6 +34,27 @@ class TransactionIdAliasesRepo(BaseRepo):
     table_ref = TRANSACTION_ID_ALIASES
     pk_columns = ("old_transaction_id",)
 
+    def undo_event(
+        self,
+        event: AuditEvent,
+        *,
+        actor: str,
+        in_outer_txn: bool = False,
+    ) -> AuditEvent | None:
+        """Refuse to undo — the alias map is append-only.
+
+        ``BaseRepo.undo_event`` reverses an INSERT with a DELETE; for this table
+        that removes a forward pointer and orphans every reference that resolves
+        ``old_transaction_id`` through it (the "never an orphan" contract). Aliases
+        are derived from merges, so the merge — not the alias row — is the undoable
+        unit. Raising here keeps ``undo_dispatch`` from silently orphaning a ref.
+        """
+        raise ValueError(
+            "transaction_id_aliases is append-only; alias rows are not "
+            "individually undoable (deleting one would orphan references that "
+            "forward through it)"
+        )
+
     def _fetch_row(self, old_transaction_id: str) -> dict[str, Any] | None:
         return self._fetch_one(
             TRANSACTION_ID_ALIASES,
