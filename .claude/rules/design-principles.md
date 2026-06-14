@@ -85,6 +85,37 @@ the right shape becomes obvious.
   code hard to write — that compounds. Plugin systems and config-driven
   toggles add surface without removing ambiguity — they rot.
 
+## Magic stays visible
+
+Automation that acts without showing its work erodes the trust the
+durable path is built on. **Every increment of "magic" — detection,
+auto-matching, silent defaulting, agent self-accept — must be matched by
+a visible, dismissible confirm**, targeted at the moment the inference
+could be wrong. The bar is **better-targeted confirmation, not less of it
+than the competition**: tools that bind explicitly (you pick the account,
+you write the rule) never surprise the user, so a detection-first tool
+earns that trust only by surfacing a confirm exactly where its inference
+is uncertain — and staying silent only where it is genuinely certain.
+
+Two rules fall out:
+
+- **Calibrate visibility to certainty.** Silent action is allowed only on
+  a strong, near-certain signal (exact id, remembered binding). A weak or
+  ambiguous inference always surfaces — and is never eligible for agent
+  self-accept, regardless of confidence score.
+- **Weigh the cost of a wrong silent action.** The harder a wrong
+  inference is to notice and undo (a silent account *merge*, a silent
+  destructive write), the higher the bar for acting without a confirm.
+  Cheap, self-evident mistakes (a column guess visible in the result) can
+  lean more automatic.
+
+A confirm/review surface is therefore part of a feature's durable design,
+not a nicety bolted on later. Operational home for the confirm pattern
+itself (the `_confirm` verb, propose→review→confirm): `surface-design.md`.
+Origin: the account-identity work (`account-identity-resolution.md`),
+where a column-mapping confirm that *existed* went unseen because the
+agent path self-accepted it silently.
+
 ## Coherence: one way to do each thing
 
 Coherence makes the foundation feel consistent from outside: every part

@@ -401,6 +401,13 @@ extractor, and tabular/gsheet adopt them in this spec's work.
   `smart-import-pdf.md`; this spec owns only the confirm/confidence seam it plugs into.
 - **A "trust this source forever" mode** — first encounter always confirms; no global
   auto-accept toggle in v1 (consistent with the privacy spec's posture).
+- **Account-identity binding in the confirm flow.** v1 confirms *column mapping*
+  only. Extending the same `confirmation_required` / `import_confirm` envelope to
+  also propose and ratify **which canonical account** a file belongs to (proposal
+  + candidates + an `account_id` pin) is specified in
+  [`account-identity-resolution.md`](account-identity-resolution.md) (M1S,
+  Decision 7). It is a new *facet* of this contract — **one envelope shape**, not
+  a second confirmation flow — and lands with M1S, not here.
 
 ## Open Questions
 
