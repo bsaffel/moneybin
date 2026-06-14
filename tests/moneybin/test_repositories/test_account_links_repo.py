@@ -136,6 +136,16 @@ def test_insert_rejects_duplicate_accepted_strong_ref(db: Database, kind: str) -
         )
 
 
+def test_rejects_invalid_reversed_by(db: Database) -> None:
+    """reversed_by is domain-constrained even though reverse() lands later."""
+    repo = AccountLinksRepo(db)
+    _insert(repo, link_id="l1")
+    with pytest.raises(duckdb.ConstraintException):
+        db.conn.execute(  # noqa: S608  # test input, not executing user SQL
+            "UPDATE app.account_links SET reversed_by = 'bogus' WHERE link_id = 'l1'"
+        )
+
+
 def test_allows_relink_after_reversal(db: Database) -> None:
     """A reversed link frees its (source_type, source_origin, ref_value) slot.
 
@@ -145,6 +155,7 @@ def test_allows_relink_after_reversal(db: Database) -> None:
     """
     repo = AccountLinksRepo(db)
     _insert(repo, link_id="l1")
+    # bypass the repo: reverse() method is deferred to a later phase
     db.conn.execute(
         "UPDATE app.account_links SET status = 'reversed' WHERE link_id = 'l1'"
     )
@@ -160,6 +171,23 @@ def test_insert_rejects_invalid_decided_by(db: Database) -> None:
     repo = AccountLinksRepo(db)
     with pytest.raises(duckdb.ConstraintException):
         _insert(repo, decided_by="bogus")
+
+
+def test_undo_reinsert_respects_uniqueness_guard(db: Database) -> None:
+    """Undo-the-undo re-insert must not bypass the app-layer uniqueness guard.
+
+    insert A → undo (delete) → insert B (same source_native key) → undo-the-undo
+    of A re-inserts A via BaseRepo._insert_row; without a restore-time guard that
+    leaves two accepted mappings for one native ref (the staging JOIN becomes
+    non-1:1). Unreachable until link writers land, but the dispatch path exists.
+    """
+    repo = AccountLinksRepo(db)
+    ev_insert = _insert(repo, link_id="A")
+    ev_undo = repo.undo_event(ev_insert, actor="system")  # deletes A
+    assert ev_undo is not None
+    _insert(repo, link_id="B")  # same source_type/origin/ref_value — now allowed
+    with pytest.raises(ValueError, match="source_native"):
+        repo.undo_event(ev_undo, actor="system")  # re-insert A must hit the guard
 
 
 def test_allows_strong_ref_same_value_different_kind(db: Database) -> None:

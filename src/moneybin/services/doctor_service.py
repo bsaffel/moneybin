@@ -15,6 +15,8 @@ from moneybin.database import Database, sqlmesh_context
 from moneybin.errors import RecoveryAction
 from moneybin.extractors.pdf.fingerprint import PAGE_BUCKETS, serialize_fingerprint
 from moneybin.tables import (
+    ACCOUNT_LINK_DECISIONS,
+    ACCOUNT_LINKS,
     ACCOUNT_SETTINGS,
     AUDIT_LOG,
     BALANCE_ASSERTIONS,
@@ -34,6 +36,7 @@ from moneybin.tables import (
     PROPOSED_RULES,
     TABULAR_FORMATS,
     TRANSACTION_CATEGORIES,
+    TRANSACTION_ID_ALIASES,
     TRANSACTION_NOTES,
     TRANSACTION_TAGS,
     USER_CATEGORIES,
@@ -207,15 +210,19 @@ class DoctorService:
         ``category_overrides``, ``gsheet_connections``, ``user_merchants``,
         ``categorization_rules``, ``proposed_rules``, ``transaction_categories``,
         ``account_settings``, ``balance_assertions``, ``budgets``, plus the edge
-        writers ``tabular_formats``, ``match_decisions``, and ``imports``); later
-        repository PRs append one coverage call per newly-wrapped table plus that
-        table's FK/orphan specifics.
+        writers ``tabular_formats``, ``match_decisions``, ``imports``, and the
+        account-identity tables ``account_links``, ``account_link_decisions``,
+        ``transaction_id_aliases``); later repository PRs append one coverage call
+        per newly-wrapped table plus that table's FK/orphan specifics.
 
         Tables without an ``updated_at`` column pass their natural watermark:
         ``proposed_rules`` → ``proposed_at``, ``transaction_categories`` →
         ``categorized_at``, ``match_decisions`` →
         ``GREATEST(decided_at, reversed_at)`` (the latest of any mutation, so a
-        bypass insert, status update, *or* reversal is caught). ``balance_assertions``
+        bypass insert, status update, *or* reversal is caught) — the
+        ``account_links`` / ``account_link_decisions`` link tables use the same
+        expression, while the append-only ``transaction_id_aliases`` uses
+        ``created_at``. ``balance_assertions``
         has a composite PK, so it passes ``pk_expr`` to project the same composite
         ``target_id`` its repo emits. Those watermarks catch bypass mutations that
         advance the watermark; other bypass UPDATEs that don't are the lint rule's
@@ -258,6 +265,24 @@ class DoctorService:
             ),
             self._run_app_audit_coverage(IMPORTS, "import_id", full=full),
             self._run_app_audit_coverage(PDF_FORMATS, "name", full=full),
+            self._run_app_audit_coverage(
+                ACCOUNT_LINKS,
+                "link_id",
+                updated_expr="GREATEST(decided_at, reversed_at)",
+                full=full,
+            ),
+            self._run_app_audit_coverage(
+                ACCOUNT_LINK_DECISIONS,
+                "decision_id",
+                updated_expr="GREATEST(decided_at, reversed_at)",
+                full=full,
+            ),
+            self._run_app_audit_coverage(
+                TRANSACTION_ID_ALIASES,
+                "old_transaction_id",
+                updated_col="created_at",
+                full=full,
+            ),
             self._run_pdf_formats_recipe_validity(),
             self._run_pdf_formats_bounds(),
             self._run_pdf_formats_fingerprint_shape(),

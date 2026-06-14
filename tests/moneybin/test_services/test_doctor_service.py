@@ -710,8 +710,9 @@ def test_run_all_returns_expected_invariants(
     # balance_assertions->dim_accounts FK + budgets->dim_categories FK +
     # match_decisions->dim_accounts FK + pdf_formats recipe-validity / bounds /
     # fingerprint-shape) + orphan_app_state (PR4: scans transaction_notes /
-    # transaction_tags vs core).
-    assert len(report.invariants) == 31
+    # transaction_tags vs core) + account_links / account_link_decisions /
+    # transaction_id_aliases audit coverage (M1S).
+    assert len(report.invariants) == 34
     names = [r.name for r in report.invariants]
     assert "fct_transactions_fk_integrity" in names
     assert "fct_transactions_sign_convention" in names

@@ -88,6 +88,24 @@ class AccountLinksRepo(BaseRepo):
                     "exists for this ref_value"
                 )
 
+    def _insert_row(self, row: dict[str, Any]) -> None:
+        """Re-validate the uniqueness guard before an undo re-inserts an accepted row.
+
+        ``BaseRepo.undo_event`` re-inserts a captured row through this hook when it
+        undoes a DELETE (i.e. the undo-the-undo of an insert). The app-layer
+        ``_guard_uniqueness`` only runs on the ``insert`` path, so without this the
+        undo could restore a second accepted mapping for a native ref already held
+        by another row — making the staging translation JOIN non-1:1.
+        """
+        if row.get("status") == "accepted":
+            self._guard_uniqueness(
+                ref_kind=row["ref_kind"],
+                ref_value=row["ref_value"],
+                source_type=row["source_type"],
+                source_origin=row["source_origin"],
+            )
+        super()._insert_row(row)
+
     def insert(
         self,
         *,

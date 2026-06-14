@@ -100,6 +100,17 @@ def test_insert_rejects_invalid_decided_by(db: Database, bad_value: str) -> None
         _insert(repo, decided_by=bad_value)
 
 
+def test_rejects_invalid_reversed_by(db: Database) -> None:
+    """reversed_by is domain-constrained (auto/user) even though reverse() lands later."""
+    repo = AccountLinkDecisionsRepo(db)
+    _insert(repo)
+    with pytest.raises(duckdb.ConstraintException):
+        db.conn.execute(  # noqa: S608  # test input, not executing user SQL
+            "UPDATE app.account_link_decisions SET reversed_by = 'bogus' "
+            "WHERE decision_id = 'dec00000001'"
+        )
+
+
 def test_insert_rolls_back_when_audit_raises(db: Database) -> None:
     audit = MagicMock()
     audit.record_audit_event.side_effect = RuntimeError("simulated audit failure")

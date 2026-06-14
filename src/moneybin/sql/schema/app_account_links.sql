@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS app.account_links (
         CHECK (decided_by IN ('auto', 'user', 'system')),
     decided_at TIMESTAMP NOT NULL,             -- when this mapping was decided
     reversed_at TIMESTAMP,                     -- when reversed; NULL while accepted
-    reversed_by VARCHAR,                       -- domain actor who reversed; NULL while accepted
+    reversed_by VARCHAR                        -- domain actor who reversed; NULL while accepted
+        CHECK (reversed_by IS NULL OR reversed_by IN ('auto', 'user', 'system')),
     PRIMARY KEY (link_id)
 );

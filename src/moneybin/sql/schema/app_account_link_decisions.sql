@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS app.account_link_decisions (
     match_reason VARCHAR,                      -- human-readable explanation of why this pairing was proposed
     decided_at TIMESTAMP NOT NULL,             -- when the decision was made (or the proposal created)
     reversed_at TIMESTAMP,                     -- when a prior decision was undone; NULL otherwise
-    reversed_by VARCHAR,                       -- domain actor who reversed; NULL otherwise
+    reversed_by VARCHAR                        -- domain actor who reversed; NULL otherwise
+        CHECK (reversed_by IS NULL OR reversed_by IN ('auto', 'user')),
     PRIMARY KEY (decision_id)
 );
