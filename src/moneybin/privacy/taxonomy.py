@@ -96,7 +96,7 @@ _TIER_BY_CLASS: dict[DataClass, Tier] = {
 # docs/specs/privacy-data-classification.md ("Classification Audit").
 CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
     ("app", "account_link_decisions"): {
-        "candidate_account_id": DataClass.ACCOUNT_IDENTIFIER,
+        "candidate_account_id": DataClass.RECORD_ID,
         "confidence_score": DataClass.AGGREGATE,
         "decided_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "decided_by": DataClass.TXN_TYPE,
@@ -107,13 +107,16 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         # LOW-tier AGGREGATE passthrough. JSON masking is coarse here; the typed
         # accounts_links surface (M1S.5) presents signals with structured masking.
         "match_signals": DataClass.ACCOUNT_IDENTIFIER,
-        "provisional_account_id": DataClass.ACCOUNT_IDENTIFIER,
+        "provisional_account_id": DataClass.RECORD_ID,
         "reversed_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "reversed_by": DataClass.TXN_TYPE,
         "status": DataClass.TXN_TYPE,
     },
     ("app", "account_links"): {
-        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+        # Opaque minted canonical handle (spec D1/D6) — a record id, not PII; it
+        # passes through so agents/users can read it back as a parameter. (Legacy
+        # account_id columns elsewhere flip to RECORD_ID in M1S.3.)
+        "account_id": DataClass.RECORD_ID,
         "decided_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "decided_by": DataClass.TXN_TYPE,
         "link_id": DataClass.RECORD_ID,

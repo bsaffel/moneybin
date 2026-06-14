@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS app.account_link_decisions (
         CHECK (status IN ('pending', 'accepted', 'rejected', 'reversed')),
     decided_by VARCHAR NOT NULL                -- domain actor: auto or user (human OR agent ratification)
         CHECK (decided_by IN ('auto', 'user')),
-    match_reason VARCHAR,                       -- human-readable explanation of why this pairing was proposed
+    match_reason VARCHAR,                      -- human-readable explanation of why this pairing was proposed
     decided_at TIMESTAMP NOT NULL,             -- when the decision was made (or the proposal created)
     reversed_at TIMESTAMP,                     -- when a prior decision was undone; NULL otherwise
     reversed_by VARCHAR,                       -- domain actor who reversed; NULL otherwise

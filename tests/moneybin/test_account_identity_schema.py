@@ -48,6 +48,21 @@ class TestAccountLinksRedaction:
         )
         assert out[0]["match_signals"] != raw
 
+    def test_canonical_account_id_is_not_masked(self) -> None:
+        """The opaque minted canonical account_id is the agent handle (spec D1/D6).
+
+        It must pass through the redactor, not be masked to ****<last4> — masking
+        the handle agents/users pass back as a parameter would defeat its purpose.
+        """
+        links = CLASSIFICATION[("app", "account_links")]
+        decisions = CLASSIFICATION[("app", "account_link_decisions")]
+        rows = [{"account_id": "a1b2c3d4e5f6"}]
+        out = redact_records(rows, {"account_id": links["account_id"]})
+        assert out[0]["account_id"] == "a1b2c3d4e5f6"
+        # the decisions table's two account-id columns carry the same opaque id
+        assert decisions["provisional_account_id"] == links["account_id"]
+        assert decisions["candidate_account_id"] == links["account_id"]
+
 
 class TestAccountIdentityTableRefs:
     """TableRef constants for the three account-identity tables."""

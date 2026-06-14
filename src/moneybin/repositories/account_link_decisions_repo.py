@@ -40,7 +40,7 @@ _JSON_COLUMNS = frozenset({"match_signals"})
 
 
 def _decode_row(row: tuple[Any, ...]) -> dict[str, Any]:
-    """Map a fetched row to a column -> value dict, decoding JSON columns."""
+    """Map a fetched row to a column → value dict, decoding JSON columns."""
     out: dict[str, Any] = {}
     for col, val in zip(_ACCOUNT_LINK_DECISIONS_COLUMNS, row, strict=True):
         if col in _JSON_COLUMNS and isinstance(val, str):
