@@ -92,6 +92,7 @@ Every planned way your money gets in lands cleanly — with the *ergonomics* (co
 | **M1P** | Anonymizer (real data → reproducible test fixtures) | 📐 | The real-data parity enabler for the Ingestion-Complete gate. [`testing-anonymized-data.md`](specs/testing-anonymized-data.md). |
 | **M1Q** | Extension framework (provider / report / package) | 🚧 | Powers customizable reports; strengthens the warehouse. **🔒 public contract locks at the M1→M2 boundary**, after the schema stabilizes. [`extension-contracts.md`](specs/extension-contracts.md). |
 | **M1R** | Format-compatibility test scaffolding | 🗓️ | Curated bank-export fixtures + extractor verification; supports the Ingestion-Complete gate. |
+| **M1S** | Cross-source account identity resolution | 📐 | One real account = one canonical, opaque non-PII `account_id` across OFX/CSV/PDF/Plaid; `app.account_links` registry + resolution ladder (auto-adopt on full-number/token, review on `institution+last4`). **Unblocks** cross-source txn dedup and the deferred account merge. [`account-identity-resolution.md`](specs/account-identity-resolution.md). |
 
 > **Ingestion-Complete gate.** M1 closes when every import format (CSV/TSV/OFX/QFX/QBO/Excel/Parquet/PDF/gsheet/Plaid) passes an end-to-end scenario; a deliberate multi-currency round-trip reconciles to a bank-statement expectation within $0.01; investment cost basis ties to a real broker 1099-B for a full tax year; the pipeline reproduces a parity check against anonymized real data; and `system doctor` is clean.
 
