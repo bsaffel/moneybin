@@ -1,6 +1,6 @@
 # Cross-Source Account Identity Resolution
 
-> Last updated: 2026-06-13
+> Last updated: 2026-06-14
 > Status: draft
 > Address: M1S (Ingestion Core)
 > Type: Feature
@@ -203,6 +203,8 @@ match_signals    TEXT,                   -- JSON: signals used; for pending rows
                                          --   the candidate list [{account_id, conf, signal}]
 status           TEXT     NOT NULL,      -- accepted | pending | rejected | reversed
 decided_by       TEXT     NOT NULL,      -- auto | user | system
+                                         --   ('user' = human OR agent ratification;
+                                         --    actor_kind is runtime-only, not a value)
 match_reason     TEXT,
 decided_at       TIMESTAMP NOT NULL,
 reversed_at      TIMESTAMP,
@@ -213,13 +215,23 @@ reversed_by      TEXT
 `source_type`/`match_type` closed-discriminator convention in `identifiers.md`
 §"Out of scope"):
 
+**Stored `ref_kind` vocabulary** — the closed set of values that appear on an
+*actual `account_links` row* (extensible per the `source_type`/`match_type`
+closed-discriminator convention in `identifiers.md` §"Out of scope"):
+
 | `ref_kind` | strength | source | role |
 |---|---|---|---|
 | `source_native` | — | every source account | the source's own account key (OFX number, CSV slug, Plaid token); the **translation + idempotency** key staging joins on |
 | `persistent_token` | strong | Plaid `persistent_account_id`; SnapTrade `institution_account_id` | cross-re-link / cross-connection auto-adopt |
 | `full_number` | strong **only when scoped** | OFX always (`BANKID`+`ACCTID`); CSV/PDF when present | cross-source auto-adopt confirmer — `ref_value` MUST be the **institution/routing-scoped** number (see below) |
-| `institution_last4` | weak | all (OFX `RIGHT(number,4)`, Plaid `mask`, tabular `account_number_masked`) | **candidate only** — never an accepted auto-link key |
-| `account_name` | weakest | all | candidate only |
+
+**Candidate signals — NOT stored `ref_kind` values.** `institution_last4` (OFX
+`RIGHT(number,4)`, Plaid `mask`, tabular `account_number_masked`) and
+`account_name` are *weak signals* the resolver computes live to find candidate
+accounts. They are recorded **only** in a pending `source_native` row's
+`match_signals.candidates` (`[{account_id, confidence, signal}]`) — never written
+as their own `account_links` rows, never an accepted auto-link key. They drive
+which candidates a review surfaces; they are not identity keys.
 
 **Contracts:**
 - **Strong-ref uniqueness** — `(ref_kind, ref_value)` is unique among
@@ -234,13 +246,16 @@ reversed_by      TEXT
   CSV with a number column but unknown institution) is **demoted to a candidate**
   (review), never a global auto-adopt key. `persistent_token` is already
   globally unique by construction and needs no scoping.
-- **Idempotency** — one accepted `source_native` row per `(source_type,
-  ref_value)`: re-importing the same source account resolves to the same
-  canonical id (the "remembered mapping" of GnuCash / Actual / Firefly).
-- **Weak refs are never accepted auto-link keys.** `institution_last4` and
-  `account_name` only ever produce **pending** proposals (Decision 3 / Plaid's
-  guidance). They are computed live from source attributes and recorded in a
-  pending row's `match_signals.candidates`.
+- **`source_native` idempotency uniqueness** — `(source_type, ref_value)` is
+  unique among `status='accepted'` rows where `ref_kind='source_native'`:
+  re-importing the same source account resolves to the same canonical id (the
+  "remembered mapping" of GnuCash / Actual / Firefly). Like strong-ref
+  uniqueness, this needs a filtered unique index (status='accepted') or an
+  application-layer guard in `AccountLinksRepo`.
+- **Weak signals never become accepted auto-link keys** — see the candidate-
+  signals note above; `institution_last4` / `account_name` live in
+  `match_signals`, only ever drive **pending** proposals (Decision 3 / Plaid's
+  guidance), and are never an accepted `ref_kind`.
 
 **The links table is the substrate for account *merge* too** (the operation
 `account-management.md` deferred precisely because "merge would require
@@ -279,7 +294,17 @@ recompute** — no `raw` mutation.
 > **provisional** canonical account immediately and the review queue is the
 > *"is this provisional a duplicate of an existing account?"* question (accept =
 > re-point/merge; reject = confirm standalone). This keeps everything in one
-> table and never blocks an import. The one modeling subtlety to confirm at the
+> table and never blocks an import.
+>
+> **Provisional lifecycle after accept:** on accept, the provisional account `X`'s
+> links re-point to the target `Y`, so **no accepted `source_native` link
+> references `X` anymore**. Because `dim_accounts` is built only from accepted
+> links (the translation JOIN, Decision 4), `X` **drops out of the dimension on
+> the next transform recompute** — no ghost row. Its full history survives in
+> `app.account_links` (the superseded/reversed rows) and `app.audit_log`; the
+> dimension is derived state, so nothing is lost by `X` vanishing from it.
+>
+> The one modeling subtlety to confirm at the
 > `ready` promotion: a `pending` `source_native` row carries a *provisional*
 > `account_id` plus `match_signals.candidates`. The alternative — a second
 > `app.account_link_decisions` table shaped exactly like `match_decisions` for
@@ -319,10 +344,14 @@ ordered by signal reliability (see [§What the signals can and can't do](#proble
 
 | Outcome | signal | action | `status` / `decided_by` |
 |---|---|---|---|
-| Adopt (pinned) | explicit `account_id` | bind to the named canonical | accepted / user (or agent) |
+| Adopt (pinned) | explicit `account_id` | bind to the named canonical | accepted / user¹ |
 | Auto-adopt | remembered `source_native`, full number+routing, or persistent token | reuse existing canonical | accepted / auto |
 | Mint new | no candidate at all | new canonical account | accepted / auto |
 | Confirm / review | `institution+last4` or fuzzy name | candidates → confirm at import, else pending queue | pending / auto |
+
+¹ `decided_by` is `auto | user | system`; **agent ratification maps to `user`**
+(consistent with `match_decisions_repo`) — `actor_kind` is a runtime distinction,
+not a `decided_by` value.
 
 `institution` is **best-effort metadata**, never a required input: when it's
 unknown (a bare CSV), the `institution+last4` candidate rung simply doesn't fire
