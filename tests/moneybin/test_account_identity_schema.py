@@ -33,6 +33,21 @@ class TestAccountLinksRedaction:
         )
         assert out[0]["ref_value"] == "****4321"
 
+    def test_match_signals_is_masked(self) -> None:
+        """match_signals can carry institution_last4 — must not be LOW passthrough.
+
+        Unlike match_decisions.match_signals (scores, no PII), this column's
+        weak-signal values include account digits, so the dynamic-SQL redactor
+        must not pass it through. Asserts the value is changed (masked), not the
+        exact form (JSON masking is coarse; structured presentation is M1S.5).
+        """
+        classes = CLASSIFICATION[("app", "account_link_decisions")]
+        raw = '{"signal": "institution_last4", "value": "4267"}'
+        out = redact_records(
+            [{"match_signals": raw}], {"match_signals": classes["match_signals"]}
+        )
+        assert out[0]["match_signals"] != raw
+
 
 class TestAccountIdentityTableRefs:
     """TableRef constants for the three account-identity tables."""

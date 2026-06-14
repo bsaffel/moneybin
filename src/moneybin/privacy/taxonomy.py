@@ -102,7 +102,11 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "decided_by": DataClass.TXN_TYPE,
         "decision_id": DataClass.RECORD_ID,
         "match_reason": DataClass.USER_NOTE,
-        "match_signals": DataClass.AGGREGATE,
+        # Unlike match_decisions.match_signals (scores), this carries weak-signal
+        # values that include account digits (institution_last4) — masked, not the
+        # LOW-tier AGGREGATE passthrough. JSON masking is coarse here; the typed
+        # accounts_links surface (M1S.5) presents signals with structured masking.
+        "match_signals": DataClass.ACCOUNT_IDENTIFIER,
         "provisional_account_id": DataClass.ACCOUNT_IDENTIFIER,
         "reversed_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "reversed_by": DataClass.TXN_TYPE,

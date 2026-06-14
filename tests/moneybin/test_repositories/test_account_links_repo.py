@@ -121,18 +121,38 @@ def test_allows_source_native_same_value_different_origin(db: Database) -> None:
     assert n is not None and n[0] == 2
 
 
-def test_insert_rejects_duplicate_accepted_strong_ref(db: Database) -> None:
-    """One strong ref (full_number/persistent_token) -> one canonical account."""
+@pytest.mark.parametrize("kind", ["full_number", "persistent_token"])
+def test_insert_rejects_duplicate_accepted_strong_ref(db: Database, kind: str) -> None:
+    """One strong ref (full_number OR persistent_token) -> one canonical account."""
     repo = AccountLinksRepo(db)
-    _insert(repo, link_id="l1", ref_kind="full_number", ref_value="wells_fargo:123456")
+    _insert(repo, link_id="l1", ref_kind=kind, ref_value="wells_fargo:123456")
     with pytest.raises(ValueError, match="strong"):
         _insert(
             repo,
             link_id="l2",
             account_id="acct_other",
-            ref_kind="full_number",
+            ref_kind=kind,
             ref_value="wells_fargo:123456",
         )
+
+
+def test_allows_relink_after_reversal(db: Database) -> None:
+    """A reversed link frees its (source_type, source_origin, ref_value) slot.
+
+    The guard filters on status='accepted', so a reversed mapping must not block a
+    fresh accepted one — the link-undo-relink invariant (reachable today via the
+    status param; reverse() lands in a later phase).
+    """
+    repo = AccountLinksRepo(db)
+    _insert(repo, link_id="l1")
+    db.conn.execute(
+        "UPDATE app.account_links SET status = 'reversed' WHERE link_id = 'l1'"
+    )
+    _insert(repo, link_id="l2")  # same source_type/origin/ref_value -> must succeed
+    n = db.conn.execute(
+        "SELECT COUNT(*) FROM app.account_links WHERE status = 'accepted'"
+    ).fetchone()
+    assert n is not None and n[0] == 1
 
 
 def test_insert_rejects_invalid_decided_by(db: Database) -> None:
