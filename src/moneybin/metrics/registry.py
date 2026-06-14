@@ -322,6 +322,15 @@ ACCOUNT_MATCH_OUTCOMES_TOTAL = Counter(
     ["result"],
 )
 
+# Supersedes ACCOUNT_MATCH_OUTCOMES_TOTAL once the AccountResolver replaces
+# _resolve_account_via_matcher (M1S.2). Defined in M1S.1 with the schema; emission
+# wires in M1S.2, which also retires the counter above.
+ACCOUNT_LINK_OUTCOMES_TOTAL = Counter(
+    "moneybin_account_link_outcomes_total",
+    "Outcomes of cross-source account identity resolution (AccountResolver)",
+    ["result"],
+)
+
 # ── MCP server ────────────────────────────────────────────────────────────────
 
 MCP_TOOL_CALLS_TOTAL = Counter(
