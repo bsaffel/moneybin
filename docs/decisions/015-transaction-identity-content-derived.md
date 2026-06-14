@@ -1,8 +1,8 @@
 # ADR-015: Transaction identity is content-derived with alias forwarding; account identity is a surrogate
 
-**Status:** Proposed (decision approved in design; flips to Accepted when
+**Status:** Accepted (the governing spec
 [`account-identity-resolution.md`](../specs/account-identity-resolution.md) is
-promoted from `draft` → `ready`)
+`ready`)
 
 ## Context
 

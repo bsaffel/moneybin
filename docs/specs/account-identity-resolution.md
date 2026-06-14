@@ -1,7 +1,7 @@
 # Cross-Source Account Identity Resolution
 
 > Last updated: 2026-06-14
-> Status: draft
+> Status: ready
 > Address: M1S (Ingestion Core)
 > Type: Feature
 > Owns: the canonical-account-identity contract (`core.dim_accounts.account_id`
