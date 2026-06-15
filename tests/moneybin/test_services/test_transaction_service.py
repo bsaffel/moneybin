@@ -994,7 +994,7 @@ class TestManualEntry:
         # the SQLMesh int_transactions__matched fallback hash.
         entry_result = result.results[0]
         expected_txn_id = hashlib.sha256(
-            f"manual|{entry_result.source_transaction_id}|A1".encode()
+            f"manual|user|A1|{entry_result.source_transaction_id}".encode()
         ).hexdigest()[:16]
         assert entry_result.transaction_id == expected_txn_id
 

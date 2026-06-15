@@ -6,10 +6,13 @@ via the same hash ``_predict_manual_gold_key`` uses), so per
 ≥3 realistic rows with ``transaction_id = NULL`` (the pre-V026 state) and
 asserts the backfill writes the expected deterministic hash for each.
 
-Includes a lockstep test asserting the migration's ``_predict`` produces
-the same hash as ``transaction_service._predict_manual_gold_key`` — a fix
-to one without the matching change to the other would re-introduce the
-exact false-positive V026 exists to suppress.
+V026 is a FROZEN migration: its ``_predict`` uses the ORIGINAL
+``manual|source_transaction_id|account_id`` hash. The ADR-015/RD-2 re-key (B4)
+later moved the live transaction_id formula to the immutable source identity
+(``source_type|source_origin|source_account_key|source_transaction_id``);
+migration V030 re-keys the V026-backfilled rows forward to it. So V026 stays
+historical and must NOT track the service formula — the cross-migration
+consistency it once guarded is now V030's responsibility (test_migration_v030).
 """
 
 # pyright: reportPrivateUsage=false
@@ -25,7 +28,6 @@ from decimal import Decimal
 import pytest
 
 from moneybin.database import Database
-from moneybin.services.transaction_service import _predict_manual_gold_key
 from moneybin.sql.migrations.V026__add_transaction_id_to_manual_transactions import (
     _predict as _migration_predict,
 )
@@ -36,7 +38,11 @@ from tests.moneybin.migration_helpers import column_exists, run_migration
 
 
 def _expected_hash(source_transaction_id: str, account_id: str) -> str:
-    """Mirror ``_predict_manual_gold_key`` — the SQL transform uses the same."""
+    """V026's frozen backfill hash: ``manual|source_transaction_id|account_id``.
+
+    This is the ORIGINAL pre-ADR-015 formula. The live service + SQL model moved
+    on (B4); V030 re-keys these rows forward. V026's own output stays this.
+    """
     raw = f"manual|{source_transaction_id}|{account_id}"
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
@@ -50,19 +56,19 @@ def _expected_hash(source_transaction_id: str, account_id: str) -> str:
         ("manual_xxxxx", "weird-acct/with-symbols-001"),
     ],
 )
-def test_migration_predict_matches_service_predict(
+def test_migration_predict_uses_frozen_original_formula(
     source_transaction_id: str, account_id: str
 ) -> None:
-    """V026 migration's ``_predict`` MUST produce the same hash as the service.
+    """V026's ``_predict`` stays the ORIGINAL ``manual|stid|account_id`` hash.
 
-    They're separate Python definitions of the same SHA256 formula
-    (mirroring the unmatched-row branch of ``int_transactions__matched``).
-    A drift between them re-introduces the orphan-suppression
-    false-positive V026 exists to fix — pre-V026 rows would be backfilled
-    with one hash while new ``create_manual_batch`` writes use the other.
+    V026 is a frozen migration — its backfill formula is historical and must NOT
+    be silently retracked to the live transaction_id formula, which the ADR-015 /
+    RD-2 re-key (B4) changed to the immutable source identity. Migration V030
+    re-keys the V026-backfilled rows forward to the new formula; pinning V026's
+    own output here guards against an accidental change to a shipped migration.
     """
     assert _migration_predict(source_transaction_id, account_id) == (
-        _predict_manual_gold_key(source_transaction_id, account_id)
+        _expected_hash(source_transaction_id, account_id)
     )
 
 

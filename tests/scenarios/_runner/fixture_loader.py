@@ -131,9 +131,13 @@ def _enrich_for_ofx_raw(
 def _seed_category_overrides(db: Database, spec: FixtureSpec) -> None:
     """Write FixtureSpec.categories into app.transaction_categories.
 
-    Computes the gold transaction_id (SHA256(source_type|source_transaction_id|account_id)[:16])
-    to match int_transactions__matched.sql — must align with the gold key so the
-    categorize step's LEFT JOIN on transaction_categories actually finds the override.
+    Computes the gold transaction_id per the ADR-015/RD-2 re-key —
+    SHA256(source_type|source_origin|source_account_key|source_transaction_id)[:16],
+    keyed on the immutable source identity, NOT the mutable canonical account_id.
+    Fixture rows are loaded with source_origin='fixture' and source_account_key =
+    spec.account (see _seed_*_account / _enrich_*), so this mirrors the unmatched
+    branch of int_transactions__matched.sql — it must align with the gold key so
+    the categorize step's LEFT JOIN on transaction_categories finds the override.
 
     Runs after raw rows are loaded but before transform, so the categorize
     step (which skips rows already present in transaction_categories) sees
@@ -149,7 +153,10 @@ def _seed_category_overrides(db: Database, spec: FixtureSpec) -> None:
         " categorized_by = EXCLUDED.categorized_by"
     )
     for override in spec.categories:
-        raw = f"{spec.source_type}|{override.source_transaction_id}|{spec.account}"
+        raw = (
+            f"{spec.source_type}|fixture|{spec.account}|"
+            f"{override.source_transaction_id}"
+        )
         gold_id = hashlib.sha256(raw.encode()).hexdigest()[:16]
         db.execute(
             _upsert_sql,
