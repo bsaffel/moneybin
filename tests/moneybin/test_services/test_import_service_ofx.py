@@ -96,3 +96,53 @@ class TestImportOFXBatchLifecycle:
             if h["source_type"] == "ofx" and h["source_file"] == canonical
         ]
         assert len(ofx_for_file) == 2
+
+
+class TestImportOFXAccountResolution:
+    """OFX import populates app.account_links via AccountResolver (A7)."""
+
+    def test_import_writes_accepted_source_native_link(self, db: Database) -> None:
+        """Each OFX account yields an accepted source_native link in app.account_links.
+
+        sample_minimal.ofx has one account: ACCTID=1111, BANKID(routing)=123456789.
+        The resolver mints a canonical account and writes the accepted
+        source_native mapping (ref_value = the ACCTID, source_type='ofx') — this
+        is the ref the B1 staging translation JOIN keys on, so it must be total
+        for new OFX imports. refresh=False skips the SQLMesh apply (no
+        core.dim_accounts needed here).
+
+        Per account-identity-resolution.md Decision 3 step 2, the mint path writes
+        ONLY source_native; the scoped full_number is passed into the resolver (so
+        a later same-number import can adopt via step 1) but is NOT itself written
+        as an accepted strong ref on a fresh mint — asserted negatively below to
+        pin that contract. See the A7 report concern re: mint-time strong-ref write.
+        """
+        fixture = Path("tests/fixtures/ofx/sample_minimal.ofx")
+        if not fixture.exists():
+            pytest.fail(
+                "Sample OFX fixture missing at tests/fixtures/ofx/sample_minimal.ofx"
+            )
+
+        ImportService(db).import_file(fixture, refresh=False)
+
+        native = db.execute(
+            """
+            SELECT account_id FROM app.account_links
+            WHERE status = 'accepted' AND ref_kind = 'source_native'
+              AND source_type = 'ofx' AND ref_value = ?
+            """,
+            ["1111"],
+        ).fetchall()
+        assert len(native) == 1
+        assert len(native[0][0]) == 12  # minted canonical uuid4[:12]
+
+        # Spec Decision 3 step 2: a fresh mint records source_native only; the
+        # scoped full_number is not yet an accepted strong ref.
+        full_number = db.execute(
+            """
+            SELECT COUNT(*) FROM app.account_links
+            WHERE status = 'accepted' AND ref_kind = 'full_number'
+              AND source_type = 'ofx'
+            """,
+        ).fetchone()
+        assert full_number is not None and full_number[0] == 0

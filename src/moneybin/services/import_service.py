@@ -690,6 +690,50 @@ class ImportService:
             IMPORT_ERRORS_TOTAL.labels(source_type="ofx", error_type="load").inc()
             raise
 
+        # Resolve each OFX account to a canonical account_id, populating
+        # app.account_links (source_native + scoped full_number strong refs) so
+        # the staging translation JOIN is total for new OFX imports. Additive:
+        # raw.ofx_accounts.account_id still holds the source-native ACCTID. Runs
+        # after the raw load so links exist iff their raw account rows landed; a
+        # separate try/except finalizes 'failed' rather than leaving the batch
+        # stuck in 'importing'.
+        try:
+            resolver = AccountResolver(self._db, actor="system")
+            for row in data["accounts"].iter_rows(named=True):
+                acctid: str | None = row["account_id"]
+                if not acctid:
+                    continue
+                routing = row.get("routing_number")
+                # full_number is a strong ref ONLY when institution/routing-scoped
+                # (contains ':'); a bare number is demoted to a candidate signal.
+                scoped_number = f"{routing}:{acctid}" if routing else None
+                resolved_account = resolver.resolve(
+                    SourceAccount(
+                        source_type="ofx",
+                        source_origin=source_origin,
+                        source_account_key=acctid,
+                        account_name=f"{source_origin} "
+                        f"{row.get('account_type') or ''}".strip(),
+                        account_number=scoped_number,
+                        last_four=acctid[-4:],
+                        institution=source_origin,
+                    )
+                )
+                ACCOUNT_LINK_OUTCOMES_TOTAL.labels(
+                    result=resolved_account.outcome
+                ).inc()
+        except Exception:
+            import_log.finalize_import(
+                self._db,
+                import_id,
+                status="failed",
+                rows_total=sum(rows_loaded.values()),
+                rows_imported=sum(rows_loaded.values()),
+            )
+            OFX_IMPORT_BATCHES.labels(status="failed").inc()
+            IMPORT_ERRORS_TOTAL.labels(source_type="ofx", error_type="resolve").inc()
+            raise
+
         # Total across all four OFX tables — balance-only statements still
         # count as a successful import. Zero rows means nothing was written
         # (e.g., empty statement period); record as 'failed' so the metric
