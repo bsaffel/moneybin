@@ -347,6 +347,10 @@ class OFXExtractor:
                 "extracted_at": extraction_timestamp.isoformat(),
                 "import_id": import_id,
                 "source_type": "ofx",
+                # source_origin must match app.account_links.source_origin so the
+                # staging translation JOIN in stg_ofx__accounts is total (B1).
+                # Do NOT change how source_origin is derived here.
+                "source_origin": source_origin,
             }
             accounts_data.append(account_info)
 
@@ -363,6 +367,7 @@ class OFXExtractor:
                 "extracted_at": pl.String,
                 "import_id": pl.String,
                 "source_type": pl.String,
+                "source_origin": pl.String,
             }
         )
 

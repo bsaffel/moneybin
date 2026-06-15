@@ -4,19 +4,26 @@ MODEL (
 );
 
 SELECT
-  account_id, /* Source-system account identifier */
-  account_name, /* Human-readable label */
-  account_number, /* Full account number (encrypted at rest) */
-  account_number_masked, /* Last 4 digits for display */
-  account_type, /* Account classification */
-  institution_name, /* Financial institution name */
-  currency, /* Default currency */
-  NULL::TEXT AS routing_number, /* Not available from tabular imports */
-  NULL::TEXT AS institution_fid, /* Not available from tabular imports */
-  source_file, /* Path to source file */
-  source_type, /* Import pathway: csv, tsv, excel, parquet, feather, pipe */
-  source_origin, /* Institution/format that produced this data */
-  import_id, /* UUID linking to import batch */
-  extracted_at, /* When data was parsed from source */
-  loaded_at /* When record was loaded into database */
-FROM raw.tabular_accounts
+  links.account_id,
+  a.account_id AS source_account_key,
+  a.account_name,
+  a.account_number,
+  a.account_number_masked,
+  a.account_type,
+  a.institution_name,
+  a.currency,
+  NULL::TEXT AS routing_number,
+  NULL::TEXT AS institution_fid,
+  a.source_file,
+  a.source_type,
+  a.source_origin,
+  a.import_id,
+  a.extracted_at,
+  a.loaded_at
+FROM raw.tabular_accounts AS a
+LEFT JOIN app.account_links AS links
+  ON links.status = 'accepted'
+  AND links.ref_kind = 'source_native'
+  AND links.source_type = a.source_type
+  AND links.source_origin = a.source_origin
+  AND links.ref_value = a.account_id
