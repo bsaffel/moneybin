@@ -37,8 +37,9 @@ class TestSeedSourcePriority:
         assert len(rows) == 10
         assert rows[0] == ("manual", 1)
         assert rows[1] == ("gsheet", 2)
-        assert rows[2] == ("plaid", 3)
-        assert rows[-1] == ("ofx", 10)
+        assert rows[2] == ("ofx", 3)
+        assert rows[3] == ("plaid", 4)
+        assert rows[-1] == ("pipe", 10)
 
     def test_replaces_on_rerun(self, db: Database) -> None:
         settings = MatchingSettings()
