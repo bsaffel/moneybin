@@ -23,11 +23,13 @@ if TYPE_CHECKING:
 from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.extractors.institution_resolution import resolve_institution_tabular
 from moneybin.extractors.tabular.formats import (
     NumberFormatType,
     SignConventionType,
 )
 from moneybin.metrics.registry import (
+    ACCOUNT_LINK_OUTCOMES_TOTAL,
     IMPORT_DURATION_SECONDS,
     IMPORT_ERRORS_TOTAL,
     IMPORT_RECORDS_TOTAL,
@@ -37,6 +39,8 @@ from moneybin.metrics.registry import (
 from moneybin.repositories.imports_repo import ImportsRepo
 from moneybin.repositories.pdf_formats_repo import PdfFormatsRepo
 from moneybin.services._validators import validate_slug
+from moneybin.services.account_resolution_types import SourceAccount
+from moneybin.services.account_resolver import AccountResolver
 from moneybin.services.audit_service import AuditService
 from moneybin.services.import_confirmation import (
     ActorKind,
@@ -508,104 +512,6 @@ class ImportService:
             logger.debug(f"Could not determine date range from {table}", exc_info=True)
         return ""
 
-    def _resolve_account_via_matcher(
-        self,
-        *,
-        account_name: str,
-        account_number: str | None,
-        threshold: float,
-        auto_accept: bool,
-    ) -> str:
-        """Resolve an account name to an account_id using match_account().
-
-        Outcomes:
-          1. Matched (number or exact slug) → return the existing account_id.
-          2. Fuzzy candidates and auto_accept=True → take the top candidate, log it.
-          3. Fuzzy candidates and auto_accept=False → log a warning listing
-             candidates, fall back to slugify(account_name).
-          4. No candidates → fall back to slugify(account_name) (creates new).
-
-        Args:
-            account_name: Account name from CLI/file.
-            account_number: Account number if available, for strongest match.
-            threshold: Minimum SequenceMatcher.ratio for a fuzzy candidate.
-            auto_accept: True if the user passed --yes (or stdin is non-interactive).
-
-        Returns:
-            The resolved account_id (existing or freshly slugified).
-        """
-        from moneybin.extractors.tabular.account_matching import match_account
-        from moneybin.metrics.registry import ACCOUNT_MATCH_OUTCOMES_TOTAL
-        from moneybin.utils import slugify
-
-        try:
-            # GROUP BY account_id collapses duplicates from the same account being
-            # imported with slightly different names (e.g. "Chase Checking" vs
-            # "CHASE CHECKING"); take the most-recently-seen name.
-            rows = self._db.execute(
-                """
-                SELECT account_id,
-                       LAST(account_name ORDER BY loaded_at) AS account_name,
-                       LAST(account_number ORDER BY loaded_at) AS account_number
-                FROM raw.tabular_accounts
-                GROUP BY account_id
-                """
-            ).fetchall()
-        except duckdb.CatalogException:  # raw.tabular_accounts absent on first import
-            logger.debug("raw.tabular_accounts unavailable; skipping account match")
-            ACCOUNT_MATCH_OUTCOMES_TOTAL.labels(result="table_missing").inc()
-            return slugify(account_name)
-
-        existing = [
-            {"account_id": r[0], "account_name": r[1], "account_number": r[2]}
-            for r in rows
-        ]
-
-        result = match_account(
-            account_name,
-            account_number=account_number,
-            existing_accounts=existing,
-            threshold=threshold,
-        )
-
-        if result.matched and result.account_id:
-            logger.info(f"Matched account to existing id {result.account_id!r}")
-            ACCOUNT_MATCH_OUTCOMES_TOTAL.labels(result="exact").inc()
-            return result.account_id
-
-        if result.candidates:
-            if auto_accept:
-                top = result.candidates[0]
-                if top["account_id"]:
-                    logger.info(
-                        f"⚙️  Auto-accepting fuzzy match → {top['account_id']!r}"
-                    )
-                    ACCOUNT_MATCH_OUTCOMES_TOTAL.labels(result="fuzzy_accepted").inc()
-                    return top["account_id"]
-                # Fuzzy candidates exist but none have an account_id — this should
-                # be rare (suggests stale/orphaned rows in raw.tabular_accounts),
-                # but we must surface it instead of silently slugifying.
-                logger.warning(
-                    "⚠️  Auto-accept requested but top fuzzy candidate has no "
-                    "account_id; falling back to slugify(account_name)."
-                )
-                ACCOUNT_MATCH_OUTCOMES_TOTAL.labels(result="fuzzy_no_id").inc()
-            else:
-                candidate_ids = ", ".join(
-                    filter(None, (c["account_id"] for c in result.candidates))
-                )
-                logger.warning(
-                    f"⚠️  Account did not match exactly. Fuzzy candidate ids: "
-                    f"{candidate_ids}. "
-                    "Use --yes to auto-accept the top candidate, "
-                    "or --account-id to pick explicitly."
-                )
-                ACCOUNT_MATCH_OUTCOMES_TOTAL.labels(result="fuzzy_ambiguous").inc()
-        else:
-            ACCOUNT_MATCH_OUTCOMES_TOTAL.labels(result="slugify_new").inc()
-
-        return slugify(account_name)
-
     def run_transforms(self) -> bool:
         """Apply SQLMesh transforms via :class:`TransformService`.
 
@@ -757,9 +663,6 @@ class ImportService:
             IMPORT_ERRORS_TOTAL.labels(source_type="ofx", error_type="extract").inc()
             raise
 
-        # Best-effort account matching for OFX (passthrough today; emits metrics).
-        self._match_ofx_accounts(account_ids)
-
         # Write all four DataFrames through the encrypted ingest path. Wrapped
         # in try/except so a load failure marks the batch as failed instead of
         # leaving raw.import_log.status='importing' and blocking re-imports.
@@ -824,19 +727,6 @@ class ImportService:
             )
 
         return result
-
-    def _match_ofx_accounts(self, account_ids: list[str]) -> None:
-        """Best-effort account matching for OFX. Emits metrics; doesn't mutate data.
-
-        Today's behavior (carried forward): the OFX file's account_id IS the
-        matching key downstream. This method exists so future improvements have
-        a single place to live and so account-match metrics are emitted for
-        OFX too.
-        """
-        from moneybin.metrics.registry import ACCOUNT_MATCH_OUTCOMES_TOTAL
-
-        for _aid in account_ids:
-            ACCOUNT_MATCH_OUTCOMES_TOTAL.labels(result="not_attempted").inc()
 
     def _import_tabular(
         self,
@@ -1153,29 +1043,61 @@ class ImportService:
         if source_type in ("semicolon", "pipe"):
             source_type = "csv"
 
-        # Build per-row account_ids and a name→id mapping for the accounts table
+        # source_origin scopes the source_native key; compute before resolution so
+        # raw.* and app.account_links.source_origin stay identical (a later staging
+        # JOIN keys on it). Do NOT change how source_origin is derived.
+        source_origin = (
+            matched_format.name
+            if matched_format
+            else slugify(account_name or "unknown")
+        )
+        # institution is best-effort metadata feeding the resolver's weak-signal
+        # (institution+last4) candidate pass; unknown is allowed.
+        institution = resolve_institution_tabular(
+            file_path=file_path,
+            format_institution=(
+                matched_format.institution_name if matched_format else None
+            ),
+            cli_override=None,  # no --institution flag on tabular yet
+        )
+        resolver = AccountResolver(self._db, actor="system")
+
+        # account_ids stamped on raw are source-NATIVE keys (DP-1); the resolver
+        # writes the native->canonical app.account_links mapping as a side effect.
         acct_name_col = resolved.field_mapping.get("account_name")
         acct_id_to_name: dict[str, str] = {}
 
         if account_id:
+            resolved_account = resolver.resolve(
+                SourceAccount(
+                    source_type=source_type,
+                    source_origin=source_origin,
+                    source_account_key=account_id,
+                    account_name=account_name or account_id,
+                    institution=institution,
+                    explicit_account_id=account_id,
+                )
+            )
+            ACCOUNT_LINK_OUTCOMES_TOTAL.labels(result=resolved_account.outcome).inc()
             account_ids: str | list[str] = account_id
             acct_id_to_name[account_id] = account_name or account_id
         elif account_name:
-            from moneybin.config import get_settings
-
-            threshold = get_settings().providers.tabular.account_match_threshold
-            aid = self._resolve_account_via_matcher(
-                account_name=account_name,
-                account_number=None,  # no --account-number CLI flag yet
-                threshold=threshold,
-                auto_accept=auto_accept,
+            native_key = slugify(account_name)
+            resolved_account = resolver.resolve(
+                SourceAccount(
+                    source_type=source_type,
+                    source_origin=source_origin,
+                    source_account_key=native_key,
+                    account_name=account_name,
+                    institution=institution,
+                )
             )
-            account_ids = aid
-            acct_id_to_name[aid] = account_name
+            ACCOUNT_LINK_OUTCOMES_TOTAL.labels(result=resolved_account.outcome).inc()
+            account_ids = native_key
+            acct_id_to_name[native_key] = account_name
         elif (
             resolved.is_multi_account and acct_name_col and acct_name_col in df.columns
         ):
-            # Per-row account assignment from the DataFrame column
             raw_names = [
                 str(v) if v is not None else "unknown"
                 for v in df[acct_name_col].to_list()
@@ -1184,16 +1106,23 @@ class ImportService:
             for aid, name in zip(account_ids, raw_names, strict=True):
                 if aid not in acct_id_to_name:
                     acct_id_to_name[aid] = name
+            for native_key, name in acct_id_to_name.items():
+                resolved_account = resolver.resolve(
+                    SourceAccount(
+                        source_type=source_type,
+                        source_origin=source_origin,
+                        source_account_key=native_key,
+                        account_name=name,
+                        institution=institution,
+                    )
+                )
+                ACCOUNT_LINK_OUTCOMES_TOTAL.labels(
+                    result=resolved_account.outcome
+                ).inc()
         else:
             raise ValueError(
                 "Single-account files require --account-name or --account-id"
             )
-
-        source_origin = (
-            matched_format.name
-            if matched_format
-            else slugify(account_name or "unknown")
-        )
 
         # Create import batch
         extractor = TabularExtractor(self._db)
