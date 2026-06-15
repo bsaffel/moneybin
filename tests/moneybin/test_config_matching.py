@@ -14,6 +14,7 @@ class TestMatchingSettings:
         assert settings.source_priority == [
             "manual",
             "gsheet",
+            "ofx",
             "plaid",
             "csv",
             "excel",
@@ -21,7 +22,6 @@ class TestMatchingSettings:
             "parquet",
             "feather",
             "pipe",
-            "ofx",
         ]
 
     def test_source_priority_must_not_be_empty(self) -> None:
