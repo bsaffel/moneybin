@@ -621,3 +621,75 @@ class TestPullAutoRefreshes:
         assert result.transforms_applied is False
         assert result.transforms_duration_seconds == 0.12
         assert result.transforms_error == "SQLMeshError"
+
+
+class TestPullResolvesAccounts:
+    """sync.pull() populates app.account_links via AccountResolver (A8).
+
+    Mirrors the import path (A6/A7): the SERVICE layer resolves each loaded
+    account to a canonical id, writing the accepted source_native mapping the
+    B1 staging translation JOIN keys on. The Plaid native key is the source
+    account_id token already stamped on raw.plaid_accounts (unchanged here).
+    """
+
+    def test_pull_writes_accepted_source_native_link_per_account(
+        self,
+        mock_client: MagicMock,
+        db: Database,
+        loader: PlaidExtractor,
+        sync_data: SyncDataResponse,
+    ) -> None:
+        """Each Plaid account yields an accepted source_native link.
+
+        The fixture has two accounts (acc_chase_check, acc_chase_save) under
+        one institution (provider_item_id=item_chase_abc). After pull(), each
+        gets an accepted source_native row keyed by its Plaid account_id, with
+        source_origin == the provider_item_id — identical to raw.plaid_accounts
+        so the later staging JOIN is total. refresh=False skips the SQLMesh apply.
+        """
+        service = SyncService(client=mock_client, db=db, loader=loader)
+        service.pull(refresh=False)
+
+        rows = db.execute(
+            """
+            SELECT ref_value, account_id, source_origin
+            FROM app.account_links
+            WHERE status = 'accepted' AND ref_kind = 'source_native'
+              AND source_type = 'plaid'
+            ORDER BY ref_value
+            """,
+        ).fetchall()
+        assert [r[0] for r in rows] == ["acc_chase_check", "acc_chase_save"]
+        # source_origin must equal the provider_item_id stamped on raw (B1 JOIN key).
+        assert all(r[2] == "item_chase_abc" for r in rows)
+        # Each resolves to a freshly minted canonical uuid4[:12].
+        assert all(len(r[1]) == 12 for r in rows)
+
+    def test_pull_resolver_failure_does_not_fail_the_pull(
+        self,
+        mock_client: MagicMock,
+        db: Database,
+        loader: PlaidExtractor,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A resolver failure soft-fails: raw data stays loaded, pull succeeds.
+
+        The account-links population is best-effort post-load metadata — a
+        failure must not corrupt the pull's success accounting (raw rows are
+        already durable), mirroring the refresh / auto-pull soft-fail pattern.
+        """
+        from moneybin.services import sync_service as mod
+
+        class _Boom:
+            def __init__(self, *_a: object, **_kw: object) -> None:
+                pass
+
+            def resolve(self, *_a: object, **_kw: object) -> None:
+                raise RuntimeError("resolver boom")
+
+        monkeypatch.setattr(mod, "AccountResolver", _Boom)
+        service = SyncService(client=mock_client, db=db, loader=loader)
+        result = service.pull(refresh=False)
+
+        assert result.accounts_loaded == 2
+        assert result.transactions_loaded == 3

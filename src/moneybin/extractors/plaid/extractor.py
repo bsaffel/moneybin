@@ -137,7 +137,7 @@ class PlaidExtractor:
         source_file = f"sync_{job_id}"
         extracted_at = sync_data.metadata.synced_at
         loaded_at = datetime.now(UTC)
-        item_by_account = self._build_account_to_item_map(sync_data)
+        item_by_account = self.build_account_to_item_map(sync_data)
 
         accounts_loaded = self._load_accounts(
             sync_data.accounts,
@@ -166,8 +166,12 @@ class PlaidExtractor:
             balances_loaded=balances_loaded,
         )
 
-    def _build_account_to_item_map(self, sync_data: SyncDataResponse) -> dict[str, str]:
-        """Map each account_id to its provider_item_id.
+    def build_account_to_item_map(self, sync_data: SyncDataResponse) -> dict[str, str]:
+        """Map each account_id to its provider_item_id (its ``source_origin``).
+
+        Public so the sync service can attribute each account to the same
+        ``source_origin`` this loader stamps on ``raw.plaid_*`` when it
+        populates ``app.account_links`` (the staging JOIN keys on that scope).
 
         Single-institution sync: all accounts get the one item's id.
 
