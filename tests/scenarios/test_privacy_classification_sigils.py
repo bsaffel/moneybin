@@ -34,6 +34,8 @@ def test_core_columns_carry_class_sigil_after_transform() -> None:
         ).fetchone()
 
     assert row is not None and row[0] is not None
-    assert "[class: account_identifier]" in row[0], (
+    # account_id is the opaque canonical surrogate (record_id), not PII, since the
+    # D6 reclassification — the PII now lives in app.account_links.ref_value.
+    assert "[class: record_id]" in row[0], (
         f"core.fct_transactions.account_id missing privacy sigil; got: {row[0]!r}"
     )

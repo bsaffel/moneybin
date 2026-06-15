@@ -35,10 +35,13 @@ def test_dedup_cross_source() -> None:
             assert_source_system_populated(
                 db,
                 table="core.fct_transactions",
-                # Fixture is two CSV files; OFX is absent. The stricter
-                # missing-sources check would (correctly) fail if we listed
-                # 'ofx' here.
-                expected_sources={"csv"},
+                # The fixture pairs a csv-tagged file with an ofx-tagged twin;
+                # each overlap collapses to one gold record whose source_type is
+                # the golden-record-merge winner. RD-1 reordered
+                # MatchingSettings.source_priority so ofx outranks the tabular
+                # family (a bank OFX export's field values beat a CSV's), so the
+                # ofx twin now wins source_type for every collapsed pair.
+                expected_sources={"ofx"},
                 column="source_type",
             ),
             assert_amount_precision(
