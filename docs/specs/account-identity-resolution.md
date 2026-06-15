@@ -1,7 +1,7 @@
 # Cross-Source Account Identity Resolution
 
-> Last updated: 2026-06-14
-> Status: ready
+> Last updated: 2026-06-15
+> Status: in-progress
 > Address: M1S (Ingestion Core)
 > Type: Feature
 > Owns: the canonical-account-identity contract (`core.dim_accounts.account_id`
@@ -383,7 +383,9 @@ last-write-wins logic would let a later CSV row **null an OFX account's
 COALESCE-across-group** that preserves the best non-null value:
 
 - Structured bank fields (`routing_number`, `institution_fid`) — first non-null
-  by **source strength** (`ofx > plaid > tabular`) then recency.
+  by **source strength** (`ofx > plaid > tabular` — the `MatchingSettings.source_priority`
+  ordering, which governs field merging only and is decoupled from transaction
+  identity; see the `transaction_id` stability section above) then recency.
 - `institution_name`, `account_type` — first non-null by recency.
 - `source_type` / `source_file` — record the contributing set (the winning row's
   for display; the union is recoverable from `app.account_links`).
@@ -416,17 +418,38 @@ analysis + the account-vs-transaction asymmetry: [ADR-015](../decisions/015-tran
 **Decision: content-derived id + alias forwarding (not a surrogate).**
 
 1. **Re-key the hash to the immutable source identity** — drop the mutable
-   `account_id`; key on `source_type | source_origin | source_native_key |
+   `account_id`; key on `source_type | source_origin | source_account_key |
    source_transaction_id`, and **exclude descriptive text** (`description` /
    `memo` — the brittle field belongs to the fuzzy matcher, never to identity).
    (`source_origin` is the existing `raw.*` column.)
-2. **Priority-anchor, don't whole-set-hash.** A merged group's id derives from its
-   **highest-priority member** (reusing `MatchingSettings.source_priority`,
-   `ofx > plaid > tabular`), not a hash over all members. Result: a lower-priority
-   twin joining (the common forward-order — bank file first, CSV later) leaves the
-   id **unchanged**; only a higher-priority source arriving later flips the anchor.
-   `transaction_id` then changes **iff the dedup group's anchor changes** — the
-   tightest possible churn — and rides the most stable id available.
+2. **Stability-class anchor, not whole-set-hash.** A merged group's `transaction_id`
+   derives from its **anchor member** — chosen by an intrinsic stability class, not
+   the mutable `source_priority` list (which governs field merging only; see
+   Decision 4). The anchor is `argmin` over group members of
+   `(stability_class_rank, loaded_at, source_identity_tuple)`:
+
+   | Class | Rank | Sources | Id basis | Drifts? |
+   |---|---|---|---|---|
+   | native | 0 | OFX (FITID), Plaid (txn id) | upstream-assigned | never |
+   | minted | 1 | manual (`manual_` + uuid4, persisted PK) | minted once | never |
+   | hash | 2 | CSV / tabular family; gsheet-live (future) | content hash | yes (re-export) |
+
+   `account_id` is excluded from the hash — keyed on
+   `source_type | source_origin | source_account_key | source_transaction_id`
+   only. M1S makes `account_id` a mutable canonical surrogate; keeping it in the
+   hash would re-key every affected transaction on every account re-mint or merge.
+
+   **Why intrinsic class, not the list.** Reusing `source_priority` for identity
+   is fragile: reordering it (a legitimate field-merge tuning operation) would
+   re-key merged `transaction_id`s. And `gsheet` (field-authoritative in that list)
+   is a future content-hash source — an unstable anchor — while `ofx` is a
+   native-id source and the naturally stable choice regardless of field priority
+   ordering. The intrinsic 3-class rank is a fact about how an id is derived; it
+   does not drift as sources are added or priorities are retuned. Properties:
+   a lower-stability twin joining leaves the id **unchanged**; a more-stable source
+   backfilling history re-anchors the group **once** (alias-forwarded via
+   `app.transaction_id_aliases`), then stays stable; single and unmatched
+   transactions hash their own identity.
 3. **Alias map for reference durability.** A new `app.transaction_id_aliases`
    (`old_id → new_id`, append-only, written only on id-changing merges) lets SQL,
    agent, external, and curation-FK references resolve old→new — the Plaid pointer
