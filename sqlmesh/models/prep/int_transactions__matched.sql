@@ -84,25 +84,71 @@ WITH RECURSIVE active_matches AS (
     aid,
     st,
     stid
-), group_gold_keys AS (
+), group_members AS (
+  /* Each group member's immutable source identity + loaded_at + intrinsic
+     stability rank, used to pick a single anchor member to derive the gold
+     transaction_id from. account_id is deliberately ABSENT from the identity
+     tuple: it is a mutable canonical surrogate (M1S), so including it would
+     re-key every transaction whenever an account is re-minted and orphan all
+     app.* curation. source_account_key (the raw source-native account key) is
+     always present and is the NULL-safe immutable stand-in. */
   SELECT
     mg.group_id,
+    u.source_type,
+    u.source_origin,
+    u.source_account_key,
+    u.source_transaction_id,
+    u.loaded_at,
+    CASE u.source_type
+      WHEN 'ofx'
+      THEN 0
+      WHEN 'plaid'
+      THEN 0
+      WHEN 'manual'
+      THEN 1
+      ELSE 2
+    END AS stability_rank
+  FROM match_groups AS mg
+  JOIN prep.int_transactions__unioned AS u
+    ON u.source_type = mg.source_type
+    AND u.source_transaction_id = mg.source_transaction_id
+    AND u.account_id = mg.account_id
+), group_anchor AS (
+  /* Anchor = argmin over members of (stability_rank, loaded_at, source_type,
+     source_origin, source_account_key, source_transaction_id). Native ids
+     (ofx/plaid, rank 0) outrank minted (manual, rank 1) outrank content-hashed
+     (csv/tabular/gsheet, rank 2); loaded_at then prefers the earliest-seen
+     member. The trailing identity columns make the order total/deterministic. */
+  SELECT
+    group_id,
+    source_type,
+    source_origin,
+    source_account_key,
+    source_transaction_id,
+    ROW_NUMBER() OVER (
+      PARTITION BY group_id
+      ORDER BY
+        stability_rank,
+        loaded_at,
+        source_type,
+        source_origin,
+        source_account_key,
+        source_transaction_id
+    ) AS _rn
+  FROM group_members
+), group_gold_keys AS (
+  SELECT
+    group_id,
     SUBSTRING(
       SHA256(
-        LISTAGG(
-          mg.source_type || '|' || mg.source_transaction_id || '|' || mg.account_id, '|'
-          ORDER BY
-            mg.source_type,
-            mg.source_transaction_id,
-            mg.account_id
-        )
+        source_type || '|' || source_origin || '|' || source_account_key || '|' || source_transaction_id
       ),
       1,
       16
     ) AS transaction_id
-  FROM match_groups AS mg
-  GROUP BY
-    mg.group_id
+  FROM group_anchor
+  WHERE
+    _rn = 1
 ), group_confidence AS (
   SELECT
     mg.group_id,
@@ -129,7 +175,9 @@ SELECT
     WHEN NOT gk.transaction_id IS NULL
     THEN gk.transaction_id
     ELSE SUBSTRING(
-      SHA256(u.source_type || '|' || u.source_transaction_id || '|' || u.account_id),
+      SHA256(
+        u.source_type || '|' || u.source_origin || '|' || u.source_account_key || '|' || u.source_transaction_id
+      ),
       1,
       16
     )
