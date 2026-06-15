@@ -25,7 +25,7 @@ WITH ranked AS (
     ON t.account_id = a.account_id
 )
 SELECT
-  links.account_id,
+  COALESCE(links.account_id, ranked.account_id) AS account_id, /* canonical when linked, else source-native (transient until B7 backfill) */
   ranked.account_id AS source_account_key,
   ranked.source_transaction_id,
   ranked.transaction_type,

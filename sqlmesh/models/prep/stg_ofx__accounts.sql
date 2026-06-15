@@ -4,7 +4,7 @@ MODEL (
 );
 
 SELECT
-  links.account_id,
+  COALESCE(links.account_id, a.account_id) AS account_id, /* canonical when linked, else source-native (transient until B7 backfill) */
   a.account_id AS source_account_key,
   a.routing_number,
   a.account_type,

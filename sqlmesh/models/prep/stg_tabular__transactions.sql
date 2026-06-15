@@ -41,7 +41,7 @@ WITH ranked AS (
   WHERE deleted_from_source_at IS NULL
 )
 SELECT
-  links.account_id,
+  COALESCE(links.account_id, ranked.account_id) AS account_id, /* canonical when linked, else source-native (transient until B7 backfill) */
   ranked.account_id AS source_account_key,
   ranked.transaction_id,
   ranked.transaction_date,

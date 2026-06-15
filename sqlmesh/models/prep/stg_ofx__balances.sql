@@ -4,7 +4,7 @@ MODEL (
 );
 
 SELECT
-  links.account_id,
+  COALESCE(links.account_id, b.account_id) AS account_id, /* canonical when linked, else source-native (transient until B7 backfill) */
   b.account_id AS source_account_key,
   b.statement_start_date::DATE AS statement_start_date,
   b.statement_end_date::DATE AS statement_end_date,
