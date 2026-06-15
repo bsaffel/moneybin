@@ -9,6 +9,7 @@ import pytest
 from moneybin.database import Database
 from moneybin.services.account_resolution_types import SourceAccount
 from moneybin.services.account_resolver import AccountResolver
+from tests.moneybin.db_helpers import create_core_tables
 
 
 def _src(**overrides: Any) -> SourceAccount:
@@ -132,3 +133,144 @@ def test_scoped_full_number_auto_adopts_ofx_then_csv(db: Database) -> None:
     )
     assert csv.account_id == ofx.account_id
     assert csv.outcome == "adopted_strong"
+
+
+# ---------------------------------------------------------------------------
+# Step 2 — candidate pass (A4)
+# ---------------------------------------------------------------------------
+
+
+def _seed_dim_account(
+    db: Database,
+    *,
+    account_id: str,
+    last_four: str | None = None,
+    institution_name: str | None = None,
+    display_name: str | None = None,
+) -> None:
+    """Insert a minimal core.dim_accounts row (simulates a prior transform run)."""
+    db.conn.execute(
+        "INSERT INTO core.dim_accounts (account_id, last_four, institution_name, "
+        "display_name) VALUES (?, ?, ?, ?)",  # noqa: S608  # test fixture insert
+        [account_id, last_four, institution_name, display_name or f"acct {account_id}"],
+    )
+
+
+def test_no_candidate_mints_standalone(db: Database) -> None:
+    """Empty (but present) core.dim_accounts -> a brand-new standalone account."""
+    create_core_tables(db)  # dim exists but is empty: exercises the real query path
+    resolver = AccountResolver(db, actor="system")
+    resolved = resolver.resolve(_src())
+    assert resolved.is_new is True
+    assert resolved.outcome == "minted_new"
+    assert resolved.pending_decision_ids == ()
+    assert len(resolved.account_id) == 12
+
+
+def test_fuzzy_name_writes_pending(db: Database) -> None:
+    """No last4/institution: a fuzzy account_name match -> a pending decision."""
+    create_core_tables(db)
+    resolver = AccountResolver(db, actor="system")
+    first = resolver.resolve(
+        _src(
+            source_account_key="chase-a",
+            account_name="Chase Checking",
+            last_four=None,
+            institution=None,
+        )
+    )
+    _seed_dim_account(db, account_id=first.account_id, display_name="Chase Checking")
+    second = resolver.resolve(
+        _src(
+            source_type="ofx",
+            source_account_key="chase-ofx",
+            account_name="Chase Checkng",  # typo -> fuzzy match, not exact
+            last_four=None,
+            institution=None,
+        )
+    )
+    assert second.outcome == "pending_review"
+    assert len(second.pending_decision_ids) == 1
+    dec = db.conn.execute(
+        "SELECT candidate_account_id, match_reason FROM app.account_link_decisions "
+        "WHERE decision_id = ?",
+        [second.pending_decision_ids[0]],
+    ).fetchone()
+    assert dec == (first.account_id, "name")
+
+
+def test_exact_name_match_writes_pending(db: Database) -> None:
+    """An exact display_name slug match is still weak -> pending, never auto-merge."""
+    create_core_tables(db)
+    resolver = AccountResolver(db, actor="system")
+    first = resolver.resolve(
+        _src(
+            source_account_key="sav-a",
+            account_name="Savings Account",
+            last_four=None,
+            institution=None,
+        )
+    )
+    _seed_dim_account(db, account_id=first.account_id, display_name="Savings Account")
+    second = resolver.resolve(
+        _src(
+            source_type="ofx",
+            source_account_key="sav-ofx",
+            account_name="Savings Account",  # exact -> match_account.matched=True
+            last_four=None,
+            institution=None,
+        )
+    )
+    assert second.is_new is True
+    assert second.account_id != first.account_id  # never auto-merged
+    assert second.outcome == "pending_review"
+    assert len(second.pending_decision_ids) == 1
+
+
+def test_institution_last4_writes_pending_never_merges(db: Database) -> None:
+    """A shared institution+last4 produces a pending decision, NOT an auto-merge."""
+    # create core.dim_accounts so the candidate pass can see an existing account
+    create_core_tables(db)
+    resolver = AccountResolver(db, actor="system")
+    first = resolver.resolve(_src(source_account_key="wf-checking-a"))
+    _seed_dim_account(
+        db,
+        account_id=first.account_id,
+        last_four="4267",
+        institution_name="wells_fargo",
+    )
+    second = resolver.resolve(
+        _src(source_type="ofx", source_account_key="ofx-4267", last_four="4267")
+    )
+    assert second.is_new is True
+    assert second.account_id != first.account_id
+    assert second.outcome == "pending_review"
+    assert len(second.pending_decision_ids) == 1
+    dec = db.conn.execute(
+        "SELECT provisional_account_id, candidate_account_id, status "
+        "FROM app.account_link_decisions WHERE decision_id = ?",
+        [second.pending_decision_ids[0]],
+    ).fetchone()
+    assert dec == (second.account_id, first.account_id, "pending")
+
+
+def test_cross_institution_slug_collision_stays_distinct(db: Database) -> None:
+    """source_origin scopes source_native: same slug, different bank -> distinct mints."""
+    create_core_tables(db)
+    resolver = AccountResolver(db, actor="system")
+    a = resolver.resolve(
+        _src(source_origin="wells_fargo", source_account_key="checking")
+    )
+    b = resolver.resolve(
+        _src(source_origin="chase", source_account_key="checking", institution="chase")
+    )
+    assert a.account_id != b.account_id
+    assert b.pending_decision_ids == ()
+
+
+def test_missing_dim_accounts_mints_standalone(db: Database) -> None:
+    """First import before any transform: core.dim_accounts absent -> mint, no crash."""
+    resolver = AccountResolver(db, actor="system")
+    resolved = resolver.resolve(_src())
+    assert resolved.is_new is True
+    assert resolved.outcome == "minted_new"

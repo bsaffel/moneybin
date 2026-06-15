@@ -11,14 +11,32 @@ from __future__ import annotations
 
 import logging
 import uuid
+from dataclasses import dataclass
+
+import duckdb
 
 from moneybin.database import Database
+from moneybin.extractors.tabular.account_matching import match_account
 from moneybin.repositories.account_link_decisions_repo import AccountLinkDecisionsRepo
 from moneybin.repositories.account_links_repo import AccountLinksRepo
 from moneybin.services.account_resolution_types import ResolvedAccount, SourceAccount
-from moneybin.tables import ACCOUNT_LINKS
+from moneybin.tables import ACCOUNT_LINKS, DIM_ACCOUNTS
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _Candidate:
+    """A weak-signal candidate for a pending merge proposal.
+
+    ``confidence`` is informational metadata only — weak signals always go to
+    review regardless of score, so a fixed value per signal type is correct.
+    """
+
+    account_id: str
+    signal: str  # "institution_last4" | "name"
+    value: str
+    confidence: float
 
 
 class AccountResolver:
@@ -59,7 +77,36 @@ class AccountResolver:
             return ResolvedAccount(
                 account_id=adopted, is_new=False, outcome="adopted_strong"
             )
-        raise NotImplementedError("ladder step 2 lands in A4")
+        # Step 2 - candidate pass. Mint first (never orphaned), then propose.
+        account_id = uuid.uuid4().hex[:12]
+        self._write_native_mapping(src, account_id=account_id, decided_by="auto")
+
+        candidates = self._find_candidates(src, exclude_account_id=account_id)
+        if not candidates:
+            return ResolvedAccount(
+                account_id=account_id, is_new=True, outcome="minted_new"
+            )
+
+        pending_ids: list[str] = []
+        for cand in candidates:
+            decision_id = uuid.uuid4().hex[:12]
+            self._decisions.insert(
+                decision_id=decision_id,
+                provisional_account_id=account_id,
+                candidate_account_id=cand.account_id,
+                confidence_score=cand.confidence,
+                match_signals={"signal": cand.signal, "value": cand.value},
+                decided_by="auto",
+                actor=self._actor,
+                match_reason=cand.signal,
+            )
+            pending_ids.append(decision_id)
+        return ResolvedAccount(
+            account_id=account_id,
+            is_new=True,
+            pending_decision_ids=tuple(pending_ids),
+            outcome="pending_review",
+        )
 
     def _write_native_mapping(
         self, src: SourceAccount, *, account_id: str, decided_by: str
@@ -182,3 +229,68 @@ class AccountResolver:
                 decided_by=decided_by,
                 actor=self._actor,
             )
+
+    def _find_candidates(
+        self, src: SourceAccount, *, exclude_account_id: str
+    ) -> list[_Candidate]:
+        """Weak-signal candidates from core.dim_accounts (institution+last4, then name).
+
+        Each is a review proposal, never an auto-merge. Returns no candidates if
+        core.dim_accounts is not yet materialized (first import before any transform).
+        """
+        try:
+            out: list[_Candidate] = []
+            if src.last_four and src.institution:
+                rows = self._db.execute(
+                    f"SELECT account_id FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef + parameterized values
+                    "WHERE last_four = ? AND institution_name = ? AND account_id != ?",
+                    [src.last_four, src.institution, exclude_account_id],
+                ).fetchall()
+                # confidence is informational only — weak signals always go to review.
+                out.extend(
+                    _Candidate(
+                        account_id=str(r[0]),
+                        signal="institution_last4",
+                        value=f"{src.institution}:{src.last_four}",
+                        confidence=0.5,
+                    )
+                    for r in rows
+                )
+            if out:
+                return out
+            existing = [
+                {"account_id": str(r[0]), "account_name": str(r[1] or "")}
+                for r in self._db.execute(
+                    f"SELECT account_id, display_name FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef + parameterized values
+                    "WHERE account_id != ?",
+                    [exclude_account_id],
+                ).fetchall()
+            ]
+            result = match_account(src.account_name, existing_accounts=existing)
+            if result.matched and result.account_id:
+                # Exact slug match: still a weak signal — proposed for review,
+                # never auto-merged (match_account returns it via account_id, not
+                # via .candidates, so it must be picked up explicitly).
+                out.append(
+                    _Candidate(
+                        account_id=result.account_id,
+                        signal="name",
+                        value=src.account_name,
+                        confidence=0.4,
+                    )
+                )
+            else:
+                out.extend(
+                    _Candidate(
+                        account_id=c["account_id"],
+                        signal="name",
+                        value=src.account_name,
+                        confidence=0.4,
+                    )
+                    for c in result.candidates
+                    if c["account_id"]
+                )
+            return out
+        except duckdb.CatalogException:
+            logger.debug("core.dim_accounts unavailable; no candidates")
+            return []
