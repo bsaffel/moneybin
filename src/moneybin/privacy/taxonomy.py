@@ -114,8 +114,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
     },
     ("app", "account_links"): {
         # Opaque minted canonical handle (spec D1/D6) — a record id, not PII; it
-        # passes through so agents/users can read it back as a parameter. (Legacy
-        # account_id columns elsewhere flip to RECORD_ID in M1S.3.)
+        # passes through so agents/users can read it back as a parameter.
         "account_id": DataClass.RECORD_ID,
         "decided_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "decided_by": DataClass.TXN_TYPE,
@@ -132,7 +131,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "status": DataClass.TXN_TYPE,
     },
     ("app", "account_settings"): {
-        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+        "account_id": DataClass.RECORD_ID,
         "account_subtype": DataClass.TXN_TYPE,
         "archived": DataClass.TXN_TYPE,
         "credit_limit": DataClass.BALANCE,
@@ -170,7 +169,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "undoes_operation_id": DataClass.RECORD_ID,
     },
     ("app", "balance_assertions"): {
-        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+        "account_id": DataClass.RECORD_ID,
         "assertion_date": DataClass.TXN_DATE,
         "balance": DataClass.BALANCE,
         "created_at": DataClass.TIMESTAMP_OBSERVABILITY,
@@ -188,7 +187,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
     },
     ("app", "categorization_rules"): {
-        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+        "account_id": DataClass.RECORD_ID,
         "category": DataClass.CATEGORY,
         "category_id": DataClass.RECORD_ID,
         "created_at": DataClass.TIMESTAMP_OBSERVABILITY,
@@ -210,7 +209,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
     },
     ("app", "gsheet_connections"): {
-        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+        "account_id": DataClass.RECORD_ID,
         "account_name": DataClass.INSTITUTION,
         "adapter": DataClass.TXN_TYPE,
         "alias": DataClass.RECORD_ID,
@@ -242,8 +241,8 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "updated_by": DataClass.TXN_TYPE,
     },
     ("app", "match_decisions"): {
-        "account_id": DataClass.ACCOUNT_IDENTIFIER,
-        "account_id_b": DataClass.ACCOUNT_IDENTIFIER,
+        "account_id": DataClass.RECORD_ID,
+        "account_id_b": DataClass.RECORD_ID,
         "confidence_score": DataClass.AGGREGATE,
         "decided_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "decided_by": DataClass.TXN_TYPE,
@@ -419,7 +418,9 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "transfer_id": DataClass.RECORD_ID,
     },
     ("core", "dim_accounts"): {
-        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+        # Opaque minted canonical surrogate (spec D6) — not PII. PII lives in
+        # app.account_links.ref_value (ACCOUNT_IDENTIFIER).
+        "account_id": DataClass.RECORD_ID,
         "account_subtype": DataClass.TXN_TYPE,
         "account_type": DataClass.TXN_TYPE,
         "archived": DataClass.TXN_TYPE,
@@ -463,7 +464,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
     },
     ("core", "fct_balances"): {
-        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+        "account_id": DataClass.RECORD_ID,
         "balance": DataClass.BALANCE,
         "balance_date": DataClass.TXN_DATE,
         "source_ref": DataClass.RECORD_ID,
@@ -471,7 +472,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
     },
     ("core", "fct_balances_daily"): {
-        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+        "account_id": DataClass.RECORD_ID,
         "balance": DataClass.BALANCE,
         "balance_date": DataClass.TXN_DATE,
         "is_observed": DataClass.TXN_TYPE,
@@ -479,7 +480,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "reconciliation_delta": DataClass.BALANCE,
     },
     ("core", "fct_transaction_lines"): {
-        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+        "account_id": DataClass.RECORD_ID,
         "description": DataClass.DESCRIPTION,
         "is_pending": DataClass.TXN_TYPE,
         "is_transfer": DataClass.TXN_TYPE,
@@ -501,7 +502,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "transfer_pair_id": DataClass.RECORD_ID,
     },
     ("core", "fct_transactions"): {
-        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+        "account_id": DataClass.RECORD_ID,
         "amount": DataClass.TXN_AMOUNT,
         "amount_absolute": DataClass.TXN_AMOUNT,
         "authorized_date": DataClass.TXN_DATE,

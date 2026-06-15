@@ -81,24 +81,26 @@ def test_query_help_lists_output_flag() -> None:
 
 @pytest.mark.usefixtures("_patched")
 def test_query_json_masks_critical() -> None:
-    """JSON output masks the CRITICAL account_id — parity with the MCP tool."""
+    """JSON output masks the CRITICAL routing_number — parity with the MCP tool."""
     result = runner.invoke(
-        app, ["query", "SELECT account_id FROM core.dim_accounts", "-o", "json"]
+        app, ["query", "SELECT routing_number FROM core.dim_accounts", "-o", "json"]
     )
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
-    assert str(payload["data"][0]["account_id"]).startswith("****")
-    assert "ACC000123456789" not in result.output
+    assert str(payload["data"][0]["routing_number"]).startswith("****")
+    assert "021000021" not in result.output
     assert payload["summary"]["sensitivity"] == "critical"
 
 
 @pytest.mark.usefixtures("_patched")
 def test_query_text_masks_critical() -> None:
-    """Text output masks the CRITICAL account_id and never prints the raw value."""
-    result = runner.invoke(app, ["query", "SELECT account_id FROM core.dim_accounts"])
+    """Text output masks the CRITICAL routing_number and never prints the raw value."""
+    result = runner.invoke(
+        app, ["query", "SELECT routing_number FROM core.dim_accounts"]
+    )
     assert result.exit_code == 0, result.output
     assert "****" in result.output
-    assert "ACC000123456789" not in result.output
+    assert "021000021" not in result.output
 
 
 @pytest.mark.usefixtures("_patched")

@@ -4,8 +4,9 @@ Each field carries ``Annotated[T, DataClass.X]`` metadata so the Phase 6
 middleware can derive sensitivity via ``derive_tier`` without inspecting
 tool source code directly.
 
-Payloads with ``ACCOUNT_IDENTIFIER`` (CRITICAL) resolve to ``Tier.CRITICAL``:
-  - ``TransactionRow`` (account_id always present)
+``account_id`` is RECORD_ID (spec D6 — opaque canonical surrogate, not PII).
+Payloads with ``TXN_AMOUNT`` (HIGH) as strongest class:
+  - ``TransactionRow`` (account_id = RECORD_ID; amount = TXN_AMOUNT → HIGH)
   - ``ManualBatchEntryResult`` (account_id not surfaced directly; batch level
     carries no account_id, so ``ManualBatchPayload`` resolves to ``Tier.LOW``)
   - ``TagsPayload`` (transaction_id only — RECORD_ID → LOW)
@@ -18,7 +19,7 @@ Payloads with ``USER_NOTE`` (MEDIUM) as strongest:
   - ``ReviewStatusPayload`` (aggregate counts only — LOW)
 
 ``TransactionGetPayload`` contains ``TransactionRow`` which has ``account_id``
-(ACCOUNT_IDENTIFIER → CRITICAL).
+(RECORD_ID, spec D6) and ``amount`` (TXN_AMOUNT → HIGH tier).
 """
 
 from __future__ import annotations
@@ -39,8 +40,8 @@ class TransactionRow:
     """One row from core.fct_transactions (transactions_get result)."""
 
     transaction_id: Annotated[str, DataClass.RECORD_ID]
-    # CRITICAL — drives TransactionGetPayload to Tier.CRITICAL
-    account_id: Annotated[str, DataClass.ACCOUNT_IDENTIFIER]
+    # RECORD_ID (spec D6): opaque canonical surrogate, not PII; passes through.
+    account_id: Annotated[str, DataClass.RECORD_ID]
     transaction_date: Annotated[str, DataClass.TXN_DATE]
     amount: Annotated[Decimal, DataClass.TXN_AMOUNT]
     description: Annotated[str, DataClass.DESCRIPTION]

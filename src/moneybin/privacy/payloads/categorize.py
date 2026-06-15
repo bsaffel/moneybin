@@ -8,12 +8,14 @@ Tier derivation summary:
   - ``CategorizeRunPayload``       → Tier.LOW  (AGGREGATE only — counts)
   - ``CategorizeStatsPayload``     → Tier.LOW  (AGGREGATE only — counts)
   - ``CategorizeCommitPayload``    → Tier.LOW  (AGGREGATE only — counts)
-  - ``RuleRow``                    → Tier.CRITICAL (ACCOUNT_IDENTIFIER via account_id)
-  - ``CategorizeRulesPayload``     → Tier.CRITICAL (via RuleRow.account_id)
+  - ``RuleRow``                    → Tier.HIGH (TXN_AMOUNT via min/max_amount;
+                                    account_id = RECORD_ID per spec D6)
+  - ``CategorizeRulesPayload``     → Tier.HIGH (via RuleRow)
   - ``RulesCreatePayload``         → Tier.LOW  (AGGREGATE only — counts + IDs)
   - ``RulesDeletePayload``         → Tier.LOW  (RECORD_ID — rule_id only)
-  - ``PendingTxnRow``              → Tier.CRITICAL (account_id present)
-  - ``CatPendingPayload``          → Tier.CRITICAL (via PendingTxnRow.account_id)
+  - ``PendingTxnRow``              → Tier.HIGH (TXN_AMOUNT via amount;
+                                    account_id = RECORD_ID per spec D6)
+  - ``CatPendingPayload``          → Tier.HIGH (via PendingTxnRow)
   - ``AutoReviewProposalRow``      → Tier.MEDIUM (merchant_pattern = MERCHANT_NAME)
   - ``AutoReviewPayload``          → Tier.MEDIUM (via AutoReviewProposalRow)
   - ``AutoAcceptPayload``          → Tier.LOW  (AGGREGATE only — counts + IDs)
@@ -21,9 +23,10 @@ Tier derivation summary:
   - ``AssistRow``                  → Tier.MEDIUM (description_redacted = DESCRIPTION)
   - ``CatAssistPayload``           → Tier.MEDIUM (via AssistRow)
 
-``transactions_categorize_assist`` deliberately redacts amounts, dates, and
-account_id.  ``AssistRow`` mirrors that shape — no ACCOUNT_IDENTIFIER,
-TXN_AMOUNT, or TXN_DATE field.  The middleware must not mask further.
+``transactions_categorize_assist`` deliberately redacts amounts and dates.
+``account_id`` is RECORD_ID (spec D6) so it passes through without masking.
+``AssistRow`` mirrors that shape — no TXN_AMOUNT or TXN_DATE field. The
+middleware must not mask further.
 """
 
 from __future__ import annotations
@@ -48,8 +51,8 @@ class RuleRow:
     match_type: Annotated[str | None, DataClass.TXN_TYPE]
     min_amount: Annotated[float | None, DataClass.TXN_AMOUNT]
     max_amount: Annotated[float | None, DataClass.TXN_AMOUNT]
-    # ACCOUNT_IDENTIFIER — drives CategorizeRulesPayload to Tier.CRITICAL
-    account_id: Annotated[str | None, DataClass.ACCOUNT_IDENTIFIER]
+    # RECORD_ID (spec D6): opaque canonical surrogate, not PII; passes through.
+    account_id: Annotated[str | None, DataClass.RECORD_ID]
     category: Annotated[str | None, DataClass.CATEGORY]
     subcategory: Annotated[str | None, DataClass.CATEGORY]
     priority: Annotated[int | None, DataClass.AGGREGATE]
@@ -107,8 +110,8 @@ class PendingTxnRow:
     amount: Annotated[float | None, DataClass.TXN_AMOUNT]
     description: Annotated[str | None, DataClass.DESCRIPTION]
     memo: Annotated[str | None, DataClass.DESCRIPTION]
-    # ACCOUNT_IDENTIFIER — drives CatPendingPayload to Tier.CRITICAL
-    account_id: Annotated[str | None, DataClass.ACCOUNT_IDENTIFIER]
+    # RECORD_ID (spec D6): opaque canonical surrogate, not PII; passes through.
+    account_id: Annotated[str | None, DataClass.RECORD_ID]
     age_days: Annotated[int | None, DataClass.AGGREGATE]
 
 

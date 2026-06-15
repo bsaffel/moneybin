@@ -45,7 +45,7 @@ def _all_classified_column_names() -> dict[str, set[DataClass]]:
     """Flatten the registry: ``column_name`` → set of ``DataClass`` it carries.
 
     The same column name appears across multiple ``(schema, table)`` entries
-    (e.g. ``account_id`` is ACCOUNT_IDENTIFIER in every table that has it).
+    (e.g. ``account_id`` is RECORD_ID in every table that has it — spec D6).
     Aggregating into a set lets the cross-check accept any of the registry's
     classifications for a given column name.
     """
@@ -79,12 +79,12 @@ def _find_annotated_meta(hint: object) -> DataClass | None:
 def test_payload_fields_match_registry(payload_cls: type) -> None:
     """Every payload field whose name matches a registry column uses its class.
 
-    A payload field named ``account_id`` MUST use
-    ``DataClass.ACCOUNT_IDENTIFIER`` because every registry entry for
-    ``account_id`` is ACCOUNT_IDENTIFIER. Aggregate payloads with fields like
-    ``total`` or ``count_archived`` (no registry counterpart) are exempt —
-    they must still carry a ``DataClass`` annotation but the specific value
-    cannot be cross-checked.
+    A payload field named ``account_id`` MUST use ``DataClass.RECORD_ID``
+    because every registry entry for ``account_id`` is RECORD_ID (spec D6:
+    the opaque minted canonical surrogate is not PII). Aggregate payloads
+    with fields like ``total`` or ``count_archived`` (no registry counterpart)
+    are exempt — they must still carry a ``DataClass`` annotation but the
+    specific value cannot be cross-checked.
     """
     registry = _all_classified_column_names()
     hints = get_type_hints(payload_cls, include_extras=True)

@@ -125,4 +125,5 @@ def test_error_audit_classification_derives_critical_from_payload() -> None:
 
     sensitivity, classes = _error_audit_classification(AccountDetail)
     assert sensitivity == "critical"
-    assert "account_identifier" in classes
+    # AccountDetail is CRITICAL via routing_number (account_id is RECORD_ID per D6).
+    assert "routing_number" in classes

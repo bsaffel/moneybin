@@ -65,8 +65,9 @@ class TestCategorizePendingGet:
     async def test_returns_all_rows_default_sort_date(self, mcp_db: Path) -> None:
         self._install_view()
         parsed = (await transactions_categorize_pending()).to_dict()
-        # CatPendingPayload has account_id: ACCOUNT_IDENTIFIER → Tier.CRITICAL
-        assert parsed["summary"]["sensitivity"] == "critical"
+        # CatPendingPayload → PendingTxnRow amount is TXN_AMOUNT → Tier.HIGH
+        # (account_id is RECORD_ID per spec D6).
+        assert parsed["summary"]["sensitivity"] == "high"
         # Default sort=date → most recent first (T3 > T2 > T1).
         ids = [row["transaction_id"] for row in parsed["data"]["transactions"]]
         assert ids == ["T3", "T2", "T1"]
