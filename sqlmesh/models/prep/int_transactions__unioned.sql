@@ -7,6 +7,7 @@ WITH ofx AS (
   SELECT
     source_transaction_id,
     account_id,
+    source_account_key,
     posted_date AS transaction_date,
     NULL::DATE AS authorized_date,
     amount::DECIMAL(18, 2) AS amount,
@@ -38,6 +39,7 @@ WITH ofx AS (
   SELECT
     source_transaction_id,
     account_id,
+    source_account_key,
     transaction_date,
     NULL::DATE AS authorized_date,
     amount::DECIMAL(18, 2) AS amount,
@@ -69,6 +71,7 @@ WITH ofx AS (
   SELECT
     transaction_id AS source_transaction_id,
     account_id,
+    source_account_key,
     transaction_date,
     post_date AS authorized_date,
     amount::DECIMAL(18, 2) AS amount,
@@ -100,6 +103,7 @@ WITH ofx AS (
   SELECT
     transaction_id AS source_transaction_id,
     account_id,
+    source_account_key,
     posted_date AS transaction_date,
     NULL::DATE AS authorized_date,
     amount::DECIMAL(18, 2) AS amount,

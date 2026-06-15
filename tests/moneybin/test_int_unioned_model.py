@@ -29,6 +29,7 @@ class TestIntTransactionsUnionedModel:
         assert "source_type" in content
         assert "source_origin" in content
         assert "account_id" in content
+        assert "source_account_key" in content
         assert "transaction_date" in content
         assert "amount" in content
         assert "description" in content
