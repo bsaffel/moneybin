@@ -11,6 +11,7 @@ MODEL (
 WITH ofx_accounts AS (
   SELECT
     account_id,
+    source_account_key,
     routing_number,
     account_type,
     institution_org AS institution_name,
@@ -23,6 +24,7 @@ WITH ofx_accounts AS (
 ), tabular_accounts AS (
   SELECT
     account_id,
+    source_account_key,
     routing_number,
     account_type,
     institution_name,
@@ -35,6 +37,7 @@ WITH ofx_accounts AS (
 ), plaid_accounts AS (
   SELECT
     account_id,
+    source_account_key,
     NULL::TEXT AS routing_number,
     account_type,
     institution_name,
@@ -56,34 +59,59 @@ WITH ofx_accounts AS (
   SELECT
     *
   FROM plaid_accounts
-), deduplicated AS (
+), ranked AS (
   SELECT
     *,
-    ROW_NUMBER() OVER (PARTITION BY account_id ORDER BY extracted_at DESC) AS _row_num
+    /* Grain key. account_id is the CANONICAL opaque id when the account has an
+       accepted app.account_links row; it is NULL for accounts imported before the
+       B7 backfill migration. COALESCE falls back to the source-native key so those
+       unlinked accounts stay DISTINCT instead of every NULL collapsing into one
+       bad row. Transient safety net: post-migration every account is linked, so
+       the COALESCE always takes the canonical id and this fallback is inert. */
+    COALESCE(account_id, source_account_key) AS grain_key,
+    /* Source strength for the golden-record merge: ofx > plaid > tabular (lower
+       rank wins). Mirrors MatchingSettings.source_priority. */
+    CASE source_type WHEN 'ofx' THEN 0 WHEN 'plaid' THEN 1 ELSE 2 END AS source_rank
   FROM all_accounts
-), winners AS (
+), merged AS (
+  /* Per-field COALESCE-across-group merge (Decision 4), replacing last-write-wins.
+     A later weaker-source NULL can no longer clobber a stronger source's value. */
   SELECT
-    *
-  FROM deduplicated
-  WHERE
-    _row_num = 1
+    grain_key AS account_id,
+    /* Structured bank fields: first non-null by source strength then recency.
+       ARG_MIN over (source_rank ASC, extracted_at DESC) — negating epoch_us flips
+       the timestamp to descending within the composite ordering key. */
+    ARG_MIN(routing_number, (source_rank, -EPOCH_US(extracted_at))) FILTER (WHERE NOT routing_number IS NULL) AS routing_number,
+    ARG_MIN(institution_fid, (source_rank, -EPOCH_US(extracted_at))) FILTER (WHERE NOT institution_fid IS NULL) AS institution_fid,
+    /* Descriptive fields: first non-null by recency. */
+    ARG_MAX(institution_name, extracted_at) FILTER (WHERE NOT institution_name IS NULL) AS institution_name,
+    ARG_MAX(account_type, extracted_at) FILTER (WHERE NOT account_type IS NULL) AS account_type,
+    /* Display provenance: the winning (strength then recency) row's value. The
+       full contributing set is recoverable from app.account_links. */
+    ARG_MIN(source_type, (source_rank, -EPOCH_US(extracted_at))) AS source_type,
+    ARG_MIN(source_file, (source_rank, -EPOCH_US(extracted_at))) AS source_file,
+    /* Representative timestamps for the merged group; keeps updated_at monotone. */
+    MAX(extracted_at) AS extracted_at,
+    MAX(loaded_at) AS loaded_at
+  FROM ranked
+  GROUP BY grain_key
 )
 SELECT
-  w.account_id, /* Unique account identifier; stable across imports; foreign key in fct_transactions */
-  w.routing_number, /* ABA bank routing number; NULL when not provided by source */
+  w.account_id, /* Canonical account identifier; opaque and stable across imports; foreign key in fct_transactions */
+  w.routing_number, /* ABA bank routing number; merged first-non-null by source strength then recency; NULL when no source provided it */
   w.account_type, /* Account classification from source, e.g. CHECKING, SAVINGS, CREDITLINE */
   w.institution_name, /* Human-readable name of the financial institution */
-  w.institution_fid, /* OFX financial institution identifier; NULL for tabular sources */
-  w.source_type, /* Origin of the winning record after deduplication: ofx, csv, tsv, excel, etc. */
-  w.source_file, /* Path to the source file from which this record was loaded */
-  w.extracted_at, /* When the data was parsed from the source file */
-  w.loaded_at, /* When the record was written to the raw table */
+  w.institution_fid, /* OFX financial institution identifier; NULL for tabular/plaid sources */
+  w.source_type, /* Origin of the winning record after the cross-source merge: ofx, csv, tsv, excel, plaid, etc. */
+  w.source_file, /* Path to the source file from which the winning record was loaded */
+  w.extracted_at, /* Latest time the data was parsed from a contributing source */
+  w.loaded_at, /* Latest time a contributing record was written to the raw table */
   GREATEST(w.loaded_at, s.updated_at) AS updated_at, /* Latest of all per-row input timestamps contributing to this row's current values. Does not advance on idempotent SQLMesh re-applies. See docs/specs/core-updated-at-convention.md. */
   COALESCE(
     s.display_name,
-    w.institution_name || ' ' || w.account_type || ' …' || RIGHT(w.account_id, 4),
-    w.account_id
-  ) AS display_name, /* Resolved display label: user override → derived default → bare account_id */
+    w.institution_name || ' ' || w.account_type || ' …' || s.last_four,
+    w.institution_name || ' ' || w.account_type
+  ) AS display_name, /* Resolved display label: user override → derived default with last_four → derived default without */
   s.official_name, /* Institution's formal name (mirrors Plaid official_name); user-set or future Plaid sync */
   s.last_four, /* Last 4 digits of account number (mirrors Plaid mask); user-set or future Plaid sync */
   s.account_subtype, /* Plaid-style subtype (checking, savings, credit card, mortgage, ...) */
@@ -92,6 +120,6 @@ SELECT
   s.credit_limit, /* User-asserted credit limit on credit cards / lines */
   COALESCE(s.archived, FALSE) AS archived, /* Hides account from default list and from agg_net_worth */
   COALESCE(s.include_in_net_worth, TRUE) AS include_in_net_worth /* Whether this account contributes to agg_net_worth */
-FROM winners AS w
+FROM merged AS w
 LEFT JOIN app.account_settings AS s
   ON w.account_id = s.account_id
