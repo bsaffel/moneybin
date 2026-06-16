@@ -120,8 +120,11 @@ SELECT
   COALESCE(
     s.display_name,
     w.institution_name || ' ' || w.account_type || ' …' || s.last_four,
-    w.institution_name || ' ' || w.account_type
-  ) AS display_name, /* Resolved display label: user override → derived default with last_four → derived default without */
+    w.institution_name || ' ' || w.account_type,
+    w.institution_name,
+    w.account_type,
+    'Account ' || w.account_id
+  ) AS display_name, /* Resolved display label: user override → derived (institution+type[+last4]) → institution or type alone → 'Account <id>' terminal so it is never NULL */
   s.official_name, /* Institution's formal name (mirrors Plaid official_name); user-set or future Plaid sync */
   s.last_four, /* Last 4 digits of account number (mirrors Plaid mask); user-set or future Plaid sync */
   s.account_subtype, /* Plaid-style subtype (checking, savings, credit card, mortgage, ...) */

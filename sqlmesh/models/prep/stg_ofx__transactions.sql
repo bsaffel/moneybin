@@ -18,14 +18,12 @@ WITH ranked AS (
     t.loaded_at,
     t.import_id,
     'ofx' AS source_type,
-    COALESCE(t.source_origin, a.institution_org, 'ofx_unknown') AS source_origin,
+    t.source_origin,
     ROW_NUMBER() OVER (PARTITION BY t.source_transaction_id, t.account_id ORDER BY t.loaded_at DESC) AS _row_num
   FROM raw.ofx_transactions AS t
-  LEFT JOIN raw.ofx_accounts AS a
-    ON t.account_id = a.account_id
 )
 SELECT
-  COALESCE(links.account_id, ranked.account_id) AS account_id, /* canonical when linked, else source-native (transient until B7 backfill) */
+  COALESCE(links.account_id, ranked.account_id) AS account_id, /* canonical via the import-time resolver link; source-native only if unresolved */
   ranked.account_id AS source_account_key,
   ranked.source_transaction_id,
   ranked.transaction_type,

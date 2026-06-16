@@ -4,7 +4,7 @@ MODEL (
 );
 
 SELECT
-  COALESCE(links.account_id, a.account_id) AS account_id, /* canonical when linked, else source-native (transient until B7 backfill) */
+  COALESCE(links.account_id, a.account_id) AS account_id, /* canonical via the import-time resolver link; source-native only if unresolved */
   a.account_id AS source_account_key,
   a.routing_number,
   a.account_type,

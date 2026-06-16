@@ -9,10 +9,13 @@ asserts the backfill writes the expected deterministic hash for each.
 V026 is a FROZEN migration: its ``_predict`` uses the ORIGINAL
 ``manual|source_transaction_id|account_id`` hash. The ADR-015/RD-2 re-key (B4)
 later moved the live transaction_id formula to the immutable source identity
-(``source_type|source_origin|source_account_key|source_transaction_id``);
-migration V030 re-keys the V026-backfilled rows forward to it. So V026 stays
-historical and must NOT track the service formula — the cross-migration
-consistency it once guarded is now V030's responsibility (test_migration_v030).
+(``source_type|source_origin|source_account_key|source_transaction_id``). There
+is no in-place re-key migration: existing dogfood data is re-imported into a
+clean database, and fresh manual transactions are written with the new formula
+by ``transaction_service._predict_manual_gold_key``. So V026 stays historical —
+its backfill is inert on fresh data (no pre-V026 rows) — and must NOT track the
+service formula; pinning its output here guards a shipped migration against
+accidental change.
 """
 
 # pyright: reportPrivateUsage=false
@@ -41,7 +44,7 @@ def _expected_hash(source_transaction_id: str, account_id: str) -> str:
     """V026's frozen backfill hash: ``manual|source_transaction_id|account_id``.
 
     This is the ORIGINAL pre-ADR-015 formula. The live service + SQL model moved
-    on (B4); V030 re-keys these rows forward. V026's own output stays this.
+    on (B4); V026's own output stays this (frozen shipped migration).
     """
     raw = f"manual|{source_transaction_id}|{account_id}"
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
@@ -63,9 +66,8 @@ def test_migration_predict_uses_frozen_original_formula(
 
     V026 is a frozen migration — its backfill formula is historical and must NOT
     be silently retracked to the live transaction_id formula, which the ADR-015 /
-    RD-2 re-key (B4) changed to the immutable source identity. Migration V030
-    re-keys the V026-backfilled rows forward to the new formula; pinning V026's
-    own output here guards against an accidental change to a shipped migration.
+    RD-2 re-key (B4) changed to the immutable source identity. Pinning V026's own
+    output here guards against an accidental change to a shipped migration.
     """
     assert _migration_predict(source_transaction_id, account_id) == (
         _expected_hash(source_transaction_id, account_id)

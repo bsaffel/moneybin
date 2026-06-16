@@ -81,6 +81,7 @@ def _seed_ofx_account(db: Database, account_id: str, source_file: str) -> None:
             "account_type": "CREDITCARD",
             "institution_org": "fixture",
             "institution_fid": None,
+            "source_origin": "fixture",
             "source_file": source_file,
             "extracted_at": datetime.now(UTC),
         }
@@ -124,6 +125,9 @@ def _enrich_for_ofx_raw(
         pl.lit(None, dtype=pl.Utf8).alias("memo"),
         pl.lit(None, dtype=pl.Utf8).alias("check_number"),
         pl.lit(source_file).alias("source_file"),
+        # The real OFX extractor stamps source_origin on every transaction row;
+        # staging keys the account_links JOIN on it, so the fixture must too.
+        pl.lit("fixture").alias("source_origin"),
         pl.lit(datetime.now(UTC)).alias("extracted_at"),
     )
 
