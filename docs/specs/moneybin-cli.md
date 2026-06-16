@@ -179,6 +179,18 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |                                    standalone `transform_apply` MCP tool.
 |         [--output json] [-q]
 |
++-- review                         -- What needs my attention? Pending counts across all review queues.
+|     [--type matches|categorize|all]   Default all; walks matches first then categorize
+|     [--status]                        Counts only, no interactive loop
+|     [--confirm <id>]                  Non-interactive: confirm one match by ID
+|     [--reject <id>]                   Non-interactive: reject one match by ID
+|     [--confirm-all]                   Non-interactive: confirm all items in scope
+|     [--limit N]                       Cap items per session
+|     [--output text|json] [-q]
+|   Aggregates matches_pending + categorize_pending + account_links_pending in one sweep.
+|   Use `--status` for counts only; drill into `accounts links pending`,
+|   `transactions matches list`, or `transactions categorize pending` for queue contents.
+|
 +-- accounts
 |   +-- list                       -- List accounts [--include-archived] [--type TYPE]
 |   +-- get <account_id>           -- Show one account's full settings + dim record
@@ -233,7 +245,8 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- list                       -- List transactions [--account ID] [--from] [--to]
 |   +-- create                     -- Create a manual transaction
 |   +-- audit                      -- Audit one transaction's curation history (notes, tags, splits)
-|   +-- review                     -- Unified review queue (matches + categorize)
+|   +-- review                     -- DEPRECATED: use `moneybin review` (removed after one minor release)
+|   |                                  Unified review queue (matches + categorize + account-links)
 |   |     [--type matches|categorize|all]   Default all; walks matches first then categorize
 |   |     [--status]                        Counts only, no interactive loop
 |   |     [--confirm <id>]                  Non-interactive: confirm one match or categorize item by ID

@@ -55,8 +55,12 @@ class SystemService:
         accounts_count = self._count_accounts()
         transactions_count, min_date, max_date = self._query_transactions()
         last_import_at = self._last_import_at()
+        from moneybin.services.account_links_service import AccountLinksService
+
         review = ReviewService(
-            MatchingService(self._db), CategorizationService(self._db)
+            MatchingService(self._db),
+            CategorizationService(self._db),
+            AccountLinksService(self._db),
         ).status()
         freshness = TransformService(self._db).freshness()
         schema_drift = check_core_schema_drift(self._db)

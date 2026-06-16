@@ -108,6 +108,19 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
 - **`system_status` `database_connections` section** identifies the active
   writer (via the lock file) and concurrent readers (via `lsof`). Powers the
   `DatabaseLockError` recovery action.
+- **`review` MCP tool and `moneybin review` CLI command** (M1S.5c) — domain-neutral
+  orientation sweep that aggregates all three review queues in one call:
+  `matches_pending`, `categorize_pending`, and `account_links_pending` (new).
+  One "what needs my attention?" call now covers transaction matches, uncategorized
+  transactions, and account-link decisions without a separate sweep per domain.
+
+### Deprecated
+- **`transactions_review` MCP tool** — use `review` instead. Registered as a
+  deprecated alias with description starting with "DEPRECATED: use `review`";
+  removed after one minor release.
+- **`moneybin transactions review`** — use `moneybin review` instead. Emits a
+  deprecation warning to stderr and delegates to the same implementation;
+  removed after one minor release.
 
 ### Changed
 - **`Database.__init__()` and `get_database()` now require `read_only` as a

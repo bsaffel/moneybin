@@ -32,6 +32,7 @@ from .commands import (
     profile,
     refresh,
     reports,
+    review,
     sql,
     stats,
     sync,
@@ -144,6 +145,10 @@ app.add_typer(
     name="reports",
     help="Cross-domain analytical reports",
 )
+app.command(
+    name="review",
+    help="Pending counts across all review queues (matches, categorize, account-links)",
+)(review.review_command)
 app.add_typer(transactions.app, name="transactions")
 app.add_typer(assets.app, name="assets")
 app.add_typer(categories.app, name="categories")

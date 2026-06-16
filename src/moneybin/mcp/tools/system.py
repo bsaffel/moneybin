@@ -326,7 +326,7 @@ def system_status() -> ResponseEnvelope[SystemStatusPayload]:
 
     schema_drift_payload: SystemStatusSchemaDrift | None = None
     actions = [
-        "Use transactions_review for per-queue review counts",
+        "Use `review` for per-queue review counts (matches + categorize + account-links)",
         "Use reports_spending for a monthly spending trend snapshot",
     ]
     if status.schema_drift:

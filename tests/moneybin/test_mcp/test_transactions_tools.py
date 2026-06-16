@@ -30,14 +30,20 @@ async def test_review_status_returns_envelope(mcp_db: object) -> None:
 
 @pytest.mark.unit
 async def test_review_status_data_shape(mcp_db: object) -> None:
-    """Data dict carries matches_pending, categorize_pending, and total."""
+    """Data dict carries matches_pending, categorize_pending, account_links_pending, and total."""
     data = (await transactions_review()).to_dict()["data"]
     assert "matches_pending" in data
     assert "categorize_pending" in data
+    assert "account_links_pending" in data
     assert "total" in data
     assert isinstance(data["matches_pending"], int)
     assert isinstance(data["categorize_pending"], int)
-    assert data["total"] == data["matches_pending"] + data["categorize_pending"]
+    assert isinstance(data["account_links_pending"], int)
+    assert data["total"] == (
+        data["matches_pending"]
+        + data["categorize_pending"]
+        + data["account_links_pending"]
+    )
 
 
 @pytest.mark.unit

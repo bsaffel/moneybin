@@ -113,6 +113,7 @@ not-yet-built.
 | 50| Accept (merge) or standalone-reject one pending account-link decision | `accounts_links_set` *(`decision_id`, `target_account_id: str\|null` — no default; null = standalone-reject)* | `accounts links set <decision_id> --into <account_id>` (merge) / `--standalone` (reject) | — | live |
 | 51| Show recent account-link decisions (all statuses) | `accounts_links_history` *(`limit=50`)* | `accounts links history` *(`--limit`, `--output json`)* | — | live |
 | 52| Backfill pending account-link proposals for existing accounts (cross-source twin discovery) | `accounts_links_run` *(returns `data.new_proposals`)* | `accounts links run` *(`--output json`)* | — | live |
+| 53| "What needs my attention?" — pending counts across all three review queues in one sweep | `review` *(returns `{matches_pending, categorize_pending, account_links_pending, total}`)* | `moneybin review --status` *(`--type`, `--output json`)* | — | live |
 
 *(Bootstrap rows only; full table populates incrementally as
 follow-up work closes the parity backlog. A prior row covering
@@ -162,7 +163,12 @@ surfaced.
 Row 52 added 2026-06-16 with the accounts-links-run backfill PR (M1S.5b):
 `accounts_links_run` (MCP) and `accounts links run` (CLI) registered. Backfills pending
 proposals for cross-source twins already in `core.dim_accounts`; skips pairs already
-proposed or decided in either direction. Undo deliberately deferred to M1L.)*
+proposed or decided in either direction. Undo deliberately deferred to M1L.
+Row 53 added 2026-06-16 with the review-promotion PR (M1S.5c):
+`review` (MCP) and `moneybin review` (CLI) replace `transactions_review` /
+`moneybin transactions review` as the domain-neutral orientation sweep. Payload gains
+`account_links_pending` so one call covers all three queues. Old names kept as
+deprecated aliases for one minor release; descriptions start with "DEPRECATED:".)*
 
 ## Exemption categories
 

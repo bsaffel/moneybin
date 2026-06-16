@@ -133,7 +133,7 @@ Required content:
 - One-line product description (local-first, on-device DuckDB)
 - Top-level group enumeration with brief domain hint (entity groups, reference data, reports, system, pipeline, privacy)
 - Naming convention reminder (path-prefix-verb-suffix, with 2–3 examples)
-- Orientation pointers — which tool to call to "get oriented" (`system_status` for data status; `transactions_review` for review queues; `reports_networth` + `reports_spending` for a quick financial pulse)
+- Orientation pointers — which tool to call to "get oriented" (`system_status` for data status; `review` for pending review counts across all queues; `reports_networth` + `reports_spending` for a quick financial pulse)
 - Response envelope shape (`{summary, data, actions}`) and pagination convention
 - Batch-tool preference
 - Sensitivity tiers and degraded-response behavior
@@ -594,15 +594,21 @@ Primary transaction read tool. Returns full transaction records with curation me
 - **CLI:** `moneybin transactions list`
 - **read_only:** true
 
-### `transactions_review`
+### `review`
 
-Orientation tool: pending counts across the review queues.
+Orientation tool: pending counts across **all three** review queues (matches + categorize + account-links).
 
 - **Sensitivity:** `low` — counts only.
 - **Unique parameters:** None.
-- **Behavior:** Returns `{matches_pending: int, categorize_pending: int, total: int}` so the agent can answer "anything to review?" in one call. The agent drills into `transactions_categorize_pending` for categorization items and into `transactions_matches_pending` for match proposals. Use `transactions_matches_set` to accept or reject individual match proposals; use `transactions_categorize_commit` to persist categorization decisions.
-- **Service:** `TransactionService.review_counts() -> ReviewCounts`
-- **CLI:** `moneybin transactions review`
+- **Behavior:** Returns `{matches_pending: int, categorize_pending: int, account_links_pending: int, total: int}` so the agent can answer "what needs my attention?" in one sweep. Drill into `transactions_categorize_pending` for categorization items, `transactions_matches_pending` for match proposals, and `accounts_links_pending` for account-link decisions.
+- **Service:** `ReviewService(MatchingService, CategorizationService, AccountLinksService).status()`
+- **CLI:** `moneybin review`
+
+### `transactions_review` *(deprecated — removed after one minor release)*
+
+**DEPRECATED alias for `review`.** Registered with a description starting with `"DEPRECATED: use review — removed after one minor release."` Identical behavior; prefer `review` in all new agent code.
+
+- **CLI:** `moneybin transactions review` *(deprecated — use `moneybin review`)*
 
 ### Curation tools (`transactions_create`, notes / tags / splits, `import_labels_set`, `system_audit`)
 
