@@ -1,7 +1,8 @@
 """End-to-end tests for sql_query lineage-based privacy enforcement.
 
 Verifies that:
-- CRITICAL columns (account_id) are masked (****<last4>)
+- CRITICAL columns (routing_number) are masked (*****)
+- account_id is RECORD_ID (opaque minted surrogate, spec D6) — passes through
 - HIGH columns (amount) pass through in the clear
 - Aggregate queries return LOW sensitivity
 - Nonexistent tables return an error envelope
@@ -43,14 +44,22 @@ def _seeded_txn(mcp_db: object) -> None:  # type: ignore[type-arg]
 
 
 @pytest.mark.integration
-def test_critical_column_masked(mcp_db: object) -> None:  # type: ignore[type-arg]
-    """CRITICAL column (account_id) must be masked in sql_query output."""
+def test_opaque_account_id_passes_through(mcp_db: object) -> None:  # type: ignore[type-arg]
+    """account_id is RECORD_ID (opaque minted surrogate, spec D6) — LOW, unmasked.
+
+    The PR-wide reclassification flipped core/app ``account_id`` from
+    ACCOUNT_IDENTIFIER to RECORD_ID: it is an opaque canonical handle, not
+    PII, so it passes through in the clear as the agent-readable parameter.
+    Real account numbers live in ``app.account_links.ref_value``
+    (still ACCOUNT_IDENTIFIER, still masked). ``test_routing_number_masked``
+    covers the masked-critical-column path.
+    """
     env = _run("SELECT account_id FROM core.dim_accounts LIMIT 1")
     assert env.error is None, f"Unexpected error: {env.error}"
-    assert env.summary.sensitivity == "critical"
+    assert env.summary.sensitivity == "low"
     for row in env.data:  # type: ignore[union-attr]
-        assert str(row["account_id"]).startswith("****"), (
-            f"account_id was not masked: {row['account_id']!r}"
+        assert row["account_id"] in {"ACC001", "ACC002"}, (
+            f"account_id should pass through unmasked: {row['account_id']!r}"
         )
 
 
@@ -106,7 +115,7 @@ def test_classes_returned_in_envelope(mcp_db: object) -> None:  # type: ignore[t
     env = _run("SELECT account_id FROM core.dim_accounts LIMIT 1")
     assert env.error is None
     assert env.classes_returned is not None
-    assert "account_identifier" in env.classes_returned
+    assert "record_id" in env.classes_returned
     # classes_returned is not in the wire dict
     assert "classes_returned" not in env.to_dict()
 
@@ -174,18 +183,22 @@ def test_truncation_sets_has_more(
 
 @pytest.mark.integration
 def test_unaliased_aggregate_critical_masked(mcp_db: object) -> None:  # type: ignore[type-arg]
-    """Unaliased MIN(account_id) is masked despite the sqlglot/DuckDB name split.
+    """Unaliased MIN(routing_number) is masked despite the sqlglot/DuckDB name split.
 
     sqlglot names the projection `''` while DuckDB calls the result column
-    `min(account_id)`; name-keyed redaction would miss it and leak the account
-    number. Position-aligned redaction masks it by the real column name.
+    `min(routing_number)`; name-keyed redaction would miss it and leak the
+    routing number. Position-aligned redaction masks it by the real column
+    name. Uses routing_number (still CRITICAL) — the canonical account_id is
+    RECORD_ID per spec D6 and no longer masked.
     """
-    env = _run("SELECT MIN(account_id) FROM core.dim_accounts")
+    env = _run("SELECT MIN(routing_number) FROM core.dim_accounts")
     assert env.error is None, f"Unexpected error: {env.error}"
     assert env.summary.sensitivity == "critical"
     row = env.data[0]  # type: ignore[index]
     (value,) = row.values()
-    assert str(value).startswith("****"), f"unaliased account_id not masked: {value!r}"
+    assert str(value).startswith("****"), (
+        f"unaliased routing_number not masked: {value!r}"
+    )
 
 
 @pytest.mark.integration
