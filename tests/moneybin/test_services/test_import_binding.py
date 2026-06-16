@@ -168,3 +168,35 @@ def test_agent_import_does_not_gate_and_queues(
         assert n is not None and n[0] >= 1
     finally:
         db.close()
+
+
+def test_import_emits_account_link_metrics(
+    mock_secret_store: MagicMock, tmp_path: Path
+) -> None:
+    """A queued candidate observes confidence and refreshes the pending gauge."""
+    from prometheus_client import REGISTRY
+
+    db = _db(mock_secret_store, tmp_path)
+    try:
+        _seed_existing_account(
+            db, account_id="wf_existing01", display_name="WF Checking"
+        )
+        before = (
+            REGISTRY.get_sample_value("moneybin_account_link_confidence_count") or 0.0
+        )
+        ImportService(db).import_file(
+            _STANDARD_CSV,
+            account_name="WF Checking",
+            refresh=False,
+            confirm=True,
+            actor_kind="agent",  # loads + queues so resolve() observes confidence
+        )
+        after = (
+            REGISTRY.get_sample_value("moneybin_account_link_confidence_count") or 0.0
+        )
+        assert after > before  # at least one candidate confidence observed
+        # Gauge was just refreshed from this DB's live pending count (one proposal).
+        gauge = REGISTRY.get_sample_value("moneybin_account_link_review_pending")
+        assert gauge == 1.0
+    finally:
+        db.close()

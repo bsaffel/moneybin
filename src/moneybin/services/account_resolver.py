@@ -17,6 +17,10 @@ import duckdb
 
 from moneybin.database import Database
 from moneybin.extractors.tabular.account_matching import match_account
+from moneybin.metrics.registry import (
+    ACCOUNT_LINK_CONFIDENCE,
+    ACCOUNT_LINK_REVIEW_PENDING,
+)
 from moneybin.repositories.account_link_decisions_repo import AccountLinkDecisionsRepo
 from moneybin.repositories.account_links_repo import AccountLinksRepo
 from moneybin.services.account_resolution_types import (
@@ -25,9 +29,24 @@ from moneybin.services.account_resolution_types import (
     ResolvedAccount,
     SourceAccount,
 )
-from moneybin.tables import ACCOUNT_LINKS, DIM_ACCOUNTS
+from moneybin.tables import ACCOUNT_LINK_DECISIONS, ACCOUNT_LINKS, DIM_ACCOUNTS
 
 logger = logging.getLogger(__name__)
+
+
+def refresh_account_link_pending_gauge(db: Database) -> None:
+    """Set ACCOUNT_LINK_REVIEW_PENDING from the live pending-decision count.
+
+    Called at the two sites that change the count: the resolver's candidate
+    pass (adds proposals) and ``AccountLinksService.set`` (accept/reject clears
+    them). Keeps the gauge honest in both directions rather than only counting
+    up. Matches the canonical predicate used by ``count_pending``.
+    """
+    row = db.execute(
+        f"SELECT count(*) FROM {ACCOUNT_LINK_DECISIONS.full_name} "  # noqa: S608  # TableRef constant, no user input
+        "WHERE status = 'pending' AND reversed_at IS NULL"
+    ).fetchone()
+    ACCOUNT_LINK_REVIEW_PENDING.set(int(row[0]) if row else 0)
 
 
 @dataclass(frozen=True)
@@ -116,7 +135,9 @@ class AccountResolver:
                 actor=self._actor,
                 match_reason=cand.signal,
             )
+            ACCOUNT_LINK_CONFIDENCE.observe(cand.confidence)
             pending_ids.append(decision_id)
+        refresh_account_link_pending_gauge(self._db)
         return ResolvedAccount(
             account_id=account_id,
             is_new=True,

@@ -227,7 +227,10 @@ class AccountLinksService:
         """
         # Import here to avoid a circular-import at module level
         # (AccountResolver ← AccountLinkDecisionsRepo ← AccountLinksService would cycle).
-        from moneybin.services.account_resolver import AccountResolver  # noqa: PLC0415
+        from moneybin.services.account_resolver import (  # noqa: PLC0415
+            AccountResolver,
+            refresh_account_link_pending_gauge,
+        )
 
         resolver = AccountResolver(self._db, actor=self._actor)
         try:
@@ -311,6 +314,7 @@ class AccountLinksService:
             self._db.rollback()
             raise
 
+        refresh_account_link_pending_gauge(self._db)
         logger.info(f"accounts_links_run: wrote {new_count} new pending decisions")
         return new_count
 
@@ -460,3 +464,10 @@ class AccountLinksService:
         except BaseException:
             self._db.rollback()
             raise
+        # Accept/reject changed the pending count — refresh the gauge (only
+        # reached on a successful commit; the except above re-raises).
+        from moneybin.services.account_resolver import (  # noqa: PLC0415
+            refresh_account_link_pending_gauge,
+        )
+
+        refresh_account_link_pending_gauge(self._db)
