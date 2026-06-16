@@ -778,10 +778,12 @@ def import_confirm(
     from the statement; pass ``account_id`` only to pin rows to an existing
     account when the statement carries no account anchor.
 
-    Mutation surface: writes to ``raw.tabular_transactions`` (data load) and
-    ``app.tabular_formats`` / ``app.pdf_formats`` when ``save_format=True``.
-    Data load is reversible via ``import_revert`` with the returned
-    ``import_id``; format save can be undone via ``system_audit_undo``.
+    Mutation surface: writes to ``raw.tabular_transactions`` (data load),
+    ``app.tabular_formats`` / ``app.pdf_formats`` when ``save_format=True``, and
+    ``app.account_settings`` when ``account_metadata`` captures fields for a
+    newly-minted account. Data load is reversible via ``import_revert`` with the
+    returned ``import_id``; format save and the settings write can be undone via
+    ``system_audit_undo``.
 
     Amounts use the accounting convention: negative = expense, positive =
     income; transfers exempt.

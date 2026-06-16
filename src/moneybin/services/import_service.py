@@ -1332,8 +1332,21 @@ class ImportService:
             resolved_account = resolver.resolve(src)
             ACCOUNT_LINK_OUTCOMES_TOTAL.labels(result=resolved_account.outcome).inc()
             meta = metadata.get(src.source_account_key)
-            if meta and resolved_account.is_new:
+            if not meta:
+                continue
+            # Capture only for a genuinely-new account (outcome="minted_new",
+            # i.e. a "new" binding or a clean no-candidate mint). A
+            # pending_review provisional is is_new=True too, but a later
+            # accept re-points it onto the candidate and abandons the
+            # provisional id — settings written here would be orphaned. An
+            # adopted account keeps its existing settings.
+            if resolved_account.outcome == "minted_new":
                 self._capture_new_account_metadata(resolved_account.account_id, meta)
+            else:
+                logger.warning(
+                    "account_metadata ignored: account resolved to "
+                    f"{resolved_account.outcome!r}, not a new mint."
+                )
 
         # Create import batch
         extractor = TabularExtractor(self._db)

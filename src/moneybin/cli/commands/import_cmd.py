@@ -518,10 +518,20 @@ def import_files_command(
                 "flagged": list(outcome.confidence.flagged),
                 "missing_required": list(outcome.confidence.missing_required),
                 "unmapped_columns": unmapped,
+                "account_proposals": list(outcome.account_proposals),
             }
             confirm_actions: list[str] = []
             if outcome.error_message:
                 confirm_actions.append(f"Validation failed: {outcome.error_message}")
+            if outcome.reason == "account_confirmation":
+                # The layout is settled; only the account identity needs
+                # ratifying. Direct the user to the binding subcommand — the
+                # mapping hints below do not resolve an account_confirmation.
+                confirm_actions.append(
+                    f"Run 'moneybin import confirm {file_path_str} --accept "
+                    "--account-binding <source_key>=<account_id|new>' to bind each "
+                    "proposed account (adopt an existing id, or 'new' to keep distinct)."
+                )
             # resolve_or_confirm refuses Accept on low-tier proposals (the
             # detector couldn't form a complete one); suggesting --confirm
             # there would just bounce back with the same outcome. Only

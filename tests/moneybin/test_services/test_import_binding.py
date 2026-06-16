@@ -235,6 +235,68 @@ def test_account_metadata_rejects_unknown_field(
         db.close()
 
 
+def test_metadata_not_captured_for_pending_provisional(
+    mock_secret_store: MagicMock, tmp_path: Path
+) -> None:
+    """Metadata for an unbound account that resolves to pending_review is dropped.
+
+    Writing settings to a provisional id that a later merge re-points would
+    orphan them — capture is reserved for genuinely-new mints.
+    """
+    db = _db(mock_secret_store, tmp_path)
+    try:
+        _seed_existing_account(
+            db, account_id="wf_existing01", display_name="WF Checking"
+        )
+        ImportService(db).import_file(
+            _STANDARD_CSV,
+            account_name="WF Checking",
+            refresh=False,
+            confirm=True,
+            actor_kind="agent",  # no gate; the csv mints a pending provisional
+            account_metadata={"wf-checking": {"display_name": "Renamed"}},
+        )
+        # The account resolved to a pending_review provisional, so no settings.
+        n = db.execute("SELECT COUNT(*) FROM app.account_settings").fetchone()
+        assert n is not None and n[0] == 0
+    finally:
+        db.close()
+
+
+def test_pending_gauge_counts_distinct_provisionals(
+    mock_secret_store: MagicMock, tmp_path: Path
+) -> None:
+    """The gauge counts review items (distinct provisionals), not decision rows."""
+    from prometheus_client import REGISTRY
+
+    from moneybin.repositories.account_link_decisions_repo import (
+        AccountLinkDecisionsRepo,
+    )
+    from moneybin.services.account_resolver import refresh_account_link_pending_gauge
+
+    db = _db(mock_secret_store, tmp_path)
+    try:
+        # One provisional with two candidate decisions (two weak signals).
+        repo = AccountLinkDecisionsRepo(db)
+        for cand in ("cand_a", "cand_b"):
+            repo.insert(
+                decision_id=f"dec_{cand}",
+                provisional_account_id="prov_1",
+                candidate_account_id=cand,
+                confidence_score=0.5,
+                match_signals={"signal": "name", "value": "WF"},
+                decided_by="auto",
+                actor="system",
+                match_reason="name",
+            )
+        refresh_account_link_pending_gauge(db)
+        # Two decision rows, but one provisional → one review item.
+        gauge = REGISTRY.get_sample_value("moneybin_account_link_review_pending")
+        assert gauge == 1.0
+    finally:
+        db.close()
+
+
 def test_import_emits_account_link_metrics(
     mock_secret_store: MagicMock, tmp_path: Path
 ) -> None:

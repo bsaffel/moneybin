@@ -200,6 +200,60 @@ class TestImportFilesConfirmFlow:
         call_kwargs = mock_import_file.call_args.kwargs
         assert call_kwargs["overrides"] == {"description": "Memo"}
 
+    def test_account_confirmation_envelope_carries_proposals(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """`import files` surfaces account_proposals + the binding hint on the gate."""
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+        outcome = ConfirmationRequired(
+            channel="tabular",
+            confidence=Confidence(
+                score=1.0, tier="high", flagged=(), missing_required=()
+            ),
+            proposed=ProposedMapping(
+                field_mapping={"description": "Memo"},
+                sample_values={},
+                unmapped_columns=(),
+            ),
+            reason="account_confirmation",
+            account_proposals=[
+                {
+                    "source_account_key": "checking",
+                    "proposed_account_id": "prov12345678",
+                    "is_new": True,
+                    "candidates": [
+                        {
+                            "account_id": "cand87654321",
+                            "display_name": "Checking",
+                            "confidence": 0.5,
+                            "signal": "name",
+                        }
+                    ],
+                }
+            ],
+        )
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=ImportConfirmationRequiredError(outcome),
+        )
+
+        result = runner.invoke(
+            app,
+            ["files", str(csv_file), "--account-name", "Checking", "--output", "json"],
+        )
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        data = payload["data"]
+        assert data["status"] == "confirmation_required"
+        assert data["reason"] == "account_confirmation"
+        assert data["account_proposals"][0]["source_account_key"] == "checking"
+        assert any("--account-binding" in a for a in payload["actions"])
+
     def test_unknown_layout_non_tty_emits_json_envelope(
         self,
         mock_db: MagicMock,

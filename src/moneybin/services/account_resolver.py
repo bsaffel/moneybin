@@ -35,15 +35,18 @@ logger = logging.getLogger(__name__)
 
 
 def refresh_account_link_pending_gauge(db: Database) -> None:
-    """Set ACCOUNT_LINK_REVIEW_PENDING from the live pending-decision count.
+    """Set ACCOUNT_LINK_REVIEW_PENDING from the live review-queue depth.
 
     Called at the two sites that change the count: the resolver's candidate
     pass (adds proposals) and ``AccountLinksService.set`` (accept/reject clears
     them). Keeps the gauge honest in both directions rather than only counting
-    up. Matches the canonical predicate used by ``count_pending``.
+    up. Counts DISTINCT provisional accounts — the review *unit* is the
+    provisional, not the raw decision row — so the gauge matches
+    ``AccountLinksService.count_pending`` and the queue users actually see.
     """
     row = db.execute(
-        f"SELECT count(*) FROM {ACCOUNT_LINK_DECISIONS.full_name} "  # noqa: S608  # TableRef constant, no user input
+        f"SELECT COUNT(DISTINCT provisional_account_id) "  # noqa: S608  # TableRef constant, no user input
+        f"FROM {ACCOUNT_LINK_DECISIONS.full_name} "
         "WHERE status = 'pending' AND reversed_at IS NULL"
     ).fetchone()
     ACCOUNT_LINK_REVIEW_PENDING.set(int(row[0]) if row else 0)
