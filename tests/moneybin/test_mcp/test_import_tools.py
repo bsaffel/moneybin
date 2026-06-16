@@ -467,6 +467,49 @@ class TestImportConfirmTool:
         _args, kwargs = mock_service.import_file.call_args
         assert kwargs.get("account_bindings") == bindings
 
+    async def test_account_metadata_forwarded_to_service(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """import_confirm threads account_metadata to ImportService.import_file."""
+        csv_file = tmp_path / "statements" / "test.csv"
+        csv_file.parent.mkdir(parents=True)
+        csv_file.touch()
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database",
+            _fake_database,
+        )
+
+        from moneybin.services.import_service import ImportResult
+
+        mock_service = MagicMock()
+        mock_service.import_file.return_value = ImportResult(
+            file_path=str(csv_file),
+            file_type="tabular",
+            transactions=1,
+            import_id="mta-001",
+        )
+        metadata = {"wf-checking": {"display_name": "WF Checking", "last_four": "4267"}}
+
+        with patch(
+            "moneybin.services.import_service.ImportService",
+            return_value=mock_service,
+        ):
+            with patch(
+                "moneybin.extractors.tabular.format_detector.detect_format",
+                side_effect=ValueError("preview unavailable"),
+            ):
+                await import_confirm(
+                    file_path=str(csv_file),
+                    accept=True,
+                    account_bindings={"wf-checking": "new"},
+                    account_metadata=metadata,
+                )
+
+        _args, kwargs = mock_service.import_file.call_args
+        assert kwargs.get("account_metadata") == metadata
+
     async def test_save_format_default_true(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
     ) -> None:

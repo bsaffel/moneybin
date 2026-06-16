@@ -92,6 +92,26 @@ def _parse_account_bindings(binding: list[str] | None) -> dict[str, str] | None:
     return result
 
 
+def _parse_account_metadata(
+    meta: list[str] | None,
+) -> dict[str, dict[str, str]] | None:
+    """Parse --account-meta source_key:field=value into a nested map."""
+    if not meta:
+        return None
+    result: dict[str, dict[str, str]] = {}
+    for raw in meta:
+        if ":" not in raw or "=" not in raw.split(":", 1)[1]:
+            logger.error(
+                "❌ Invalid --account-meta format "
+                f"(expected source_key:field=value): {raw!r}"
+            )
+            raise typer.Exit(1)
+        key, _, field_value = raw.partition(":")
+        field, _, value = field_value.partition("=")
+        result.setdefault(key.strip(), {})[field.strip()] = value.strip()
+    return result
+
+
 def _load_all_formats(
     db: Database | None = None,
 ) -> tuple[dict[str, TabularFormat], dict[str, TabularFormat]]:
@@ -706,6 +726,15 @@ def import_confirm_command(
             "Keys come from confirmation_required account_proposals."
         ),
     ),
+    account_meta: list[str] = typer.Option(
+        None,
+        "--account-meta",
+        help=(
+            "Metadata for a 'new' account (repeatable): "
+            "--account-meta source_key:field=value, where field is one of "
+            "display_name, account_subtype, last_four, iso_currency_code."
+        ),
+    ),
     save_format: bool = typer.Option(
         True,
         "--save-format/--no-save-format",
@@ -748,6 +777,9 @@ def import_confirm_command(
     parsed_bindings = (
         _parse_account_bindings(list(account_binding)) if account_binding else None
     )
+    parsed_metadata = (
+        _parse_account_metadata(list(account_meta)) if account_meta else None
+    )
 
     from moneybin.services.import_confirmation import (
         ImportConfirmationRequiredError,
@@ -766,6 +798,7 @@ def import_confirm_command(
                     account_id=account_id,
                     account_name=account_name,
                     account_bindings=parsed_bindings,
+                    account_metadata=parsed_metadata,
                     save_format=save_format,
                     actor_kind="human",
                     refresh=False,  # caller can run 'moneybin transform apply' separately

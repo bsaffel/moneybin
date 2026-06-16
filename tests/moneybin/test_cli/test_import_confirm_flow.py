@@ -501,6 +501,54 @@ class TestImportConfirmCommand:
             "wf-savings": "new",
         }
 
+    def test_account_meta_parsed_into_nested_map(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Repeatable --account-meta source_key:field=value nests per source key."""
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+
+        result = runner.invoke(
+            app,
+            [
+                "confirm",
+                str(csv_file),
+                "--accept",
+                "--account-binding",
+                "wf-checking=new",
+                "--account-meta",
+                "wf-checking:display_name=WF Checking",
+                "--account-meta",
+                "wf-checking:last_four=4267",
+            ],
+        )
+
+        assert result.exit_code == 0
+        call_kwargs = mock_import_file.call_args.kwargs
+        assert call_kwargs["account_metadata"] == {
+            "wf-checking": {"display_name": "WF Checking", "last_four": "4267"}
+        }
+
+    def test_account_meta_invalid_format_exits(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """--account-meta without the source_key:field=value shape exits non-zero."""
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+
+        result = runner.invoke(
+            app,
+            ["confirm", str(csv_file), "--accept", "--account-meta", "no-colon=here"],
+        )
+
+        assert result.exit_code != 0
+
     def test_account_confirmation_envelope_carries_proposals(
         self,
         mock_db: MagicMock,

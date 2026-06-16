@@ -424,6 +424,16 @@ def _sniff_ofx_content(file_path: Path) -> bool:
     return False
 
 
+# Fields a caller may capture for a freshly-minted ("new"-bound) account at
+# import time. Mirrors the import-time-relevant subset of app.account_settings.
+_NEW_ACCOUNT_META_KEYS = frozenset({
+    "display_name",
+    "account_subtype",
+    "last_four",
+    "iso_currency_code",
+})
+
+
 def _apply_account_bindings(
     source_accounts: list[SourceAccount], bindings: dict[str, str]
 ) -> list[SourceAccount]:
@@ -800,6 +810,49 @@ class ImportService:
 
         return result
 
+    def _capture_new_account_metadata(
+        self, account_id: str, meta: dict[str, str]
+    ) -> None:
+        """Write user-supplied metadata for a freshly-minted account to settings.
+
+        Only the four import-time-capturable fields are accepted; an unknown key
+        fails loud rather than silently dropping the user's intent. The write
+        lands in ``app.account_settings`` (audited, Invariant 10) for the minted
+        id even before the account materializes in ``core.dim_accounts`` — the
+        next transform's LEFT JOIN folds the values in (``dim_accounts.sql``).
+        """
+        unknown = set(meta) - _NEW_ACCOUNT_META_KEYS
+        if unknown:
+            raise ValueError(
+                f"Unknown account_metadata field(s): {sorted(unknown)}. "
+                f"Valid: {sorted(_NEW_ACCOUNT_META_KEYS)}."
+            )
+        from moneybin.repositories.account_settings_repo import AccountSettingsRepo
+        from moneybin.services.account_service import AccountSettings
+
+        # Construct AccountSettings first so its __post_init__ validation runs
+        # (display_name length, last_four 4-digits, currency 3-letter, etc.).
+        settings = AccountSettings(
+            account_id=account_id,
+            display_name=meta.get("display_name"),
+            last_four=meta.get("last_four"),
+            account_subtype=meta.get("account_subtype"),
+            iso_currency_code=meta.get("iso_currency_code"),
+        )
+        AccountSettingsRepo(self._db, audit=self._audit).set(
+            account_id=settings.account_id,
+            display_name=settings.display_name,
+            official_name=settings.official_name,
+            last_four=settings.last_four,
+            account_subtype=settings.account_subtype,
+            holder_category=settings.holder_category,
+            iso_currency_code=settings.iso_currency_code,
+            credit_limit=settings.credit_limit,
+            archived=settings.archived,
+            include_in_net_worth=settings.include_in_net_worth,
+            actor="import",
+        )
+
     def _gate_account_proposals(
         self,
         resolver: AccountResolver,
@@ -877,6 +930,7 @@ class ImportService:
         confirm: bool = False,
         actor_kind: "ActorKind" = "human",
         account_bindings: dict[str, str] | None = None,
+        account_metadata: dict[str, dict[str, str]] | None = None,
     ) -> ImportResult:
         """Import a tabular file through the five-stage pipeline.
 
@@ -902,6 +956,9 @@ class ImportService:
                 (adopt) or "new" (mint standalone), ratifying the account-binding
                 confirmation. Unbound accounts with weak candidates gate for a
                 human caller.
+            account_metadata: Map of source_account_key -> {display_name,
+                account_subtype, last_four, iso_currency_code} captured into
+                app.account_settings for accounts minted this import.
 
         Returns:
             ImportResult with summary.
@@ -1268,10 +1325,15 @@ class ImportService:
             resolved_mapping=dict(resolved.field_mapping),
         )
 
-        # Phase 3 — resolve (writes native->canonical mapping + pending decisions).
+        # Phase 3 — resolve (writes native->canonical mapping + pending decisions),
+        # then capture any caller-supplied metadata for accounts minted this import.
+        metadata = account_metadata or {}
         for src in source_accounts:
             resolved_account = resolver.resolve(src)
             ACCOUNT_LINK_OUTCOMES_TOTAL.labels(result=resolved_account.outcome).inc()
+            meta = metadata.get(src.source_account_key)
+            if meta and resolved_account.is_new:
+                self._capture_new_account_metadata(resolved_account.account_id, meta)
 
         # Create import batch
         extractor = TabularExtractor(self._db)
@@ -2386,6 +2448,7 @@ class ImportService:
         confirm: bool = False,
         actor_kind: ActorKind = "human",
         account_bindings: dict[str, str] | None = None,
+        account_metadata: dict[str, dict[str, str]] | None = None,
     ) -> ImportResult:
         """Import a financial data file into DuckDB.
 
@@ -2429,6 +2492,8 @@ class ImportService:
             account_bindings: Map of source_account_key -> canonical account_id
                 (adopt) or "new" (mint standalone), ratifying the account-binding
                 confirmation for tabular imports.
+            account_metadata: Map of source_account_key -> settings dict captured
+                for accounts minted this import (tabular).
 
         Returns:
             ImportResult with summary of what was imported.
@@ -2459,6 +2524,7 @@ class ImportService:
             confirm=confirm,
             actor_kind=actor_kind,
             account_bindings=account_bindings,
+            account_metadata=account_metadata,
         )
 
         # Include PDFs only when the deterministic path landed transactions —
@@ -2515,6 +2581,7 @@ class ImportService:
         confirm: bool = False,
         actor_kind: ActorKind = "human",
         account_bindings: dict[str, str] | None = None,
+        account_metadata: dict[str, dict[str, str]] | None = None,
     ) -> ImportResult:
         """Extract + load one file. Does NOT run the refresh pipeline.
 
@@ -2554,6 +2621,7 @@ class ImportService:
                 confirm=confirm,
                 actor_kind=actor_kind,
                 account_bindings=account_bindings,
+                account_metadata=account_metadata,
             )
         if file_type == "pdf":
             return self._import_pdf(

@@ -785,6 +785,7 @@ agent-authored extraction recipe). `import_files`/`import_preview` returns a
   | `account_id` | `str \| None` | Pin rows to an existing account (single-account tabular; PDF with no account anchor). |
   | `account_name` | `str \| None` | Existing account name to resolve to an `account_id` (single-account tabular). |
   | `account_bindings` | `dict[str, str] \| None` | Ratify an `account_confirmation`: `source_account_key` → existing `account_id` (adopt) or `"new"` (mint a distinct account). Keys come from `confirmation_payload.account_proposals[].source_account_key`. For multi-account files; `account_id`/`account_name` cover the single-account case. |
+  | `account_metadata` | `dict[str, dict[str, str]] \| None` | For `"new"`-bound accounts: `source_account_key` → `{display_name, account_subtype, last_four, iso_currency_code}` captured into the minted account's `app.account_settings`. Unknown fields raise; ignored for adopted accounts. |
 
 - **Behavior (tabular):** Merges `mapping` over the detected proposal, validates, and executes the import.
 - **`account_confirmation` state:** when a tabular import resolves a source account to weak merge candidate(s) (`institution+last4` / name) and the caller has not bound it, an **interactive human** import returns `confirmation_required` with `confirmation_payload.{reason="account_confirmation", account_proposals[]}` instead of loading — the column layout is settled; only the account identity needs ratifying via `account_bindings`. **Agent** (`actor_kind="agent"`) imports never gate here: they load and leave the proposal in the account-link review queue (`accounts_links_pending`). Strong-confirmer adoptions and `account_bindings`-resolved accounts load silently. See [`account-identity-resolution.md`](account-identity-resolution.md) Decision 7.
@@ -792,7 +793,7 @@ agent-authored extraction recipe). `import_files`/`import_preview` returns a
 - Amounts use accounting convention: negative=expense, positive=income; transfers exempt.
 - **Mutation surface:** `raw.tabular_transactions` (load), `app.tabular_formats` / `app.pdf_formats` (when `save_format=True`). Revertible via `import_revert` (data rows) and `system_audit_undo` (format save).
 - **Service:** `ImportService.confirm_import()` (tabular) / `ImportService.apply_pdf_bridge_response()` (PDF).
-- **CLI:** `moneybin import confirm <file> [--accept] [--mapping field=column] [--save-format/--no-save-format] [--account-name NAME] [--account-id ID] [--account-binding source_key=ACCOUNT_ID|new] [--output text|json]`
+- **CLI:** `moneybin import confirm <file> [--accept] [--mapping field=column] [--save-format/--no-save-format] [--account-name NAME] [--account-id ID] [--account-binding source_key=ACCOUNT_ID|new] [--account-meta source_key:field=value] [--output text|json]`
 
 ### `import_status`
 

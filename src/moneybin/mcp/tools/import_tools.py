@@ -751,6 +751,7 @@ def import_confirm(
     account_id: str | None = None,
     account_name: str | None = None,
     account_bindings: dict[str, str] | None = None,
+    account_metadata: dict[str, dict[str, str]] | None = None,
 ) -> ResponseEnvelope[ImportConfirmPayload]:
     """Confirm or override a proposed mapping, or apply a PDF bridge response.
 
@@ -802,6 +803,10 @@ def import_confirm(
             ``confirmation_payload.account_proposals[].source_account_key`` of a
             prior ``confirmation_required`` response. Use this for multi-account
             files; ``account_id``/``account_name`` cover the single-account case.
+        account_metadata: For accounts bound ``"new"``, a map of
+            ``source_account_key`` -> ``{display_name, account_subtype,
+            last_four, iso_currency_code}`` captured into the minted account's
+            settings. Unknown fields raise. Ignored for adopted accounts.
     """
     from moneybin.services.import_confirmation import (
         ImportConfirmationRequiredError,
@@ -872,6 +877,7 @@ def import_confirm(
                 account_id=account_id,
                 account_name=account_name,
                 account_bindings=account_bindings,
+                account_metadata=account_metadata,
                 actor_kind="agent",
                 refresh=False,  # caller can run refresh_run separately
             )

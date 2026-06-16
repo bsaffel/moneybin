@@ -22,10 +22,12 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   settled, only the account identity needs ratifying. The caller binds each
   proposed account via `account_bindings` (MCP) / `--account-binding
   source_key=ACCOUNT_ID|new` (CLI): adopt an existing account, or `new` to mint
-  a distinct one. Agent / non-interactive imports never gate here — they load
-  and leave the proposal in the account-link review queue
-  (`accounts_links_pending`). The `moneybin_account_link_review_pending` gauge
-  and `moneybin_account_link_confidence` histogram now emit.
+  a distinct one. A `"new"` account can capture `display_name` / `account_subtype`
+  / `last_four` / `iso_currency_code` at mint via `account_metadata` (MCP) /
+  `--account-meta source_key:field=value` (CLI). Agent / non-interactive imports
+  never gate here — they load and leave the proposal in the account-link review
+  queue (`accounts_links_pending`). The `moneybin_account_link_review_pending`
+  gauge and `moneybin_account_link_confidence` histogram now emit.
 - **Account-link review queue (M1S.5).** New `accounts_links_pending` /
   `accounts_links_set` / `accounts_links_history` / `accounts_links_run` MCP
   tools and the `moneybin accounts links` CLI subgroup surface the cross-source

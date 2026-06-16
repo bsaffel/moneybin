@@ -170,6 +170,71 @@ def test_agent_import_does_not_gate_and_queues(
         db.close()
 
 
+def _minted_account_id(db: Database, source_key: str) -> str:
+    row = db.execute(
+        "SELECT account_id FROM app.account_links WHERE ref_kind='source_native' "
+        "AND ref_value=? AND status='accepted'",
+        [source_key],
+    ).fetchone()
+    assert row is not None
+    return str(row[0])
+
+
+def test_new_binding_captures_account_metadata(
+    mock_secret_store: MagicMock, tmp_path: Path
+) -> None:
+    """account_metadata for a 'new' binding writes app.account_settings at mint."""
+    db = _db(mock_secret_store, tmp_path)
+    try:
+        svc = ImportService(db)
+        svc.import_file(
+            _STANDARD_CSV,
+            account_name="WF Checking",
+            refresh=False,
+            confirm=True,
+            actor_kind="human",
+            account_bindings={"wf-checking": "new"},
+            account_metadata={
+                "wf-checking": {
+                    "display_name": "WF Checking",
+                    "account_subtype": "checking",
+                    "last_four": "4267",
+                    "iso_currency_code": "USD",
+                }
+            },
+        )
+        minted = _minted_account_id(db, "wf-checking")
+        row = db.execute(
+            "SELECT display_name, last_four, account_subtype, iso_currency_code "
+            "FROM app.account_settings WHERE account_id=?",
+            [minted],
+        ).fetchone()
+        assert row == ("WF Checking", "4267", "checking", "USD")
+    finally:
+        db.close()
+
+
+def test_account_metadata_rejects_unknown_field(
+    mock_secret_store: MagicMock, tmp_path: Path
+) -> None:
+    """A typo'd metadata key fails loud rather than silently dropping intent."""
+    db = _db(mock_secret_store, tmp_path)
+    try:
+        svc = ImportService(db)
+        with pytest.raises(ValueError, match="Unknown account_metadata"):
+            svc.import_file(
+                _STANDARD_CSV,
+                account_name="WF Checking",
+                refresh=False,
+                confirm=True,
+                actor_kind="human",
+                account_bindings={"wf-checking": "new"},
+                account_metadata={"wf-checking": {"subtype": "checking"}},
+            )
+    finally:
+        db.close()
+
+
 def test_import_emits_account_link_metrics(
     mock_secret_store: MagicMock, tmp_path: Path
 ) -> None:
