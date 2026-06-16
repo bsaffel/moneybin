@@ -133,7 +133,7 @@ Required content:
 - One-line product description (local-first, on-device DuckDB)
 - Top-level group enumeration with brief domain hint (entity groups, reference data, reports, system, pipeline, privacy)
 - Naming convention reminder (path-prefix-verb-suffix, with 2–3 examples)
-- Orientation pointers — which tool to call to "get oriented" (`system_status` for data status; `transactions_review` for review queues; `reports_networth` + `reports_spending` for a quick financial pulse)
+- Orientation pointers — which tool to call to "get oriented" (`system_status` for data status; `review` for pending review counts across all queues; `reports_networth` + `reports_spending` for a quick financial pulse)
 - Response envelope shape (`{summary, data, actions}`) and pagination convention
 - Batch-tool preference
 - Sensitivity tiers and degraded-response behavior
@@ -532,6 +532,50 @@ Partial-update entry point for an account's settings.
 - **Service:** `AccountService.settings_update() -> AccountSettings`
 - **CLI:** `moneybin accounts set <account_id> [--display-name TEXT] [--include/--exclude] [--archive/--unarchive] [--subtype TYPE] [--holder-category CAT] [--currency CODE] [--credit-limit N] [--last-four DIGITS] [--official-name TEXT] [--clear-display-name] [--clear-currency] [--yes]`
 
+### `accounts_links_pending`
+
+List pending account-link decisions grouped by provisional account.
+
+- **Sensitivity:** `medium` — surfaces account `display_name` (classified `USER_NOTE`, matching `accounts_summary`/`accounts_get`), so the proposal labels sit behind the same consent bar; opaque IDs, signal strings, and confidence scores otherwise. Never surfaces `ref_value` (which can be a full account number). Without consent the response degrades to counts.
+- **Unique parameters:** None.
+- **Behavior:** Returns all provisional accounts that have pending merge candidates, each grouped with their candidate list. Each candidate carries `decision_id`, `candidate_account_id`, `candidate_display_name`, `confidence`, and `signal`. Use `accounts_links_set` with the candidate's `account_id` as `target_account_id` to merge, or `null` to standalone-reject.
+- **Service:** `AccountLinksService.pending()` + `AccountLinksService.count_pending()`
+- **CLI:** `moneybin accounts links pending`
+
+### `accounts_links_set`
+
+Accept (merge) or standalone-reject one pending account-link decision.
+
+- **Sensitivity:** `low`
+- **Unique parameters:** `decision_id: str` (required); `target_account_id: str | None` (required — no Python default; pass the candidate's `account_id` to merge, `null` to standalone-reject). The absence of a default prevents accidental rejection when the argument is omitted.
+- **Mutation surface:** writes `app.account_links` and `app.account_link_decisions`. Revert via `system_audit_undo`.
+- **Service:** `AccountLinksService.set()`
+- **CLI:** `moneybin accounts links set <decision_id> --into <account_id>` (merge) or `--standalone` (standalone-reject)
+
+### `accounts_links_history`
+
+Show recent account-link decisions (all statuses), newest first.
+
+- **Sensitivity:** `low`
+- **Unique parameters:** `limit: int = 50`
+- **Behavior:** Returns decisions across all statuses (pending, accepted, rejected). Useful for auditing what has already been decided.
+- **Service:** `AccountLinksService.history()`
+- **CLI:** `moneybin accounts links history`
+
+### `accounts_links_run`
+
+Backfill account-link proposals for accounts already in `core.dim_accounts` that have no pending proposal yet.
+
+- **Sensitivity:** `low` — count only.
+- **Unique parameters:** None.
+- **Behavior:** Iterates all accounts in `core.dim_accounts`, calls the resolver candidate pass (institution+last4 or name fuzzy-match) excluding each account itself, and writes `pending` `app.account_link_decisions` rows for any new unordered pair not already proposed or decided. Skips pairs that already have a decision in either direction (any status). Returns `data.new_proposals` — count of new pending decisions written.
+- **Mutation surface:** writes `app.account_link_decisions`; revert via `app.audit_log` (no undo tool; deferred to M1L).
+- **Service:** `AccountLinksService.run()`
+- **CLI:** `moneybin accounts links run`
+- **read_only:** false
+
+> **Note:** An undo variant (`accounts_links_undo`) remains deliberately out of scope, deferred to the M1L audit-undo consumer.
+
 ---
 
 ## 6. `transactions.*` — Transaction-level operations (matches and categorize workflows nested)
@@ -550,15 +594,21 @@ Primary transaction read tool. Returns full transaction records with curation me
 - **CLI:** `moneybin transactions list`
 - **read_only:** true
 
-### `transactions_review`
+### `review`
 
-Orientation tool: pending counts across the review queues.
+Orientation tool: pending counts across **all three** review queues (matches + categorize + account-links).
 
 - **Sensitivity:** `low` — counts only.
 - **Unique parameters:** None.
-- **Behavior:** Returns `{matches_pending: int, categorize_pending: int, total: int}` so the agent can answer "anything to review?" in one call. The agent drills into `transactions_categorize_pending` for categorization items and into `transactions_matches_pending` for match proposals. Use `transactions_matches_set` to accept or reject individual match proposals; use `transactions_categorize_commit` to persist categorization decisions.
-- **Service:** `TransactionService.review_counts() -> ReviewCounts`
-- **CLI:** `moneybin transactions review`
+- **Behavior:** Returns `{matches_pending: int, categorize_pending: int, account_links_pending: int, total: int}` so the agent can answer "what needs my attention?" in one sweep. Drill into `transactions_categorize_pending` for categorization items, `transactions_matches_pending` for match proposals, and `accounts_links_pending` for account-link decisions.
+- **Service:** `ReviewService(MatchingService, CategorizationService, AccountLinksService).status()`
+- **CLI:** `moneybin review`
+
+### `transactions_review` *(deprecated — removed after one minor release)*
+
+**DEPRECATED alias for `review`.** Registered with a description starting with `"DEPRECATED: use review — removed after one minor release."` Identical behavior; prefer `review` in all new agent code.
+
+- **CLI:** `moneybin transactions review` *(deprecated — use `moneybin review`)*
 
 ### Curation tools (`transactions_create`, notes / tags / splits, `import_labels_set`, `system_audit`)
 

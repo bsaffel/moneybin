@@ -14,6 +14,7 @@ caller supplies both.
 
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 from moneybin.repositories.base import BaseRepo
@@ -158,6 +159,80 @@ class AccountLinksRepo(BaseRepo):
                 target=(*self._audit_target, link_id),
                 before=None,
                 after=self._serialize_for_audit(after),
+                actor=actor,
+                parent_audit_id=parent_audit_id,
+            )
+
+    def repoint(
+        self,
+        *,
+        link_id: str,
+        new_account_id: str,
+        decided_by: str,
+        actor: str,
+        parent_audit_id: str | None = None,
+        in_outer_txn: bool = False,
+    ) -> AuditEvent:
+        """Re-point an accepted link onto a different canonical account_id (merge primitive).
+
+        Within one transaction:
+        1. Reverses the existing row (status='reversed') so ``_guard_uniqueness``
+           no longer sees it as accepted.
+        2. Inserts a new accepted row for ``new_account_id`` with the same ref
+           coordinates — the guard now passes because the old row is reversed.
+        3. Emits a paired audit for the OLD row's reversal (action
+           ``"account_link.repoint"``). The nested ``insert`` emits its own audit
+           for the new row (Invariant 10 — each mutation audited independently).
+
+        Raises ``ValueError`` when ``link_id`` is not found, already points to
+        ``new_account_id`` (caller bug), or is not in ``accepted`` status.
+        """
+        with self._transaction(in_outer_txn=in_outer_txn):
+            before = self._require(self._fetch_row(link_id), "link_id", link_id)
+            if before["account_id"] == new_account_id:
+                raise ValueError(
+                    f"account_links repoint: link {link_id!r} already points to "
+                    f"account_id={new_account_id!r}"
+                )
+            if before["status"] != "accepted":
+                raise ValueError(
+                    f"account_links repoint: link {link_id!r} has status="
+                    f"{before['status']!r}; can only re-point an accepted link"
+                )
+            # Reverse the old row first so _guard_uniqueness won't block the insert.
+            self._db.execute(
+                f"""
+                UPDATE {ACCOUNT_LINKS.full_name}
+                SET reversed_at = CURRENT_TIMESTAMP, reversed_by = ?,
+                    status = 'reversed'
+                WHERE link_id = ?
+                """,  # noqa: S608  # TableRef + parameterized values
+                [decided_by, link_id],
+            )
+            after_reversal = self._fetch_row(link_id)
+            # Insert a new accepted row for new_account_id (same ref coordinates).
+            # Uses in_outer_txn=True to join the enclosing transaction; the insert
+            # emits its own audit row (Invariant 10).
+            new_link_id = uuid.uuid4().hex[:12]
+            self.insert(
+                link_id=new_link_id,
+                account_id=new_account_id,
+                ref_kind=before["ref_kind"],
+                ref_value=before["ref_value"],
+                source_type=before["source_type"],
+                source_origin=before["source_origin"],
+                decided_by=decided_by,
+                actor=actor,
+                status="accepted",
+                parent_audit_id=parent_audit_id,
+                in_outer_txn=True,
+            )
+            # Audit the OLD row's reversal as the repoint action.
+            return self._emit_audit(
+                action="account_link.repoint",
+                target=(*self._audit_target, link_id),
+                before=self._serialize_for_audit(before),
+                after=self._serialize_for_audit(after_reversal),
                 actor=actor,
                 parent_audit_id=parent_audit_id,
             )

@@ -115,3 +115,80 @@ class AccountSettingsPayload:
     archived: Annotated[bool, DataClass.TXN_TYPE]
     warnings: Annotated[list[str], DataClass.DESCRIPTION] = field(default_factory=list)
     cascaded_include_in_net_worth: Annotated[bool | None, DataClass.TXN_TYPE] = None
+
+
+# ---------------------------------------------------------------------------
+# accounts_links_pending / accounts_links_set / accounts_links_history
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class LinkCandidateRow:
+    """One candidate merge proposal in an account-links pending review group.
+
+    Carries only opaque ids + account labels + match signal/confidence.
+    ref_value (which can be a full account number) is never surfaced here.
+    """
+
+    decision_id: Annotated[str, DataClass.RECORD_ID]
+    candidate_account_id: Annotated[str, DataClass.RECORD_ID]
+    # USER_NOTE (MEDIUM) — matches the canonical display_name class everywhere
+    # else (taxonomy.py / AccountSummary / AccountDetail); a user/auto label can
+    # embed identifying text, so it must not be under-classified to LOW here.
+    candidate_display_name: Annotated[str, DataClass.USER_NOTE]
+    confidence: Annotated[float | None, DataClass.AGGREGATE]
+    signal: Annotated[str, DataClass.TXN_TYPE]  # "institution_last4" or "name"
+
+
+@dataclass(frozen=True, slots=True)
+class LinkPendingGroup:
+    """One provisional account with its candidate merge proposals."""
+
+    provisional_account_id: Annotated[str, DataClass.RECORD_ID]
+    # USER_NOTE (MEDIUM) — see LinkCandidateRow.candidate_display_name.
+    provisional_display_name: Annotated[str, DataClass.USER_NOTE]
+    candidates: list[LinkCandidateRow]
+
+
+@dataclass(frozen=True, slots=True)
+class AccountLinksPendingPayload:
+    """Payload for accounts_links_pending — pending review queue grouped by provisional account."""
+
+    groups: list[LinkPendingGroup]
+    n_pending: Annotated[int, DataClass.AGGREGATE]
+
+
+@dataclass(frozen=True, slots=True)
+class AccountLinksSetPayload:
+    """Payload for accounts_links_set — confirmation of the decision applied."""
+
+    decision_id: Annotated[str, DataClass.RECORD_ID]
+    status: Annotated[str, DataClass.TXN_TYPE]  # "accepted" or "rejected"
+
+
+@dataclass(frozen=True, slots=True)
+class LinkHistoryRow:
+    """One past account-link decision (accounts_links_history result)."""
+
+    decision_id: Annotated[str, DataClass.RECORD_ID]
+    provisional_account_id: Annotated[str, DataClass.RECORD_ID]
+    candidate_account_id: Annotated[str, DataClass.RECORD_ID]
+    status: Annotated[str, DataClass.TXN_TYPE]
+    decided_by: Annotated[str, DataClass.TXN_TYPE]
+    decided_at: Annotated[str | None, DataClass.TIMESTAMP_OBSERVABILITY]
+    confidence: Annotated[float | None, DataClass.AGGREGATE]
+    signal: Annotated[str, DataClass.TXN_TYPE]
+
+
+@dataclass(frozen=True, slots=True)
+class AccountLinksHistoryPayload:
+    """Payload for accounts_links_history — decision log, newest first."""
+
+    decisions: list[LinkHistoryRow]
+
+
+@dataclass(frozen=True, slots=True)
+class AccountLinksRunPayload:
+    """Payload for accounts_links_run — count of new pending proposals written."""
+
+    new_proposals: Annotated[int, DataClass.AGGREGATE]

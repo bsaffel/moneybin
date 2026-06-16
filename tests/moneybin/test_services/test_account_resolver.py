@@ -1,4 +1,4 @@
-"""Tests for AccountResolver (M1S.2 resolution ladder)."""
+"""Tests for AccountResolver (M1S.2 resolution ladder + M1S.4 propose())."""
 
 from __future__ import annotations
 
@@ -7,7 +7,8 @@ from typing import Any
 import pytest
 
 from moneybin.database import Database
-from moneybin.services.account_resolution_types import SourceAccount
+from moneybin.repositories.account_links_repo import AccountLinksRepo
+from moneybin.services.account_resolution_types import AccountProposal, SourceAccount
 from moneybin.services.account_resolver import AccountResolver
 from tests.moneybin.db_helpers import create_core_tables
 
@@ -274,3 +275,158 @@ def test_missing_dim_accounts_mints_standalone(db: Database) -> None:
     resolved = resolver.resolve(_src())
     assert resolved.is_new is True
     assert resolved.outcome == "minted_new"
+
+
+# ---------------------------------------------------------------------------
+# M1S.4 — propose() read-only preview
+# ---------------------------------------------------------------------------
+
+
+def test_propose_surfaces_weak_candidate_without_writing(db: Database) -> None:
+    """propose() returns a weak-signal candidate but writes nothing to app tables."""
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="wf_existing_01",
+        last_four="4267",
+        institution_name="wells_fargo",
+        display_name="WF Checking",
+    )
+    resolver = AccountResolver(db, actor="system")
+    src = _src()  # last_four="4267", institution="wells_fargo"
+    proposal = resolver.propose(src)
+
+    assert isinstance(proposal, AccountProposal)
+    assert proposal.requires_confirm is True
+    assert len(proposal.candidates) == 1
+    assert proposal.candidates[0].signal == "institution_last4"
+    assert proposal.candidates[0].display_name == "WF Checking"
+    # Zero side effects — no rows written
+    n_links = db.conn.execute("SELECT count(*) FROM app.account_links").fetchone()
+    assert n_links is not None and n_links[0] == 0
+    n_decisions = db.conn.execute(
+        "SELECT count(*) FROM app.account_link_decisions"
+    ).fetchone()
+    assert n_decisions is not None and n_decisions[0] == 0
+
+
+def test_propose_strong_ref_adopts_without_writing(db: Database) -> None:
+    """propose() on a known source_native key returns adopted verdict with no new writes."""
+    resolver = AccountResolver(db, actor="system")
+    # Pre-insert one accepted source_native link directly via repo
+    AccountLinksRepo(db).insert(
+        link_id="link_pre",
+        account_id="acct_existing",
+        ref_kind="source_native",
+        ref_value="wf-checking",
+        source_type="csv",
+        source_origin="wells_fargo",
+        decided_by="auto",
+        actor="system",
+    )
+    src = _src()  # source_native key = "wf-checking"
+    proposal = resolver.propose(src)
+
+    assert proposal.is_new is False
+    assert proposal.adopted_via == "source_native"
+    assert proposal.candidates == ()
+    assert proposal.requires_confirm is False
+    # propose() must not write new rows — only the pre-inserted link is present
+    n_links = db.conn.execute("SELECT count(*) FROM app.account_links").fetchone()
+    assert n_links is not None and n_links[0] == 1
+    n_decisions = db.conn.execute(
+        "SELECT count(*) FROM app.account_link_decisions"
+    ).fetchone()
+    assert n_decisions is not None and n_decisions[0] == 0
+
+
+# ---------------------------------------------------------------------------
+# M1S.5b — propose_existing() backfill read-only preview
+# ---------------------------------------------------------------------------
+
+
+def test_propose_existing_finds_candidates_excluding_self(db: Database) -> None:
+    """propose_existing(A) finds B (same institution+last4) but not A itself."""
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="twin_a",
+        last_four="9999",
+        institution_name="chase",
+        display_name="Chase Checking A",
+    )
+    _seed_dim_account(
+        db,
+        account_id="twin_b",
+        last_four="9999",
+        institution_name="chase",
+        display_name="Chase Checking B",
+    )
+    resolver = AccountResolver(db, actor="system")
+    proposal = resolver.propose_existing("twin_a")
+
+    assert proposal is not None
+    assert proposal.proposed_account_id == "twin_a"
+    assert proposal.is_new is False
+    assert len(proposal.candidates) == 1
+    assert proposal.candidates[0].account_id == "twin_b"
+    assert proposal.candidates[0].signal == "institution_last4"
+    # twin_a must not appear as its own candidate
+    assert all(c.account_id != "twin_a" for c in proposal.candidates)
+
+
+def test_propose_existing_returns_none_for_absent_account(db: Database) -> None:
+    """propose_existing on an account not in dim_accounts returns None."""
+    create_core_tables(db)
+    resolver = AccountResolver(db, actor="system")
+    assert resolver.propose_existing("nonexistent_id") is None
+
+
+def test_propose_existing_returns_none_when_no_candidates(db: Database) -> None:
+    """propose_existing with no matching twins returns None (no candidates)."""
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="solo_acct",
+        last_four="1111",
+        institution_name="wells_fargo",
+        display_name="Solo Account",
+    )
+    resolver = AccountResolver(db, actor="system")
+    assert resolver.propose_existing("solo_acct") is None
+
+
+def test_propose_existing_is_read_only(db: Database) -> None:
+    """propose_existing writes nothing to app.account_links or account_link_decisions."""
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="ro_acct_a",
+        last_four="5555",
+        institution_name="bank_x",
+        display_name="RO Account A",
+    )
+    _seed_dim_account(
+        db,
+        account_id="ro_acct_b",
+        last_four="5555",
+        institution_name="bank_x",
+        display_name="RO Account B",
+    )
+    resolver = AccountResolver(db, actor="system")
+    proposal = resolver.propose_existing("ro_acct_a")
+    assert proposal is not None  # candidate found, but nothing written
+
+    n_links = db.conn.execute("SELECT COUNT(*) FROM app.account_links").fetchone()
+    assert n_links is not None and n_links[0] == 0
+    n_decisions = db.conn.execute(
+        "SELECT COUNT(*) FROM app.account_link_decisions"
+    ).fetchone()
+    assert n_decisions is not None and n_decisions[0] == 0
+
+
+def test_propose_existing_guards_catalog_exception(db: Database) -> None:
+    """propose_existing returns None when core.dim_accounts does not exist."""
+    # No create_core_tables call → dim_accounts absent → CatalogException guarded
+    resolver = AccountResolver(db, actor="system")
+    assert resolver.propose_existing("any_id") is None

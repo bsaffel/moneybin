@@ -71,10 +71,11 @@ class TransactionGetPayload:
 
 @dataclass(frozen=True, slots=True)
 class ReviewStatusPayload:
-    """Payload for transactions_review — aggregate queue counts only."""
+    """Payload for `review` / `transactions_review` — aggregate queue counts only."""
 
     matches_pending: Annotated[int, DataClass.AGGREGATE]
     categorize_pending: Annotated[int, DataClass.AGGREGATE]
+    account_links_pending: Annotated[int, DataClass.AGGREGATE]
     total: Annotated[int, DataClass.AGGREGATE]
 
 

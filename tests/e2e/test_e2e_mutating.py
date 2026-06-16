@@ -1342,6 +1342,85 @@ class TestCategorizeRulesDeleteCLI:
         assert "Rule does-not-exist not found" in result.stderr
 
 
+class TestAccountLinksMutating:
+    """E2E smoke tests for `accounts links run` and `accounts links set`."""
+
+    def test_accounts_links_run(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """`accounts links run` exits 0; 0 proposals on empty data is success."""
+        env = make_workflow_env_fast(tmp_path, "links-run", _mutating_profile_template)
+        result = run_cli("accounts", "links", "run", env=env)
+        result.assert_success()
+
+    def test_accounts_links_run_json(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """`accounts links run --output json` returns an envelope with new_proposals."""
+        env = make_workflow_env_fast(
+            tmp_path, "links-run-json", _mutating_profile_template
+        )
+        result = run_cli("accounts", "links", "run", "--output", "json", env=env)
+        result.assert_success()
+        payload = json.loads(result.stdout)
+        assert "data" in payload
+        assert "new_proposals" in payload["data"]
+        assert isinstance(payload["data"]["new_proposals"], int)
+
+    def test_accounts_links_set_not_found(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """`accounts links set <nonexistent_id> --standalone` fails with not-found, no traceback.
+
+        No pending link decisions exist on a fresh profile — the service raises
+        UserError(MUTATION_NOT_FOUND) which handle_cli_errors converts to exit 1.
+        """
+        env = make_workflow_env_fast(
+            tmp_path, "links-set-nf", _mutating_profile_template
+        )
+        result = run_cli(
+            "accounts",
+            "links",
+            "set",
+            "nonexistent-decision-id",
+            "--standalone",
+            env=env,
+        )
+        assert result.exit_code != 0
+        assert "Traceback (most recent call last)" not in result.stderr
+
+    def test_accounts_links_set_missing_flag_is_usage_error(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """`accounts links set <id>` without --into or --standalone exits 2 (usage error)."""
+        env = make_workflow_env_fast(
+            tmp_path, "links-set-usage", _mutating_profile_template
+        )
+        result = run_cli("accounts", "links", "set", "any-id", env=env)
+        assert result.exit_code == 2
+        assert "Traceback (most recent call last)" not in result.stderr
+
+    def test_accounts_links_set_mutual_exclusion_error(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """`accounts links set <id> --into X --standalone` exits 2 (mutually exclusive)."""
+        env = make_workflow_env_fast(
+            tmp_path, "links-set-mutex", _mutating_profile_template
+        )
+        result = run_cli(
+            "accounts",
+            "links",
+            "set",
+            "any-id",
+            "--into",
+            "CAND001",
+            "--standalone",
+            env=env,
+        )
+        assert result.exit_code == 2
+        assert "Traceback (most recent call last)" not in result.stderr
+
+
 class TestPrivacyConsent:
     """Consent ledger CLI commands (grant / revoke / revoke-all)."""
 

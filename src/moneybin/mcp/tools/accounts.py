@@ -11,8 +11,12 @@ Write tools (entity):      accounts_set
 Read tools (balance):      accounts_balances, accounts_balance_history,
                            accounts_balance_reconcile, accounts_balance_assertions
 Write tools (balance):     accounts_balance_assert, accounts_balance_assertion_delete
+Read tools (links):        accounts_links_pending, accounts_links_history
+Write tools (links):       accounts_links_set, accounts_links_run
 
-All tools delegate to AccountService / BalanceService — no business logic here.
+All tools delegate to AccountService / BalanceService / AccountLinksService — no
+business logic here. accounts links undo is deliberately NOT YET registered:
+deferred to the M1L audit-undo consumer.
 """
 
 from __future__ import annotations
@@ -29,10 +33,17 @@ from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.privacy.payloads.accounts import (
     AccountDetail,
+    AccountLinksHistoryPayload,
+    AccountLinksPendingPayload,
+    AccountLinksRunPayload,
+    AccountLinksSetPayload,
     AccountListPayload,
     AccountResolvePayload,
     AccountSettingsPayload,
     AccountSummaryStats,
+    LinkCandidateRow,
+    LinkHistoryRow,
+    LinkPendingGroup,
 )
 from moneybin.privacy.payloads.balances import (
     BalanceAssertionDeletePayload,
@@ -41,6 +52,10 @@ from moneybin.privacy.payloads.balances import (
     BalanceObservationListPayload,
 )
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.services.account_links_service import (
+    AccountLinksService,
+    signal_from_match_signals,
+)
 from moneybin.services.account_service import CLEAR, AccountService
 from moneybin.services.balance_service import BalanceService
 
@@ -380,6 +395,168 @@ def accounts_resolve(
     return build_envelope(data=payload, actions=actions)
 
 
+# ─── Review tools (links) ──────────────────────────────────────────────────
+
+
+@mcp_tool(domain="links")
+def accounts_links_pending() -> ResponseEnvelope[AccountLinksPendingPayload]:
+    """List pending account-link decisions, grouped by provisional account.
+
+    Returns the review queue of provisional accounts with candidate merge
+    proposals. Each group represents one provisional account (recently
+    imported but not yet confirmed as a canonical entity) and its candidate
+    existing accounts that may represent the same real-world account.
+
+    For each candidate: decision_id, candidate_account_id, display name,
+    confidence score, and the matching signal that fired (institution_last4
+    or name). ref_value (the raw native reference, which can be a full
+    account number) is never included.
+
+    Decide each group via accounts_links_set. accounts_links_run (backfill
+    discovery) and accounts links undo are not yet registered — deferred to
+    follow-up units M1S.5b and M1L respectively.
+    """
+    with get_database(read_only=True) as db:
+        svc = AccountLinksService(db, actor="mcp")
+        groups = svc.pending()
+        n_pending = svc.count_pending()
+    payload = AccountLinksPendingPayload(
+        groups=[
+            LinkPendingGroup(
+                provisional_account_id=g.provisional_account_id,
+                provisional_display_name=g.provisional_display_name,
+                candidates=[
+                    LinkCandidateRow(
+                        decision_id=c.decision_id,
+                        candidate_account_id=c.candidate_account_id,
+                        candidate_display_name=c.candidate_display_name,
+                        confidence=float(c.confidence)
+                        if c.confidence is not None
+                        else None,
+                        signal=c.signal,
+                    )
+                    for c in g.candidates
+                ],
+            )
+            for g in groups
+        ],
+        n_pending=n_pending,
+    )
+    return build_envelope(
+        data=payload,
+        total_count=n_pending,
+        actions=[
+            "Use accounts_links_set to merge (pass candidate_account_id as "
+            "target_account_id) or standalone-reject (pass null) each decision",
+        ],
+    )
+
+
+@mcp_tool(domain="links", read_only=False)
+def accounts_links_set(
+    decision_id: str,
+    target_account_id: str | None,
+) -> ResponseEnvelope[AccountLinksSetPayload]:
+    """Accept (merge) or standalone-reject one pending account-link decision.
+
+    Mutates app.account_link_decisions (sets status) and, on accept,
+    re-points app.account_links source_native entries from the provisional
+    account onto target_account_id. On standalone-reject (target_account_id
+    = null), rejects every pending decision for the provisional account —
+    it remains its own canonical account.
+
+    target_account_id MUST be passed explicitly — there is no default:
+    - Pass the candidate_account_id from accounts_links_pending to MERGE.
+    - Pass null to STANDALONE-REJECT (keep the provisional as its own entity).
+    Omitting it would default the merge, which may cause unintended binding.
+
+    Mutation surface: writes app.account_link_decisions + app.account_links.
+    Revert is via the audit log in app.audit_log (no undo tool yet; undo
+    is deferred to the M1L audit-undo consumer). Find pending decisions
+    with accounts_links_pending.
+
+    Args:
+        decision_id: The decision id to act on (from accounts_links_pending).
+        target_account_id: The candidate account_id to merge into, or null
+            to standalone-reject (keep provisional as its own canonical account).
+    """
+    with get_database(read_only=False) as db:
+        AccountLinksService(db, actor="mcp").set(
+            decision_id, target_account_id=target_account_id, decided_by="user"
+        )
+    status = "accepted" if target_account_id is not None else "rejected"
+    return build_envelope(
+        data=AccountLinksSetPayload(decision_id=decision_id, status=status),
+        actions=[
+            "Use accounts_links_pending to review remaining pending decisions",
+        ],
+    )
+
+
+@mcp_tool(domain="links")
+def accounts_links_history(
+    limit: int = 50,
+) -> ResponseEnvelope[AccountLinksHistoryPayload]:
+    """Recent account-link decisions (all statuses), newest first.
+
+    Args:
+        limit: Maximum rows (default 50).
+    """
+    with get_database(read_only=True) as db:
+        rows = AccountLinksService(db, actor="mcp").history(limit=limit)
+    payload = AccountLinksHistoryPayload(
+        decisions=[
+            LinkHistoryRow(
+                decision_id=r["decision_id"],
+                provisional_account_id=r["provisional_account_id"],
+                candidate_account_id=r["candidate_account_id"],
+                status=r["status"],
+                decided_by=r["decided_by"],
+                decided_at=str(r["decided_at"]) if r.get("decided_at") else None,
+                confidence=(
+                    float(r["confidence_score"])
+                    if r.get("confidence_score") is not None
+                    else None
+                ),
+                signal=signal_from_match_signals(r.get("match_signals")),
+            )
+            for r in rows
+        ]
+    )
+    return build_envelope(
+        data=payload,
+        actions=["Use accounts_links_pending for the active review queue"],
+    )
+
+
+@mcp_tool(domain="links", read_only=False)
+def accounts_links_run() -> ResponseEnvelope[AccountLinksRunPayload]:
+    """Backfill account-link proposals for existing accounts in core.dim_accounts.
+
+    Surfaces weak-candidate merge proposals for accounts that already exist but
+    have no pending proposal yet (e.g. accounts imported before the resolver
+    candidate-pass existed, or cross-source twins minted separately). Writes
+    ``pending`` ``app.account_link_decisions`` rows — the same shape the
+    import-time resolver writes.
+
+    Skips pairs that already have a decision in either direction (any status)
+    and avoids double-proposing the same unordered pair within one run.
+
+    Mutation surface: writes ``app.account_link_decisions``. Revert is via the
+    audit log in ``app.audit_log`` (no undo tool yet; deferred to M1L).
+    Review new proposals with ``accounts_links_pending``.
+
+    Returns:
+        Envelope with ``data.new_proposals`` — count of new pending decisions written.
+    """
+    with get_database(read_only=False) as db:
+        new_proposals = AccountLinksService(db, actor="mcp").run()
+    return build_envelope(
+        data=AccountLinksRunPayload(new_proposals=new_proposals),
+        actions=["Use accounts_links_pending to review the proposed merges"],
+    )
+
+
 # ─── Registration ──────────────────────────────────────────────────────────
 
 
@@ -478,4 +655,50 @@ def register_accounts_tools(mcp: FastMCP) -> None:
         "'checking') to an account_id. Returns ranked candidates with "
         "confidence scores. Use this before tools that require an account_id "
         "when you only have a natural-language reference.",
+    )
+    register(
+        mcp,
+        accounts_links_pending,
+        "accounts_links_pending",
+        "List pending account-link decisions grouped by provisional account. "
+        "Returns the review queue of provisional accounts (recently imported, "
+        "not yet confirmed canonical) with candidate merge proposals. Each "
+        "candidate carries decision_id, account_id, display name, confidence "
+        "score, and the match signal (institution_last4 or name). ref_value "
+        "(raw native reference, which can be a full account number) is never "
+        "included. Use accounts_links_set to accept or standalone-reject each group. "
+        "Run accounts_links_run first to backfill proposals for pre-existing accounts.",
+    )
+    register(
+        mcp,
+        accounts_links_run,
+        "accounts_links_run",
+        "Backfill account-link proposals for accounts already in core.dim_accounts "
+        "that have no pending proposal yet (e.g. cross-source twins imported separately). "
+        "Writes pending app.account_link_decisions rows; skips pairs already proposed "
+        "or decided in either direction. Returns data.new_proposals (count of new pending "
+        "decisions written). Mutation surface: writes app.account_link_decisions; "
+        "revert via app.audit_log (no undo tool yet). "
+        "Review results with accounts_links_pending.",
+    )
+    register(
+        mcp,
+        accounts_links_set,
+        "accounts_links_set",
+        "Accept (merge) or standalone-reject one pending account-link decision. "
+        "Pass target_account_id = candidate_account_id to MERGE the provisional "
+        "account into the candidate. Pass null to STANDALONE-REJECT — the "
+        "provisional stays its own canonical account. target_account_id has no "
+        "default: pass it explicitly to avoid accidental standalone rejection. "
+        "Writes app.account_link_decisions + app.account_links; revert via "
+        "app.audit_log (no undo tool yet). Discover pending decisions with "
+        "accounts_links_pending.",
+    )
+    register(
+        mcp,
+        accounts_links_history,
+        "accounts_links_history",
+        "Recent account-link decisions (all statuses), newest first. "
+        "Read-only. Filter by limit. Use accounts_links_pending for the "
+        "active review queue.",
     )

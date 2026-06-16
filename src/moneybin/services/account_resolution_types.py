@@ -6,6 +6,64 @@ from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
+class AccountCandidate:
+    """One weak-signal merge candidate surfaced for confirmation."""
+
+    account_id: str
+    display_name: str
+    confidence: float
+    signal: str  # "institution_last4" | "name"
+
+
+@dataclass(frozen=True)
+class AccountProposal:
+    """The resolver verdict for one detected source account, surfaced to confirm.
+
+    ``requires_confirm`` encodes the surfacing rule structurally: a proposal with
+    weak candidates ALWAYS surfaces; a strong-confirmer adoption (``adopted_via``
+    set, no candidates) never does. A brand-new standalone account (is_new, no
+    adoption, no candidates) also surfaces — minting a new account is a visible
+    moment (spec Decision 7).
+    """
+
+    source_account_key: str
+    proposed_account_id: str
+    is_new: bool
+    candidates: tuple[AccountCandidate, ...] = ()
+    adopted_via: str | None = (
+        None  # "source_native"|"persistent_token"|"full_number"|"explicit"
+    )
+
+    @property
+    def requires_confirm(self) -> bool:
+        """True when the proposal must be shown to the user before import proceeds."""
+        return bool(self.candidates) or (self.is_new and self.adopted_via is None)
+
+    def to_dict(self) -> dict[str, object]:
+        """Serialise to a plain dict for surface display.
+
+        Includes opaque ids, display_name, confidence, and signal.
+        Never exposes ref_value or other PII-bearing fields.
+        """
+        return {
+            "source_account_key": self.source_account_key,
+            "proposed_account_id": self.proposed_account_id,
+            "is_new": self.is_new,
+            "adopted_via": self.adopted_via,
+            "requires_confirm": self.requires_confirm,
+            "candidates": [
+                {
+                    "account_id": c.account_id,
+                    "display_name": c.display_name,
+                    "confidence": c.confidence,
+                    "signal": c.signal,
+                }
+                for c in self.candidates
+            ],
+        }
+
+
+@dataclass(frozen=True)
 class SourceAccount:
     """One source account presented to the resolver.
 
@@ -40,3 +98,23 @@ class ResolvedAccount:
 
     outcome: str = "minted_new"
     """One of the ACCOUNT_LINK_OUTCOMES_TOTAL result labels."""
+
+
+@dataclass(frozen=True)
+class PendingLinkCandidate:
+    """One candidate merge proposal within a pending-review group."""
+
+    decision_id: str
+    candidate_account_id: str
+    candidate_display_name: str
+    confidence: float | None
+    signal: str  # e.g. "institution_last4" | "name"
+
+
+@dataclass(frozen=True)
+class PendingLinkGroup:
+    """One provisional account awaiting review + its candidate proposals."""
+
+    provisional_account_id: str
+    provisional_display_name: str
+    candidates: tuple[PendingLinkCandidate, ...]
