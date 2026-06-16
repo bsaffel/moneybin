@@ -98,3 +98,23 @@ class ResolvedAccount:
 
     outcome: str = "minted_new"
     """One of the ACCOUNT_LINK_OUTCOMES_TOTAL result labels."""
+
+
+@dataclass(frozen=True)
+class PendingLinkCandidate:
+    """One candidate merge proposal within a pending-review group."""
+
+    decision_id: str
+    candidate_account_id: str
+    candidate_display_name: str
+    confidence: float | None
+    signal: str  # e.g. "institution_last4" | "name"
+
+
+@dataclass(frozen=True)
+class PendingLinkGroup:
+    """One provisional account awaiting review + its candidate proposals."""
+
+    provisional_account_id: str
+    provisional_display_name: str
+    candidates: tuple[PendingLinkCandidate, ...]
