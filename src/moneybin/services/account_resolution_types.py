@@ -81,6 +81,11 @@ class SourceAccount:
     institution: str | None = None
     persistent_token: str | None = None
     explicit_account_id: str | None = None
+    force_standalone: bool = False
+    """User declared this a NEW standalone account: mint fresh, skip the
+    weak-candidate merge pass. Set by an import-time ``account_bindings`` entry
+    of ``"new"``. Still idempotent on re-import (adopts an existing
+    source_native above)."""
 
 
 @dataclass(frozen=True)

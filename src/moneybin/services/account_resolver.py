@@ -83,6 +83,16 @@ class AccountResolver:
             return ResolvedAccount(
                 account_id=adopted, is_new=False, outcome="adopted_strong"
             )
+        # force_standalone: caller declared a NEW account. Mint + record refs but
+        # skip the candidate pass (no merge proposal). Placed after the strong-ref
+        # lookup so a re-import of the same source_native stays idempotent.
+        if src.force_standalone:
+            account_id = uuid.uuid4().hex[:12]
+            self._write_native_mapping(src, account_id=account_id, decided_by="user")
+            self._write_strong_ref(src, account_id=account_id, decided_by="user")
+            return ResolvedAccount(
+                account_id=account_id, is_new=True, outcome="minted_new"
+            )
         # Step 2 - candidate pass. Mint first (never orphaned), then propose.
         account_id = uuid.uuid4().hex[:12]
         self._write_native_mapping(src, account_id=account_id, decided_by="auto")
@@ -143,6 +153,15 @@ class AccountResolver:
                 proposed_account_id=adopted,
                 is_new=False,
                 adopted_via=kind,
+            )
+        # force_standalone: declared-new verdict, no candidate pass. adopted_via
+        # "explicit" so requires_confirm is False (the caller already decided).
+        if src.force_standalone:
+            return AccountProposal(
+                source_account_key=src.source_account_key,
+                proposed_account_id=uuid.uuid4().hex[:12],
+                is_new=True,
+                adopted_via="explicit",
             )
         # Step 2 - candidate pass. Mint a preview id (NOT written anywhere).
         preview_id = uuid.uuid4().hex[:12]

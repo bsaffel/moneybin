@@ -255,6 +255,62 @@ def test_institution_last4_writes_pending_never_merges(db: Database) -> None:
     assert dec == (second.account_id, first.account_id, "pending")
 
 
+def test_force_standalone_mints_despite_candidates(db: Database) -> None:
+    """force_standalone declares a NEW account, skipping the merge-candidate pass."""
+    create_core_tables(db)
+    resolver = AccountResolver(db, actor="system")
+    first = resolver.resolve(_src(source_account_key="wf-checking-a"))
+    _seed_dim_account(
+        db,
+        account_id=first.account_id,
+        last_four="4267",
+        institution_name="wells_fargo",
+    )
+    # Same institution+last4 would normally propose a merge; force_standalone
+    # says "this is a distinct new account" — no pending decision is written.
+    second = resolver.resolve(
+        _src(
+            source_type="ofx",
+            source_account_key="ofx-4267",
+            last_four="4267",
+            force_standalone=True,
+        )
+    )
+    assert second.is_new is True
+    assert second.outcome == "minted_new"
+    assert second.pending_decision_ids == ()
+    assert second.account_id != first.account_id
+
+
+def test_force_standalone_reimport_is_idempotent(db: Database) -> None:
+    """A force_standalone re-import adopts the prior source_native, not a duplicate."""
+    create_core_tables(db)
+    resolver = AccountResolver(db, actor="system")
+    first = resolver.resolve(_src(source_account_key="wf-new", force_standalone=True))
+    second = resolver.resolve(_src(source_account_key="wf-new", force_standalone=True))
+    assert second.account_id == first.account_id
+    assert second.is_new is False
+
+
+def test_propose_force_standalone_reports_clean_new(db: Database) -> None:
+    """propose() with force_standalone surfaces a declared-new verdict, no confirm."""
+    create_core_tables(db)
+    resolver = AccountResolver(db, actor="system")
+    first = resolver.resolve(_src(source_account_key="wf-checking-a"))
+    _seed_dim_account(
+        db,
+        account_id=first.account_id,
+        last_four="4267",
+        institution_name="wells_fargo",
+    )
+    proposal = resolver.propose(
+        _src(source_account_key="ofx-4267", last_four="4267", force_standalone=True)
+    )
+    assert proposal.is_new is True
+    assert proposal.candidates == ()
+    assert proposal.requires_confirm is False  # user declared it; no ambiguity
+
+
 def test_cross_institution_slug_collision_stays_distinct(db: Database) -> None:
     """source_origin scopes source_native: same slug, different bank -> distinct mints."""
     create_core_tables(db)
