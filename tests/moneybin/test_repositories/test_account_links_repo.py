@@ -203,3 +203,94 @@ def test_allows_strong_ref_same_value_different_kind(db: Database) -> None:
     )
     n = db.conn.execute("SELECT COUNT(*) FROM app.account_links").fetchone()
     assert n is not None and n[0] == 2
+
+
+# -- repoint --
+
+
+def test_repoint_net_effect(db: Database) -> None:
+    """After repoint: old row is reversed.
+
+    Exactly one accepted row for the same ref coordinates now points to
+    new_account_id.
+    """
+    repo = AccountLinksRepo(db)
+    _insert(repo, link_id="lnk00000001", account_id="acct_canonical_1")
+
+    repo.repoint(
+        link_id="lnk00000001",
+        new_account_id="acct_canonical_2",
+        decided_by="user",
+        actor="cli",
+    )
+
+    old_row = db.conn.execute(
+        "SELECT status, account_id FROM app.account_links WHERE link_id = ?",
+        ["lnk00000001"],
+    ).fetchone()
+    assert old_row == ("reversed", "acct_canonical_1")
+
+    accepted = db.conn.execute(
+        "SELECT account_id FROM app.account_links "
+        "WHERE status = 'accepted' AND ref_kind = ? AND ref_value = ? "
+        "AND source_type = ? AND source_origin = ?",
+        ["source_native", "checking", "ofx", "wells_fargo"],
+    ).fetchall()
+    assert len(accepted) == 1
+    assert accepted[0][0] == "acct_canonical_2"
+
+
+def test_repoint_raises_for_same_account(db: Database) -> None:
+    """Re-pointing a link onto its current account_id is a caller bug."""
+    repo = AccountLinksRepo(db)
+    _insert(repo, link_id="lnk00000001", account_id="acct_canonical_1")
+    with pytest.raises(ValueError, match="already points"):
+        repo.repoint(
+            link_id="lnk00000001",
+            new_account_id="acct_canonical_1",
+            decided_by="user",
+            actor="cli",
+        )
+
+
+def test_repoint_raises_for_non_accepted_link(db: Database) -> None:
+    """Can only re-point an accepted link; a reversed link raises."""
+    repo = AccountLinksRepo(db)
+    _insert(repo, link_id="lnk00000001", account_id="acct_canonical_1")
+    db.conn.execute(  # noqa: S608  # test input, not executing user SQL
+        "UPDATE app.account_links SET status = 'reversed' WHERE link_id = 'lnk00000001'"
+    )
+    with pytest.raises(ValueError, match="can only re-point"):
+        repo.repoint(
+            link_id="lnk00000001",
+            new_account_id="acct_canonical_2",
+            decided_by="user",
+            actor="cli",
+        )
+
+
+def test_repoint_emits_both_audit_rows(db: Database) -> None:
+    """Repoint emits one audit for the old-row reversal AND one for the new insert."""
+    repo = AccountLinksRepo(db)
+    _insert(repo, link_id="lnk00000001", account_id="acct_canonical_1")
+
+    repo.repoint(
+        link_id="lnk00000001",
+        new_account_id="acct_canonical_2",
+        decided_by="user",
+        actor="cli",
+    )
+
+    # Old row's repoint audit — before=accepted, after=reversed
+    old_audits = _audit_rows_for(db, "lnk00000001")
+    repoint_audit = next(r for r in old_audits if r[0] == "account_link.repoint")
+    assert json.loads(repoint_audit[4])["account_id"] == "acct_canonical_1"
+    assert json.loads(repoint_audit[5])["status"] == "reversed"
+
+    # New row's insert audit — keyed on the freshly minted link_id
+    new_link_id = db.conn.execute(
+        "SELECT link_id FROM app.account_links WHERE account_id = 'acct_canonical_2'"
+    ).fetchone()
+    assert new_link_id is not None
+    new_audits = _audit_rows_for(db, new_link_id[0])
+    assert any(r[0] == "account_link.insert" for r in new_audits)

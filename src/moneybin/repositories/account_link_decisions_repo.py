@@ -38,6 +38,9 @@ _ACCOUNT_LINK_DECISIONS_COLUMNS = (
 # (AuditService json.dumps the whole payload). Writes json.dumps once.
 _JSON_COLUMNS = frozenset({"match_signals"})
 
+# Pre-quoted column list for multi-row SELECT (security.md: identifiers quoted).
+_COLS = ", ".join(f'"{c}"' for c in _ACCOUNT_LINK_DECISIONS_COLUMNS)
+
 
 def _decode_row(row: tuple[Any, ...]) -> dict[str, Any]:
     """Map a fetched row to a column → value dict, decoding JSON columns."""
@@ -116,3 +119,96 @@ class AccountLinkDecisionsRepo(BaseRepo):
                 actor=actor,
                 parent_audit_id=parent_audit_id,
             )
+
+    def update_status(
+        self,
+        decision_id: str,
+        *,
+        status: str,
+        decided_by: str,
+        actor: str,
+        parent_audit_id: str | None = None,
+        in_outer_txn: bool = False,
+    ) -> AuditEvent:
+        """Transition a decision's status (e.g. pending → accepted/rejected).
+
+        Re-stamps ``decided_at``/``decided_by``; captures full before/after.
+        Raises ``ValueError`` when no decision with this id exists.
+        """
+        with self._transaction(in_outer_txn=in_outer_txn):
+            before = self._require(
+                self._fetch_row(decision_id), "decision_id", decision_id
+            )
+            self._db.execute(
+                f"""
+                UPDATE {ACCOUNT_LINK_DECISIONS.full_name}
+                SET status = ?, decided_by = ?, decided_at = CURRENT_TIMESTAMP
+                WHERE decision_id = ?
+                """,  # noqa: S608  # TableRef + parameterized values
+                [status, decided_by, decision_id],
+            )
+            after = self._fetch_row(decision_id)
+            return self._emit_audit(
+                action="account_link_decision.update_status",
+                target=(*self._audit_target, decision_id),
+                before=self._serialize_for_audit(before),
+                after=self._serialize_for_audit(after),
+                actor=actor,
+                parent_audit_id=parent_audit_id,
+            )
+
+    def reverse(
+        self,
+        decision_id: str,
+        *,
+        reversed_by: str,
+        actor: str,
+        parent_audit_id: str | None = None,
+        in_outer_txn: bool = False,
+    ) -> AuditEvent:
+        """Reverse a decision (sets ``reversed_at``/``reversed_by``, status reversed).
+
+        Captures the full prior row in ``before``. Raises ``ValueError`` when no
+        decision with this id exists, or when it is already reversed — re-reversing
+        would overwrite the original reversal's audit trail
+        (``reversed_at``/``reversed_by``), so a second reverse is rejected.
+        """
+        with self._transaction(in_outer_txn=in_outer_txn):
+            before = self._require(
+                self._fetch_row(decision_id), "decision_id", decision_id
+            )
+            if before["reversed_at"] is not None:
+                raise ValueError(f"Decision already reversed: {decision_id}")
+            self._db.execute(
+                f"""
+                UPDATE {ACCOUNT_LINK_DECISIONS.full_name}
+                SET reversed_at = CURRENT_TIMESTAMP, reversed_by = ?,
+                    status = 'reversed'
+                WHERE decision_id = ?
+                """,  # noqa: S608  # TableRef + parameterized values
+                [reversed_by, decision_id],
+            )
+            after = self._fetch_row(decision_id)
+            return self._emit_audit(
+                action="account_link_decision.reverse",
+                target=(*self._audit_target, decision_id),
+                before=self._serialize_for_audit(before),
+                after=self._serialize_for_audit(after),
+                actor=actor,
+                parent_audit_id=parent_audit_id,
+            )
+
+    def list_pending(self) -> list[dict[str, Any]]:
+        """Return all pending, non-reversed decisions ordered for review grouping.
+
+        Returns ``status='pending'`` rows with ``reversed_at IS NULL``, decoded
+        via ``_decode_row``, ordered ``provisional_account_id, decision_id`` so
+        callers can group proposals by the provisional account under review.
+        Read-only — no audit emitted.
+        """
+        rows = self._db.execute(
+            f"SELECT {_COLS} FROM {ACCOUNT_LINK_DECISIONS.full_name} "  # noqa: S608  # constant column list + TableRef
+            "WHERE status = 'pending' AND reversed_at IS NULL "
+            "ORDER BY provisional_account_id, decision_id",
+        ).fetchall()
+        return [_decode_row(r) for r in rows]

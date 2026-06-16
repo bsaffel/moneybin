@@ -124,3 +124,137 @@ def test_insert_rolls_back_when_audit_raises(db: Database) -> None:
         ["ghost_decision"],
     ).fetchall()
     assert rows == []
+
+
+# -- update_status --
+
+
+def test_update_status_captures_before_and_after(db: Database) -> None:
+    repo = AccountLinkDecisionsRepo(db)
+    _insert(repo, status="pending")
+
+    event = repo.update_status(
+        "dec00000001", status="accepted", decided_by="user", actor="cli"
+    )
+    assert event.target_id == "dec00000001"
+
+    row = db.conn.execute(
+        "SELECT status, decided_by FROM app.account_link_decisions WHERE decision_id = ?",
+        ["dec00000001"],
+    ).fetchone()
+    assert row == ("accepted", "user")
+
+    upd = next(
+        r
+        for r in _audit_rows_for(db, "dec00000001")
+        if r[0] == "account_link_decision.update_status"
+    )
+    assert json.loads(upd[4])["status"] == "pending"
+    assert json.loads(upd[5])["status"] == "accepted"
+    assert upd[6] == "cli"
+
+
+def test_update_status_raises_for_missing_decision(db: Database) -> None:
+    repo = AccountLinkDecisionsRepo(db)
+    with pytest.raises(ValueError, match="not found"):
+        repo.update_status("nope", status="accepted", decided_by="user", actor="cli")
+
+
+# -- reverse --
+
+
+def test_reverse_sets_reversed_fields_and_captures_before(db: Database) -> None:
+    repo = AccountLinkDecisionsRepo(db)
+    _insert(repo, status="accepted")
+
+    event = repo.reverse("dec00000001", reversed_by="user", actor="cli")
+    assert event.target_id == "dec00000001"
+
+    row = db.conn.execute(
+        "SELECT status, reversed_by, reversed_at IS NOT NULL "
+        "FROM app.account_link_decisions WHERE decision_id = ?",
+        ["dec00000001"],
+    ).fetchone()
+    assert row == ("reversed", "user", True)
+
+    rev = next(
+        r
+        for r in _audit_rows_for(db, "dec00000001")
+        if r[0] == "account_link_decision.reverse"
+    )
+    assert json.loads(rev[4])["status"] == "accepted"
+    assert json.loads(rev[5])["status"] == "reversed"
+
+
+def test_reverse_raises_for_missing_decision(db: Database) -> None:
+    repo = AccountLinkDecisionsRepo(db)
+    with pytest.raises(ValueError, match="not found"):
+        repo.reverse("nope", reversed_by="user", actor="cli")
+
+
+def test_reverse_raises_when_already_reversed(db: Database) -> None:
+    """Re-reversing an already-reversed decision is rejected (audit integrity)."""
+    repo = AccountLinkDecisionsRepo(db)
+    _insert(repo, status="accepted")
+    repo.reverse("dec00000001", reversed_by="user", actor="cli")
+    with pytest.raises(ValueError, match="already reversed"):
+        repo.reverse("dec00000001", reversed_by="user", actor="cli")
+
+
+# -- list_pending --
+
+
+def test_list_pending_returns_only_active_pending(db: Database) -> None:
+    repo = AccountLinkDecisionsRepo(db)
+    _insert(repo, decision_id="d_pending", status="pending")
+    _insert(repo, decision_id="d_accepted", status="accepted")
+    _insert(repo, decision_id="d_rejected", status="rejected")
+    # Reverse a pending decision — it drops from the queue (reversed_at set, status=reversed)
+    repo.reverse("d_pending", reversed_by="user", actor="cli")
+    # A fresh pending decision should appear
+    _insert(repo, decision_id="d_pending2", status="pending")
+
+    result = repo.list_pending()
+    ids = [r["decision_id"] for r in result]
+    assert "d_pending2" in ids
+    assert "d_pending" not in ids  # reversed
+    assert "d_accepted" not in ids
+    assert "d_rejected" not in ids
+
+
+def test_list_pending_orders_by_provisional_then_decision_id(db: Database) -> None:
+    repo = AccountLinkDecisionsRepo(db)
+    _insert(
+        repo,
+        decision_id="dec_B1",
+        provisional_account_id="acct_prov_B",
+        status="pending",
+    )
+    _insert(
+        repo,
+        decision_id="dec_A2",
+        provisional_account_id="acct_prov_A",
+        status="pending",
+    )
+    _insert(
+        repo,
+        decision_id="dec_A1",
+        provisional_account_id="acct_prov_A",
+        status="pending",
+    )
+
+    result = repo.list_pending()
+    ids = [r["decision_id"] for r in result]
+    assert ids == ["dec_A1", "dec_A2", "dec_B1"]
+
+
+def test_list_pending_decodes_match_signals(db: Database) -> None:
+    """list_pending decodes JSON match_signals to nested objects (not doubly-encoded)."""
+    repo = AccountLinkDecisionsRepo(db)
+    _insert(repo, decision_id="dec_json", status="pending")
+
+    result = repo.list_pending()
+    assert len(result) == 1
+    signals = result[0]["match_signals"]
+    assert isinstance(signals, dict)
+    assert signals["signal"] == "institution_last4"
