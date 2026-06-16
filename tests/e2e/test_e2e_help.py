@@ -131,6 +131,14 @@ _HELP_COMMANDS: list[list[str]] = [
     ["sql"],
     ["sql", "query"],
     ["export"],
+    # top-level review leaf
+    ["review"],
+    # accounts links subgroup + leaves
+    ["accounts", "links"],
+    ["accounts", "links", "pending"],
+    ["accounts", "links", "set"],
+    ["accounts", "links", "history"],
+    ["accounts", "links", "run"],
 ]
 
 _runner = CliRunner()

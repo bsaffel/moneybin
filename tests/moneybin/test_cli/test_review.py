@@ -96,3 +96,47 @@ def test_transactions_review_alias_still_works(
 
     result = runner.invoke(app, ["transactions", "review", "--status"])
     assert result.exit_code == 0
+
+
+@patch("moneybin.cli.commands.transactions.review.get_database")
+@patch("moneybin.config.get_settings")
+def test_review_type_account_links_status_text(
+    mock_get_settings: MagicMock, mock_get_db: MagicMock
+) -> None:
+    """`moneybin review --type account-links --status` shows only the account-link count (text)."""
+    mock_db = MagicMock()
+    mock_get_db.return_value.__enter__.return_value = mock_db
+    mock_get_settings.return_value = MagicMock()
+    mock_db.execute.return_value.fetchone.return_value = (0,)
+
+    result = runner.invoke(app, ["review", "--type", "account-links", "--status"])
+    assert result.exit_code == 0
+    out = result.output.lower()
+    # Only the account-links queue appears in text output for --type account-links
+    assert "account" in out or "link" in out or "decision" in out
+    # The other queues must NOT appear when --type filters to account-links
+    assert "match" not in out
+    assert "categori" not in out
+
+
+@patch("moneybin.cli.commands.transactions.review.get_database")
+@patch("moneybin.config.get_settings")
+def test_review_type_account_links_status_json(
+    mock_get_settings: MagicMock, mock_get_db: MagicMock
+) -> None:
+    """`moneybin review --type account-links --status --output json` returns only account_links_pending."""
+    mock_db = MagicMock()
+    mock_get_db.return_value.__enter__.return_value = mock_db
+    mock_get_settings.return_value = MagicMock()
+    mock_db.execute.return_value.fetchone.return_value = (0,)
+
+    result = runner.invoke(
+        app, ["review", "--type", "account-links", "--status", "--output", "json"]
+    )
+    assert result.exit_code == 0
+    envelope = json.loads(result.stdout)
+    payload = envelope["data"]
+    assert "account_links_pending" in payload
+    # Per-type JSON must NOT include the other queue fields
+    assert "matches_pending" not in payload
+    assert "categorize_pending" not in payload

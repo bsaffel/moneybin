@@ -26,7 +26,9 @@ from .transactions.review import review_impl
 
 
 def review_command(
-    type_: str = typer.Option("all", "--type", help="all | matches | categorize"),
+    type_: str = typer.Option(
+        "all", "--type", help="all | matches | categorize | account-links"
+    ),
     status: bool = typer.Option(
         False, "--status", help="Show queue counts only, no interactive loop"
     ),

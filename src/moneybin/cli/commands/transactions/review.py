@@ -31,7 +31,7 @@ from ..stubs import _not_implemented
 
 logger = logging.getLogger(__name__)
 
-_VALID_TYPES = {"all", "matches", "categorize"}
+_VALID_TYPES = {"all", "matches", "categorize", "account-links"}
 
 
 def review_impl(
@@ -74,7 +74,9 @@ def review_impl(
 
 
 def transactions_review(
-    type_: str = typer.Option("all", "--type", help="all | matches | categorize"),
+    type_: str = typer.Option(
+        "all", "--type", help="all | matches | categorize | account-links"
+    ),
     status: bool = typer.Option(
         False, "--status", help="Show queue counts only, no interactive loop"
     ),
@@ -181,8 +183,10 @@ def _print_status(type_: str, output: OutputFormat) -> None:
             )
         elif type_ == "matches":
             data = {"matches_pending": s.matches_pending}
-        else:  # type_ == "categorize"
+        elif type_ == "categorize":
             data = {"categorize_pending": s.categorize_pending}
+        else:  # type_ == "account-links"
+            data = {"account_links_pending": s.account_links_pending}
         render_or_json(
             build_envelope(data=data, sensitivity="low"),
             output,
@@ -194,6 +198,8 @@ def _print_status(type_: str, output: OutputFormat) -> None:
         typer.echo(f"Matches pending: {s.matches_pending}")
     elif type_ == "categorize":
         typer.echo(f"Uncategorized transactions: {s.categorize_pending}")
+    elif type_ == "account-links":
+        typer.echo(f"Account-link decisions pending: {s.account_links_pending}")
     else:
         typer.echo(f"Matches pending: {s.matches_pending}")
         typer.echo(f"Uncategorized transactions: {s.categorize_pending}")
