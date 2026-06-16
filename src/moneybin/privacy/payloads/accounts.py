@@ -183,3 +183,10 @@ class AccountLinksHistoryPayload:
     """Payload for accounts_links_history — decision log, newest first."""
 
     decisions: list[LinkHistoryRow]
+
+
+@dataclass(frozen=True, slots=True)
+class AccountLinksRunPayload:
+    """Payload for accounts_links_run — count of new pending proposals written."""
+
+    new_proposals: Annotated[int, DataClass.AGGREGATE]

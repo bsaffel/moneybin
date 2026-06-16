@@ -436,3 +436,107 @@ def test_history_match_signals_decoded(seeded: AccountLinksService) -> None:
     rows = seeded.history(limit=5)
     for row in rows:
         assert isinstance(row["match_signals"], dict)
+
+
+# ---------------------------------------------------------------------------
+# run — backfill pending proposals
+# ---------------------------------------------------------------------------
+
+# Two accounts sharing institution+last4 in dim_accounts (cross-source twins).
+_TWIN_A = "twin_a_acct00"
+_TWIN_B = "twin_b_acct00"
+_TWIN_LINK_A = "twin_link_a_00"
+_TWIN_LINK_B = "twin_link_b_00"
+
+
+def _seed_twin_accounts(db: Database) -> None:
+    """Insert two dim_accounts rows sharing institution+last4 (triggers institution_last4 signal)."""
+    db.execute(
+        "INSERT INTO core.dim_accounts (account_id, last_four, institution_name, display_name, source_type) "
+        "VALUES (?, ?, ?, ?, ?)",  # noqa: S608  # test fixture insert
+        [_TWIN_A, "7777", "first_bank", "First Bank Checking A", "csv"],
+    )
+    db.execute(
+        "INSERT INTO core.dim_accounts (account_id, last_four, institution_name, display_name, source_type) "
+        "VALUES (?, ?, ?, ?, ?)",  # noqa: S608  # test fixture insert
+        [_TWIN_B, "7777", "first_bank", "First Bank Checking B", "ofx"],
+    )
+
+
+def test_run_writes_pending_for_cross_source_twins(
+    svc: AccountLinksService, db: Database
+) -> None:
+    """run() writes one pending decision for a twin pair sharing institution+last4."""
+    _seed_twin_accounts(db)
+
+    count = svc.run()
+
+    assert count == 1
+    row = db.execute(
+        "SELECT provisional_account_id, candidate_account_id, status "
+        "FROM app.account_link_decisions LIMIT 1"
+    ).fetchone()
+    assert row is not None
+    provisional, candidate, status = row
+    # Either direction is valid — the pair is unordered
+    pair = {provisional, candidate}
+    assert pair == {_TWIN_A, _TWIN_B}
+    assert status == "pending"
+
+
+def test_run_is_idempotent(svc: AccountLinksService, db: Database) -> None:
+    """A second run() writes 0 new decisions — the pair is already proposed."""
+    _seed_twin_accounts(db)
+
+    first = svc.run()
+    second = svc.run()
+
+    assert first == 1
+    assert second == 0
+    # Still exactly one decision row
+    n = db.execute("SELECT COUNT(*) FROM app.account_link_decisions").fetchone()
+    assert n is not None and n[0] == 1
+
+
+def test_run_skips_pair_with_existing_decision_any_status(
+    svc: AccountLinksService, db: Database
+) -> None:
+    """run() does not re-propose a pair that already has a decision (accepted or rejected)."""
+    _seed_twin_accounts(db)
+    # Seed a pre-existing accepted decision for the twin pair
+    _insert_decision(
+        db,
+        decision_id="pre_dec_00001",
+        provisional_account_id=_TWIN_A,
+        candidate_account_id=_TWIN_B,
+        signal="institution_last4",
+    )
+    # Mark it accepted
+    db.execute(
+        "UPDATE app.account_link_decisions SET status = 'accepted' WHERE decision_id = ?",
+        ["pre_dec_00001"],
+    )
+
+    count = svc.run()
+
+    assert count == 0
+
+
+def test_run_skips_reverse_direction_pair(
+    svc: AccountLinksService, db: Database
+) -> None:
+    """run() skips the pair B→A when A→B was already proposed in prior run."""
+    _seed_twin_accounts(db)
+    # Seed a pre-existing decision in the reverse direction
+    _insert_decision(
+        db,
+        decision_id="rev_dec_00001",
+        provisional_account_id=_TWIN_B,
+        candidate_account_id=_TWIN_A,
+        signal="institution_last4",
+    )
+
+    count = svc.run()
+
+    # The pair is already covered (in reverse) — 0 new decisions
+    assert count == 0

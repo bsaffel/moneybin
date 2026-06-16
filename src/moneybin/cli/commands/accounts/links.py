@@ -1,11 +1,10 @@
 """accounts links — review-queue commands for account identity binding.
 
-Subcommands: pending, set, history.
+Subcommands: pending, set, history, run.
 Mirrors `transactions matches` — thin wrappers over AccountLinksService.
 
-accounts_links_run and `accounts links undo` are deliberately NOT YET
-registered: run lands in M1S.5b; undo is deferred to the M1L audit-undo
-consumer.
+`accounts links undo` is deliberately NOT YET registered:
+deferred to the M1L audit-undo consumer.
 """
 
 from __future__ import annotations
@@ -20,6 +19,7 @@ from moneybin.database import get_database
 from moneybin.privacy.payloads.accounts import (
     AccountLinksHistoryPayload,
     AccountLinksPendingPayload,
+    AccountLinksRunPayload,
     LinkCandidateRow,
     LinkHistoryRow,
     LinkPendingGroup,
@@ -231,3 +231,38 @@ def links_history(
             f"{conf_str:>5}"
         )
     typer.echo()
+
+
+@app.command("run")
+def links_run(
+    output: OutputFormat = output_option,
+) -> None:
+    """Backfill pending account-link proposals for existing accounts.
+
+    Finds weak-signal candidate pairs for every account in core.dim_accounts
+    that has no pending proposal yet and writes pending decisions for review.
+
+    Run this after importing accounts from multiple sources to surface
+    cross-source twins for review.
+    """
+    with handle_cli_errors():
+        with get_database(read_only=False) as db:
+            new_proposals = AccountLinksService(db, actor="cli").run()
+
+    payload = AccountLinksRunPayload(new_proposals=new_proposals)
+
+    if output == OutputFormat.JSON:
+        from moneybin.cli.output import render_or_json  # noqa: PLC0415 — defer import
+
+        render_or_json(
+            build_envelope(data=payload),
+            output,
+            cli_actor="accounts_links_run",
+        )
+        return
+
+    if new_proposals == 0:
+        typer.echo("No new account-link proposals written.")
+    else:
+        typer.echo(f"✅ Wrote {new_proposals} new pending account-link proposal(s).")
+    typer.echo("Run `accounts links pending` to review.")

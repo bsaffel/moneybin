@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from typing import Any
 
 import duckdb
@@ -208,6 +209,96 @@ class AccountLinksService:
     # ------------------------------------------------------------------
     # Mutations
     # ------------------------------------------------------------------
+
+    def run(self, *, decided_by: str = "auto") -> int:
+        """Backfill pending link proposals for all accounts in core.dim_accounts.
+
+        For each account in core.dim_accounts, calls
+        ``AccountResolver.propose_existing`` to find weak-signal candidates
+        (institution+last4 or name fuzzy-match), then writes a ``pending``
+        ``app.account_link_decisions`` row for each new unordered pair.
+
+        Dedup rules (skips a candidate if either holds):
+        - A decision already exists for that pair in either direction (any status).
+        - The same unordered pair was already written in this run.
+
+        Returns the count of new ``pending`` decisions written. Returns 0 when
+        ``core.dim_accounts`` is not yet materialized.
+        """
+        # Import here to avoid a circular-import at module level
+        # (AccountResolver ← AccountLinkDecisionsRepo ← AccountLinksService would cycle).
+        from moneybin.services.account_resolver import AccountResolver  # noqa: PLC0415
+
+        resolver = AccountResolver(self._db, actor=self._actor)
+        try:
+            account_ids = [
+                str(r[0])
+                for r in self._db.execute(
+                    f"SELECT account_id FROM {DIM_ACCOUNTS.full_name}",  # noqa: S608  # TableRef constant
+                ).fetchall()
+            ]
+        except duckdb.CatalogException:
+            logger.debug("core.dim_accounts unavailable in run(); returning 0")
+            return 0
+
+        new_count = 0
+        # Track unordered pairs written this run to avoid A→B + B→A double-writes.
+        seen_pairs: set[frozenset[str]] = set()
+
+        self._db.begin()
+        try:
+            for account_id in account_ids:
+                proposal = resolver.propose_existing(account_id)
+                if proposal is None:
+                    continue
+                for candidate in proposal.candidates:
+                    pair: frozenset[str] = frozenset({account_id, candidate.account_id})
+                    if pair in seen_pairs:
+                        continue
+                    # Skip if any decision (any status, either direction) already covers this pair.
+                    existing = self._db.execute(
+                        f"""
+                        SELECT 1 FROM {ACCOUNT_LINK_DECISIONS.full_name}
+                        WHERE (provisional_account_id = ? AND candidate_account_id = ?)
+                           OR (provisional_account_id = ? AND candidate_account_id = ?)
+                        LIMIT 1
+                        """,  # noqa: S608  # TableRef constant + parameterized values
+                        [
+                            account_id,
+                            candidate.account_id,
+                            candidate.account_id,
+                            account_id,
+                        ],
+                    ).fetchone()
+                    seen_pairs.add(pair)
+                    if existing is not None:
+                        continue
+                    decision_id = uuid.uuid4().hex[:12]
+                    self._decisions.insert(
+                        decision_id=decision_id,
+                        provisional_account_id=account_id,
+                        candidate_account_id=candidate.account_id,
+                        confidence_score=candidate.confidence,
+                        # value = matched candidate's display_name (schema intent:
+                        # "which weak signal fired + its value"), mirroring import-time.
+                        # Internal field; the queue surfaces signal/display_name, not this.
+                        match_signals={
+                            "signal": candidate.signal,
+                            "value": candidate.display_name,
+                        },
+                        decided_by=decided_by,
+                        actor=self._actor,
+                        status="pending",
+                        in_outer_txn=True,
+                    )
+                    new_count += 1
+            self._db.commit()
+        except BaseException:
+            self._db.rollback()
+            raise
+
+        logger.info(f"accounts_links_run: wrote {new_count} new pending decisions")
+        return new_count
 
     def set(  # noqa: A003  # mirrors the existing set_status verb shape; "set" is the surface verb
         self,

@@ -164,6 +164,57 @@ class AccountResolver:
             adopted_via=None,
         )
 
+    def propose_existing(self, account_id: str) -> AccountProposal | None:
+        """Backfill verdict for an account already in core.dim_accounts.
+
+        Looks up the account's institution_name, last_four, and display_name,
+        builds a synthetic SourceAccount (source_type/source_origin="backfill";
+        the candidate pass only uses last_four, institution, account_name), then
+        delegates to _find_candidates excluding the account itself.
+
+        Returns None when the account is absent from dim_accounts, when
+        core.dim_accounts is not yet materialized, or when no candidates are
+        found. Read-only — writes nothing.
+        """
+        try:
+            row = self._db.execute(
+                f"SELECT institution_name, last_four, display_name "  # noqa: S608  # TableRef + parameterized value
+                f"FROM {DIM_ACCOUNTS.full_name} WHERE account_id = ? LIMIT 1",
+                [account_id],
+            ).fetchone()
+        except duckdb.CatalogException:
+            logger.debug("core.dim_accounts unavailable in propose_existing")
+            return None
+        if row is None:
+            return None
+        institution_name, last_four, display_name = row
+        src = SourceAccount(
+            source_type="backfill",
+            source_origin="backfill",
+            source_account_key="",
+            account_name=str(display_name or ""),
+            last_four=str(last_four) if last_four is not None else None,
+            institution=str(institution_name) if institution_name is not None else None,
+        )
+        raw_candidates = self._find_candidates(src, exclude_account_id=account_id)
+        if not raw_candidates:
+            return None
+        candidates = tuple(
+            AccountCandidate(
+                account_id=c.account_id,
+                display_name=self._fetch_display_name(c.account_id),
+                confidence=c.confidence,
+                signal=c.signal,
+            )
+            for c in raw_candidates
+        )
+        return AccountProposal(
+            source_account_key="",
+            proposed_account_id=account_id,
+            is_new=False,
+            candidates=candidates,
+        )
+
     def _fetch_display_name(self, account_id: str) -> str:
         """Return display_name from core.dim_accounts for a candidate account_id.
 

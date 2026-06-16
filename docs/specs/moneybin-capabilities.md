@@ -112,6 +112,7 @@ not-yet-built.
 | 49| List pending account-link decisions grouped by provisional account | `accounts_links_pending` | `accounts links pending` | — | live |
 | 50| Accept (merge) or standalone-reject one pending account-link decision | `accounts_links_set` *(`decision_id`, `target_account_id: str\|null` — no default; null = standalone-reject)* | `accounts links set <decision_id> --into <account_id>` (merge) / `--standalone` (reject) | — | live |
 | 51| Show recent account-link decisions (all statuses) | `accounts_links_history` *(`limit=50`)* | `accounts links history` *(`--limit`, `--output json`)* | — | live |
+| 52| Backfill pending account-link proposals for existing accounts (cross-source twin discovery) | `accounts_links_run` *(returns `data.new_proposals`)* | `accounts links run` *(`--output json`)* | — | live |
 
 *(Bootstrap rows only; full table populates incrementally as
 follow-up work closes the parity backlog. A prior row covering
@@ -157,7 +158,11 @@ Rows 49–51 added 2026-06-15 with the account-binding review-surface PR (M1S.5a
 `accounts_links_pending`, `accounts_links_set`, and `accounts_links_history` MCP tools
 registered; `accounts links {pending,set,history}` CLI commands wired. Sensitivity `low`
 throughout — opaque IDs + display names + signal/confidence only; `ref_value` never
-surfaced. `accounts_links_run` and undo deliberately not registered (run lands M1S.5b).)*
+surfaced.
+Row 52 added 2026-06-16 with the accounts-links-run backfill PR (M1S.5b):
+`accounts_links_run` (MCP) and `accounts links run` (CLI) registered. Backfills pending
+proposals for cross-source twins already in `core.dim_accounts`; skips pairs already
+proposed or decided in either direction. Undo deliberately deferred to M1L.)*
 
 ## Exemption categories
 

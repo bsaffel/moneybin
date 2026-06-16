@@ -17,6 +17,7 @@ from moneybin.database import get_database
 from moneybin.mcp.tools.accounts import (
     accounts_links_history,
     accounts_links_pending,
+    accounts_links_run,
     accounts_links_set,
     register_accounts_tools,
 )
@@ -348,6 +349,70 @@ class TestAccountsLinksHistory:
 
 
 # ---------------------------------------------------------------------------
+# accounts_links_run
+# ---------------------------------------------------------------------------
+
+
+class TestAccountsLinksRun:
+    """Tests for accounts_links_run."""
+
+    @patch("moneybin.mcp.tools.accounts.get_database")
+    @patch("moneybin.services.account_links_service.AccountLinksService.run")
+    async def test_run_returns_envelope(
+        self, mock_run: MagicMock, mock_get_db: MagicMock
+    ) -> None:
+        """accounts_links_run returns a valid ResponseEnvelope."""
+        mock_db = MagicMock()
+        mock_get_db.return_value.__enter__.return_value = mock_db
+        mock_run.return_value = 3
+
+        parsed = (await accounts_links_run()).to_dict()
+        assert "summary" in parsed
+        assert "data" in parsed
+        assert "actions" in parsed
+
+    @patch("moneybin.mcp.tools.accounts.get_database")
+    @patch("moneybin.services.account_links_service.AccountLinksService.run")
+    async def test_run_payload_contains_count(
+        self, mock_run: MagicMock, mock_get_db: MagicMock
+    ) -> None:
+        """data.new_proposals reflects the count returned by service.run()."""
+        mock_db = MagicMock()
+        mock_get_db.return_value.__enter__.return_value = mock_db
+        mock_run.return_value = 5
+
+        data = (await accounts_links_run()).to_dict()["data"]
+        assert data["new_proposals"] == 5
+
+    @patch("moneybin.mcp.tools.accounts.get_database")
+    @patch("moneybin.services.account_links_service.AccountLinksService.run")
+    async def test_run_sensitivity_is_low(
+        self, mock_run: MagicMock, mock_get_db: MagicMock
+    ) -> None:
+        """accounts_links_run has low sensitivity (counts only)."""
+        mock_db = MagicMock()
+        mock_get_db.return_value.__enter__.return_value = mock_db
+        mock_run.return_value = 0
+
+        parsed = (await accounts_links_run()).to_dict()
+        assert parsed["summary"]["sensitivity"] == "low"
+
+    @patch("moneybin.mcp.tools.accounts.get_database")
+    @patch("moneybin.services.account_links_service.AccountLinksService.run")
+    async def test_run_actions_point_to_pending(
+        self, mock_run: MagicMock, mock_get_db: MagicMock
+    ) -> None:
+        """actions[] after run points at accounts_links_pending."""
+        mock_db = MagicMock()
+        mock_get_db.return_value.__enter__.return_value = mock_db
+        mock_run.return_value = 2
+
+        result = (await accounts_links_run()).to_dict()
+        actions_text = " ".join(result["actions"])
+        assert "accounts_links_pending" in actions_text
+
+
+# ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
 
@@ -356,13 +421,14 @@ class TestAccountsLinksRegistration:
     """Verify accounts_links_* tools are registered with the FastMCP server."""
 
     async def test_tools_registered(self) -> None:
-        """register_accounts_tools includes all three accounts_links_* tools."""
+        """register_accounts_tools includes all four accounts_links_* tools."""
         srv = FastMCP("test")
         register_accounts_tools(srv)
         names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
         assert "accounts_links_pending" in names
         assert "accounts_links_set" in names
         assert "accounts_links_history" in names
+        assert "accounts_links_run" in names
 
 
 # ---------------------------------------------------------------------------

@@ -204,6 +204,61 @@ class TestLinksSet:
 # ---------------------------------------------------------------------------
 
 
+class TestLinksRun:
+    """Tests for `accounts links run`."""
+
+    @patch("moneybin.cli.commands.accounts.links.get_database")
+    @patch("moneybin.services.account_links_service.AccountLinksService.run")
+    def test_run_exits_0(self, mock_run: MagicMock, mock_get_db: MagicMock) -> None:
+        """Run exits 0 and prints the new-proposal count."""
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_run.return_value = 3
+
+        result = runner.invoke(app, ["run"])
+        assert result.exit_code == 0
+        assert "3" in result.output
+
+    @patch("moneybin.cli.commands.accounts.links.get_database")
+    @patch("moneybin.services.account_links_service.AccountLinksService.run")
+    def test_run_mentions_pending_command(
+        self, mock_run: MagicMock, mock_get_db: MagicMock
+    ) -> None:
+        """Run output hints the user toward `accounts links pending`."""
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_run.return_value = 2
+
+        result = runner.invoke(app, ["run"])
+        assert result.exit_code == 0
+        assert "pending" in result.output.lower()
+
+    @patch("moneybin.cli.commands.accounts.links.get_database")
+    @patch("moneybin.services.account_links_service.AccountLinksService.run")
+    def test_run_zero_proposals_exits_0(
+        self, mock_run: MagicMock, mock_get_db: MagicMock
+    ) -> None:
+        """Run with 0 new proposals still exits 0."""
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_run.return_value = 0
+
+        result = runner.invoke(app, ["run"])
+        assert result.exit_code == 0
+
+    @patch("moneybin.cli.commands.accounts.links.get_database")
+    @patch("moneybin.services.account_links_service.AccountLinksService.run")
+    def test_run_json_output_shape(
+        self, mock_run: MagicMock, mock_get_db: MagicMock
+    ) -> None:
+        """--output json returns an envelope with new_proposals in data."""
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_run.return_value = 7
+
+        result = runner.invoke(app, ["run", "--output", "json"])
+        assert result.exit_code == 0
+        parsed = json.loads(result.output)
+        assert "data" in parsed
+        assert parsed["data"]["new_proposals"] == 7
+
+
 class TestLinksHistory:
     """Tests for `accounts links history`."""
 

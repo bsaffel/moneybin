@@ -562,7 +562,19 @@ Show recent account-link decisions (all statuses), newest first.
 - **Service:** `AccountLinksService.history()`
 - **CLI:** `moneybin accounts links history`
 
-> **Not yet registered:** `accounts_links_run` (lands in M1S.5b) and an undo variant are deliberately out of scope for this increment.
+### `accounts_links_run`
+
+Backfill account-link proposals for accounts already in `core.dim_accounts` that have no pending proposal yet.
+
+- **Sensitivity:** `low` — count only.
+- **Unique parameters:** None.
+- **Behavior:** Iterates all accounts in `core.dim_accounts`, calls the resolver candidate pass (institution+last4 or name fuzzy-match) excluding each account itself, and writes `pending` `app.account_link_decisions` rows for any new unordered pair not already proposed or decided. Skips pairs that already have a decision in either direction (any status). Returns `data.new_proposals` — count of new pending decisions written.
+- **Mutation surface:** writes `app.account_link_decisions`; revert via `app.audit_log` (no undo tool; deferred to M1L).
+- **Service:** `AccountLinksService.run()`
+- **CLI:** `moneybin accounts links run`
+- **read_only:** false
+
+> **Note:** An undo variant (`accounts_links_undo`) remains deliberately out of scope, deferred to the M1L audit-undo consumer.
 
 ---
 
