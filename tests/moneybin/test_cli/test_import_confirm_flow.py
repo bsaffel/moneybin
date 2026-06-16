@@ -470,3 +470,85 @@ class TestImportConfirmCommand:
         call_kwargs = mock_import_file.call_args.kwargs
         assert call_kwargs["overrides"] == {"description": "Memo"}
         assert call_kwargs["confirm"] is True
+
+    def test_account_binding_parsed_and_forwarded(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Repeatable --account-binding folds into an account_bindings map."""
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+
+        result = runner.invoke(
+            app,
+            [
+                "confirm",
+                str(csv_file),
+                "--accept",
+                "--account-binding",
+                "wf-checking=acct123456",
+                "--account-binding",
+                "wf-savings=new",
+            ],
+        )
+
+        assert result.exit_code == 0
+        call_kwargs = mock_import_file.call_args.kwargs
+        assert call_kwargs["account_bindings"] == {
+            "wf-checking": "acct123456",
+            "wf-savings": "new",
+        }
+
+    def test_account_confirmation_envelope_carries_proposals(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """An account_confirmation surfaces account_proposals in the JSON envelope."""
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+        outcome = ConfirmationRequired(
+            channel="tabular",
+            confidence=Confidence(
+                score=1.0, tier="high", flagged=(), missing_required=()
+            ),
+            proposed=ProposedMapping(
+                field_mapping={"description": "Memo"},
+                sample_values={},
+                unmapped_columns=(),
+            ),
+            reason="account_confirmation",
+            account_proposals=[
+                {
+                    "source_account_key": "wf-checking",
+                    "proposed_account_id": "prov12345678",
+                    "is_new": True,
+                    "candidates": [
+                        {
+                            "account_id": "cand87654321",
+                            "display_name": "WF Checking",
+                            "confidence": 0.5,
+                            "signal": "institution_last4",
+                        }
+                    ],
+                }
+            ],
+        )
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=ImportConfirmationRequiredError(outcome),
+        )
+
+        result = runner.invoke(
+            app, ["confirm", str(csv_file), "--accept", "--output", "json"]
+        )
+
+        payload = json.loads(result.output)
+        data = payload["data"]
+        assert data["status"] == "confirmation_required"
+        assert data["reason"] == "account_confirmation"
+        assert data["account_proposals"][0]["source_account_key"] == "wf-checking"
+        assert any("--account-binding" in a for a in payload["actions"])

@@ -75,6 +75,23 @@ def _parse_overrides(override: list[str] | None) -> dict[str, str] | None:
     return result
 
 
+def _parse_account_bindings(binding: list[str] | None) -> dict[str, str] | None:
+    """Parse --account-binding source_key=ACCOUNT_ID|new values."""
+    if not binding:
+        return None
+    result: dict[str, str] = {}
+    for raw in binding:
+        if "=" not in raw:
+            logger.error(
+                "❌ Invalid --account-binding format "
+                f"(expected source_key=ACCOUNT_ID|new): {raw!r}"
+            )
+            raise typer.Exit(1)
+        key, _, target = raw.partition("=")
+        result[key.strip()] = target.strip()
+    return result
+
+
 def _load_all_formats(
     db: Database | None = None,
 ) -> tuple[dict[str, TabularFormat], dict[str, TabularFormat]]:
@@ -679,6 +696,16 @@ def import_confirm_command(
         "--account-name",
         help="Account name to associate with imported transactions.",
     ),
+    account_binding: list[str] = typer.Option(
+        None,
+        "--account-binding",
+        help=(
+            "Ratify an account_confirmation (repeatable): "
+            "--account-binding source_key=ACCOUNT_ID to adopt an existing "
+            "account, or source_key=new to mint a distinct new account. "
+            "Keys come from confirmation_required account_proposals."
+        ),
+    ),
     save_format: bool = typer.Option(
         True,
         "--save-format/--no-save-format",
@@ -718,6 +745,9 @@ def import_confirm_command(
         raise typer.Exit(1)
 
     parsed_mapping = _parse_overrides(list(mapping)) if mapping else None
+    parsed_bindings = (
+        _parse_account_bindings(list(account_binding)) if account_binding else None
+    )
 
     from moneybin.services.import_confirmation import (
         ImportConfirmationRequiredError,
@@ -735,6 +765,7 @@ def import_confirm_command(
                     overrides=parsed_mapping,
                     account_id=account_id,
                     account_name=account_name,
+                    account_bindings=parsed_bindings,
                     save_format=save_format,
                     actor_kind="human",
                     refresh=False,  # caller can run 'moneybin transform apply' separately
@@ -770,10 +801,18 @@ def import_confirm_command(
             "flagged": list(outcome.confidence.flagged),
             "missing_required": list(outcome.confidence.missing_required),
             "unmapped_columns": unmapped,
+            "account_proposals": list(outcome.account_proposals),
         }
         confirm_actions: list[str] = []
         if outcome.error_message:
             confirm_actions.append(f"Validation failed: {outcome.error_message}")
+        if outcome.reason == "account_confirmation":
+            # The layout is settled; only the account identity needs ratifying.
+            confirm_actions.append(
+                f"Re-run 'moneybin import confirm {file_path} --accept "
+                "--account-binding <source_key>=<account_id|new>' to bind each "
+                "proposed account (adopt an existing id, or 'new' to keep distinct)."
+            )
         confirm_actions.append(
             "Re-run with --mapping <field>=<column> to override specific fields."
         )
