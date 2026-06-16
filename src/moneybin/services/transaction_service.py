@@ -40,20 +40,29 @@ _AUDIT_TARGET_MANUAL = ("raw", "manual_transactions")
 _MANUAL_BATCH_MAX = 100
 _MANUAL_FORMAT_NAME = "manual_entry"
 _MANUAL_SOURCE_TYPE = "manual"
+# raw.manual_transactions.source_origin is always 'user' (schema DEFAULT) and is
+# the manual native account key's scope; both feed the transaction_id hash.
+_MANUAL_SOURCE_ORIGIN = "user"
 _MIN_ACCOUNT_FUZZY_CONFIDENCE = 0.4
 
 
 def _predict_manual_gold_key(source_transaction_id: str, account_id: str) -> str:
     """Pre-compute the gold ``transaction_id`` the SQLMesh pipeline will assign.
 
-    Mirrors the unmatched-row branch of ``int_transactions__matched``:
-    ``SUBSTRING(SHA256(source_type || '|' || source_transaction_id || '|' || account_id), 1, 16)``.
-    Manual rows are exempt from the matcher (spec Req 6 / Task 8) so this
-    branch is the only one they hit. If either side of this hash drifts from
-    the SQL, the pre-attached user-category row will silently fail to join in
-    ``core.fct_transactions``.
+    Mirrors the unmatched-row branch of ``int_transactions__matched`` after the
+    ADR-015 / RD-2 re-key, which hashes the immutable source identity (NOT the
+    mutable canonical ``account_id``):
+    ``SUBSTRING(SHA256(source_type||'|'||source_origin||'|'||source_account_key||'|'||source_transaction_id), 1, 16)``.
+    For manual rows ``source_origin='user'`` and ``source_account_key`` is the
+    stored ``account_id``. Manual rows are exempt from the matcher (spec Req 6 /
+    Task 8) so this branch is the only one they hit. If either side of this hash
+    drifts from the SQL, the pre-attached user-category row will silently fail to
+    join in ``core.fct_transactions``.
     """
-    raw = f"{_MANUAL_SOURCE_TYPE}|{source_transaction_id}|{account_id}"
+    raw = (
+        f"{_MANUAL_SOURCE_TYPE}|{_MANUAL_SOURCE_ORIGIN}|"
+        f"{account_id}|{source_transaction_id}"
+    )
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 

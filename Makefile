@@ -1,7 +1,7 @@
 # MoneyBin Development Makefile
 # This Makefile provides development commands for the MoneyBin project
 
-.PHONY: help setup clean install install-dev test test-cov lint format type-check pre-commit venv activate status install-uv test-e2e test-scenarios claude-mcp
+.PHONY: help setup clean install install-dev test test-cov lint format format-sql type-check pre-commit venv activate status install-uv test-e2e test-scenarios claude-mcp
 
 # Default target
 .DEFAULT_GOAL := help
@@ -157,7 +157,7 @@ test-scenarios: venv ## Development: Run all whole-pipeline scenarios via pytest
 	@echo "$(BLUE)🧪 Running all scenarios...$(RESET)"
 	@uv run pytest tests/scenarios/ -m scenarios -v --durations=25
 
-format: venv ## Development: Format code with ruff
+format: venv format-sql ## Development: Format SQL models (format-sql) + code with ruff
 	@echo "$(BLUE)🎨 Formatting code with ruff...$(RESET)"
 	@uv run ruff format .
 	@echo "$(BLUE)🔧 Fixing auto-fixable issues...$(RESET)"
@@ -166,6 +166,16 @@ format: venv ## Development: Format code with ruff
 	@uv run pre-commit run trailing-whitespace --all-files || true
 	@uv run pre-commit run end-of-file-fixer --all-files || true
 	@echo "$(GREEN)✅ Code formatted and fixed$(RESET)"
+
+format-sql: venv ## Development: Format SQLMesh models (MAX_FORK_WORKERS=1 — see below)
+	@echo "$(BLUE)🎨 Formatting SQLMesh models...$(RESET)"
+	@# MAX_FORK_WORKERS=1 forces sqlmesh's SynchronousPoolExecutor. The bare CLI
+	@# doesn't import moneybin.database (which sets this for all runtime), so it
+	@# would otherwise fork a worker pool — disallowed by the encrypted-DB design
+	@# (orphan FDs vs the single-writer lock; see src/moneybin/database.py) and
+	@# blocked outright by the macOS sandbox's denied semaphore syscall.
+	@MAX_FORK_WORKERS=1 uv run sqlmesh -p sqlmesh format
+	@echo "$(GREEN)✅ SQL models formatted$(RESET)"
 
 lint: venv ## Development: Lint code with ruff
 	@echo "$(BLUE)🔍 Linting code with ruff...$(RESET)"

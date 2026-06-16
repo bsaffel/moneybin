@@ -167,8 +167,8 @@ class TestAccountsList:
             include_archived=True, type_filter=None
         )
         ids = [a["account_id"] for a in json.loads(result.stdout)["data"]["rows"]]
-        # account_id is ACCOUNT_IDENTIFIER (CRITICAL) — redacted to ****<last4>
-        assert "****ived" in ids
+        # account_id is RECORD_ID (spec D6) — passes through unmasked.
+        assert "acct_archived" in ids
 
     @pytest.mark.unit
     @patch("moneybin.cli.commands.accounts.get_database")
@@ -232,8 +232,10 @@ class TestAccountsGet:
         assert result.exit_code == 0, result.stderr
         data = json.loads(result.stdout)
         assert data["status"] == "ok"
-        # account_id is ACCOUNT_IDENTIFIER (CRITICAL) — redacted to ****<last4>
-        assert data["data"]["account_id"] == "****ct_a"
+        # account_id is RECORD_ID (spec D6) — passes through unmasked.
+        assert data["data"]["account_id"] == "acct_a"
+        # routing_number is ROUTING_NUMBER (CRITICAL) — still masked.
+        assert data["data"]["routing_number"] == "*****"
 
     @pytest.mark.unit
     @patch("moneybin.cli.commands.accounts.get_database")
@@ -697,12 +699,12 @@ class TestAccountsResolve:
         )
         assert result.exit_code == 0, result.stderr
         payload = json.loads(result.stdout)
-        # AccountResolvePayload carries account_id (ACCOUNT_IDENTIFIER → CRITICAL);
-        # render_or_json stamps the derived tier over the command's "low".
-        assert payload["summary"]["sensitivity"] == "critical"
+        # AccountResolvePayload's highest class is USER_NOTE (display_name) → MEDIUM;
+        # account_id is RECORD_ID (spec D6). render_or_json stamps the derived tier.
+        assert payload["summary"]["sensitivity"] == "medium"
         # data is {"matches": [...]} from AccountResolvePayload serialization
-        # account_id is ACCOUNT_IDENTIFIER (CRITICAL) — <4 chars → "****"
-        assert payload["data"]["matches"][0]["account_id"] == "****"
+        # account_id is RECORD_ID (spec D6) — passes through unmasked.
+        assert payload["data"]["matches"][0]["account_id"] == "a1"
         assert payload["data"]["matches"][0]["confidence"] == 1.0
 
     @pytest.mark.unit

@@ -162,11 +162,11 @@ class TestFetchActiveDedupDecisions:
             ("ofx", "ofx_new", "acct1"),
         ) in decisions.active_edges
 
-        # secondary_ids: ofx is lower-priority than csv per default source_priority,
-        # so the ofx side of each pair is the secondary (excluded from transfers).
-        assert ("ofx_pre1", "ofx", "acct1") in decisions.secondary_ids
-        assert ("ofx_pre2", "ofx", "acct1") in decisions.secondary_ids
-        assert ("ofx_new", "ofx", "acct1") in decisions.secondary_ids
+        # secondary_ids: ofx is higher-priority than csv per default source_priority (RD-1),
+        # so the csv side of each pair is the secondary (excluded from transfers).
+        assert ("csv_pre1", "csv", "acct1") in decisions.secondary_ids
+        assert ("csv_pre2", "csv", "acct1") in decisions.secondary_ids
+        assert ("csv_new", "csv", "acct1") in decisions.secondary_ids
 
     def test_secondary_ids_excludes_all_non_primary_members(self, db: Database) -> None:
         """Component-based exclusion must exclude ALL non-primary members.

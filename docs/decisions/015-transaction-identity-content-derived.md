@@ -2,7 +2,7 @@
 
 **Status:** Accepted (the governing spec
 [`account-identity-resolution.md`](../specs/account-identity-resolution.md) is
-`ready`)
+`in-progress`)
 
 ## Context
 
@@ -61,17 +61,37 @@ surrogate. Account identity *is* a surrogate. The asymmetry is deliberate.**
 For transactions:
 
 1. **`transaction_id` stays content-derived**, keyed on the **immutable source
-   identity** (`source_type | source_origin | source_native_key |
+   identity** (`source_type | source_origin | source_account_key |
    source_transaction_id`), never on the mutable canonical `account_id` and never
    on descriptive text (`description`/`memo` — the brittle field belongs to the
    fuzzy matcher, not to identity).
-2. **Priority-anchored, not whole-set-hashed.** A merged group's id is derived
-   from its **highest-priority member's** immutable identity (reusing the
-   existing golden-record `MatchingSettings.source_priority`, `ofx > plaid >
-   tabular`). A lower-priority twin joining (the common forward-order case —
-   authoritative bank file first, CSV later) leaves the id **unchanged**; only a
-   higher-priority source arriving later flips the anchor. This minimizes churn
-   and rides the most stable id available.
+2. **Stability-class-anchored, not whole-set-hashed.** A merged group's
+   `transaction_id` is derived from its **anchor member's** immutable identity,
+   where the anchor is chosen by an intrinsic stability class — not by the mutable
+   `MatchingSettings.source_priority` list (which governs golden-record field merging
+   only):
+
+   | Class | Rank | Sources | Id basis | Drifts? |
+   |---|---|---|---|---|
+   | native | 0 | OFX (FITID), Plaid (txn id) | upstream-assigned | never |
+   | minted | 1 | manual (`manual_` + uuid4, persisted PK) | minted once | never |
+   | hash | 2 | CSV / tabular family; gsheet-live (future) | content hash | yes (re-export) |
+
+   Within a class, the tiebreak is `loaded_at` (first-seen), then the source
+   identity tuple for a deterministic final ordering. A lower-stability twin
+   joining (the common forward-order case — bank file first, CSV later) leaves the
+   id **unchanged**; a more-stable source backfilling history re-anchors the group
+   **once** (alias-forwarded), then stays stable. Single and unmatched transactions
+   hash their own identity unchanged.
+
+   **Why intrinsic class, not the source-priority list.** Reusing `source_priority`
+   for identity is fragile: reordering it (a legitimate field-merge tuning operation)
+   would re-key merged `transaction_id`s. More concretely, `gsheet` (field-
+   authoritative in the list) is a future content-hash source — an unstable anchor
+   candidate — while `ofx` is a native-id source and the naturally stable choice
+   regardless of how field priorities are ordered. An intrinsic 3-class rank is a
+   fact about how an id is derived; it does not drift as sources are added or
+   priorities are retuned.
 3. **An alias map (`old_id → new_id`) records every id-changing merge.** SQL,
    agent, external, and curation-FK references resolve through it — the Plaid
    `pending_transaction_id` model. Brittleness in any one source key (a mutated
@@ -104,7 +124,9 @@ reference durability.
   contract (like Plaid's): a consumer holding an old id must resolve it through
   the alias map. The `moneybin://schema` / `sql_query` docs must state this.
 - **Churn is bounded** to transactions whose dedup-group membership actually
-  changes, and minimized further by priority-anchoring.
+  changes, and minimized further by stability-class anchoring: a new lower-stability
+  twin joining causes no re-key; only a more-stable source arriving later flips the
+  anchor (once, then stable).
 - **Two open follow-ups** (tracked in the spec, not blocking): hardening the CSV
   per-source content hash (drop `description`; `identifiers.md` territory), and
   the alias-chain-collapse rule across multiple successive merges.
@@ -124,3 +146,15 @@ reference durability.
   dominated by (C) — external/SQL references break on merge for the want of a
   cheap append-only alias table, and the prior art is unanimous that bare
   content-as-identity is brittle.
+
+## Change history
+
+- **2026-06-15 (pre-launch) — Decision 2 amended.** The merged-group anchor is
+  chosen by an intrinsic stability class (native › minted › hash) plus first-seen
+  tiebreak, not by `MatchingSettings.source_priority`. Rationale: `source_priority`
+  governs field merging and is mutable; reusing it for identity would re-key merged
+  `transaction_id`s on a legitimate field-merge tuning operation, and a future
+  content-hash source (`gsheet`) ranking high on field authority would be an
+  unstable anchor regardless of its list position. The intrinsic 3-class rank is a
+  fact about how an id is derived and does not drift. Consequences section updated
+  accordingly.

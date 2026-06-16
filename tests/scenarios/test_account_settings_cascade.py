@@ -53,6 +53,18 @@ def test_archive_cascade_excludes_from_networth() -> None:
         # Step 2: first transform — materialise dim_accounts + fct_balances_daily.
         run_step("transform", scenario.setup, db, env=env)
 
+        # The AccountResolver mints opaque canonical account_ids on import, so the
+        # source-native ACCTIDs (CHECKING1/SAVINGS1) are no longer the dim_accounts
+        # key. Resolve native ref → canonical id via app.account_links.
+        links = dict(
+            db.execute(
+                "SELECT ref_value, account_id FROM app.account_links "
+                "WHERE ref_kind = 'source_native' AND status = 'accepted'"
+            ).fetchall()
+        )
+        checking_id = links["CHECKING1"]
+        savings_id = links["SAVINGS1"]
+
         # --- Pre-archive assertions (derived from fixture) ---
         # Fixture has 2 STMTTRNRS blocks → 2 accounts in dim_accounts.
         pre_total = db.execute("SELECT COUNT(*) FROM core.dim_accounts").fetchone()
@@ -87,7 +99,7 @@ def test_archive_cascade_excludes_from_networth() -> None:
         from moneybin.services.account_service import AccountService
 
         svc = AccountService(db)
-        updated = svc.archive("CHECKING1")
+        updated = svc.archive(checking_id)
 
         # Verify the service write is immediately reflected in app.account_settings
         # (before the next transform propagates it to dim_accounts).
@@ -114,7 +126,7 @@ def test_archive_cascade_excludes_from_networth() -> None:
             FROM core.dim_accounts
             WHERE account_id = ?
             """,
-            ["CHECKING1"],
+            [checking_id],
         ).fetchone()
         assert checking is not None, "CHECKING1 must still exist in dim_accounts"
         checking_archived, checking_include = checking
@@ -132,7 +144,7 @@ def test_archive_cascade_excludes_from_networth() -> None:
             FROM core.dim_accounts
             WHERE account_id = ?
             """,
-            ["SAVINGS1"],
+            [savings_id],
         ).fetchone()
         assert savings is not None, "SAVINGS1 must still exist in dim_accounts"
         savings_archived, savings_include = savings
@@ -154,7 +166,7 @@ def test_archive_cascade_excludes_from_networth() -> None:
         assert len(default_list.rows) == 1, (
             f"list_accounts() default: expected 1 account, got {len(default_list.rows)}"
         )
-        assert default_list.rows[0].account_id == "SAVINGS1", (
+        assert default_list.rows[0].account_id == savings_id, (
             f"Expected SAVINGS1 in default list, got {default_list.rows[0].account_id}"
         )
 
@@ -164,6 +176,6 @@ def test_archive_cascade_excludes_from_networth() -> None:
             f"list_accounts(include_archived=True): expected 2, got {len(full_list.rows)}"
         )
         ids = {row.account_id for row in full_list.rows}
-        assert ids == {"CHECKING1", "SAVINGS1"}, (
+        assert ids == {checking_id, savings_id}, (
             f"Expected both accounts in --include-archived list, got {ids}"
         )

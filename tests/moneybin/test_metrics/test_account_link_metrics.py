@@ -1,7 +1,7 @@
 """Tests for account-link metrics registration (M1S).
 
-``ACCOUNT_LINK_OUTCOMES_TOTAL`` is defined here in M1S.1; emission wires into the
-``AccountResolver`` in M1S.2 (superseding ``ACCOUNT_MATCH_OUTCOMES_TOTAL``).
+``ACCOUNT_LINK_OUTCOMES_TOTAL`` is defined here in M1S.1; M1S.2 wired emission
+into the ``AccountResolver`` and retired the legacy account-match counter.
 """
 
 from moneybin.metrics.registry import ACCOUNT_LINK_OUTCOMES_TOTAL

@@ -4,10 +4,10 @@ Each field carries ``Annotated[T, DataClass.X]`` metadata so the Phase 6
 middleware can derive sensitivity via ``derive_tier`` without inspecting
 tool source code directly.
 
-NetWorthSnapshotPayload contains ACCOUNT_IDENTIFIER (CRITICAL) via
-per-account breakdown rows, so ``derive_tier`` resolves to ``Tier.CRITICAL``.
-NetWorthHistoryPayload contains only BALANCE and TXN_DATE, so it resolves to
-``Tier.HIGH``.
+``account_id`` is RECORD_ID (spec D6 — opaque canonical surrogate, not PII).
+NetWorthSnapshotPayload resolves to ``Tier.HIGH`` (BALANCE is the highest
+class among per-account breakdown rows). NetWorthHistoryPayload also resolves
+to ``Tier.HIGH`` (BALANCE and TXN_DATE only).
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from moneybin.privacy.taxonomy import DataClass
 class NetWorthAccountRow:
     """One per-account breakdown row in the networth snapshot."""
 
-    account_id: Annotated[str, DataClass.ACCOUNT_IDENTIFIER]
+    account_id: Annotated[str, DataClass.RECORD_ID]
     display_name: Annotated[str | None, DataClass.USER_NOTE]
     balance: Annotated[Decimal, DataClass.BALANCE]
     observation_source: Annotated[str | None, DataClass.TXN_TYPE]

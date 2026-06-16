@@ -152,10 +152,9 @@ SELECT
   ARG_MIN(m.currency_code, COALESCE(sp.priority, 2147483647)) AS currency_code,
   ARG_MIN(m.source_type, COALESCE(sp.priority, 2147483647)) AS canonical_source_type,
   COUNT(*) AS source_count,
-  /* Weakest-link: every member of a group already carries the same group-level
+  MIN(m.match_confidence) AS match_confidence, /* Weakest-link: every member of a group already carries the same group-level
      match_confidence (set by int_transactions__matched), so MIN == MAX here —
      MIN keeps the weakest-link intent explicit if that ever becomes per-edge. */
-  MIN(m.match_confidence) AS match_confidence,
   MAX(m.source_extracted_at) AS source_extracted_at,
   MAX(m.loaded_at) AS loaded_at
 FROM prep.int_transactions__matched AS m

@@ -90,3 +90,24 @@ class TestResolveInstitution:
                 cli_override=None,
                 interactive=False,
             )
+
+
+def test_resolve_institution_tabular_filename_then_unknown(tmp_path: Path) -> None:
+    """Tabular institution is best-effort: filename heuristic hits; unknown is allowed.
+
+    Unlike the OFX chain, an unknown institution returns None rather than raising —
+    institution is optional metadata for tabular imports (spec Decision 3 / 7).
+    """
+    from moneybin.extractors.institution_resolution import resolve_institution_tabular
+
+    hit = resolve_institution_tabular(
+        file_path=Path("wells_fargo_2024.csv"),
+        format_institution=None,
+        cli_override=None,
+    )
+    assert hit == "wells_fargo"
+
+    miss = resolve_institution_tabular(
+        file_path=Path("export.csv"), format_institution=None, cli_override=None
+    )
+    assert miss is None  # unknown allowed — no InstitutionResolutionError

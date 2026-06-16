@@ -1,7 +1,7 @@
 # Cross-Source Account Identity Resolution
 
-> Last updated: 2026-06-14
-> Status: ready
+> Last updated: 2026-06-15
+> Status: in-progress
 > Address: M1S (Ingestion Core)
 > Type: Feature
 > Owns: the canonical-account-identity contract (`core.dim_accounts.account_id`
@@ -169,8 +169,8 @@ resolution-chain pattern `core.dim_securities` already uses
 - **A stable, non-PII agent handle** (see Decision 6 / AX).
 
 **Cost (one-way door, accepted).** This changes `core.fct_transactions.account_id`
-semantics and requires re-pointing `app.*` state keyed on the old source-ids
-(migration below). Cheap pre-launch; see [§Migration](#migration-pre-launch-clean-re-mint).
+semantics. Pre-launch, existing dogfood data is re-imported into a clean database
+rather than migrated in place (see [§Migration](#migration-re-import-to-adopt)).
 Rejected: *keep the strongest source's id as canonical* — leaves the canonical id
 as PII for OFX-first accounts, inconsistent across accounts (number vs token vs
 slug), and still forces masking a PK; no prior-art tool does this.
@@ -383,7 +383,9 @@ last-write-wins logic would let a later CSV row **null an OFX account's
 COALESCE-across-group** that preserves the best non-null value:
 
 - Structured bank fields (`routing_number`, `institution_fid`) — first non-null
-  by **source strength** (`ofx > plaid > tabular`) then recency.
+  by **source strength** (`ofx > plaid > tabular` — the `MatchingSettings.source_priority`
+  ordering, which governs field merging only and is decoupled from transaction
+  identity; see the `transaction_id` stability section above) then recency.
 - `institution_name`, `account_type` — first non-null by recency.
 - `source_type` / `source_file` — record the contributing set (the winning row's
   for display; the union is recoverable from `app.account_links`).
@@ -416,17 +418,38 @@ analysis + the account-vs-transaction asymmetry: [ADR-015](../decisions/015-tran
 **Decision: content-derived id + alias forwarding (not a surrogate).**
 
 1. **Re-key the hash to the immutable source identity** — drop the mutable
-   `account_id`; key on `source_type | source_origin | source_native_key |
+   `account_id`; key on `source_type | source_origin | source_account_key |
    source_transaction_id`, and **exclude descriptive text** (`description` /
    `memo` — the brittle field belongs to the fuzzy matcher, never to identity).
    (`source_origin` is the existing `raw.*` column.)
-2. **Priority-anchor, don't whole-set-hash.** A merged group's id derives from its
-   **highest-priority member** (reusing `MatchingSettings.source_priority`,
-   `ofx > plaid > tabular`), not a hash over all members. Result: a lower-priority
-   twin joining (the common forward-order — bank file first, CSV later) leaves the
-   id **unchanged**; only a higher-priority source arriving later flips the anchor.
-   `transaction_id` then changes **iff the dedup group's anchor changes** — the
-   tightest possible churn — and rides the most stable id available.
+2. **Stability-class anchor, not whole-set-hash.** A merged group's `transaction_id`
+   derives from its **anchor member** — chosen by an intrinsic stability class, not
+   the mutable `source_priority` list (which governs field merging only; see
+   Decision 4). The anchor is `argmin` over group members of
+   `(stability_class_rank, loaded_at, source_identity_tuple)`:
+
+   | Class | Rank | Sources | Id basis | Drifts? |
+   |---|---|---|---|---|
+   | native | 0 | OFX (FITID), Plaid (txn id) | upstream-assigned | never |
+   | minted | 1 | manual (`manual_` + uuid4, persisted PK) | minted once | never |
+   | hash | 2 | CSV / tabular family; gsheet-live (future) | content hash | yes (re-export) |
+
+   `account_id` is excluded from the hash — keyed on
+   `source_type | source_origin | source_account_key | source_transaction_id`
+   only. M1S makes `account_id` a mutable canonical surrogate; keeping it in the
+   hash would re-key every affected transaction on every account re-mint or merge.
+
+   **Why intrinsic class, not the list.** Reusing `source_priority` for identity
+   is fragile: reordering it (a legitimate field-merge tuning operation) would
+   re-key merged `transaction_id`s. And `gsheet` (field-authoritative in that list)
+   is a future content-hash source — an unstable anchor — while `ofx` is a
+   native-id source and the naturally stable choice regardless of field priority
+   ordering. The intrinsic 3-class rank is a fact about how an id is derived; it
+   does not drift as sources are added or priorities are retuned. Properties:
+   a lower-stability twin joining leaves the id **unchanged**; a more-stable source
+   backfilling history re-anchors the group **once** (alias-forwarded via
+   `app.transaction_id_aliases`), then stays stable; single and unmatched
+   transactions hash their own identity.
 3. **Alias map for reference durability.** A new `app.transaction_id_aliases`
    (`old_id → new_id`, append-only, written only on id-changing merges) lets SQL,
    agent, external, and curation-FK references resolve old→new — the Plaid pointer
@@ -618,43 +641,38 @@ savings …5585/…7070):
 - **Correction** — `accounts links undo` reverses a decision (audited);
   re-resolution re-proposes.
 
-## Migration (pre-launch clean re-mint)
+## Migration (re-import to adopt)
 
-Pre-launch, with only the maintainer's dogfooding data, the durable path is a
-clean re-mint (no backward-compat shim — none requested, none built):
+Pre-launch, with only the maintainer's dogfooding data and no external users,
+the durable path is **no data migration**: the feature is canonical from the
+first import, and existing data is re-imported into a clean database. A re-mint
+migration that walked legacy `raw.*` to canonical ids was prototyped and
+deliberately removed — every failure mode it carried (NULL-`source_origin`
+legacy rows the staging JOIN couldn't match, manual transactions it didn't
+re-key, ambiguous source-native keys it had to skip, and the PII-bearing native
+keys those skips left behind in the now-unmasked `account_id` columns) existed
+*only* to preserve data nobody has. Re-import sidesteps all of it.
 
 1. Create `app.account_links` + `app.account_link_decisions` + their repos +
-   `app.transaction_id_aliases` (+ lint allowlist entries).
-2. **Resolve, then write.** Run `AccountResolver` over every existing source
-   account in `raw.*_accounts` so the cross-source merge is computed **first**;
-   *then* persist the resulting accepted `source_native` mappings (and any pending
-   decisions). Writing accepted mappings before resolving would short-circuit the
-   very cross-source collapse the backfill exists to produce (5 ofx + 5 csv → 5
-   canonical, with pending decisions where only last4 bridges).
-3. **Re-point every `app.*` `account_id` FK** keyed on the old source
-   `account_id`, in one transaction via the old→new mapping: `app.account_settings`,
-   `app.balance_assertions`, `app.match_decisions` (`account_id` **and**
-   `account_id_b`), `app.categorization_rules`, `app.gsheet_connections`. (Budgets
-   key on category — unaffected. Verify the full set against the live schema —
-   grep `account_id` across `src/moneybin/repositories/` — rather than trusting
-   this list.)
-4. **Remap transaction-keyed curation.** Curation (`app.transaction_categories`,
-   `_notes`, `_tags`, `_splits`, and audit targets) keys on `transaction_id`,
-   which today hashes `account_id` and so changes on re-mint. Re-key the hash to
-   the immutable source identity (ADR-015 / above), then compute the old→new
-   `transaction_id` mapping **by replaying the actual hash both ways for both
-   paths** — matched rows via the group gold key
-   (`SHA256(LISTAGG(sorted source_type|source_transaction_id|account_id))`),
-   unmatched via the single-row hash — seeding `app.transaction_id_aliases` and
-   rewriting the curation FKs in the same transaction. After this one-time re-key
-   the hash no longer depends on `account_id`, so future merges record only
-   incremental aliases.
-5. Loaders stop stamping resolved ids on `raw`; staging adds the `account_links`
+   `app.transaction_id_aliases` (+ lint allowlist entries). `source_origin` is
+   added to the OFX raw tables by additive migrations (V028/V029); fresh installs
+   get it from the schema DDL.
+2. **New imports are canonical from the first row.** Every import/sync runs
+   through `AccountResolver`, which mints (or binds) an `app.account_links` row
+   *before* staging runs, so `dim_accounts` / `fct_transactions` project the
+   canonical id directly. There is no legacy walk and no `transaction_id` re-key:
+   fresh transactions are hashed with the immutable source identity (ADR-015)
+   from the start, and `app.transaction_id_aliases` carries only the incremental
+   aliases a future cross-source merge produces.
+3. **Adopting existing data = re-import into a clean database.** The maintainer
+   holds the source files; re-importing routes them through the resolver and
+   yields canonical ids with no archaeology. This keeps `account_id` opaque **by
+   construction**, which is what makes the privacy reclassification
+   (`ACCOUNT_IDENTIFIER` → `RECORD_ID`, unmasked) safe — a native source key can
+   never reach an unmasked column.
+4. Loaders stop stamping resolved ids on `raw`; staging adds the `account_links`
    translation JOIN; `dim_accounts` switches to the canonical grain + COALESCE
    merge.
-
-Fallback if any FK rewrite is unsafe: re-import from source files (the maintainer
-holds them) after the schema change — acceptable pre-launch.
 
 ## Observability
 
@@ -696,7 +714,7 @@ Per [`observability.md`](observability.md), mirror the `DEDUP_*` family
   tabular.
 - **M1S.3** — loaders write native keys; staging translation JOIN; `dim_accounts`
   canonical grain + COALESCE merge; `transaction_id` re-key (ADR-015) + privacy-
-  taxonomy reclassification; migration + backfill.
+  taxonomy reclassification; no migration (re-import to adopt).
 - **M1S.4** — **import-time UX/AX (Decision 7):** extend `import_preview`→
   `import_confirm` with the per-account binding facet (proposals + candidates +
   `account_bindings`); human confirm + agent self-accept/envelope paths; new-

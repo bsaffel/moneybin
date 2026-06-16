@@ -128,6 +128,7 @@ class SyntheticWriter:
                 "account_type": _account_type_to_ofx(acct.account_type),
                 "institution_org": acct.institution,
                 "institution_fid": None,
+                "source_origin": acct.institution,
                 "source_file": _source_file(result, slugify(acct.name)),
                 "extracted_at": now,
             })
@@ -146,6 +147,7 @@ class SyntheticWriter:
             start_dt = datetime.combine(result.start_date, time())
             rows.append({
                 "account_id": acct.account_id,
+                "source_origin": acct.institution,
                 "statement_start_date": start_dt,
                 "statement_end_date": start_dt,
                 "ledger_balance": Decimal(str(round(acct.opening_balance, 2))),
@@ -171,6 +173,7 @@ class SyntheticWriter:
             rows.append({
                 "source_transaction_id": txn.transaction_id,
                 "account_id": acct.account_id,
+                "source_origin": acct.institution,
                 "transaction_type": txn.transaction_type,
                 "date_posted": datetime.combine(txn.date, time()),
                 "amount": Decimal(str(round(txn.amount, 2))),

@@ -88,8 +88,15 @@ Precedent: `core.dim_accounts` joins `app.account_settings` (per
 ## SQL Formatting
 
 ```bash
-uv run sqlmesh -p sqlmesh format
+make format-sql
 ```
+
+`make format-sql` sets `MAX_FORK_WORKERS=1` before invoking the formatter. The
+bare `uv run sqlmesh -p sqlmesh format` doesn't import `moneybin.database` (which
+sets that for all runtime), so it falls back to a forked worker pool — disallowed
+by the encrypted-DB design (orphan FDs vs the single-writer lock) and blocked by
+the macOS sandbox's denied semaphore syscall. Run it whenever you touch
+`sqlmesh/models/**/*.sql`.
 
 ## File Types
 
@@ -122,6 +129,13 @@ Every column should have a comment. Use existing schema files as examples for st
 
 Both SQLMesh models and schema DDL use the same pattern: `/* description */` block comment on the line immediately before `MODEL()` or `CREATE TABLE` for table comments, and inline `-- comment` on columns. `prep.*` staging views get no comments (internal layer).
 
+**Write comments where `sqlmesh format` keeps them stable.** The formatter parses each model with sqlglot and re-emits every comment attached to its AST node, which *relocates* ill-placed ones. Two stable forms:
+
+- **Catalog column descriptions** → trailing-inline `/* … */` *after* the column on the **final/outermost SELECT** (`w.account_id, /* … */`). The formatter preserves these verbatim, even on multi-line expressions, and `register_comments` reads them.
+- **Logic / CTE / WHERE comments** → a *single* standalone `/* … */` block on its own line immediately before the `SELECT`/clause it describes. The formatter leaves standalone leading blocks untouched.
+
+**Avoid** a comment *leading* a SELECT-list item (the formatter re-emits it trailing the first sub-expression — e.g. jammed between `ARG_MIN(...)` and its `FILTER(...)`) and **multi-line `--` comments** (each `--` line becomes its own inline `/* */`, exploding into a jumble). Consolidate into one leading `/* */` block instead.
+
 ### How Comments Reach DuckDB's Catalog
 
 **SQLMesh models:** `register_comments` (enabled by default) auto-detects the `/* */` block before `MODEL()` as the table description and inline comments on outermost SELECT columns as column descriptions. Both are applied as `COMMENT ON TABLE`/`COLUMN` on every `sqlmesh run`. Important: if a `column_descriptions` block is present in MODEL(), auto-detection of inline comments is disabled — use one or the other, not both.
@@ -131,7 +145,8 @@ Both SQLMesh models and schema DDL use the same pattern: `/* description */` blo
 ### Gotchas
 
 - Column comments go on the **final SELECT only** in SQLMesh models, not CTEs.
-- `sqlmesh format` converts `--` to `/* */` — both styles work.
+- `sqlmesh format` converts `--` to `/* */` **and re-anchors each comment to its AST node** — a single-line `--` trailing a final-SELECT column is fine, but a *leading* or *multi-line* comment gets relocated/exploded. See Comment Placement above.
+- `append_newline=True` (set in `sqlmesh/config.py`) makes the formatter emit a trailing newline so it doesn't fight the `end-of-file-fixer` hook.
 - **Do not use** the `columns` block with `COMMENT` keyword — SQLMesh silently swallows it without writing to DuckDB's catalog. Use inline comments instead.
 
 ## DuckDB vs. PostgreSQL

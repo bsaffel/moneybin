@@ -5,9 +5,10 @@ Each field carries ``Annotated[T, DataClass.X]`` metadata so the Phase 6
 middleware can derive sensitivity via ``derive_tier`` without inspecting
 tool source code directly.
 
-CRITICAL fields (``ACCOUNT_IDENTIFIER``, ``INSTITUTION_ACCOUNT_NUMBER``,
-``ROUTING_NUMBER``) propagate to ``Tier.CRITICAL`` for ``AccountDetail``
-and ``AccountSettingsPayload``. The middleware masks them in PR 2.
+``account_id`` is ``RECORD_ID`` (Tier.LOW) — the opaque minted canonical
+surrogate (spec D6) is not PII. CRITICAL propagates from
+``INSTITUTION_ACCOUNT_NUMBER`` (last_four) and ``ROUTING_NUMBER``
+(routing_number) fields on AccountDetail and AccountSettingsPayload.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from moneybin.privacy.taxonomy import DataClass
 class AccountSummary:
     """One row in the list view. last_four / credit_limit included; middleware masks."""
 
-    account_id: Annotated[str, DataClass.ACCOUNT_IDENTIFIER]
+    account_id: Annotated[str, DataClass.RECORD_ID]
     display_name: Annotated[str | None, DataClass.USER_NOTE]
     institution_name: Annotated[str | None, DataClass.INSTITUTION]
     account_type: Annotated[str, DataClass.TXN_TYPE]
@@ -47,7 +48,7 @@ class AccountListPayload:
 class AccountDetail:
     """Full account record for accounts_get. Includes routing_number (CRITICAL)."""
 
-    account_id: Annotated[str, DataClass.ACCOUNT_IDENTIFIER]
+    account_id: Annotated[str, DataClass.RECORD_ID]
     display_name: Annotated[str | None, DataClass.USER_NOTE]
     official_name: Annotated[str | None, DataClass.INSTITUTION]
     institution_name: Annotated[str | None, DataClass.INSTITUTION]
@@ -79,7 +80,7 @@ class AccountSummaryStats:
 class AccountResolutionItem:
     """One candidate in the accounts_resolve result."""
 
-    account_id: Annotated[str, DataClass.ACCOUNT_IDENTIFIER]
+    account_id: Annotated[str, DataClass.RECORD_ID]
     display_name: Annotated[str | None, DataClass.USER_NOTE]
     account_subtype: Annotated[str | None, DataClass.TXN_TYPE]
     institution_name: Annotated[str | None, DataClass.INSTITUTION]
@@ -102,7 +103,7 @@ class AccountSettingsPayload:
     this payload from settings.to_dict() at the tool boundary instead.
     """
 
-    account_id: Annotated[str, DataClass.ACCOUNT_IDENTIFIER]
+    account_id: Annotated[str, DataClass.RECORD_ID]
     display_name: Annotated[str | None, DataClass.USER_NOTE]
     official_name: Annotated[str | None, DataClass.INSTITUTION]
     last_four: Annotated[str | None, DataClass.INSTITUTION_ACCOUNT_NUMBER]

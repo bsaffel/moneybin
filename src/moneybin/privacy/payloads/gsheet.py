@@ -5,28 +5,28 @@ middleware can derive sensitivity via ``derive_tier`` without inspecting
 tool source code directly.
 
 Tier derivation summary:
-  - ``GsheetConnectionRow``     → Tier.CRITICAL (account_id = ACCOUNT_IDENTIFIER)
-  - ``GsheetConnectionsPayload``→ Tier.CRITICAL (via GsheetConnectionRow) — backs
+  - ``GsheetConnectionRow``     → Tier.MEDIUM (account_id = RECORD_ID, D6;
+                                  highest class is DESCRIPTION via
+                                  last_status_reason / column_mapping)
+  - ``GsheetConnectionsPayload``→ Tier.MEDIUM (via GsheetConnectionRow) — backs
                                   ``gsheet`` and ``gsheet_status``
   - ``GsheetDetection``         → Tier.MEDIUM (column_mapping, detection_notes = DESCRIPTION)
   - ``GsheetInitialPull``       → Tier.MEDIUM (error = DESCRIPTION)
-  - ``GsheetConnectPayload``    → Tier.CRITICAL (via GsheetConnectionRow) — backs
+  - ``GsheetConnectPayload``    → Tier.MEDIUM (via GsheetConnectionRow) — backs
                                   ``gsheet_connect`` and ``gsheet_reconnect``
   - ``GsheetAuthPayload``       → Tier.LOW (status = TXN_TYPE)
   - ``GsheetPullRow``           → Tier.MEDIUM (error_message = DESCRIPTION)
   - ``GsheetPullPayload``       → Tier.MEDIUM (via GsheetPullRow)
   - ``GsheetDisconnectPayload`` → Tier.LOW (RECORD_ID + TXN_TYPE only)
 
-``account_id`` is ACCOUNT_IDENTIFIER (Tier.CRITICAL → masked) because a
-transactions-adapter connection stores the canonical ``dim_accounts.account_id``,
-which for OFX sources is the real ``<ACCTID>``. Classifying it lower would leak
-the account number through the connection-listing tools. Field classifications
-mirror the ``app.gsheet_connections`` registry block in ``taxonomy.py`` (the
-cross-layer source of truth, enforced by ``test_annotated_registry_sync``):
-``account_name`` / ``workbook_name`` / ``sheet_name`` are user-chosen source
-labels (INSTITUTION, Tier.LOW); ``last_status_reason`` and ``column_mapping`` are
-DESCRIPTION (Tier.MEDIUM). The sheet's *contents* never appear here, only its
-metadata.
+``account_id`` is RECORD_ID (spec D6 — the opaque minted canonical surrogate
+is not PII; real account numbers live in ``app.account_links.ref_value``).
+Field classifications mirror the ``app.gsheet_connections`` registry block
+in ``taxonomy.py`` (the cross-layer source of truth, enforced by
+``test_annotated_registry_sync``): ``account_name`` / ``workbook_name`` /
+``sheet_name`` are user-chosen source labels (INSTITUTION, Tier.LOW);
+``last_status_reason`` and ``column_mapping`` are DESCRIPTION (Tier.MEDIUM).
+The sheet's *contents* never appear here, only its metadata.
 """
 
 from __future__ import annotations
@@ -52,7 +52,7 @@ class GsheetConnectionRow:
     workbook_name: Annotated[str, DataClass.INSTITUTION]
     adapter: Annotated[str, DataClass.TXN_TYPE]
     alias: Annotated[str | None, DataClass.RECORD_ID]
-    account_id: Annotated[str | None, DataClass.ACCOUNT_IDENTIFIER]
+    account_id: Annotated[str | None, DataClass.RECORD_ID]
     account_name: Annotated[str | None, DataClass.INSTITUTION]
     status: Annotated[str, DataClass.TXN_TYPE]
     last_pull_at: Annotated[str | None, DataClass.TIMESTAMP_OBSERVABILITY]

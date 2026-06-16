@@ -159,7 +159,7 @@ async def test_gsheet_auth_force_reauth_runs_authorize_even_when_authorized(
 
 
 # ---------------------------------------------------------------------------
-# gsheet_connect — carries connection.account_id → Tier.CRITICAL
+# gsheet_connect — connection row's highest class is DESCRIPTION → Tier.MEDIUM
 # ---------------------------------------------------------------------------
 
 
@@ -168,7 +168,7 @@ async def test_gsheet_auth_force_reauth_runs_authorize_even_when_authorized(
 async def test_gsheet_connect_returns_envelope_with_connection(
     mock_build: MagicMock,
 ) -> None:
-    """gsheet_connect returns a critical-sensitivity envelope with connection details."""
+    """gsheet_connect returns a medium-sensitivity envelope with connection details."""
     service = MagicMock()
     service.connect.return_value = ConnectResult(
         connection=_make_connection(),
@@ -182,8 +182,9 @@ async def test_gsheet_connect_returns_envelope_with_connection(
     envelope = await gsheet_connect(
         url="https://docs.google.com/spreadsheets/d/abc/edit#gid=0"
     )
-    # account_id is ACCOUNT_IDENTIFIER (CRITICAL) → tool derives critical tier.
-    assert envelope.summary.sensitivity == "critical"
+    # account_id is RECORD_ID (spec D6); last_status_reason / column_mapping are
+    # DESCRIPTION (MEDIUM) → tool derives medium tier.
+    assert envelope.summary.sensitivity == "medium"
     assert envelope.data.connection.connection_id == "conn_abc"
     assert envelope.data.initial_pull is not None
     assert envelope.data.initial_pull.rows_inserted == 10
@@ -254,7 +255,7 @@ async def test_gsheet_pull_single_connection(mock_build: MagicMock) -> None:
 
 
 # ---------------------------------------------------------------------------
-# gsheet (collection) — connection rows carry account_id → Tier.CRITICAL
+# gsheet (collection) — connection rows' highest class is DESCRIPTION → Tier.MEDIUM
 # ---------------------------------------------------------------------------
 
 
@@ -277,8 +278,8 @@ async def test_gsheet_collection_returns_actions_on_drift(
     from moneybin.mcp.tools.gsheet import gsheet
 
     envelope = await gsheet()
-    # Connection rows expose account_id (ACCOUNT_IDENTIFIER) → critical tier.
-    assert envelope.summary.sensitivity == "critical"
+    # account_id is RECORD_ID (spec D6); last_status_reason is DESCRIPTION → medium tier.
+    assert envelope.summary.sensitivity == "medium"
     rows = envelope.data.connections
     assert len(rows) == 2
     # Only the drifted connection should have a reconnect hint.
@@ -287,7 +288,7 @@ async def test_gsheet_collection_returns_actions_on_drift(
 
 
 # ---------------------------------------------------------------------------
-# gsheet_status — connection rows carry account_id → Tier.CRITICAL
+# gsheet_status — connection rows' highest class is DESCRIPTION → Tier.MEDIUM
 # ---------------------------------------------------------------------------
 
 
@@ -303,7 +304,7 @@ async def test_gsheet_status_single_connection(mock_build: MagicMock) -> None:
     from moneybin.mcp.tools.gsheet import gsheet_status
 
     envelope = await gsheet_status(connection_id="conn_abc")
-    assert envelope.summary.sensitivity == "critical"
+    assert envelope.summary.sensitivity == "medium"
     rows = envelope.data.connections
     assert rows[0].connection_id == "conn_abc"
     service.get.assert_called_once_with("conn_abc")
@@ -348,14 +349,14 @@ async def test_gsheet_status_surfaces_drift_hint(mock_build: MagicMock) -> None:
 
 
 # ---------------------------------------------------------------------------
-# gsheet_reconnect — carries connection.account_id → Tier.CRITICAL
+# gsheet_reconnect — connection row's highest class is DESCRIPTION → Tier.MEDIUM
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.unit
 @patch("moneybin.mcp.tools.gsheet._build_connection_service")
 async def test_gsheet_reconnect_returns_envelope(mock_build: MagicMock) -> None:
-    """gsheet_reconnect returns a critical-sensitivity envelope with new detection."""
+    """gsheet_reconnect returns a medium-sensitivity envelope with new detection."""
     healed = replace(_make_connection(), status="healthy")
     service = MagicMock()
     service.reconnect.return_value = ConnectResult(
@@ -368,7 +369,7 @@ async def test_gsheet_reconnect_returns_envelope(mock_build: MagicMock) -> None:
     from moneybin.mcp.tools.gsheet import gsheet_reconnect
 
     envelope = await gsheet_reconnect(connection_id="conn_abc", yes=True)
-    assert envelope.summary.sensitivity == "critical"
+    assert envelope.summary.sensitivity == "medium"
     assert envelope.data.connection.status == "healthy"
     service.reconnect.assert_called_once_with(
         "conn_abc", yes=True, sign=None, actor="mcp"

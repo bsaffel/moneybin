@@ -64,6 +64,33 @@ class TestAccountLinksRedaction:
         assert decisions["candidate_account_id"] == links["account_id"]
 
 
+class TestCanonicalAccountIdPrivacyClass:
+    """D6: the opaque minted canonical account_id must not be masked."""
+
+    def test_canonical_account_id_is_record_id_not_masked(self) -> None:
+        """D6: the opaque canonical account_id is the agent handle — NOT masked.
+
+        PII now lives in account_links.ref_value (still ACCOUNT_IDENTIFIER).
+        Every account_id / account_id_b column in CLASSIFICATION must be
+        RECORD_ID so the opaque surrogate passes through read surfaces
+        instead of being redacted to ****<last4>.
+        """
+        from moneybin.privacy.taxonomy import CLASSIFICATION, DataClass
+
+        for (schema, table), cols in CLASSIFICATION.items():
+            for col in ("account_id", "account_id_b"):
+                if col in cols:
+                    assert cols[col] == DataClass.RECORD_ID, (
+                        f"{schema}.{table}.{col} is {cols[col]!r}, expected RECORD_ID. "
+                        "D6 reclassifies the opaque canonical surrogate as non-PII."
+                    )
+        assert CLASSIFICATION[("app", "account_links")]["ref_value"] == (
+            DataClass.ACCOUNT_IDENTIFIER
+        ), (
+            "account_links.ref_value must remain ACCOUNT_IDENTIFIER (carries real account numbers)"
+        )
+
+
 class TestAccountIdentityTableRefs:
     """TableRef constants for the three account-identity tables."""
 

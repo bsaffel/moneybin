@@ -103,6 +103,7 @@ def _seed_ofx_account(db: Database, account_id: str) -> None:
             "account_type": "CHECKING",
             "institution_org": "scenario",
             "institution_fid": None,
+            "source_origin": "scenario",
             "source_file": "scenario://ofx/synthetic_workbook",
             "extracted_at": datetime.now(UTC),
         }
@@ -116,6 +117,7 @@ def _seed_ofx_rows(db: Database, account_id: str, rows: list[dict[str, str]]) ->
         {
             "source_transaction_id": r["source_transaction_id"],
             "account_id": account_id,
+            "source_origin": "scenario",
             "transaction_type": r["transaction_type"],
             "date_posted": datetime.fromisoformat(r["transaction_date"]),
             "amount": pl.Decimal(18, 2),  # placeholder for typing — overwritten below

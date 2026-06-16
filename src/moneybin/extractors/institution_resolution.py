@@ -112,6 +112,29 @@ def resolve_institution(
     )
 
 
+def resolve_institution_tabular(
+    *,
+    file_path: Path,
+    format_institution: str | None,
+    cli_override: str | None,
+) -> str | None:
+    """Best-effort institution slug for a tabular import.
+
+    Chain: format metadata (Tiller Institution / registered format) -> filename
+    heuristic -> --institution override -> unknown (None). Unlike the OFX chain,
+    *unknown is allowed* — institution is best-effort metadata, never required
+    (spec Decision 3 / Decision 7).
+    """
+    if format_institution:
+        return _to_slug(format_institution)
+    for pattern, slug in _FILENAME_PATTERNS:
+        if pattern.search(file_path.name):
+            return slug
+    if cli_override:
+        return _to_slug(cli_override)
+    return None
+
+
 def _to_slug(name: str) -> str:
     """Convert a human-readable name to a snake_case slug.
 
