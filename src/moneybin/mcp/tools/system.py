@@ -24,6 +24,7 @@ from moneybin.privacy.payloads.system import (
     SystemAuditHistoryPayload,
     SystemAuditUndoPayload,
     SystemDoctorPayload,
+    SystemStatusAccountLinksInfo,
     SystemStatusAccountsInfo,
     SystemStatusCategorizationInfo,
     SystemStatusDatabaseConnectionsInfo,
@@ -263,6 +264,7 @@ def _locked_status_envelope(
                 count=0, date_range=[None, None], last_import_at=None
             ),
             matches=SystemStatusMatchesInfo(pending_review=0),
+            account_links=SystemStatusAccountLinksInfo(pending_review=0),
             categorization=SystemStatusCategorizationInfo(uncategorized=0),
             transforms=SystemStatusTransformsInfo(pending=False, last_apply_at=None),
             schema_drift=None,
@@ -364,6 +366,9 @@ def system_status() -> ResponseEnvelope[SystemStatusPayload]:
                 ),
             ),
             matches=SystemStatusMatchesInfo(pending_review=status.matches_pending),
+            account_links=SystemStatusAccountLinksInfo(
+                pending_review=status.account_links_pending
+            ),
             categorization=SystemStatusCategorizationInfo(
                 uncategorized=status.categorize_pending
             ),

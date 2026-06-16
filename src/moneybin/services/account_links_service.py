@@ -412,16 +412,21 @@ class AccountLinksService:
                     actor=self._actor,
                     in_outer_txn=True,
                 )
-                # Auto-reject sibling pending decisions on the same provisional.
+                # Auto-reject every other pending decision that touches the
+                # provisional — both where it is the provisional (other
+                # candidates for it) AND where it is the *candidate* (some other
+                # Q→P proposal). The provisional is merged away, so a later
+                # accept of Q→P would re-point Q onto a dead account; a fresh
+                # run() re-proposes Q→C if Q really is the same account.
                 sibling_rows = self._db.execute(
                     f"""
                     SELECT decision_id FROM {ACCOUNT_LINK_DECISIONS.full_name}
-                    WHERE provisional_account_id = ?
+                    WHERE (provisional_account_id = ? OR candidate_account_id = ?)
                       AND decision_id != ?
                       AND status = 'pending'
                       AND reversed_at IS NULL
                     """,  # noqa: S608  # TableRef constant + parameterized values
-                    [provisional_id, decision_id],
+                    [provisional_id, provisional_id, decision_id],
                 ).fetchall()
                 for (sid,) in sibling_rows:
                     self._decisions.update_status(

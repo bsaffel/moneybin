@@ -633,3 +633,25 @@ def test_run_skips_reverse_direction_pair(
 
     # The pair is already covered (in reverse) — 0 new decisions
     assert count == 0
+
+
+def test_set_accept_rejects_proposals_where_provisional_is_candidate(
+    seeded: AccountLinksService, db: Database
+) -> None:
+    """Accepting P→C also rejects pending Q→P proposals.
+
+    P is merged away, so a later accept of Q→P would re-point Q onto a dead
+    provisional. Unrelated proposals (neither side is P) stay pending.
+    """
+    # A proposal to merge prov2 INTO prov1 — prov1 is the *candidate* here.
+    _insert_decision(
+        db,
+        decision_id="qp_dec000001",
+        provisional_account_id=_PROV2,
+        candidate_account_id=_PROV1,
+        signal="institution_last4",
+    )
+    seeded.set(_DEC1, target_account_id=_CAND_A)  # merge prov1 into cand_a
+    assert _decision_status(db, "qp_dec000001") == "rejected"
+    # The unrelated prov2→cand_a proposal (neither side is prov1) stays pending.
+    assert _decision_status(db, _DEC3) == "pending"

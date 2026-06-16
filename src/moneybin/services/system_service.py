@@ -25,6 +25,7 @@ class SystemStatus:
     transactions_date_range: tuple[date | None, date | None]
     last_import_at: date | None
     matches_pending: int
+    account_links_pending: int
     categorize_pending: int
     transforms_pending: bool
     transforms_last_apply_at: datetime | None
@@ -76,6 +77,7 @@ class SystemService:
             transactions_date_range=(min_date, max_date),
             last_import_at=last_import_at,
             matches_pending=review.matches_pending,
+            account_links_pending=review.account_links_pending,
             categorize_pending=review.categorize_pending,
             transforms_pending=freshness.pending,
             transforms_last_apply_at=freshness.last_apply_at,
