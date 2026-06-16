@@ -369,6 +369,29 @@ def test_set_wrong_target_raises_user_error(seeded: AccountLinksService) -> None
         seeded.set(_DEC1, target_account_id=_CAND_B)  # dec1 names cand_a, not cand_b
 
 
+def test_set_accept_with_no_source_native_link_raises(
+    svc: AccountLinksService, db: Database
+) -> None:
+    """Accepting a merge whose provisional has no source_native link is refused.
+
+    The staging JOIN translates raw rows via source_native links; with none to
+    re-point, accepting would record a 'paper merge' that never collapses the
+    data — so set() raises and rolls back rather than marking it accepted.
+    """
+    _insert_dim_account(db, "prov_nolink01", "Prov NoLink")
+    _insert_dim_account(db, _CAND_A, "Cand A")
+    _insert_decision(
+        db,
+        decision_id="dec_nolink001",
+        provisional_account_id="prov_nolink01",
+        candidate_account_id=_CAND_A,
+    )
+    with pytest.raises(UserError, match="no source_native mapping"):
+        svc.set("dec_nolink001", target_account_id=_CAND_A)
+    # Rolled back: the decision stays pending.
+    assert _decision_status(db, "dec_nolink001") == "pending"
+
+
 def test_set_missing_decision_raises_user_error(svc: AccountLinksService) -> None:
     """Unknown decision_id → UserError with MUTATION_NOT_FOUND code."""
     with pytest.raises(UserError) as exc_info:

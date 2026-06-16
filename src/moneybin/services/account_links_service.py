@@ -367,6 +367,18 @@ class AccountLinksService:
                     """,  # noqa: S608  # TableRef constant + parameterized values
                     [provisional_id],
                 ).fetchall()
+                if not links:
+                    # No source_native mapping to re-point means the merge can't
+                    # take effect: the staging JOIN translates raw rows via
+                    # source_native links, so accepting here would record a
+                    # "paper merge" that never collapses the data. Refuse (rolls
+                    # back) rather than silently mark the decision accepted.
+                    raise UserError(
+                        f"Cannot apply merge for decision {decision_id!r}: the "
+                        "provisional account has no source_native mapping to "
+                        "re-point onto the candidate.",
+                        code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+                    )
                 for (link_id,) in links:
                     self._links.repoint(
                         link_id=link_id,
