@@ -80,10 +80,14 @@ class TestAccountsLinksPending:
         assert "data" in parsed
         assert "actions" in parsed
 
-    async def test_sensitivity_is_low(self) -> None:
-        """accounts_links_pending is sensitivity low (no amounts/descriptions)."""
+    async def test_sensitivity_is_medium(self) -> None:
+        """accounts_links_pending is medium (it surfaces account display_name).
+
+        display_name is USER_NOTE — matching accounts_summary/accounts_get — so
+        the proposal labels sit behind the same consent bar.
+        """
         parsed = (await accounts_links_pending()).to_dict()
-        assert parsed["summary"]["sensitivity"] == "low"
+        assert parsed["summary"]["sensitivity"] == "medium"
 
     async def test_empty_queue(self) -> None:
         """Empty queue returns groups=[], n_pending=0."""

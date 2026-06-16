@@ -52,7 +52,10 @@ from moneybin.privacy.payloads.balances import (
     BalanceObservationListPayload,
 )
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
-from moneybin.services.account_links_service import AccountLinksService
+from moneybin.services.account_links_service import (
+    AccountLinksService,
+    signal_from_match_signals,
+)
 from moneybin.services.account_service import CLEAR, AccountService
 from moneybin.services.balance_service import BalanceService
 
@@ -395,14 +398,6 @@ def accounts_resolve(
 # ─── Review tools (links) ──────────────────────────────────────────────────
 
 
-def _link_signal(match_signals: object) -> str:
-    """Extract 'signal' from an already-decoded match_signals dict."""
-    try:
-        return str(match_signals["signal"])  # type: ignore[index]  # Any-typed dict
-    except (KeyError, TypeError):
-        return ""
-
-
 @mcp_tool(domain="links")
 def accounts_links_pending() -> ResponseEnvelope[AccountLinksPendingPayload]:
     """List pending account-link decisions, grouped by provisional account.
@@ -523,7 +518,7 @@ def accounts_links_history(
                     if r.get("confidence_score") is not None
                     else None
                 ),
-                signal=_link_signal(r.get("match_signals")),
+                signal=signal_from_match_signals(r.get("match_signals")),
             )
             for r in rows
         ]

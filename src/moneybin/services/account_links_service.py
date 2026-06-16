@@ -48,7 +48,7 @@ _DECISION_COLUMNS = (
 _DECISION_COLS = ", ".join(f'"{c}"' for c in _DECISION_COLUMNS)
 
 
-def _signal_from_decoded(match_signals: Any) -> str:
+def signal_from_match_signals(match_signals: Any) -> str:
     """Extract the 'signal' key from an already-decoded match_signals dict.
 
     ``list_pending()`` returns ``match_signals`` as a decoded ``dict``; the
@@ -161,7 +161,7 @@ class AccountLinksService:
                     ),
                     confidence=d["confidence_score"],
                     # match_signals is already decoded by list_pending(); cast for pyright.
-                    signal=_signal_from_decoded(d["match_signals"]),
+                    signal=signal_from_match_signals(d["match_signals"]),
                 )
                 for d in decisions
             )
@@ -241,6 +241,18 @@ class AccountLinksService:
             logger.debug("core.dim_accounts unavailable in run(); returning 0")
             return 0
 
+        # Only a provisional with an accepted source_native link can be merged
+        # (set() re-points that link; without it the merge can't collapse data
+        # and set() refuses it). Don't write backfill proposals that would
+        # dead-end at the merge step — they'd only be resolvable as standalone.
+        mergeable = {
+            str(r[0])
+            for r in self._db.execute(
+                f"SELECT DISTINCT account_id FROM {ACCOUNT_LINKS.full_name} "  # noqa: S608  # TableRef constant
+                "WHERE ref_kind = 'source_native' AND status = 'accepted'",
+            ).fetchall()
+        }
+
         new_count = 0
         # Track unordered pairs written this run to avoid A→B + B→A double-writes.
         seen_pairs: set[frozenset[str]] = set()
@@ -248,6 +260,8 @@ class AccountLinksService:
         self._db.begin()
         try:
             for account_id in account_ids:
+                if account_id not in mergeable:
+                    continue
                 proposal = resolver.propose_existing(account_id)
                 if proposal is None:
                     continue
@@ -357,17 +371,20 @@ class AccountLinksService:
                         "candidate_account_id as a confirming safety check.",
                         code=error_codes.MUTATION_INVALID_INPUT,
                     )
-                # Re-point all accepted source_native links for the provisional.
+                # Re-point ALL accepted links for the provisional onto the
+                # candidate — not only source_native (the staging-JOIN key) but
+                # also strong refs (persistent_token / full_number, used for
+                # adoption lookups). Leaving a strong ref on the merged-away
+                # provisional would later mis-adopt a source carrying the same
+                # token/number onto the dead id instead of the candidate.
                 links = self._db.execute(
                     f"""
-                    SELECT link_id FROM {ACCOUNT_LINKS.full_name}
-                    WHERE account_id = ?
-                      AND ref_kind = 'source_native'
-                      AND status = 'accepted'
+                    SELECT link_id, ref_kind FROM {ACCOUNT_LINKS.full_name}
+                    WHERE account_id = ? AND status = 'accepted'
                     """,  # noqa: S608  # TableRef constant + parameterized values
                     [provisional_id],
                 ).fetchall()
-                if not links:
+                if not any(ref_kind == "source_native" for _, ref_kind in links):
                     # No source_native mapping to re-point means the merge can't
                     # take effect: the staging JOIN translates raw rows via
                     # source_native links, so accepting here would record a
@@ -379,7 +396,7 @@ class AccountLinksService:
                         "re-point onto the candidate.",
                         code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
                     )
-                for (link_id,) in links:
+                for link_id, _ref_kind in links:
                     self._links.repoint(
                         link_id=link_id,
                         new_account_id=target_account_id,

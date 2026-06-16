@@ -536,7 +536,7 @@ Partial-update entry point for an account's settings.
 
 List pending account-link decisions grouped by provisional account.
 
-- **Sensitivity:** `low` — opaque IDs, display names (entity labels, not user-authored text), signal strings, and confidence scores only. Never surfaces `ref_value` (which can be a full account number).
+- **Sensitivity:** `medium` — surfaces account `display_name` (classified `USER_NOTE`, matching `accounts_summary`/`accounts_get`), so the proposal labels sit behind the same consent bar; opaque IDs, signal strings, and confidence scores otherwise. Never surfaces `ref_value` (which can be a full account number). Without consent the response degrades to counts.
 - **Unique parameters:** None.
 - **Behavior:** Returns all provisional accounts that have pending merge candidates, each grouped with their candidate list. Each candidate carries `decision_id`, `candidate_account_id`, `candidate_display_name`, `confidence`, and `signal`. Use `accounts_links_set` with the candidate's `account_id` as `target_account_id` to merge, or `null` to standalone-reject.
 - **Service:** `AccountLinksService.pending()` + `AccountLinksService.count_pending()`

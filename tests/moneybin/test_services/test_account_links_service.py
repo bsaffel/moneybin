@@ -484,6 +484,24 @@ def _seed_twin_accounts(db: Database) -> None:
         "VALUES (?, ?, ?, ?, ?)",  # noqa: S608  # test fixture insert
         [_TWIN_B, "7777", "first_bank", "First Bank Checking B", "ofx"],
     )
+    # Each twin carries an accepted source_native link (as resolver-imported
+    # accounts do) so run() treats them as mergeable provisionals.
+    _insert_link(
+        db,
+        link_id="link_twin_a0",
+        account_id=_TWIN_A,
+        ref_value="twin_a_native",
+        source_type="csv",
+        source_origin="first_bank_csv",
+    )
+    _insert_link(
+        db,
+        link_id="link_twin_b0",
+        account_id=_TWIN_B,
+        ref_value="twin_b_native",
+        source_type="ofx",
+        source_origin="first_bank_ofx",
+    )
 
 
 def test_run_writes_pending_for_cross_source_twins(
@@ -542,7 +560,59 @@ def test_run_skips_pair_with_existing_decision_any_status(
 
     count = svc.run()
 
+    # The pair is already covered (accepted) — 0 new decisions
     assert count == 0
+
+
+def test_run_skips_provisionals_without_source_native_link(
+    svc: AccountLinksService, db: Database
+) -> None:
+    """run() does not propose merges for accounts lacking a source_native link.
+
+    set() refuses to merge such a provisional (nothing to re-point), so proposing
+    one would be a dead-end. Two twins share institution+last4 but neither has a
+    source_native link → zero proposals.
+    """
+    db.execute(
+        "INSERT INTO core.dim_accounts (account_id, last_four, institution_name, display_name, source_type) "
+        "VALUES (?, ?, ?, ?, ?)",  # noqa: S608  # test fixture insert
+        ["nolink_a0001", "5555", "second_bank", "No-Link A", "csv"],
+    )
+    db.execute(
+        "INSERT INTO core.dim_accounts (account_id, last_four, institution_name, display_name, source_type) "
+        "VALUES (?, ?, ?, ?, ?)",  # noqa: S608  # test fixture insert
+        ["nolink_b0001", "5555", "second_bank", "No-Link B", "ofx"],
+    )
+    assert svc.run() == 0
+    n = db.execute("SELECT count(*) FROM app.account_link_decisions").fetchone()
+    assert n is not None and n[0] == 0
+
+
+def test_set_accept_repoints_strong_ref_links_too(
+    seeded: AccountLinksService, db: Database
+) -> None:
+    """Accept re-points strong-ref links too, not just source_native.
+
+    Otherwise a later source carrying the same persistent_token / full_number
+    would mis-adopt onto the merged-away provisional.
+    """
+    AccountLinksRepo(db).insert(
+        link_id="link_prov1_pt0",
+        account_id=_PROV1,
+        ref_kind="persistent_token",
+        ref_value="prov1-token-xyz",
+        source_type="plaid",
+        source_origin="plaid_first_bank",
+        decided_by="auto",
+        actor="system",
+    )
+    seeded.set(_DEC1, target_account_id=_CAND_A)
+    # The persistent_token strong ref now points at the candidate (old reversed).
+    accepted_tokens = _link_rows(db, ref_kind="persistent_token", status="accepted")
+    assert len(accepted_tokens) == 1
+    assert accepted_tokens[0][1] == _CAND_A  # account_id column
+    # The provisional retains no accepted links — all re-pointed onto the candidate.
+    assert _link_rows(db, account_id=_PROV1, status="accepted") == []
 
 
 def test_run_skips_reverse_direction_pair(

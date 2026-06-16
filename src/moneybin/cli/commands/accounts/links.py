@@ -25,21 +25,16 @@ from moneybin.privacy.payloads.accounts import (
     LinkPendingGroup,
 )
 from moneybin.protocol.envelope import build_envelope
-from moneybin.services.account_links_service import AccountLinksService
+from moneybin.services.account_links_service import (
+    AccountLinksService,
+    signal_from_match_signals,
+)
 
 app = typer.Typer(
     help="Review and manage account-link binding decisions",
     no_args_is_help=True,
 )
 logger = logging.getLogger(__name__)
-
-
-def _link_signal(match_signals: object) -> str:
-    """Extract 'signal' from a decoded match_signals dict."""
-    try:
-        return str(match_signals["signal"])  # type: ignore[index]  # Any-typed dict
-    except (KeyError, TypeError):
-        return ""
 
 
 @app.command("pending")
@@ -193,7 +188,7 @@ def links_history(
                     if r.get("confidence_score") is not None
                     else None
                 ),
-                signal=_link_signal(r.get("match_signals")),
+                signal=signal_from_match_signals(r.get("match_signals")),
             )
             for r in rows
         ]

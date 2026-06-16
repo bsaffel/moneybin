@@ -132,8 +132,10 @@ class LinkCandidateRow:
 
     decision_id: Annotated[str, DataClass.RECORD_ID]
     candidate_account_id: Annotated[str, DataClass.RECORD_ID]
-    # INSTITUTION (LOW) — account display label, not sensitive free text.
-    candidate_display_name: Annotated[str, DataClass.INSTITUTION]
+    # USER_NOTE (MEDIUM) — matches the canonical display_name class everywhere
+    # else (taxonomy.py / AccountSummary / AccountDetail); a user/auto label can
+    # embed identifying text, so it must not be under-classified to LOW here.
+    candidate_display_name: Annotated[str, DataClass.USER_NOTE]
     confidence: Annotated[float | None, DataClass.AGGREGATE]
     signal: Annotated[str, DataClass.TXN_TYPE]  # "institution_last4" or "name"
 
@@ -143,8 +145,8 @@ class LinkPendingGroup:
     """One provisional account with its candidate merge proposals."""
 
     provisional_account_id: Annotated[str, DataClass.RECORD_ID]
-    # INSTITUTION (LOW) — account display label, not sensitive free text.
-    provisional_display_name: Annotated[str, DataClass.INSTITUTION]
+    # USER_NOTE (MEDIUM) — see LinkCandidateRow.candidate_display_name.
+    provisional_display_name: Annotated[str, DataClass.USER_NOTE]
     candidates: list[LinkCandidateRow]
 
 
