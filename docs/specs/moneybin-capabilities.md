@@ -114,6 +114,7 @@ not-yet-built.
 | 51| Show recent account-link decisions (all statuses) | `accounts_links_history` *(`limit=50`)* | `accounts links history` *(`--limit`, `--output json`)* | — | live |
 | 52| Backfill pending account-link proposals for existing accounts (cross-source twin discovery) | `accounts_links_run` *(returns `data.new_proposals`)* | `accounts links run` *(`--output json`)* | — | live |
 | 53| "What needs my attention?" — pending counts across all three review queues in one sweep | `review` *(returns `{matches_pending, categorize_pending, account_links_pending, total}`)* | `moneybin review --status` *(`--type`, `--output json`)* | — | live |
+| 54| Confirm account identity at import time (which account is this file?) | `import_confirm` *(`account_bindings={source_key: account_id\|"new"}` ratifies an `account_confirmation`; interactive-human imports gate on weak candidates, agents load + queue)* | `import confirm <file> --account-binding source_key=ACCOUNT_ID\|new` | — | live |
 
 *(Bootstrap rows only; full table populates incrementally as
 follow-up work closes the parity backlog. A prior row covering

@@ -238,6 +238,14 @@ flowchart TD
 - `ProposedMapping`, `BridgePayload`, `Accept`, `Override`, `Resolved`, and
   `ConfirmationRequired` are defined at implementation; their shapes follow the payloads
   described above (this is a design spec, not the type module).
+- **Account-binding facet (M1S.4).** `ConfirmationRequired` carries a third,
+  optional facet beyond the column mapping: `account_proposals` with
+  `reason="account_confirmation"`. This surfaces the account *identity* verdict
+  (the resolver's weak merge candidates) — the dimension this confirm flow
+  originally excluded ("not … account assignment", Req 1). The column-mapping
+  and account-binding facets ride the same one-shape envelope; see
+  [`account-identity-resolution.md`](account-identity-resolution.md) Decision 7
+  for when each gates.
 
 ## Surface Design
 
