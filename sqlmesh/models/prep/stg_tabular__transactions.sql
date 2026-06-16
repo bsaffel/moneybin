@@ -34,11 +34,12 @@ WITH ranked AS (
     deleted_from_source_at,
     ROW_NUMBER() OVER (PARTITION BY transaction_id, account_id ORDER BY loaded_at DESC) AS _row_num
   FROM raw.tabular_transactions
-  -- Exclude soft-deleted rows BEFORE ranking. Otherwise a soft-deleted row
-  -- with a newer loaded_at ranks #1 and is then dropped by the outer filter,
-  -- while a valid same-key row at #2 is also excluded — silently losing the
-  -- transaction. Filtering pre-rank lets the valid row take #1.
-  WHERE deleted_from_source_at IS NULL
+  /* Exclude soft-deleted rows BEFORE ranking: a soft-deleted row with a newer
+     loaded_at would rank #1 and then be dropped by the outer filter, while a valid
+     same-key row at #2 is also excluded — silently losing the transaction.
+     Filtering pre-rank lets the valid row take #1. */
+  WHERE
+    deleted_from_source_at IS NULL
 )
 SELECT
   COALESCE(links.account_id, ranked.account_id) AS account_id, /* canonical when linked, else source-native (transient until B7 backfill) */

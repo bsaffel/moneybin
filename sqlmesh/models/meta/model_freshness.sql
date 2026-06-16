@@ -8,8 +8,12 @@ MODEL (
 );
 
 WITH snapshots AS (
+  /* `name` in sqlmesh._snapshots is a quoted three-part FQN like
+     "moneybin"."core"."dim_accounts". Strip the quotes, then strip the leading
+     catalog component, leaving 'schema.entity' for the public contract.
+     `updated_ts` is BIGINT milliseconds since epoch. */
   SELECT
-    REGEXP_REPLACE(REPLACE(name, '"', ''), '^[^.]+\.', '') AS model_name, /* `name` in sqlmesh._snapshots is a quoted three-part FQN like */ /* "moneybin"."core"."dim_accounts". Strip the quotes, then strip the */ /* leading catalog component, leaving 'schema.entity' for the public */ /* contract. `updated_ts` is BIGINT milliseconds since epoch. */
+    REGEXP_REPLACE(REPLACE(name, '"', ''), '^[^.]+\.', '') AS model_name,
     version,
     updated_ts
   FROM sqlmesh._snapshots

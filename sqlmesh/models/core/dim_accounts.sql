@@ -1,7 +1,8 @@
 /* Canonical accounts dimension; deduplicated accounts from all sources, with
    user-controlled settings (display_name, archive, include_in_net_worth, Plaid-
    parity metadata) joined in as the single resolved source of truth.
-   Per .claude/rules/database.md, no consumer joins app.account_settings directly. */ /* Query examples for the LLM: see src/moneybin/services/schema_catalog.py (EXAMPLES dict) */
+   Per .claude/rules/database.md, no consumer joins app.account_settings directly.
+   Query examples for the LLM: see src/moneybin/services/schema_catalog.py (EXAMPLES dict). */
 MODEL (
   name core.dim_accounts,
   kind FULL,
@@ -60,41 +61,50 @@ WITH ofx_accounts AS (
     *
   FROM plaid_accounts
 ), ranked AS (
+  /* grain_key: account_id is the CANONICAL opaque id when the account has an
+     accepted app.account_links row; it is NULL for accounts imported before the B7
+     backfill migration. COALESCE falls back to the source-native key so those
+     unlinked accounts stay DISTINCT instead of every NULL collapsing into one bad
+     row. Transient safety net: post-migration every account is linked, so the
+     COALESCE always takes the canonical id and this fallback is inert.
+     source_rank: source strength for the golden-record merge (ofx > plaid >
+     tabular, lower rank wins). Mirrors MatchingSettings.source_priority. */
   SELECT
     *,
-    /* Grain key. account_id is the CANONICAL opaque id when the account has an
-       accepted app.account_links row; it is NULL for accounts imported before the
-       B7 backfill migration. COALESCE falls back to the source-native key so those
-       unlinked accounts stay DISTINCT instead of every NULL collapsing into one
-       bad row. Transient safety net: post-migration every account is linked, so
-       the COALESCE always takes the canonical id and this fallback is inert. */
     COALESCE(account_id, source_account_key) AS grain_key,
-    /* Source strength for the golden-record merge: ofx > plaid > tabular (lower
-       rank wins). Mirrors MatchingSettings.source_priority. */
     CASE source_type WHEN 'ofx' THEN 0 WHEN 'plaid' THEN 1 ELSE 2 END AS source_rank
   FROM all_accounts
 ), merged AS (
   /* Per-field COALESCE-across-group merge (Decision 4), replacing last-write-wins.
-     A later weaker-source NULL can no longer clobber a stronger source's value. */
+     A later weaker-source NULL can no longer clobber a stronger source's value.
+       - Structured bank fields (routing_number, institution_fid): first non-null
+         by source strength then recency — ARG_MIN over (source_rank ASC,
+         extracted_at DESC); negating epoch_us flips the timestamp to descending
+         within the composite ordering key.
+       - Descriptive fields (institution_name, account_type): first non-null by
+         recency — ARG_MAX over extracted_at.
+       - Display provenance (source_type, source_file): the winning (strength then
+         recency) row's value; the full contributing set is recoverable from
+         app.account_links.
+       - Representative timestamps (extracted_at, loaded_at): MAX over the merged
+         group; keeps updated_at monotone. */
   SELECT
     grain_key AS account_id,
-    /* Structured bank fields: first non-null by source strength then recency.
-       ARG_MIN over (source_rank ASC, extracted_at DESC) — negating epoch_us flips
-       the timestamp to descending within the composite ordering key. */
-    ARG_MIN(routing_number, (source_rank, -EPOCH_US(extracted_at))) FILTER (WHERE NOT routing_number IS NULL) AS routing_number,
-    ARG_MIN(institution_fid, (source_rank, -EPOCH_US(extracted_at))) FILTER (WHERE NOT institution_fid IS NULL) AS institution_fid,
-    /* Descriptive fields: first non-null by recency. */
-    ARG_MAX(institution_name, extracted_at) FILTER (WHERE NOT institution_name IS NULL) AS institution_name,
-    ARG_MAX(account_type, extracted_at) FILTER (WHERE NOT account_type IS NULL) AS account_type,
-    /* Display provenance: the winning (strength then recency) row's value. The
-       full contributing set is recoverable from app.account_links. */
+    ARG_MIN(routing_number, (source_rank, -EPOCH_US(extracted_at))) FILTER(WHERE
+      NOT routing_number IS NULL) AS routing_number,
+    ARG_MIN(institution_fid, (source_rank, -EPOCH_US(extracted_at))) FILTER(WHERE
+      NOT institution_fid IS NULL) AS institution_fid,
+    ARG_MAX(institution_name, extracted_at) FILTER(WHERE
+      NOT institution_name IS NULL) AS institution_name,
+    ARG_MAX(account_type, extracted_at) FILTER(WHERE
+      NOT account_type IS NULL) AS account_type,
     ARG_MIN(source_type, (source_rank, -EPOCH_US(extracted_at))) AS source_type,
     ARG_MIN(source_file, (source_rank, -EPOCH_US(extracted_at))) AS source_file,
-    /* Representative timestamps for the merged group; keeps updated_at monotone. */
     MAX(extracted_at) AS extracted_at,
     MAX(loaded_at) AS loaded_at
   FROM ranked
-  GROUP BY grain_key
+  GROUP BY
+    grain_key
 )
 SELECT
   w.account_id, /* Canonical account identifier; opaque and stable across imports; foreign key in fct_transactions */

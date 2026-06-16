@@ -1,7 +1,8 @@
 /* Canonical transactions fact view; reads from the deduplicated merged layer
    with categorization and merchant joins; negative amount = expense, positive = income.
    Curation columns (notes/tags/splits + counts) join from app.* per Architectural
-   Pattern 1: app.* writes are flat-relational; consumers read DuckDB nested types. */ /* Query examples for the LLM: see src/moneybin/services/schema_catalog.py (EXAMPLES dict) */
+   Pattern 1: app.* writes are flat-relational; consumers read DuckDB nested types.
+   Query examples for the LLM: see src/moneybin/services/schema_catalog.py (EXAMPLES dict). */
 MODEL (
   name core.fct_transactions,
   kind VIEW,
@@ -11,7 +12,7 @@ MODEL (
 WITH notes_agg AS (
   SELECT
     transaction_id,
-    LIST(
+    ARRAY_AGG(
       {'note_id': note_id, 'text': text, 'author': author, 'created_at': created_at} ORDER BY created_at
     ) AS notes,
     COUNT(*) AS note_count,
@@ -22,7 +23,7 @@ WITH notes_agg AS (
 ), tags_agg AS (
   SELECT
     transaction_id,
-    LIST(tag ORDER BY tag) AS tags,
+    ARRAY_AGG(tag ORDER BY tag) AS tags,
     COUNT(*) AS tag_count,
     MAX(applied_at) AS tags_latest
   FROM app.transaction_tags
@@ -31,7 +32,7 @@ WITH notes_agg AS (
 ), splits_agg AS (
   SELECT
     s.transaction_id,
-    LIST(
+    ARRAY_AGG(
       {'split_id': s.split_id, 'amount': s.amount, 'category': COALESCE(sdc.category, s.category), 'subcategory': COALESCE(sdc.subcategory, s.subcategory), 'note': s.note} ORDER BY s.ord, s.split_id
     ) AS splits,
     COUNT(*) AS split_count,

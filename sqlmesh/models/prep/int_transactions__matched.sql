@@ -99,15 +99,7 @@ WITH RECURSIVE active_matches AS (
     u.source_account_key,
     u.source_transaction_id,
     u.loaded_at,
-    CASE u.source_type
-      WHEN 'ofx'
-      THEN 0
-      WHEN 'plaid'
-      THEN 0
-      WHEN 'manual'
-      THEN 1
-      ELSE 2
-    END AS stability_rank
+    CASE u.source_type WHEN 'ofx' THEN 0 WHEN 'plaid' THEN 0 WHEN 'manual' THEN 1 ELSE 2 END AS stability_rank
   FROM match_groups AS mg
   JOIN prep.int_transactions__unioned AS u
     ON u.source_type = mg.source_type
@@ -127,13 +119,7 @@ WITH RECURSIVE active_matches AS (
     source_transaction_id,
     ROW_NUMBER() OVER (
       PARTITION BY group_id
-      ORDER BY
-        stability_rank,
-        loaded_at,
-        source_type,
-        source_origin,
-        source_account_key,
-        source_transaction_id
+      ORDER BY stability_rank, loaded_at, source_type, source_origin, source_account_key, source_transaction_id
     ) AS _rn
   FROM group_members
 ), group_gold_keys AS (
