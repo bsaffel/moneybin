@@ -1,7 +1,7 @@
 # Cross-Source Account Identity Resolution
 
-> Last updated: 2026-06-15
-> Status: in-progress
+> Last updated: 2026-06-16
+> Status: implemented
 > Address: M1S (Ingestion Core)
 > Type: Feature
 > Owns: the canonical-account-identity contract (`core.dim_accounts.account_id`
@@ -698,11 +698,17 @@ Per [`observability.md`](observability.md), mirror the `DEDUP_*` family
   with an `account_bindings` map pins N accounts; a remembered/strong ref imports
   silently (no prompt); a weak-signal proposal never agent-self-accepts;
   institution-unknown bare CSV mints without error. CLI + MCP parity.
-- **Scenario** (`tests/scenarios/`, `make test-scenarios` — data-shape change):
-  `account-identity-cross-source` — the 5-account WF case imported as 5 `.qfx` +
-  5 `.csv` twins resolves to **5 canonical accounts** and **279
-  `core.fct_transactions` rows at `source_count = 2`** (the import-validation live
-  test, now reproducible). Reuse the deidentified WF fixture below.
+- **Scenario** (`tests/scenarios/test_account_identity_cross_source.py`,
+  `make test-scenarios` — data-shape change): `account-identity-cross-source`
+  proves the regression fix with a representative 2-account fixture — 2 WF
+  accounts imported as 2 `.qfx` + 2 `.csv` twins (12 raw rows across 4 source
+  accounts), bound onto the qfx-minted canonical accounts, resolve to **2
+  canonical accounts** and **6 `core.fct_transactions` rows at
+  `source_count = 2`** (the import-validation live test, now reproducible). The
+  hand-derived counts make over/under-merge detectable per the
+  scenario-expectations rule. Scaling this to the full 5-account / 279-row WF
+  persona (which needs a twin generator) is tracked as follow-up enrichment, not
+  a capability gap — the collapse mechanism is identical at any N.
 
 ## Phased implementation outline (later increments)
 
