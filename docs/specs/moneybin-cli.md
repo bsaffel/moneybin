@@ -197,6 +197,17 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |   +-- assertion-delete <account_id> <date> [--yes]
 |   |   +-- reconcile [--account ID] [--threshold AMOUNT]
 |   |   +-- history --account ID [--from DATE] [--to DATE]
+|   +-- links                      -- Review and manage account-link binding decisions
+|       +-- pending [--output json] [--quiet]
+|       |         List provisional accounts + candidate merge proposals; each candidate
+|       |         shows decision_id, candidate_account_id, display name, confidence, signal.
+|       +-- set <decision_id> --into <account_id> | --standalone [--quiet]
+|       |         Merge the provisional into the candidate (--into) or keep as standalone
+|       |         (--standalone). The two flags are mutually exclusive; omitting both exits 2.
+|       +-- history [--limit N] [--output json] [--quiet]
+|                 Recent decisions (all statuses), newest first.
+|   Note: `accounts links run` and `accounts links undo` are deliberately NOT YET registered
+|         (run lands in M1S.5b; undo deferred to M1L audit-undo consumer).
 |
 +-- assets                         -- (future spec) Physical assets (real estate, vehicles, valuables)
 |                                     Workflows defined in asset-tracking.md.

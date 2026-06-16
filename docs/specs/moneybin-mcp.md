@@ -532,6 +532,38 @@ Partial-update entry point for an account's settings.
 - **Service:** `AccountService.settings_update() -> AccountSettings`
 - **CLI:** `moneybin accounts set <account_id> [--display-name TEXT] [--include/--exclude] [--archive/--unarchive] [--subtype TYPE] [--holder-category CAT] [--currency CODE] [--credit-limit N] [--last-four DIGITS] [--official-name TEXT] [--clear-display-name] [--clear-currency] [--yes]`
 
+### `accounts_links_pending`
+
+List pending account-link decisions grouped by provisional account.
+
+- **Sensitivity:** `low` — opaque IDs, display names (entity labels, not user-authored text), signal strings, and confidence scores only. Never surfaces `ref_value` (which can be a full account number).
+- **Unique parameters:** None.
+- **Behavior:** Returns all provisional accounts that have pending merge candidates, each grouped with their candidate list. Each candidate carries `decision_id`, `candidate_account_id`, `candidate_display_name`, `confidence`, and `signal`. Use `accounts_links_set` with the candidate's `account_id` as `target_account_id` to merge, or `null` to standalone-reject.
+- **Service:** `AccountLinksService.pending()` + `AccountLinksService.count_pending()`
+- **CLI:** `moneybin accounts links pending`
+
+### `accounts_links_set`
+
+Accept (merge) or standalone-reject one pending account-link decision.
+
+- **Sensitivity:** `low`
+- **Unique parameters:** `decision_id: str` (required); `target_account_id: str | None` (required — no Python default; pass the candidate's `account_id` to merge, `null` to standalone-reject). The absence of a default prevents accidental rejection when the argument is omitted.
+- **Mutation surface:** writes `app.account_links` and `app.account_link_decisions`. Revert via `system_audit_undo`.
+- **Service:** `AccountLinksService.set()`
+- **CLI:** `moneybin accounts links set <decision_id> --into <account_id>` (merge) or `--standalone` (standalone-reject)
+
+### `accounts_links_history`
+
+Show recent account-link decisions (all statuses), newest first.
+
+- **Sensitivity:** `low`
+- **Unique parameters:** `limit: int = 50`
+- **Behavior:** Returns decisions across all statuses (pending, accepted, rejected). Useful for auditing what has already been decided.
+- **Service:** `AccountLinksService.history()`
+- **CLI:** `moneybin accounts links history`
+
+> **Not yet registered:** `accounts_links_run` (lands in M1S.5b) and an undo variant are deliberately out of scope for this increment.
+
 ---
 
 ## 6. `transactions.*` — Transaction-level operations (matches and categorize workflows nested)
