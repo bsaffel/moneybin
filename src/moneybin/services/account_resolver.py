@@ -19,7 +19,12 @@ from moneybin.database import Database
 from moneybin.extractors.tabular.account_matching import match_account
 from moneybin.repositories.account_link_decisions_repo import AccountLinkDecisionsRepo
 from moneybin.repositories.account_links_repo import AccountLinksRepo
-from moneybin.services.account_resolution_types import ResolvedAccount, SourceAccount
+from moneybin.services.account_resolution_types import (
+    AccountCandidate,
+    AccountProposal,
+    ResolvedAccount,
+    SourceAccount,
+)
 from moneybin.tables import ACCOUNT_LINKS, DIM_ACCOUNTS
 
 logger = logging.getLogger(__name__)
@@ -70,8 +75,9 @@ class AccountResolver:
             )
         # Step 1 - strong confirmer / idempotency: source_native, then
         # persistent_token, then scoped full_number. Hit -> auto-adopt.
-        adopted = self._lookup_strong_ref(src)
-        if adopted is not None:
+        strong = self._lookup_strong_ref(src)
+        if strong is not None:
+            adopted, _kind = strong
             self._write_native_mapping(src, account_id=adopted, decided_by="auto")
             self._write_strong_ref(src, account_id=adopted)
             return ResolvedAccount(
@@ -108,6 +114,69 @@ class AccountResolver:
             outcome="pending_review",
         )
 
+    def propose(self, src: SourceAccount) -> AccountProposal:
+        """Compute the resolver verdict without writing anything (read-only preview).
+
+        Mirrors the resolve() ladder exactly — explicit binding, strong ref,
+        candidate pass — but performs no writes: no mint is persisted, no
+        account_links row is inserted, no account_link_decisions row is created.
+        Safe to call at any point in the import flow, including before confirm.
+
+        The proposed_account_id in the mint path (is_new=True) is a preview id
+        (uuid4[:12]) that is NOT written anywhere; resolve() will produce a
+        different real id when the import is actually committed.
+        """
+        # Step 0 - explicit binding.
+        if src.explicit_account_id:
+            return AccountProposal(
+                source_account_key=src.source_account_key,
+                proposed_account_id=src.explicit_account_id,
+                is_new=False,
+                adopted_via="explicit",
+            )
+        # Step 1 - strong ref.
+        strong = self._lookup_strong_ref(src)
+        if strong is not None:
+            adopted, kind = strong
+            return AccountProposal(
+                source_account_key=src.source_account_key,
+                proposed_account_id=adopted,
+                is_new=False,
+                adopted_via=kind,
+            )
+        # Step 2 - candidate pass. Mint a preview id (NOT written anywhere).
+        preview_id = uuid.uuid4().hex[:12]
+        raw_candidates = self._find_candidates(src, exclude_account_id=preview_id)
+        candidates = tuple(
+            AccountCandidate(
+                account_id=c.account_id,
+                display_name=self._fetch_display_name(c.account_id),
+                confidence=c.confidence,
+                signal=c.signal,
+            )
+            for c in raw_candidates
+        )
+        return AccountProposal(
+            source_account_key=src.source_account_key,
+            proposed_account_id=preview_id,
+            is_new=True,
+            candidates=candidates,
+            adopted_via=None,
+        )
+
+    def _fetch_display_name(self, account_id: str) -> str:
+        """Return display_name from core.dim_accounts for a candidate account_id.
+
+        Returns empty string when the row is absent (defensive; if _find_candidates
+        returned a candidate, dim_accounts is materialized and the row should exist).
+        """
+        row = self._db.execute(
+            f"SELECT display_name FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef + parameterized value
+            "WHERE account_id = ? LIMIT 1",
+            [account_id],
+        ).fetchone()
+        return str(row[0]) if row and row[0] is not None else ""
+
     def _write_native_mapping(
         self, src: SourceAccount, *, account_id: str, decided_by: str
     ) -> None:
@@ -143,11 +212,12 @@ class AccountResolver:
             actor=self._actor,
         )
 
-    def _lookup_strong_ref(self, src: SourceAccount) -> str | None:
-        """Return an existing canonical id if any accepted strong ref matches.
+    def _lookup_strong_ref(self, src: SourceAccount) -> tuple[str, str] | None:
+        """Return (account_id, ref_kind) if any accepted strong ref matches, else None.
 
         Checks source_native first (same-source re-import), then persistent_token
         (cross-connection identity), then scoped full_number (cross-source format).
+        The ref_kind is surfaced so propose() can populate adopted_via accurately.
         """
         row = self._db.execute(
             f"SELECT account_id FROM {ACCOUNT_LINKS.full_name} "  # noqa: S608  # TableRef + parameterized values
@@ -156,7 +226,7 @@ class AccountResolver:
             [src.source_type, src.source_origin, src.source_account_key],
         ).fetchone()
         if row is not None:
-            return str(row[0])
+            return str(row[0]), "source_native"
         if src.persistent_token:
             row = self._db.execute(
                 f"SELECT account_id FROM {ACCOUNT_LINKS.full_name} "  # noqa: S608  # TableRef + parameterized values
@@ -165,7 +235,7 @@ class AccountResolver:
                 [src.persistent_token],
             ).fetchone()
             if row is not None:
-                return str(row[0])
+                return str(row[0]), "persistent_token"
         scoped = self._scoped_full_number(src)
         if scoped is not None:
             row = self._db.execute(
@@ -175,7 +245,7 @@ class AccountResolver:
                 [scoped],
             ).fetchone()
             if row is not None:
-                return str(row[0])
+                return str(row[0]), "full_number"
         return None
 
     @staticmethod

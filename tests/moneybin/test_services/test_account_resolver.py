@@ -1,4 +1,4 @@
-"""Tests for AccountResolver (M1S.2 resolution ladder)."""
+"""Tests for AccountResolver (M1S.2 resolution ladder + M1S.4 propose())."""
 
 from __future__ import annotations
 
@@ -7,7 +7,8 @@ from typing import Any
 import pytest
 
 from moneybin.database import Database
-from moneybin.services.account_resolution_types import SourceAccount
+from moneybin.repositories.account_links_repo import AccountLinksRepo
+from moneybin.services.account_resolution_types import AccountProposal, SourceAccount
 from moneybin.services.account_resolver import AccountResolver
 from tests.moneybin.db_helpers import create_core_tables
 
@@ -274,3 +275,66 @@ def test_missing_dim_accounts_mints_standalone(db: Database) -> None:
     resolved = resolver.resolve(_src())
     assert resolved.is_new is True
     assert resolved.outcome == "minted_new"
+
+
+# ---------------------------------------------------------------------------
+# M1S.4 — propose() read-only preview
+# ---------------------------------------------------------------------------
+
+
+def test_propose_surfaces_weak_candidate_without_writing(db: Database) -> None:
+    """propose() returns a weak-signal candidate but writes nothing to app tables."""
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="wf_existing_01",
+        last_four="4267",
+        institution_name="wells_fargo",
+        display_name="WF Checking",
+    )
+    resolver = AccountResolver(db, actor="system")
+    src = _src()  # last_four="4267", institution="wells_fargo"
+    proposal = resolver.propose(src)
+
+    assert isinstance(proposal, AccountProposal)
+    assert proposal.requires_confirm is True
+    assert len(proposal.candidates) == 1
+    assert proposal.candidates[0].signal == "institution_last4"
+    assert proposal.candidates[0].display_name == "WF Checking"
+    # Zero side effects — no rows written
+    n_links = db.conn.execute("SELECT count(*) FROM app.account_links").fetchone()
+    assert n_links is not None and n_links[0] == 0
+    n_decisions = db.conn.execute(
+        "SELECT count(*) FROM app.account_link_decisions"
+    ).fetchone()
+    assert n_decisions is not None and n_decisions[0] == 0
+
+
+def test_propose_strong_ref_adopts_without_writing(db: Database) -> None:
+    """propose() on a known source_native key returns adopted verdict with no new writes."""
+    resolver = AccountResolver(db, actor="system")
+    # Pre-insert one accepted source_native link directly via repo
+    AccountLinksRepo(db).insert(
+        link_id="link_pre",
+        account_id="acct_existing",
+        ref_kind="source_native",
+        ref_value="wf-checking",
+        source_type="csv",
+        source_origin="wells_fargo",
+        decided_by="auto",
+        actor="system",
+    )
+    src = _src()  # source_native key = "wf-checking"
+    proposal = resolver.propose(src)
+
+    assert proposal.is_new is False
+    assert proposal.adopted_via == "source_native"
+    assert proposal.candidates == ()
+    assert proposal.requires_confirm is False
+    # propose() must not write new rows — only the pre-inserted link is present
+    n_links = db.conn.execute("SELECT count(*) FROM app.account_links").fetchone()
+    assert n_links is not None and n_links[0] == 1
+    n_decisions = db.conn.execute(
+        "SELECT count(*) FROM app.account_link_decisions"
+    ).fetchone()
+    assert n_decisions is not None and n_decisions[0] == 0
