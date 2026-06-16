@@ -87,6 +87,100 @@ class TestConfirmationRequired:
         )
         assert out.reason == "validation_failure"
 
+    def test_account_proposals_default_empty(self) -> None:
+        c = Confidence(score=0.85, tier="high", flagged=(), missing_required=())
+        p = ProposedMapping(field_mapping={}, sample_values={}, unmapped_columns=())
+        out = ConfirmationRequired(
+            channel="tabular", confidence=c, proposed=p, reason="unknown_layout"
+        )
+        # A mapping-only confirmation carries no account facet.
+        assert out.account_proposals == []
+
+    def test_account_confirmation_carries_proposals(self) -> None:
+        c = Confidence(score=1.0, tier="high", flagged=(), missing_required=())
+        p = ProposedMapping(
+            field_mapping={"transaction_date": "Date", "amount": "Amt"},
+            sample_values={},
+            unmapped_columns=(),
+        )
+        out = ConfirmationRequired(
+            channel="tabular",
+            confidence=c,
+            proposed=p,
+            reason="account_confirmation",
+            account_proposals=[
+                {
+                    "source_account_key": "wf-checking",
+                    "proposed_account_id": "prov12345678",
+                    "is_new": True,
+                    "candidates": [
+                        {
+                            "account_id": "cand87654321",
+                            "display_name": "WF Checking",
+                            "confidence": 0.5,
+                            "signal": "institution_last4",
+                        }
+                    ],
+                }
+            ],
+        )
+        assert out.reason == "account_confirmation"
+        assert out.account_proposals[0]["source_account_key"] == "wf-checking"
+
+
+class TestConfirmationPayloadDict:
+    """confirmation_payload_dict serialization includes the account facet."""
+
+    def test_carries_account_proposals(self) -> None:
+        from moneybin.services.import_confirmation import confirmation_payload_dict
+
+        c = Confidence(score=1.0, tier="high", flagged=(), missing_required=())
+        p = ProposedMapping(
+            field_mapping={"transaction_date": "Date"},
+            sample_values={},
+            unmapped_columns=(),
+        )
+        proposals: list[dict[str, object]] = [
+            {
+                "source_account_key": "wf-checking",
+                "proposed_account_id": "prov12345678",
+                "is_new": True,
+                "adopted_via": None,
+                "requires_confirm": True,
+                "candidates": [
+                    {
+                        "account_id": "cand87654321",
+                        "display_name": "WF Checking",
+                        "confidence": 0.5,
+                        "signal": "institution_last4",
+                    }
+                ],
+            }
+        ]
+        out = ConfirmationRequired(
+            channel="tabular",
+            confidence=c,
+            proposed=p,
+            reason="account_confirmation",
+            account_proposals=proposals,
+        )
+        d = confirmation_payload_dict(out)
+        assert d["reason"] == "account_confirmation"
+        assert d["account_proposals"] == proposals
+        # The resolved mapping still rides along so the caller sees the full picture.
+        assert d["proposed_mapping"] == {"transaction_date": "Date"}
+
+    def test_mapping_only_confirmation_has_empty_account_proposals(self) -> None:
+        from moneybin.services.import_confirmation import confirmation_payload_dict
+
+        c = Confidence(score=0.5, tier="low", flagged=(), missing_required=())
+        p = ProposedMapping(field_mapping={}, sample_values={}, unmapped_columns=())
+        out = ConfirmationRequired(
+            channel="tabular", confidence=c, proposed=p, reason="unknown_layout"
+        )
+        d = confirmation_payload_dict(out)
+        assert d["account_proposals"] == []
+
 
 class TestResolved:
     """Validate Resolved terminal outcome shape."""
