@@ -59,37 +59,34 @@ app.add_typer(import_labels.app, name="labels", help="Manage labels on imports")
 logger = logging.getLogger(__name__)
 
 
-def _parse_overrides(override: list[str] | None) -> dict[str, str] | None:
-    """Parse and validate --override field=column values."""
-    if not override:
+def _parse_kv(
+    values: list[str] | None, *, flag: str, fmt: str
+) -> dict[str, str] | None:
+    """Parse repeatable ``KEY=VALUE`` CLI options into a stripped dict.
+
+    ``flag`` and ``fmt`` shape only the error message (e.g. ``flag="--override"``,
+    ``fmt="field=column"``). Returns ``None`` for empty input.
+    """
+    if not values:
         return None
     result: dict[str, str] = {}
-    for raw in override:
+    for raw in values:
         if "=" not in raw:
-            logger.error(
-                f"❌ Invalid --override format (expected field=column): {raw!r}"
-            )
+            logger.error(f"❌ Invalid {flag} format (expected {fmt}): {raw!r}")
             raise typer.Exit(1)
-        field, _, col = raw.partition("=")
-        result[field.strip()] = col.strip()
+        key, _, value = raw.partition("=")
+        result[key.strip()] = value.strip()
     return result
+
+
+def _parse_overrides(override: list[str] | None) -> dict[str, str] | None:
+    """Parse and validate --override field=column values."""
+    return _parse_kv(override, flag="--override", fmt="field=column")
 
 
 def _parse_account_bindings(binding: list[str] | None) -> dict[str, str] | None:
     """Parse --account-binding source_key=ACCOUNT_ID|new values."""
-    if not binding:
-        return None
-    result: dict[str, str] = {}
-    for raw in binding:
-        if "=" not in raw:
-            logger.error(
-                "❌ Invalid --account-binding format "
-                f"(expected source_key=ACCOUNT_ID|new): {raw!r}"
-            )
-            raise typer.Exit(1)
-        key, _, target = raw.partition("=")
-        result[key.strip()] = target.strip()
-    return result
+    return _parse_kv(binding, flag="--account-binding", fmt="source_key=ACCOUNT_ID|new")
 
 
 def _parse_account_metadata(
@@ -483,7 +480,6 @@ def import_files_command(
     except Exception as _exc:  # noqa: BLE001 — dispatch on type below
         from moneybin.services.import_confirmation import (  # noqa: PLC0415
             ImportConfirmationRequiredError,
-            ProposedMapping,
         )
 
         if isinstance(_exc, ImportConfirmationRequiredError):
@@ -496,30 +492,7 @@ def import_files_command(
             # to re-run with --confirm or --mapping instead.
             outcome = _exc.outcome
             file_path_str = str(file_paths[0]) if len(file_paths) == 1 else ""
-            proposed_mapping: dict[str, str] = (
-                outcome.proposed.field_mapping
-                if isinstance(outcome.proposed, ProposedMapping)
-                else {}
-            )
-            unmapped = (
-                list(outcome.proposed.unmapped_columns)
-                if isinstance(outcome.proposed, ProposedMapping)
-                else []
-            )
-            envelope_data: dict[str, Any] = {
-                "status": "confirmation_required",
-                "channel": outcome.channel,
-                "tier": outcome.confidence.tier,
-                "score": outcome.confidence.score,
-                "reason": outcome.reason,
-                "error_message": outcome.error_message,
-                "proposed_mapping": proposed_mapping,
-                "samples": outcome.samples,
-                "flagged": list(outcome.confidence.flagged),
-                "missing_required": list(outcome.confidence.missing_required),
-                "unmapped_columns": unmapped,
-                "account_proposals": list(outcome.account_proposals),
-            }
+            envelope_data = _confirmation_envelope_data(outcome)
             confirm_actions: list[str] = []
             if outcome.error_message:
                 confirm_actions.append(f"Validation failed: {outcome.error_message}")
@@ -638,6 +611,24 @@ def import_files_command(
     # Mirrors the fail-loud single-file path that raises on refresh() error.
     if data.get("transforms_error"):
         raise typer.Exit(1)
+
+
+def _confirmation_envelope_data(outcome: ConfirmationRequired) -> dict[str, Any]:
+    """Build the ``confirmation_required`` envelope ``data`` dict from an outcome.
+
+    Shared by ``import files`` and ``import confirm`` so the JSON shape cannot
+    drift between the two surfaces. Delegates to the canonical
+    ``confirmation_payload_dict`` — the single source MCP and the batch service
+    also use — so a new channel field (e.g. ``bridge_payload``) lands in one
+    place; this wrapper only prepends the CLI-envelope ``status`` field. The
+    per-command ``actions[]`` hints differ (files-level vs confirm-subcommand
+    context) and stay in the callers.
+    """
+    from moneybin.services.import_confirmation import (  # noqa: PLC0415 — defer import to keep CLI cold-start light
+        confirmation_payload_dict,
+    )
+
+    return {"status": "confirmation_required", **confirmation_payload_dict(outcome)}
 
 
 def _echo_account_proposals(outcome: ConfirmationRequired, *, err: bool) -> None:
@@ -831,7 +822,6 @@ def import_confirm_command(
 
     from moneybin.services.import_confirmation import (
         ImportConfirmationRequiredError,
-        ProposedMapping,
     )
 
     try:
@@ -860,30 +850,7 @@ def import_confirm_command(
         # a structured payload instead of an unparseable stderr message.
         # Exit code stays 1: the confirm action did not succeed.
         outcome = e.outcome
-        proposed_mapping_dict = (
-            outcome.proposed.field_mapping
-            if isinstance(outcome.proposed, ProposedMapping)
-            else {}
-        )
-        unmapped = (
-            list(outcome.proposed.unmapped_columns)
-            if isinstance(outcome.proposed, ProposedMapping)
-            else []
-        )
-        envelope_data: dict[str, Any] = {
-            "status": "confirmation_required",
-            "channel": outcome.channel,
-            "tier": outcome.confidence.tier,
-            "score": outcome.confidence.score,
-            "reason": outcome.reason,
-            "error_message": outcome.error_message,
-            "proposed_mapping": proposed_mapping_dict,
-            "samples": outcome.samples,
-            "flagged": list(outcome.confidence.flagged),
-            "missing_required": list(outcome.confidence.missing_required),
-            "unmapped_columns": unmapped,
-            "account_proposals": list(outcome.account_proposals),
-        }
+        envelope_data = _confirmation_envelope_data(outcome)
         confirm_actions: list[str] = []
         if outcome.error_message:
             confirm_actions.append(f"Validation failed: {outcome.error_message}")

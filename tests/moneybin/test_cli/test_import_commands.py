@@ -1,4 +1,6 @@
 # ruff: noqa: S101,S106
+# TestConfirmationEnvelopeData tests the module-private _confirmation_envelope_data builder:
+# pyright: reportPrivateUsage=false
 """Tests for import CLI commands.
 
 Tests CLI-specific functionality: argument parsing, exit codes, error handling.
@@ -495,3 +497,46 @@ class TestImportStatusCommand:
         assert result.exit_code == 0
         assert "ofx_transactions" in result.output
         assert "2 rows" in result.output
+
+
+class TestConfirmationEnvelopeData:
+    """`_confirmation_envelope_data` is the single CLI confirmation_required builder.
+
+    It must produce the canonical `confirmation_payload_dict` shape (so the CLI
+    and MCP `confirmation_required` envelopes cannot drift) plus a leading
+    `status` field — including `bridge_payload` for the PDF bridge channel.
+    """
+
+    @staticmethod
+    def _bridge_outcome() -> Any:
+        from moneybin.extractors.confidence import Confidence
+        from moneybin.services.import_confirmation import (
+            BridgePayload,
+            ConfirmationRequired,
+        )
+
+        return ConfirmationRequired(
+            channel="pdf",
+            confidence=Confidence(
+                score=0.4, tier="low", flagged=(), missing_required=()
+            ),
+            proposed=BridgePayload(payload={"ir": "request"}),
+            reason="validation_failure",
+        )
+
+    def test_bridge_payload_is_carried(self) -> None:
+        from moneybin.cli.commands.import_cmd import _confirmation_envelope_data
+
+        data = _confirmation_envelope_data(self._bridge_outcome())
+        assert data["bridge_payload"] == {"ir": "request"}
+
+    def test_matches_canonical_helper_plus_status(self) -> None:
+        from moneybin.cli.commands.import_cmd import _confirmation_envelope_data
+        from moneybin.services.import_confirmation import confirmation_payload_dict
+
+        outcome = self._bridge_outcome()
+        data = _confirmation_envelope_data(outcome)
+        assert data == {
+            "status": "confirmation_required",
+            **confirmation_payload_dict(outcome),
+        }

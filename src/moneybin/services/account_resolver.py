@@ -30,6 +30,7 @@ from moneybin.services.account_resolution_types import (
     SourceAccount,
 )
 from moneybin.tables import ACCOUNT_LINK_DECISIONS, ACCOUNT_LINKS, DIM_ACCOUNTS
+from moneybin.utils import slugify
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,24 @@ def refresh_account_link_pending_gauge(db: Database) -> None:
         "WHERE status = 'pending' AND reversed_at IS NULL"
     ).fetchone()
     ACCOUNT_LINK_REVIEW_PENDING.set(int(row[0]) if row else 0)
+
+
+def fetch_display_name(db: Database, account_id: str) -> str:
+    """Return ``display_name`` from ``core.dim_accounts``; empty string when absent.
+
+    Shared by the resolver's candidate decode and the account-link review queue.
+    Guards ``duckdb.CatalogException`` so callers work before the core layer is
+    materialized (e.g. during initial import before a SQLMesh run).
+    """
+    try:
+        row = db.execute(
+            f"SELECT display_name FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef constant + parameterized value
+            "WHERE account_id = ? LIMIT 1",
+            [account_id],
+        ).fetchone()
+    except duckdb.CatalogException:
+        return ""
+    return str(row[0]) if row and row[0] is not None else ""
 
 
 @dataclass(frozen=True)
@@ -81,7 +100,25 @@ class AccountResolver:
 
         Ladder: explicit binding (step 0) -> strong confirmer / idempotency
         (step 1, A3) -> candidate pass / mint + propose (step 2, A4).
+
+        All writes for one account run in a single transaction (atomic per
+        account): a mid-resolve failure rolls back, so a later same-id import
+        cannot adopt a half-written account. resolve() owns the transaction —
+        it is always called outside one (the per-write repo transactions it
+        composes succeed today, proving no enclosing transaction), so the
+        composed writes pass in_outer_txn=True to join this one.
         """
+        self._db.begin()
+        try:
+            result = self._run_ladder(src)
+        except BaseException:
+            self._db.rollback()
+            raise
+        self._db.commit()
+        return result
+
+    def _run_ladder(self, src: SourceAccount) -> ResolvedAccount:
+        """Resolution-ladder body; runs inside ``resolve()``'s transaction."""
         # Step 0 - explicit binding: caller pinned identity, adopt above detection.
         if src.explicit_account_id:
             self._write_native_mapping(
@@ -118,6 +155,10 @@ class AccountResolver:
         # Step 2 - candidate pass. Mint first (never orphaned), then propose.
         account_id = uuid.uuid4().hex[:12]
         self._write_native_mapping(src, account_id=account_id, decided_by="auto")
+        # Claim the mint's strong refs (persistent_token / scoped full_number) so
+        # a later source carrying the same id auto-adopts (step 1) instead of
+        # minting a duplicate. Safe: step 1 above already proved no conflict.
+        self._write_strong_ref(src, account_id=account_id, decided_by="auto")
 
         candidates = self._find_candidates(src, exclude_account_id=account_id)
         if not candidates:
@@ -137,6 +178,7 @@ class AccountResolver:
                 decided_by="auto",
                 actor=self._actor,
                 match_reason=cand.signal,
+                in_outer_txn=True,  # joins resolve()'s per-account transaction
             )
             ACCOUNT_LINK_CONFIDENCE.observe(cand.confidence)
             pending_ids.append(decision_id)
@@ -260,17 +302,8 @@ class AccountResolver:
         )
 
     def _fetch_display_name(self, account_id: str) -> str:
-        """Return display_name from core.dim_accounts for a candidate account_id.
-
-        Returns empty string when the row is absent (defensive; if _find_candidates
-        returned a candidate, dim_accounts is materialized and the row should exist).
-        """
-        row = self._db.execute(
-            f"SELECT display_name FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef + parameterized value
-            "WHERE account_id = ? LIMIT 1",
-            [account_id],
-        ).fetchone()
-        return str(row[0]) if row and row[0] is not None else ""
+        """Return display_name from core.dim_accounts for a candidate account_id."""
+        return fetch_display_name(self._db, account_id)
 
     def _write_native_mapping(
         self, src: SourceAccount, *, account_id: str, decided_by: str
@@ -305,6 +338,7 @@ class AccountResolver:
             source_origin=src.source_origin,
             decided_by=decided_by,
             actor=self._actor,
+            in_outer_txn=True,  # joins resolve()'s per-account transaction
         )
 
     def _lookup_strong_ref(self, src: SourceAccount) -> tuple[str, str] | None:
@@ -393,6 +427,7 @@ class AccountResolver:
                 source_origin=src.source_origin,
                 decided_by=decided_by,
                 actor=self._actor,
+                in_outer_txn=True,  # joins resolve()'s per-account transaction
             )
 
     def _find_candidates(
@@ -405,21 +440,32 @@ class AccountResolver:
         """
         try:
             out: list[_Candidate] = []
-            if src.last_four and src.institution:
+            if (
+                src.last_four
+                and src.institution
+                and (target_inst := slugify(src.institution))
+            ):
+                # institution_name holds raw source text (OFX <ORG> "CHASE"),
+                # while src.institution may be a slug ("chase"). An exact SQL
+                # match never fires across that case/format gap, so fetch by the
+                # exact last_four and slugify-compare the institution in Python.
+                # An empty slug (institution is all punctuation) is skipped — it
+                # would spuriously match other empty-slug rows sharing last_four.
                 rows = self._db.execute(
-                    f"SELECT account_id FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef + parameterized values
-                    "WHERE last_four = ? AND institution_name = ? AND account_id != ?",
-                    [src.last_four, src.institution, exclude_account_id],
+                    f"SELECT account_id, institution_name FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef + parameterized values
+                    "WHERE last_four = ? AND account_id != ?",
+                    [src.last_four, exclude_account_id],
                 ).fetchall()
                 # confidence is informational only — weak signals always go to review.
                 out.extend(
                     _Candidate(
                         account_id=str(r[0]),
                         signal="institution_last4",
-                        value=f"{src.institution}:{src.last_four}",
+                        value=f"{target_inst}:{src.last_four}",
                         confidence=0.5,
                     )
                     for r in rows
+                    if r[1] and slugify(str(r[1])) == target_inst
                 )
             if out:
                 return out

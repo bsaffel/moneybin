@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -255,6 +256,102 @@ def test_institution_last4_writes_pending_never_merges(db: Database) -> None:
     assert dec == (second.account_id, first.account_id, "pending")
 
 
+def test_institution_last4_matches_across_case(db: Database) -> None:
+    """institution+last4 fires when the stored ORG differs in case from the slug.
+
+    OFX stores institution_name as raw ``<ORG>`` (e.g. ``CHASE``); a later import
+    carries the slug (``chase``). An exact text match would never fire — both
+    must slugify-compare equal for the cross-source signal to surface.
+    """
+    create_core_tables(db)
+    resolver = AccountResolver(db, actor="system")
+    first = resolver.resolve(_src(source_account_key="chase-a", institution="chase"))
+    _seed_dim_account(
+        db,
+        account_id=first.account_id,
+        last_four="4267",
+        institution_name="CHASE",  # raw OFX <ORG>, uppercase
+    )
+    second = resolver.resolve(
+        _src(
+            source_type="ofx",
+            source_account_key="ofx-4267",
+            last_four="4267",
+            institution="chase",
+        )
+    )
+    assert second.outcome == "pending_review"
+    assert len(second.pending_decision_ids) == 1
+    dec = db.conn.execute(
+        "SELECT candidate_account_id, match_reason "
+        "FROM app.account_link_decisions WHERE decision_id = ?",
+        [second.pending_decision_ids[0]],
+    ).fetchone()
+    assert dec == (first.account_id, "institution_last4")
+
+
+def test_institution_last4_skips_when_slug_is_empty(db: Database) -> None:
+    """A purely non-alphanumeric institution slugifies to '' and must not match.
+
+    '###' and '@@@' both slugify to '' (slugify strips non-alphanumerics), so an
+    empty slug would otherwise spuriously equal any stored institution that also
+    slugifies to '' sharing the last_four — a false merge proposal. The
+    institution+last4 rung is skipped when the slug is empty.
+    """
+    create_core_tables(db)
+    resolver = AccountResolver(db, actor="system")
+    first = resolver.resolve(_src(source_account_key="a", institution="@@@"))
+    _seed_dim_account(
+        db,
+        account_id=first.account_id,
+        last_four="4267",
+        institution_name="@@@",  # slugifies to ''
+    )
+    second = resolver.resolve(
+        _src(source_type="ofx", source_account_key="ofx-x", institution="###")
+    )
+    assert second.outcome == "minted_new"
+
+
+def test_mint_claims_full_number_strong_ref_for_later_adopt(db: Database) -> None:
+    """A minted account claims its scoped full_number so a later source adopts it.
+
+    Without claiming the strong ref on mint, a second source carrying the same
+    scoped full number mints a DUPLICATE instead of auto-adopting the same real
+    account (step 1 already proved no conflict, so the claim is safe).
+    """
+    create_core_tables(db)
+    resolver = AccountResolver(db, actor="system")
+    # First import mints (empty dim_accounts → no candidates) and must claim the
+    # scoped full_number strong ref.
+    first = resolver.resolve(
+        _src(
+            source_type="ofx",
+            source_origin="chase",
+            source_account_key="1111",
+            account_number="121000248:1111",
+            last_four=None,
+            institution=None,
+        )
+    )
+    assert first.is_new is True
+    assert first.outcome == "minted_new"
+    # A different source carrying the SAME scoped full_number auto-adopts.
+    second = resolver.resolve(
+        _src(
+            source_type="csv",
+            source_origin="chase-csv",
+            source_account_key="chk",
+            account_number="121000248:1111",
+            last_four=None,
+            institution=None,
+        )
+    )
+    assert second.account_id == first.account_id
+    assert second.is_new is False
+    assert second.outcome == "adopted_strong"
+
+
 def test_force_standalone_mints_despite_candidates(db: Database) -> None:
     """force_standalone declares a NEW account, skipping the merge-candidate pass."""
     create_core_tables(db)
@@ -486,3 +583,23 @@ def test_propose_existing_guards_catalog_exception(db: Database) -> None:
     # No create_core_tables call → dim_accounts absent → CatalogException guarded
     resolver = AccountResolver(db, actor="system")
     assert resolver.propose_existing("any_id") is None
+
+
+def test_resolve_rolls_back_partial_writes_on_failure(db: Database) -> None:
+    """resolve() is atomic per account: a mid-resolve failure rolls everything back.
+
+    _write_strong_ref runs after _write_native_mapping in every branch. Forcing
+    it to raise leaves the native mapping mid-flight; without a single enclosing
+    transaction the mapping would auto-commit and a later same-id import would
+    adopt a half-written account.
+    """
+    create_core_tables(db)
+    resolver = AccountResolver(db, actor="system")
+    with patch.object(
+        AccountResolver, "_write_strong_ref", side_effect=RuntimeError("boom")
+    ):
+        with pytest.raises(RuntimeError):
+            resolver.resolve(_src(account_number="121000248:1111"))
+
+    n = db.conn.execute("SELECT COUNT(*) FROM app.account_links").fetchone()
+    assert n is not None and n[0] == 0

@@ -476,6 +476,10 @@ def _apply_account_bindings(
     account, skip the merge-candidate pass); any other value is an existing
     canonical ``account_id`` to adopt (``explicit_account_id``). Unbound
     accounts pass through unchanged so the gate can still surface them.
+
+    Raises ``ValueError`` on an empty binding value — ``explicit_account_id=""``
+    is falsy and would silently fall through to a fresh mint as if no binding
+    were given, discarding the caller's intent ("magic stays visible").
     """
     if not bindings:
         return source_accounts
@@ -489,6 +493,14 @@ def _apply_account_bindings(
                 dataclasses.replace(
                     src, force_standalone=True, explicit_account_id=None
                 )
+            )
+        elif not target.strip():
+            # Reject whitespace-only too: CLI input is not stripped (_parse_kv
+            # keeps the raw value) and MCP passes JSON as-is, so a bare-spaces
+            # value would otherwise be truthy and bind a bogus account_id.
+            raise ValueError(
+                f"account_bindings for source key {src.source_account_key!r} "
+                'has an empty value; use an existing account_id or "new".'
             )
         else:
             bound.append(dataclasses.replace(src, explicit_account_id=target))
