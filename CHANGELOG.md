@@ -13,6 +13,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 M2 closing out and M3 underway. M2A curator state shipped (transaction notes, tags, splits, manual entry, audit log). M2B architecture reference shipped (`architecture-shared-primitives.md`; writer-coordination contract via short-lived per-call connections). M2C brand surface advancing: `moneybin system doctor` integrity command, `reports.*` recipe library (eight curated views), and the `transform_*` MCP toolset closing the agent ingest loop. M3A Plaid Transactions sync shipped (Phase 1). Doc surface tightened for the personas reachable today; MCP surface hardened with protocol-standard annotations, `accounts_resolve`, list-parameter cap, structured error envelopes, and shell completion. Categorization correctness pass: memo-aware matcher, exemplar accumulation, source-precedence enforcement, auto-fan-out after apply; seed merchant catalogs retired in favor of user-driven and LLM-assist-driven merchant creation.
 
 ### Added
+- **Import-time account-binding confirmation (M1S.4).** Tabular `import_confirm`
+  now surfaces the account resolver's verdict at import time. When an
+  interactive human imports a file whose source account resolves to weak merge
+  candidate(s) (`institution+last4` / name), the import returns
+  `confirmation_required` with `confirmation_payload.{reason="account_confirmation",
+  account_proposals[]}` instead of silently minting — the column layout is
+  settled, only the account identity needs ratifying. The caller binds each
+  proposed account via `account_bindings` (MCP) / `--account-binding
+  source_key=ACCOUNT_ID|new` (CLI): adopt an existing account, or `new` to mint
+  a distinct one. A `"new"` account can capture `display_name` / `account_subtype`
+  / `last_four` / `iso_currency_code` at mint via `account_metadata` (MCP) /
+  `--account-meta source_key:field=value` (CLI). Agent / non-interactive imports
+  never gate here — they load and leave the proposal in the account-link review
+  queue (`accounts_links_pending`). The `moneybin_account_link_review_pending`
+  gauge and `moneybin_account_link_confidence` histogram now emit.
 - **Account-link review queue (M1S.5).** New `accounts_links_pending` /
   `accounts_links_set` / `accounts_links_history` / `accounts_links_run` MCP
   tools and the `moneybin accounts links` CLI subgroup surface the cross-source

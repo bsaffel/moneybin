@@ -17,6 +17,10 @@ import duckdb
 
 from moneybin.database import Database
 from moneybin.extractors.tabular.account_matching import match_account
+from moneybin.metrics.registry import (
+    ACCOUNT_LINK_CONFIDENCE,
+    ACCOUNT_LINK_REVIEW_PENDING,
+)
 from moneybin.repositories.account_link_decisions_repo import AccountLinkDecisionsRepo
 from moneybin.repositories.account_links_repo import AccountLinksRepo
 from moneybin.services.account_resolution_types import (
@@ -25,9 +29,27 @@ from moneybin.services.account_resolution_types import (
     ResolvedAccount,
     SourceAccount,
 )
-from moneybin.tables import ACCOUNT_LINKS, DIM_ACCOUNTS
+from moneybin.tables import ACCOUNT_LINK_DECISIONS, ACCOUNT_LINKS, DIM_ACCOUNTS
 
 logger = logging.getLogger(__name__)
+
+
+def refresh_account_link_pending_gauge(db: Database) -> None:
+    """Set ACCOUNT_LINK_REVIEW_PENDING from the live review-queue depth.
+
+    Called at the two sites that change the count: the resolver's candidate
+    pass (adds proposals) and ``AccountLinksService.set`` (accept/reject clears
+    them). Keeps the gauge honest in both directions rather than only counting
+    up. Counts DISTINCT provisional accounts — the review *unit* is the
+    provisional, not the raw decision row — so the gauge matches
+    ``AccountLinksService.count_pending`` and the queue users actually see.
+    """
+    row = db.execute(
+        f"SELECT COUNT(DISTINCT provisional_account_id) "  # noqa: S608  # TableRef constant, no user input
+        f"FROM {ACCOUNT_LINK_DECISIONS.full_name} "
+        "WHERE status = 'pending' AND reversed_at IS NULL"
+    ).fetchone()
+    ACCOUNT_LINK_REVIEW_PENDING.set(int(row[0]) if row else 0)
 
 
 @dataclass(frozen=True)
@@ -83,6 +105,16 @@ class AccountResolver:
             return ResolvedAccount(
                 account_id=adopted, is_new=False, outcome="adopted_strong"
             )
+        # force_standalone: caller declared a NEW account. Mint + record refs but
+        # skip the candidate pass (no merge proposal). Placed after the strong-ref
+        # lookup so a re-import of the same source_native stays idempotent.
+        if src.force_standalone:
+            account_id = uuid.uuid4().hex[:12]
+            self._write_native_mapping(src, account_id=account_id, decided_by="user")
+            self._write_strong_ref(src, account_id=account_id, decided_by="user")
+            return ResolvedAccount(
+                account_id=account_id, is_new=True, outcome="minted_new"
+            )
         # Step 2 - candidate pass. Mint first (never orphaned), then propose.
         account_id = uuid.uuid4().hex[:12]
         self._write_native_mapping(src, account_id=account_id, decided_by="auto")
@@ -106,7 +138,9 @@ class AccountResolver:
                 actor=self._actor,
                 match_reason=cand.signal,
             )
+            ACCOUNT_LINK_CONFIDENCE.observe(cand.confidence)
             pending_ids.append(decision_id)
+        refresh_account_link_pending_gauge(self._db)
         return ResolvedAccount(
             account_id=account_id,
             is_new=True,
@@ -143,6 +177,16 @@ class AccountResolver:
                 proposed_account_id=adopted,
                 is_new=False,
                 adopted_via=kind,
+            )
+        # force_standalone: declared-new verdict, no candidate pass. adopted_via
+        # "explicit" so requires_confirm is False (the caller already decided).
+        # No preview id — resolve() mints the real one at commit time.
+        if src.force_standalone:
+            return AccountProposal(
+                source_account_key=src.source_account_key,
+                proposed_account_id=None,
+                is_new=True,
+                adopted_via="explicit",
             )
         # Step 2 - candidate pass. Mint a preview id (NOT written anywhere).
         preview_id = uuid.uuid4().hex[:12]

@@ -120,6 +120,8 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |     [--save-format/--no-save-format]  Pin merged mapping for silent reuse (default on)
 |   |     [--account-name NAME]      Required for single-account files
 |   |     [--account-id ID]          Explicit account ID bypass
+|   |     [--account-binding K=ID|new]  Ratify an account_confirmation (repeatable)
+|   |     [--account-meta K:field=value]  Metadata for a 'new' account (repeatable)
 |   |     [--output text|json]       JSON emits the standard ResponseEnvelope
 |   +-- history                    -- Show recent import batches
 |   +-- preview                    -- Detect format / column mapping without writing
