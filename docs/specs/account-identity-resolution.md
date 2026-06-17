@@ -345,8 +345,12 @@ signal reliability:
    `full_number`. Hit → **auto-adopt** that canonical id; record any new strong
    ref of this source as an accepted mapping. `decided_by='auto'`.
 2. **Candidate pass** (only if no strong hit). Mint a canonical account and write
-   its accepted `source_native` mapping (so it is in the dimension immediately),
-   then look for existing accounts sharing `institution + last4` (when institution
+   its accepted `source_native` mapping (so it is in the dimension immediately)
+   **plus an accepted strong ref for every scoped confirmer this source carries
+   (`persistent_token`, scoped `full_number`)** — safe because step 1 just proved
+   no existing account holds them, and it lets a later source bearing the same
+   token / scoped number auto-adopt via step 1 instead of minting a duplicate.
+   Then look for existing accounts sharing `institution + last4` (when institution
    is known), then fuzzy `account_name`, querying `core.dim_accounts`:
    - **0 candidates** → done: a new standalone account. Its `last_four` /
      institution / name (captured per Decision 7) become candidate signals for
@@ -361,7 +365,7 @@ signal reliability:
 |---|---|---|---|
 | Adopt (pinned) | explicit `account_id` | bind to the named canonical | accepted mapping (`decided_by=user`¹) |
 | Auto-adopt | remembered `source_native`, scoped full number, or persistent token | reuse existing canonical | accepted mapping (`auto`) |
-| Mint new | no candidate at all | new standalone canonical account | accepted mapping (`auto`) |
+| Mint new | no candidate at all | new standalone canonical account | accepted `source_native` + any scoped strong ref (`auto`) |
 | Propose / review | `institution+last4` or fuzzy name | new account + `pending` decision(s) | accepted mapping **plus** pending decision(s) |
 
 ¹ `decided_by` is `auto | user | system`; **agent ratification maps to `user`**
