@@ -140,7 +140,7 @@ def links_set(
 
 @app.command("history")
 def links_history(
-    limit: int = typer.Option(50, "--limit", "-n", help="Max records to show"),
+    limit: int = typer.Option(50, "--limit", "-n", min=0, help="Max records to show"),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
 ) -> None:

@@ -73,8 +73,16 @@ class AccountLinkDecisionsRepo(BaseRepo):
         )
 
     def fetch_by_id(self, decision_id: str) -> dict[str, Any] | None:
-        """Read one decoded decision row by id, or None when absent. Read-only."""
-        return self._fetch_row(decision_id)
+        """Read one decoded decision row by id, or None when absent. Read-only.
+
+        Returns None when the table does not yet exist (``CatalogException``
+        guard), matching ``count_pending``/``history`` so a fresh DB yields a
+        clean not-found rather than a raw catalog error.
+        """
+        try:
+            return self._fetch_row(decision_id)
+        except duckdb.CatalogException:
+            return None
 
     def insert(
         self,
@@ -210,21 +218,28 @@ class AccountLinkDecisionsRepo(BaseRepo):
         Returns ``status='pending'`` rows with ``reversed_at IS NULL``, decoded
         via ``_decode_row``, ordered ``provisional_account_id, decision_id`` so
         callers can group proposals by the provisional account under review.
+        Returns an empty list when the table does not yet exist
+        (``CatalogException`` guard), matching ``count_pending``/``history``.
         Read-only — no audit emitted.
         """
-        rows = self._db.execute(
-            f"SELECT {_COLS} FROM {ACCOUNT_LINK_DECISIONS.full_name} "  # noqa: S608  # constant column list + TableRef
-            "WHERE status = 'pending' AND reversed_at IS NULL "
-            "ORDER BY provisional_account_id, decision_id",
-        ).fetchall()
+        try:
+            rows = self._db.execute(
+                f"SELECT {_COLS} FROM {ACCOUNT_LINK_DECISIONS.full_name} "  # noqa: S608  # constant column list + TableRef
+                "WHERE status = 'pending' AND reversed_at IS NULL "
+                "ORDER BY provisional_account_id, decision_id",
+            ).fetchall()
+        except duckdb.CatalogException:
+            return []
         return [_decode_row(r) for r in rows]
 
     def history(self, *, limit: int = 50) -> list[dict[str, Any]]:
         """All decisions (any status) newest-first by ``decided_at``. Read-only.
 
         Returns an empty list when the table does not yet exist
-        (``CatalogException`` guard). No audit emitted.
+        (``CatalogException`` guard). A negative ``limit`` is clamped to 0 —
+        DuckDB rejects a negative LIMIT (``BinderException``). No audit emitted.
         """
+        limit = max(limit, 0)
         try:
             rows = self._db.execute(
                 f"SELECT {_COLS} FROM {ACCOUNT_LINK_DECISIONS.full_name} "  # noqa: S608  # constant column list + TableRef + parameterized limit

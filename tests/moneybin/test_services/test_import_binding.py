@@ -289,13 +289,16 @@ def test_account_bindings_rejects_unknown_source_key(
         db.close()
 
 
+@pytest.mark.parametrize("bad_value", ["", "   ", "\t"])
 def test_account_bindings_rejects_empty_value(
-    mock_secret_store: MagicMock, tmp_path: Path
+    mock_secret_store: MagicMock, tmp_path: Path, bad_value: str
 ) -> None:
-    """An empty binding value fails loud, not a silent fall-through to mint.
+    """An empty or whitespace-only binding value fails loud, not a silent mint.
 
-    `explicit_account_id=""` is falsy, so without the guard the resolver would
-    skip the explicit-adopt path and mint fresh as if no binding was given.
+    A falsy/whitespace `explicit_account_id` would otherwise skip the
+    explicit-adopt path and mint fresh as if no binding was given. CLI input is
+    not stripped (`_parse_kv` keeps the raw value) and MCP passes JSON as-is, so
+    the guard must reject whitespace-only too, not just the empty string.
     """
     db = _db(mock_secret_store, tmp_path)
     try:
@@ -307,7 +310,7 @@ def test_account_bindings_rejects_empty_value(
                 refresh=False,
                 confirm=True,
                 actor_kind="human",
-                account_bindings={"wf-checking": ""},
+                account_bindings={"wf-checking": bad_value},
             )
         n = db.execute("SELECT COUNT(*) FROM app.account_links").fetchone()
         assert n is not None and n[0] == 0

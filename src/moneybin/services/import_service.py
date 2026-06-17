@@ -494,7 +494,10 @@ def _apply_account_bindings(
                     src, force_standalone=True, explicit_account_id=None
                 )
             )
-        elif not target:
+        elif not target.strip():
+            # Reject whitespace-only too: CLI input is not stripped (_parse_kv
+            # keeps the raw value) and MCP passes JSON as-is, so a bare-spaces
+            # value would otherwise be truthy and bind a bogus account_id.
             raise ValueError(
                 f"account_bindings for source key {src.source_account_key!r} "
                 'has an empty value; use an existing account_id or "new".'

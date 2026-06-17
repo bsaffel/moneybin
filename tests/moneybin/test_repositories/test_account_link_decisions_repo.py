@@ -301,3 +301,31 @@ def test_history_respects_limit(db: Database) -> None:
         _insert(repo, decision_id=f"h_{i}", status="pending")
 
     assert len(repo.history(limit=2)) == 2
+
+
+def test_history_clamps_negative_limit(db: Database) -> None:
+    """A negative limit must not reach DuckDB (LIMIT/OFFSET cannot be negative)."""
+    repo = AccountLinkDecisionsRepo(db)
+    _insert(repo, decision_id="d1", status="pending")
+
+    # Must not raise duckdb.BinderException; clamps to an empty result.
+    assert repo.history(limit=-1) == []
+
+
+# -- missing-table resilience (CatalogException guard) --
+
+
+def test_list_pending_returns_empty_when_table_absent(db: Database) -> None:
+    """list_pending guards a missing table like count_pending/history do."""
+    db.conn.execute("DROP TABLE app.account_link_decisions")
+    repo = AccountLinkDecisionsRepo(db)
+
+    assert repo.list_pending() == []
+
+
+def test_fetch_by_id_returns_none_when_table_absent(db: Database) -> None:
+    """fetch_by_id returns None (clean not-found) rather than raising on a fresh DB."""
+    db.conn.execute("DROP TABLE app.account_link_decisions")
+    repo = AccountLinkDecisionsRepo(db)
+
+    assert repo.fetch_by_id("dec00000001") is None
