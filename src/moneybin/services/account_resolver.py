@@ -30,6 +30,7 @@ from moneybin.services.account_resolution_types import (
     SourceAccount,
 )
 from moneybin.tables import ACCOUNT_LINK_DECISIONS, ACCOUNT_LINKS, DIM_ACCOUNTS
+from moneybin.utils import slugify
 
 logger = logging.getLogger(__name__)
 
@@ -406,20 +407,26 @@ class AccountResolver:
         try:
             out: list[_Candidate] = []
             if src.last_four and src.institution:
+                # institution_name holds raw source text (OFX <ORG> "CHASE"),
+                # while src.institution may be a slug ("chase"). An exact SQL
+                # match never fires across that case/format gap, so fetch by the
+                # exact last_four and slugify-compare the institution in Python.
+                target_inst = slugify(src.institution)
                 rows = self._db.execute(
-                    f"SELECT account_id FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef + parameterized values
-                    "WHERE last_four = ? AND institution_name = ? AND account_id != ?",
-                    [src.last_four, src.institution, exclude_account_id],
+                    f"SELECT account_id, institution_name FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef + parameterized values
+                    "WHERE last_four = ? AND account_id != ?",
+                    [src.last_four, exclude_account_id],
                 ).fetchall()
                 # confidence is informational only — weak signals always go to review.
                 out.extend(
                     _Candidate(
                         account_id=str(r[0]),
                         signal="institution_last4",
-                        value=f"{src.institution}:{src.last_four}",
+                        value=f"{target_inst}:{src.last_four}",
                         confidence=0.5,
                     )
                     for r in rows
+                    if r[1] and slugify(str(r[1])) == target_inst
                 )
             if out:
                 return out

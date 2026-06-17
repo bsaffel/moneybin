@@ -255,6 +255,40 @@ def test_institution_last4_writes_pending_never_merges(db: Database) -> None:
     assert dec == (second.account_id, first.account_id, "pending")
 
 
+def test_institution_last4_matches_across_case(db: Database) -> None:
+    """institution+last4 fires when the stored ORG differs in case from the slug.
+
+    OFX stores institution_name as raw ``<ORG>`` (e.g. ``CHASE``); a later import
+    carries the slug (``chase``). An exact text match would never fire — both
+    must slugify-compare equal for the cross-source signal to surface.
+    """
+    create_core_tables(db)
+    resolver = AccountResolver(db, actor="system")
+    first = resolver.resolve(_src(source_account_key="chase-a", institution="chase"))
+    _seed_dim_account(
+        db,
+        account_id=first.account_id,
+        last_four="4267",
+        institution_name="CHASE",  # raw OFX <ORG>, uppercase
+    )
+    second = resolver.resolve(
+        _src(
+            source_type="ofx",
+            source_account_key="ofx-4267",
+            last_four="4267",
+            institution="chase",
+        )
+    )
+    assert second.outcome == "pending_review"
+    assert len(second.pending_decision_ids) == 1
+    dec = db.conn.execute(
+        "SELECT candidate_account_id, match_reason "
+        "FROM app.account_link_decisions WHERE decision_id = ?",
+        [second.pending_decision_ids[0]],
+    ).fetchone()
+    assert dec == (first.account_id, "institution_last4")
+
+
 def test_force_standalone_mints_despite_candidates(db: Database) -> None:
     """force_standalone declares a NEW account, skipping the merge-candidate pass."""
     create_core_tables(db)
