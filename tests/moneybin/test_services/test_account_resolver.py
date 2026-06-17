@@ -289,6 +289,45 @@ def test_institution_last4_matches_across_case(db: Database) -> None:
     assert dec == (first.account_id, "institution_last4")
 
 
+def test_mint_claims_full_number_strong_ref_for_later_adopt(db: Database) -> None:
+    """A minted account claims its scoped full_number so a later source adopts it.
+
+    Without claiming the strong ref on mint, a second source carrying the same
+    scoped full number mints a DUPLICATE instead of auto-adopting the same real
+    account (step 1 already proved no conflict, so the claim is safe).
+    """
+    create_core_tables(db)
+    resolver = AccountResolver(db, actor="system")
+    # First import mints (empty dim_accounts → no candidates) and must claim the
+    # scoped full_number strong ref.
+    first = resolver.resolve(
+        _src(
+            source_type="ofx",
+            source_origin="chase",
+            source_account_key="1111",
+            account_number="121000248:1111",
+            last_four=None,
+            institution=None,
+        )
+    )
+    assert first.is_new is True
+    assert first.outcome == "minted_new"
+    # A different source carrying the SAME scoped full_number auto-adopts.
+    second = resolver.resolve(
+        _src(
+            source_type="csv",
+            source_origin="chase-csv",
+            source_account_key="chk",
+            account_number="121000248:1111",
+            last_four=None,
+            institution=None,
+        )
+    )
+    assert second.account_id == first.account_id
+    assert second.is_new is False
+    assert second.outcome == "adopted_strong"
+
+
 def test_force_standalone_mints_despite_candidates(db: Database) -> None:
     """force_standalone declares a NEW account, skipping the merge-candidate pass."""
     create_core_tables(db)

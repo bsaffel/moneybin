@@ -119,6 +119,10 @@ class AccountResolver:
         # Step 2 - candidate pass. Mint first (never orphaned), then propose.
         account_id = uuid.uuid4().hex[:12]
         self._write_native_mapping(src, account_id=account_id, decided_by="auto")
+        # Claim the mint's strong refs (persistent_token / scoped full_number) so
+        # a later source carrying the same id auto-adopts (step 1) instead of
+        # minting a duplicate. Safe: step 1 above already proved no conflict.
+        self._write_strong_ref(src, account_id=account_id, decided_by="auto")
 
         candidates = self._find_candidates(src, exclude_account_id=account_id)
         if not candidates:
