@@ -18,6 +18,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Annotated, Any
 
 from moneybin.privacy.taxonomy import DataClass
+from moneybin.utils.parsing import signal_from_match_signals
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -224,10 +225,6 @@ class LinkHistoryRow:
     @classmethod
     def from_decision_row(cls, r: dict[str, Any]) -> LinkHistoryRow:
         """Map a decoded ``account_link_decisions`` row into the history payload."""
-        from moneybin.services.account_links_service import (  # noqa: PLC0415
-            signal_from_match_signals,
-        )
-
         return cls(
             decision_id=r["decision_id"],
             provisional_account_id=r["provisional_account_id"],

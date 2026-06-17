@@ -57,3 +57,18 @@ def coerce_to_decimal(v: Any) -> Decimal | None:
                 return None
         return Decimal(str(v))
     raise ValueError(f"Cannot convert {type(v)} to Decimal")
+
+
+def signal_from_match_signals(match_signals: Any) -> str:
+    """Extract the ``'signal'`` key from an already-decoded match_signals dict.
+
+    ``account_link_decisions`` rows store ``match_signals`` as JSON; the repo's
+    ``_decode_row`` returns it as a ``dict``. The ``Any`` annotation also covers
+    the raw read path. Uses try/except to avoid pyright's
+    ``dict[Unknown, Unknown]`` narrowing issue after ``isinstance`` checks on
+    ``Any``-typed inputs. Returns ``""`` when the key/shape is absent.
+    """
+    try:
+        return str(match_signals["signal"])
+    except (KeyError, TypeError):
+        return ""

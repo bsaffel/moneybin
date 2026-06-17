@@ -27,31 +27,23 @@ from moneybin.services.account_resolution_types import (
     PendingLinkGroup,
 )
 from moneybin.tables import ACCOUNT_LINK_DECISIONS, ACCOUNT_LINKS, DIM_ACCOUNTS
+from moneybin.utils.parsing import signal_from_match_signals
 
 logger = logging.getLogger(__name__)
-
-
-def signal_from_match_signals(match_signals: Any) -> str:
-    """Extract the 'signal' key from an already-decoded match_signals dict.
-
-    ``list_pending()`` returns ``match_signals`` as a decoded ``dict``; the
-    ``Any`` annotation covers the raw DB read path too (used by ``history``).
-    Uses try/except to avoid pyright's ``dict[Unknown, Unknown]`` narrowing
-    issue after ``isinstance`` checks on ``Any``-typed inputs.
-    """
-    try:
-        return str(match_signals["signal"])
-    except (KeyError, TypeError):
-        return ""
 
 
 def _resolve_display_name(db: Database, account_id: str) -> str:
     """Return ``display_name`` from ``core.dim_accounts``; empty string when absent.
 
-    Thin alias over the shared ``fetch_display_name`` (imported function-locally
-    to match the module's existing account_resolver import pattern).
+    Thin alias that localizes the sole ``account_resolver`` seam to one place
+    rather than scattering the import across both call sites.
     """
-    from moneybin.services.account_resolver import fetch_display_name  # noqa: PLC0415
+    # Function-local for the same reason as run() below: a module-level import
+    # of account_resolver cycles (AccountResolver <- AccountLinkDecisionsRepo
+    # <- AccountLinksService).
+    from moneybin.services.account_resolver import (  # noqa: PLC0415 — circular-import avoidance
+        fetch_display_name,
+    )
 
     return fetch_display_name(db, account_id)
 
