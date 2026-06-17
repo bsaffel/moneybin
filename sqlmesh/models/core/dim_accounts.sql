@@ -62,11 +62,12 @@ WITH ofx_accounts AS (
   FROM plaid_accounts
 ), ranked AS (
   /* grain_key: account_id is the CANONICAL opaque id when the account has an
-     accepted app.account_links row; it is NULL for accounts imported before the B7
-     backfill migration. COALESCE falls back to the source-native key so those
-     unlinked accounts stay DISTINCT instead of every NULL collapsing into one bad
-     row. Transient safety net: post-migration every account is linked, so the
-     COALESCE always takes the canonical id and this fallback is inert.
+     accepted app.account_links row; it is NULL for accounts not yet re-imported
+     through AccountResolver (pre-M1S.3 raw data). COALESCE falls back to the
+     source-native key so those unlinked accounts stay DISTINCT instead of every
+     NULL collapsing into one bad row. Safety net: the durable path is re-import,
+     not a migration — once all data is re-imported every account is linked, so
+     the COALESCE always takes the canonical id and this fallback is inert.
      source_rank: source strength for the golden-record merge (ofx > plaid >
      tabular, lower rank wins). Mirrors MatchingSettings.source_priority. */
   SELECT
