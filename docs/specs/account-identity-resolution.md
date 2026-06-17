@@ -261,7 +261,7 @@ state lives.
 decision_id            TEXT  PRIMARY KEY,  -- uuid4[:12]
 provisional_account_id TEXT  NOT NULL,     -- the just-minted source account under review
 candidate_account_id   TEXT  NOT NULL,     -- an existing canonical account proposed as the same
-confidence_score       DOUBLE,
+confidence_score       DECIMAL(5, 4),
 match_signals          TEXT,               -- JSON-encoded (per match_decisions convention):
                                            --   which weak signal matched + its value (institution_last4 / name)
 status                 TEXT  NOT NULL,     -- pending | accepted | rejected | reversed

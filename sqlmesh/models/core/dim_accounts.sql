@@ -68,8 +68,9 @@ WITH ofx_accounts AS (
      NULL collapsing into one bad row. Safety net: the durable path is re-import,
      not a migration — once all data is re-imported every account is linked, so
      the COALESCE always takes the canonical id and this fallback is inert.
-     source_rank: source strength for the golden-record merge (ofx > plaid >
-     tabular, lower rank wins). Mirrors MatchingSettings.source_priority. */
+     source_rank: bank-field authority ordering for the golden-record merge
+     (ofx > plaid > tabular, lower rank wins); manual/gsheet contribute no
+     structured bank fields. */
   SELECT
     *,
     COALESCE(account_id, source_account_key) AS grain_key,
