@@ -3,6 +3,11 @@
 import pytest
 
 from moneybin.extractors.confidence import Confidence
+from moneybin.services.account_resolution_types import (
+    AccountCandidate,
+    AccountProposal,
+    AccountProposalDict,
+)
 from moneybin.services.import_confirmation import (
     Accept,
     BridgePayload,
@@ -15,6 +20,23 @@ from moneybin.services.import_confirmation import (
     resolve_or_confirm,
     validate_partial_mapping,
 )
+
+
+def _account_proposal_dict() -> AccountProposalDict:
+    """One account proposal dict via the real serializer (guarantees the shape)."""
+    return AccountProposal(
+        source_account_key="wf-checking",
+        proposed_account_id="prov12345678",
+        is_new=True,
+        candidates=(
+            AccountCandidate(
+                account_id="cand87654321",
+                display_name="WF Checking",
+                confidence=0.5,
+                signal="institution_last4",
+            ),
+        ),
+    ).to_dict()
 
 
 class TestProposedMapping:
@@ -108,21 +130,7 @@ class TestConfirmationRequired:
             confidence=c,
             proposed=p,
             reason="account_confirmation",
-            account_proposals=[
-                {
-                    "source_account_key": "wf-checking",
-                    "proposed_account_id": "prov12345678",
-                    "is_new": True,
-                    "candidates": [
-                        {
-                            "account_id": "cand87654321",
-                            "display_name": "WF Checking",
-                            "confidence": 0.5,
-                            "signal": "institution_last4",
-                        }
-                    ],
-                }
-            ],
+            account_proposals=[_account_proposal_dict()],
         )
         assert out.reason == "account_confirmation"
         assert out.account_proposals[0]["source_account_key"] == "wf-checking"
@@ -140,23 +148,7 @@ class TestConfirmationPayloadDict:
             sample_values={},
             unmapped_columns=(),
         )
-        proposals: list[dict[str, object]] = [
-            {
-                "source_account_key": "wf-checking",
-                "proposed_account_id": "prov12345678",
-                "is_new": True,
-                "adopted_via": None,
-                "requires_confirm": True,
-                "candidates": [
-                    {
-                        "account_id": "cand87654321",
-                        "display_name": "WF Checking",
-                        "confidence": 0.5,
-                        "signal": "institution_last4",
-                    }
-                ],
-            }
-        ]
+        proposals = [_account_proposal_dict()]
         out = ConfirmationRequired(
             channel="tabular",
             confidence=c,

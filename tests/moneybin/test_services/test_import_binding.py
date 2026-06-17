@@ -64,9 +64,7 @@ def test_human_import_gates_on_weak_account_candidate(
         outcome = exc.value.outcome
         assert outcome.reason == "account_confirmation"
         cand_ids = [
-            c["account_id"]
-            for p in outcome.account_proposals
-            for c in p["candidates"]  # type: ignore[union-attr,index]
+            c["account_id"] for p in outcome.account_proposals for c in p["candidates"]
         ]
         assert "wf_existing01" in cand_ids
         # Gate raised before transform/load: no rows landed.
@@ -214,10 +212,10 @@ def test_new_binding_captures_account_metadata(
         db.close()
 
 
-def test_account_metadata_rejects_unknown_field(
+def test_account_metadata_rejects_unknown_field_before_any_write(
     mock_secret_store: MagicMock, tmp_path: Path
 ) -> None:
-    """A typo'd metadata key fails loud rather than silently dropping intent."""
+    """A typo'd metadata key fails up-front — no rows are written (no orphans)."""
     db = _db(mock_secret_store, tmp_path)
     try:
         svc = ImportService(db)
@@ -231,6 +229,38 @@ def test_account_metadata_rejects_unknown_field(
                 account_bindings={"wf-checking": "new"},
                 account_metadata={"wf-checking": {"subtype": "checking"}},
             )
+        # Validation runs before any DB write — no orphaned account_links, no
+        # raw rows, no settings.
+        for table in (
+            "app.account_links",
+            "raw.tabular_transactions",
+            "app.account_settings",
+        ):
+            n = db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()  # noqa: S608  # constant table name
+            assert n is not None and n[0] == 0, table
+    finally:
+        db.close()
+
+
+def test_account_metadata_rejects_invalid_value_before_any_write(
+    mock_secret_store: MagicMock, tmp_path: Path
+) -> None:
+    """A malformed value (bad last_four) also fails up-front, before any write."""
+    db = _db(mock_secret_store, tmp_path)
+    try:
+        svc = ImportService(db)
+        with pytest.raises(ValueError, match="last_four"):
+            svc.import_file(
+                _STANDARD_CSV,
+                account_name="WF Checking",
+                refresh=False,
+                confirm=True,
+                actor_kind="human",
+                account_bindings={"wf-checking": "new"},
+                account_metadata={"wf-checking": {"last_four": "42"}},
+            )
+        n = db.execute("SELECT COUNT(*) FROM app.account_links").fetchone()
+        assert n is not None and n[0] == 0
     finally:
         db.close()
 

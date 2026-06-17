@@ -180,10 +180,11 @@ class AccountResolver:
             )
         # force_standalone: declared-new verdict, no candidate pass. adopted_via
         # "explicit" so requires_confirm is False (the caller already decided).
+        # No preview id — resolve() mints the real one at commit time.
         if src.force_standalone:
             return AccountProposal(
                 source_account_key=src.source_account_key,
-                proposed_account_id=uuid.uuid4().hex[:12],
+                proposed_account_id=None,
                 is_new=True,
                 adopted_via="explicit",
             )

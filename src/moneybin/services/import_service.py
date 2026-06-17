@@ -39,7 +39,10 @@ from moneybin.metrics.registry import (
 from moneybin.repositories.imports_repo import ImportsRepo
 from moneybin.repositories.pdf_formats_repo import PdfFormatsRepo
 from moneybin.services._validators import validate_slug
-from moneybin.services.account_resolution_types import SourceAccount
+from moneybin.services.account_resolution_types import (
+    AccountProposalDict,
+    SourceAccount,
+)
 from moneybin.services.account_resolver import AccountResolver
 from moneybin.services.audit_service import AuditService
 from moneybin.services.import_confirmation import (
@@ -434,6 +437,36 @@ _NEW_ACCOUNT_META_KEYS = frozenset({
 })
 
 
+def _validate_account_metadata(metadata: dict[str, dict[str, str]] | None) -> None:
+    """Validate account_metadata field keys + values before any DB writes.
+
+    Runs up-front (before the Phase-3 resolve()/load writes) so an unknown key or
+    a malformed value fails fast. A mid-loop raise would leave the
+    ``app.account_links`` rows of already-resolved accounts orphaned with no
+    import batch to revert.
+    """
+    if not metadata:
+        return
+    from moneybin.services.account_service import AccountSettings
+
+    for meta in metadata.values():
+        unknown = set(meta) - _NEW_ACCOUNT_META_KEYS
+        if unknown:
+            raise ValueError(
+                f"Unknown account_metadata field(s): {sorted(unknown)}. "
+                f"Valid: {sorted(_NEW_ACCOUNT_META_KEYS)}."
+            )
+        # Construct AccountSettings to trigger its __post_init__ field
+        # validation (last_four 4-digits, display_name length, currency code).
+        AccountSettings(
+            account_id="_validate_",
+            display_name=meta.get("display_name"),
+            last_four=meta.get("last_four"),
+            account_subtype=meta.get("account_subtype"),
+            iso_currency_code=meta.get("iso_currency_code"),
+        )
+
+
 def _apply_account_bindings(
     source_accounts: list[SourceAccount], bindings: dict[str, str]
 ) -> list[SourceAccount]:
@@ -815,18 +848,12 @@ class ImportService:
     ) -> None:
         """Write user-supplied metadata for a freshly-minted account to settings.
 
-        Only the four import-time-capturable fields are accepted; an unknown key
-        fails loud rather than silently dropping the user's intent. The write
+        Field keys + values are validated up-front by ``_validate_account_metadata``
+        (before any writes), so this method assumes a clean ``meta``. The write
         lands in ``app.account_settings`` (audited, Invariant 10) for the minted
         id even before the account materializes in ``core.dim_accounts`` — the
         next transform's LEFT JOIN folds the values in (``dim_accounts.sql``).
         """
-        unknown = set(meta) - _NEW_ACCOUNT_META_KEYS
-        if unknown:
-            raise ValueError(
-                f"Unknown account_metadata field(s): {sorted(unknown)}. "
-                f"Valid: {sorted(_NEW_ACCOUNT_META_KEYS)}."
-            )
         from moneybin.repositories.account_settings_repo import AccountSettingsRepo
         from moneybin.services.account_service import AccountSettings
 
@@ -873,7 +900,7 @@ class ImportService:
         """
         if actor_kind != "human":
             return
-        proposals: list[dict[str, object]] = []
+        proposals: list[AccountProposalDict] = []
         for src in source_accounts:
             # A bound account (explicit_account_id / force_standalone) is already
             # decided; only ambiguous unbound accounts gate.
@@ -981,6 +1008,10 @@ class ImportService:
 
         result = ImportResult(file_path=str(file_path), file_type="tabular")
         _t0 = time.monotonic()
+
+        # Fail fast on bad account_metadata before any DB writes — a later raise
+        # mid-resolve would orphan account_links rows with no import batch.
+        _validate_account_metadata(account_metadata)
 
         # Load formats early so explicit --format can influence file reading
         builtin_formats = load_builtin_formats()
@@ -1343,7 +1374,10 @@ class ImportService:
             if resolved_account.outcome == "minted_new":
                 self._capture_new_account_metadata(resolved_account.account_id, meta)
             else:
-                logger.warning(
+                # Routine on the agent path (a binding adopted an existing
+                # account, or the account went to pending_review) — info, not a
+                # warning about an error.
+                logger.info(
                     "account_metadata ignored: account resolved to "
                     f"{resolved_account.outcome!r}, not a new mint."
                 )

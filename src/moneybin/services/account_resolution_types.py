@@ -3,6 +3,27 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TypedDict
+
+
+class AccountCandidateDict(TypedDict):
+    """Serialized shape of one ``AccountCandidate`` carried across the envelope."""
+
+    account_id: str
+    display_name: str
+    confidence: float
+    signal: str
+
+
+class AccountProposalDict(TypedDict):
+    """Serialized shape of one ``AccountProposal`` (``account_proposals`` entry)."""
+
+    source_account_key: str
+    proposed_account_id: str | None
+    is_new: bool
+    adopted_via: str | None
+    requires_confirm: bool
+    candidates: list[AccountCandidateDict]
 
 
 @dataclass(frozen=True)
@@ -27,20 +48,22 @@ class AccountProposal:
     """
 
     source_account_key: str
-    proposed_account_id: str
+    proposed_account_id: str | None
     is_new: bool
     candidates: tuple[AccountCandidate, ...] = ()
     adopted_via: str | None = (
         None  # "source_native"|"persistent_token"|"full_number"|"explicit"
     )
+    """``None`` for a declared-new (force_standalone) proposal — no preview id
+    exists; ``resolve()`` mints the real id at commit time."""
 
     @property
     def requires_confirm(self) -> bool:
         """True when the proposal must be shown to the user before import proceeds."""
         return bool(self.candidates) or (self.is_new and self.adopted_via is None)
 
-    def to_dict(self) -> dict[str, object]:
-        """Serialise to a plain dict for surface display.
+    def to_dict(self) -> AccountProposalDict:
+        """Serialise to a typed dict for surface display.
 
         Includes opaque ids, display_name, confidence, and signal.
         Never exposes ref_value or other PII-bearing fields.

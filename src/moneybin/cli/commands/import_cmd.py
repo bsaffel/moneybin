@@ -733,7 +733,8 @@ def import_confirm_command(
             "Ratify an account_confirmation (repeatable): "
             "--account-binding source_key=ACCOUNT_ID to adopt an existing "
             "account, or source_key=new to mint a distinct new account. "
-            "Keys come from confirmation_required account_proposals."
+            "Keys come from confirmation_required account_proposals. On retry, "
+            "re-supply ALL bindings — no partial state persists between calls."
         ),
     ),
     account_meta: list[str] = typer.Option(

@@ -805,6 +805,8 @@ def import_confirm(
             ``confirmation_payload.account_proposals[].source_account_key`` of a
             prior ``confirmation_required`` response. Use this for multi-account
             files; ``account_id``/``account_name`` cover the single-account case.
+            On retry, re-supply ALL bindings — the gate re-evaluates every
+            account and persists no partial state between calls.
         account_metadata: For accounts bound ``"new"``, a map of
             ``source_account_key`` -> ``{display_name, account_subtype,
             last_four, iso_currency_code}`` captured into the minted account's

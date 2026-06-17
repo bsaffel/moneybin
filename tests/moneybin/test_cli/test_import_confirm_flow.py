@@ -19,6 +19,11 @@ from typer.testing import CliRunner
 
 from moneybin.cli.commands.import_cmd import app
 from moneybin.extractors.confidence import Confidence
+from moneybin.services.account_resolution_types import (
+    AccountCandidate,
+    AccountProposal,
+    AccountProposalDict,
+)
 from moneybin.services.import_confirmation import (
     ConfirmationRequired,
     ImportConfirmationRequiredError,
@@ -27,6 +32,23 @@ from moneybin.services.import_confirmation import (
 from moneybin.services.import_service import ImportResult
 
 runner = CliRunner()
+
+
+def _account_proposal_dict(source_account_key: str) -> AccountProposalDict:
+    """One account proposal dict via the real serializer (guarantees the shape)."""
+    return AccountProposal(
+        source_account_key=source_account_key,
+        proposed_account_id="prov12345678",
+        is_new=True,
+        candidates=(
+            AccountCandidate(
+                account_id="cand87654321",
+                display_name="Checking",
+                confidence=0.5,
+                signal="name",
+            ),
+        ),
+    ).to_dict()
 
 
 def _make_import_result(**kwargs: Any) -> ImportResult:
@@ -200,7 +222,7 @@ class TestImportFilesConfirmFlow:
         call_kwargs = mock_import_file.call_args.kwargs
         assert call_kwargs["overrides"] == {"description": "Memo"}
 
-    def test_account_confirmation_envelope_carries_proposals(
+    def test_account_confirmation_envelope_carries_proposals_on_files(
         self,
         mock_db: MagicMock,
         mocker: Any,
@@ -220,21 +242,7 @@ class TestImportFilesConfirmFlow:
                 unmapped_columns=(),
             ),
             reason="account_confirmation",
-            account_proposals=[
-                {
-                    "source_account_key": "checking",
-                    "proposed_account_id": "prov12345678",
-                    "is_new": True,
-                    "candidates": [
-                        {
-                            "account_id": "cand87654321",
-                            "display_name": "Checking",
-                            "confidence": 0.5,
-                            "signal": "name",
-                        }
-                    ],
-                }
-            ],
+            account_proposals=[_account_proposal_dict("checking")],
         )
         mocker.patch(
             "moneybin.services.import_service.ImportService.import_file",
@@ -623,21 +631,7 @@ class TestImportConfirmCommand:
                 unmapped_columns=(),
             ),
             reason="account_confirmation",
-            account_proposals=[
-                {
-                    "source_account_key": "wf-checking",
-                    "proposed_account_id": "prov12345678",
-                    "is_new": True,
-                    "candidates": [
-                        {
-                            "account_id": "cand87654321",
-                            "display_name": "WF Checking",
-                            "confidence": 0.5,
-                            "signal": "institution_last4",
-                        }
-                    ],
-                }
-            ],
+            account_proposals=[_account_proposal_dict("wf-checking")],
         )
         mocker.patch(
             "moneybin.services.import_service.ImportService.import_file",

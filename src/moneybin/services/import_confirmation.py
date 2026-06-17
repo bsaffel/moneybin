@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from moneybin.extractors.confidence import Confidence
+from moneybin.services.account_resolution_types import AccountProposalDict
 
 Channel = Literal["tabular", "gsheet", "pdf"]
 ActorKind = Literal["human", "agent"]
@@ -108,7 +109,7 @@ class ConfirmationRequired:
     reason: ConfirmationReason
     samples: dict[str, list[str]] = field(default_factory=dict)
     error_message: str = ""
-    account_proposals: list[dict[str, object]] = field(default_factory=list)
+    account_proposals: list[AccountProposalDict] = field(default_factory=list)
 
 
 def confirmation_payload_dict(outcome: ConfirmationRequired) -> dict[str, object]:
