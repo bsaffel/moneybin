@@ -480,7 +480,6 @@ def import_files_command(
     except Exception as _exc:  # noqa: BLE001 — dispatch on type below
         from moneybin.services.import_confirmation import (  # noqa: PLC0415
             ImportConfirmationRequiredError,
-            ProposedMapping,
         )
 
         if isinstance(_exc, ImportConfirmationRequiredError):
@@ -493,30 +492,7 @@ def import_files_command(
             # to re-run with --confirm or --mapping instead.
             outcome = _exc.outcome
             file_path_str = str(file_paths[0]) if len(file_paths) == 1 else ""
-            proposed_mapping: dict[str, str] = (
-                outcome.proposed.field_mapping
-                if isinstance(outcome.proposed, ProposedMapping)
-                else {}
-            )
-            unmapped = (
-                list(outcome.proposed.unmapped_columns)
-                if isinstance(outcome.proposed, ProposedMapping)
-                else []
-            )
-            envelope_data: dict[str, Any] = {
-                "status": "confirmation_required",
-                "channel": outcome.channel,
-                "tier": outcome.confidence.tier,
-                "score": outcome.confidence.score,
-                "reason": outcome.reason,
-                "error_message": outcome.error_message,
-                "proposed_mapping": proposed_mapping,
-                "samples": outcome.samples,
-                "flagged": list(outcome.confidence.flagged),
-                "missing_required": list(outcome.confidence.missing_required),
-                "unmapped_columns": unmapped,
-                "account_proposals": list(outcome.account_proposals),
-            }
+            envelope_data = _confirmation_envelope_data(outcome)
             confirm_actions: list[str] = []
             if outcome.error_message:
                 confirm_actions.append(f"Validation failed: {outcome.error_message}")
@@ -635,6 +611,38 @@ def import_files_command(
     # Mirrors the fail-loud single-file path that raises on refresh() error.
     if data.get("transforms_error"):
         raise typer.Exit(1)
+
+
+def _confirmation_envelope_data(outcome: ConfirmationRequired) -> dict[str, Any]:
+    """Build the ``confirmation_required`` envelope ``data`` dict from an outcome.
+
+    Shared by ``import files`` and ``import confirm`` so the JSON shape cannot
+    drift between the two surfaces. The per-command ``actions[]`` hints differ
+    (files-level vs confirm-subcommand context) and stay in the callers.
+    """
+    from moneybin.services.import_confirmation import ProposedMapping  # noqa: PLC0415
+
+    proposed = outcome.proposed
+    if isinstance(proposed, ProposedMapping):
+        proposed_mapping: dict[str, str] = proposed.field_mapping
+        unmapped: list[str] = list(proposed.unmapped_columns)
+    else:
+        proposed_mapping = {}
+        unmapped = []
+    return {
+        "status": "confirmation_required",
+        "channel": outcome.channel,
+        "tier": outcome.confidence.tier,
+        "score": outcome.confidence.score,
+        "reason": outcome.reason,
+        "error_message": outcome.error_message,
+        "proposed_mapping": proposed_mapping,
+        "samples": outcome.samples,
+        "flagged": list(outcome.confidence.flagged),
+        "missing_required": list(outcome.confidence.missing_required),
+        "unmapped_columns": unmapped,
+        "account_proposals": list(outcome.account_proposals),
+    }
 
 
 def _echo_account_proposals(outcome: ConfirmationRequired, *, err: bool) -> None:
@@ -828,7 +836,6 @@ def import_confirm_command(
 
     from moneybin.services.import_confirmation import (
         ImportConfirmationRequiredError,
-        ProposedMapping,
     )
 
     try:
@@ -857,30 +864,7 @@ def import_confirm_command(
         # a structured payload instead of an unparseable stderr message.
         # Exit code stays 1: the confirm action did not succeed.
         outcome = e.outcome
-        proposed_mapping_dict = (
-            outcome.proposed.field_mapping
-            if isinstance(outcome.proposed, ProposedMapping)
-            else {}
-        )
-        unmapped = (
-            list(outcome.proposed.unmapped_columns)
-            if isinstance(outcome.proposed, ProposedMapping)
-            else []
-        )
-        envelope_data: dict[str, Any] = {
-            "status": "confirmation_required",
-            "channel": outcome.channel,
-            "tier": outcome.confidence.tier,
-            "score": outcome.confidence.score,
-            "reason": outcome.reason,
-            "error_message": outcome.error_message,
-            "proposed_mapping": proposed_mapping_dict,
-            "samples": outcome.samples,
-            "flagged": list(outcome.confidence.flagged),
-            "missing_required": list(outcome.confidence.missing_required),
-            "unmapped_columns": unmapped,
-            "account_proposals": list(outcome.account_proposals),
-        }
+        envelope_data = _confirmation_envelope_data(outcome)
         confirm_actions: list[str] = []
         if outcome.error_message:
             confirm_actions.append(f"Validation failed: {outcome.error_message}")
