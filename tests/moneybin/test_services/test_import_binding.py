@@ -289,6 +289,32 @@ def test_account_bindings_rejects_unknown_source_key(
         db.close()
 
 
+def test_account_bindings_rejects_empty_value(
+    mock_secret_store: MagicMock, tmp_path: Path
+) -> None:
+    """An empty binding value fails loud, not a silent fall-through to mint.
+
+    `explicit_account_id=""` is falsy, so without the guard the resolver would
+    skip the explicit-adopt path and mint fresh as if no binding was given.
+    """
+    db = _db(mock_secret_store, tmp_path)
+    try:
+        svc = ImportService(db)
+        with pytest.raises(ValueError, match="empty value"):
+            svc.import_file(
+                _STANDARD_CSV,
+                account_name="WF Checking",
+                refresh=False,
+                confirm=True,
+                actor_kind="human",
+                account_bindings={"wf-checking": ""},
+            )
+        n = db.execute("SELECT COUNT(*) FROM app.account_links").fetchone()
+        assert n is not None and n[0] == 0
+    finally:
+        db.close()
+
+
 def test_metadata_not_captured_for_pending_provisional(
     mock_secret_store: MagicMock, tmp_path: Path
 ) -> None:
