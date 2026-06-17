@@ -59,37 +59,34 @@ app.add_typer(import_labels.app, name="labels", help="Manage labels on imports")
 logger = logging.getLogger(__name__)
 
 
-def _parse_overrides(override: list[str] | None) -> dict[str, str] | None:
-    """Parse and validate --override field=column values."""
-    if not override:
+def _parse_kv(
+    values: list[str] | None, *, flag: str, fmt: str
+) -> dict[str, str] | None:
+    """Parse repeatable ``KEY=VALUE`` CLI options into a stripped dict.
+
+    ``flag`` and ``fmt`` shape only the error message (e.g. ``flag="--override"``,
+    ``fmt="field=column"``). Returns ``None`` for empty input.
+    """
+    if not values:
         return None
     result: dict[str, str] = {}
-    for raw in override:
+    for raw in values:
         if "=" not in raw:
-            logger.error(
-                f"❌ Invalid --override format (expected field=column): {raw!r}"
-            )
+            logger.error(f"❌ Invalid {flag} format (expected {fmt}): {raw!r}")
             raise typer.Exit(1)
-        field, _, col = raw.partition("=")
-        result[field.strip()] = col.strip()
+        key, _, value = raw.partition("=")
+        result[key.strip()] = value.strip()
     return result
+
+
+def _parse_overrides(override: list[str] | None) -> dict[str, str] | None:
+    """Parse and validate --override field=column values."""
+    return _parse_kv(override, flag="--override", fmt="field=column")
 
 
 def _parse_account_bindings(binding: list[str] | None) -> dict[str, str] | None:
     """Parse --account-binding source_key=ACCOUNT_ID|new values."""
-    if not binding:
-        return None
-    result: dict[str, str] = {}
-    for raw in binding:
-        if "=" not in raw:
-            logger.error(
-                "❌ Invalid --account-binding format "
-                f"(expected source_key=ACCOUNT_ID|new): {raw!r}"
-            )
-            raise typer.Exit(1)
-        key, _, target = raw.partition("=")
-        result[key.strip()] = target.strip()
-    return result
+    return _parse_kv(binding, flag="--account-binding", fmt="source_key=ACCOUNT_ID|new")
 
 
 def _parse_account_metadata(
