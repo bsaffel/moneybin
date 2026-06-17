@@ -617,32 +617,18 @@ def _confirmation_envelope_data(outcome: ConfirmationRequired) -> dict[str, Any]
     """Build the ``confirmation_required`` envelope ``data`` dict from an outcome.
 
     Shared by ``import files`` and ``import confirm`` so the JSON shape cannot
-    drift between the two surfaces. The per-command ``actions[]`` hints differ
-    (files-level vs confirm-subcommand context) and stay in the callers.
+    drift between the two surfaces. Delegates to the canonical
+    ``confirmation_payload_dict`` — the single source MCP and the batch service
+    also use — so a new channel field (e.g. ``bridge_payload``) lands in one
+    place; this wrapper only prepends the CLI-envelope ``status`` field. The
+    per-command ``actions[]`` hints differ (files-level vs confirm-subcommand
+    context) and stay in the callers.
     """
-    from moneybin.services.import_confirmation import ProposedMapping  # noqa: PLC0415
+    from moneybin.services.import_confirmation import (  # noqa: PLC0415 — defer import to keep CLI cold-start light
+        confirmation_payload_dict,
+    )
 
-    proposed = outcome.proposed
-    if isinstance(proposed, ProposedMapping):
-        proposed_mapping: dict[str, str] = proposed.field_mapping
-        unmapped: list[str] = list(proposed.unmapped_columns)
-    else:
-        proposed_mapping = {}
-        unmapped = []
-    return {
-        "status": "confirmation_required",
-        "channel": outcome.channel,
-        "tier": outcome.confidence.tier,
-        "score": outcome.confidence.score,
-        "reason": outcome.reason,
-        "error_message": outcome.error_message,
-        "proposed_mapping": proposed_mapping,
-        "samples": outcome.samples,
-        "flagged": list(outcome.confidence.flagged),
-        "missing_required": list(outcome.confidence.missing_required),
-        "unmapped_columns": unmapped,
-        "account_proposals": list(outcome.account_proposals),
-    }
+    return {"status": "confirmation_required", **confirmation_payload_dict(outcome)}
 
 
 def _echo_account_proposals(outcome: ConfirmationRequired, *, err: bool) -> None:
