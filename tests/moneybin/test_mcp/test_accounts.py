@@ -86,10 +86,14 @@ class TestAccountsResolve:
     """Tests for the accounts_resolve MCP tool envelope and action hints."""
 
     @pytest.mark.unit
-    async def test_envelope_shape_returns_critical_sensitivity(
+    async def test_envelope_shape_returns_medium_sensitivity(
         self, mcp_db: Path
     ) -> None:
-        """accounts_resolve returns CRITICAL sensitivity (account_id is ACCOUNT_IDENTIFIER)."""
+        """accounts_resolve returns MEDIUM sensitivity (display_name is USER_NOTE).
+
+        account_id is RECORD_ID (spec D6) — no longer CRITICAL; the highest
+        class in AccountResolutionItem is USER_NOTE (display_name) → MEDIUM.
+        """
         _seed_named_account(
             "a1",
             display_name="Chase Checking",
@@ -98,15 +102,14 @@ class TestAccountsResolve:
         )
         result = await accounts_resolve(query="chase")
         parsed = result.to_dict()
-        # ACCOUNT_IDENTIFIER → Tier.CRITICAL per privacy taxonomy
-        assert parsed["summary"]["sensitivity"] == "critical"
+        # USER_NOTE (display_name) → Tier.MEDIUM per privacy taxonomy
+        assert parsed["summary"]["sensitivity"] == "medium"
         # data is now {"matches": [...]} from AccountResolvePayload serialization
         assert isinstance(parsed["data"], dict)
         matches = parsed["data"]["matches"]
         assert len(matches) >= 1
-        # account_id is ACCOUNT_IDENTIFIER → masked by redact_typed.
-        # "a1" is only 2 chars, so the entire value is masked → "****"
-        assert matches[0]["account_id"] == "****"
+        # account_id is RECORD_ID (spec D6) — passes through unmasked.
+        assert matches[0]["account_id"] == "a1"
         # Data shape matches AccountResolutionItem fields
         assert "confidence" in matches[0]
         assert "display_name" in matches[0]
@@ -198,7 +201,8 @@ class TestAccountsSetExtended:
             include_in_net_worth=False,
         )
         parsed = result.to_dict()
-        # AccountSettingsPayload has account_id: ACCOUNT_IDENTIFIER → CRITICAL
+        # AccountSettingsPayload is CRITICAL via last_four (INSTITUTION_ACCOUNT_NUMBER);
+        # account_id is RECORD_ID (spec D6).
         assert parsed["summary"]["sensitivity"] == "critical"
         assert parsed["data"]["display_name"] == "My Custom Name"
         assert parsed["data"]["include_in_net_worth"] is False

@@ -104,3 +104,17 @@ def test_ai_config_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = MoneyBinSettings()
     assert settings.ai.default_backend == "anthropic"
     assert settings.ai.consent_policy == "strict"
+
+
+def test_source_priority_ranks_ofx_above_tabular_family() -> None:
+    """RD-1: ofx must outrank the tabular family.
+
+    So D4 COALESCE can't let a later CSV null an OFX account's routing_number.
+    """
+    from moneybin.config import MatchingSettings
+
+    order = MatchingSettings().source_priority
+    assert order.index("ofx") < order.index("csv")
+    assert order.index("ofx") < order.index("plaid")
+    assert order.index("manual") < order.index("ofx")
+    assert order.index("gsheet") < order.index("ofx")

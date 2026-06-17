@@ -34,39 +34,47 @@ WITH ranked AS (
     deleted_from_source_at,
     ROW_NUMBER() OVER (PARTITION BY transaction_id, account_id ORDER BY loaded_at DESC) AS _row_num
   FROM raw.tabular_transactions
-  -- Exclude soft-deleted rows BEFORE ranking. Otherwise a soft-deleted row
-  -- with a newer loaded_at ranks #1 and is then dropped by the outer filter,
-  -- while a valid same-key row at #2 is also excluded — silently losing the
-  -- transaction. Filtering pre-rank lets the valid row take #1.
-  WHERE deleted_from_source_at IS NULL
+  /* Exclude soft-deleted rows BEFORE ranking: a soft-deleted row with a newer
+     loaded_at would rank #1 and then be dropped by the outer filter, while a valid
+     same-key row at #2 is also excluded — silently losing the transaction.
+     Filtering pre-rank lets the valid row take #1. */
+  WHERE
+    deleted_from_source_at IS NULL
 )
 SELECT
-  transaction_id, /* Deterministic ID: source-provided or SHA-256 hash */
-  account_id, /* Source-system account identifier */
-  transaction_date, /* Parsed date from source */
-  post_date, /* Settlement date when available */
-  amount, /* Normalized: negative = expense, positive = income */
-  original_amount, /* Raw amount string for audit */
-  original_date_str, /* Raw date string for audit */
-  description, /* Trimmed transaction description */
-  memo, /* Trimmed supplementary details */
-  category, /* Source-provided category (for migration bootstrap) */
-  subcategory, /* Source-provided subcategory */
-  transaction_type, /* Source-provided type code */
-  status, /* Source-provided status */
-  check_number, /* Check number when applicable */
-  source_transaction_id, /* Institution-assigned unique ID */
-  reference_number, /* Institution reference number */
-  balance, /* Running balance after this transaction */
-  currency, /* ISO 4217 currency code */
-  member_name, /* Account holder name */
-  source_file, /* Path to source file */
-  source_type, /* Import pathway: csv, tsv, excel, parquet, feather, pipe, pdf */
-  source_origin, /* Institution/format that produced this data */
-  import_id, /* UUID linking to import batch */
-  row_number, /* 1-based source file row number */
-  extracted_at, /* When data was parsed from source */
-  loaded_at /* When record was loaded into database */
+  COALESCE(links.account_id, ranked.account_id) AS account_id, /* canonical via the import-time resolver link; source-native only if unresolved */
+  ranked.account_id AS source_account_key,
+  ranked.transaction_id,
+  ranked.transaction_date,
+  ranked.post_date,
+  ranked.amount,
+  ranked.original_amount,
+  ranked.original_date_str,
+  ranked.description,
+  ranked.memo,
+  ranked.category,
+  ranked.subcategory,
+  ranked.transaction_type,
+  ranked.status,
+  ranked.check_number,
+  ranked.source_transaction_id,
+  ranked.reference_number,
+  ranked.balance,
+  ranked.currency,
+  ranked.member_name,
+  ranked.source_file,
+  ranked.source_type,
+  ranked.source_origin,
+  ranked.import_id,
+  ranked.row_number,
+  ranked.extracted_at,
+  ranked.loaded_at
 FROM ranked
+LEFT JOIN app.account_links AS links
+  ON links.status = 'accepted'
+  AND links.ref_kind = 'source_native'
+  AND links.source_type = ranked.source_type
+  AND links.source_origin = ranked.source_origin
+  AND links.ref_value = ranked.account_id
 WHERE
-  _row_num = 1
+  ranked._row_num = 1

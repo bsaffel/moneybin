@@ -109,6 +109,12 @@ not-yet-built.
 | 46| Confirm a proposed import column mapping                          | `import_confirm` *(`file_path`, `accept=True`, `mapping={...}`)* | `import confirm <file> --accept` / `--mapping field=column` | —          | live                  |
 | 47| List available import formats (tabular + PDF) for selection / introspection | `import_formats` *(returns `formats` + `pdf_formats` arrays)* | `import formats list [--type tabular\|pdf\|all]` *(text or JSON; agent can also `import formats show <name>` for either kind)* | —          | live                  |
 | 48| Import a native-text PDF an agent must help extract (bridge round-trip) | `import_preview`/`import_files` *(return `confirmation_required` with a `bridge_payload` when the deterministic rung can't crack the layout)* → `import_confirm` *(`bridge_response={recipe, rows}`; re-runs the recipe, reconciles, persists, loads)* | *deferred — the CLI keeps the seed fallback until the agent-aware CLI escalation signal lands* | —          | live (MCP)            |
+| 49| List pending account-link decisions grouped by provisional account | `accounts_links_pending` | `accounts links pending` | — | live |
+| 50| Accept (merge) or standalone-reject one pending account-link decision | `accounts_links_set` *(`decision_id`, `target_account_id: str\|null` — no default; null = standalone-reject)* | `accounts links set <decision_id> --into <account_id>` (merge) / `--standalone` (reject) | — | live |
+| 51| Show recent account-link decisions (all statuses) | `accounts_links_history` *(`limit=50`)* | `accounts links history` *(`--limit`, `--output json`)* | — | live |
+| 52| Backfill pending account-link proposals for existing accounts (cross-source twin discovery) | `accounts_links_run` *(returns `data.new_proposals`)* | `accounts links run` *(`--output json`)* | — | live |
+| 53| "What needs my attention?" — pending counts across all three review queues in one sweep | `review` *(returns `{matches_pending, categorize_pending, account_links_pending, total}`)* | `moneybin review --status` *(`--type`, `--output json`)* | — | live |
+| 54| Confirm account identity at import time (which account is this file?) | `import_confirm` *(`account_bindings={source_key: account_id\|"new"}` ratifies an `account_confirmation`; `account_metadata` captures display_name/subtype/last_four/currency for `"new"` accounts; interactive-human imports gate on weak candidates, agents load + queue)* | `import confirm <file> --account-binding source_key=ACCOUNT_ID\|new [--account-meta source_key:field=value]` | — | live |
 
 *(Bootstrap rows only; full table populates incrementally as
 follow-up work closes the parity backlog. A prior row covering
@@ -149,7 +155,21 @@ agent (`import_preview`/`import_files` return a `bridge_payload`), and
 re-executed rows against the statement balances, persists the recipe, and loads
 the transactions. MCP-only for now — escalation is gated on the agent caller
 (`actor_kind="agent"`); the CLI keeps the Phase 2a seed fallback until its
-agent-aware escalation signal lands as follow-up work.)*
+agent-aware escalation signal lands as follow-up work.
+Rows 49–51 added 2026-06-15 with the account-binding review-surface PR (M1S.5a):
+`accounts_links_pending`, `accounts_links_set`, and `accounts_links_history` MCP tools
+registered; `accounts links {pending,set,history}` CLI commands wired. Sensitivity `low`
+throughout — opaque IDs + display names + signal/confidence only; `ref_value` never
+surfaced.
+Row 52 added 2026-06-16 with the accounts-links-run backfill PR (M1S.5b):
+`accounts_links_run` (MCP) and `accounts links run` (CLI) registered. Backfills pending
+proposals for cross-source twins already in `core.dim_accounts`; skips pairs already
+proposed or decided in either direction. Undo deliberately deferred to M1L.
+Row 53 added 2026-06-16 with the review-promotion PR (M1S.5c):
+`review` (MCP) and `moneybin review` (CLI) replace `transactions_review` /
+`moneybin transactions review` as the domain-neutral orientation sweep. Payload gains
+`account_links_pending` so one call covers all three queues. Old names kept as
+deprecated aliases for one minor release; descriptions start with "DEPRECATED:".)*
 
 ## Exemption categories
 

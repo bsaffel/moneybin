@@ -502,6 +502,7 @@ class MatchingSettings(BaseModel):
         default=[
             "manual",
             "gsheet",
+            "ofx",
             "plaid",
             "csv",
             "excel",
@@ -509,7 +510,6 @@ class MatchingSettings(BaseModel):
             "parquet",
             "feather",
             "pipe",
-            "ofx",
         ],
         description="Source types in priority order (first = highest priority)",
     )

@@ -21,8 +21,9 @@ async def test_transactions_get_returns_envelope(mcp_db: object) -> None:
     assert "summary" in d
     assert "data" in d
     assert "actions" in d
-    # TransactionGetPayload → TransactionRow has account_id: ACCOUNT_IDENTIFIER → CRITICAL
-    assert d["summary"]["sensitivity"] == "critical"
+    # TransactionGetPayload → TransactionRow amount is TXN_AMOUNT → HIGH
+    # (account_id is RECORD_ID per spec D6, no longer the driver).
+    assert d["summary"]["sensitivity"] == "high"
 
 
 @pytest.mark.unit

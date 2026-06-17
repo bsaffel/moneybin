@@ -13,6 +13,7 @@ LISTAGG), so it runs identically inside a plain DuckDB connection.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Generator
 from datetime import date
@@ -43,6 +44,7 @@ _UNIONED_STUB_DDL = """\
 CREATE TABLE IF NOT EXISTS prep.int_transactions__unioned (
     source_transaction_id VARCHAR NOT NULL,
     account_id            VARCHAR NOT NULL,
+    source_account_key    VARCHAR,
     transaction_date      DATE,
     authorized_date       DATE,
     amount                DECIMAL(18, 2),
@@ -130,30 +132,57 @@ def _insert_unioned_row(
     source_transaction_id: str,
     source_type: str,
     account_id: str,
+    source_account_key: str | None = None,
+    source_origin: str = "bank",
     txn_date: date = date(2024, 3, 15),
     amount: str = "-52.30",
 ) -> None:
-    """Insert a minimal row into the prep.int_transactions__unioned stub."""
+    """Insert a minimal row into the prep.int_transactions__unioned stub.
+
+    ``source_account_key`` is the immutable source-native account key that the
+    RD-2 transaction_id hash is built from; it defaults to ``account_id`` so each
+    distinct account gets a distinct key (the realistic case), but tests probing
+    account_id-independence override it to hold the source identity fixed.
+    """
     db.execute(
         """
         INSERT INTO prep.int_transactions__unioned (
-            source_transaction_id, account_id, transaction_date, amount,
-            description, currency_code, source_type, source_origin,
-            is_pending
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            source_transaction_id, account_id, source_account_key,
+            transaction_date, amount, description, currency_code,
+            source_type, source_origin, is_pending
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,  # noqa: S608  # test input, not executing user SQL
         [
             source_transaction_id,
             account_id,
+            source_account_key if source_account_key is not None else account_id,
             txn_date,
             amount,
             "Test transaction",
             "USD",
             source_type,
-            "bank",
+            source_origin,
             False,
         ],
     )
+
+
+def _source_identity_hash(
+    *,
+    source_type: str,
+    source_origin: str,
+    source_account_key: str,
+    source_transaction_id: str,
+) -> str:
+    """Independently derive the RD-2 transaction_id from the immutable source tuple.
+
+    Mirrors the model's ``SUBSTRING(SHA256(source_type || '|' || source_origin ||
+    '|' || source_account_key || '|' || source_transaction_id), 1, 16)``. Derived
+    here from first principles (hashlib over the documented input), never observed
+    from the model's output, per testing.md.
+    """
+    raw = f"{source_type}|{source_origin}|{source_account_key}|{source_transaction_id}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
 # ---------------------------------------------------------------------------
@@ -455,3 +484,117 @@ class TestIntTransactionsMatchedModel:
         assert rows[0][0] == Decimal("0.8000"), (
             f"Expected weakest-link confidence 0.8000, got {rows[0][0]}"
         )
+
+    def test_unmatched_transaction_id_is_source_identity_hash_not_account_id(
+        self, matched_db: Database
+    ) -> None:
+        """RD-2: an unmatched row's transaction_id is independent of account_id.
+
+        The id hashes the immutable source identity
+        (source_type|source_origin|source_account_key|source_transaction_id) only.
+        Two rows share one source identity but carry different account_ids — the
+        artificial case that isolates the hash inputs. They must produce the SAME
+        transaction_id, equal to the independently-derived source-identity hash.
+        Re-minting account_id (M1S) therefore never re-keys a transaction.
+        """
+        sak = "src-acct-key-77"
+        origin = "first_bank"
+        stid = "ofx_fitid_00112233"
+        expected = _source_identity_hash(
+            source_type="ofx",
+            source_origin=origin,
+            source_account_key=sak,
+            source_transaction_id=stid,
+        )
+
+        # Same source identity, two different canonical account_ids.
+        for acct in ("acct_before_remint", "acct_after_remint"):
+            _insert_unioned_row(
+                matched_db,
+                source_transaction_id=stid,
+                source_type="ofx",
+                account_id=acct,
+                source_account_key=sak,
+                source_origin=origin,
+            )
+
+        rows = matched_db.execute(
+            "SELECT account_id, transaction_id "
+            "FROM prep.int_transactions__matched "
+            "WHERE source_transaction_id = ? ORDER BY account_id",
+            [stid],
+        ).fetchall()
+
+        assert len(rows) == 2
+        ids = {r[1] for r in rows}
+        assert ids == {expected}, (
+            f"Expected both rows to hash to {expected!r} regardless of account_id, "
+            f"got {rows!r}"
+        )
+
+    def test_matched_group_transaction_id_anchors_on_native_source(
+        self, matched_db: Database
+    ) -> None:
+        """RD-2: a merged group's transaction_id is the hash of its ANCHOR member.
+
+        Anchor = argmin over (stability_rank, loaded_at, source_type, ...). An OFX
+        member (stability_rank 0, native) outranks a CSV member (rank 2, content
+        hash), so the group key derives from the OFX member's source identity —
+        not the CSV member's, and not a whole-set hash including account_id.
+        """
+        acct = "acct_anchor"
+        sak = "anchor-src-key-01"
+        origin = "anchor_bank"
+        ofx_stid = "ofx_zzzzzzzzzzzzzzzz"  # lexically large: would lose a tiebreak
+        csv_stid = "csv_aaaaaaaaaaaaaaaa"  # lexically small: wins only on rank
+        _insert_unioned_row(
+            matched_db,
+            source_transaction_id=ofx_stid,
+            source_type="ofx",
+            account_id=acct,
+            source_account_key=sak,
+            source_origin=origin,
+        )
+        _insert_unioned_row(
+            matched_db,
+            source_transaction_id=csv_stid,
+            source_type="csv",
+            account_id=acct,
+            source_account_key=sak,
+            source_origin=origin,
+        )
+        _insert_match(
+            matched_db,
+            match_id="match_anchor_0001",
+            stid_a=csv_stid,
+            st_a="csv",
+            stid_b=ofx_stid,
+            st_b="ofx",
+            account_id=acct,
+        )
+
+        ofx_hash = _source_identity_hash(
+            source_type="ofx",
+            source_origin=origin,
+            source_account_key=sak,
+            source_transaction_id=ofx_stid,
+        )
+        csv_hash = _source_identity_hash(
+            source_type="csv",
+            source_origin=origin,
+            source_account_key=sak,
+            source_transaction_id=csv_stid,
+        )
+
+        rows = matched_db.execute(
+            "SELECT DISTINCT transaction_id "
+            "FROM prep.int_transactions__matched "
+            "WHERE account_id = ? AND match_group_id IS NOT NULL",
+            [acct],
+        ).fetchall()
+
+        assert len(rows) == 1, f"Expected one gold key for the group, got {rows!r}"
+        assert rows[0][0] == ofx_hash, (
+            f"Group key should anchor on the OFX member ({ofx_hash!r}), got {rows[0][0]!r}"
+        )
+        assert rows[0][0] != csv_hash, "Group key must not derive from the CSV member"

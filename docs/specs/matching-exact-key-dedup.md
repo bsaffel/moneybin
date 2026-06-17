@@ -5,6 +5,7 @@
 > Address: M1B (matching engine refinement)
 > Parent: [`matching-same-record-dedup.md`](matching-same-record-dedup.md) (cross-source dedup, pillar A)
 > Refines: [`matching-nway-dedup.md`](matching-nway-dedup.md) — adds a cardinality guard to its Requirement 2 edge-add rule, and supersedes its "No change to scoring" out-of-scope note for the cross-source tier
+> Inert on real cross-source data until: [`account-identity-resolution.md`](account-identity-resolution.md) (M1S) — see [§Prerequisite](#prerequisite-shared-account_id-m1s)
 
 ## Goal
 
@@ -29,6 +30,20 @@ differently from CSV (OFX `description` is truncated; the rest lands in the
 unscored `memo`), so cross-format `S` is well below 0.92 — exact duplicates
 **never auto-merged**. Verified live: importing 5 WF `.csv` files (twins of 5
 already-loaded `.qfx`) produced **558** core rows instead of **279**.
+
+## Prerequisite: shared `account_id` (M1S)
+
+This fix is **correct but inert on real cross-source data** until account
+identity unifies. The blocking self-join requires `a.account_id = b.account_id`
+(`scoring.py`), but today each source mints its own `account_id`, so a real
+account imported as both `.qfx` and `.csv` carries **two** `account_id`s and the
+join produces **zero** candidate pairs — scoring (this fix) is never reached.
+Verified live 2026-06-13: the 5-WF `.qfx`+`.csv` case yielded 10 `account_id`s
+for 5 accounts → 558 rows, all `source_count = 1`. The unit/scenario fixtures
+here pass because they construct both sides with the **same** `account_id`;
+production data does not. [`account-identity-resolution.md`](account-identity-resolution.md)
+(M1S) makes `account_id` canonical across sources, at which point this auto-merge
+fires as designed (279 @ `source_count = 2`).
 
 ## Decision (2026-06-13)
 

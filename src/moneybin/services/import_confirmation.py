@@ -16,10 +16,13 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from moneybin.extractors.confidence import Confidence
+from moneybin.services.account_resolution_types import AccountProposalDict
 
 Channel = Literal["tabular", "gsheet", "pdf"]
 ActorKind = Literal["human", "agent"]
-ConfirmationReason = Literal["unknown_layout", "validation_failure"]
+ConfirmationReason = Literal[
+    "unknown_layout", "validation_failure", "account_confirmation"
+]
 ConfirmationOutcome = Literal["accepted", "overridden", "declined"]
 
 
@@ -89,7 +92,15 @@ class ConfirmationRequired:
     encounter confirm. `reason='validation_failure'` surfaces a known
     layout that failed its replay/validation guard (Req 9) — for tabular
     the proposed mapping carries the failing signal; for PDF this re-
-    escalates to the bridge per `smart-import-pdf.md`.
+    escalates to the bridge per `smart-import-pdf.md`. `reason=
+    'account_confirmation'` surfaces a resolved layout whose *account*
+    identity is ambiguous (weak merge candidates) — the column mapping in
+    `proposed` is already accepted; the caller ratifies the account binding
+    via `account_proposals`.
+
+    `account_proposals` carries the `AccountProposal.to_dict()` payload for
+    each detected source account whose resolution surfaced weak candidates.
+    Empty for mapping-only confirmations.
     """
 
     channel: Channel
@@ -98,6 +109,7 @@ class ConfirmationRequired:
     reason: ConfirmationReason
     samples: dict[str, list[str]] = field(default_factory=dict)
     error_message: str = ""
+    account_proposals: list[AccountProposalDict] = field(default_factory=list)
 
 
 def confirmation_payload_dict(outcome: ConfirmationRequired) -> dict[str, object]:
@@ -132,6 +144,7 @@ def confirmation_payload_dict(outcome: ConfirmationRequired) -> dict[str, object
         "missing_required": list(outcome.confidence.missing_required),
         "unmapped_columns": unmapped,
         "bridge_payload": bridge_payload,
+        "account_proposals": list(outcome.account_proposals),
     }
 
 

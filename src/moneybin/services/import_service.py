@@ -23,11 +23,13 @@ if TYPE_CHECKING:
 from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.extractors.institution_resolution import resolve_institution_tabular
 from moneybin.extractors.tabular.formats import (
     NumberFormatType,
     SignConventionType,
 )
 from moneybin.metrics.registry import (
+    ACCOUNT_LINK_OUTCOMES_TOTAL,
     IMPORT_DURATION_SECONDS,
     IMPORT_ERRORS_TOTAL,
     IMPORT_RECORDS_TOTAL,
@@ -37,6 +39,11 @@ from moneybin.metrics.registry import (
 from moneybin.repositories.imports_repo import ImportsRepo
 from moneybin.repositories.pdf_formats_repo import PdfFormatsRepo
 from moneybin.services._validators import validate_slug
+from moneybin.services.account_resolution_types import (
+    AccountProposalDict,
+    SourceAccount,
+)
+from moneybin.services.account_resolver import AccountResolver
 from moneybin.services.audit_service import AuditService
 from moneybin.services.import_confirmation import (
     ActorKind,
@@ -420,6 +427,86 @@ def _sniff_ofx_content(file_path: Path) -> bool:
     return False
 
 
+# Fields a caller may capture for a freshly-minted ("new"-bound) account at
+# import time. Mirrors the import-time-relevant subset of app.account_settings.
+_NEW_ACCOUNT_META_KEYS = frozenset({
+    "display_name",
+    "account_subtype",
+    "last_four",
+    "iso_currency_code",
+})
+
+
+def _validate_account_metadata(metadata: dict[str, dict[str, str]] | None) -> None:
+    """Validate account_metadata field keys + values before any DB writes.
+
+    Runs up-front (before the Phase-3 resolve()/load writes) so an unknown key or
+    a malformed value fails fast. A mid-loop raise would leave the
+    ``app.account_links`` rows of already-resolved accounts orphaned with no
+    import batch to revert.
+    """
+    if not metadata:
+        return
+    from moneybin.services.account_service import AccountSettings
+
+    for meta in metadata.values():
+        unknown = set(meta) - _NEW_ACCOUNT_META_KEYS
+        if unknown:
+            raise ValueError(
+                f"Unknown account_metadata field(s): {sorted(unknown)}. "
+                f"Valid: {sorted(_NEW_ACCOUNT_META_KEYS)}."
+            )
+        # Construct AccountSettings to trigger its __post_init__ field
+        # validation (last_four 4-digits, display_name length, currency code).
+        AccountSettings(
+            account_id="_validate_",
+            display_name=meta.get("display_name"),
+            last_four=meta.get("last_four"),
+            account_subtype=meta.get("account_subtype"),
+            iso_currency_code=meta.get("iso_currency_code"),
+        )
+
+
+def _apply_account_bindings(
+    source_accounts: list[SourceAccount], bindings: dict[str, str]
+) -> list[SourceAccount]:
+    """Fold each source account's binding into the resolver's input fields.
+
+    A binding value of ``"new"`` sets ``force_standalone`` (mint a fresh
+    account, skip the merge-candidate pass); any other value is an existing
+    canonical ``account_id`` to adopt (``explicit_account_id``). Unbound
+    accounts pass through unchanged so the gate can still surface them.
+
+    Raises ``ValueError`` on an empty binding value — ``explicit_account_id=""``
+    is falsy and would silently fall through to a fresh mint as if no binding
+    were given, discarding the caller's intent ("magic stays visible").
+    """
+    if not bindings:
+        return source_accounts
+    bound: list[SourceAccount] = []
+    for src in source_accounts:
+        target = bindings.get(src.source_account_key)
+        if target is None:
+            bound.append(src)
+        elif target == "new":
+            bound.append(
+                dataclasses.replace(
+                    src, force_standalone=True, explicit_account_id=None
+                )
+            )
+        elif not target.strip():
+            # Reject whitespace-only too: CLI input is not stripped (_parse_kv
+            # keeps the raw value) and MCP passes JSON as-is, so a bare-spaces
+            # value would otherwise be truthy and bind a bogus account_id.
+            raise ValueError(
+                f"account_bindings for source key {src.source_account_key!r} "
+                'has an empty value; use an existing account_id or "new".'
+            )
+        else:
+            bound.append(dataclasses.replace(src, explicit_account_id=target))
+    return bound
+
+
 class ImportService:
     """Orchestrates the full file import pipeline.
 
@@ -507,104 +594,6 @@ class ImportService:
         except Exception:  # noqa: BLE001 — date range is best-effort; any DB failure returns empty string
             logger.debug(f"Could not determine date range from {table}", exc_info=True)
         return ""
-
-    def _resolve_account_via_matcher(
-        self,
-        *,
-        account_name: str,
-        account_number: str | None,
-        threshold: float,
-        auto_accept: bool,
-    ) -> str:
-        """Resolve an account name to an account_id using match_account().
-
-        Outcomes:
-          1. Matched (number or exact slug) → return the existing account_id.
-          2. Fuzzy candidates and auto_accept=True → take the top candidate, log it.
-          3. Fuzzy candidates and auto_accept=False → log a warning listing
-             candidates, fall back to slugify(account_name).
-          4. No candidates → fall back to slugify(account_name) (creates new).
-
-        Args:
-            account_name: Account name from CLI/file.
-            account_number: Account number if available, for strongest match.
-            threshold: Minimum SequenceMatcher.ratio for a fuzzy candidate.
-            auto_accept: True if the user passed --yes (or stdin is non-interactive).
-
-        Returns:
-            The resolved account_id (existing or freshly slugified).
-        """
-        from moneybin.extractors.tabular.account_matching import match_account
-        from moneybin.metrics.registry import ACCOUNT_MATCH_OUTCOMES_TOTAL
-        from moneybin.utils import slugify
-
-        try:
-            # GROUP BY account_id collapses duplicates from the same account being
-            # imported with slightly different names (e.g. "Chase Checking" vs
-            # "CHASE CHECKING"); take the most-recently-seen name.
-            rows = self._db.execute(
-                """
-                SELECT account_id,
-                       LAST(account_name ORDER BY loaded_at) AS account_name,
-                       LAST(account_number ORDER BY loaded_at) AS account_number
-                FROM raw.tabular_accounts
-                GROUP BY account_id
-                """
-            ).fetchall()
-        except duckdb.CatalogException:  # raw.tabular_accounts absent on first import
-            logger.debug("raw.tabular_accounts unavailable; skipping account match")
-            ACCOUNT_MATCH_OUTCOMES_TOTAL.labels(result="table_missing").inc()
-            return slugify(account_name)
-
-        existing = [
-            {"account_id": r[0], "account_name": r[1], "account_number": r[2]}
-            for r in rows
-        ]
-
-        result = match_account(
-            account_name,
-            account_number=account_number,
-            existing_accounts=existing,
-            threshold=threshold,
-        )
-
-        if result.matched and result.account_id:
-            logger.info(f"Matched account to existing id {result.account_id!r}")
-            ACCOUNT_MATCH_OUTCOMES_TOTAL.labels(result="exact").inc()
-            return result.account_id
-
-        if result.candidates:
-            if auto_accept:
-                top = result.candidates[0]
-                if top["account_id"]:
-                    logger.info(
-                        f"⚙️  Auto-accepting fuzzy match → {top['account_id']!r}"
-                    )
-                    ACCOUNT_MATCH_OUTCOMES_TOTAL.labels(result="fuzzy_accepted").inc()
-                    return top["account_id"]
-                # Fuzzy candidates exist but none have an account_id — this should
-                # be rare (suggests stale/orphaned rows in raw.tabular_accounts),
-                # but we must surface it instead of silently slugifying.
-                logger.warning(
-                    "⚠️  Auto-accept requested but top fuzzy candidate has no "
-                    "account_id; falling back to slugify(account_name)."
-                )
-                ACCOUNT_MATCH_OUTCOMES_TOTAL.labels(result="fuzzy_no_id").inc()
-            else:
-                candidate_ids = ", ".join(
-                    filter(None, (c["account_id"] for c in result.candidates))
-                )
-                logger.warning(
-                    f"⚠️  Account did not match exactly. Fuzzy candidate ids: "
-                    f"{candidate_ids}. "
-                    "Use --yes to auto-accept the top candidate, "
-                    "or --account-id to pick explicitly."
-                )
-                ACCOUNT_MATCH_OUTCOMES_TOTAL.labels(result="fuzzy_ambiguous").inc()
-        else:
-            ACCOUNT_MATCH_OUTCOMES_TOTAL.labels(result="slugify_new").inc()
-
-        return slugify(account_name)
 
     def run_transforms(self) -> bool:
         """Apply SQLMesh transforms via :class:`TransformService`.
@@ -757,9 +746,6 @@ class ImportService:
             IMPORT_ERRORS_TOTAL.labels(source_type="ofx", error_type="extract").inc()
             raise
 
-        # Best-effort account matching for OFX (passthrough today; emits metrics).
-        self._match_ofx_accounts(account_ids)
-
         # Write all four DataFrames through the encrypted ingest path. Wrapped
         # in try/except so a load failure marks the batch as failed instead of
         # leaving raw.import_log.status='importing' and blocking re-imports.
@@ -785,6 +771,50 @@ class ImportService:
             )
             OFX_IMPORT_BATCHES.labels(status="failed").inc()
             IMPORT_ERRORS_TOTAL.labels(source_type="ofx", error_type="load").inc()
+            raise
+
+        # Resolve each OFX account to a canonical account_id, populating
+        # app.account_links (source_native + scoped full_number strong refs) so
+        # the staging translation JOIN is total for new OFX imports. Additive:
+        # raw.ofx_accounts.account_id still holds the source-native ACCTID. Runs
+        # after the raw load so links exist iff their raw account rows landed; a
+        # separate try/except finalizes 'failed' rather than leaving the batch
+        # stuck in 'importing'.
+        try:
+            resolver = AccountResolver(self._db, actor="system")
+            for row in data["accounts"].iter_rows(named=True):
+                acctid: str | None = row["account_id"]
+                if not acctid:
+                    continue
+                routing = row.get("routing_number")
+                # full_number is a strong ref ONLY when institution/routing-scoped
+                # (contains ':'); a bare number is demoted to a candidate signal.
+                scoped_number = f"{routing}:{acctid}" if routing else None
+                resolved_account = resolver.resolve(
+                    SourceAccount(
+                        source_type="ofx",
+                        source_origin=source_origin,
+                        source_account_key=acctid,
+                        account_name=f"{source_origin} "
+                        f"{row.get('account_type') or ''}".strip(),
+                        account_number=scoped_number,
+                        last_four=acctid[-4:],
+                        institution=source_origin,
+                    )
+                )
+                ACCOUNT_LINK_OUTCOMES_TOTAL.labels(
+                    result=resolved_account.outcome
+                ).inc()
+        except Exception:
+            import_log.finalize_import(
+                self._db,
+                import_id,
+                status="failed",
+                rows_total=sum(rows_loaded.values()),
+                rows_imported=sum(rows_loaded.values()),
+            )
+            OFX_IMPORT_BATCHES.labels(status="failed").inc()
+            IMPORT_ERRORS_TOTAL.labels(source_type="ofx", error_type="resolve").inc()
             raise
 
         # Total across all four OFX tables — balance-only statements still
@@ -825,18 +855,98 @@ class ImportService:
 
         return result
 
-    def _match_ofx_accounts(self, account_ids: list[str]) -> None:
-        """Best-effort account matching for OFX. Emits metrics; doesn't mutate data.
+    def _capture_new_account_metadata(
+        self, account_id: str, meta: dict[str, str]
+    ) -> None:
+        """Write user-supplied metadata for a freshly-minted account to settings.
 
-        Today's behavior (carried forward): the OFX file's account_id IS the
-        matching key downstream. This method exists so future improvements have
-        a single place to live and so account-match metrics are emitted for
-        OFX too.
+        Field keys + values are validated up-front by ``_validate_account_metadata``
+        (before any writes), so this method assumes a clean ``meta``. The write
+        lands in ``app.account_settings`` (audited, Invariant 10) for the minted
+        id even before the account materializes in ``core.dim_accounts`` — the
+        next transform's LEFT JOIN folds the values in (``dim_accounts.sql``).
         """
-        from moneybin.metrics.registry import ACCOUNT_MATCH_OUTCOMES_TOTAL
+        from moneybin.repositories.account_settings_repo import AccountSettingsRepo
+        from moneybin.services.account_service import AccountSettings
 
-        for _aid in account_ids:
-            ACCOUNT_MATCH_OUTCOMES_TOTAL.labels(result="not_attempted").inc()
+        # Construct AccountSettings first so its __post_init__ validation runs
+        # (display_name length, last_four 4-digits, currency 3-letter, etc.).
+        settings = AccountSettings(
+            account_id=account_id,
+            display_name=meta.get("display_name"),
+            last_four=meta.get("last_four"),
+            account_subtype=meta.get("account_subtype"),
+            iso_currency_code=meta.get("iso_currency_code"),
+        )
+        AccountSettingsRepo(self._db, audit=self._audit).set(
+            account_id=settings.account_id,
+            display_name=settings.display_name,
+            official_name=settings.official_name,
+            last_four=settings.last_four,
+            account_subtype=settings.account_subtype,
+            holder_category=settings.holder_category,
+            iso_currency_code=settings.iso_currency_code,
+            credit_limit=settings.credit_limit,
+            archived=settings.archived,
+            include_in_net_worth=settings.include_in_net_worth,
+            actor="import",
+        )
+
+    def _gate_account_proposals(
+        self,
+        resolver: AccountResolver,
+        source_accounts: list[SourceAccount],
+        *,
+        actor_kind: "ActorKind",
+        resolved_mapping: dict[str, str],
+    ) -> None:
+        """Surface weak account-merge candidates for confirmation before load.
+
+        Interactive-human first contact only: when an unbound source account
+        resolves to weak merge candidate(s), raise
+        ``ImportConfirmationRequiredError`` (no rows load) so the human ratifies
+        the account identity (adopt a candidate or declare ``"new"``). Agent /
+        non-interactive imports never gate here — they mint+propose and the
+        proposal stays visible in the account-link review queue (M1S.5), per
+        ``account-identity-resolution.md`` Decision 7.
+        """
+        if actor_kind != "human":
+            return
+        proposals: list[AccountProposalDict] = []
+        for src in source_accounts:
+            # A bound account (explicit_account_id / force_standalone) is already
+            # decided; only ambiguous unbound accounts gate.
+            if src.explicit_account_id or src.force_standalone:
+                continue
+            proposal = resolver.propose(src)
+            if proposal.candidates:
+                proposals.append(proposal.to_dict())
+        if not proposals:
+            return
+        from moneybin.extractors.confidence import Confidence
+        from moneybin.services.import_confirmation import (
+            ConfirmationRequired,
+            ImportConfirmationRequiredError,
+            ProposedMapping,
+        )
+
+        raise ImportConfirmationRequiredError(
+            ConfirmationRequired(
+                channel="tabular",
+                # The column layout is already resolved; only the account
+                # identity is in question. high/1.0 reflects the settled mapping.
+                confidence=Confidence(
+                    score=1.0, tier="high", flagged=(), missing_required=()
+                ),
+                proposed=ProposedMapping(
+                    field_mapping=resolved_mapping,
+                    sample_values={},
+                    unmapped_columns=(),
+                ),
+                reason="account_confirmation",
+                account_proposals=proposals,
+            )
+        )
 
     def _import_tabular(
         self,
@@ -858,6 +968,8 @@ class ImportService:
         auto_accept: bool = False,
         confirm: bool = False,
         actor_kind: "ActorKind" = "human",
+        account_bindings: dict[str, str] | None = None,
+        account_metadata: dict[str, dict[str, str]] | None = None,
     ) -> ImportResult:
         """Import a tabular file through the five-stage pipeline.
 
@@ -879,6 +991,13 @@ class ImportService:
             auto_accept: Auto-accept the top fuzzy account match without prompting.
             confirm: If True, acts as Accept signal to resolve_or_confirm.
             actor_kind: 'human' (always surfaces) or 'agent' (may self-accept at high tier).
+            account_bindings: Map of source_account_key -> canonical account_id
+                (adopt) or "new" (mint standalone), ratifying the account-binding
+                confirmation. Unbound accounts with weak candidates gate for a
+                human caller.
+            account_metadata: Map of source_account_key -> {display_name,
+                account_subtype, last_four, iso_currency_code} captured into
+                app.account_settings for accounts minted this import.
 
         Returns:
             ImportResult with summary.
@@ -901,6 +1020,10 @@ class ImportService:
 
         result = ImportResult(file_path=str(file_path), file_type="tabular")
         _t0 = time.monotonic()
+
+        # Fail fast on bad account_metadata before any DB writes — a later raise
+        # mid-resolve would orphan account_links rows with no import batch.
+        _validate_account_metadata(account_metadata)
 
         # Load formats early so explicit --format can influence file reading
         builtin_formats = load_builtin_formats()
@@ -1153,29 +1276,64 @@ class ImportService:
         if source_type in ("semicolon", "pipe"):
             source_type = "csv"
 
-        # Build per-row account_ids and a name→id mapping for the accounts table
+        # source_origin scopes the source_native key; compute before resolution so
+        # raw.* and app.account_links.source_origin stay identical (a later staging
+        # JOIN keys on it). Do NOT change how source_origin is derived.
+        source_origin = (
+            matched_format.name
+            if matched_format
+            else slugify(account_name or "unknown")
+        )
+        # institution is best-effort metadata feeding the resolver's weak-signal
+        # (institution+last4) candidate pass; unknown is allowed.
+        institution = resolve_institution_tabular(
+            file_path=file_path,
+            format_institution=(
+                matched_format.institution_name if matched_format else None
+            ),
+            cli_override=None,  # no --institution flag on tabular yet
+        )
+        resolver = AccountResolver(self._db, actor="system")
+        bindings = account_bindings or {}
+
+        # account_ids stamped on raw are source-NATIVE keys (DP-1); the resolver
+        # writes the native->canonical app.account_links mapping as a side effect.
         acct_name_col = resolved.field_mapping.get("account_name")
         acct_id_to_name: dict[str, str] = {}
 
+        # Phase 1 — enumerate the source accounts this file presents (one per
+        # native key) WITHOUT resolving, so the account-binding gate can run
+        # between enumeration and the writing resolve() pass.
+        source_accounts: list[SourceAccount] = []
         if account_id:
             account_ids: str | list[str] = account_id
             acct_id_to_name[account_id] = account_name or account_id
-        elif account_name:
-            from moneybin.config import get_settings
-
-            threshold = get_settings().providers.tabular.account_match_threshold
-            aid = self._resolve_account_via_matcher(
-                account_name=account_name,
-                account_number=None,  # no --account-number CLI flag yet
-                threshold=threshold,
-                auto_accept=auto_accept,
+            source_accounts.append(
+                SourceAccount(
+                    source_type=source_type,
+                    source_origin=source_origin,
+                    source_account_key=account_id,
+                    account_name=account_name or account_id,
+                    institution=institution,
+                    explicit_account_id=account_id,
+                )
             )
-            account_ids = aid
-            acct_id_to_name[aid] = account_name
+        elif account_name:
+            native_key = slugify(account_name)
+            account_ids = native_key
+            acct_id_to_name[native_key] = account_name
+            source_accounts.append(
+                SourceAccount(
+                    source_type=source_type,
+                    source_origin=source_origin,
+                    source_account_key=native_key,
+                    account_name=account_name,
+                    institution=institution,
+                )
+            )
         elif (
             resolved.is_multi_account and acct_name_col and acct_name_col in df.columns
         ):
-            # Per-row account assignment from the DataFrame column
             raw_names = [
                 str(v) if v is not None else "unknown"
                 for v in df[acct_name_col].to_list()
@@ -1184,16 +1342,73 @@ class ImportService:
             for aid, name in zip(account_ids, raw_names, strict=True):
                 if aid not in acct_id_to_name:
                     acct_id_to_name[aid] = name
+            source_accounts.extend(
+                SourceAccount(
+                    source_type=source_type,
+                    source_origin=source_origin,
+                    source_account_key=native_key,
+                    account_name=name,
+                    institution=institution,
+                )
+                for native_key, name in acct_id_to_name.items()
+            )
         else:
             raise ValueError(
                 "Single-account files require --account-name or --account-id"
             )
 
-        source_origin = (
-            matched_format.name
-            if matched_format
-            else slugify(account_name or "unknown")
+        # Phase 2 — apply explicit bindings, then gate on weak account proposals.
+        # The gate raises ImportConfirmationRequiredError (no rows load) for an
+        # interactive human first-contact with ambiguous candidates.
+        #
+        # Fail loud on a binding/metadata source key that doesn't match any of
+        # this file's accounts (a typo) — silently ignoring it would do the
+        # wrong thing invisibly ("magic stays visible").
+        known_keys = {s.source_account_key for s in source_accounts}
+        for label, keyed in (
+            ("account_bindings", bindings),
+            ("account_metadata", account_metadata or {}),
+        ):
+            unknown_keys = set(keyed) - known_keys
+            if unknown_keys:
+                raise ValueError(
+                    f"{label} references unknown source key(s): "
+                    f"{sorted(unknown_keys)}. This file's source keys: "
+                    f"{sorted(known_keys)}."
+                )
+        source_accounts = _apply_account_bindings(source_accounts, bindings)
+        self._gate_account_proposals(
+            resolver,
+            source_accounts,
+            actor_kind=actor_kind,
+            resolved_mapping=dict(resolved.field_mapping),
         )
+
+        # Phase 3 — resolve (writes native->canonical mapping + pending decisions),
+        # then capture any caller-supplied metadata for accounts minted this import.
+        metadata = account_metadata or {}
+        for src in source_accounts:
+            resolved_account = resolver.resolve(src)
+            ACCOUNT_LINK_OUTCOMES_TOTAL.labels(result=resolved_account.outcome).inc()
+            meta = metadata.get(src.source_account_key)
+            if not meta:
+                continue
+            # Capture only for a genuinely-new account (outcome="minted_new",
+            # i.e. a "new" binding or a clean no-candidate mint). A
+            # pending_review provisional is is_new=True too, but a later
+            # accept re-points it onto the candidate and abandons the
+            # provisional id — settings written here would be orphaned. An
+            # adopted account keeps its existing settings.
+            if resolved_account.outcome == "minted_new":
+                self._capture_new_account_metadata(resolved_account.account_id, meta)
+            else:
+                # Routine on the agent path (a binding adopted an existing
+                # account, or the account went to pending_review) — info, not a
+                # warning about an error.
+                logger.info(
+                    "account_metadata ignored: account resolved to "
+                    f"{resolved_account.outcome!r}, not a new mint."
+                )
 
         # Create import batch
         extractor = TabularExtractor(self._db)
@@ -2307,6 +2522,8 @@ class ImportService:
         auto_accept: bool = False,
         confirm: bool = False,
         actor_kind: ActorKind = "human",
+        account_bindings: dict[str, str] | None = None,
+        account_metadata: dict[str, dict[str, str]] | None = None,
     ) -> ImportResult:
         """Import a financial data file into DuckDB.
 
@@ -2347,6 +2564,11 @@ class ImportService:
                 (CLI: --yes / -y). Defaults to False.
             confirm: Accept the proposed mapping without further prompting.
             actor_kind: 'human' (always surfaces) or 'agent' (may self-accept at high tier).
+            account_bindings: Map of source_account_key -> canonical account_id
+                (adopt) or "new" (mint standalone), ratifying the account-binding
+                confirmation for tabular imports.
+            account_metadata: Map of source_account_key -> settings dict captured
+                for accounts minted this import (tabular).
 
         Returns:
             ImportResult with summary of what was imported.
@@ -2376,6 +2598,8 @@ class ImportService:
             auto_accept=auto_accept,
             confirm=confirm,
             actor_kind=actor_kind,
+            account_bindings=account_bindings,
+            account_metadata=account_metadata,
         )
 
         # Include PDFs only when the deterministic path landed transactions —
@@ -2431,6 +2655,8 @@ class ImportService:
         auto_accept: bool = False,
         confirm: bool = False,
         actor_kind: ActorKind = "human",
+        account_bindings: dict[str, str] | None = None,
+        account_metadata: dict[str, dict[str, str]] | None = None,
     ) -> ImportResult:
         """Extract + load one file. Does NOT run the refresh pipeline.
 
@@ -2469,6 +2695,8 @@ class ImportService:
                 auto_accept=auto_accept,
                 confirm=confirm,
                 actor_kind=actor_kind,
+                account_bindings=account_bindings,
+                account_metadata=account_metadata,
             )
         if file_type == "pdf":
             return self._import_pdf(

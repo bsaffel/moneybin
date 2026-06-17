@@ -13,6 +13,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 M2 closing out and M3 underway. M2A curator state shipped (transaction notes, tags, splits, manual entry, audit log). M2B architecture reference shipped (`architecture-shared-primitives.md`; writer-coordination contract via short-lived per-call connections). M2C brand surface advancing: `moneybin system doctor` integrity command, `reports.*` recipe library (eight curated views), and the `transform_*` MCP toolset closing the agent ingest loop. M3A Plaid Transactions sync shipped (Phase 1). Doc surface tightened for the personas reachable today; MCP surface hardened with protocol-standard annotations, `accounts_resolve`, list-parameter cap, structured error envelopes, and shell completion. Categorization correctness pass: memo-aware matcher, exemplar accumulation, source-precedence enforcement, auto-fan-out after apply; seed merchant catalogs retired in favor of user-driven and LLM-assist-driven merchant creation.
 
 ### Added
+- **Import-time account-binding confirmation (M1S.4).** Tabular `import_confirm`
+  now surfaces the account resolver's verdict at import time. When an
+  interactive human imports a file whose source account resolves to weak merge
+  candidate(s) (`institution+last4` / name), the import returns
+  `confirmation_required` with `confirmation_payload.{reason="account_confirmation",
+  account_proposals[]}` instead of silently minting — the column layout is
+  settled, only the account identity needs ratifying. The caller binds each
+  proposed account via `account_bindings` (MCP) / `--account-binding
+  source_key=ACCOUNT_ID|new` (CLI): adopt an existing account, or `new` to mint
+  a distinct one. A `"new"` account can capture `display_name` / `account_subtype`
+  / `last_four` / `iso_currency_code` at mint via `account_metadata` (MCP) /
+  `--account-meta source_key:field=value` (CLI). Agent / non-interactive imports
+  never gate here — they load and leave the proposal in the account-link review
+  queue (`accounts_links_pending`). The `moneybin_account_link_review_pending`
+  gauge and `moneybin_account_link_confidence` histogram now emit.
+- **Account-link review queue (M1S.5).** New `accounts_links_pending` /
+  `accounts_links_set` / `accounts_links_history` / `accounts_links_run` MCP
+  tools and the `moneybin accounts links` CLI subgroup surface the cross-source
+  account-merge proposals the resolver raises (`institution+last4` / name) so a
+  weak account match is reviewed, never silently merged. Accepting a proposal
+  re-points the provisional account's native references onto the chosen
+  canonical account (auto-rejecting siblings); `--standalone` keeps it separate.
+  `accounts links run` backfills proposals over existing accounts. Account
+  numbers are never surfaced (proposals carry opaque ids + labels only).
 - **Smart-import-pdf Phase 2a — deterministic PDF routing to `raw.tabular_transactions`.**
   PDFs that auto-derive (or replay a saved) high-confidence recipe land
   rows in `raw.tabular_transactions` (`source_type='pdf'`) instead of the
@@ -108,6 +132,19 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
 - **`system_status` `database_connections` section** identifies the active
   writer (via the lock file) and concurrent readers (via `lsof`). Powers the
   `DatabaseLockError` recovery action.
+- **`review` MCP tool and `moneybin review` CLI command** (M1S.5c) — domain-neutral
+  orientation sweep that aggregates all three review queues in one call:
+  `matches_pending`, `categorize_pending`, and `account_links_pending` (new).
+  One "what needs my attention?" call now covers transaction matches, uncategorized
+  transactions, and account-link decisions without a separate sweep per domain.
+
+### Deprecated
+- **`transactions_review` MCP tool** — use `review` instead. Registered as a
+  deprecated alias with description starting with "DEPRECATED: use `review`";
+  removed after one minor release.
+- **`moneybin transactions review`** — use `moneybin review` instead. Emits a
+  deprecation warning to stderr and delegates to the same implementation;
+  removed after one minor release.
 
 ### Changed
 - **`Database.__init__()` and `get_database()` now require `read_only` as a

@@ -4,9 +4,9 @@ Each field carries ``Annotated[T, DataClass.X]`` metadata so the Phase 6
 middleware can derive sensitivity via ``derive_tier`` without inspecting
 tool source code directly.
 
-Balance data includes ACCOUNT_IDENTIFIER (CRITICAL), BALANCE (HIGH), and
-TXN_DATE (MEDIUM), so ``derive_tier`` resolves to ``Tier.CRITICAL`` for
-all payloads here.
+Balance data includes BALANCE (HIGH) and TXN_DATE (MEDIUM). ``account_id``
+is RECORD_ID (spec D6 — opaque canonical surrogate, not PII), so
+``derive_tier`` resolves to ``Tier.HIGH`` for all payloads here.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from moneybin.privacy.taxonomy import DataClass
 class BalanceObservationRow:
     """One row of core.fct_balances_daily for list/history/reconcile."""
 
-    account_id: Annotated[str, DataClass.ACCOUNT_IDENTIFIER]
+    account_id: Annotated[str, DataClass.RECORD_ID]
     balance_date: Annotated[date, DataClass.TXN_DATE]
     balance: Annotated[Decimal, DataClass.BALANCE]
     is_observed: Annotated[bool, DataClass.TXN_TYPE]
@@ -42,7 +42,7 @@ class BalanceObservationListPayload:
 class BalanceAssertionRow:
     """One row of app.balance_assertions."""
 
-    account_id: Annotated[str, DataClass.ACCOUNT_IDENTIFIER]
+    account_id: Annotated[str, DataClass.RECORD_ID]
     assertion_date: Annotated[date, DataClass.TXN_DATE]
     balance: Annotated[Decimal, DataClass.BALANCE]
     notes: Annotated[str | None, DataClass.USER_NOTE]
@@ -67,6 +67,6 @@ class BalanceAssertionPayload:
 class BalanceAssertionDeletePayload:
     """Status payload for accounts_balance_assertion_delete."""
 
-    account_id: Annotated[str, DataClass.ACCOUNT_IDENTIFIER]
+    account_id: Annotated[str, DataClass.RECORD_ID]
     assertion_date: Annotated[date, DataClass.TXN_DATE]
     deleted: Annotated[bool, DataClass.TXN_TYPE]

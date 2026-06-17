@@ -59,19 +59,53 @@ app.add_typer(import_labels.app, name="labels", help="Manage labels on imports")
 logger = logging.getLogger(__name__)
 
 
-def _parse_overrides(override: list[str] | None) -> dict[str, str] | None:
-    """Parse and validate --override field=column values."""
-    if not override:
+def _parse_kv(
+    values: list[str] | None, *, flag: str, fmt: str
+) -> dict[str, str] | None:
+    """Parse repeatable ``KEY=VALUE`` CLI options into a stripped dict.
+
+    ``flag`` and ``fmt`` shape only the error message (e.g. ``flag="--override"``,
+    ``fmt="field=column"``). Returns ``None`` for empty input.
+    """
+    if not values:
         return None
     result: dict[str, str] = {}
-    for raw in override:
+    for raw in values:
         if "=" not in raw:
+            logger.error(f"❌ Invalid {flag} format (expected {fmt}): {raw!r}")
+            raise typer.Exit(1)
+        key, _, value = raw.partition("=")
+        result[key.strip()] = value.strip()
+    return result
+
+
+def _parse_overrides(override: list[str] | None) -> dict[str, str] | None:
+    """Parse and validate --override field=column values."""
+    return _parse_kv(override, flag="--override", fmt="field=column")
+
+
+def _parse_account_bindings(binding: list[str] | None) -> dict[str, str] | None:
+    """Parse --account-binding source_key=ACCOUNT_ID|new values."""
+    return _parse_kv(binding, flag="--account-binding", fmt="source_key=ACCOUNT_ID|new")
+
+
+def _parse_account_metadata(
+    meta: list[str] | None,
+) -> dict[str, dict[str, str]] | None:
+    """Parse --account-meta source_key:field=value into a nested map."""
+    if not meta:
+        return None
+    result: dict[str, dict[str, str]] = {}
+    for raw in meta:
+        if ":" not in raw or "=" not in raw.split(":", 1)[1]:
             logger.error(
-                f"❌ Invalid --override format (expected field=column): {raw!r}"
+                "❌ Invalid --account-meta format "
+                f"(expected source_key:field=value): {raw!r}"
             )
             raise typer.Exit(1)
-        field, _, col = raw.partition("=")
-        result[field.strip()] = col.strip()
+        key, _, field_value = raw.partition(":")
+        field, _, value = field_value.partition("=")
+        result.setdefault(key.strip(), {})[field.strip()] = value.strip()
     return result
 
 
@@ -446,7 +480,6 @@ def import_files_command(
     except Exception as _exc:  # noqa: BLE001 — dispatch on type below
         from moneybin.services.import_confirmation import (  # noqa: PLC0415
             ImportConfirmationRequiredError,
-            ProposedMapping,
         )
 
         if isinstance(_exc, ImportConfirmationRequiredError):
@@ -459,49 +492,40 @@ def import_files_command(
             # to re-run with --confirm or --mapping instead.
             outcome = _exc.outcome
             file_path_str = str(file_paths[0]) if len(file_paths) == 1 else ""
-            proposed_mapping: dict[str, str] = (
-                outcome.proposed.field_mapping
-                if isinstance(outcome.proposed, ProposedMapping)
-                else {}
-            )
-            unmapped = (
-                list(outcome.proposed.unmapped_columns)
-                if isinstance(outcome.proposed, ProposedMapping)
-                else []
-            )
-            envelope_data: dict[str, Any] = {
-                "status": "confirmation_required",
-                "channel": outcome.channel,
-                "tier": outcome.confidence.tier,
-                "score": outcome.confidence.score,
-                "reason": outcome.reason,
-                "error_message": outcome.error_message,
-                "proposed_mapping": proposed_mapping,
-                "samples": outcome.samples,
-                "flagged": list(outcome.confidence.flagged),
-                "missing_required": list(outcome.confidence.missing_required),
-                "unmapped_columns": unmapped,
-            }
+            envelope_data = _confirmation_envelope_data(outcome)
             confirm_actions: list[str] = []
             if outcome.error_message:
                 confirm_actions.append(f"Validation failed: {outcome.error_message}")
-            # resolve_or_confirm refuses Accept on low-tier proposals (the
-            # detector couldn't form a complete one); suggesting --confirm
-            # there would just bounce back with the same outcome. Only
-            # surface the accept hint when the tier permits acceptance.
-            if outcome.confidence.tier != "low":
+            if outcome.reason == "account_confirmation":
+                # The layout is settled; only the account identity needs
+                # ratifying. The --mapping/--confirm hints below are irrelevant
+                # here (and following --accept without a binding loops back to
+                # this gate), so surface ONLY the binding + preview hints.
                 confirm_actions.append(
-                    "Re-run with --confirm to accept the proposed mapping as-is."
+                    f"Run 'moneybin import confirm {file_path_str} --accept "
+                    "--account-binding <source_key>=<account_id|new>' to bind each "
+                    "proposed account (adopt an existing id, or 'new' to keep distinct)."
                 )
-            confirm_actions.extend([
-                "Re-run with --mapping <field>=<column> to override specific fields.",
-                f"Run 'moneybin import preview {file_path_str}' to inspect the proposal.",
-            ])
-            if outcome.confidence.tier != "low":
+            else:
+                # resolve_or_confirm refuses Accept on low-tier proposals (the
+                # detector couldn't form a complete one); suggesting --confirm
+                # there would just bounce back with the same outcome. Only
+                # surface the accept hint when the tier permits acceptance.
+                if outcome.confidence.tier != "low":
+                    confirm_actions.append(
+                        "Re-run with --confirm to accept the proposed mapping as-is."
+                    )
                 confirm_actions.append(
-                    f"Run 'moneybin import confirm {file_path_str} --accept' "
-                    "as a subcommand."
+                    "Re-run with --mapping <field>=<column> to override specific fields."
                 )
+                if outcome.confidence.tier != "low":
+                    confirm_actions.append(
+                        f"Run 'moneybin import confirm {file_path_str} --accept' "
+                        "as a subcommand."
+                    )
+            confirm_actions.append(
+                f"Run 'moneybin import preview {file_path_str}' to inspect the proposal."
+            )
             if output == OutputFormat.JSON or not sys.stdout.isatty():
                 # Non-TTY / --output json: emit the full ResponseEnvelope so
                 # CLI --output json matches the MCP envelope shape (same
@@ -589,6 +613,44 @@ def import_files_command(
         raise typer.Exit(1)
 
 
+def _confirmation_envelope_data(outcome: ConfirmationRequired) -> dict[str, Any]:
+    """Build the ``confirmation_required`` envelope ``data`` dict from an outcome.
+
+    Shared by ``import files`` and ``import confirm`` so the JSON shape cannot
+    drift between the two surfaces. Delegates to the canonical
+    ``confirmation_payload_dict`` — the single source MCP and the batch service
+    also use — so a new channel field (e.g. ``bridge_payload``) lands in one
+    place; this wrapper only prepends the CLI-envelope ``status`` field. The
+    per-command ``actions[]`` hints differ (files-level vs confirm-subcommand
+    context) and stay in the callers.
+    """
+    from moneybin.services.import_confirmation import (  # noqa: PLC0415 — defer import to keep CLI cold-start light
+        confirmation_payload_dict,
+    )
+
+    return {"status": "confirmation_required", **confirmation_payload_dict(outcome)}
+
+
+def _echo_account_proposals(outcome: ConfirmationRequired, *, err: bool) -> None:
+    """Print the source keys + candidate accounts for an account_confirmation.
+
+    Shared by the interactive `import files` prompt (stdout) and the `import
+    confirm` error path (stderr) so the binding info a user must reference never
+    diverges between the two surfaces.
+    """
+    if not outcome.account_proposals:
+        return
+    typer.echo("\n   Account binding required:", err=err)
+    for p in outcome.account_proposals:
+        typer.echo(f"     source key: {p['source_account_key']}", err=err)
+        for c in p["candidates"]:
+            typer.echo(
+                f"       candidate: {c['account_id']}  "
+                f"({c['display_name']}, {c['signal']})",
+                err=err,
+            )
+
+
 def _render_confirmation_prompt(
     outcome: ConfirmationRequired, file_path_str: str
 ) -> None:
@@ -636,20 +698,33 @@ def _render_confirmation_prompt(
                 f"{', '.join(outcome.proposed.unmapped_columns)}"
             )
 
+    # account_confirmation: the layout is settled; show the source keys +
+    # candidate accounts the user must reference in --account-binding (without
+    # this, an interactive user has no visible path to complete the binding).
+    if outcome.reason == "account_confirmation":
+        _echo_account_proposals(outcome, err=False)
+
     typer.echo("\n   To proceed:")
     # Suggested commands shlex-quoted so paths with spaces survive copy-paste.
-    # Accept hint is gated on tier — resolve_or_confirm refuses Accept at the
-    # low-tier gate, so suggesting --confirm there would loop indefinitely.
-    if tier != "low":
-        typer.echo(f"     moneybin import files {quoted_path} --confirm")
-    typer.echo(
-        f"     moneybin import files {quoted_path} --mapping description=<column>"
-    )
-    if tier != "low":
+    if outcome.reason == "account_confirmation":
+        # --mapping/--confirm are irrelevant once the layout is settled.
         typer.echo(
-            f"     moneybin import confirm {quoted_path} --accept   "
-            "(dedicated confirm subcommand)"
+            f"     moneybin import confirm {quoted_path} --accept "
+            "--account-binding <source_key>=<account_id|new>"
         )
+    else:
+        # Accept hint is gated on tier — resolve_or_confirm refuses Accept at
+        # the low-tier gate, so suggesting --confirm there would loop.
+        if tier != "low":
+            typer.echo(f"     moneybin import files {quoted_path} --confirm")
+        typer.echo(
+            f"     moneybin import files {quoted_path} --mapping description=<column>"
+        )
+        if tier != "low":
+            typer.echo(
+                f"     moneybin import confirm {quoted_path} --accept   "
+                "(dedicated confirm subcommand)"
+            )
     typer.echo(
         f"     moneybin import preview {quoted_path}   (inspect proposal in detail)"
     )
@@ -678,6 +753,26 @@ def import_confirm_command(
         None,
         "--account-name",
         help="Account name to associate with imported transactions.",
+    ),
+    account_binding: list[str] = typer.Option(
+        None,
+        "--account-binding",
+        help=(
+            "Ratify an account_confirmation (repeatable): "
+            "--account-binding source_key=ACCOUNT_ID to adopt an existing "
+            "account, or source_key=new to mint a distinct new account. "
+            "Keys come from confirmation_required account_proposals. On retry, "
+            "re-supply ALL bindings — no partial state persists between calls."
+        ),
+    ),
+    account_meta: list[str] = typer.Option(
+        None,
+        "--account-meta",
+        help=(
+            "Metadata for a 'new' account (repeatable): "
+            "--account-meta source_key:field=value, where field is one of "
+            "display_name, account_subtype, last_four, iso_currency_code."
+        ),
     ),
     save_format: bool = typer.Option(
         True,
@@ -718,10 +813,15 @@ def import_confirm_command(
         raise typer.Exit(1)
 
     parsed_mapping = _parse_overrides(list(mapping)) if mapping else None
+    parsed_bindings = (
+        _parse_account_bindings(list(account_binding)) if account_binding else None
+    )
+    parsed_metadata = (
+        _parse_account_metadata(list(account_meta)) if account_meta else None
+    )
 
     from moneybin.services.import_confirmation import (
         ImportConfirmationRequiredError,
-        ProposedMapping,
     )
 
     try:
@@ -735,6 +835,8 @@ def import_confirm_command(
                     overrides=parsed_mapping,
                     account_id=account_id,
                     account_name=account_name,
+                    account_bindings=parsed_bindings,
+                    account_metadata=parsed_metadata,
                     save_format=save_format,
                     actor_kind="human",
                     refresh=False,  # caller can run 'moneybin transform apply' separately
@@ -748,40 +850,29 @@ def import_confirm_command(
         # a structured payload instead of an unparseable stderr message.
         # Exit code stays 1: the confirm action did not succeed.
         outcome = e.outcome
-        proposed_mapping_dict = (
-            outcome.proposed.field_mapping
-            if isinstance(outcome.proposed, ProposedMapping)
-            else {}
-        )
-        unmapped = (
-            list(outcome.proposed.unmapped_columns)
-            if isinstance(outcome.proposed, ProposedMapping)
-            else []
-        )
-        envelope_data: dict[str, Any] = {
-            "status": "confirmation_required",
-            "channel": outcome.channel,
-            "tier": outcome.confidence.tier,
-            "score": outcome.confidence.score,
-            "reason": outcome.reason,
-            "error_message": outcome.error_message,
-            "proposed_mapping": proposed_mapping_dict,
-            "samples": outcome.samples,
-            "flagged": list(outcome.confidence.flagged),
-            "missing_required": list(outcome.confidence.missing_required),
-            "unmapped_columns": unmapped,
-        }
+        envelope_data = _confirmation_envelope_data(outcome)
         confirm_actions: list[str] = []
         if outcome.error_message:
             confirm_actions.append(f"Validation failed: {outcome.error_message}")
-        confirm_actions.append(
-            "Re-run with --mapping <field>=<column> to override specific fields."
-        )
-        if outcome.confidence.tier != "low":
+        if outcome.reason == "account_confirmation":
+            # The layout is settled; only the account identity needs ratifying.
+            # The --mapping/--accept hints are irrelevant here (and --accept
+            # without a binding loops back to this gate), so surface only the
+            # binding + preview hints.
             confirm_actions.append(
-                f"Re-run 'moneybin import confirm {file_path} --accept' "
-                "to accept the proposed mapping as-is."
+                f"Re-run 'moneybin import confirm {file_path} --accept "
+                "--account-binding <source_key>=<account_id|new>' to bind each "
+                "proposed account (adopt an existing id, or 'new' to keep distinct)."
             )
+        else:
+            confirm_actions.append(
+                "Re-run with --mapping <field>=<column> to override specific fields."
+            )
+            if outcome.confidence.tier != "low":
+                confirm_actions.append(
+                    f"Re-run 'moneybin import confirm {file_path} --accept' "
+                    "to accept the proposed mapping as-is."
+                )
         confirm_actions.append(
             f"Run 'moneybin import preview {file_path}' to inspect the proposal."
         )
@@ -801,14 +892,24 @@ def import_confirm_command(
             # partial-override iteration.
             return
         # Interactive path: human-readable summary + exit code 1.
-        msg = f"❌ Confirmation failed: {outcome.reason}" + (
-            f" — {outcome.error_message}" if outcome.error_message else ""
-        )
-        logger.error(msg)
-        logger.info(
-            "💡 Inspect the proposal with 'moneybin import preview "
-            f"{file_path}' and re-run with a corrected --mapping."
-        )
+        if outcome.reason == "account_confirmation":
+            # The layout is settled; show the bindings to supply, not a --mapping
+            # hint (which would mislead — the mapping is fine).
+            logger.error("❌ Account identity must be confirmed before import.")
+            _echo_account_proposals(outcome, err=True)
+            logger.info(
+                f"💡 Re-run 'moneybin import confirm {file_path} --accept "
+                "--account-binding <source_key>=<account_id|new>'."
+            )
+        else:
+            msg = f"❌ Confirmation failed: {outcome.reason}" + (
+                f" — {outcome.error_message}" if outcome.error_message else ""
+            )
+            logger.error(msg)
+            logger.info(
+                "💡 Inspect the proposal with 'moneybin import preview "
+                f"{file_path}' and re-run with a corrected --mapping."
+            )
         raise typer.Exit(1) from e
 
     if output == OutputFormat.JSON:

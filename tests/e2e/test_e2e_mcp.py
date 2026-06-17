@@ -154,12 +154,12 @@ class TestMCPServerBoot:
     async def test_accounts_balance_assertions_invocable(
         self, mcp_env: dict[str, str]
     ) -> None:
-        """accounts_balance_assertions returns a valid critical-sensitivity envelope.
+        """accounts_balance_assertions returns a valid high-sensitivity envelope.
 
-        Each row carries account_id (ACCOUNT_IDENTIFIER → CRITICAL); the
-        middleware masks it to ``****<last4>``. Uses app.balance_assertions
-        (created at DB init, not SQLMesh) so this works on a fresh DB and
-        returns an empty assertions list.
+        ``account_id`` is RECORD_ID (Tier.LOW — opaque surrogate, not PII);
+        the highest-tier field is ``balance`` (BALANCE → HIGH). Uses
+        app.balance_assertions (created at DB init, not SQLMesh) so this works
+        on a fresh DB and returns an empty assertions list.
         """
         from mcp import ClientSession
         from mcp.client.stdio import StdioServerParameters, stdio_client
@@ -182,7 +182,7 @@ class TestMCPServerBoot:
                 content = result.content[0]
                 assert isinstance(content, TextContent)
                 envelope = json.loads(content.text)
-                assert envelope["summary"]["sensitivity"] == "critical"
+                assert envelope["summary"]["sensitivity"] == "high"
                 # Fresh DB has no assertions — payload shape is {"assertions": []}
                 assert isinstance(envelope["data"], dict)
                 assert isinstance(envelope["data"]["assertions"], list)

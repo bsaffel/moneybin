@@ -402,21 +402,21 @@ class TestTypedPayloads:
 
     @pytest.mark.unit
     def test_observation_list_payload_has_annotations(self) -> None:
-        """BalanceObservationListPayload resolves to CRITICAL tier via introspection."""
+        """BalanceObservationListPayload resolves to HIGH tier via introspection."""
         from moneybin.privacy.introspection import derive_tier
         from moneybin.privacy.taxonomy import Tier
 
         tier = derive_tier(BalanceObservationListPayload)
-        assert tier == Tier.CRITICAL  # account_id → ACCOUNT_IDENTIFIER → CRITICAL
+        assert tier == Tier.HIGH  # balance → BALANCE → HIGH (account_id is RECORD_ID)
 
     @pytest.mark.unit
     def test_assertion_list_payload_has_annotations(self) -> None:
-        """BalanceAssertionListPayload resolves to CRITICAL tier via introspection."""
+        """BalanceAssertionListPayload resolves to HIGH tier via introspection."""
         from moneybin.privacy.introspection import derive_tier
         from moneybin.privacy.taxonomy import Tier
 
         tier = derive_tier(BalanceAssertionListPayload)
-        assert tier == Tier.CRITICAL
+        assert tier == Tier.HIGH  # balance → BALANCE → HIGH (account_id is RECORD_ID)
 
 
 class TestAccountValidation:

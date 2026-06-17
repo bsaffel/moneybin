@@ -15,6 +15,9 @@ from sqlmesh.core.config import (  # type: ignore[import-untyped] — sqlmesh ha
     GatewayConfig,
     ModelDefaultsConfig,
 )
+from sqlmesh.core.config.format import (  # type: ignore[import-untyped] — sqlmesh has no type stubs
+    FormatConfig,
+)
 
 # Add project root to path so moneybin is importable
 _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -85,4 +88,8 @@ config = Config(
     default_gateway="local",
     model_defaults=ModelDefaultsConfig(dialect="duckdb"),
     cache_dir=os.path.join(_sqlmesh_dir, ".cache"),
+    # sqlglot emits no trailing newline by default, which fights the repo-wide
+    # end-of-file-fixer hook (sqlmesh strips it, the hook re-adds it). append_newline
+    # makes the formatter emit it itself, so formatted SQL is already EOF-clean.
+    format=FormatConfig(append_newline=True),
 )

@@ -120,6 +120,8 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |     [--save-format/--no-save-format]  Pin merged mapping for silent reuse (default on)
 |   |     [--account-name NAME]      Required for single-account files
 |   |     [--account-id ID]          Explicit account ID bypass
+|   |     [--account-binding K=ID|new]  Ratify an account_confirmation (repeatable)
+|   |     [--account-meta K:field=value]  Metadata for a 'new' account (repeatable)
 |   |     [--output text|json]       JSON emits the standard ResponseEnvelope
 |   +-- history                    -- Show recent import batches
 |   +-- preview                    -- Detect format / column mapping without writing
@@ -179,6 +181,18 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |                                    standalone `transform_apply` MCP tool.
 |         [--output json] [-q]
 |
++-- review                         -- What needs my attention? Pending counts across all review queues.
+|     [--type all|matches|categorize|account-links]   Default all; walks matches first then categorize
+|     [--status]                        Counts only, no interactive loop
+|     [--confirm <id>]                  Non-interactive: confirm one match by ID
+|     [--reject <id>]                   Non-interactive: reject one match by ID
+|     [--confirm-all]                   Non-interactive: confirm all items in scope
+|     [--limit N]                       Cap items per session
+|     [--output text|json] [-q]
+|   Aggregates matches_pending + categorize_pending + account_links_pending in one sweep.
+|   Use `--status` for counts only; drill into `accounts links pending`,
+|   `transactions matches list`, or `transactions categorize pending` for queue contents.
+|
 +-- accounts
 |   +-- list                       -- List accounts [--include-archived] [--type TYPE]
 |   +-- get <account_id>           -- Show one account's full settings + dim record
@@ -197,6 +211,21 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |   +-- assertion-delete <account_id> <date> [--yes]
 |   |   +-- reconcile [--account ID] [--threshold AMOUNT]
 |   |   +-- history --account ID [--from DATE] [--to DATE]
+|   +-- links                      -- Review and manage account-link binding decisions
+|       +-- pending [--output json] [--quiet]
+|       |         List provisional accounts + candidate merge proposals; each candidate
+|       |         shows decision_id, candidate_account_id, display name, confidence, signal.
+|       +-- set <decision_id> --into <account_id> | --standalone [--quiet]
+|       |         Merge the provisional into the candidate (--into) or keep as standalone
+|       |         (--standalone). The two flags are mutually exclusive; omitting both exits 2.
+|       +-- history [--limit N] [--output json] [--quiet]
+|       |         Recent decisions (all statuses), newest first.
+|       +-- run [--output json]
+|                 Backfill pending link proposals for all existing accounts.
+|                 Finds cross-source twins (same institution+last4 or fuzzy name match)
+|                 that have no pending proposal yet and writes pending decisions.
+|                 Prints count of new proposals written; hints user toward `accounts links pending`.
+|   Note: `accounts links undo` is deliberately NOT YET registered (deferred to M1L audit-undo consumer).
 |
 +-- assets                         -- (future spec) Physical assets (real estate, vehicles, valuables)
 |                                     Workflows defined in asset-tracking.md.
@@ -218,8 +247,9 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- list                       -- List transactions [--account ID] [--from] [--to]
 |   +-- create                     -- Create a manual transaction
 |   +-- audit                      -- Audit one transaction's curation history (notes, tags, splits)
-|   +-- review                     -- Unified review queue (matches + categorize)
-|   |     [--type matches|categorize|all]   Default all; walks matches first then categorize
+|   +-- review                     -- DEPRECATED: use `moneybin review` (removed after one minor release)
+|   |                                  Unified review queue (matches + categorize + account-links)
+|   |     [--type all|matches|categorize|account-links]   Default all; walks matches first then categorize
 |   |     [--status]                        Counts only, no interactive loop
 |   |     [--confirm <id>]                  Non-interactive: confirm one match or categorize item by ID
 |   |     [--reject <id>]                   Non-interactive: reject one match by ID

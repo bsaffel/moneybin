@@ -11,5 +11,6 @@ CREATE TABLE IF NOT EXISTS raw.ofx_balances (
     loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- Timestamp when this record was inserted into the database
     import_id VARCHAR, -- UUID of the import batch this row belongs to; NULL for rows imported before V003
     source_type VARCHAR DEFAULT 'ofx', -- Format taxonomy marker; always 'ofx' for OFX/QFX/QBO files
+    source_origin VARCHAR, -- Institution slug resolved at import time; scopes source_native against slug collisions (matches app.account_links.source_origin for the staging JOIN)
     PRIMARY KEY (account_id, statement_end_date, source_file)
 );

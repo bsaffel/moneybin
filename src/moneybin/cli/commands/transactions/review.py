@@ -1,11 +1,15 @@
-"""Unified review queue: walks pending matches + uncategorized transactions.
+"""Unified review queue: walks pending matches + uncategorized transactions + account-links.
 
 CLI-only collapse (per moneybin-cli.md v2). MCP keeps separate
 ``transactions_matches_pending`` and ``transactions_categorize_pending``
 tools because their result shapes differ; the orientation tool
-``transactions_review`` returns the counts.
+``review`` returns the counts.
 
 Interactive loop UX is stubbed for v2; --status works end-to-end.
+
+``transactions_review`` is a **deprecated alias** for the top-level
+``review_command`` (``moneybin review``). It emits a deprecation warning
+then delegates to ``review_impl``.
 """
 
 from __future__ import annotations
@@ -27,28 +31,24 @@ from ..stubs import _not_implemented
 
 logger = logging.getLogger(__name__)
 
-_VALID_TYPES = {"all", "matches", "categorize"}
+_VALID_TYPES = {"all", "matches", "categorize", "account-links"}
 
 
-def transactions_review(
-    type_: str = typer.Option("all", "--type", help="all | matches | categorize"),
-    status: bool = typer.Option(
-        False, "--status", help="Show queue counts only, no interactive loop"
-    ),
-    confirm_id: str | None = typer.Option(
-        None, "--confirm", help="Non-interactive: confirm one item by ID"
-    ),
-    reject_id: str | None = typer.Option(
-        None, "--reject", help="Non-interactive: reject one item by ID"
-    ),
-    confirm_all: bool = typer.Option(
-        False, "--confirm-all", help="Non-interactive: confirm all items in scope"
-    ),
-    limit: int = typer.Option(50, "--limit", help="Cap items per session"),  # noqa: ARG001 — placeholder; interactive loop pending
-    output: OutputFormat = output_option,
-    quiet: bool = quiet_option,  # noqa: ARG001 — --status emits data only; nothing to suppress
+def review_impl(
+    type_: str,
+    status: bool,
+    confirm_id: str | None,
+    reject_id: str | None,
+    confirm_all: bool,
+    limit: int,
+    output: OutputFormat,
+    quiet: bool,  # noqa: ARG001 — --status emits data only; nothing to suppress
 ) -> None:
-    """Walk pending matches first, then uncategorized transactions."""
+    """Shared implementation for `moneybin review` and `moneybin transactions review`.
+
+    Extracted so both the top-level leaf and the deprecated alias can call it
+    without duplicating logic.
+    """
     if type_ not in _VALID_TYPES:
         raise typer.BadParameter(
             f"--type must be one of {sorted(_VALID_TYPES)}, got {type_!r}"
@@ -71,6 +71,47 @@ def transactions_review(
         return
 
     _not_implemented("moneybin-cli.md (review collapse — interactive loop pending)")
+
+
+def transactions_review(
+    type_: str = typer.Option(
+        "all", "--type", help="all | matches | categorize | account-links"
+    ),
+    status: bool = typer.Option(
+        False, "--status", help="Show queue counts only, no interactive loop"
+    ),
+    confirm_id: str | None = typer.Option(
+        None, "--confirm", help="Non-interactive: confirm one item by ID"
+    ),
+    reject_id: str | None = typer.Option(
+        None, "--reject", help="Non-interactive: reject one item by ID"
+    ),
+    confirm_all: bool = typer.Option(
+        False, "--confirm-all", help="Non-interactive: confirm all items in scope"
+    ),
+    limit: int = typer.Option(50, "--limit", help="Cap items per session"),
+    output: OutputFormat = output_option,
+    quiet: bool = quiet_option,
+) -> None:
+    """Walk pending matches first, then uncategorized transactions.
+
+    DEPRECATED: use `moneybin review` instead. Removed after one minor release.
+    """
+    typer.echo(
+        "⚠️  `moneybin transactions review` is deprecated. "
+        "Use `moneybin review` instead. Removed after one minor release.",
+        err=True,
+    )
+    review_impl(
+        type_=type_,
+        status=status,
+        confirm_id=confirm_id,
+        reject_id=reject_id,
+        confirm_all=confirm_all,
+        limit=limit,
+        output=output,
+        quiet=quiet,
+    )
 
 
 def _review_matches_noninteractive(
@@ -114,6 +155,7 @@ def _review_matches_noninteractive(
 def _print_status(type_: str, output: OutputFormat) -> None:
     from moneybin.cli.utils import handle_cli_errors
     from moneybin.config import get_settings
+    from moneybin.services.account_links_service import AccountLinksService
     from moneybin.services.categorization import CategorizationService
     from moneybin.services.matching_service import MatchingService
     from moneybin.services.review_service import ReviewService
@@ -123,6 +165,7 @@ def _print_status(type_: str, output: OutputFormat) -> None:
             review_svc = ReviewService(
                 match_service=MatchingService(db, get_settings().matching),
                 categorize_service=CategorizationService(db),
+                account_links_service=AccountLinksService(db),
             )
             s = review_svc.status()
 
@@ -135,16 +178,19 @@ def _print_status(type_: str, output: OutputFormat) -> None:
             data: object = ReviewStatusPayload(
                 matches_pending=s.matches_pending,
                 categorize_pending=s.categorize_pending,
+                account_links_pending=s.account_links_pending,
                 total=s.total,
             )
         elif type_ == "matches":
             data = {"matches_pending": s.matches_pending}
-        else:  # type_ == "categorize"
+        elif type_ == "categorize":
             data = {"categorize_pending": s.categorize_pending}
+        else:  # type_ == "account-links"
+            data = {"account_links_pending": s.account_links_pending}
         render_or_json(
             build_envelope(data=data, sensitivity="low"),
             output,
-            cli_actor="transactions_review",
+            cli_actor="review",
         )
         return
 
@@ -152,7 +198,10 @@ def _print_status(type_: str, output: OutputFormat) -> None:
         typer.echo(f"Matches pending: {s.matches_pending}")
     elif type_ == "categorize":
         typer.echo(f"Uncategorized transactions: {s.categorize_pending}")
+    elif type_ == "account-links":
+        typer.echo(f"Account-link decisions pending: {s.account_links_pending}")
     else:
         typer.echo(f"Matches pending: {s.matches_pending}")
         typer.echo(f"Uncategorized transactions: {s.categorize_pending}")
+        typer.echo(f"Account-link decisions pending: {s.account_links_pending}")
         typer.echo(f"Total: {s.total}")

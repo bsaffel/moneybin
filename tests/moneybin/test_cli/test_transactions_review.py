@@ -106,6 +106,7 @@ def test_review_status_json_output(
     assert payload == {
         "matches_pending": 0,
         "categorize_pending": 0,
+        "account_links_pending": 0,
         "total": 0,
     }
 

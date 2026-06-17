@@ -38,6 +38,7 @@ from moneybin.services.doctor_service import (
     DoctorService,
 )
 from moneybin.tables import (
+    ACCOUNT_LINKS,
     ACCOUNT_SETTINGS,
     BALANCE_ASSERTIONS,
     BUDGETS,
@@ -134,6 +135,22 @@ def test_audit_coverage_passes_for_repo_mutated_row(db: Database) -> None:
     result = DoctorService(db)._run_app_audit_coverage(USER_CATEGORIES, "category_id")
     assert result.status == "pass"
     assert result.affected_ids == []
+
+
+def test_audit_coverage_flags_account_links_bypass(db: Database) -> None:
+    """The GREATEST(decided_at, reversed_at) watermark catches a raw account_links write."""
+    db.execute(
+        "INSERT INTO app.account_links "  # noqa: S608  # test input, not executing user SQL
+        "(link_id, account_id, ref_kind, ref_value, source_type, source_origin, "
+        "status, decided_by, decided_at) VALUES "
+        "('bypasslink', 'acct1', 'source_native', 'checking', 'ofx', 'wf', "
+        "'accepted', 'auto', now()::TIMESTAMP)",
+    )
+    result = DoctorService(db)._run_app_audit_coverage(
+        ACCOUNT_LINKS, "link_id", updated_expr="GREATEST(decided_at, reversed_at)"
+    )
+    assert result.status == "fail"
+    assert "bypasslink" in result.affected_ids
 
 
 def test_audit_coverage_ignores_rows_outside_lookback(db: Database) -> None:

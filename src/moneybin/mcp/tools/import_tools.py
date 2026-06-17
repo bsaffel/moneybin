@@ -750,6 +750,8 @@ def import_confirm(
     save_format: bool = True,
     account_id: str | None = None,
     account_name: str | None = None,
+    account_bindings: dict[str, str] | None = None,
+    account_metadata: dict[str, dict[str, str]] | None = None,
 ) -> ResponseEnvelope[ImportConfirmPayload]:
     """Confirm or override a proposed mapping, or apply a PDF bridge response.
 
@@ -776,10 +778,12 @@ def import_confirm(
     from the statement; pass ``account_id`` only to pin rows to an existing
     account when the statement carries no account anchor.
 
-    Mutation surface: writes to ``raw.tabular_transactions`` (data load) and
-    ``app.tabular_formats`` / ``app.pdf_formats`` when ``save_format=True``.
-    Data load is reversible via ``import_revert`` with the returned
-    ``import_id``; format save can be undone via ``system_audit_undo``.
+    Mutation surface: writes to ``raw.tabular_transactions`` (data load),
+    ``app.tabular_formats`` / ``app.pdf_formats`` when ``save_format=True``, and
+    ``app.account_settings`` when ``account_metadata`` captures fields for a
+    newly-minted account. Data load is reversible via ``import_revert`` with the
+    returned ``import_id``; format save and the settings write can be undone via
+    ``system_audit_undo``.
 
     Amounts use the accounting convention: negative = expense, positive =
     income; transfers exempt.
@@ -795,6 +799,18 @@ def import_confirm(
             for future imports. Defaults to True.
         account_id: Existing account id to associate single-account rows with.
         account_name: Existing account name to look up; resolves to account_id.
+        account_bindings: Ratify an ``account_confirmation``: a map of
+            ``source_account_key`` -> existing ``account_id`` (adopt) or
+            ``"new"`` (mint a distinct new account). The keys come from the
+            ``confirmation_payload.account_proposals[].source_account_key`` of a
+            prior ``confirmation_required`` response. Use this for multi-account
+            files; ``account_id``/``account_name`` cover the single-account case.
+            On retry, re-supply ALL bindings — the gate re-evaluates every
+            account and persists no partial state between calls.
+        account_metadata: For accounts bound ``"new"``, a map of
+            ``source_account_key`` -> ``{display_name, account_subtype,
+            last_four, iso_currency_code}`` captured into the minted account's
+            settings. Unknown fields raise. Ignored for adopted accounts.
     """
     from moneybin.services.import_confirmation import (
         ImportConfirmationRequiredError,
@@ -864,6 +880,8 @@ def import_confirm(
                 save_format=save_format,
                 account_id=account_id,
                 account_name=account_name,
+                account_bindings=account_bindings,
+                account_metadata=account_metadata,
                 actor_kind="agent",
                 refresh=False,  # caller can run refresh_run separately
             )

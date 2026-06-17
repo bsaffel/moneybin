@@ -254,7 +254,7 @@ class OFXExtractor:
                     ofx, source_file, extraction_timestamp, import_id, source_origin
                 ),
                 "balances": self._extract_balances(
-                    ofx, source_file, extraction_timestamp, import_id
+                    ofx, source_file, extraction_timestamp, import_id, source_origin
                 ),
             }
 
@@ -347,6 +347,10 @@ class OFXExtractor:
                 "extracted_at": extraction_timestamp.isoformat(),
                 "import_id": import_id,
                 "source_type": "ofx",
+                # source_origin must match app.account_links.source_origin so the
+                # staging translation JOIN in stg_ofx__accounts is total (B1).
+                # Do NOT change how source_origin is derived here.
+                "source_origin": source_origin,
             }
             accounts_data.append(account_info)
 
@@ -363,6 +367,7 @@ class OFXExtractor:
                 "extracted_at": pl.String,
                 "import_id": pl.String,
                 "source_type": pl.String,
+                "source_origin": pl.String,
             }
         )
 
@@ -441,6 +446,7 @@ class OFXExtractor:
         source_file: str,
         extraction_timestamp: datetime,
         import_id: str,
+        source_origin: str,
     ) -> pl.DataFrame:
         """Extract balance information from OFX file."""
         balances_data: list[dict[str, Any]] = []
@@ -470,6 +476,10 @@ class OFXExtractor:
                     "extracted_at": extraction_timestamp.isoformat(),
                     "import_id": import_id,
                     "source_type": "ofx",
+                    # source_origin must match app.account_links.source_origin so the
+                    # staging translation JOIN in stg_ofx__balances is total (B2).
+                    # Do NOT change how source_origin is derived here.
+                    "source_origin": source_origin,
                 }
                 balances_data.append(balance_info)
 
@@ -489,6 +499,7 @@ class OFXExtractor:
                 "extracted_at": pl.String,
                 "import_id": pl.String,
                 "source_type": pl.String,
+                "source_origin": pl.String,
             }
         )
 

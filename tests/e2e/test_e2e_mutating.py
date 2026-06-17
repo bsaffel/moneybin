@@ -754,10 +754,10 @@ def _accounts_with_data_template(  # pyright: ignore[reportUnusedFunction]  # py
 ) -> Path:
     """Module template: profile with sample OFX imported and transforms applied.
 
-    Provides a MONEYBIN_HOME where core.dim_accounts has at least one row
-    (account_id=9876543210). Account mutation tests copy this template via
-    make_workflow_env_fast so they can call rename/archive/etc. without
-    failing the _assert_account_exists check.
+    Provides a MONEYBIN_HOME where core.dim_accounts has at least one row.
+    Account mutation tests copy this template via make_workflow_env_fast so
+    they can call rename/archive/etc. without failing the _assert_account_exists
+    check. Use _resolve_account_id(env) to look up the minted canonical id.
 
     Uses _TEMPLATE_PROFILE_NAME ("e2e-template") so make_workflow_env_fast
     resolves the correct active profile when copying.
@@ -770,6 +770,22 @@ def _accounts_with_data_template(  # pyright: ignore[reportUnusedFunction]  # py
     ).assert_success()
     run_cli("transform", "apply", env=env, timeout=180).assert_success()
     return e2e_home
+
+
+def _resolve_account_id(env: dict[str, str]) -> str:
+    """Resolve the canonical account_id minted by the AccountResolver at import time.
+
+    The OFX import mints an opaque UUID-based account_id for the ACCTID from the
+    fixture; the source-native number (9876543210) is no longer the lookup key.
+    Fetches the real id from ``accounts list --output json`` so tests don't
+    hardcode a value that changes every time a fresh template is built.
+    """
+    result = run_cli("accounts", "list", "--output", "json", env=env)
+    result.assert_success()
+    data = json.loads(result.stdout)["data"]
+    rows = data["rows"]
+    assert len(rows) >= 1, f"expected >=1 account row, got: {result.stdout}"
+    return str(rows[0]["account_id"])
 
 
 class TestAccountsEntityOps:
@@ -788,10 +804,11 @@ class TestAccountsEntityOps:
         env = make_workflow_env_fast(
             tmp_path, "acct-rename", _accounts_with_data_template
         )
+        account_id = _resolve_account_id(env)
         result = run_cli(
             "accounts",
             "set",
-            self._ACCOUNT,
+            account_id,
             "--display-name",
             "My Test Account",
             env=env,
@@ -806,9 +823,10 @@ class TestAccountsEntityOps:
         env = make_workflow_env_fast(
             tmp_path, "acct-include", _accounts_with_data_template
         )
-        result = run_cli("accounts", "set", self._ACCOUNT, "--exclude", env=env)
+        account_id = _resolve_account_id(env)
+        result = run_cli("accounts", "set", account_id, "--exclude", env=env)
         result.assert_success()
-        result = run_cli("accounts", "set", self._ACCOUNT, "--include", env=env)
+        result = run_cli("accounts", "set", account_id, "--include", env=env)
         result.assert_success()
 
     def test_accounts_set_archive_then_unarchive(
@@ -818,10 +836,11 @@ class TestAccountsEntityOps:
         env = make_workflow_env_fast(
             tmp_path, "acct-archive", _accounts_with_data_template
         )
-        result = run_cli("accounts", "set", self._ACCOUNT, "--archive", env=env)
+        account_id = _resolve_account_id(env)
+        result = run_cli("accounts", "set", account_id, "--archive", env=env)
         result.assert_success()
         assert "excluded from net worth" in result.output
-        result = run_cli("accounts", "set", self._ACCOUNT, "--unarchive", env=env)
+        result = run_cli("accounts", "set", account_id, "--unarchive", env=env)
         result.assert_success()
 
     def test_accounts_set_canonical_subtype(
@@ -829,10 +848,11 @@ class TestAccountsEntityOps:
     ) -> None:
         """Accounts set --subtype with a canonical value and --yes succeeds."""
         env = make_workflow_env_fast(tmp_path, "acct-set", _accounts_with_data_template)
+        account_id = _resolve_account_id(env)
         result = run_cli(
             "accounts",
             "set",
-            self._ACCOUNT,
+            account_id,
             "--subtype",
             "checking",
             "--yes",
@@ -879,11 +899,12 @@ class TestBalanceAssertions:
         env = make_workflow_env_fast(
             tmp_path, "bal-assert-list", _accounts_with_data_template
         )
+        account_id = _resolve_account_id(env)
         result = run_cli(
             "accounts",
             "balance",
             "assert",
-            self._ACCOUNT,
+            account_id,
             self._DATE,
             self._AMOUNT,
             "--notes",
@@ -894,8 +915,8 @@ class TestBalanceAssertions:
 
         result = run_cli("accounts", "balance", "list", "--output", "json", env=env)
         result.assert_success()
-        # account_id is CRITICAL → masked to ****<last4> in JSON output.
-        assert f"****{self._ACCOUNT[-4:]}" in result.stdout
+        # account_id is RECORD_ID (unmasked opaque surrogate — not PII).
+        assert account_id in result.stdout
         assert self._DATE in result.stdout
 
     def test_balance_assert_then_delete(
@@ -905,11 +926,12 @@ class TestBalanceAssertions:
         env = make_workflow_env_fast(
             tmp_path, "bal-assert-del", _accounts_with_data_template
         )
+        account_id = _resolve_account_id(env)
         run_cli(
             "accounts",
             "balance",
             "assert",
-            self._ACCOUNT,
+            account_id,
             self._DATE,
             self._AMOUNT,
             env=env,
@@ -919,7 +941,7 @@ class TestBalanceAssertions:
             "accounts",
             "balance",
             "assertion-delete",
-            self._ACCOUNT,
+            account_id,
             self._DATE,
             env=env,
         )
@@ -931,7 +953,7 @@ class TestBalanceAssertions:
             "balance",
             "list",
             "--account",
-            self._ACCOUNT,
+            account_id,
             "--output",
             "json",
             env=env,
@@ -1318,6 +1340,85 @@ class TestCategorizeRulesDeleteCLI:
         assert result.exit_code != 0
         assert "Traceback (most recent call last)" not in result.stderr
         assert "Rule does-not-exist not found" in result.stderr
+
+
+class TestAccountLinksMutating:
+    """E2E smoke tests for `accounts links run` and `accounts links set`."""
+
+    def test_accounts_links_run(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """`accounts links run` exits 0; 0 proposals on empty data is success."""
+        env = make_workflow_env_fast(tmp_path, "links-run", _mutating_profile_template)
+        result = run_cli("accounts", "links", "run", env=env)
+        result.assert_success()
+
+    def test_accounts_links_run_json(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """`accounts links run --output json` returns an envelope with new_proposals."""
+        env = make_workflow_env_fast(
+            tmp_path, "links-run-json", _mutating_profile_template
+        )
+        result = run_cli("accounts", "links", "run", "--output", "json", env=env)
+        result.assert_success()
+        payload = json.loads(result.stdout)
+        assert "data" in payload
+        assert "new_proposals" in payload["data"]
+        assert isinstance(payload["data"]["new_proposals"], int)
+
+    def test_accounts_links_set_not_found(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """`accounts links set <nonexistent_id> --standalone` fails with not-found, no traceback.
+
+        No pending link decisions exist on a fresh profile — the service raises
+        UserError(MUTATION_NOT_FOUND) which handle_cli_errors converts to exit 1.
+        """
+        env = make_workflow_env_fast(
+            tmp_path, "links-set-nf", _mutating_profile_template
+        )
+        result = run_cli(
+            "accounts",
+            "links",
+            "set",
+            "nonexistent-decision-id",
+            "--standalone",
+            env=env,
+        )
+        assert result.exit_code != 0
+        assert "Traceback (most recent call last)" not in result.stderr
+
+    def test_accounts_links_set_missing_flag_is_usage_error(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """`accounts links set <id>` without --into or --standalone exits 2 (usage error)."""
+        env = make_workflow_env_fast(
+            tmp_path, "links-set-usage", _mutating_profile_template
+        )
+        result = run_cli("accounts", "links", "set", "any-id", env=env)
+        assert result.exit_code == 2
+        assert "Traceback (most recent call last)" not in result.stderr
+
+    def test_accounts_links_set_mutual_exclusion_error(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """`accounts links set <id> --into X --standalone` exits 2 (mutually exclusive)."""
+        env = make_workflow_env_fast(
+            tmp_path, "links-set-mutex", _mutating_profile_template
+        )
+        result = run_cli(
+            "accounts",
+            "links",
+            "set",
+            "any-id",
+            "--into",
+            "CAND001",
+            "--standalone",
+            env=env,
+        )
+        assert result.exit_code == 2
+        assert "Traceback (most recent call last)" not in result.stderr
 
 
 class TestPrivacyConsent:

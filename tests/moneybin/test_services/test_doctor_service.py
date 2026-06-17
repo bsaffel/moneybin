@@ -140,9 +140,10 @@ def _seed_prep_unioned(db: Database, row_count: int) -> None:
         db.execute(
             """
             INSERT INTO prep.int_transactions__unioned (
-                source_transaction_id, account_id, transaction_date, amount,
-                description, currency_code, source_type, source_origin, is_pending
-            ) VALUES (?, 'ACC1', '2026-01-01', -50.00, 'Test', 'USD', 'ofx', 'bank', false)
+                source_transaction_id, account_id, source_account_key,
+                transaction_date, amount, description, currency_code,
+                source_type, source_origin, is_pending
+            ) VALUES (?, 'ACC1', 'ACC1', '2026-01-01', -50.00, 'Test', 'USD', 'ofx', 'bank', false)
             """,  # noqa: S608 — test input, not user data
             [f"u{i}"],
         )
@@ -463,6 +464,7 @@ _UNIONED_FULL_DDL = """\
 CREATE TABLE IF NOT EXISTS prep.int_transactions__unioned (
     source_transaction_id VARCHAR NOT NULL,
     account_id            VARCHAR NOT NULL,
+    source_account_key    VARCHAR,
     transaction_date      DATE,
     authorized_date       DATE,
     amount                DECIMAL(18, 2),
@@ -513,11 +515,12 @@ def _insert_unioned_row_for_matched(
     db.execute(
         """
         INSERT INTO prep.int_transactions__unioned (
-            source_transaction_id, account_id, transaction_date, amount,
-            description, currency_code, source_type, source_origin, is_pending
-        ) VALUES (?, ?, '2026-01-01', -50.00, 'Test', 'USD', ?, 'bank', false)
+            source_transaction_id, account_id, source_account_key,
+            transaction_date, amount, description, currency_code,
+            source_type, source_origin, is_pending
+        ) VALUES (?, ?, ?, '2026-01-01', -50.00, 'Test', 'USD', ?, 'bank', false)
         """,  # noqa: S608 — test input, not user data
-        [source_transaction_id, account_id, source_type],
+        [source_transaction_id, account_id, account_id, source_type],
     )
 
 
@@ -710,8 +713,9 @@ def test_run_all_returns_expected_invariants(
     # balance_assertions->dim_accounts FK + budgets->dim_categories FK +
     # match_decisions->dim_accounts FK + pdf_formats recipe-validity / bounds /
     # fingerprint-shape) + orphan_app_state (PR4: scans transaction_notes /
-    # transaction_tags vs core).
-    assert len(report.invariants) == 31
+    # transaction_tags vs core) + account_links / account_link_decisions /
+    # transaction_id_aliases audit coverage (M1S).
+    assert len(report.invariants) == 34
     names = [r.name for r in report.invariants]
     assert "fct_transactions_fk_integrity" in names
     assert "fct_transactions_sign_convention" in names

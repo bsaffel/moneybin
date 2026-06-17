@@ -132,9 +132,11 @@ def test_count_distinct_account_id_is_aggregate(populated_db: Database) -> None:
     assert out == {"n": DataClass.AGGREGATE}
 
 
-def test_min_account_id_stays_critical(populated_db: Database) -> None:
-    out = _classes("SELECT MIN(account_id) AS m FROM core.dim_accounts", populated_db)
-    assert out == {"m": DataClass.ACCOUNT_IDENTIFIER}
+def test_min_routing_number_stays_critical(populated_db: Database) -> None:
+    out = _classes(
+        "SELECT MIN(routing_number) AS m FROM core.dim_accounts", populated_db
+    )
+    assert out == {"m": DataClass.ROUTING_NUMBER}
 
 
 def test_multi_column_expression_takes_max_tier(populated_db: Database) -> None:
@@ -149,7 +151,7 @@ def test_multi_column_expression_takes_max_tier(populated_db: Database) -> None:
 
 def test_derive_query_tier_takes_max(populated_db: Database) -> None:
     out = _classes(
-        "SELECT account_id, account_type FROM core.dim_accounts", populated_db
+        "SELECT routing_number, account_type FROM core.dim_accounts", populated_db
     )
     assert derive_query_tier(out) is Tier.CRITICAL
 
@@ -199,16 +201,16 @@ def test_corpus_resolves_expected_classes(
 def test_unresolvable_projection_falls_back_to_max_input_tier(
     populated_db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Monkeypatch _column_key to fail for 'amount'; assert fallback = CRITICAL.
+    """Monkeypatch _column_key to fail for 'credit_limit'; assert fallback = CRITICAL.
 
-    The query touches account_id (CRITICAL) in its input columns, so when
-    the 'amount' projection cannot be resolved, the conservative fallback
+    The query touches routing_number (CRITICAL) in its input columns, so when
+    the 'credit_limit' projection cannot be resolved, the conservative fallback
     raises the floor to the max input tier: CRITICAL. This ensures we
     over-redact rather than under-redact.
     """
     import moneybin.privacy.sql_lineage as lin
 
-    sql = "SELECT account_id, amount FROM core.fct_transactions"
+    sql = "SELECT routing_number, credit_limit FROM core.dim_accounts"
     snap = get_current_schema_snapshot(populated_db)
     tree = lin.expand_star(lin.parse_cached(sql), snap)
 
@@ -219,32 +221,33 @@ def test_unresolvable_projection_falls_back_to_max_input_tier(
         alias_map: object,
         snapshot: object,
     ) -> object:
-        # _column_key(col, alias_map, snapshot) — fail only for 'amount'
+        # _column_key(col, alias_map, snapshot) — fail only for 'credit_limit'
         from sqlglot import exp as _exp
 
-        if isinstance(col, _exp.Column) and col.name == "amount":
+        if isinstance(col, _exp.Column) and col.name == "credit_limit":
             return None
         return real(col, alias_map, snapshot)  # type: ignore[arg-type]
 
     monkeypatch.setattr(lin, "_column_key", flaky)  # pyright: ignore[reportPrivateUsage]
 
     out = lin.resolve_output_classes(tree, snap, sql)
-    # account_id still resolves to CRITICAL; amount falls back to max input tier
-    # (CRITICAL, because account_id is among the input columns).
-    assert out["amount"].tier is Tier.CRITICAL
+    # routing_number still resolves to CRITICAL; credit_limit falls back to max
+    # input tier (CRITICAL, because routing_number is among the input columns).
+    assert out["credit_limit"].tier is Tier.CRITICAL
 
 
 def test_cte_outer_column_falls_back_to_max_inner_tier(populated_db: Database) -> None:
     """CTE outer SELECT cannot resolve column to schema directly; falls back to max input tier.
 
-    The CTE inner query references account_id (CRITICAL) and amount (HIGH).
-    The outer SELECT's account_id projection hits the fallback (CTE column is
-    not in the schema snapshot), and the max input tier from the whole tree is
-    CRITICAL (account_id is present). The fallback is conservative — CRITICAL.
+    The CTE inner query references routing_number (CRITICAL) and credit_limit
+    (HIGH). The outer SELECT's routing_number projection hits the fallback (CTE
+    column is not in the schema snapshot), and the max input tier from the whole
+    tree is CRITICAL (routing_number is present). The fallback is conservative —
+    CRITICAL.
     """
     out = _classes(
-        "WITH spend AS (SELECT account_id, amount FROM core.fct_transactions) "
-        "SELECT account_id FROM spend",
+        "WITH acct AS (SELECT routing_number, credit_limit FROM core.dim_accounts) "
+        "SELECT routing_number FROM acct",
         populated_db,
     )
     assert next(iter(out.values())).tier is Tier.CRITICAL
@@ -254,18 +257,18 @@ def test_union_classifies_every_branch_by_position(populated_db: Database) -> No
     """A CRITICAL column in a later UNION branch masks the output position.
 
     Output names come from the first branch (``description``, MEDIUM), but the
-    second branch supplies ``account_id`` (CRITICAL) by position. Classifying
-    only the first branch would leak account numbers in the ``description``
+    second branch supplies ``routing_number`` (CRITICAL) by position. Classifying
+    only the first branch would leak routing numbers in the ``description``
     column; the per-position max-tier rule must yield CRITICAL.
     """
     out = _classes(
         "SELECT description FROM core.fct_transactions "
         "UNION ALL "
-        "SELECT account_id FROM core.dim_accounts",
+        "SELECT routing_number FROM core.dim_accounts",
         populated_db,
     )
     assert list(out.keys()) == ["description"]
-    assert out["description"] is DataClass.ACCOUNT_IDENTIFIER
+    assert out["description"] is DataClass.ROUTING_NUMBER
     assert derive_query_tier(out) is Tier.CRITICAL
 
 
@@ -323,15 +326,16 @@ def test_fallback_log_omits_raw_sql(
 def test_count_plus_critical_column_not_downgraded(populated_db: Database) -> None:
     """A top-level COUNT alongside a surfaced CRITICAL column must not collapse to LOW.
 
-    `COUNT(*) + account_id GROUP BY account_id` surfaces account_id's value
-    directly; the count does not suppress it. Classifying the projection as
-    AGGREGATE would leak account numbers unmasked at sensitivity=low.
+    `COUNT(*) + routing_number GROUP BY routing_number` surfaces routing_number's
+    value directly; the count does not suppress it. Classifying the projection as
+    AGGREGATE would leak routing numbers unmasked at sensitivity=low.
     """
     out = _classes(
-        "SELECT COUNT(*) + account_id AS x FROM core.dim_accounts GROUP BY account_id",
+        "SELECT COUNT(*) + routing_number AS x FROM core.dim_accounts "
+        "GROUP BY routing_number",
         populated_db,
     )
-    assert out == {"x": DataClass.ACCOUNT_IDENTIFIER}
+    assert out == {"x": DataClass.ROUTING_NUMBER}
     assert derive_query_tier(out) is Tier.CRITICAL
 
 
@@ -349,13 +353,13 @@ def test_count_of_critical_column_stays_aggregate(populated_db: Database) -> Non
 def test_two_unaliased_projections_get_distinct_keys(populated_db: Database) -> None:
     """Two unnamed projections must not collide on one output key.
 
-    `MIN(account_id)` and `MAX(routing_number)` both yield `""` from
+    `MIN(last_four)` and `MAX(routing_number)` both yield `""` from
     alias_or_name; a positional suffix keeps each a distinct key so neither
     class is dropped (a dropped class weakens sql_query's position-aligned
     fallback).
     """
     out = _classes(
-        "SELECT MIN(account_id), MAX(routing_number) FROM core.dim_accounts",
+        "SELECT MIN(last_four), MAX(routing_number) FROM core.dim_accounts",
         populated_db,
     )
     assert len(out) == 2

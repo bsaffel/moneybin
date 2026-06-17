@@ -40,14 +40,14 @@ def _seed_txn(db: Database) -> None:
     """)
 
 
-def test_critical_account_id_masked(populated_db: Database) -> None:
-    """CRITICAL account_id is masked (****<last4>) and the tier is CRITICAL."""
+def test_account_id_passes_through_unmasked(populated_db: Database) -> None:
+    """account_id is RECORD_ID (opaque minted surrogate, spec D6) — LOW, unmasked."""
     _seed_account(populated_db)
     result = execute_sql_query(
         populated_db, "SELECT account_id FROM core.dim_accounts", max_rows=100
     )
-    assert result.tier is Tier.CRITICAL
-    assert str(result.records[0]["account_id"]).startswith("****")
+    assert result.tier is Tier.LOW
+    assert result.records[0]["account_id"] == "ACC000123456789"
 
 
 def test_routing_number_masked(populated_db: Database) -> None:
@@ -137,15 +137,16 @@ def test_select_star_masks_every_critical_column(populated_db: Database) -> None
 
     Redaction maps DuckDB result columns to classes BY NAME, so it cannot be
     fooled by any divergence between sqlglot's `*` expansion order and DuckDB's
-    runtime column order (the round-5 SELECT * bypass).
+    runtime column order (the round-5 SELECT * bypass). account_id is RECORD_ID
+    (spec D6) — it passes through; the CRITICAL routing_number is masked.
     """
     _seed_account(populated_db)
     result = execute_sql_query(
         populated_db, "SELECT * FROM core.dim_accounts", max_rows=100
     )
     row = result.records[0]
-    assert str(row["account_id"]).startswith("****")
-    assert row["routing_number"] == "*****"
+    assert row["account_id"] == "ACC000123456789"  # RECORD_ID — not masked
+    assert row["routing_number"] == "*****"  # CRITICAL — masked
     assert result.tier is Tier.CRITICAL
 
 
@@ -176,13 +177,13 @@ def test_union_reused_alias_masks_critical(populated_db: Database) -> None:
 def test_unaliased_aggregate_fails_closed_to_max_tier(populated_db: Database) -> None:
     """An unaliased expression DuckDB names differently than sqlglot fails closed.
 
-    `MIN(account_id)` → DuckDB column 'min(account_id)' vs sqlglot ''. The name
-    miss fails closed to the query's max tier (CRITICAL), so the value is masked
-    — never returned in the clear.
+    `MIN(routing_number)` → DuckDB column 'min(routing_number)' vs sqlglot ''. The
+    name miss fails closed to the query's max tier (CRITICAL), so the value is
+    masked — never returned in the clear.
     """
     _seed_account(populated_db)
     result = execute_sql_query(
-        populated_db, "SELECT MIN(account_id) FROM core.dim_accounts", max_rows=100
+        populated_db, "SELECT MIN(routing_number) FROM core.dim_accounts", max_rows=100
     )
     (value,) = result.records[0].values()
     assert str(value).startswith("****")
@@ -227,24 +228,24 @@ def test_truncation_sets_total_count(populated_db: Database) -> None:
 
 
 def test_unaliased_aggregate_critical_masked(populated_db: Database) -> None:
-    """Unaliased MIN(account_id) is masked despite the sqlglot/DuckDB name split.
+    """Unaliased MIN(routing_number) is masked despite the sqlglot/DuckDB name split.
 
     sqlglot names the projection ``''`` while DuckDB calls the column
-    ``min(account_id)``; position-aligned redaction masks it by the real name.
+    ``min(routing_number)``; position-aligned redaction masks it by the real name.
     """
     _seed_account(populated_db)
     result = execute_sql_query(
-        populated_db, "SELECT MIN(account_id) FROM core.dim_accounts", max_rows=100
+        populated_db, "SELECT MIN(routing_number) FROM core.dim_accounts", max_rows=100
     )
     assert result.tier is Tier.CRITICAL
     (value,) = result.records[0].values()
     assert str(value).startswith("****")
 
 
-def test_classes_returned_includes_account_identifier(populated_db: Database) -> None:
+def test_classes_returned_includes_routing_number(populated_db: Database) -> None:
     """classes_returned surfaces the resolved data classes for observability."""
     _seed_account(populated_db)
     result = execute_sql_query(
-        populated_db, "SELECT account_id FROM core.dim_accounts", max_rows=100
+        populated_db, "SELECT routing_number FROM core.dim_accounts", max_rows=100
     )
-    assert "account_identifier" in result.classes_returned
+    assert "routing_number" in result.classes_returned

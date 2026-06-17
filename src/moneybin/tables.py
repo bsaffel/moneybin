@@ -81,6 +81,11 @@ TABULAR_FORMATS = TableRef("app", "tabular_formats")
 MATCH_DECISIONS = TableRef("app", "match_decisions")
 SEED_SOURCE_PRIORITY = TableRef("app", "seed_source_priority")
 
+# -- App account-identity tables (M1S) --
+ACCOUNT_LINKS = TableRef("app", "account_links")
+ACCOUNT_LINK_DECISIONS = TableRef("app", "account_link_decisions")
+TRANSACTION_ID_ALIASES = TableRef("app", "transaction_id_aliases")
+
 # -- Seed tables (materialized by SQLMesh from CSV) --
 SEED_CATEGORIES = TableRef("seeds", "categories")
 

@@ -238,6 +238,14 @@ flowchart TD
 - `ProposedMapping`, `BridgePayload`, `Accept`, `Override`, `Resolved`, and
   `ConfirmationRequired` are defined at implementation; their shapes follow the payloads
   described above (this is a design spec, not the type module).
+- **Account-binding facet (M1S.4).** `ConfirmationRequired` carries a third,
+  optional facet beyond the column mapping: `account_proposals` with
+  `reason="account_confirmation"`. This surfaces the account *identity* verdict
+  (the resolver's weak merge candidates) — the dimension this confirm flow
+  originally excluded ("not … account assignment", Req 1). The column-mapping
+  and account-binding facets ride the same one-shape envelope; see
+  [`account-identity-resolution.md`](account-identity-resolution.md) Decision 7
+  for when each gates.
 
 ## Surface Design
 
@@ -401,6 +409,13 @@ extractor, and tabular/gsheet adopt them in this spec's work.
   `smart-import-pdf.md`; this spec owns only the confirm/confidence seam it plugs into.
 - **A "trust this source forever" mode** — first encounter always confirms; no global
   auto-accept toggle in v1 (consistent with the privacy spec's posture).
+- **Account-identity binding in the confirm flow.** v1 confirms *column mapping*
+  only. Extending the same `confirmation_required` / `import_confirm` envelope to
+  also propose and ratify **which canonical account** a file belongs to (proposal
+  + candidates + an `account_id` pin) is specified in
+  [`account-identity-resolution.md`](account-identity-resolution.md) (M1S,
+  Decision 7). It is a new *facet* of this contract — **one envelope shape**, not
+  a second confirmation flow — and lands with M1S, not here.
 
 ## Open Questions
 

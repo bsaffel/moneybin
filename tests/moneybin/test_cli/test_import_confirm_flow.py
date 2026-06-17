@@ -19,6 +19,11 @@ from typer.testing import CliRunner
 
 from moneybin.cli.commands.import_cmd import app
 from moneybin.extractors.confidence import Confidence
+from moneybin.services.account_resolution_types import (
+    AccountCandidate,
+    AccountProposal,
+    AccountProposalDict,
+)
 from moneybin.services.import_confirmation import (
     ConfirmationRequired,
     ImportConfirmationRequiredError,
@@ -27,6 +32,23 @@ from moneybin.services.import_confirmation import (
 from moneybin.services.import_service import ImportResult
 
 runner = CliRunner()
+
+
+def _account_proposal_dict(source_account_key: str) -> AccountProposalDict:
+    """One account proposal dict via the real serializer (guarantees the shape)."""
+    return AccountProposal(
+        source_account_key=source_account_key,
+        proposed_account_id="prov12345678",
+        is_new=True,
+        candidates=(
+            AccountCandidate(
+                account_id="cand87654321",
+                display_name="Checking",
+                confidence=0.5,
+                signal="name",
+            ),
+        ),
+    ).to_dict()
 
 
 def _make_import_result(**kwargs: Any) -> ImportResult:
@@ -199,6 +221,88 @@ class TestImportFilesConfirmFlow:
         assert result.exit_code == 0
         call_kwargs = mock_import_file.call_args.kwargs
         assert call_kwargs["overrides"] == {"description": "Memo"}
+
+    def test_account_confirmation_envelope_carries_proposals_on_files(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """`import files` surfaces account_proposals + the binding hint on the gate."""
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+        outcome = ConfirmationRequired(
+            channel="tabular",
+            confidence=Confidence(
+                score=1.0, tier="high", flagged=(), missing_required=()
+            ),
+            proposed=ProposedMapping(
+                field_mapping={"description": "Memo"},
+                sample_values={},
+                unmapped_columns=(),
+            ),
+            reason="account_confirmation",
+            account_proposals=[_account_proposal_dict("checking")],
+        )
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=ImportConfirmationRequiredError(outcome),
+        )
+
+        result = runner.invoke(
+            app,
+            ["files", str(csv_file), "--account-name", "Checking", "--output", "json"],
+        )
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        data = payload["data"]
+        assert data["status"] == "confirmation_required"
+        assert data["reason"] == "account_confirmation"
+        assert data["account_proposals"][0]["source_account_key"] == "checking"
+        assert any("--account-binding" in a for a in payload["actions"])
+        # Mapping/accept hints are gated out for account_confirmation (noise —
+        # the layout is settled and --accept without a binding loops the gate).
+        assert not any("--mapping" in a for a in payload["actions"])
+
+    def test_account_confirmation_tty_renders_proposals(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """Interactive TTY prompt shows source keys + candidates to bind."""
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+        outcome = ConfirmationRequired(
+            channel="tabular",
+            confidence=Confidence(
+                score=1.0, tier="high", flagged=(), missing_required=()
+            ),
+            proposed=ProposedMapping(
+                field_mapping={"description": "Memo"},
+                sample_values={},
+                unmapped_columns=(),
+            ),
+            reason="account_confirmation",
+            account_proposals=[_account_proposal_dict("checking")],
+        )
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=ImportConfirmationRequiredError(outcome),
+        )
+        # Force the interactive (TTY) branch — patch the module's sys.
+        mock_sys = mocker.patch("moneybin.cli.commands.import_cmd.sys")
+        mock_sys.stdout.isatty.return_value = True
+
+        result = runner.invoke(
+            app, ["files", str(csv_file), "--account-name", "Checking"]
+        )
+
+        assert "Account binding required" in result.output
+        assert "checking" in result.output  # the source key
+        assert "cand87654321" in result.output  # the candidate account id
+        assert "--account-binding" in result.output
 
     def test_unknown_layout_non_tty_emits_json_envelope(
         self,
@@ -470,3 +574,160 @@ class TestImportConfirmCommand:
         call_kwargs = mock_import_file.call_args.kwargs
         assert call_kwargs["overrides"] == {"description": "Memo"}
         assert call_kwargs["confirm"] is True
+
+    def test_account_binding_parsed_and_forwarded(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Repeatable --account-binding folds into an account_bindings map."""
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+
+        result = runner.invoke(
+            app,
+            [
+                "confirm",
+                str(csv_file),
+                "--accept",
+                "--account-binding",
+                "wf-checking=acct123456",
+                "--account-binding",
+                "wf-savings=new",
+            ],
+        )
+
+        assert result.exit_code == 0
+        call_kwargs = mock_import_file.call_args.kwargs
+        assert call_kwargs["account_bindings"] == {
+            "wf-checking": "acct123456",
+            "wf-savings": "new",
+        }
+
+    def test_account_meta_parsed_into_nested_map(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Repeatable --account-meta source_key:field=value nests per source key."""
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+
+        result = runner.invoke(
+            app,
+            [
+                "confirm",
+                str(csv_file),
+                "--accept",
+                "--account-binding",
+                "wf-checking=new",
+                "--account-meta",
+                "wf-checking:display_name=WF Checking",
+                "--account-meta",
+                "wf-checking:last_four=4267",
+            ],
+        )
+
+        assert result.exit_code == 0
+        call_kwargs = mock_import_file.call_args.kwargs
+        assert call_kwargs["account_metadata"] == {
+            "wf-checking": {"display_name": "WF Checking", "last_four": "4267"}
+        }
+
+    def test_account_meta_invalid_format_exits(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """--account-meta without the source_key:field=value shape exits non-zero."""
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+
+        result = runner.invoke(
+            app,
+            ["confirm", str(csv_file), "--accept", "--account-meta", "no-colon=here"],
+        )
+
+        assert result.exit_code != 0
+
+    def test_account_confirmation_envelope_carries_proposals(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """An account_confirmation surfaces account_proposals in the JSON envelope."""
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+        outcome = ConfirmationRequired(
+            channel="tabular",
+            confidence=Confidence(
+                score=1.0, tier="high", flagged=(), missing_required=()
+            ),
+            proposed=ProposedMapping(
+                field_mapping={"description": "Memo"},
+                sample_values={},
+                unmapped_columns=(),
+            ),
+            reason="account_confirmation",
+            account_proposals=[_account_proposal_dict("wf-checking")],
+        )
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=ImportConfirmationRequiredError(outcome),
+        )
+
+        result = runner.invoke(
+            app, ["confirm", str(csv_file), "--accept", "--output", "json"]
+        )
+
+        payload = json.loads(result.output)
+        data = payload["data"]
+        assert data["status"] == "confirmation_required"
+        assert data["reason"] == "account_confirmation"
+        assert data["account_proposals"][0]["source_account_key"] == "wf-checking"
+        assert any("--account-binding" in a for a in payload["actions"])
+        # Mapping/accept hints gated out for account_confirmation.
+        assert not any("--mapping" in a for a in payload["actions"])
+
+    def test_account_confirmation_tty_renders_proposals(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """`import confirm` TTY error path shows proposals + binding hint, not --mapping."""
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+        outcome = ConfirmationRequired(
+            channel="tabular",
+            confidence=Confidence(
+                score=1.0, tier="high", flagged=(), missing_required=()
+            ),
+            proposed=ProposedMapping(
+                field_mapping={"description": "Memo"},
+                sample_values={},
+                unmapped_columns=(),
+            ),
+            reason="account_confirmation",
+            account_proposals=[_account_proposal_dict("wf-checking")],
+        )
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=ImportConfirmationRequiredError(outcome),
+        )
+        mock_sys = mocker.patch("moneybin.cli.commands.import_cmd.sys")
+        mock_sys.stdout.isatty.return_value = True
+
+        result = runner.invoke(app, ["confirm", str(csv_file), "--accept"])
+
+        assert result.exit_code == 1
+        # The proposals (source key + candidate) render so the user sees what to
+        # bind. The --account-binding hint itself is a logger.info line (real
+        # stderr, not captured here under the sys mock).
+        assert "Account binding required" in result.output
+        assert "wf-checking" in result.output
+        assert "cand87654321" in result.output

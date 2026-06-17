@@ -44,7 +44,7 @@ from moneybin.services.balance_service import (
     BalanceService,  # noqa: F401 — re-exported for patch targets in tests  # type: ignore[reportUnusedImport]
 )
 
-from . import balance, investments
+from . import balance, investments, links
 
 logger = logging.getLogger(__name__)
 
@@ -337,3 +337,4 @@ def accounts_resolve(
 
 app.add_typer(balance.app, name="balance")
 app.add_typer(investments.app, name="investments")
+app.add_typer(links.app, name="links")

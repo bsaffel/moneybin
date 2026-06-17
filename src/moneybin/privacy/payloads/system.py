@@ -149,6 +149,13 @@ class SystemStatusMatchesInfo:
 
 
 @dataclass(frozen=True, slots=True)
+class SystemStatusAccountLinksInfo:
+    """Account-link review queue sub-object inside SystemStatusPayload."""
+
+    pending_review: Annotated[int, DataClass.AGGREGATE]
+
+
+@dataclass(frozen=True, slots=True)
 class SystemStatusCategorizationInfo:
     """Categorization queue sub-object inside SystemStatusPayload."""
 
@@ -247,6 +254,7 @@ class SystemStatusPayload:
     accounts: SystemStatusAccountsInfo
     transactions: SystemStatusTransactionsInfo
     matches: SystemStatusMatchesInfo
+    account_links: SystemStatusAccountLinksInfo
     categorization: SystemStatusCategorizationInfo
     transforms: SystemStatusTransformsInfo
     schema_drift: SystemStatusSchemaDrift | None

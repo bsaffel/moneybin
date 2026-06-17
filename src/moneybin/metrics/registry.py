@@ -314,12 +314,22 @@ MERCHANT_EXEMPLAR_COUNT = Gauge(
     ["merchant_id"],
 )
 
-# ── Account matching ─────────────────────────────────────────────────────────
+# ── Account identity resolution ──────────────────────────────────────────────
 
-ACCOUNT_MATCH_OUTCOMES_TOTAL = Counter(
-    "moneybin_account_match_outcomes_total",
-    "Outcomes of account-name resolution during tabular import",
+ACCOUNT_LINK_OUTCOMES_TOTAL = Counter(
+    "moneybin_account_link_outcomes_total",
+    "Outcomes of cross-source account identity resolution (AccountResolver)",
     ["result"],
+)
+
+ACCOUNT_LINK_REVIEW_PENDING = Gauge(
+    "moneybin_account_link_review_pending",
+    "Current count of pending account_link_decisions.",
+)
+
+ACCOUNT_LINK_CONFIDENCE = Histogram(
+    "moneybin_account_link_confidence",
+    "Resolution confidence for account-link candidate proposals.",
 )
 
 # ── MCP server ────────────────────────────────────────────────────────────────

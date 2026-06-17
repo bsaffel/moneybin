@@ -21,16 +21,20 @@ from moneybin.connectors.sync_models import (
     ConnectResult,
     PullResult,
     SyncConnectionView,
+    SyncDataResponse,
 )
 from moneybin.database import Database
 from moneybin.extractors.plaid import PlaidExtractor
 from moneybin.metrics.registry import (
+    ACCOUNT_LINK_OUTCOMES_TOTAL,
     SYNC_CONNECT_OUTCOMES,
     SYNC_INSTITUTION_ERRORS_TOTAL,
     SYNC_PULL_DURATION_SECONDS,
     SYNC_PULL_OUTCOMES_TOTAL,
     SYNC_PULL_TRANSACTIONS_LOADED,
 )
+from moneybin.services.account_resolution_types import SourceAccount
+from moneybin.services.account_resolver import AccountResolver
 from moneybin.services.refresh import refresh as _refresh
 
 logger = logging.getLogger(__name__)
@@ -124,6 +128,15 @@ class SyncService:
             SYNC_PULL_TRANSACTIONS_LOADED.labels(provider=_PROVIDER).inc(
                 load_result.transactions_loaded
             )
+            # Populate app.account_links for each synced account (mirrors the
+            # import path, A6/A7). Best-effort: raw rows are already durable and
+            # this pull has been counted a success, so a resolver failure must
+            # not flip that accounting — log and continue (refresh/auto-pull
+            # soft-fail pattern). A subsequent pull re-resolves idempotently.
+            try:
+                self._resolve_accounts(sync_data)
+            except Exception as e:  # noqa: BLE001  # best-effort post-load metadata
+                logger.warning(f"Account resolution failed after pull: {e}")
             for inst in sync_data.metadata.institutions:
                 if inst.status == "failed" and inst.error_code:
                     SYNC_INSTITUTION_ERRORS_TOTAL.labels(
@@ -153,6 +166,47 @@ class SyncService:
             result.transforms_duration_seconds = refresh_result.duration_seconds
             result.transforms_error = refresh_result.error
         return result
+
+    def _resolve_accounts(self, sync_data: SyncDataResponse) -> None:
+        """Resolve each synced account to a canonical id, populating app.account_links.
+
+        The Plaid native key is the source ``account_id`` token already stamped
+        on ``raw.plaid_accounts`` (unchanged) — the resolver only ADDS the
+        native->canonical mapping the B1 staging JOIN keys on. ``source_origin``
+        is the account's ``provider_item_id``; we reuse the loader's
+        account->item attribution so it is byte-identical to what raw recorded
+        (a divergent scope would corrupt source_native uniqueness).
+
+        ``persistent_token`` (Plaid ``persistent_account_id``) is the
+        cross-connection strong ref, but the server's ``SyncAccount`` contract
+        does not expose it today, so it is always None here — cross-connection
+        identity for Plaid stays unwired until that field lands (followup).
+        """
+        if not sync_data.accounts:
+            return
+        item_by_account = self.loader.build_account_to_item_map(sync_data)
+        resolver = AccountResolver(self.db, actor="system")
+        for acc in sync_data.accounts:
+            resolved_account = resolver.resolve(
+                SourceAccount(
+                    source_type="plaid",
+                    source_origin=item_by_account[acc.account_id],
+                    source_account_key=acc.account_id,
+                    account_name=(
+                        acc.official_name
+                        or (
+                            f"{acc.institution_name} account"
+                            if acc.institution_name
+                            else acc.account_id
+                        )
+                    ),
+                    account_number=None,  # Plaid never exposes a full number
+                    last_four=acc.mask,
+                    institution=acc.institution_name,
+                    persistent_token=None,  # not in SyncAccount contract (followup)
+                )
+            )
+            ACCOUNT_LINK_OUTCOMES_TOTAL.labels(result=resolved_account.outcome).inc()
 
     # ------------------------------ Connect ------------------------------
 
