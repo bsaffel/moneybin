@@ -1,7 +1,9 @@
 # Cross-Source Account Identity Resolution
 
-> Last updated: 2026-06-16
-> Status: implemented
+> Last updated: 2026-06-17
+> Status: implemented (architecture + M1S.1–.6); capture + bind-first
+> corrections in progress (M1S.7–.9 — cross-source linking does not yet fire in
+> the wild; see [§Decision 8](#decision-8--capture-mutable-labels-and-the-exporter-axis-m1s7-live-test-reconciliation))
 > Address: M1S (Ingestion Core)
 > Type: Feature
 > Owns: the canonical-account-identity contract (`core.dim_accounts.account_id`
@@ -80,6 +82,14 @@ account name.** `institution + last4` only ever produces a *review candidate* �
 never an auto-merge — and institution itself is treated as best-effort metadata,
 not a required identity input (see [§Decision 3](#decision-3--resolution-ladder--confidence-tiers)
 and [§Decision 7](#decision-7--import-time-ux--ax-detect--confirm--remember)).
+
+**⚠ Reconciled (Decision 8):** signal #1 holds only for an upstream-*stable*
+`native_ref` (OFX `ACCTID`, Plaid token); a *mutable* CSV/aggregator account
+label is not a reliable remembered key — a rename mints a duplicate — so
+Decision 8 demotes it to a Tier-B suggestion anchored on last4. The per-format
+note above also understates aggregator exports: Monarch/Tiller account labels
+often embed the last4 (`Daily Expense (...1789)`). Decision 8's capture table is
+authoritative.
 
 ## Prior art
 
@@ -278,7 +288,10 @@ reversed_by            TEXT
   against **existing accounts' `last_four` / `institution_name` / `display_name`
   on `core.dim_accounts`** (durably present there — captured at mint, Decision 7).
   A match produces a `pending` decision row recording which signal fired. Weak
-  signals are never an accepted `ref_kind` and never auto-merge.
+  signals are never an accepted `ref_kind` and never auto-merge. **⚠ Reconciled
+  (Decision 8):** "durably present, captured at mint" was the gap — last4 was
+  never *derived* into `dim_accounts` (only the user-set value landed), so this
+  rung was dead in the wild. Decision 8 builds the capture layer.
 - **Resolving a decision** (Decision 5): **accept(target=candidate)** re-points
   the provisional's `account_links` to the candidate (`UPDATE … SET account_id`)
   and marks the decision `accepted`; sibling decisions for the same provisional
@@ -377,6 +390,12 @@ not a `decided_by` value.
 resolution falls through to name / mint-new. Thresholds reuse `MatchingSettings`
 (`high_confidence_threshold`, `review_threshold`) — no parallel knobs.
 
+**⚠ Reconciled (Decision 8): the strong-ref auto-adopt (step 1) is valid only
+for an upstream-*stable* native key** (OFX `ACCTID`, Plaid token). A CSV/aggregator
+`source_native` is `slugify(account_name)` — *mutable* upstream — so it must not
+be a hard auto-adopt key; a rename otherwise mints a duplicate. Decision 8 demotes
+the mutable CSV label to a Tier-B suggestion and anchors re-association on last4.
+
 ## Decision 4 — `core.dim_accounts` keyed on canonical id; COALESCE-across-group merge
 
 `core.dim_accounts` grain stays `account_id`, but `account_id` is now canonical,
@@ -398,8 +417,10 @@ This is the same "golden-record merge across sources" rule
 [`matching-same-record-dedup.md`](matching-same-record-dedup.md) applies to
 transactions, lifted to the account grain. `display_name`'s
 `RIGHT(account_id, 4)` fallback is dropped (the id is now opaque); the default
-becomes `institution_name || ' ' || account_type || ' …' || last_four` sourced
-from `app.account_settings.last_four` (captured per Decision 7).
+becomes `institution_name || ' ' || account_type || ' …' || last_four`, where
+`last_four` is `COALESCE(`user-set `app.account_settings.last_four`, per-source
+**derived** last4`)` — **not user-set only** (corrected in Decision 8; the
+user-set-only reading is the live display + bridge bug).
 
 ## `transaction_id` stability under a mutable `account_id` (ADR-015)
 
@@ -626,6 +647,133 @@ that spec carries a forward pointer. Keep the confirmation envelope **one shape*
 — account binding is a new facet of the existing
 `confirmation_required`/`import_confirm` contract, not a second flow.
 
+## Decision 8 — Capture, mutable labels, and the exporter axis (M1S.7+ live-test reconciliation)
+
+Live dogfooding (2026-06-17) of the shipped M1S work found cross-source linking
+fails in the wild despite green scenario tests. Three failure modes share one
+root cause — **assuming an identity signal is present, stable, or singular when
+it isn't.** The corrections below refine Decisions 3, 4, and 7; they do not
+change the architecture (canonical surrogate + two tables + ladder).
+
+### The three failure modes (post-mortem — recorded so they aren't reintroduced)
+
+1. **last4 never reaches `dim_accounts`.** Decisions 4 and 7 assert last4 is
+   "captured at mint, durably present on `dim_accounts`." In fact
+   `dim_accounts.last_four` is `s.last_four` only — the *user-set*
+   `app.account_settings` value. No source's natively-carried last4 (OFX
+   `RIGHT(<ACCTID>,4)`, Plaid `mask`, a CSV number column) is ever *derived*
+   into the column the candidate pass reads, so the `institution+last4` rung is
+   dead for 100% of file/sync-imported accounts and everything degrades to name.
+   The scenario test passed only because it force-binds the twins via
+   `account_bindings`, never exercising the bridge.
+2. **A mutable CSV label is treated as a hard key.** The CSV `source_native` ref
+   is `slugify(account_name)`. An aggregator account label is user-mutable
+   upstream (renaming "Daily Expense" → "Fun Money" in Monarch); the slug then
+   misses and the resolver **mints a duplicate** instead of re-associating.
+3. **The exporter name masquerades as the institution.** For a tabular import
+   the per-account `institution` is resolved from `matched_format.
+   institution_name`, which for an aggregator format *is the tool name*
+   ("Monarch"/"Tiller"). Every account in a Monarch file gets
+   `institution="monarch"`, so even with last4 present the bridge to a real
+   Wells Fargo OFX/Plaid account never fires (`"monarch" ≠ "wells fargo"`).
+
+The unifying fix is an **executable capture contract** (below): reconcile "what
+each format carries" with "what the matcher requires" in CI, not in prose.
+
+### Signal tiers (refines Decision 3's ladder + the reliable-signals list)
+
+All identity signals collapse into three tiers by how much trust each earns:
+
+- **Tier A — stable native key → silent auto-adopt.** OFX `BANKID+ACCTID`,
+  Plaid `persistent_account_id`, or a *remembered* binding whose key is stable
+  upstream. **Only an upstream-stable native key qualifies.** A mutable native
+  key (a CSV/aggregator account label) is **explicitly excluded** — it never
+  auto-adopts (failure mode 2).
+- **Tier B — weak signals, one review bar.** Filename-parsed name/last4, the
+  account-column value (`Daily Expense (...1789)`), a user-typed `account_name`,
+  a masked-number column. **All parsed uniformly, all feed candidates into one
+  confirm/mapping step, none auto-binds.** last4 corroborates and makes a
+  candidate recognizable; it is never a key (Plaid's mask≠number rule).
+- **Tier C — nothing → explicit account required.** A bare bank CSV
+  (`<date>.csv`, Date/Description/Amount only) carries no identity; the account
+  is supplied per-import (`--account-id`, folder routing), never inferred from a
+  non-distinguishing signal (filename/fingerprint).
+
+**CSV account binding is therefore always explicit** — resolved from Tier-B
+candidates (confirmed) or Tier-C input — and **remembered on a stable,
+distinguishing, in-file signal** (the account-label value), never on the format
+fingerprint or filename. N bare same-fingerprint files then have nothing to
+collapse onto, by construction.
+
+### Capture: derive last4 (+ institution) into `dim_accounts` (corrects Decisions 4 + 7)
+
+`core.dim_accounts.last_four` becomes `COALESCE(s.last_four, <derived>)`, where
+`<derived>` is the per-source identity merged across the canonical group:
+
+| Source | derived last4 | derived institution |
+|---|---|---|
+| OFX/QFX/QBO | `RIGHT(<ACCTID>,4)` from the source key | `<ORG>` (already) |
+| Plaid | `mask` | `institution_name` (already) |
+| tabular — aggregator | last4 parsed from the account-label value / `Account #` column | per-row `Institution` column or parsed from the label — **never the exporter/tool name** |
+| tabular — bare | none (Tier C) | filename heuristic / explicit / unknown |
+
+The full number / `full_number` `ref_value` is CRITICAL/PII: derive `RIGHT(·,4)`
+inside the model and expose only the last 4; never surface the full number in
+`dim`. `display_name`'s last4 fragment reads the same derived value (fixes the
+bare-"WF CHECKING" display regression).
+
+### The account-label parser (Tier B)
+
+One parser extracts `(name, last_four)` from every Tier-B string — the
+account-column value, the filename, a typed name — tolerant of the common last4
+forms (`(...1789)`, `····1789`, `x1789`, "ending 1789"). Its output feeds the
+candidate pass (name + last4) and the new-account capture. Filename seeds a
+*proposal* but is never a *remember* key (timestamped exports drift).
+
+### Mutable-label re-association (the Tier-A exclusion, mechanics)
+
+Because a CSV label is mutable, CSV remember-and-rematch keys on
+`(exporter scope + last_four)` as the durable anchor, with the label as
+suggestion + display:
+
+- exact (label + last4) → idempotent silent re-adopt.
+- last4 same, label changed → **re-association suggestion** (the rename case:
+  "Fun Money (...1789)" ↔ "Daily Expense (...1789)"); confirm updates the
+  remembered label. Never a silent merge, never a new mint.
+- label same, last4 changed → surface as suspicious (a reused name pointing at a
+  different account).
+- neither → new-account proposal.
+
+### Exporter axis ≠ institution (corrects Decision 7's institution chain)
+
+The **exporter** (Monarch / Tiller / a specific bank's web export) is a property
+of the **format/fingerprint** (≈ today's `source_origin = matched_format.name`),
+orthogonal to **institution** (a per-account property). The exporter selects the
+label parser, is provenance, and scopes remembered bindings. The **per-account
+institution must come from row data** (Tiller `Institution`, OFX `<ORG>`, Plaid
+`institution_name`) or be unknown — **never the exporter/tool name.** For a
+`multi_account` format a format-level `institution_name` must not leak onto
+accounts; for a single-institution bank format the two legitimately coincide.
+
+### Saved format = columns only (the format/account-binding decoupling)
+
+`app.tabular_formats` remembers **column mapping** (shared by header
+fingerprint) and may carry an institution *hint* for single-institution
+formats. It **never carries an authoritative account binding** — an explicit
+`account_name`/`account_id` always wins, and a saved format never silently
+re-binds a structurally-identical file's account (the documented
+wrong-account footgun: pre-selecting a last-used account across same-shape
+files). Account resolution always runs.
+
+### Capture contract (the anti-recurrence guarantee)
+
+A per-source executable contract asserts, for each format/source, that an import
+lands the matcher's required identity inputs (`dim_accounts.last_four` +
+`institution_name` for detect-capable sources) **or** is explicitly declared
+*binding-only* (name is the only signal). A source that silently lands nothing
+fails CI. This is the durable reconciliation of "what we know per format" with
+"what the matcher requires" — the gap all three failure modes fell through.
+
 ## Idempotency, reverse-order imports, correction
 
 Worked through the WF case (`institution="WF"`, checking …4267/…1789/…9940,
@@ -733,6 +881,19 @@ Per [`observability.md`](observability.md), mirror the `DEDUP_*` family
   import/sync, `review` orientation promotion (+ `transactions_review` deprecation
   alias).
 - **M1S.6** — scenario + the import-validation gate re-run.
+- **M1S.7** — **capture layer + capture contract (Decision 8):** derive
+  `dim_accounts.last_four` (+ institution) per source (OFX `RIGHT(number,4)`,
+  Plaid `mask`, tabular label/`Account #`); the Tier-B account-label parser;
+  `display_name` fix; per-source capture-contract test. Unblocks OFX↔Plaid and
+  aggregator-label detection. (The original M1S.7 last4-bridge fix, widened.)
+- **M1S.8** — **CSV bind-first + format/account decoupling (Decision 8):**
+  `app.tabular_formats` = columns only (explicit `account_name`/`account_id`
+  always wins); CSV account binding always explicit; mutable-label
+  re-association anchored on last4 (the Tier-A exclusion).
+- **M1S.9** — **exporter/institution split (Decision 8):** per-account
+  institution from row data, never the exporter/tool name; `multi_account`
+  formats don't leak a format-level institution onto accounts; name the
+  exporter axis distinctly from `source_origin`'s overloaded uses.
 
 (Account *merge* of two pre-existing canonicals — `account-management.md`'s
 deferred operation — is a sibling increment built on this substrate, not in M1S
