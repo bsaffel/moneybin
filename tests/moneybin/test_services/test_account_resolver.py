@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -582,3 +583,23 @@ def test_propose_existing_guards_catalog_exception(db: Database) -> None:
     # No create_core_tables call → dim_accounts absent → CatalogException guarded
     resolver = AccountResolver(db, actor="system")
     assert resolver.propose_existing("any_id") is None
+
+
+def test_resolve_rolls_back_partial_writes_on_failure(db: Database) -> None:
+    """resolve() is atomic per account: a mid-resolve failure rolls everything back.
+
+    _write_strong_ref runs after _write_native_mapping in every branch. Forcing
+    it to raise leaves the native mapping mid-flight; without a single enclosing
+    transaction the mapping would auto-commit and a later same-id import would
+    adopt a half-written account.
+    """
+    create_core_tables(db)
+    resolver = AccountResolver(db, actor="system")
+    with patch.object(
+        AccountResolver, "_write_strong_ref", side_effect=RuntimeError("boom")
+    ):
+        with pytest.raises(RuntimeError):
+            resolver.resolve(_src(account_number="121000248:1111"))
+
+    n = db.conn.execute("SELECT COUNT(*) FROM app.account_links").fetchone()
+    assert n is not None and n[0] == 0

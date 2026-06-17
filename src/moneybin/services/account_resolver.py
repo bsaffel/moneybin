@@ -100,7 +100,25 @@ class AccountResolver:
 
         Ladder: explicit binding (step 0) -> strong confirmer / idempotency
         (step 1, A3) -> candidate pass / mint + propose (step 2, A4).
+
+        All writes for one account run in a single transaction (atomic per
+        account): a mid-resolve failure rolls back, so a later same-id import
+        cannot adopt a half-written account. resolve() owns the transaction —
+        it is always called outside one (the per-write repo transactions it
+        composes succeed today, proving no enclosing transaction), so the
+        composed writes pass in_outer_txn=True to join this one.
         """
+        self._db.begin()
+        try:
+            result = self._run_ladder(src)
+        except BaseException:
+            self._db.rollback()
+            raise
+        self._db.commit()
+        return result
+
+    def _run_ladder(self, src: SourceAccount) -> ResolvedAccount:
+        """Resolution-ladder body; runs inside ``resolve()``'s transaction."""
         # Step 0 - explicit binding: caller pinned identity, adopt above detection.
         if src.explicit_account_id:
             self._write_native_mapping(
@@ -160,6 +178,7 @@ class AccountResolver:
                 decided_by="auto",
                 actor=self._actor,
                 match_reason=cand.signal,
+                in_outer_txn=True,  # joins resolve()'s per-account transaction
             )
             ACCOUNT_LINK_CONFIDENCE.observe(cand.confidence)
             pending_ids.append(decision_id)
@@ -319,6 +338,7 @@ class AccountResolver:
             source_origin=src.source_origin,
             decided_by=decided_by,
             actor=self._actor,
+            in_outer_txn=True,  # joins resolve()'s per-account transaction
         )
 
     def _lookup_strong_ref(self, src: SourceAccount) -> tuple[str, str] | None:
@@ -407,6 +427,7 @@ class AccountResolver:
                 source_origin=src.source_origin,
                 decided_by=decided_by,
                 actor=self._actor,
+                in_outer_txn=True,  # joins resolve()'s per-account transaction
             )
 
     def _find_candidates(
