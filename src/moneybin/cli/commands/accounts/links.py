@@ -20,14 +20,10 @@ from moneybin.privacy.payloads.accounts import (
     AccountLinksHistoryPayload,
     AccountLinksPendingPayload,
     AccountLinksRunPayload,
-    LinkCandidateRow,
-    LinkHistoryRow,
-    LinkPendingGroup,
 )
 from moneybin.protocol.envelope import build_envelope
 from moneybin.services.account_links_service import (
     AccountLinksService,
-    signal_from_match_signals,
 )
 
 app = typer.Typer(
@@ -54,28 +50,7 @@ def links_pending(
             groups = svc.pending()
             n_pending = svc.count_pending()
 
-    payload = AccountLinksPendingPayload(
-        groups=[
-            LinkPendingGroup(
-                provisional_account_id=g.provisional_account_id,
-                provisional_display_name=g.provisional_display_name,
-                candidates=[
-                    LinkCandidateRow(
-                        decision_id=c.decision_id,
-                        candidate_account_id=c.candidate_account_id,
-                        candidate_display_name=c.candidate_display_name,
-                        confidence=float(c.confidence)
-                        if c.confidence is not None
-                        else None,
-                        signal=c.signal,
-                    )
-                    for c in g.candidates
-                ],
-            )
-            for g in groups
-        ],
-        n_pending=n_pending,
-    )
+    payload = AccountLinksPendingPayload.from_service(groups, n_pending)
 
     if output == OutputFormat.JSON:
         from moneybin.cli.output import render_or_json  # noqa: PLC0415 — defer import
@@ -174,25 +149,7 @@ def links_history(
         with get_database(read_only=True) as db:
             rows = AccountLinksService(db, actor="cli").history(limit=limit)
 
-    payload = AccountLinksHistoryPayload(
-        decisions=[
-            LinkHistoryRow(
-                decision_id=r["decision_id"],
-                provisional_account_id=r["provisional_account_id"],
-                candidate_account_id=r["candidate_account_id"],
-                status=r["status"],
-                decided_by=r["decided_by"],
-                decided_at=str(r["decided_at"]) if r.get("decided_at") else None,
-                confidence=(
-                    float(r["confidence_score"])
-                    if r.get("confidence_score") is not None
-                    else None
-                ),
-                signal=signal_from_match_signals(r.get("match_signals")),
-            )
-            for r in rows
-        ]
-    )
+    payload = AccountLinksHistoryPayload.from_rows(rows)
 
     if output == OutputFormat.JSON:
         from moneybin.cli.output import render_or_json  # noqa: PLC0415 — defer import

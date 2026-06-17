@@ -53,6 +53,24 @@ def refresh_account_link_pending_gauge(db: Database) -> None:
     ACCOUNT_LINK_REVIEW_PENDING.set(int(row[0]) if row else 0)
 
 
+def fetch_display_name(db: Database, account_id: str) -> str:
+    """Return ``display_name`` from ``core.dim_accounts``; empty string when absent.
+
+    Shared by the resolver's candidate decode and the account-link review queue.
+    Guards ``duckdb.CatalogException`` so callers work before the core layer is
+    materialized (e.g. during initial import before a SQLMesh run).
+    """
+    try:
+        row = db.execute(
+            f"SELECT display_name FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef constant + parameterized value
+            "WHERE account_id = ? LIMIT 1",
+            [account_id],
+        ).fetchone()
+    except duckdb.CatalogException:
+        return ""
+    return str(row[0]) if row and row[0] is not None else ""
+
+
 @dataclass(frozen=True)
 class _Candidate:
     """A weak-signal candidate for a pending merge proposal.
@@ -265,17 +283,8 @@ class AccountResolver:
         )
 
     def _fetch_display_name(self, account_id: str) -> str:
-        """Return display_name from core.dim_accounts for a candidate account_id.
-
-        Returns empty string when the row is absent (defensive; if _find_candidates
-        returned a candidate, dim_accounts is materialized and the row should exist).
-        """
-        row = self._db.execute(
-            f"SELECT display_name FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef + parameterized value
-            "WHERE account_id = ? LIMIT 1",
-            [account_id],
-        ).fetchone()
-        return str(row[0]) if row and row[0] is not None else ""
+        """Return display_name from core.dim_accounts for a candidate account_id."""
+        return fetch_display_name(self._db, account_id)
 
     def _write_native_mapping(
         self, src: SourceAccount, *, account_id: str, decided_by: str

@@ -11,7 +11,6 @@ column (``user``/``system``/``auto``). The caller supplies both.
 
 from __future__ import annotations
 
-import json
 import logging
 import uuid
 from typing import Any
@@ -31,22 +30,6 @@ from moneybin.tables import ACCOUNT_LINK_DECISIONS, ACCOUNT_LINKS, DIM_ACCOUNTS
 
 logger = logging.getLogger(__name__)
 
-# Column order matches app_account_link_decisions.sql (and the repo's constant).
-_DECISION_COLUMNS = (
-    "decision_id",
-    "provisional_account_id",
-    "candidate_account_id",
-    "confidence_score",
-    "match_signals",
-    "status",
-    "decided_by",
-    "match_reason",
-    "decided_at",
-    "reversed_at",
-    "reversed_by",
-)
-_DECISION_COLS = ", ".join(f'"{c}"' for c in _DECISION_COLUMNS)
-
 
 def signal_from_match_signals(match_signals: Any) -> str:
     """Extract the 'signal' key from an already-decoded match_signals dict.
@@ -62,31 +45,15 @@ def signal_from_match_signals(match_signals: Any) -> str:
         return ""
 
 
-def _decode_decision_row(row: tuple[Any, ...]) -> dict[str, Any]:
-    """Map a raw DB row to a dict, decoding the JSON ``match_signals`` column."""
-    out: dict[str, Any] = {}
-    for col, val in zip(_DECISION_COLUMNS, row, strict=True):
-        if col == "match_signals" and isinstance(val, str):
-            out[col] = json.loads(val)
-        else:
-            out[col] = val
-    return out
-
-
 def _resolve_display_name(db: Database, account_id: str) -> str:
     """Return ``display_name`` from ``core.dim_accounts``; empty string when absent.
 
-    Guards ``duckdb.CatalogException`` so callers work before the core layer is
-    materialized (e.g. during initial import before a SQLMesh run).
+    Thin alias over the shared ``fetch_display_name`` (imported function-locally
+    to match the module's existing account_resolver import pattern).
     """
-    try:
-        row = db.execute(
-            f"SELECT display_name FROM {DIM_ACCOUNTS.full_name} WHERE account_id = ?",  # noqa: S608  # TableRef constant + parameterized value
-            [account_id],
-        ).fetchone()
-        return (row[0] or "") if row else ""
-    except duckdb.CatalogException:
-        return ""
+    from moneybin.services.account_resolver import fetch_display_name  # noqa: PLC0415
+
+    return fetch_display_name(db, account_id)
 
 
 class AccountLinksService:
@@ -177,22 +144,10 @@ class AccountLinksService:
     def history(self, *, limit: int = 50) -> list[dict[str, Any]]:
         """All decisions (any status) newest-first by ``decided_at``. Read-only.
 
-        Mirrors ``MatchingService.get_log``. Returns an empty list when the
-        table does not yet exist (``CatalogException`` guard).
+        Mirrors ``MatchingService.get_log``. Delegates to the repo (raw SQL +
+        decode live in the repo layer); empty list when the table is absent.
         """
-        try:
-            rows = self._db.execute(
-                f"""
-                SELECT {_DECISION_COLS}
-                FROM {ACCOUNT_LINK_DECISIONS.full_name}
-                ORDER BY decided_at DESC NULLS LAST
-                LIMIT ?
-                """,  # noqa: S608  # constant column list + TableRef + parameterized limit
-                [limit],
-            ).fetchall()
-        except duckdb.CatalogException:
-            return []
-        return [_decode_decision_row(r) for r in rows]
+        return self._decisions.history(limit=limit)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -200,11 +155,7 @@ class AccountLinksService:
 
     def _fetch_decision(self, decision_id: str) -> dict[str, Any] | None:
         """Read one decision row by id. Returns None when not found."""
-        row = self._db.execute(
-            f"SELECT {_DECISION_COLS} FROM {ACCOUNT_LINK_DECISIONS.full_name} WHERE decision_id = ?",  # noqa: S608  # constant columns + TableRef + parameterized pk
-            [decision_id],
-        ).fetchone()
-        return _decode_decision_row(row) if row else None
+        return self._decisions.fetch_by_id(decision_id)
 
     # ------------------------------------------------------------------
     # Mutations

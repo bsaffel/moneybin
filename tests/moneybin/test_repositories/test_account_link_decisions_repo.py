@@ -258,3 +258,46 @@ def test_list_pending_decodes_match_signals(db: Database) -> None:
     signals = result[0]["match_signals"]
     assert isinstance(signals, dict)
     assert signals["signal"] == "institution_last4"
+
+
+# -- fetch_by_id --
+
+
+def test_fetch_by_id_returns_decoded_row(db: Database) -> None:
+    repo = AccountLinkDecisionsRepo(db)
+    _insert(repo, decision_id="dec_fetch", status="pending")
+
+    row = repo.fetch_by_id("dec_fetch")
+    assert row is not None
+    assert row["decision_id"] == "dec_fetch"
+    assert row["provisional_account_id"] == "acct_prov_1"
+    assert row["candidate_account_id"] == "acct_cand_1"
+    # match_signals decodes to a nested object (not doubly-encoded).
+    assert row["match_signals"]["signal"] == "institution_last4"
+
+
+def test_fetch_by_id_returns_none_when_absent(db: Database) -> None:
+    repo = AccountLinkDecisionsRepo(db)
+    assert repo.fetch_by_id("nonexistent") is None
+
+
+# -- history --
+
+
+def test_history_includes_all_statuses(db: Database) -> None:
+    """history() spans every status — unlike list_pending, which is pending-only."""
+    repo = AccountLinkDecisionsRepo(db)
+    _insert(repo, decision_id="h_pending", status="pending")
+    _insert(repo, decision_id="h_accepted", status="accepted")
+    _insert(repo, decision_id="h_rejected", status="rejected")
+
+    ids = {r["decision_id"] for r in repo.history()}
+    assert ids == {"h_pending", "h_accepted", "h_rejected"}
+
+
+def test_history_respects_limit(db: Database) -> None:
+    repo = AccountLinkDecisionsRepo(db)
+    for i in range(3):
+        _insert(repo, decision_id=f"h_{i}", status="pending")
+
+    assert len(repo.history(limit=2)) == 2
