@@ -289,6 +289,29 @@ def test_institution_last4_matches_across_case(db: Database) -> None:
     assert dec == (first.account_id, "institution_last4")
 
 
+def test_institution_last4_skips_when_slug_is_empty(db: Database) -> None:
+    """A purely non-alphanumeric institution slugifies to '' and must not match.
+
+    '###' and '@@@' both slugify to '' (slugify strips non-alphanumerics), so an
+    empty slug would otherwise spuriously equal any stored institution that also
+    slugifies to '' sharing the last_four — a false merge proposal. The
+    institution+last4 rung is skipped when the slug is empty.
+    """
+    create_core_tables(db)
+    resolver = AccountResolver(db, actor="system")
+    first = resolver.resolve(_src(source_account_key="a", institution="@@@"))
+    _seed_dim_account(
+        db,
+        account_id=first.account_id,
+        last_four="4267",
+        institution_name="@@@",  # slugifies to ''
+    )
+    second = resolver.resolve(
+        _src(source_type="ofx", source_account_key="ofx-x", institution="###")
+    )
+    assert second.outcome == "minted_new"
+
+
 def test_mint_claims_full_number_strong_ref_for_later_adopt(db: Database) -> None:
     """A minted account claims its scoped full_number so a later source adopts it.
 

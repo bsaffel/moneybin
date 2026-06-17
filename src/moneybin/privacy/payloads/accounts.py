@@ -231,7 +231,9 @@ class LinkHistoryRow:
             candidate_account_id=r["candidate_account_id"],
             status=r["status"],
             decided_by=r["decided_by"],
-            decided_at=str(r["decided_at"]) if r.get("decided_at") else None,
+            decided_at=(
+                str(r["decided_at"]) if r.get("decided_at") is not None else None
+            ),
             confidence=(
                 float(r["confidence_score"])
                 if r.get("confidence_score") is not None

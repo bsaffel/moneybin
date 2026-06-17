@@ -366,7 +366,7 @@ signal reliability:
 | Adopt (pinned) | explicit `account_id` | bind to the named canonical | accepted mapping (`decided_by=user`¹) |
 | Auto-adopt | remembered `source_native`, scoped full number, or persistent token | reuse existing canonical | accepted mapping (`auto`) |
 | Mint new | no candidate at all | new standalone canonical account | accepted `source_native` + any scoped strong ref (`auto`) |
-| Propose / review | `institution+last4` or fuzzy name | new account + `pending` decision(s) | accepted mapping **plus** pending decision(s) |
+| Propose / review | `institution+last4` or fuzzy name | new account + `pending` decision(s) | accepted `source_native` + any scoped strong ref **plus** pending decision(s) |
 
 ¹ `decided_by` is `auto | user | system`; **agent ratification maps to `user`**
 (consistent with `match_decisions_repo`) — `actor_kind` is a runtime distinction,

@@ -419,12 +419,17 @@ class AccountResolver:
         """
         try:
             out: list[_Candidate] = []
-            if src.last_four and src.institution:
+            if (
+                src.last_four
+                and src.institution
+                and (target_inst := slugify(src.institution))
+            ):
                 # institution_name holds raw source text (OFX <ORG> "CHASE"),
                 # while src.institution may be a slug ("chase"). An exact SQL
                 # match never fires across that case/format gap, so fetch by the
                 # exact last_four and slugify-compare the institution in Python.
-                target_inst = slugify(src.institution)
+                # An empty slug (institution is all punctuation) is skipped — it
+                # would spuriously match other empty-slug rows sharing last_four.
                 rows = self._db.execute(
                     f"SELECT account_id, institution_name FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef + parameterized values
                     "WHERE last_four = ? AND account_id != ?",

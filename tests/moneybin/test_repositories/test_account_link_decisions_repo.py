@@ -303,6 +303,29 @@ def test_history_respects_limit(db: Database) -> None:
     assert len(repo.history(limit=2)) == 2
 
 
+def test_history_orders_newest_first(db: Database) -> None:
+    """history() orders by decided_at DESC (newest decision first).
+
+    insert stamps decided_at (NOT NULL), so distinct timestamps are set
+    explicitly here to pin ordering deterministically rather than relying on
+    same-tick inserts.
+    """
+    repo = AccountLinkDecisionsRepo(db)
+    _insert(repo, decision_id="older", status="accepted")
+    _insert(repo, decision_id="newer", status="accepted")
+    db.conn.execute(
+        "UPDATE app.account_link_decisions SET decided_at = ? WHERE decision_id = ?",
+        ["2026-01-01 00:00:00", "older"],
+    )
+    db.conn.execute(
+        "UPDATE app.account_link_decisions SET decided_at = ? WHERE decision_id = ?",
+        ["2026-06-01 00:00:00", "newer"],
+    )
+
+    ids = [r["decision_id"] for r in repo.history()]
+    assert ids == ["newer", "older"]
+
+
 def test_history_clamps_negative_limit(db: Database) -> None:
     """A negative limit must not reach DuckDB (LIMIT/OFFSET cannot be negative)."""
     repo = AccountLinkDecisionsRepo(db)
