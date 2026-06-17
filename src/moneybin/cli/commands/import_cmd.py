@@ -525,30 +525,34 @@ def import_files_command(
                 confirm_actions.append(f"Validation failed: {outcome.error_message}")
             if outcome.reason == "account_confirmation":
                 # The layout is settled; only the account identity needs
-                # ratifying. Direct the user to the binding subcommand — the
-                # mapping hints below do not resolve an account_confirmation.
+                # ratifying. The --mapping/--confirm hints below are irrelevant
+                # here (and following --accept without a binding loops back to
+                # this gate), so surface ONLY the binding + preview hints.
                 confirm_actions.append(
                     f"Run 'moneybin import confirm {file_path_str} --accept "
                     "--account-binding <source_key>=<account_id|new>' to bind each "
                     "proposed account (adopt an existing id, or 'new' to keep distinct)."
                 )
-            # resolve_or_confirm refuses Accept on low-tier proposals (the
-            # detector couldn't form a complete one); suggesting --confirm
-            # there would just bounce back with the same outcome. Only
-            # surface the accept hint when the tier permits acceptance.
-            if outcome.confidence.tier != "low":
+            else:
+                # resolve_or_confirm refuses Accept on low-tier proposals (the
+                # detector couldn't form a complete one); suggesting --confirm
+                # there would just bounce back with the same outcome. Only
+                # surface the accept hint when the tier permits acceptance.
+                if outcome.confidence.tier != "low":
+                    confirm_actions.append(
+                        "Re-run with --confirm to accept the proposed mapping as-is."
+                    )
                 confirm_actions.append(
-                    "Re-run with --confirm to accept the proposed mapping as-is."
+                    "Re-run with --mapping <field>=<column> to override specific fields."
                 )
-            confirm_actions.extend([
-                "Re-run with --mapping <field>=<column> to override specific fields.",
-                f"Run 'moneybin import preview {file_path_str}' to inspect the proposal.",
-            ])
-            if outcome.confidence.tier != "low":
-                confirm_actions.append(
-                    f"Run 'moneybin import confirm {file_path_str} --accept' "
-                    "as a subcommand."
-                )
+                if outcome.confidence.tier != "low":
+                    confirm_actions.append(
+                        f"Run 'moneybin import confirm {file_path_str} --accept' "
+                        "as a subcommand."
+                    )
+            confirm_actions.append(
+                f"Run 'moneybin import preview {file_path_str}' to inspect the proposal."
+            )
             if output == OutputFormat.JSON or not sys.stdout.isatty():
                 # Non-TTY / --output json: emit the full ResponseEnvelope so
                 # CLI --output json matches the MCP envelope shape (same
@@ -683,20 +687,40 @@ def _render_confirmation_prompt(
                 f"{', '.join(outcome.proposed.unmapped_columns)}"
             )
 
+    # account_confirmation: the layout is settled; show the source keys +
+    # candidate accounts the user must reference in --account-binding (without
+    # this, an interactive user has no visible path to complete the binding).
+    if outcome.reason == "account_confirmation" and outcome.account_proposals:
+        typer.echo("\n   Account binding required:")
+        for p in outcome.account_proposals:
+            typer.echo(f"     source key: {p['source_account_key']}")
+            for c in p["candidates"]:
+                typer.echo(
+                    f"       candidate: {c['account_id']}  "
+                    f"({c['display_name']}, {c['signal']})"
+                )
+
     typer.echo("\n   To proceed:")
     # Suggested commands shlex-quoted so paths with spaces survive copy-paste.
-    # Accept hint is gated on tier — resolve_or_confirm refuses Accept at the
-    # low-tier gate, so suggesting --confirm there would loop indefinitely.
-    if tier != "low":
-        typer.echo(f"     moneybin import files {quoted_path} --confirm")
-    typer.echo(
-        f"     moneybin import files {quoted_path} --mapping description=<column>"
-    )
-    if tier != "low":
+    if outcome.reason == "account_confirmation":
+        # --mapping/--confirm are irrelevant once the layout is settled.
         typer.echo(
-            f"     moneybin import confirm {quoted_path} --accept   "
-            "(dedicated confirm subcommand)"
+            f"     moneybin import confirm {quoted_path} --accept "
+            "--account-binding <source_key>=<account_id|new>"
         )
+    else:
+        # Accept hint is gated on tier — resolve_or_confirm refuses Accept at
+        # the low-tier gate, so suggesting --confirm there would loop.
+        if tier != "low":
+            typer.echo(f"     moneybin import files {quoted_path} --confirm")
+        typer.echo(
+            f"     moneybin import files {quoted_path} --mapping description=<column>"
+        )
+        if tier != "low":
+            typer.echo(
+                f"     moneybin import confirm {quoted_path} --accept   "
+                "(dedicated confirm subcommand)"
+            )
     typer.echo(
         f"     moneybin import preview {quoted_path}   (inspect proposal in detail)"
     )
@@ -852,19 +876,23 @@ def import_confirm_command(
             confirm_actions.append(f"Validation failed: {outcome.error_message}")
         if outcome.reason == "account_confirmation":
             # The layout is settled; only the account identity needs ratifying.
+            # The --mapping/--accept hints are irrelevant here (and --accept
+            # without a binding loops back to this gate), so surface only the
+            # binding + preview hints.
             confirm_actions.append(
                 f"Re-run 'moneybin import confirm {file_path} --accept "
                 "--account-binding <source_key>=<account_id|new>' to bind each "
                 "proposed account (adopt an existing id, or 'new' to keep distinct)."
             )
-        confirm_actions.append(
-            "Re-run with --mapping <field>=<column> to override specific fields."
-        )
-        if outcome.confidence.tier != "low":
+        else:
             confirm_actions.append(
-                f"Re-run 'moneybin import confirm {file_path} --accept' "
-                "to accept the proposed mapping as-is."
+                "Re-run with --mapping <field>=<column> to override specific fields."
             )
+            if outcome.confidence.tier != "low":
+                confirm_actions.append(
+                    f"Re-run 'moneybin import confirm {file_path} --accept' "
+                    "to accept the proposed mapping as-is."
+                )
         confirm_actions.append(
             f"Run 'moneybin import preview {file_path}' to inspect the proposal."
         )

@@ -261,6 +261,48 @@ class TestImportFilesConfirmFlow:
         assert data["reason"] == "account_confirmation"
         assert data["account_proposals"][0]["source_account_key"] == "checking"
         assert any("--account-binding" in a for a in payload["actions"])
+        # Mapping/accept hints are gated out for account_confirmation (noise —
+        # the layout is settled and --accept without a binding loops the gate).
+        assert not any("--mapping" in a for a in payload["actions"])
+
+    def test_account_confirmation_tty_renders_proposals(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """Interactive TTY prompt shows source keys + candidates to bind."""
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+        outcome = ConfirmationRequired(
+            channel="tabular",
+            confidence=Confidence(
+                score=1.0, tier="high", flagged=(), missing_required=()
+            ),
+            proposed=ProposedMapping(
+                field_mapping={"description": "Memo"},
+                sample_values={},
+                unmapped_columns=(),
+            ),
+            reason="account_confirmation",
+            account_proposals=[_account_proposal_dict("checking")],
+        )
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=ImportConfirmationRequiredError(outcome),
+        )
+        # Force the interactive (TTY) branch — patch the module's sys.
+        mock_sys = mocker.patch("moneybin.cli.commands.import_cmd.sys")
+        mock_sys.stdout.isatty.return_value = True
+
+        result = runner.invoke(
+            app, ["files", str(csv_file), "--account-name", "Checking"]
+        )
+
+        assert "Account binding required" in result.output
+        assert "checking" in result.output  # the source key
+        assert "cand87654321" in result.output  # the candidate account id
+        assert "--account-binding" in result.output
 
     def test_unknown_layout_non_tty_emits_json_envelope(
         self,
@@ -648,3 +690,5 @@ class TestImportConfirmCommand:
         assert data["reason"] == "account_confirmation"
         assert data["account_proposals"][0]["source_account_key"] == "wf-checking"
         assert any("--account-binding" in a for a in payload["actions"])
+        # Mapping/accept hints gated out for account_confirmation.
+        assert not any("--mapping" in a for a in payload["actions"])
