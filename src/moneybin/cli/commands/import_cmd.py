@@ -640,6 +640,26 @@ def import_files_command(
         raise typer.Exit(1)
 
 
+def _echo_account_proposals(outcome: ConfirmationRequired, *, err: bool) -> None:
+    """Print the source keys + candidate accounts for an account_confirmation.
+
+    Shared by the interactive `import files` prompt (stdout) and the `import
+    confirm` error path (stderr) so the binding info a user must reference never
+    diverges between the two surfaces.
+    """
+    if not outcome.account_proposals:
+        return
+    typer.echo("\n   Account binding required:", err=err)
+    for p in outcome.account_proposals:
+        typer.echo(f"     source key: {p['source_account_key']}", err=err)
+        for c in p["candidates"]:
+            typer.echo(
+                f"       candidate: {c['account_id']}  "
+                f"({c['display_name']}, {c['signal']})",
+                err=err,
+            )
+
+
 def _render_confirmation_prompt(
     outcome: ConfirmationRequired, file_path_str: str
 ) -> None:
@@ -690,15 +710,8 @@ def _render_confirmation_prompt(
     # account_confirmation: the layout is settled; show the source keys +
     # candidate accounts the user must reference in --account-binding (without
     # this, an interactive user has no visible path to complete the binding).
-    if outcome.reason == "account_confirmation" and outcome.account_proposals:
-        typer.echo("\n   Account binding required:")
-        for p in outcome.account_proposals:
-            typer.echo(f"     source key: {p['source_account_key']}")
-            for c in p["candidates"]:
-                typer.echo(
-                    f"       candidate: {c['account_id']}  "
-                    f"({c['display_name']}, {c['signal']})"
-                )
+    if outcome.reason == "account_confirmation":
+        _echo_account_proposals(outcome, err=False)
 
     typer.echo("\n   To proceed:")
     # Suggested commands shlex-quoted so paths with spaces survive copy-paste.
@@ -912,14 +925,24 @@ def import_confirm_command(
             # partial-override iteration.
             return
         # Interactive path: human-readable summary + exit code 1.
-        msg = f"❌ Confirmation failed: {outcome.reason}" + (
-            f" — {outcome.error_message}" if outcome.error_message else ""
-        )
-        logger.error(msg)
-        logger.info(
-            "💡 Inspect the proposal with 'moneybin import preview "
-            f"{file_path}' and re-run with a corrected --mapping."
-        )
+        if outcome.reason == "account_confirmation":
+            # The layout is settled; show the bindings to supply, not a --mapping
+            # hint (which would mislead — the mapping is fine).
+            logger.error("❌ Account identity must be confirmed before import.")
+            _echo_account_proposals(outcome, err=True)
+            logger.info(
+                f"💡 Re-run 'moneybin import confirm {file_path} --accept "
+                "--account-binding <source_key>=<account_id|new>'."
+            )
+        else:
+            msg = f"❌ Confirmation failed: {outcome.reason}" + (
+                f" — {outcome.error_message}" if outcome.error_message else ""
+            )
+            logger.error(msg)
+            logger.info(
+                "💡 Inspect the proposal with 'moneybin import preview "
+                f"{file_path}' and re-run with a corrected --mapping."
+            )
         raise typer.Exit(1) from e
 
     if output == OutputFormat.JSON:

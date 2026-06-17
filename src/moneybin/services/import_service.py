@@ -1348,6 +1348,22 @@ class ImportService:
         # Phase 2 — apply explicit bindings, then gate on weak account proposals.
         # The gate raises ImportConfirmationRequiredError (no rows load) for an
         # interactive human first-contact with ambiguous candidates.
+        #
+        # Fail loud on a binding/metadata source key that doesn't match any of
+        # this file's accounts (a typo) — silently ignoring it would do the
+        # wrong thing invisibly ("magic stays visible").
+        known_keys = {s.source_account_key for s in source_accounts}
+        for label, keyed in (
+            ("account_bindings", bindings),
+            ("account_metadata", account_metadata or {}),
+        ):
+            unknown_keys = set(keyed) - known_keys
+            if unknown_keys:
+                raise ValueError(
+                    f"{label} references unknown source key(s): "
+                    f"{sorted(unknown_keys)}. This file's source keys: "
+                    f"{sorted(known_keys)}."
+                )
         source_accounts = _apply_account_bindings(source_accounts, bindings)
         self._gate_account_proposals(
             resolver,

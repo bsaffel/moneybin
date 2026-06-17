@@ -265,6 +265,30 @@ def test_account_metadata_rejects_invalid_value_before_any_write(
         db.close()
 
 
+def test_account_bindings_rejects_unknown_source_key(
+    mock_secret_store: MagicMock, tmp_path: Path
+) -> None:
+    """A binding for a source key not in the file fails loud, before any write."""
+    db = _db(mock_secret_store, tmp_path)
+    try:
+        svc = ImportService(db)
+        with pytest.raises(
+            ValueError, match="account_bindings references unknown source key"
+        ):
+            svc.import_file(
+                _STANDARD_CSV,
+                account_name="WF Checking",
+                refresh=False,
+                confirm=True,
+                actor_kind="human",
+                account_bindings={"typo-key": "new"},
+            )
+        n = db.execute("SELECT COUNT(*) FROM app.account_links").fetchone()
+        assert n is not None and n[0] == 0
+    finally:
+        db.close()
+
+
 def test_metadata_not_captured_for_pending_provisional(
     mock_secret_store: MagicMock, tmp_path: Path
 ) -> None:
