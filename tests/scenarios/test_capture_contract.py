@@ -68,6 +68,21 @@ def _import_csv_number_col(svc: ImportService) -> None:
     )
 
 
+def _import_explicit_id_digits(svc: ImportService) -> None:
+    """A --account-id whose value ends in 4 digits must NOT fabricate a bank last4.
+
+    The canonical id ("acct-1234") is opaque, not an account label; parsing its
+    trailing digits as a mask would write a fake "****1234" to dim_accounts.
+    """
+    svc.import_file(
+        _CAPTURE / "transactions.csv",
+        account_id="acct-1234",
+        confirm=True,
+        actor_kind="human",
+        refresh=False,
+    )
+
+
 # (source_label, importer, expects_last4, expects_institution)
 # Every detect-capable source MUST appear here with expects_last4=True; a
 # binding-only source is listed with expects_last4=False and MUST assert NO last4
@@ -83,6 +98,7 @@ _CONTRACT: list[tuple[str, Callable[[ImportService], None], bool, bool]] = [
     ("csv_with_label", _import_csv_with_label, True, False),
     ("csv_number_col", _import_csv_number_col, True, False),
     ("bare_csv", _import_bare_csv, False, False),
+    ("explicit_id_digits", _import_explicit_id_digits, False, False),
 ]
 
 

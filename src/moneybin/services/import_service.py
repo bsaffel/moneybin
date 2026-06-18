@@ -1333,8 +1333,14 @@ class ImportService:
         if account_id:
             account_ids: str | list[str] = account_id
             acct_id_to_name[account_id] = account_name or account_id
-            label_parsed_by_key[account_id] = parse_account_label(
-                account_name or account_id
+            # Parse only a real display label, never the canonical --account-id
+            # itself: an opaque id ending in 4 digits ("acct-1234") would
+            # otherwise fabricate a "****1234" bank mask in dim_accounts. No
+            # label supplied → no derived last4.
+            label_parsed_by_key[account_id] = (
+                parse_account_label(account_name)
+                if account_name
+                else (account_id, None)
             )
             source_accounts.append(
                 SourceAccount(
