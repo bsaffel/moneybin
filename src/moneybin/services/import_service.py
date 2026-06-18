@@ -1325,6 +1325,11 @@ class ImportService:
         # when a label carries none (e.g. "Checking" alongside an "Account Number"
         # column). Keyed by native account key.
         number_last4_by_key: dict[str, str | None] = {}
+        # Per-account institution for multi-account exporter formats, from a mapped
+        # Institution column (Tiller-style); else None. NEVER the exporter/tool name
+        # (Decision 8 exporter/institution split). Single-account keeps the
+        # format/file institution unchanged.
+        multi_acct_inst: dict[str, str | None] = {}
 
         # Phase 1 — enumerate the source accounts this file presents (one per
         # native key) WITHOUT resolving, so the account-binding gate can run
@@ -1395,13 +1400,22 @@ class ImportService:
                         continue
                     if l4 := _last4_from_account_number(value):
                         number_last4_by_key[aid] = l4
+            # Per-account institution from a mapped Institution column (Tiller-style):
+            # first non-null value per account key. The institution embedded in a
+            # Monarch-style account LABEL is not parsed here (future increment).
+            inst_col = resolved.field_mapping.get("institution_name")
+            if inst_col and inst_col in df.columns:
+                for nm, inst_val in zip(raw_names, df[inst_col].to_list(), strict=True):
+                    key = slugify(nm)
+                    if key not in multi_acct_inst and inst_val:
+                        multi_acct_inst[key] = str(inst_val)
             source_accounts.extend(
                 SourceAccount(
                     source_type=source_type,
                     source_origin=source_origin,
                     source_account_key=native_key,
                     account_name=label_parsed_by_key[native_key][0],
-                    institution=institution,
+                    institution=multi_acct_inst.get(native_key),
                     last_four=(
                         label_parsed_by_key[native_key][1]
                         or number_last4_by_key.get(native_key)
@@ -1519,13 +1533,20 @@ class ImportService:
         for aid in acct_id_to_name:
             l4 = label_parsed_by_key[aid][1] or number_last4_by_key.get(aid)
             acct_id_to_last4[aid] = f"****{l4}" if l4 else None
+        # institution_name per account: multi-account exporters carry per-account
+        # institution from row data (Decision 8); single-account uses the
+        # format/file institution for its one row (unchanged).
+        account_institutions = [
+            multi_acct_inst.get(aid) if resolved.is_multi_account else institution
+            for aid in unique_ids
+        ]
         account_df = pl.DataFrame({
             "account_id": unique_ids,
             "account_name": [acct_id_to_name[aid] for aid in unique_ids],
             "account_number": [None] * len(unique_ids),
             "account_number_masked": [acct_id_to_last4[aid] for aid in unique_ids],
             "account_type": [None] * len(unique_ids),
-            "institution_name": [institution] * len(unique_ids),
+            "institution_name": account_institutions,
             "currency": [None] * len(unique_ids),
             "source_file": [str(file_path)] * len(unique_ids),
             "source_type": [source_type] * len(unique_ids),
