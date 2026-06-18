@@ -91,3 +91,38 @@ def test_explicit_account_name_overrides_saved_format_binding(
         assert keys == {"wf-checking", "wf-savings"}, keys
     finally:
         db.close()
+
+
+def test_autosaved_format_records_resolved_institution(
+    mock_secret_store: MagicMock, tmp_path: Path
+) -> None:
+    """An auto-saved format records the filename-resolved institution, not "unknown".
+
+    A future import matching the format then inherits a real institution hint for
+    the cross-source bridge. The account-label leak stays fixed; only a
+    genuinely-resolved institution lands here.
+    """
+    from moneybin.services.import_service import ImportService
+
+    csv = tmp_path / "wells_fargo_export.csv"
+    csv.write_text("Date,Description,Amount\n2026-01-15,Coffee,-12.50\n")
+    db = Database(
+        tmp_path / "fmt_inst.duckdb",
+        secret_store=mock_secret_store,
+        no_auto_upgrade=True,
+        read_only=False,
+    )
+    try:
+        svc = ImportService(db)
+        svc.import_file(
+            csv,
+            account_name="Checking",
+            confirm=True,
+            actor_kind="human",
+            save_format=True,
+            refresh=False,
+        )
+        row = db.execute("SELECT institution_name FROM app.tabular_formats").fetchone()
+        assert row is not None and row[0] == "wells_fargo", row
+    finally:
+        db.close()

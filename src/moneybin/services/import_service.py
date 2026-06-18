@@ -1313,6 +1313,10 @@ class ImportService:
             ),
             cli_override=None,  # no --institution flag on tabular yet
         )
+        # Stage 5 reassigns `institution` for the account_df flow; keep the
+        # resolved (format / filename) value for the auto-save block below so a
+        # saved format records its real institution rather than always "unknown".
+        resolved_institution = institution
         resolver = AccountResolver(self._db, actor="system")
         bindings = account_bindings or {}
 
@@ -1537,11 +1541,16 @@ class ImportService:
         for aid in acct_id_to_name:
             l4 = label_parsed_by_key[aid][1] or number_last4_by_key.get(aid)
             acct_id_to_last4[aid] = f"****{l4}" if l4 else None
-        # institution_name per account: multi-account exporters carry per-account
-        # institution from row data (Decision 8); single-account uses the
-        # format/file institution for its one row (unchanged).
+        # institution_name per account: per-account institution applies only when
+        # the multi-account branch actually ran (no explicit --account-name/
+        # --account-id); an explicit account on a multi-account-detected format
+        # keeps the shared format/file institution (Decision 8). Single-account
+        # uses the shared institution for its one row (unchanged).
+        per_account_inst = (
+            resolved.is_multi_account and not account_id and not account_name
+        )
         account_institutions = [
-            multi_acct_inst.get(aid) if resolved.is_multi_account else institution
+            multi_acct_inst.get(aid) if per_account_inst else institution
             for aid in unique_ids
         ]
         account_df = pl.DataFrame({
@@ -1621,7 +1630,7 @@ class ImportService:
                     # (account_name) must NEVER land here — a format describes a
                     # column layout, not an account (bug #5). "unknown" when no
                     # institution resolved; the exporter/format identity is `name`.
-                    institution_name=institution or "unknown",
+                    institution_name=resolved_institution or "unknown",
                     file_type=format_info.file_type,
                     delimiter=format_info.delimiter,
                     encoding=format_info.encoding,
