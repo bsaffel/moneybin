@@ -24,6 +24,7 @@ from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.extractors.institution_resolution import resolve_institution_tabular
+from moneybin.extractors.tabular.account_label import parse_account_label
 from moneybin.extractors.tabular.formats import (
     NumberFormatType,
     SignConventionType,
@@ -1329,6 +1330,7 @@ class ImportService:
                     source_account_key=native_key,
                     account_name=account_name,
                     institution=institution,
+                    last_four=parse_account_label(account_name)[1],
                 )
             )
         elif (
@@ -1349,6 +1351,7 @@ class ImportService:
                     source_account_key=native_key,
                     account_name=name,
                     institution=institution,
+                    last_four=parse_account_label(name)[1],
                 )
                 for native_key, name in acct_id_to_name.items()
             )
@@ -1456,11 +1459,15 @@ class ImportService:
         # Stage 5: Load — one account record per unique account
         institution = matched_format.institution_name if matched_format else None
         unique_ids = sorted(acct_id_to_name.keys())
+        acct_id_to_last4 = {
+            aid: (f"****{l4}" if (l4 := parse_account_label(name)[1]) else None)
+            for aid, name in acct_id_to_name.items()
+        }
         account_df = pl.DataFrame({
             "account_id": unique_ids,
             "account_name": [acct_id_to_name[aid] for aid in unique_ids],
             "account_number": [None] * len(unique_ids),
-            "account_number_masked": [None] * len(unique_ids),
+            "account_number_masked": [acct_id_to_last4[aid] for aid in unique_ids],
             "account_type": [None] * len(unique_ids),
             "institution_name": [institution] * len(unique_ids),
             "currency": [None] * len(unique_ids),
