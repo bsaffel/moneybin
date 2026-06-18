@@ -37,9 +37,11 @@ _LAST4_PATTERNS: tuple[re.Pattern[str], ...] = (
 )
 
 # Strip a recognized trailing last4 token (and its mask/paren ornamentation)
-# from the display name.
+# from the display name. The "ending|ends|end in" alternation mirrors
+# _LAST4_PATTERNS so every phrasing the capture accepts is also stripped from
+# the clean name (else leftover words like "ends in" degrade the fuzzy match).
 _TRAILING_TOKEN = re.compile(
-    r"\s*[\(\[]?\s*(?:ending(?:\s+in)?\s+)?[.…*x#·\-\s]*\d{4}\s*[\)\]]?\s*$",
+    r"\s*[\(\[]?\s*(?:(?:ending(?:\s+in)?|ends?\s+in)\s+)?[.…*x#·\-\s]*\d{4}\s*[\)\]]?\s*$",
     re.IGNORECASE,
 )
 

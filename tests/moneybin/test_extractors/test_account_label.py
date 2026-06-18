@@ -15,6 +15,8 @@ from moneybin.extractors.tabular.account_label import parse_account_label
         ("Savings x1789", "Savings", "1789"),
         ("Card ending in 1789", "Card", "1789"),
         ("Card ending 1789", "Card", "1789"),
+        ("Card ends in 1789", "Card", "1789"),  # "ends in" must strip like "ending in"
+        ("Checking end in 4267", "Checking", "4267"),  # "end in" variant
         ("WF CHECKING 9940", "WF CHECKING", "9940"),  # bare trailing 4-digit group
         ("Joint (xxxx4267)", "Joint", "4267"),
         ("365 Savings", "365 Savings", None),  # 3 digits → no last4
