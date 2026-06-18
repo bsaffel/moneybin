@@ -20,7 +20,11 @@ WITH ofx_accounts AS (
     'ofx' AS source_type,
     source_file,
     extracted_at,
-    loaded_at
+    loaded_at,
+    CASE
+      WHEN LENGTH(REGEXP_REPLACE(source_account_key, '[^0-9]', '', 'g')) >= 4
+      THEN RIGHT(REGEXP_REPLACE(source_account_key, '[^0-9]', '', 'g'), 4)
+    END AS last_four_raw
   FROM prep.stg_ofx__accounts
 ), tabular_accounts AS (
   SELECT
@@ -33,7 +37,16 @@ WITH ofx_accounts AS (
     source_type,
     source_file,
     extracted_at,
-    loaded_at
+    loaded_at,
+    CASE
+      WHEN LENGTH(
+        REGEXP_REPLACE(COALESCE(account_number, account_number_masked), '[^0-9]', '', 'g')
+      ) >= 4
+      THEN RIGHT(
+        REGEXP_REPLACE(COALESCE(account_number, account_number_masked), '[^0-9]', '', 'g'),
+        4
+      )
+    END AS last_four_raw
   FROM prep.stg_tabular__accounts
 ), plaid_accounts AS (
   SELECT
@@ -46,7 +59,11 @@ WITH ofx_accounts AS (
     'plaid' AS source_type,
     source_file,
     extracted_at,
-    loaded_at
+    loaded_at,
+    CASE
+      WHEN LENGTH(REGEXP_REPLACE(mask, '[^0-9]', '', 'g')) >= 4
+      THEN RIGHT(REGEXP_REPLACE(mask, '[^0-9]', '', 'g'), 4)
+    END AS last_four_raw
   FROM prep.stg_plaid__accounts
 ), all_accounts AS (
   SELECT
@@ -103,7 +120,9 @@ WITH ofx_accounts AS (
     ARG_MIN(source_type, (source_rank, -EPOCH_US(extracted_at))) AS source_type,
     ARG_MIN(source_file, (source_rank, -EPOCH_US(extracted_at))) AS source_file,
     MAX(extracted_at) AS extracted_at,
-    MAX(loaded_at) AS loaded_at
+    MAX(loaded_at) AS loaded_at,
+    ARG_MIN(last_four_raw, (source_rank, -EPOCH_US(extracted_at))) FILTER(WHERE
+      NOT last_four_raw IS NULL) AS last_four_derived
   FROM ranked
   GROUP BY
     grain_key
@@ -121,14 +140,14 @@ SELECT
   GREATEST(w.loaded_at, s.updated_at) AS updated_at, /* Latest of all per-row input timestamps contributing to this row's current values. Does not advance on idempotent SQLMesh re-applies. See docs/specs/core-updated-at-convention.md. */
   COALESCE(
     s.display_name,
-    w.institution_name || ' ' || w.account_type || ' …' || s.last_four,
+    w.institution_name || ' ' || w.account_type || ' …' || COALESCE(s.last_four, w.last_four_derived),
     w.institution_name || ' ' || w.account_type,
     w.institution_name,
     w.account_type,
     'Account ' || w.account_id
   ) AS display_name, /* Resolved display label: user override → derived (institution+type[+last4]) → institution or type alone → 'Account <id>' terminal so it is never NULL */
   s.official_name, /* Institution's formal name (mirrors Plaid official_name); user-set or future Plaid sync */
-  s.last_four, /* Last 4 digits of account number (mirrors Plaid mask); user-set or future Plaid sync */
+  COALESCE(s.last_four, w.last_four_derived) AS last_four, /* Last 4 of account number: user-set app.account_settings.last_four, else derived per source (OFX source_account_key digits, Plaid mask, tabular account_number/masked). Never the full number. */
   s.account_subtype, /* Plaid-style subtype (checking, savings, credit card, mortgage, ...) */
   s.holder_category, /* 'personal' / 'business' / 'joint' */
   COALESCE(s.iso_currency_code, 'USD') AS iso_currency_code, /* ISO-4217 currency code; defaults to USD until multi-currency.md ships */

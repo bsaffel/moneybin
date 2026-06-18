@@ -226,3 +226,41 @@ def test_dim_accounts_unlinked_account_keyed_by_source_native(db: Database) -> N
     ).fetchone()
     assert null_count is not None
     assert null_count[0] == 0, "core.dim_accounts must never emit a NULL account_id"
+
+
+@pytest.mark.slow
+def test_last_four_derived_for_ofx_without_account_settings(db: Database) -> None:
+    """OFX account without app.account_settings gets last_four derived from ACCTID digits.
+
+    Verifies the Decision 8 capture layer: last_four is derived from source fields
+    (OFX source_account_key) when no user-set app.account_settings row exists.
+    """
+    canonical_id = "canonofxlast401"
+    ofx_native = "123456784267"  # ACCTID ending 4267
+    _insert_ofx_account(
+        db,
+        native_key=ofx_native,
+        routing_number="121000248",
+        institution_org="WELLS FARGO",
+        account_type="CHECKING",
+        extracted_at="2024-01-01 00:00:00",
+    )
+    _insert_accepted_source_native(
+        db,
+        link_id="link-ofx-last4",
+        account_id=canonical_id,
+        ref_value=ofx_native,
+        source_type="ofx",
+        source_origin="test_bank_ofx",
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    row = db.execute(
+        "SELECT last_four, display_name FROM core.dim_accounts WHERE account_id = ?",
+        [canonical_id],
+    ).fetchone()
+    assert row is not None, "derived-last4 canonical row missing from core.dim_accounts"
+    assert row[0] == "4267", f"expected derived last_four 4267, got {row[0]!r}"
+    assert "4267" in row[1], f"display_name should include last4: {row[1]!r}"
