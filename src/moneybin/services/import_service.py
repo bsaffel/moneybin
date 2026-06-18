@@ -1409,8 +1409,9 @@ class ImportService:
                     if l4 := _last4_from_account_number(value):
                         number_last4_by_key[aid] = l4
             # Per-account institution from a mapped Institution column (Tiller-style):
-            # first non-null value per account key. The institution embedded in a
-            # Monarch-style account LABEL is not parsed here (future increment).
+            # first non-null value per account key. An institution embedded only in a
+            # Monarch-style account LABEL is not parsed here — label→institution
+            # parsing is not implemented.
             inst_col = resolved.field_mapping.get("institution_name")
             if inst_col and inst_col in df.columns:
                 for nm, inst_val in zip(raw_names, df[inst_col].to_list(), strict=True):
