@@ -313,6 +313,41 @@ def test_institution_last4_skips_when_slug_is_empty(db: Database) -> None:
     assert second.outcome == "minted_new"
 
 
+def test_find_candidates_prefers_institution_last4_over_name(db: Database) -> None:
+    """Institution+last4 suppresses the weak name signal (Decision 8 bridge precedence).
+
+    When institution+last4 match an existing dim account, the candidate pass
+    returns an institution_last4 proposal and SUPPRESSES the weak name signal.
+    The seeded display_name deliberately equals the source account_name so the
+    name branch WOULD fire if not short-circuited — making the `no name candidate`
+    assertion non-vacuous.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="acct_ofx",
+        last_four="4267",
+        institution_name="WELLS FARGO",
+        display_name="WF Checking 4267",
+    )
+    resolver = AccountResolver(db, actor="system")
+    candidates = resolver._find_candidates(  # type: ignore[reportPrivateUsage]  # pin candidate-pass precedence
+        _src(
+            institution="Wells Fargo",
+            last_four="4267",
+            account_name="WF Checking 4267",
+        ),
+        exclude_account_id="prov_new",
+    )
+    assert any(
+        c.signal == "institution_last4" and c.account_id == "acct_ofx"
+        for c in candidates
+    ), candidates
+    assert not any(c.signal == "name" for c in candidates), (
+        "name must not fire when institution+last4 matches (bridge precedence)"
+    )
+
+
 def test_mint_claims_full_number_strong_ref_for_later_adopt(db: Database) -> None:
     """A minted account claims its scoped full_number so a later source adopts it.
 
