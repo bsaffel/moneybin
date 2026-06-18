@@ -1592,7 +1592,11 @@ class ImportService:
             try:
                 detected_fmt = TabularFormat(
                     name=source_origin,
-                    institution_name=account_name or source_origin,
+                    # Institution is best-effort metadata; the per-account label
+                    # (account_name) must NEVER land here — a format describes a
+                    # column layout, not an account (bug #5). "unknown" when no
+                    # institution resolved; the exporter/format identity is `name`.
+                    institution_name=institution or "unknown",
                     file_type=format_info.file_type,
                     delimiter=format_info.delimiter,
                     encoding=format_info.encoding,
