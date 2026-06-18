@@ -1295,6 +1295,10 @@ class ImportService:
         # source_origin scopes the source_native key; compute before resolution so
         # raw.* and app.account_links.source_origin stay identical (a later staging
         # JOIN keys on it). Do NOT change how source_origin is derived.
+        # This is the EXPORTER / format identity (Monarch / Tiller / bank export,
+        # or the account slug for an unregistered single file) — orthogonal to the
+        # per-account institution, which is resolved separately and, for
+        # multi-account exporters, comes from row data (Decision 8).
         source_origin = (
             matched_format.name
             if matched_format
