@@ -39,3 +39,55 @@ def test_autosaved_format_does_not_store_account_name_as_institution(
         )
     finally:
         db.close()
+
+
+def test_explicit_account_name_overrides_saved_format_binding(
+    mock_secret_store: MagicMock, tmp_path: Path
+) -> None:
+    """Two structurally-identical CSVs imported with DIFFERENT explicit account names.
+
+    They land on DISTINCT accounts, even though the second matches the saved
+    format. A saved format carries columns only, never an account binding (#5).
+    """
+    from moneybin.services.import_service import ImportService
+
+    db = Database(
+        tmp_path / "override.duckdb",
+        secret_store=mock_secret_store,
+        no_auto_upgrade=True,
+        read_only=False,
+    )
+    try:
+        svc = ImportService(db)
+        a = tmp_path / "a.csv"
+        a.write_text("Date,Description,Amount\n2026-01-01,X,-1.00\n")
+        b = tmp_path / "b.csv"
+        b.write_text("Date,Description,Amount\n2026-02-01,Y,-2.00\n")
+        # First import saves the format (header signature = these columns).
+        svc.import_file(
+            a,
+            account_name="WF Checking",
+            confirm=True,
+            actor_kind="human",
+            save_format=True,
+            refresh=False,
+        )
+        # Second import is structurally identical -> matches the saved format,
+        # but carries a DIFFERENT explicit account name.
+        svc.import_file(
+            b,
+            account_name="WF Savings",
+            confirm=True,
+            actor_kind="human",
+            refresh=False,
+        )
+        keys = {
+            r[0]
+            for r in db.execute(
+                "SELECT ref_value FROM app.account_links WHERE ref_kind = 'source_native' "
+                "AND source_type IN ('csv', 'tsv', 'excel')"
+            ).fetchall()
+        }
+        assert keys == {"wf-checking", "wf-savings"}, keys
+    finally:
+        db.close()
