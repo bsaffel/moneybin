@@ -74,6 +74,39 @@ def test_human_import_gates_on_weak_account_candidate(
         db.close()
 
 
+def test_masked_label_reaches_resolver_as_clean_name(
+    mock_secret_store: MagicMock, tmp_path: Path
+) -> None:
+    """A masked label must reach the resolver as its cleaned name.
+
+    "Cash (...1789)" must arrive as "Cash"; otherwise the mask text sinks the
+    fuzzy-name ratio below threshold (SequenceMatcher("cash (...1789)", "cash")
+    ~= 0.44 < 0.6) and a duplicate is silently minted instead of surfacing the
+    existing-account candidate. With no institution resolved, name is the only
+    signal.
+    """
+    db = _db(mock_secret_store, tmp_path)
+    try:
+        _seed_existing_account(db, account_id="cash_existing01", display_name="Cash")
+        svc = ImportService(db)
+        with pytest.raises(ImportConfirmationRequiredError) as exc:
+            svc.import_file(
+                _STANDARD_CSV,
+                account_name="Cash (...1789)",
+                refresh=False,
+                confirm=True,
+                actor_kind="human",
+            )
+        cand_ids = [
+            c["account_id"]
+            for p in exc.value.outcome.account_proposals
+            for c in p["candidates"]
+        ]
+        assert "cash_existing01" in cand_ids
+    finally:
+        db.close()
+
+
 def test_binding_to_candidate_adopts_and_loads(
     mock_secret_store: MagicMock, tmp_path: Path
 ) -> None:

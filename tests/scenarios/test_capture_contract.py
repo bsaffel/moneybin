@@ -54,14 +54,34 @@ def _import_bare_csv(svc: ImportService) -> None:
     )
 
 
+def _import_csv_number_col(svc: ImportService) -> None:
+    """Multi-account CSV whose last4 lives only in the Account Number column.
+
+    The labels ("Checking"/"Savings") carry no digits, so last4 can only be
+    captured from the mapped account-number column, not the display label.
+    """
+    svc.import_file(
+        _CAPTURE / "transactions_multi_acct_number.csv",
+        confirm=True,
+        actor_kind="human",
+        refresh=False,
+    )
+
+
 # (source_label, importer, expects_last4, expects_institution)
 # Every detect-capable source MUST appear here with expects_last4=True; a
 # binding-only source is listed with expects_last4=False and MUST assert NO last4
 # (proving it does not silently fabricate one). A new format added without a row
 # here is a coverage gap the reviewer catches.
+#
+# Plaid: detect-capable (the plaid_accounts CTE in dim_accounts.sql derives
+# last_four from `mask`), but exercised via the sync connector, not import_file —
+# there is no file fixture this import_file-shaped contract can drive. Contracted
+# separately when sync gains a scenario harness (M1S.9 exporter/institution split).
 _CONTRACT: list[tuple[str, Callable[[ImportService], None], bool, bool]] = [
     ("ofx", _import_ofx, True, True),
     ("csv_with_label", _import_csv_with_label, True, False),
+    ("csv_number_col", _import_csv_number_col, True, False),
     ("bare_csv", _import_bare_csv, False, False),
 ]
 
