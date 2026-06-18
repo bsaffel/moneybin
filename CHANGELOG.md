@@ -226,6 +226,15 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   accounts rendered as `Institution Type` with the last-4 fragment dropped
   because `last_four` was NULL; `core.dim_accounts.display_name` now shows the
   derived last 4 (`Institution Type …NNNN`). (#257)
+- **Multi-account (Tiller-style) imports record each account's own institution
+  (M1S.9).** For a multi-account exporter format with a per-row Institution
+  column, every account now gets its own institution (which the cross-source
+  bridge can use) instead of a single shared exporter/tool name stamped on all of
+  them. (#258)
+- **Saved tabular formats no longer store an account label as their institution
+  (M1S.8).** An auto-saved format records its resolved (filename/format)
+  institution or `unknown`, never the per-account `--account-name` — a format
+  describes a column layout, not an account. (#258)
 
 ### Added
 - **PDF import (seed path).** Native-text PDFs import via `moneybin import <file.pdf>` and the inbox; their tables land as a queryable JSON seed (`raw.pdf_seeds`) with an auto-generated typed view (`raw.pdf_<alias>`), reversible like any import. Mapping PDFs to transactions/core is a later phase.
