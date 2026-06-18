@@ -107,3 +107,128 @@ def test_cross_source_twins_collapse_to_canonical_accounts() -> None:
         assert all(sc == 2 for _aid, sc in rows), rows
         # Every transaction re-keys under a canonical account (no orphan twins).
         assert {aid for aid, _sc in rows} == {checking_id, savings_id}
+
+
+@pytest.mark.scenarios
+@pytest.mark.slow
+def test_csv_twin_human_import_gates_on_last4_bridge() -> None:
+    """A HUMAN importing the Wells-Fargo csv twin (no binding) is GATED.
+
+    The derived last4 ('1111') + filename-resolved institution ('wells_fargo')
+    match the ofx account, so the import raises ImportConfirmationRequiredError
+    (account_confirmation) instead of silently minting/merging — the bridge fires
+    VISIBLY at the gate (Decision 7 human first-contact, "magic stays visible").
+    """
+    from moneybin.services.import_confirmation import ImportConfirmationRequiredError
+
+    scenario = Scenario(
+        scenario="account-identity-cross-source",
+        setup=SetupSpec(persona="family"),
+        pipeline=[],
+    )
+    with scenario_env(scenario) as (db, _tmp, env):
+        svc = ImportService(db)
+        svc.import_file(_FIXTURES / "wf_checking.qfx", refresh=False)
+        _ofx_canonical_id(db, "1111")  # ensure the ofx account exists
+        run_step("transform", scenario.setup, db, env=env)
+        with pytest.raises(
+            ImportConfirmationRequiredError, match="account_confirmation"
+        ):
+            svc.import_file(
+                _FIXTURES / "wells_fargo_checking.csv",
+                account_name="WF Checking (...1111)",
+                confirm=True,
+                actor_kind="human",
+                refresh=False,
+            )
+
+
+@pytest.mark.scenarios
+@pytest.mark.slow
+def test_csv_twin_agent_import_queues_last4_proposal_without_merge() -> None:
+    """An AGENT importing the same csv twin (no binding) does NOT gate.
+
+    It mints a provisional and writes a PENDING institution_last4 decision onto
+    the ofx account (review queue, Decision 7 agent path) — never a silent merge,
+    and the agent does not self-accept this weak signal.
+    """
+    scenario = Scenario(
+        scenario="account-identity-cross-source",
+        setup=SetupSpec(persona="family"),
+        pipeline=[],
+    )
+    with scenario_env(scenario) as (db, _tmp, env):
+        svc = ImportService(db)
+        svc.import_file(_FIXTURES / "wf_checking.qfx", refresh=False)
+        checking_id = _ofx_canonical_id(db, "1111")
+        run_step("transform", scenario.setup, db, env=env)
+        svc.import_file(
+            _FIXTURES / "wells_fargo_checking.csv",
+            account_name="WF Checking (...1111)",
+            confirm=True,
+            actor_kind="agent",
+            refresh=False,
+        )
+        decisions = db.execute(
+            "SELECT match_reason FROM app.account_link_decisions "
+            "WHERE status = 'pending' AND candidate_account_id = ?",
+            [checking_id],
+        ).fetchall()
+        assert [r[0] for r in decisions] == ["institution_last4"], decisions
+        merged = db.execute(
+            "SELECT COUNT(*) FROM app.account_links WHERE ref_kind = 'source_native' "
+            "AND source_type = 'csv' AND account_id = ?",
+            [checking_id],
+        ).fetchone()
+        assert merged is not None and merged[0] == 0, (
+            "weak last4 signal must NOT auto-merge onto the ofx account"
+        )
+
+
+@pytest.mark.scenarios
+@pytest.mark.slow
+def test_shared_last4_collision_agent_queues_both_never_merges() -> None:
+    """Two distinct Wells-Fargo accounts sharing last4 '4267' both get proposals.
+
+    An agent csv import carrying that last4 queues TWO pending institution_last4
+    proposals (one per ambiguous account), never an auto-merge — the user
+    disambiguates (collision safety; a weak signal is ambiguous by construction).
+    """
+    scenario = Scenario(
+        scenario="account-identity-cross-source",
+        setup=SetupSpec(persona="family"),
+        pipeline=[],
+    )
+    with scenario_env(scenario) as (db, _tmp, env):
+        svc = ImportService(db)
+        svc.import_file(_FIXTURES / "wf_acct_a_4267.qfx", refresh=False)
+        svc.import_file(_FIXTURES / "wf_acct_b_4267.qfx", refresh=False)
+        acct_a = _ofx_canonical_id(db, "5114267")
+        acct_b = _ofx_canonical_id(db, "6224267")
+        assert acct_a != acct_b
+        run_step("transform", scenario.setup, db, env=env)
+        svc.import_file(
+            _FIXTURES / "wells_fargo_checking.csv",
+            account_name="WF (...4267)",
+            confirm=True,
+            actor_kind="agent",
+            refresh=False,
+        )
+        cand_ids = {
+            r[0]
+            for r in db.execute(
+                "SELECT candidate_account_id FROM app.account_link_decisions "
+                "WHERE status = 'pending' AND match_reason = 'institution_last4'"
+            ).fetchall()
+        }
+        assert cand_ids == {acct_a, acct_b}, (
+            f"both same-last4 accounts must be surfaced for review, got {cand_ids}"
+        )
+        merged = db.execute(
+            "SELECT COUNT(*) FROM app.account_links WHERE ref_kind = 'source_native' "
+            "AND source_type = 'csv' AND account_id IN (?, ?)",
+            [acct_a, acct_b],
+        ).fetchone()
+        assert merged is not None and merged[0] == 0, (
+            "shared last4 must NOT auto-merge onto either ofx account"
+        )
