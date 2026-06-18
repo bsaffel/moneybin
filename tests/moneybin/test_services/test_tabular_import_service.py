@@ -161,6 +161,43 @@ def test_reimport_writes_single_accepted_source_native_link(
         db.close()
 
 
+def test_single_account_csv_captures_last4_from_label(
+    mock_secret_store: MagicMock, tmp_path: Path
+) -> None:
+    """Parsed last4 from account label lands in raw.tabular_accounts.account_number_masked.
+
+    A single-account CSV imported with an account label embedding the last 4
+    lands ****NNNN in raw.tabular_accounts.account_number_masked (Decision 8
+    capture), so dim_accounts can derive last_four even before any user edit.
+    """
+    from moneybin.services.import_service import ImportService
+
+    db = Database(
+        tmp_path / "capture.duckdb",
+        secret_store=mock_secret_store,
+        no_auto_upgrade=True,
+        read_only=False,
+    )
+    try:
+        svc = ImportService(db)
+        svc.import_file(
+            _STANDARD_CSV,
+            account_name="WF Checking (...4267)",
+            refresh=False,
+            confirm=True,
+            auto_accept=True,
+        )
+        masked = db.execute(
+            """
+            SELECT account_number_masked FROM raw.tabular_accounts
+            WHERE source_type IN ('csv', 'tsv', 'excel')
+            """
+        ).fetchone()
+        assert masked is not None and masked[0] == "****4267", masked
+    finally:
+        db.close()
+
+
 # ---------------------------------------------------------------------------
 # TestTabularConfirmationFlow
 # ---------------------------------------------------------------------------
