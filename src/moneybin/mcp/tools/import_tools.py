@@ -74,6 +74,23 @@ def _confirmation_actions(file_path: str, outcome: ConfirmationRequired) -> list
         # was unknown, which source column was missing, etc.) before
         # the generic recovery hints.
         actions.append(f"Validation failed: {outcome.error_message}")
+    if outcome.reason == "account_confirmation":
+        # The column mapping is settled; only the account identity is open.
+        # accept=True ratifies the mapping and account_bindings answers the
+        # account in one call — a bare accept (no binding) loops back to the
+        # account gate and a mapping override is irrelevant. Bind every proposal
+        # (the gate is all-or-nothing).
+        keys = [
+            str(p.get("source_account_key", "")) for p in outcome.account_proposals
+        ] or ["<source_key>"]
+        binding_map = ", ".join(f"'{k}': '<account_id|new>'" for k in keys)
+        actions.append(
+            f"Use import_confirm(file_path='{file_path}', accept=True, "
+            f"account_bindings={{{binding_map}}}) to ratify the mapping and bind "
+            "every account; source keys are in "
+            "data.account_proposals[].source_account_key."
+        )
+        return actions
     if outcome.confidence.tier != "low":
         actions.append(
             f"Use import_confirm(file_path='{file_path}', accept=True) "
@@ -343,6 +360,27 @@ def import_files(
                 _bridge_confirm_action(
                     pending.path, payload_ref="confirmation_payload.bridge_payload"
                 )
+            )
+            continue
+        if payload.get("reason") == "account_confirmation":
+            # The column layout is settled; only the account identity is open.
+            # accept=True ratifies the mapping and account_bindings answers the
+            # account (accept alone, with no binding, loops back to the account
+            # gate; a mapping override is irrelevant). One call must carry a
+            # binding for every proposal — the gate is all-or-nothing.
+            # account_proposals is always a list of serialized dicts here (built
+            # by confirmation_payload_dict); typed Any to read keys under strict.
+            raw_props: Any = payload.get("account_proposals")
+            props: list[Any] = raw_props if isinstance(raw_props, list) else []
+            keys = [str(p.get("source_account_key", "")) for p in props] or [
+                "<source_key>"
+            ]
+            binding_map = ", ".join(f"'{k}': '<account_id|new>'" for k in keys)
+            actions.append(
+                f"Use import_confirm(file_path='{pending.path}', accept=True, "
+                f"account_bindings={{{binding_map}}}) to ratify the mapping and "
+                "bind every account; source keys are in "
+                "confirmation_payload.account_proposals[].source_account_key."
             )
             continue
         if tier != "low":
@@ -915,6 +953,9 @@ def import_confirm(
                 "flagged": list(e.outcome.confidence.flagged),
                 "missing_required": list(e.outcome.confidence.missing_required),
                 "unmapped_columns": unmapped,
+                # Carry account_proposals so an account_confirmation re-prompt
+                # surfaces the source keys the agent needs for account_bindings.
+                "account_proposals": list(e.outcome.account_proposals),
             },
             actions=_confirmation_actions(str(path), e.outcome),
         )

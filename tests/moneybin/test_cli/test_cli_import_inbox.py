@@ -77,7 +77,7 @@ def test_inbox_drain_failure_exits_zero_but_warns(
         failed=[
             {
                 "filename": "x.csv",
-                "error_code": "needs_account_name",
+                "error_code": "transform_error",
                 "sidecar": "failed/2026-05/x.csv.error.yml",
             }
         ],
@@ -86,7 +86,7 @@ def test_inbox_drain_failure_exits_zero_but_warns(
     result = runner.invoke(app, ["import", "inbox"])
 
     assert result.exit_code == 0
-    assert "needs_account_name" in result.stderr
+    assert "transform_error" in result.stderr
     assert "0 imported" in result.stderr
     assert "1 failed" in result.stderr
 
@@ -123,7 +123,43 @@ def test_inbox_drain_renders_pending_files(
     assert "unknown-statement.csv" in result.stderr
     assert "pending confirmation" in result.stderr
     assert "moneybin import confirm" in result.stderr
+    # Non-low tier: --accept ratifies the detected mapping.
+    assert "--accept" in result.stderr
     assert "1 pending" in result.stderr
+
+
+def test_inbox_drain_low_tier_mapping_hint_omits_accept(
+    runner: CliRunner, patch_inbox: MagicMock
+) -> None:
+    """A low-tier mapping confirmation points at --mapping, never --accept.
+
+    resolve_or_confirm re-surfaces low-tier proposals on --accept (it never
+    loads them), so an --accept hint would loop the user; only --mapping works.
+    """
+    patch_inbox.sync.return_value = InboxSyncResult(
+        processed=[],
+        failed=[],
+        pending=[
+            {
+                "filename": "fuzzy.csv",
+                "channel": "tabular",
+                "tier": "low",
+                "score": 0.3,
+                "reason": "unknown_layout",
+                "moved_to": "pending/2026-05/fuzzy.csv",
+                "sidecar": "pending/2026-05/fuzzy.csv.pending.yml",
+            }
+        ],
+    )
+
+    result = runner.invoke(app, ["import", "inbox"])
+
+    assert result.exit_code == 0, result.stderr
+    assert "fuzzy.csv" in result.stderr
+    # The suggested command points at --mapping, not --accept. (The only
+    # "--accept" in the output is the explanatory "--accept would be rejected".)
+    assert "fuzzy.csv --mapping" in result.stderr
+    assert "fuzzy.csv --accept" not in result.stderr
 
 
 def test_inbox_drain_json_output(runner: CliRunner, patch_inbox: MagicMock) -> None:
@@ -163,3 +199,37 @@ def test_inbox_path_prints_active_profile_root(
 
     assert result.exit_code == 0
     assert str(patch_inbox.root) in result.stdout.strip()
+
+
+def test_inbox_drain_renders_account_confirmation_pending(
+    runner: CliRunner, patch_inbox: MagicMock
+) -> None:
+    """An account_confirmation pending entry tells the user to bind/name the account.
+
+    Asserts the --account-binding hint appears instead of the generic --mapping text.
+    """
+    patch_inbox.sync.return_value = InboxSyncResult(
+        processed=[],
+        failed=[],
+        pending=[
+            {
+                "filename": "statement.csv",
+                "channel": "tabular",
+                "tier": "high",
+                "score": 1.0,
+                "reason": "account_confirmation",
+                "moved_to": "pending/2026-05/statement.csv",
+                "sidecar": "pending/2026-05/statement.csv.pending.yml",
+            }
+        ],
+    )
+
+    result = runner.invoke(app, ["import", "inbox"])
+
+    assert result.exit_code == 0, result.stderr
+    assert "statement.csv" in result.stderr
+    # --accept (ratifies the settled mapping) is paired with the binding so the
+    # copy-pasted command passes the `import confirm` guard; no --mapping override.
+    assert "--accept --account-binding" in result.stderr
+    assert "1 pending" in result.stderr
+    assert "--mapping" not in result.stderr
