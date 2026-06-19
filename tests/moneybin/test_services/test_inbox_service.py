@@ -1075,6 +1075,84 @@ class TestPendingSidecarAccountHint:
         # No single-account --account-name shortcut when there are >1 accounts.
         assert all("--account-name" not in a for a in actions), actions
 
+    def test_account_confirmation_collision_rekeys_to_moved_path(
+        self, tmp_path: Path
+    ) -> None:
+        """A collision-moved bare pending file is keyed to the moved path.
+
+        `import confirm <moved>` then matches the binding. _handle_pending moves
+        statement.csv -> statement-1.csv (collision suffix) after the proposal
+        was built from the original name; the bare content key must be repointed
+        or the generated --account-binding command fails.
+        """
+        from moneybin.extractors.confidence import Confidence
+        from moneybin.services.account_resolution_types import AccountProposal
+        from moneybin.services.import_confirmation import (
+            ConfirmationRequired,
+            ImportConfirmationRequiredError,
+            ProposedMapping,
+        )
+        from moneybin.services.import_service import (
+            _bare_account_key,  # pyright: ignore[reportPrivateUsage]  # tested directly
+        )
+        from moneybin.services.inbox_service import InboxSyncResult
+
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        src = svc.inbox_dir / "statement.csv"
+        src.write_text("Date,Amount\n2026-05-01,-10\n")
+        # Pre-existing pending file with the same name forces a -1 suffix.
+        collision_dir = svc.pending_dir / "2026-05"
+        collision_dir.mkdir(parents=True, exist_ok=True)
+        (collision_dir / "statement.csv").write_text("earlier\n")
+
+        orig_key = _bare_account_key(src)
+        error = ImportConfirmationRequiredError(
+            ConfirmationRequired(
+                channel="tabular",
+                confidence=Confidence(
+                    score=1.0, tier="high", flagged=(), missing_required=()
+                ),
+                proposed=ProposedMapping(
+                    field_mapping={"Date": "transaction_date", "Amount": "amount"},
+                    sample_values={},
+                    unmapped_columns=(),
+                ),
+                reason="account_confirmation",
+                account_proposals=[
+                    AccountProposal(
+                        source_account_key=orig_key,
+                        proposed_account_id=None,
+                        is_new=True,
+                        candidates=(),
+                        adopted_via=None,
+                    ).to_dict()
+                ],
+            )
+        )
+        result = InboxSyncResult()
+        svc._handle_pending(  # pyright: ignore[reportPrivateUsage]  # exercising the move+rekey path
+            src, "statement.csv", error, "2026-05", result
+        )
+
+        moved = collision_dir / "statement-1.csv"
+        assert moved.exists()  # collision suffix applied
+        moved_key = _bare_account_key(moved)
+        assert moved_key != orig_key  # stem changed → key changed
+
+        import yaml
+
+        sidecar = moved.with_name(moved.name + ".pending.yml")
+        payload = yaml.safe_load(sidecar.read_text())
+        actions = payload["actions"]
+        # The binding command + the persisted proposal use the MOVED-path key —
+        # the original-name key (which `import confirm <moved>` would NOT match)
+        # is gone.
+        assert any(f"--account-binding {moved_key}=" in a for a in actions), actions
+        assert not any(f"--account-binding {orig_key}=" in a for a in actions), actions
+        assert payload["account_proposals"][0]["source_account_key"] == moved_key
+
 
 class TestSyncVanishedSource:
     """sync() handles a file that disappears between enumeration and import."""

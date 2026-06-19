@@ -33,7 +33,10 @@ from moneybin.metrics.registry import (
     INBOX_SYNC_TOTAL,
 )
 from moneybin.services.account_resolution_types import AccountProposalDict
-from moneybin.services.import_service import ImportService
+from moneybin.services.import_service import (
+    ImportService,
+    rekey_bare_proposals_for_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -602,6 +605,13 @@ class InboxService:
             proposed_mapping = dict(outcome_obj.proposed.field_mapping)
             unmapped_columns = list(outcome_obj.proposed.unmapped_columns)
 
+        # move_to_outcome may have appended a collision suffix, changing the stem
+        # after the proposal's bare content-key was built from the original name.
+        # Repoint it so the sidecar's --account-binding command matches the key
+        # `import confirm <moved>` will recompute.
+        pending_proposals = list(outcome_obj.account_proposals)
+        rekey_bare_proposals_for_path(pending_proposals, moved)
+
         sidecar = self.write_pending_sidecar(
             moved,
             channel=outcome_obj.channel,
@@ -614,7 +624,7 @@ class InboxService:
             missing_required=list(outcome_obj.confidence.missing_required),
             unmapped_columns=unmapped_columns,
             account_hint=account_hint,
-            account_proposals=list(outcome_obj.account_proposals),
+            account_proposals=pending_proposals,
         )
         entry = _base_entry()
         entry["moved_to"] = str(moved.relative_to(self.root))

@@ -301,6 +301,27 @@ def _bare_account_key(file_path: Path) -> str:
     return f"{slugify(file_path.stem) or 'file'}-{digest}"
 
 
+def rekey_bare_proposals_for_path(
+    account_proposals: list[AccountProposalDict], moved_path: Path
+) -> None:
+    """Repoint bare content-keyed proposals to ``moved_path``'s key, in place.
+
+    The inbox may append a collision suffix when moving a pending file
+    (``statement.csv`` → ``statement-1.csv``), changing the stem *after* the
+    ``account_confirmation`` proposal was built from the original name. The
+    sidecar's ``--account-binding`` command must use the key that
+    ``import confirm <moved_path>`` will recompute, so repoint any proposal whose
+    key is this file's bare content key (its digest suffix matches the moved
+    bytes); real, data-derived source keys are left untouched. A no-op when the
+    stem did not change.
+    """
+    digest = hashlib.sha256(moved_path.read_bytes()).hexdigest()[:12]
+    new_key = _bare_account_key(moved_path)
+    for proposal in account_proposals:
+        if str(proposal.get("source_account_key", "")).endswith(f"-{digest}"):
+            proposal["source_account_key"] = new_key
+
+
 def _pdf_alias(file_path: Path) -> str:
     """Resolve the seed alias from the file stem.
 
@@ -1482,11 +1503,14 @@ class ImportService:
             # confirmation (no rows load). A later import_confirm with
             # --account-binding <native_key>=<account_id|new> re-enters here and
             # proceeds through Phase 2; --account-name re-enters the branch above.
-            # Elicit only when genuinely unknown: no confirm answer (binding)
-            # AND no prior accepted source_native for this exact content. An
-            # exact-same-file re-import adopts via resolve() Step-1 without
-            # re-prompting (idempotency, not a filename guess).
-            if native_key not in bindings and not resolver.source_native_exists(
+            # Elicit only when genuinely unknown: no confirm answer at all AND no
+            # prior accepted source_native for this exact content. Use `not
+            # bindings` (not `native_key not in bindings`) so a binding with a
+            # MISTYPED key doesn't silently re-elicit — it falls through to the
+            # Phase-2 known_keys check below, which fails loud ("magic stays
+            # visible"). An exact-same-file re-import adopts via resolve() Step-1
+            # without re-prompting (idempotency, not a filename guess).
+            if not bindings and not resolver.source_native_exists(
                 source_type, source_origin, native_key
             ):
                 from moneybin.extractors.confidence import Confidence

@@ -744,3 +744,72 @@ def test_source_native_exists_reflects_accepted_link(
         )
     finally:
         db.close()
+
+
+def test_bare_single_account_mistyped_binding_raises(
+    mock_secret_store: MagicMock, tmp_path: Path
+) -> None:
+    """A binding whose key doesn't match the bare file's content key fails loud.
+
+    A mistyped `--account-binding <typo>=new` must raise a clear ValueError
+    naming the unknown key — not silently re-elicit account_confirmation (which
+    would loop a scripted confirm flow). "Magic stays visible."
+    """
+    db = _db(mock_secret_store, tmp_path)
+    try:
+        create_core_tables(db)
+        svc = ImportService(db)
+        with pytest.raises(ValueError, match="unknown source key"):
+            svc.import_file(
+                _STANDARD_CSV,
+                refresh=False,
+                confirm=True,
+                actor_kind="human",
+                account_bindings={"definitely-not-the-content-key": "new"},
+            )
+    finally:
+        db.close()
+
+
+def test_rekey_bare_proposals_repoints_to_moved_path(tmp_path: Path) -> None:
+    """Repoint a bare content-key proposal to the collision-moved path's key.
+
+    The digest is unchanged (same bytes); only the stem changes, and data-derived
+    keys are left untouched. Mirrors the inbox collision-suffix move
+    (statement.csv -> statement-1.csv) that changes the stem after the proposal
+    was built from the original name.
+    """
+    from moneybin.services.account_resolution_types import AccountProposal
+    from moneybin.services.import_service import (
+        _bare_account_key,  # pyright: ignore[reportPrivateUsage]  # tested directly
+        rekey_bare_proposals_for_path,
+    )
+
+    original = tmp_path / "statement.csv"
+    original.write_text("Date,Amount\n2026-01-01,-5.00\n")
+    orig_key = _bare_account_key(original)
+    moved = tmp_path / "statement-1.csv"
+    original.rename(moved)  # same bytes, new stem (the collision-suffix move)
+
+    proposals = [
+        AccountProposal(
+            source_account_key=orig_key,
+            proposed_account_id=None,
+            is_new=True,
+            candidates=(),
+            adopted_via=None,
+        ).to_dict(),
+        AccountProposal(
+            source_account_key="wf-checking",  # a real data-derived key
+            proposed_account_id=None,
+            is_new=True,
+            candidates=(),
+            adopted_via=None,
+        ).to_dict(),
+    ]
+    rekey_bare_proposals_for_path(proposals, moved)
+
+    assert proposals[0]["source_account_key"] == _bare_account_key(moved)
+    assert proposals[0]["source_account_key"] != orig_key  # stem changed
+    assert proposals[0]["source_account_key"].startswith("statement-1-")
+    assert proposals[1]["source_account_key"] == "wf-checking"  # untouched
