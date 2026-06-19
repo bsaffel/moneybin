@@ -468,7 +468,7 @@ def test_bare_single_account_surfaces_account_confirmation(
         # One no-candidate proposal carrying a stable, bindable source key.
         assert len(outcome.account_proposals) == 1
         proposal = outcome.account_proposals[0]
-        assert proposal["source_account_key"] == "standard"
+        assert proposal["source_account_key"].startswith("standard-")
         assert proposal["candidates"] == []
         assert proposal["is_new"] is True
         # No rows loaded — the gate raised before transform/load.
@@ -481,28 +481,29 @@ def test_bare_single_account_surfaces_account_confirmation(
 def test_bare_single_account_binding_new_mints_and_loads(
     mock_secret_store: MagicMock, tmp_path: Path
 ) -> None:
-    """Round-trip: import_confirm + account_binding <key>=new loads rows.
-
-    Rows land on a freshly-minted standalone account.
-    """
     db = _db(mock_secret_store, tmp_path)
     try:
         create_core_tables(db)
         svc = ImportService(db)
+        with pytest.raises(ImportConfirmationRequiredError) as exc:
+            svc.import_file(
+                _STANDARD_CSV, refresh=False, confirm=True, actor_kind="human"
+            )
+        key = exc.value.outcome.account_proposals[0]["source_account_key"]
         result = svc.import_file(
             _STANDARD_CSV,
             refresh=False,
             confirm=True,
             actor_kind="human",
-            account_bindings={"standard": "new"},
+            account_bindings={key: "new"},
         )
         assert result.transactions > 0
         row = db.execute(
             "SELECT account_id FROM app.account_links WHERE ref_kind='source_native' "
             "AND ref_value=? AND status='accepted'",
-            ["standard"],
+            [key],
         ).fetchone()
-        assert row is not None and row[0]  # a real minted id
+        assert row is not None and row[0]
         n = db.execute(
             "SELECT COUNT(*) FROM app.account_link_decisions WHERE status='pending'"
         ).fetchone()
@@ -514,23 +515,27 @@ def test_bare_single_account_binding_new_mints_and_loads(
 def test_bare_single_account_binding_adopts_existing_and_loads(
     mock_secret_store: MagicMock, tmp_path: Path
 ) -> None:
-    """--account-binding <key>=<existing_id> adopts the chosen account."""
     db = _db(mock_secret_store, tmp_path)
     try:
         _seed_existing_account(db, account_id="acct_chosen01", display_name="Chosen")
         svc = ImportService(db)
+        with pytest.raises(ImportConfirmationRequiredError) as exc:
+            svc.import_file(
+                _STANDARD_CSV, refresh=False, confirm=True, actor_kind="human"
+            )
+        key = exc.value.outcome.account_proposals[0]["source_account_key"]
         result = svc.import_file(
             _STANDARD_CSV,
             refresh=False,
             confirm=True,
             actor_kind="human",
-            account_bindings={"standard": "acct_chosen01"},
+            account_bindings={key: "acct_chosen01"},
         )
         assert result.transactions > 0
         row = db.execute(
             "SELECT account_id FROM app.account_links WHERE ref_kind='source_native' "
             "AND ref_value=? AND status='accepted'",
-            ["standard"],
+            [key],
         ).fetchone()
         assert row is not None and row[0] == "acct_chosen01"
     finally:
@@ -561,5 +566,121 @@ def test_bare_single_account_surfaces_for_agent_too(
         assert n is not None and n[0] == 0
         links = db.execute("SELECT COUNT(*) FROM app.account_links").fetchone()
         assert links is not None and links[0] == 0
+    finally:
+        db.close()
+
+
+def test_same_stem_different_content_do_not_merge(
+    mock_secret_store: MagicMock, tmp_path: Path
+) -> None:
+    """Two different-account files sharing a filename must NOT collide.
+
+    The synthetic key is content-derived, so two `statement.csv` files with
+    different content get DISTINCT keys → distinct accounts. An explicit `=new`
+    for each is honored; neither silently adopts the other.
+    """
+    db = _db(mock_secret_store, tmp_path)
+    try:
+        create_core_tables(db)
+        svc = ImportService(db)
+
+        dir_a = tmp_path / "a"
+        dir_a.mkdir()
+        file_a = dir_a / "statement.csv"
+        file_a.write_text("Date,Description,Amount\n2026-01-01,BANK A COFFEE,-3.50\n")
+        dir_b = tmp_path / "b"
+        dir_b.mkdir()
+        file_b = dir_b / "statement.csv"
+        file_b.write_text("Date,Description,Amount\n2026-02-02,BANK B GROCERY,-9.99\n")
+
+        with pytest.raises(ImportConfirmationRequiredError) as exc_a:
+            svc.import_file(file_a, refresh=False, confirm=True, actor_kind="human")
+        key_a = exc_a.value.outcome.account_proposals[0]["source_account_key"]
+        with pytest.raises(ImportConfirmationRequiredError) as exc_b:
+            svc.import_file(file_b, refresh=False, confirm=True, actor_kind="human")
+        key_b = exc_b.value.outcome.account_proposals[0]["source_account_key"]
+
+        assert key_a.startswith("statement-")
+        assert key_b.startswith("statement-")
+        assert key_a != key_b  # same stem, different content → different key
+
+        res_a = svc.import_file(
+            file_a,
+            refresh=False,
+            confirm=True,
+            actor_kind="human",
+            account_bindings={key_a: "new"},
+        )
+        res_b = svc.import_file(
+            file_b,
+            refresh=False,
+            confirm=True,
+            actor_kind="human",
+            account_bindings={key_b: "new"},
+        )
+        assert res_a.transactions > 0 and res_b.transactions > 0
+        acct_a = db.execute(
+            "SELECT account_id FROM app.account_links WHERE ref_kind='source_native' "
+            "AND ref_value=? AND status='accepted'",
+            [key_a],
+        ).fetchone()
+        acct_b = db.execute(
+            "SELECT account_id FROM app.account_links WHERE ref_kind='source_native' "
+            "AND ref_value=? AND status='accepted'",
+            [key_b],
+        ).fetchone()
+        assert acct_a is not None and acct_b is not None
+        assert acct_a[0] != acct_b[0]  # NOT merged
+    finally:
+        db.close()
+
+
+def test_exact_same_file_reimport_adopts_without_reprompt(
+    mock_secret_store: MagicMock, tmp_path: Path
+) -> None:
+    """Re-importing the EXACT same bare file adopts the prior account silently.
+
+    Content-key idempotency: no second account_confirmation, no duplicate account minted.
+    """
+    db = _db(mock_secret_store, tmp_path)
+    try:
+        create_core_tables(db)
+        svc = ImportService(db)
+
+        with pytest.raises(ImportConfirmationRequiredError) as exc:
+            svc.import_file(
+                _STANDARD_CSV, refresh=False, confirm=True, actor_kind="human"
+            )
+        key = exc.value.outcome.account_proposals[0]["source_account_key"]
+        first = svc.import_file(
+            _STANDARD_CSV,
+            refresh=False,
+            confirm=True,
+            actor_kind="human",
+            account_bindings={key: "new"},
+        )
+        assert first.transactions > 0
+        acct = db.execute(
+            "SELECT account_id FROM app.account_links WHERE ref_kind='source_native' "
+            "AND ref_value=? AND status='accepted'",
+            [key],
+        ).fetchone()
+        assert acct is not None
+        acct_id = acct[0]
+
+        # Re-import the exact same file UNBOUND → must NOT raise; adopts acct_id.
+        svc.import_file(_STANDARD_CSV, refresh=False, confirm=True, actor_kind="human")
+
+        rows = db.execute(
+            "SELECT DISTINCT account_id FROM app.account_links "
+            "WHERE ref_kind='source_native' AND ref_value=? AND status='accepted'",
+            [key],
+        ).fetchall()
+        assert len(rows) == 1 and rows[0][0] == acct_id  # same account
+        total = db.execute(
+            "SELECT COUNT(DISTINCT account_id) FROM app.account_links "
+            "WHERE status='accepted'"
+        ).fetchone()
+        assert total is not None and total[0] == 1  # no second account minted
     finally:
         db.close()

@@ -284,6 +284,23 @@ def _display_label(file_type: str, file_path: Path) -> str:
     return file_type.upper()
 
 
+def _bare_account_key(file_path: Path) -> str:
+    """Stable, content-unique source key for a single-account file with no caller-supplied identity.
+
+    A filename stem alone is too incidental to be a source identity — two
+    different-account files that share a name (two banks' ``statement.csv``)
+    would collide on the same ``source_native`` ref and silently merge
+    (``account-identity-resolution.md``, Decision 8 corollary). Binding the key
+    to file content makes it unique per file while staying stable across the
+    confirm round-trip (same bytes → same key) and idempotent on an exact
+    re-import. The digest is a disambiguator, NOT an identity claim.
+    """
+    from moneybin.utils import slugify  # noqa: PLC0415 — matches _pdf_alias
+
+    digest = hashlib.sha256(file_path.read_bytes()).hexdigest()[:12]
+    return f"{slugify(file_path.stem) or 'file'}-{digest}"
+
+
 def _pdf_alias(file_path: Path) -> str:
     """Resolve the seed alias from the file stem.
 
@@ -1441,7 +1458,7 @@ class ImportService:
             # is stable across the confirm round-trip, so an --account-binding
             # answer re-enumerates and applies in Phase 2; --account-name takes
             # the branch above instead.
-            native_key = slugify(file_path.stem) or "account"
+            native_key = _bare_account_key(file_path)
             account_ids = native_key
             placeholder_name = file_path.stem or native_key
             acct_id_to_name[native_key] = placeholder_name
@@ -1465,7 +1482,13 @@ class ImportService:
             # confirmation (no rows load). A later import_confirm with
             # --account-binding <native_key>=<account_id|new> re-enters here and
             # proceeds through Phase 2; --account-name re-enters the branch above.
-            if native_key not in bindings:
+            # Elicit only when genuinely unknown: no confirm answer (binding)
+            # AND no prior accepted source_native for this exact content. An
+            # exact-same-file re-import adopts via resolve() Step-1 without
+            # re-prompting (idempotency, not a filename guess).
+            if native_key not in bindings and not resolver.source_native_exists(
+                source_type, source_origin, native_key
+            ):
                 from moneybin.extractors.confidence import Confidence
                 from moneybin.services.account_resolution_types import (
                     AccountProposal,
