@@ -934,6 +934,56 @@ class TestPendingSidecarAccountHint:
         actions = payload["actions"]
         assert all("--account-name" not in a for a in actions), actions
 
+    def test_account_confirmation_sidecar_emits_binding_actions(
+        self, tmp_path: Path
+    ) -> None:
+        """An account_confirmation pending sidecar emits account-binding hints.
+
+        Offers --account-binding (with the real source key) + the
+        inbox/<account-slug>/ convention, not the mapping --accept/--mapping hints.
+        """
+        from pathlib import Path as _Path
+
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        moved = svc.pending_dir / "2026-05" / "statement.csv"
+        moved.parent.mkdir(parents=True, exist_ok=True)
+        moved.write_text("Date,Amount\n2026-05-01,-10\n")
+
+        sidecar = svc.write_pending_sidecar(
+            _Path(moved),
+            channel="tabular",
+            tier="high",
+            score=1.0,
+            reason="account_confirmation",
+            proposed_mapping={"Date": "transaction_date", "Amount": "amount"},
+            samples={},
+            flagged=[],
+            missing_required=[],
+            unmapped_columns=[],
+            account_proposals=[
+                {
+                    "source_account_key": "statement",
+                    "proposed_account_id": None,
+                    "is_new": True,
+                    "adopted_via": None,
+                    "requires_confirm": True,
+                    "candidates": [],
+                }
+            ],
+        )
+
+        import yaml
+
+        payload = yaml.safe_load(sidecar.read_text())
+        actions = payload["actions"]
+        assert any("--account-binding statement=" in a for a in actions), actions
+        assert any("inbox/<account-slug>" in a for a in actions), actions
+        # Mapping hints don't apply to an account_confirmation.
+        assert not any("--mapping" in a for a in actions), actions
+        assert payload["account_proposals"][0]["source_account_key"] == "statement"
+
 
 class TestSyncVanishedSource:
     """sync() handles a file that disappears between enumeration and import."""
