@@ -535,3 +535,31 @@ def test_bare_single_account_binding_adopts_existing_and_loads(
         assert row is not None and row[0] == "acct_chosen01"
     finally:
         db.close()
+
+
+def test_bare_single_account_surfaces_for_agent_too(
+    mock_secret_store: MagicMock, tmp_path: Path
+) -> None:
+    """Bare single-account import surfaces account_confirmation for agents too.
+
+    There is no silent fallback to mint a placeholder account.
+    """
+    db = _db(mock_secret_store, tmp_path)
+    try:
+        create_core_tables(db)
+        svc = ImportService(db)
+        with pytest.raises(ImportConfirmationRequiredError) as exc:
+            svc.import_file(
+                _STANDARD_CSV,
+                refresh=False,
+                confirm=True,
+                actor_kind="agent",
+            )
+        assert exc.value.outcome.reason == "account_confirmation"
+        # No silent mint: nothing loaded, no account_links row created.
+        n = db.execute("SELECT COUNT(*) FROM raw.tabular_transactions").fetchone()
+        assert n is not None and n[0] == 0
+        links = db.execute("SELECT COUNT(*) FROM app.account_links").fetchone()
+        assert links is not None and links[0] == 0
+    finally:
+        db.close()
