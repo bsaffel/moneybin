@@ -1013,6 +1013,68 @@ class TestPendingSidecarAccountHint:
         )
         assert payload["account_proposals"][0]["source_account_key"] == "statement"
 
+    def test_account_confirmation_multi_proposal_one_command_all_bindings(
+        self, tmp_path: Path
+    ) -> None:
+        """Multiple proposals → ONE import-confirm command listing every binding.
+
+        The account gate is all-or-nothing: supplying only some keys re-prompts
+        and persists nothing, so per-key commands could never complete. The
+        single-account --account-name shortcut is suppressed when >1 account.
+        """
+        from pathlib import Path as _Path
+
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        moved = svc.pending_dir / "2026-05" / "combined.csv"
+        moved.parent.mkdir(parents=True, exist_ok=True)
+        moved.write_text("Date,Amount,Account\n2026-05-01,-10,A\n")
+
+        sidecar = svc.write_pending_sidecar(
+            _Path(moved),
+            channel="tabular",
+            tier="high",
+            score=1.0,
+            reason="account_confirmation",
+            proposed_mapping={"Date": "transaction_date", "Amount": "amount"},
+            samples={},
+            flagged=[],
+            missing_required=[],
+            unmapped_columns=[],
+            account_proposals=[
+                {
+                    "source_account_key": "acct-a",
+                    "proposed_account_id": None,
+                    "is_new": True,
+                    "adopted_via": None,
+                    "requires_confirm": True,
+                    "candidates": [],
+                },
+                {
+                    "source_account_key": "acct-b",
+                    "proposed_account_id": None,
+                    "is_new": True,
+                    "adopted_via": None,
+                    "requires_confirm": True,
+                    "candidates": [],
+                },
+            ],
+        )
+
+        import yaml
+
+        actions = yaml.safe_load(sidecar.read_text())["actions"]
+        confirm_cmds = [
+            a for a in actions if "import confirm" in a and "--account-binding" in a
+        ]
+        assert len(confirm_cmds) == 1, actions  # exactly one command...
+        assert "--account-binding acct-a=" in confirm_cmds[0]  # ...with both keys
+        assert "--account-binding acct-b=" in confirm_cmds[0]
+        assert "--accept" in confirm_cmds[0]
+        # No single-account --account-name shortcut when there are >1 accounts.
+        assert all("--account-name" not in a for a in actions), actions
+
 
 class TestSyncVanishedSource:
     """sync() handles a file that disappears between enumeration and import."""

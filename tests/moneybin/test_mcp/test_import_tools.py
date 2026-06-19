@@ -115,6 +115,7 @@ def _make_confirmation_error(
     flagged: tuple[str, ...] = (),
     missing_required: tuple[str, ...] = (),
     reason: str = "unknown_layout",
+    account_proposals: list[dict[str, object]] | None = None,
 ) -> ImportConfirmationRequiredError:
     proposed = ProposedMapping(
         field_mapping=field_mapping or {"transaction_date": "Date", "amount": "Amount"},
@@ -129,6 +130,7 @@ def _make_confirmation_error(
         proposed=proposed,
         reason=reason,  # type: ignore[arg-type]
         samples={"Date": ["2024-01-01"], "Amount": ["-50.00"]},
+        account_proposals=account_proposals or [],  # type: ignore[arg-type]
     )
     return ImportConfirmationRequiredError(outcome)
 
@@ -217,6 +219,48 @@ class TestImportFilesConfirmationRequired:
         joined = " ".join(result.actions or [])
         assert "import_confirm" in joined
         assert "accept=True" in joined
+
+    async def test_account_confirmation_action_binds_every_account(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """Bind every account in one import_confirm call.
+
+        A bare account_confirmation file's action ratifies the mapping AND binds
+        every account — not a looping accept-only hint (no binding) nor an
+        irrelevant mapping-override hint.
+        """
+        csv_file = tmp_path / "statements" / "bare.csv"
+        csv_file.parent.mkdir(parents=True)
+        csv_file.touch()
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database",
+            _fake_database,
+        )
+
+        error = _make_confirmation_error(
+            tier="high",
+            score=1.0,
+            reason="account_confirmation",
+            account_proposals=[{"source_account_key": "bare-abc123", "candidates": []}],
+        )
+        mock_service = MagicMock()
+        mock_service.import_file.side_effect = error
+
+        with patch(
+            "moneybin.services.import_service.ImportService",
+            return_value=mock_service,
+        ):
+            result = await import_files(paths=[str(csv_file)])
+
+        joined = " ".join(result.actions or [])
+        assert "account_bindings={'bare-abc123': '<account_id|new>'}" in joined
+        assert "accept=True" in joined
+        # The account-confirmation reason must not emit the mapping-only paths
+        # (accept-as-is with no binding loops; a mapping override is irrelevant).
+        assert "to accept the proposed mapping as-is" not in joined
+        assert "mapping={'<dest_field>'" not in joined
 
     async def test_low_tier_envelope_includes_missing_required(
         self, tmp_path: Path, monkeypatch: MonkeyPatch

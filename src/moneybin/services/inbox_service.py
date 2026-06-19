@@ -736,16 +736,22 @@ class InboxService:
             keys = [str(p.get("source_account_key", "")) for p in proposals] or [
                 "<source_key>"
             ]
-            for key in keys:
+            # One command must carry a binding for every proposal — the gate is
+            # all-or-nothing, so supplying only some keys re-prompts and persists
+            # nothing. Emit a single command listing all bindings.
+            bindings = " ".join(
+                f"--account-binding {key}=<account_id|new>" for key in keys
+            )
+            actions.append(
+                f"moneybin import confirm {moved_path} --accept {bindings} "
+                "(adopt existing accounts, or 'new' to mint distinct ones; "
+                "supply every source key in this one command)"
+            )
+            if len(keys) == 1:
                 actions.append(
                     f"moneybin import confirm {moved_path} --accept "
-                    f"--account-binding {key}=<account_id|new> "
-                    "(adopt an existing account, or 'new' to mint a distinct one)"
+                    "--account-name <name> (name a new account directly)"
                 )
-            actions.append(
-                f"moneybin import confirm {moved_path} --accept --account-name <name> "
-                "(name a new account directly)"
-            )
             actions.append(
                 "Or move the file into inbox/<account-slug>/ and re-run sync "
                 "(the subfolder names the account)."
