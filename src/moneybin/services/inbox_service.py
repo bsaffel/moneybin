@@ -55,16 +55,14 @@ _SIDECAR_MESSAGE_MAX = 200
 _MAX_FILENAME_COLLISIONS = 9999
 
 # Substring → (error_code, stage) for ValueError messages from ImportService.
-# Note: the historical "low_confidence_mapping" pattern was removed in the
-# smart-import-confirm spec — _import_tabular now raises
-# ImportConfirmationRequiredError for that case, which _sync_one intercepts
-# before _handle_failure ever runs.
+# Notes on retired patterns:
+#   "low_confidence_mapping" — removed in the smart-import-confirm spec;
+#     _import_tabular now raises ImportConfirmationRequiredError, intercepted
+#     by _sync_one before _handle_failure ever runs.
+#   "Single-account files require" (account-name error code) — removed; bare
+#     single-account imports now raise ImportConfirmationRequiredError with
+#     reason="account_confirmation" and are routed to pending/, not failed/.
 _VALUE_ERROR_PATTERNS: tuple[tuple[str, str, str], ...] = (
-    (
-        "Single-account files require",
-        "needs_account_name",
-        "resolve_account",
-    ),
     ("Unsupported file type", "unsupported_file_type", "detect_file_type"),
     ("No data rows found", "empty_file", "read_file"),
     ("Transform failed", "transform_error", "transform"),
@@ -650,10 +648,6 @@ class InboxService:
     def _suggestion_for(error_code: str) -> str | None:
         """User-facing hint for known error codes."""
         return {
-            "needs_account_name": (
-                "Move the file into inbox/<account-slug>/ "
-                "(e.g., inbox/chase-checking/) and re-run sync."
-            ),
             "unsupported_file_type": (
                 "Convert to OFX/QFX, CSV, TSV, XLSX, Parquet, or PDF."
             ),

@@ -238,20 +238,20 @@ class TestErrorSidecar:
 
         sidecar = inbox_service.write_error_sidecar(
             moved,
-            error_code="needs_account_name",
-            stage="resolve_account",
-            message="Single-account file requires an account hint",
-            suggestion="Move into inbox/<account-slug>/ and re-run sync",
-            extra={"available_accounts": ["chase-checking", "amex"]},
+            error_code="schema_mismatch",
+            stage="load",
+            message="Database schema is out of date",
+            suggestion="Run 'moneybin db migrate' and re-run sync",
+            extra={"missing_column": "last_four"},
         )
 
         assert sidecar == failed_dir / "unknown.csv.error.yml"
         loaded = yaml.safe_load(sidecar.read_text())
-        assert loaded["error_code"] == "needs_account_name"
-        assert loaded["stage"] == "resolve_account"
-        assert loaded["message"].startswith("Single-account")
-        assert loaded["suggestion"].startswith("Move into")
-        assert loaded["available_accounts"] == ["chase-checking", "amex"]
+        assert loaded["error_code"] == "schema_mismatch"
+        assert loaded["stage"] == "load"
+        assert loaded["message"].startswith("Database schema")
+        assert loaded["suggestion"].startswith("Run")
+        assert loaded["missing_column"] == "last_four"
 
 
 class TestSyncHappyPath:
@@ -475,20 +475,47 @@ class TestSyncRefreshOnce:
 class TestSyncFailure:
     """Failed imports get moved to failed/ with YAML sidecar."""
 
-    def test_failed_import_lands_in_failed_with_sidecar(
+    def test_single_account_no_name_lands_in_pending(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         import yaml
 
+        from moneybin.extractors.confidence import Confidence
         from moneybin.services import inbox_service as mod
+        from moneybin.services.import_confirmation import (
+            ConfirmationRequired,
+            ImportConfirmationRequiredError,
+            ProposedMapping,
+        )
 
         class FakeImportService:
             def __init__(self, db: object) -> None:
                 pass
 
             def import_file(self, path: str, **kwargs: object) -> object:
-                raise ValueError(
-                    "Single-account files require --account-name or --account-id"
+                raise ImportConfirmationRequiredError(
+                    ConfirmationRequired(
+                        channel="tabular",
+                        confidence=Confidence(
+                            score=1.0, tier="high", flagged=(), missing_required=()
+                        ),
+                        proposed=ProposedMapping(
+                            field_mapping={"Date": "transaction_date"},
+                            sample_values={},
+                            unmapped_columns=(),
+                        ),
+                        reason="account_confirmation",
+                        account_proposals=[
+                            {
+                                "source_account_key": "unknown",
+                                "proposed_account_id": None,
+                                "is_new": True,
+                                "adopted_via": None,
+                                "requires_confirm": True,
+                                "candidates": [],
+                            }
+                        ],
+                    )
                 )
 
         monkeypatch.setattr(mod, "ImportService", FakeImportService)
@@ -496,23 +523,22 @@ class TestSyncFailure:
         db = MagicMock(spec=Database)
         svc = InboxService(db=db, settings=_make_settings(tmp_path))
         svc.ensure_layout()
-        (svc.inbox_dir / "unknown.csv").write_text("a\n1\n")
+        (svc.inbox_dir / "unknown.csv").write_text("Date\n2026-05-01\n")
 
         result = svc.sync(year_month="2026-05")
 
-        assert len(result.failed) == 1
-        entry = result.failed[0]
+        assert len(result.failed) == 0
+        assert len(result.pending) == 1
+        entry = result.pending[0]
         assert entry["filename"] == "unknown.csv"
-        assert entry["error_code"] == "needs_account_name"
-        assert str(entry["sidecar"]).endswith("unknown.csv.error.yml")
+        assert entry["reason"] == "account_confirmation"
 
-        moved = svc.failed_dir / "2026-05" / "unknown.csv"
-        sidecar = moved.with_name("unknown.csv.error.yml")
+        moved = svc.pending_dir / "2026-05" / "unknown.csv"
+        sidecar = moved.with_name("unknown.csv.pending.yml")
         assert moved.exists()
         loaded = yaml.safe_load(sidecar.read_text())
-        assert loaded["error_code"] == "needs_account_name"
-        assert "stage" in loaded
-        assert "message" in loaded
+        assert loaded["reason"] == "account_confirmation"
+        assert any("--account-binding" in a for a in loaded["actions"])
 
     def test_unknown_error_uses_generic_code(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

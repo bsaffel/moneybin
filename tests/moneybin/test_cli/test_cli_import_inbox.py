@@ -77,7 +77,7 @@ def test_inbox_drain_failure_exits_zero_but_warns(
         failed=[
             {
                 "filename": "x.csv",
-                "error_code": "needs_account_name",
+                "error_code": "transform_error",
                 "sidecar": "failed/2026-05/x.csv.error.yml",
             }
         ],
@@ -86,7 +86,7 @@ def test_inbox_drain_failure_exits_zero_but_warns(
     result = runner.invoke(app, ["import", "inbox"])
 
     assert result.exit_code == 0
-    assert "needs_account_name" in result.stderr
+    assert "transform_error" in result.stderr
     assert "0 imported" in result.stderr
     assert "1 failed" in result.stderr
 
