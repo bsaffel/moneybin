@@ -774,6 +774,10 @@ lands the matcher's required identity inputs (`dim_accounts.last_four` +
 fails CI. This is the durable reconciliation of "what we know per format" with
 "what the matcher requires" — the gap all three failure modes fell through.
 
+### Decision 8 corollary — bare-file identity is content-keyed
+
+A single-account file with no caller-supplied identity (no `--account-name`/`--account-id`, no account-name column) has no real source identity. Its synthetic `source_account_key` is therefore `slugify(stem)-sha256(bytes)[:12]` — unique per file content, stable across the elicit→confirm round-trip, and idempotent on an exact re-import. A filename stem is never a strong same-source key (it is even more incidental than the mutable label of Decision 8); two different-account files that share a name resolve to distinct accounts, and an explicit `=new` is always honored. The bare path never auto-links on a filename — it elicits `account_confirmation` unless the exact content was already imported.
+
 ## Idempotency, reverse-order imports, correction
 
 Worked through the WF case (`institution="WF"`, checking …4267/…1789/…9940,
