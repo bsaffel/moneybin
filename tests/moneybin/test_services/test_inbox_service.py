@@ -982,6 +982,7 @@ class TestPendingSidecarAccountHint:
         assert any("inbox/<account-slug>" in a for a in actions), actions
         # Mapping hints don't apply to an account_confirmation.
         assert not any("--mapping" in a for a in actions), actions
+        assert not any("--accept" in a for a in actions), actions
         assert payload["account_proposals"][0]["source_account_key"] == "statement"
 
 

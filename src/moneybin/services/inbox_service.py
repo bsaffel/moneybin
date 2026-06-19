@@ -727,7 +727,7 @@ class InboxService:
 
         ``account_proposals`` is passed for ``reason="account_confirmation"``
         so the sidecar can name the real source key in the --account-binding
-        hint. For other reasons, it is ignored.
+        hint. For other reasons it is not used to build actions and serializes as an empty list in the payload.
         """
         sidecar = moved_path.with_name(moved_path.name + ".pending.yml")
         proposals = account_proposals or []
