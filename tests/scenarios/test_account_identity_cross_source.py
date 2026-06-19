@@ -44,6 +44,16 @@ def _ofx_canonical_id(db: Database, acctid: str) -> str:
     return str(row[0])
 
 
+def _csv_source_native_id(db: Database) -> str:
+    """Canonical account_id the (single) CSV source_native link minted."""
+    row = db.execute(
+        "SELECT account_id FROM app.account_links "
+        "WHERE source_type='csv' AND ref_kind='source_native' AND status='accepted'"
+    ).fetchone()
+    assert row is not None, "no CSV account_link minted"
+    return str(row[0])
+
+
 @pytest.mark.scenarios
 @pytest.mark.slow
 def test_cross_source_twins_collapse_to_canonical_accounts() -> None:
@@ -296,6 +306,75 @@ def test_csv_twin_matches_accepts_and_collapses_end_to_end() -> None:
         assert account_ids == [checking_id], account_ids
         # The 3 twin transactions (hand-counted from the fixtures) dedup to 3 gold
         # records, each contributed by both sources (source_count = 2).
+        rows = db.execute("SELECT source_count FROM core.fct_transactions").fetchall()
+        assert len(rows) == 3, f"expected 3 deduped rows, got {len(rows)}"
+        assert all(sc == 2 for (sc,) in rows), rows
+
+
+@pytest.mark.scenarios
+@pytest.mark.slow
+def test_csv_first_then_ofx_matches_accepts_and_collapses_end_to_end() -> None:
+    """End-to-end match->accept->collapse in the CSV-FIRST direction.
+
+    The sibling above lands the OFX first; here the CSV twin arrives FIRST and mints
+    the canonical account, then the OFX statement lands second. For the bridge to
+    fire in this direction the CSV's dim_accounts row must carry its filename-resolved
+    institution (not NULL) so the OFX-second resolver can match on (institution,
+    last4). A single NULL institution on the CSV's dim row silently broke this
+    direction while the OFX-first direction kept working — exactly the one-directional
+    coverage gap the "No Shortcuts" rule warns about (caught in PR #258 review).
+    """
+    from moneybin.services.account_links_service import AccountLinksService
+
+    scenario = Scenario(
+        scenario="account-identity-cross-source",
+        setup=SetupSpec(persona="family"),
+        pipeline=[],
+    )
+    with scenario_env(scenario) as (db, _tmp, env):
+        svc = ImportService(db)
+        # 1) CSV twin FIRST via the agent path, NO account_bindings -> mints the
+        #    canonical account. dim is empty, so there is no candidate yet (no
+        #    proposal); the only thing under test here is that its dim row keeps the
+        #    filename institution for the second source to match against.
+        svc.import_file(
+            _FIXTURES / "wells_fargo_checking.csv",
+            account_name="WF Checking (...1111)",
+            confirm=True,
+            actor_kind="agent",
+            refresh=False,
+        )
+        csv_account_id = _csv_source_native_id(db)
+        run_step("transform", scenario.setup, db, env=env)  # dim gets institution+last4
+        # 2) OFX statement second -> the bridge fires a pending institution_last4
+        #    proposal whose candidate is the CSV-minted account.
+        svc.import_file(_FIXTURES / "wf_checking.qfx", refresh=False)
+        decision = db.execute(
+            "SELECT decision_id, candidate_account_id FROM app.account_link_decisions "
+            "WHERE status = 'pending' AND match_reason = 'institution_last4'"
+        ).fetchone()
+        assert decision is not None, "matcher produced no institution_last4 proposal"
+        assert decision[1] == csv_account_id, decision
+        # 3) Accept the proposal the way a user reviewing the queue would — this
+        #    re-points the ofx's source_native link onto the csv-minted account.
+        AccountLinksService(db).set(
+            decision[0], target_account_id=csv_account_id, decided_by="user"
+        )
+        # 4) Re-materialize -> dedup -> re-materialize: the ofx re-keys onto the csv
+        #    account and the twin transactions collapse.
+        run_step("transform", scenario.setup, db, env=env)
+        run_step("match", scenario.setup, db, env=env)
+        run_step("transform", scenario.setup, db, env=env)
+        # Both sources collapsed to ONE canonical account (no orphan twin).
+        account_ids = [
+            r[0]
+            for r in db.execute(
+                "SELECT account_id FROM core.dim_accounts ORDER BY account_id"
+            ).fetchall()
+        ]
+        assert account_ids == [csv_account_id], account_ids
+        # Same twin fixtures as the sibling: 3 distinct transactions, each in both
+        # sources -> 3 deduped rows at source_count = 2.
         rows = db.execute("SELECT source_count FROM core.fct_transactions").fetchall()
         assert len(rows) == 3, f"expected 3 deduped rows, got {len(rows)}"
         assert all(sc == 2 for (sc,) in rows), rows

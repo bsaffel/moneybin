@@ -1546,12 +1546,20 @@ class ImportService:
         # the multi-account branch actually ran (no explicit --account-name/
         # --account-id); an explicit account on a multi-account-detected format
         # keeps the shared format/file institution (Decision 8). Single-account
-        # uses the shared institution for its one row (unchanged).
+        # uses the shared institution for its one row.
+        #
+        # Fall back to resolved_institution (the filename/format value captured at
+        # Stage 1) because Stage 5 above clobbers `institution` to None for an
+        # unregistered import (no matched_format). Without it the account's dim row
+        # stores institution_name=NULL, and a later cross-source twin can't match it
+        # on (institution, last4) — breaking the CSV-first matching direction.
         per_account_inst = (
             resolved.is_multi_account and not account_id and not account_name
         )
         account_institutions = [
-            multi_acct_inst.get(aid) if per_account_inst else institution
+            multi_acct_inst.get(aid)
+            if per_account_inst
+            else (institution or resolved_institution)
             for aid in unique_ids
         ]
         account_df = pl.DataFrame({
