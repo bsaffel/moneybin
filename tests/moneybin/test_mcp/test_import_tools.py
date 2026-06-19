@@ -432,6 +432,59 @@ class TestImportConfirmTool:
         _args, kwargs = mock_service.import_file.call_args
         assert kwargs.get("overrides") == override
 
+    async def test_account_confirmation_reprompt_carries_proposals_and_binding(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """Account_confirmation re-prompt from import_confirm carries proposals.
+
+        Bare-file path: import_files returns unknown_layout, the agent calls
+        import_confirm(accept=True), and the bare-account gate fires. The
+        re-prompt envelope must carry account_proposals in data AND an
+        account-binding action — not a looping accept/mapping-only hint.
+        """
+        csv_file = tmp_path / "statements" / "bare.csv"
+        csv_file.parent.mkdir(parents=True)
+        csv_file.touch()
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database",
+            _fake_database,
+        )
+
+        error = _make_confirmation_error(
+            tier="high",
+            score=1.0,
+            reason="account_confirmation",
+            account_proposals=[{"source_account_key": "bare-abc123", "candidates": []}],
+        )
+        mock_service = MagicMock()
+        mock_service.import_file.side_effect = error
+
+        with patch(
+            "moneybin.services.import_service.ImportService",
+            return_value=mock_service,
+        ):
+            with patch(
+                "moneybin.extractors.tabular.format_detector.detect_format",
+                side_effect=ValueError("preview unavailable"),
+            ):
+                result = await import_confirm(file_path=str(csv_file), accept=True)
+
+        data = result.data
+        assert isinstance(data, dict)
+        assert data["status"] == "confirmation_required"
+        assert data["reason"] == "account_confirmation"
+        proposals = data["account_proposals"]
+        assert isinstance(proposals, list) and proposals
+        assert proposals[0]["source_account_key"] == "bare-abc123"
+        joined = " ".join(result.actions or [])
+        assert "account_bindings={'bare-abc123': '<account_id|new>'}" in joined
+        assert "accept=True" in joined
+        # No standalone accept-as-is / mapping-override hint for this reason.
+        assert "to accept the proposed mapping as-is" not in joined
+        assert "mapping={'<dest_field>'" not in joined
+
     async def test_passes_actor_kind_agent_to_service(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
     ) -> None:
