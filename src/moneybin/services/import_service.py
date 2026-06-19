@@ -1295,6 +1295,10 @@ class ImportService:
         # source_origin scopes the source_native key; compute before resolution so
         # raw.* and app.account_links.source_origin stay identical (a later staging
         # JOIN keys on it). Do NOT change how source_origin is derived.
+        # This is the EXPORTER / format identity (Monarch / Tiller / bank export,
+        # or the account slug for an unregistered single file) — orthogonal to the
+        # per-account institution, which is resolved separately and, for
+        # multi-account exporters, comes from row data (Decision 8).
         source_origin = (
             matched_format.name
             if matched_format
@@ -1309,6 +1313,10 @@ class ImportService:
             ),
             cli_override=None,  # no --institution flag on tabular yet
         )
+        # Stage 5 reassigns `institution` for the account_df flow; keep the
+        # resolved (format / filename) value for the auto-save block below so a
+        # saved format records its real institution rather than always "unknown".
+        resolved_institution = institution
         resolver = AccountResolver(self._db, actor="system")
         bindings = account_bindings or {}
 
@@ -1325,6 +1333,11 @@ class ImportService:
         # when a label carries none (e.g. "Checking" alongside an "Account Number"
         # column). Keyed by native account key.
         number_last4_by_key: dict[str, str | None] = {}
+        # Per-account institution for multi-account exporter formats, from a mapped
+        # Institution column (Tiller-style); else None. NEVER the exporter/tool name
+        # (Decision 8 exporter/institution split). Single-account keeps the
+        # format/file institution unchanged.
+        multi_acct_inst: dict[str, str | None] = {}
 
         # Phase 1 — enumerate the source accounts this file presents (one per
         # native key) WITHOUT resolving, so the account-binding gate can run
@@ -1395,13 +1408,23 @@ class ImportService:
                         continue
                     if l4 := _last4_from_account_number(value):
                         number_last4_by_key[aid] = l4
+            # Per-account institution from a mapped Institution column (Tiller-style):
+            # first non-null value per account key. An institution embedded only in a
+            # Monarch-style account LABEL is not parsed here — label→institution
+            # parsing is not implemented.
+            inst_col = resolved.field_mapping.get("institution_name")
+            if inst_col and inst_col in df.columns:
+                for nm, inst_val in zip(raw_names, df[inst_col].to_list(), strict=True):
+                    key = slugify(nm)
+                    if key not in multi_acct_inst and inst_val:
+                        multi_acct_inst[key] = str(inst_val)
             source_accounts.extend(
                 SourceAccount(
                     source_type=source_type,
                     source_origin=source_origin,
                     source_account_key=native_key,
                     account_name=label_parsed_by_key[native_key][0],
-                    institution=institution,
+                    institution=multi_acct_inst.get(native_key),
                     last_four=(
                         label_parsed_by_key[native_key][1]
                         or number_last4_by_key.get(native_key)
@@ -1519,13 +1542,33 @@ class ImportService:
         for aid in acct_id_to_name:
             l4 = label_parsed_by_key[aid][1] or number_last4_by_key.get(aid)
             acct_id_to_last4[aid] = f"****{l4}" if l4 else None
+        # institution_name per account: per-account institution applies only when
+        # the multi-account branch actually ran (no explicit --account-name/
+        # --account-id); an explicit account on a multi-account-detected format
+        # keeps the shared format/file institution (Decision 8). Single-account
+        # uses the shared institution for its one row.
+        #
+        # Fall back to resolved_institution (the filename/format value captured at
+        # Stage 1) because Stage 5 above clobbers `institution` to None for an
+        # unregistered import (no matched_format). Without it the account's dim row
+        # stores institution_name=NULL, and a later cross-source twin can't match it
+        # on (institution, last4) — breaking the CSV-first matching direction.
+        per_account_inst = (
+            resolved.is_multi_account and not account_id and not account_name
+        )
+        account_institutions = [
+            multi_acct_inst.get(aid)
+            if per_account_inst
+            else (institution or resolved_institution)
+            for aid in unique_ids
+        ]
         account_df = pl.DataFrame({
             "account_id": unique_ids,
             "account_name": [acct_id_to_name[aid] for aid in unique_ids],
             "account_number": [None] * len(unique_ids),
             "account_number_masked": [acct_id_to_last4[aid] for aid in unique_ids],
             "account_type": [None] * len(unique_ids),
-            "institution_name": [institution] * len(unique_ids),
+            "institution_name": account_institutions,
             "currency": [None] * len(unique_ids),
             "source_file": [str(file_path)] * len(unique_ids),
             "source_type": [source_type] * len(unique_ids),
@@ -1592,7 +1635,11 @@ class ImportService:
             try:
                 detected_fmt = TabularFormat(
                     name=source_origin,
-                    institution_name=account_name or source_origin,
+                    # Institution is best-effort metadata; the per-account label
+                    # (account_name) must NEVER land here — a format describes a
+                    # column layout, not an account (bug #5). "unknown" when no
+                    # institution resolved; the exporter/format identity is `name`.
+                    institution_name=resolved_institution or "unknown",
                     file_type=format_info.file_type,
                     delimiter=format_info.delimiter,
                     encoding=format_info.encoding,

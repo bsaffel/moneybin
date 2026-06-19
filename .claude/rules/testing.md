@@ -194,3 +194,49 @@ When authoring or modifying a scenario:
 5. **Negative expectations are required where applicable.** If a scenario asserts "these N records should match," it must also include cases that should *not* match. Otherwise the test only catches under-matching, not over-matching.
 
 This rule applies to YAML scenario expectations, pytest assertions in `tests/scenarios/`, and any future bug-report-driven scenario. See [`docs/specs/testing-scenario-comprehensive.md`](../../docs/specs/testing-scenario-comprehensive.md) for the full taxonomy and contributor recipe.
+
+## No Shortcuts: Exercise the Real Mechanism
+
+A test or scenario must reach its asserted state through the **same mechanism a
+real user or agent would use**. Never pre-wire the end state to make an
+assertion pass when the mechanism that produces that state is the thing under
+test. A green test that bypasses the mechanism proves nothing about the
+mechanism — it hides bugs.
+
+**The canonical failure this rule exists to prevent:** cross-source account
+linking was silently broken in the wild through ~6 days of development because
+the only cross-source scenario *forced* the CSV→OFX account link — via
+`account_bindings` (the import path) and a shared `account:` label on the
+fixture pair (the `load_fixtures` path) — instead of letting the account matcher
+fire. The scenario stayed green the entire time while automatic matching never
+once worked. See `account-identity-resolution.md` (Decision 8).
+
+**When the mechanism IS what the scenario validates, never substitute for it:**
+
+- **Account identity / matching:** don't force the link with `account_bindings`,
+  a shared `account:` fixture label, a pinned `account_id`/`explicit_account_id`,
+  `force_standalone`, or a direct `INSERT INTO app.account_links`. Import the raw
+  twins and let `AccountResolver` produce the proposal.
+- **Derived `core.*` / pipeline-owned `app.*` state:** don't `INSERT` rows the
+  pipeline is supposed to derive (`dim_*` rows, match decisions, categorizations,
+  gold records) and then assert on them. Run `transform` / `match` / `categorize`
+  and assert what the pipeline produced.
+- **Propose→review→confirm flows:** don't skip the gate and write the accepted
+  state directly when the gating behavior is under test. Drive the real verb
+  (`import_confirm`, the link-review accept) the way the user/agent would.
+
+**The dividing line — explicit vs automatic are BOTH real, and each needs its
+own scenario.** Explicit binding/seeding *is* a legitimate user mechanism; use it
+only in a scenario whose point is that explicit path ("user binds a CSV to a
+known account"). A capability reachable two ways (explicit binding **and**
+automatic matching) needs a scenario for **each**, and the automatic one must
+drive the automatic path end-to-end — import raw → run the matcher/resolver →
+accept the proposal as a user would → assert the derived result. The automatic
+scenario must not borrow the explicit scenario's shortcut. Isolating a
+downstream mechanism (e.g. transaction dedup) behind a forced upstream link
+(account assignment) is acceptable **only when** a separate scenario proves that
+upstream link forms through its real mechanism — otherwise the chain is untested.
+
+If making a test pass tempts you to set up the answer directly, stop: either the
+mechanism is broken (fix it) or the test belongs at a layer where that state is a
+real input, not a shortcut.
