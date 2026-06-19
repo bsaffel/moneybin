@@ -32,7 +32,11 @@ from moneybin.metrics.registry import (
     INBOX_SYNC_DURATION_SECONDS,
     INBOX_SYNC_TOTAL,
 )
-from moneybin.services.import_service import ImportService
+from moneybin.services.account_resolution_types import AccountProposalDict
+from moneybin.services.import_service import (
+    ImportService,
+    rekey_bare_proposals_for_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -54,16 +58,14 @@ _SIDECAR_MESSAGE_MAX = 200
 _MAX_FILENAME_COLLISIONS = 9999
 
 # Substring → (error_code, stage) for ValueError messages from ImportService.
-# Note: the historical "low_confidence_mapping" pattern was removed in the
-# smart-import-confirm spec — _import_tabular now raises
-# ImportConfirmationRequiredError for that case, which _sync_one intercepts
-# before _handle_failure ever runs.
+# Notes on retired patterns:
+#   "low_confidence_mapping" — removed in the smart-import-confirm spec;
+#     _import_tabular now raises ImportConfirmationRequiredError, intercepted
+#     by _sync_one before _handle_failure ever runs.
+#   "Single-account files require" (account-name error code) — removed; bare
+#     single-account imports now raise ImportConfirmationRequiredError with
+#     reason="account_confirmation" and are routed to pending/, not failed/.
 _VALUE_ERROR_PATTERNS: tuple[tuple[str, str, str], ...] = (
-    (
-        "Single-account files require",
-        "needs_account_name",
-        "resolve_account",
-    ),
     ("Unsupported file type", "unsupported_file_type", "detect_file_type"),
     ("No data rows found", "empty_file", "read_file"),
     ("Transform failed", "transform_error", "transform"),
@@ -603,6 +605,13 @@ class InboxService:
             proposed_mapping = dict(outcome_obj.proposed.field_mapping)
             unmapped_columns = list(outcome_obj.proposed.unmapped_columns)
 
+        # move_to_outcome may have appended a collision suffix, changing the stem
+        # after the proposal's bare content-key was built from the original name.
+        # Repoint it so the sidecar's --account-binding command matches the key
+        # `import confirm <moved>` will recompute.
+        pending_proposals = list(outcome_obj.account_proposals)
+        rekey_bare_proposals_for_path(pending_proposals, moved)
+
         sidecar = self.write_pending_sidecar(
             moved,
             channel=outcome_obj.channel,
@@ -615,6 +624,7 @@ class InboxService:
             missing_required=list(outcome_obj.confidence.missing_required),
             unmapped_columns=unmapped_columns,
             account_hint=account_hint,
+            account_proposals=pending_proposals,
         )
         entry = _base_entry()
         entry["moved_to"] = str(moved.relative_to(self.root))
@@ -648,10 +658,6 @@ class InboxService:
     def _suggestion_for(error_code: str) -> str | None:
         """User-facing hint for known error codes."""
         return {
-            "needs_account_name": (
-                "Move the file into inbox/<account-slug>/ "
-                "(e.g., inbox/chase-checking/) and re-run sync."
-            ),
             "unsupported_file_type": (
                 "Convert to OFX/QFX, CSV, TSV, XLSX, Parquet, or PDF."
             ),
@@ -706,6 +712,7 @@ class InboxService:
         missing_required: list[str],
         unmapped_columns: list[str],
         account_hint: str | None = None,
+        account_proposals: list[AccountProposalDict] | None = None,
     ) -> Path:
         """Write a <filename>.pending.yml sidecar with the detector proposal.
 
@@ -719,25 +726,61 @@ class InboxService:
         is appended as ``--account-name <hint>`` to the action lines so a
         single-account CSV that arrived via ``inbox/<account>/`` confirms
         cleanly when the user runs the suggested command verbatim. Without
-        it, ImportService rejects the call with
-        "Single-account files require --account-name or --account-id".
+        it, a single-account CSV with no subfolder hint elicits an
+        ``account_confirmation`` — the hint supplies the identity directly.
+
+        ``account_proposals`` is passed for ``reason="account_confirmation"``
+        so the sidecar can name the real source key in the --account-binding
+        hint. For other reasons it is not used to build actions and serializes as an empty list in the payload.
         """
         sidecar = moved_path.with_name(moved_path.name + ".pending.yml")
-        account_suffix = f" --account-name {account_hint}" if account_hint else ""
-        # resolve_or_confirm refuses --accept on low-tier proposals; omit the
-        # accept hint there so the user (or agent) doesn't loop back with the
-        # same outcome. Override is always available as a recovery path.
+        proposals = account_proposals or []
         actions: list[str] = []
-        if tier != "low":
-            actions.append(
-                f"moneybin import confirm {moved_path} --accept{account_suffix} "
-                "(accept the proposed mapping as-is)"
+        if reason == "account_confirmation":
+            # The column layout is settled; only the account identity is open.
+            # --accept ratifies the settled mapping (the confirm guard requires
+            # --accept or --mapping); the account answer rides alongside it as
+            # --account-binding/--account-name. We don't offer a standalone
+            # --accept/--mapping action (an --accept with no binding loops back
+            # to the account gate). Also offer the inbox/<account-slug>/ path.
+            keys = [str(p.get("source_account_key", "")) for p in proposals] or [
+                "<source_key>"
+            ]
+            # One command must carry a binding for every proposal — the gate is
+            # all-or-nothing, so supplying only some keys re-prompts and persists
+            # nothing. Emit a single command listing all bindings.
+            bindings = " ".join(
+                f"--account-binding {key}=<account_id|new>" for key in keys
             )
-        actions.append(
-            f"moneybin import confirm {moved_path} "
-            f"--mapping <dest_field>=<source_column>{account_suffix} "
-            "(partial-merge override; repeatable)"
-        )
+            actions.append(
+                f"moneybin import confirm {moved_path} --accept {bindings} "
+                "(adopt existing accounts, or 'new' to mint distinct ones; "
+                "supply every source key in this one command)"
+            )
+            if len(keys) == 1:
+                actions.append(
+                    f"moneybin import confirm {moved_path} --accept "
+                    "--account-name <name> (name a new account directly)"
+                )
+            actions.append(
+                "Or move the file into inbox/<account-slug>/ and re-run sync "
+                "(the subfolder names the account)."
+            )
+        else:
+            account_suffix = f" --account-name {account_hint}" if account_hint else ""
+            # resolve_or_confirm refuses --accept on low-tier proposals; omit the
+            # accept hint there so the user (or agent) doesn't loop back with the
+            # same outcome. Override is always available as a recovery path.
+            if tier != "low":
+                actions.append(
+                    f"moneybin import confirm {moved_path} --accept{account_suffix} "
+                    "(accept the proposed mapping as-is)"
+                )
+            actions.append(
+                f"moneybin import confirm {moved_path} "
+                f"--mapping <dest_field>=<source_column>{account_suffix} "
+                "(partial-merge override; repeatable)"
+            )
         payload: dict[str, object] = {
             "channel": channel,
             "tier": tier,
@@ -748,6 +791,7 @@ class InboxService:
             "flagged": list(flagged),
             "missing_required": list(missing_required),
             "unmapped_columns": list(unmapped_columns),
+            "account_proposals": list(proposals),
             "actions": actions,
         }
         sidecar.write_text(yaml.safe_dump(payload, sort_keys=False))

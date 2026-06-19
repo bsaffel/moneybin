@@ -69,15 +69,31 @@ def import_inbox_sync(refresh: bool = True) -> ResponseEnvelope[ImportInboxSyncP
         sync_result = service.sync(refresh=refresh)
 
     actions: list[str] = ["Use transactions.search to view newly imported transactions"]
-    if sync_result.pending:
+    account_pending = [
+        p for p in sync_result.pending if p.get("reason") == "account_confirmation"
+    ]
+    if account_pending:
+        actions.insert(
+            0,
+            "Some pending files need an account identity — run `moneybin import "
+            "confirm <pending-path> --accept --account-binding "
+            "<source_key>=<account_id|new>` (--accept ratifies the settled "
+            "mapping; source_key is in the .pending.yml sidecar's "
+            "account_proposals), or move the file into inbox/<account-slug>/ and "
+            "re-run import_inbox_sync",
+        )
+    # Mapping confirmations only — account_confirmation entries are handled
+    # above and take --accept plus --account-binding (not a --mapping override).
+    mapping_pending = [
+        p for p in sync_result.pending if p.get("reason") != "account_confirmation"
+    ]
+    if mapping_pending:
         # Tier-aware action: --accept is only meaningful when at least one
         # pending file is non-low (resolve_or_confirm refuses Accept at the
         # low-tier gate, so a blanket --accept hint would loop indefinitely
         # for low-tier-only batches). Each .pending.yml sidecar carries
         # tier-correct per-file recovery hints regardless.
-        has_non_low_pending = any(
-            _tier_of(entry) != "low" for entry in sync_result.pending
-        )
+        has_non_low_pending = any(_tier_of(entry) != "low" for entry in mapping_pending)
         if has_non_low_pending:
             actions.insert(
                 0,
@@ -97,7 +113,8 @@ def import_inbox_sync(refresh: bool = True) -> ResponseEnvelope[ImportInboxSyncP
     if sync_result.failed:
         actions.insert(
             0,
-            "Move failed files into inbox/<account-slug>/ and re-run import_inbox_sync",
+            "Some files failed — see each .error.yml sidecar's `suggestion` "
+            "field for the recovery step",
         )
 
     threshold = get_settings().categorization.assist_offer_threshold

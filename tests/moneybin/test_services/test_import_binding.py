@@ -443,3 +443,373 @@ def test_import_emits_account_link_metrics(
         assert gauge == 1.0
     finally:
         db.close()
+
+
+def test_bare_single_account_surfaces_account_confirmation(
+    mock_secret_store: MagicMock, tmp_path: Path
+) -> None:
+    """A single-account file with no identity elicits account_confirmation.
+
+    Was: raised a hard ValueError('Single-account files require …').
+    """
+    db = _db(mock_secret_store, tmp_path)
+    try:
+        create_core_tables(db)
+        svc = ImportService(db)
+        with pytest.raises(ImportConfirmationRequiredError) as exc:
+            svc.import_file(
+                _STANDARD_CSV,
+                refresh=False,
+                confirm=True,
+                actor_kind="human",
+            )
+        outcome = exc.value.outcome
+        assert outcome.reason == "account_confirmation"
+        # One no-candidate proposal carrying a stable, bindable source key.
+        assert len(outcome.account_proposals) == 1
+        proposal = outcome.account_proposals[0]
+        assert proposal["source_account_key"].startswith("standard-")
+        assert proposal["candidates"] == []
+        assert proposal["is_new"] is True
+        # No rows loaded — the gate raised before transform/load.
+        n = db.execute("SELECT COUNT(*) FROM raw.tabular_transactions").fetchone()
+        assert n is not None and n[0] == 0
+    finally:
+        db.close()
+
+
+def test_bare_single_account_binding_new_mints_and_loads(
+    mock_secret_store: MagicMock, tmp_path: Path
+) -> None:
+    """Bare file: binding its content key to `new` mints a fresh account and loads."""
+    db = _db(mock_secret_store, tmp_path)
+    try:
+        create_core_tables(db)
+        svc = ImportService(db)
+        with pytest.raises(ImportConfirmationRequiredError) as exc:
+            svc.import_file(
+                _STANDARD_CSV, refresh=False, confirm=True, actor_kind="human"
+            )
+        key = exc.value.outcome.account_proposals[0]["source_account_key"]
+        result = svc.import_file(
+            _STANDARD_CSV,
+            refresh=False,
+            confirm=True,
+            actor_kind="human",
+            account_bindings={key: "new"},
+        )
+        assert result.transactions > 0
+        row = db.execute(
+            "SELECT account_id FROM app.account_links WHERE ref_kind='source_native' "
+            "AND ref_value=? AND status='accepted'",
+            [key],
+        ).fetchone()
+        assert row is not None and row[0]
+        n = db.execute(
+            "SELECT COUNT(*) FROM app.account_link_decisions WHERE status='pending'"
+        ).fetchone()
+        assert n is not None and n[0] == 0
+    finally:
+        db.close()
+
+
+def test_bare_single_account_binding_adopts_existing_and_loads(
+    mock_secret_store: MagicMock, tmp_path: Path
+) -> None:
+    """Bare file: binding its content key to an existing id adopts that account."""
+    db = _db(mock_secret_store, tmp_path)
+    try:
+        _seed_existing_account(db, account_id="acct_chosen01", display_name="Chosen")
+        svc = ImportService(db)
+        with pytest.raises(ImportConfirmationRequiredError) as exc:
+            svc.import_file(
+                _STANDARD_CSV, refresh=False, confirm=True, actor_kind="human"
+            )
+        key = exc.value.outcome.account_proposals[0]["source_account_key"]
+        result = svc.import_file(
+            _STANDARD_CSV,
+            refresh=False,
+            confirm=True,
+            actor_kind="human",
+            account_bindings={key: "acct_chosen01"},
+        )
+        assert result.transactions > 0
+        row = db.execute(
+            "SELECT account_id FROM app.account_links WHERE ref_kind='source_native' "
+            "AND ref_value=? AND status='accepted'",
+            [key],
+        ).fetchone()
+        assert row is not None and row[0] == "acct_chosen01"
+    finally:
+        db.close()
+
+
+def test_bare_single_account_surfaces_for_agent_too(
+    mock_secret_store: MagicMock, tmp_path: Path
+) -> None:
+    """Bare single-account import surfaces account_confirmation for agents too.
+
+    There is no silent fallback to mint a placeholder account.
+    """
+    db = _db(mock_secret_store, tmp_path)
+    try:
+        create_core_tables(db)
+        svc = ImportService(db)
+        with pytest.raises(ImportConfirmationRequiredError) as exc:
+            svc.import_file(
+                _STANDARD_CSV,
+                refresh=False,
+                confirm=True,
+                actor_kind="agent",
+            )
+        assert exc.value.outcome.reason == "account_confirmation"
+        # No silent mint: nothing loaded, no account_links row created.
+        n = db.execute("SELECT COUNT(*) FROM raw.tabular_transactions").fetchone()
+        assert n is not None and n[0] == 0
+        links = db.execute("SELECT COUNT(*) FROM app.account_links").fetchone()
+        assert links is not None and links[0] == 0
+    finally:
+        db.close()
+
+
+def test_same_stem_different_content_do_not_merge(
+    mock_secret_store: MagicMock, tmp_path: Path
+) -> None:
+    """Two different-account files sharing a filename must NOT collide.
+
+    The synthetic key is content-derived, so two `statement.csv` files with
+    different content get DISTINCT keys → distinct accounts. An explicit `=new`
+    for each is honored; neither silently adopts the other.
+    """
+    db = _db(mock_secret_store, tmp_path)
+    try:
+        create_core_tables(db)
+        svc = ImportService(db)
+
+        dir_a = tmp_path / "a"
+        dir_a.mkdir()
+        file_a = dir_a / "statement.csv"
+        file_a.write_text("Date,Description,Amount\n2026-01-01,BANK A COFFEE,-3.50\n")
+        dir_b = tmp_path / "b"
+        dir_b.mkdir()
+        file_b = dir_b / "statement.csv"
+        file_b.write_text("Date,Description,Amount\n2026-02-02,BANK B GROCERY,-9.99\n")
+
+        with pytest.raises(ImportConfirmationRequiredError) as exc_a:
+            svc.import_file(file_a, refresh=False, confirm=True, actor_kind="human")
+        key_a = exc_a.value.outcome.account_proposals[0]["source_account_key"]
+        with pytest.raises(ImportConfirmationRequiredError) as exc_b:
+            svc.import_file(file_b, refresh=False, confirm=True, actor_kind="human")
+        key_b = exc_b.value.outcome.account_proposals[0]["source_account_key"]
+
+        assert key_a.startswith("statement-")
+        assert key_b.startswith("statement-")
+        assert key_a != key_b  # same stem, different content → different key
+
+        res_a = svc.import_file(
+            file_a,
+            refresh=False,
+            confirm=True,
+            actor_kind="human",
+            account_bindings={key_a: "new"},
+        )
+        res_b = svc.import_file(
+            file_b,
+            refresh=False,
+            confirm=True,
+            actor_kind="human",
+            account_bindings={key_b: "new"},
+        )
+        assert res_a.transactions > 0 and res_b.transactions > 0
+        acct_a = db.execute(
+            "SELECT account_id FROM app.account_links WHERE ref_kind='source_native' "
+            "AND ref_value=? AND status='accepted'",
+            [key_a],
+        ).fetchone()
+        acct_b = db.execute(
+            "SELECT account_id FROM app.account_links WHERE ref_kind='source_native' "
+            "AND ref_value=? AND status='accepted'",
+            [key_b],
+        ).fetchone()
+        assert acct_a is not None and acct_b is not None
+        assert acct_a[0] != acct_b[0]  # NOT merged
+    finally:
+        db.close()
+
+
+def test_exact_same_file_reimport_adopts_without_reprompt(
+    mock_secret_store: MagicMock, tmp_path: Path
+) -> None:
+    """Re-importing the EXACT same bare file adopts the prior account silently.
+
+    Content-key idempotency: no second account_confirmation, no duplicate account minted.
+    """
+    db = _db(mock_secret_store, tmp_path)
+    try:
+        create_core_tables(db)
+        svc = ImportService(db)
+
+        with pytest.raises(ImportConfirmationRequiredError) as exc:
+            svc.import_file(
+                _STANDARD_CSV, refresh=False, confirm=True, actor_kind="human"
+            )
+        key = exc.value.outcome.account_proposals[0]["source_account_key"]
+        first = svc.import_file(
+            _STANDARD_CSV,
+            refresh=False,
+            confirm=True,
+            actor_kind="human",
+            account_bindings={key: "new"},
+        )
+        assert first.transactions > 0
+        acct = db.execute(
+            "SELECT account_id FROM app.account_links WHERE ref_kind='source_native' "
+            "AND ref_value=? AND status='accepted'",
+            [key],
+        ).fetchone()
+        assert acct is not None
+        acct_id = acct[0]
+
+        # Re-import the exact same file UNBOUND → must NOT raise; adopts acct_id.
+        svc.import_file(_STANDARD_CSV, refresh=False, confirm=True, actor_kind="human")
+
+        rows = db.execute(
+            "SELECT DISTINCT account_id FROM app.account_links "
+            "WHERE ref_kind='source_native' AND ref_value=? AND status='accepted'",
+            [key],
+        ).fetchall()
+        assert len(rows) == 1 and rows[0][0] == acct_id  # same account
+        total = db.execute(
+            "SELECT COUNT(DISTINCT account_id) FROM app.account_links "
+            "WHERE status='accepted'"
+        ).fetchone()
+        assert total is not None and total[0] == 1  # no second account minted
+    finally:
+        db.close()
+
+
+def test_source_native_exists_reflects_accepted_link(
+    mock_secret_store: MagicMock, tmp_path: Path
+) -> None:
+    """source_native_exists() is the short-circuit's idempotency probe.
+
+    True only after an accepted source_native link maps the exact (source_type,
+    source_origin, ref_value) tuple. Driven through the real import path — the
+    link is created by binding a bare file, never INSERTed directly.
+    """
+    from moneybin.services.account_resolver import AccountResolver
+
+    db = _db(mock_secret_store, tmp_path)
+    try:
+        create_core_tables(db)
+        svc = ImportService(db)
+        resolver = AccountResolver(db, actor="system")
+
+        with pytest.raises(ImportConfirmationRequiredError) as exc:
+            svc.import_file(
+                _STANDARD_CSV, refresh=False, confirm=True, actor_kind="human"
+            )
+        key = exc.value.outcome.account_proposals[0]["source_account_key"]
+
+        # No accepted source_native link yet → False (the elicit raised pre-Phase-3).
+        assert (
+            db.execute(
+                "SELECT 1 FROM app.account_links WHERE ref_kind='source_native' "
+                "AND ref_value=? AND status='accepted'",
+                [key],
+            ).fetchone()
+            is None
+        )
+        assert not resolver.source_native_exists("csv", "unknown", key)
+
+        svc.import_file(
+            _STANDARD_CSV,
+            refresh=False,
+            confirm=True,
+            actor_kind="human",
+            account_bindings={key: "new"},
+        )
+        link = db.execute(
+            "SELECT source_type, source_origin FROM app.account_links "
+            "WHERE ref_kind='source_native' AND ref_value=? AND status='accepted'",
+            [key],
+        ).fetchone()
+        assert link is not None
+        source_type, source_origin = link[0], link[1]
+        # True for the exact tuple the import wrote...
+        assert resolver.source_native_exists(source_type, source_origin, key)
+        # ...False for a key that was never imported (same source columns).
+        assert not resolver.source_native_exists(
+            source_type, source_origin, "never-seen-key"
+        )
+    finally:
+        db.close()
+
+
+def test_bare_single_account_mistyped_binding_raises(
+    mock_secret_store: MagicMock, tmp_path: Path
+) -> None:
+    """A binding whose key doesn't match the bare file's content key fails loud.
+
+    A mistyped `--account-binding <typo>=new` must raise a clear ValueError
+    naming the unknown key — not silently re-elicit account_confirmation (which
+    would loop a scripted confirm flow). "Magic stays visible."
+    """
+    db = _db(mock_secret_store, tmp_path)
+    try:
+        create_core_tables(db)
+        svc = ImportService(db)
+        with pytest.raises(ValueError, match="unknown source key"):
+            svc.import_file(
+                _STANDARD_CSV,
+                refresh=False,
+                confirm=True,
+                actor_kind="human",
+                account_bindings={"definitely-not-the-content-key": "new"},
+            )
+    finally:
+        db.close()
+
+
+def test_rekey_bare_proposals_repoints_to_moved_path(tmp_path: Path) -> None:
+    """Repoint a bare content-key proposal to the collision-moved path's key.
+
+    The digest is unchanged (same bytes); only the stem changes, and data-derived
+    keys are left untouched. Mirrors the inbox collision-suffix move
+    (statement.csv -> statement-1.csv) that changes the stem after the proposal
+    was built from the original name.
+    """
+    from moneybin.services.account_resolution_types import AccountProposal
+    from moneybin.services.import_service import (
+        _bare_account_key,  # pyright: ignore[reportPrivateUsage]  # tested directly
+        rekey_bare_proposals_for_path,
+    )
+
+    original = tmp_path / "statement.csv"
+    original.write_text("Date,Amount\n2026-01-01,-5.00\n")
+    orig_key = _bare_account_key(original)
+    moved = tmp_path / "statement-1.csv"
+    original.rename(moved)  # same bytes, new stem (the collision-suffix move)
+
+    proposals = [
+        AccountProposal(
+            source_account_key=orig_key,
+            proposed_account_id=None,
+            is_new=True,
+            candidates=(),
+            adopted_via=None,
+        ).to_dict(),
+        AccountProposal(
+            source_account_key="wf-checking",  # a real data-derived key
+            proposed_account_id=None,
+            is_new=True,
+            candidates=(),
+            adopted_via=None,
+        ).to_dict(),
+    ]
+    rekey_bare_proposals_for_path(proposals, moved)
+
+    assert proposals[0]["source_account_key"] == _bare_account_key(moved)
+    assert proposals[0]["source_account_key"] != orig_key  # stem changed
+    assert proposals[0]["source_account_key"].startswith("statement-1-")
+    assert proposals[1]["source_account_key"] == "wf-checking"  # untouched

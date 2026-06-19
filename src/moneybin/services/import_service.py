@@ -284,6 +284,44 @@ def _display_label(file_type: str, file_path: Path) -> str:
     return file_type.upper()
 
 
+def _bare_account_key(file_path: Path) -> str:
+    """Stable, content-unique source key for a single-account file with no caller-supplied identity.
+
+    A filename stem alone is too incidental to be a source identity — two
+    different-account files that share a name (two banks' ``statement.csv``)
+    would collide on the same ``source_native`` ref and silently merge
+    (``account-identity-resolution.md``, Decision 8 corollary). Binding the key
+    to file content makes it unique per file while staying stable across the
+    confirm round-trip (same bytes → same key) and idempotent on an exact
+    re-import. The digest is a disambiguator, NOT an identity claim.
+    """
+    from moneybin.utils import slugify  # noqa: PLC0415 — matches _pdf_alias
+
+    digest = hashlib.sha256(file_path.read_bytes()).hexdigest()[:12]
+    return f"{slugify(file_path.stem) or 'file'}-{digest}"
+
+
+def rekey_bare_proposals_for_path(
+    account_proposals: list[AccountProposalDict], moved_path: Path
+) -> None:
+    """Repoint bare content-keyed proposals to ``moved_path``'s key, in place.
+
+    The inbox may append a collision suffix when moving a pending file
+    (``statement.csv`` → ``statement-1.csv``), changing the stem *after* the
+    ``account_confirmation`` proposal was built from the original name. The
+    sidecar's ``--account-binding`` command must use the key that
+    ``import confirm <moved_path>`` will recompute, so repoint any proposal whose
+    key is this file's bare content key (its digest suffix matches the moved
+    bytes); real, data-derived source keys are left untouched. A no-op when the
+    stem did not change.
+    """
+    digest = hashlib.sha256(moved_path.read_bytes()).hexdigest()[:12]
+    new_key = _bare_account_key(moved_path)
+    for proposal in account_proposals:
+        if str(proposal.get("source_account_key", "")).endswith(f"-{digest}"):
+            proposal["source_account_key"] = new_key
+
+
 def _pdf_alias(file_path: Path) -> str:
     """Resolve the seed alias from the file stem.
 
@@ -1433,9 +1471,82 @@ class ImportService:
                 for native_key in acct_id_to_name
             )
         else:
-            raise ValueError(
-                "Single-account files require --account-name or --account-id"
+            # Single-account file with no caller-supplied identity (no
+            # --account-name/--account-id and no account-name column). The
+            # account is real but unnamed — surface it through the
+            # account_confirmation envelope like every other import ambiguity,
+            # not a hard error ("magic stays visible"). The synthetic source key
+            # is stable across the confirm round-trip, so an --account-binding
+            # answer re-enumerates and applies in Phase 2; --account-name takes
+            # the branch above instead.
+            native_key = _bare_account_key(file_path)
+            account_ids = native_key
+            placeholder_name = file_path.stem or native_key
+            acct_id_to_name[native_key] = placeholder_name
+            label_parsed_by_key[native_key] = (placeholder_name, None)
+            if acct_num_col and acct_num_col in df.columns:
+                for value in df[acct_num_col].to_list():
+                    if l4 := _last4_from_account_number(value):
+                        number_last4_by_key[native_key] = l4
+                        break
+            source_accounts.append(
+                SourceAccount(
+                    source_type=source_type,
+                    source_origin=source_origin,
+                    source_account_key=native_key,
+                    account_name=placeholder_name,
+                    institution=institution,
+                    last_four=number_last4_by_key.get(native_key),
+                )
             )
+            # No binding answer yet → surface the no-candidate account
+            # confirmation (no rows load). A later import_confirm with
+            # --account-binding <native_key>=<account_id|new> re-enters here and
+            # proceeds through Phase 2; --account-name re-enters the branch above.
+            # Elicit only when genuinely unknown: no confirm answer at all AND no
+            # prior accepted source_native for this exact content. Use `not
+            # bindings` (not `native_key not in bindings`) so a binding with a
+            # MISTYPED key doesn't silently re-elicit — it falls through to the
+            # Phase-2 known_keys check below, which fails loud ("magic stays
+            # visible"). An exact-same-file re-import adopts via resolve() Step-1
+            # without re-prompting (idempotency, not a filename guess).
+            if not bindings and not resolver.source_native_exists(
+                source_type, source_origin, native_key
+            ):
+                from moneybin.extractors.confidence import Confidence
+                from moneybin.services.account_resolution_types import (
+                    AccountProposal,
+                )
+                from moneybin.services.import_confirmation import (
+                    ConfirmationRequired,
+                    ImportConfirmationRequiredError,
+                    ProposedMapping,
+                )
+
+                raise ImportConfirmationRequiredError(
+                    ConfirmationRequired(
+                        channel="tabular",
+                        # Layout is settled; only the account identity is open.
+                        confidence=Confidence(
+                            score=1.0, tier="high", flagged=(), missing_required=()
+                        ),
+                        proposed=ProposedMapping(
+                            field_mapping=dict(resolved.field_mapping),
+                            sample_values={},
+                            unmapped_columns=(),
+                        ),
+                        reason="account_confirmation",
+                        account_proposals=[
+                            AccountProposal(
+                                source_account_key=native_key,
+                                proposed_account_id=None,
+                                is_new=True,
+                                candidates=(),
+                                adopted_via=None,
+                            ).to_dict()
+                        ],
+                    )
+                )
 
         # Phase 2 — apply explicit bindings, then gate on weak account proposals.
         # The gate raises ImportConfirmationRequiredError (no rows load) for an

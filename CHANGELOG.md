@@ -213,6 +213,17 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   spec.
 
 ### Fixed
+- **Bare single-account imports now elicit account confirmation instead of
+  erroring (M1S.4 extension).** A single-account tabular file (CSV/TSV/Excel)
+  imported with no account identifier — no `--account-name`/`--account-id`, no
+  `account_bindings`, and no account-name column — previously failed with a
+  `ValueError` (inbox: `failed/` with `needs_account_name`). It now returns the
+  M1S.4 `confirmation_required` envelope (`reason="account_confirmation"`)
+  carrying a no-candidate proposal, answered through the existing `import_confirm`
+  account-binding channel (`account_bindings={source_key: account_id|"new"}` /
+  `--account-binding`) or `--account-name`/`--account-id`. Inbox sync routes the
+  file to `pending/` (recoverable) with an account-binding sidecar; the
+  `needs_account_name` error code is retired.
 - **Cross-source account linking now actually fires (M1S.7).** `core.dim_accounts.last_four`
   is now derived from each source's native field (OFX `<ACCTID>` digits, Plaid
   `mask`, tabular account number/label) instead of being NULL for every

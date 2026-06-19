@@ -118,7 +118,7 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |     --accept                   Accept the detected mapping as-is
 |   |     [--mapping field=column]   Partial-merge override (repeatable)
 |   |     [--save-format/--no-save-format]  Pin merged mapping for silent reuse (default on)
-|   |     [--account-name NAME]      Required for single-account files
+|   |     [--account-name NAME]      Optional; omitting all account identifiers elicits account_confirmation (resolve via --account-binding/--account-name/--account-id)
 |   |     [--account-id ID]          Explicit account ID bypass
 |   |     [--account-binding K=ID|new]  Ratify an account_confirmation (repeatable)
 |   |     [--account-meta K:field=value]  Metadata for a 'new' account (repeatable)

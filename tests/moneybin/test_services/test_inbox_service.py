@@ -238,20 +238,20 @@ class TestErrorSidecar:
 
         sidecar = inbox_service.write_error_sidecar(
             moved,
-            error_code="needs_account_name",
-            stage="resolve_account",
-            message="Single-account file requires an account hint",
-            suggestion="Move into inbox/<account-slug>/ and re-run sync",
-            extra={"available_accounts": ["chase-checking", "amex"]},
+            error_code="schema_mismatch",
+            stage="load",
+            message="Database schema is out of date",
+            suggestion="Run 'moneybin db migrate' and re-run sync",
+            extra={"missing_column": "last_four"},
         )
 
         assert sidecar == failed_dir / "unknown.csv.error.yml"
         loaded = yaml.safe_load(sidecar.read_text())
-        assert loaded["error_code"] == "needs_account_name"
-        assert loaded["stage"] == "resolve_account"
-        assert loaded["message"].startswith("Single-account")
-        assert loaded["suggestion"].startswith("Move into")
-        assert loaded["available_accounts"] == ["chase-checking", "amex"]
+        assert loaded["error_code"] == "schema_mismatch"
+        assert loaded["stage"] == "load"
+        assert loaded["message"].startswith("Database schema")
+        assert loaded["suggestion"].startswith("Run")
+        assert loaded["missing_column"] == "last_four"
 
 
 class TestSyncHappyPath:
@@ -473,22 +473,49 @@ class TestSyncRefreshOnce:
 
 
 class TestSyncFailure:
-    """Failed imports get moved to failed/ with YAML sidecar."""
+    """Failed imports move to failed/; a bare no-name file routes to pending/."""
 
-    def test_failed_import_lands_in_failed_with_sidecar(
+    def test_single_account_no_name_lands_in_pending(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         import yaml
 
+        from moneybin.extractors.confidence import Confidence
         from moneybin.services import inbox_service as mod
+        from moneybin.services.import_confirmation import (
+            ConfirmationRequired,
+            ImportConfirmationRequiredError,
+            ProposedMapping,
+        )
 
         class FakeImportService:
             def __init__(self, db: object) -> None:
                 pass
 
             def import_file(self, path: str, **kwargs: object) -> object:
-                raise ValueError(
-                    "Single-account files require --account-name or --account-id"
+                raise ImportConfirmationRequiredError(
+                    ConfirmationRequired(
+                        channel="tabular",
+                        confidence=Confidence(
+                            score=1.0, tier="high", flagged=(), missing_required=()
+                        ),
+                        proposed=ProposedMapping(
+                            field_mapping={"Date": "transaction_date"},
+                            sample_values={},
+                            unmapped_columns=(),
+                        ),
+                        reason="account_confirmation",
+                        account_proposals=[
+                            {
+                                "source_account_key": "unknown",
+                                "proposed_account_id": None,
+                                "is_new": True,
+                                "adopted_via": None,
+                                "requires_confirm": True,
+                                "candidates": [],
+                            }
+                        ],
+                    )
                 )
 
         monkeypatch.setattr(mod, "ImportService", FakeImportService)
@@ -496,23 +523,22 @@ class TestSyncFailure:
         db = MagicMock(spec=Database)
         svc = InboxService(db=db, settings=_make_settings(tmp_path))
         svc.ensure_layout()
-        (svc.inbox_dir / "unknown.csv").write_text("a\n1\n")
+        (svc.inbox_dir / "unknown.csv").write_text("Date\n2026-05-01\n")
 
         result = svc.sync(year_month="2026-05")
 
-        assert len(result.failed) == 1
-        entry = result.failed[0]
+        assert len(result.failed) == 0
+        assert len(result.pending) == 1
+        entry = result.pending[0]
         assert entry["filename"] == "unknown.csv"
-        assert entry["error_code"] == "needs_account_name"
-        assert str(entry["sidecar"]).endswith("unknown.csv.error.yml")
+        assert entry["reason"] == "account_confirmation"
 
-        moved = svc.failed_dir / "2026-05" / "unknown.csv"
-        sidecar = moved.with_name("unknown.csv.error.yml")
+        moved = svc.pending_dir / "2026-05" / "unknown.csv"
+        sidecar = moved.with_name("unknown.csv.pending.yml")
         assert moved.exists()
         loaded = yaml.safe_load(sidecar.read_text())
-        assert loaded["error_code"] == "needs_account_name"
-        assert "stage" in loaded
-        assert "message" in loaded
+        assert loaded["reason"] == "account_confirmation"
+        assert any("--account-binding" in a for a in loaded["actions"])
 
     def test_unknown_error_uses_generic_code(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -867,10 +893,9 @@ class TestPendingSidecarAccountHint:
 
     When a file arrives via inbox/<account>/, the generated
     `moneybin import confirm` actions in the pending sidecar MUST include
-    `--account-name <hint>`. Without it, ImportService rejects the call
-    on single-account CSVs with "Single-account files require
-    --account-name or --account-id" — the user follows the suggested
-    command verbatim and immediately hits a wall.
+    `--account-name <hint>`. Without the subfolder hint a bare single-account
+    CSV elicits an ``account_confirmation``; the hint supplies the account
+    identity directly so the suggested command resolves in one step.
     """
 
     def test_actions_include_account_name_when_subfolder_hint_present(
@@ -933,6 +958,200 @@ class TestPendingSidecarAccountHint:
         payload = yaml.safe_load(sidecar.read_text())
         actions = payload["actions"]
         assert all("--account-name" not in a for a in actions), actions
+
+    def test_account_confirmation_sidecar_emits_binding_actions(
+        self, tmp_path: Path
+    ) -> None:
+        """An account_confirmation pending sidecar emits account-binding hints.
+
+        Offers --accept paired with --account-binding (the real source key) +
+        the inbox/<account-slug>/ convention; no standalone --mapping override.
+        """
+        from pathlib import Path as _Path
+
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        moved = svc.pending_dir / "2026-05" / "statement.csv"
+        moved.parent.mkdir(parents=True, exist_ok=True)
+        moved.write_text("Date,Amount\n2026-05-01,-10\n")
+
+        sidecar = svc.write_pending_sidecar(
+            _Path(moved),
+            channel="tabular",
+            tier="high",
+            score=1.0,
+            reason="account_confirmation",
+            proposed_mapping={"Date": "transaction_date", "Amount": "amount"},
+            samples={},
+            flagged=[],
+            missing_required=[],
+            unmapped_columns=[],
+            account_proposals=[
+                {
+                    "source_account_key": "statement",
+                    "proposed_account_id": None,
+                    "is_new": True,
+                    "adopted_via": None,
+                    "requires_confirm": True,
+                    "candidates": [],
+                }
+            ],
+        )
+
+        import yaml
+
+        payload = yaml.safe_load(sidecar.read_text())
+        actions = payload["actions"]
+        assert any("--account-binding statement=" in a for a in actions), actions
+        assert any("inbox/<account-slug>" in a for a in actions), actions
+        # --accept ratifies the settled mapping and pairs with the binding; no
+        # standalone --mapping override for an account_confirmation.
+        assert not any("--mapping" in a for a in actions), actions
+        assert all("--accept" in a for a in actions if "--account-binding" in a), (
+            actions
+        )
+        assert payload["account_proposals"][0]["source_account_key"] == "statement"
+
+    def test_account_confirmation_multi_proposal_one_command_all_bindings(
+        self, tmp_path: Path
+    ) -> None:
+        """Multiple proposals → ONE import-confirm command listing every binding.
+
+        The account gate is all-or-nothing: supplying only some keys re-prompts
+        and persists nothing, so per-key commands could never complete. The
+        single-account --account-name shortcut is suppressed when >1 account.
+        """
+        from pathlib import Path as _Path
+
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        moved = svc.pending_dir / "2026-05" / "combined.csv"
+        moved.parent.mkdir(parents=True, exist_ok=True)
+        moved.write_text("Date,Amount,Account\n2026-05-01,-10,A\n")
+
+        sidecar = svc.write_pending_sidecar(
+            _Path(moved),
+            channel="tabular",
+            tier="high",
+            score=1.0,
+            reason="account_confirmation",
+            proposed_mapping={"Date": "transaction_date", "Amount": "amount"},
+            samples={},
+            flagged=[],
+            missing_required=[],
+            unmapped_columns=[],
+            account_proposals=[
+                {
+                    "source_account_key": "acct-a",
+                    "proposed_account_id": None,
+                    "is_new": True,
+                    "adopted_via": None,
+                    "requires_confirm": True,
+                    "candidates": [],
+                },
+                {
+                    "source_account_key": "acct-b",
+                    "proposed_account_id": None,
+                    "is_new": True,
+                    "adopted_via": None,
+                    "requires_confirm": True,
+                    "candidates": [],
+                },
+            ],
+        )
+
+        import yaml
+
+        actions = yaml.safe_load(sidecar.read_text())["actions"]
+        confirm_cmds = [
+            a for a in actions if "import confirm" in a and "--account-binding" in a
+        ]
+        assert len(confirm_cmds) == 1, actions  # exactly one command...
+        assert "--account-binding acct-a=" in confirm_cmds[0]  # ...with both keys
+        assert "--account-binding acct-b=" in confirm_cmds[0]
+        assert "--accept" in confirm_cmds[0]
+        # No single-account --account-name shortcut when there are >1 accounts.
+        assert all("--account-name" not in a for a in actions), actions
+
+    def test_account_confirmation_collision_rekeys_to_moved_path(
+        self, tmp_path: Path
+    ) -> None:
+        """A collision-moved bare pending file is keyed to the moved path.
+
+        `import confirm <moved>` then matches the binding. _handle_pending moves
+        statement.csv -> statement-1.csv (collision suffix) after the proposal
+        was built from the original name; the bare content key must be repointed
+        or the generated --account-binding command fails.
+        """
+        from moneybin.extractors.confidence import Confidence
+        from moneybin.services.account_resolution_types import AccountProposal
+        from moneybin.services.import_confirmation import (
+            ConfirmationRequired,
+            ImportConfirmationRequiredError,
+            ProposedMapping,
+        )
+        from moneybin.services.import_service import (
+            _bare_account_key,  # pyright: ignore[reportPrivateUsage]  # tested directly
+        )
+        from moneybin.services.inbox_service import InboxSyncResult
+
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        src = svc.inbox_dir / "statement.csv"
+        src.write_text("Date,Amount\n2026-05-01,-10\n")
+        # Pre-existing pending file with the same name forces a -1 suffix.
+        collision_dir = svc.pending_dir / "2026-05"
+        collision_dir.mkdir(parents=True, exist_ok=True)
+        (collision_dir / "statement.csv").write_text("earlier\n")
+
+        orig_key = _bare_account_key(src)
+        error = ImportConfirmationRequiredError(
+            ConfirmationRequired(
+                channel="tabular",
+                confidence=Confidence(
+                    score=1.0, tier="high", flagged=(), missing_required=()
+                ),
+                proposed=ProposedMapping(
+                    field_mapping={"Date": "transaction_date", "Amount": "amount"},
+                    sample_values={},
+                    unmapped_columns=(),
+                ),
+                reason="account_confirmation",
+                account_proposals=[
+                    AccountProposal(
+                        source_account_key=orig_key,
+                        proposed_account_id=None,
+                        is_new=True,
+                        candidates=(),
+                        adopted_via=None,
+                    ).to_dict()
+                ],
+            )
+        )
+        result = InboxSyncResult()
+        svc._handle_pending(  # pyright: ignore[reportPrivateUsage]  # exercising the move+rekey path
+            src, "statement.csv", error, "2026-05", result
+        )
+
+        moved = collision_dir / "statement-1.csv"
+        assert moved.exists()  # collision suffix applied
+        moved_key = _bare_account_key(moved)
+        assert moved_key != orig_key  # stem changed → key changed
+
+        import yaml
+
+        sidecar = moved.with_name(moved.name + ".pending.yml")
+        payload = yaml.safe_load(sidecar.read_text())
+        actions = payload["actions"]
+        # The binding command + the persisted proposal use the MOVED-path key —
+        # the original-name key (which `import confirm <moved>` would NOT match)
+        # is gone.
+        assert any(f"--account-binding {moved_key}=" in a for a in actions), actions
+        assert not any(f"--account-binding {orig_key}=" in a for a in actions), actions
+        assert payload["account_proposals"][0]["source_account_key"] == moved_key
 
 
 class TestSyncVanishedSource:
