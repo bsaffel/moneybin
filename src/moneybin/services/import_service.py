@@ -24,6 +24,7 @@ from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.extractors.institution_resolution import resolve_institution_tabular
+from moneybin.extractors.tabular.account_label import parse_account_label
 from moneybin.extractors.tabular.formats import (
     NumberFormatType,
     SignConventionType,
@@ -360,6 +361,21 @@ def _to_account_number_mask(raw: str | None) -> str | None:
     if not digits:
         return stripped
     return f"****{digits[-4:]}"
+
+
+def _last4_from_account_number(value: object) -> str | None:
+    """Last 4 digits of a mapped account-number column value, else None.
+
+    The account-number column holds the real (or already-masked) number, so its
+    trailing 4 digits are an authoritative last4 — used as a fallback when the
+    display label carries none. Distinct from ``parse_account_label``, which only
+    trusts a recognized last-4 *pattern* in a free-text display name. Tabular
+    columns are read as strings (``infer_schema_length=0``), so no float coercion.
+    """
+    if value is None:
+        return None
+    digits = "".join(c for c in str(value) if c.isdigit())
+    return digits[-4:] if len(digits) >= 4 else None
 
 
 # Unambiguous tabular extensions: extension wins, no OFX sniffing attempted.
@@ -1279,6 +1295,10 @@ class ImportService:
         # source_origin scopes the source_native key; compute before resolution so
         # raw.* and app.account_links.source_origin stay identical (a later staging
         # JOIN keys on it). Do NOT change how source_origin is derived.
+        # This is the EXPORTER / format identity (Monarch / Tiller / bank export,
+        # or the account slug for an unregistered single file) — orthogonal to the
+        # per-account institution, which is resolved separately and, for
+        # multi-account exporters, comes from row data (Decision 8).
         source_origin = (
             matched_format.name
             if matched_format
@@ -1293,13 +1313,31 @@ class ImportService:
             ),
             cli_override=None,  # no --institution flag on tabular yet
         )
+        # Stage 5 reassigns `institution` for the account_df flow; keep the
+        # resolved (format / filename) value for the auto-save block below so a
+        # saved format records its real institution rather than always "unknown".
+        resolved_institution = institution
         resolver = AccountResolver(self._db, actor="system")
         bindings = account_bindings or {}
 
         # account_ids stamped on raw are source-NATIVE keys (DP-1); the resolver
         # writes the native->canonical app.account_links mapping as a side effect.
         acct_name_col = resolved.field_mapping.get("account_name")
+        acct_num_col = resolved.field_mapping.get("account_number")
         acct_id_to_name: dict[str, str] = {}
+        # Parse each display label once: (clean_name, label_last4). Reused by the
+        # resolver pass (clean name strips mask text → stronger fuzzy match) and
+        # by Stage 5's account_number_masked, so parse_account_label runs once.
+        label_parsed_by_key: dict[str, tuple[str, str | None]] = {}
+        # last4 from the mapped account-number column — the authoritative fallback
+        # when a label carries none (e.g. "Checking" alongside an "Account Number"
+        # column). Keyed by native account key.
+        number_last4_by_key: dict[str, str | None] = {}
+        # Per-account institution for multi-account exporter formats, from a mapped
+        # Institution column (Tiller-style); else None. NEVER the exporter/tool name
+        # (Decision 8 exporter/institution split). Single-account keeps the
+        # format/file institution unchanged.
+        multi_acct_inst: dict[str, str | None] = {}
 
         # Phase 1 — enumerate the source accounts this file presents (one per
         # native key) WITHOUT resolving, so the account-binding gate can run
@@ -1308,6 +1346,15 @@ class ImportService:
         if account_id:
             account_ids: str | list[str] = account_id
             acct_id_to_name[account_id] = account_name or account_id
+            # Parse only a real display label, never the canonical --account-id
+            # itself: an opaque id ending in 4 digits ("acct-1234") would
+            # otherwise fabricate a "****1234" bank mask in dim_accounts. No
+            # label supplied → no derived last4.
+            label_parsed_by_key[account_id] = (
+                parse_account_label(account_name)
+                if account_name
+                else (account_id, None)
+            )
             source_accounts.append(
                 SourceAccount(
                     source_type=source_type,
@@ -1322,13 +1369,21 @@ class ImportService:
             native_key = slugify(account_name)
             account_ids = native_key
             acct_id_to_name[native_key] = account_name
+            clean_name, label_last4 = parse_account_label(account_name)
+            label_parsed_by_key[native_key] = (clean_name, label_last4)
+            if acct_num_col and acct_num_col in df.columns:
+                for value in df[acct_num_col].to_list():
+                    if l4 := _last4_from_account_number(value):
+                        number_last4_by_key[native_key] = l4
+                        break
             source_accounts.append(
                 SourceAccount(
                     source_type=source_type,
                     source_origin=source_origin,
                     source_account_key=native_key,
-                    account_name=account_name,
+                    account_name=clean_name,
                     institution=institution,
+                    last_four=label_last4 or number_last4_by_key.get(native_key),
                 )
             )
         elif (
@@ -1342,15 +1397,40 @@ class ImportService:
             for aid, name in zip(account_ids, raw_names, strict=True):
                 if aid not in acct_id_to_name:
                     acct_id_to_name[aid] = name
+            label_parsed_by_key = {
+                nk: parse_account_label(nm) for nk, nm in acct_id_to_name.items()
+            }
+            if acct_num_col and acct_num_col in df.columns:
+                for aid, value in zip(
+                    account_ids, df[acct_num_col].to_list(), strict=True
+                ):
+                    if number_last4_by_key.get(aid):
+                        continue
+                    if l4 := _last4_from_account_number(value):
+                        number_last4_by_key[aid] = l4
+            # Per-account institution from a mapped Institution column (Tiller-style):
+            # first non-null value per account key. An institution embedded only in a
+            # Monarch-style account LABEL is not parsed here — label→institution
+            # parsing is not implemented.
+            inst_col = resolved.field_mapping.get("institution_name")
+            if inst_col and inst_col in df.columns:
+                for nm, inst_val in zip(raw_names, df[inst_col].to_list(), strict=True):
+                    key = slugify(nm)
+                    if key not in multi_acct_inst and inst_val:
+                        multi_acct_inst[key] = str(inst_val)
             source_accounts.extend(
                 SourceAccount(
                     source_type=source_type,
                     source_origin=source_origin,
                     source_account_key=native_key,
-                    account_name=name,
-                    institution=institution,
+                    account_name=label_parsed_by_key[native_key][0],
+                    institution=multi_acct_inst.get(native_key),
+                    last_four=(
+                        label_parsed_by_key[native_key][1]
+                        or number_last4_by_key.get(native_key)
+                    ),
                 )
-                for native_key, name in acct_id_to_name.items()
+                for native_key in acct_id_to_name
             )
         else:
             raise ValueError(
@@ -1456,13 +1536,39 @@ class ImportService:
         # Stage 5: Load — one account record per unique account
         institution = matched_format.institution_name if matched_format else None
         unique_ids = sorted(acct_id_to_name.keys())
+        # Reuse the Phase 1 parse (label_last4) with the account-number column as
+        # fallback — same last4 the resolver saw, never a second parse pass.
+        acct_id_to_last4: dict[str, str | None] = {}
+        for aid in acct_id_to_name:
+            l4 = label_parsed_by_key[aid][1] or number_last4_by_key.get(aid)
+            acct_id_to_last4[aid] = f"****{l4}" if l4 else None
+        # institution_name per account: per-account institution applies only when
+        # the multi-account branch actually ran (no explicit --account-name/
+        # --account-id); an explicit account on a multi-account-detected format
+        # keeps the shared format/file institution (Decision 8). Single-account
+        # uses the shared institution for its one row.
+        #
+        # Fall back to resolved_institution (the filename/format value captured at
+        # Stage 1) because Stage 5 above clobbers `institution` to None for an
+        # unregistered import (no matched_format). Without it the account's dim row
+        # stores institution_name=NULL, and a later cross-source twin can't match it
+        # on (institution, last4) — breaking the CSV-first matching direction.
+        per_account_inst = (
+            resolved.is_multi_account and not account_id and not account_name
+        )
+        account_institutions = [
+            multi_acct_inst.get(aid)
+            if per_account_inst
+            else (institution or resolved_institution)
+            for aid in unique_ids
+        ]
         account_df = pl.DataFrame({
             "account_id": unique_ids,
             "account_name": [acct_id_to_name[aid] for aid in unique_ids],
             "account_number": [None] * len(unique_ids),
-            "account_number_masked": [None] * len(unique_ids),
+            "account_number_masked": [acct_id_to_last4[aid] for aid in unique_ids],
             "account_type": [None] * len(unique_ids),
-            "institution_name": [institution] * len(unique_ids),
+            "institution_name": account_institutions,
             "currency": [None] * len(unique_ids),
             "source_file": [str(file_path)] * len(unique_ids),
             "source_type": [source_type] * len(unique_ids),
@@ -1529,7 +1635,11 @@ class ImportService:
             try:
                 detected_fmt = TabularFormat(
                     name=source_origin,
-                    institution_name=account_name or source_origin,
+                    # Institution is best-effort metadata; the per-account label
+                    # (account_name) must NEVER land here — a format describes a
+                    # column layout, not an account (bug #5). "unknown" when no
+                    # institution resolved; the exporter/format identity is `name`.
+                    institution_name=resolved_institution or "unknown",
                     file_type=format_info.file_type,
                     delimiter=format_info.delimiter,
                     encoding=format_info.encoding,

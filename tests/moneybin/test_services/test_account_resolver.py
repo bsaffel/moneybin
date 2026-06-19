@@ -290,6 +290,55 @@ def test_institution_last4_matches_across_case(db: Database) -> None:
     assert dec == (first.account_id, "institution_last4")
 
 
+def test_renamed_csv_label_reassociates_via_last4_not_duplicate(db: Database) -> None:
+    """Renamed Monarch account re-associates via last4, never mints a duplicate.
+
+    A Monarch account renamed Daily Expense (...1789) -> Fun Money (...1789)
+    re-associates onto the original via a PENDING institution_last4 decision —
+    not a duplicate mint that silently merges (Decision 8 mutable-label
+    behavior). The renamed import has a different source_account_key (slug) so
+    the strong-ref lookup misses; the unchanged last4 drives the candidate pass.
+    """
+    create_core_tables(db)
+    resolver = AccountResolver(db, actor="system")
+    first = resolver.resolve(
+        _src(
+            source_origin="monarch",
+            source_account_key="daily-expense-1789",
+            account_name="Daily Expense (...1789)",
+            last_four="1789",
+            institution="wells_fargo",
+        )
+    )
+    # Simulate the transform landing first's derived last4 + institution in dim.
+    _seed_dim_account(
+        db,
+        account_id=first.account_id,
+        last_four="1789",
+        institution_name="wells_fargo",
+        display_name="Daily Expense",
+    )
+    renamed = resolver.resolve(
+        _src(
+            source_origin="monarch",
+            source_account_key="fun-money-1789",
+            account_name="Fun Money (...1789)",
+            last_four="1789",
+            institution="wells_fargo",
+        )
+    )
+    # Not silently merged: the renamed import minted its own provisional account.
+    assert renamed.account_id != first.account_id
+    # ...but a pending institution_last4 proposal points back at the original.
+    pend = db.execute(
+        "SELECT candidate_account_id, match_reason FROM app.account_link_decisions "
+        "WHERE status = 'pending'"
+    ).fetchall()
+    assert any(
+        c == first.account_id and reason == "institution_last4" for c, reason in pend
+    ), pend
+
+
 def test_institution_last4_skips_when_slug_is_empty(db: Database) -> None:
     """A purely non-alphanumeric institution slugifies to '' and must not match.
 
@@ -311,6 +360,41 @@ def test_institution_last4_skips_when_slug_is_empty(db: Database) -> None:
         _src(source_type="ofx", source_account_key="ofx-x", institution="###")
     )
     assert second.outcome == "minted_new"
+
+
+def test_find_candidates_prefers_institution_last4_over_name(db: Database) -> None:
+    """Institution+last4 suppresses the weak name signal (Decision 8 bridge precedence).
+
+    When institution+last4 match an existing dim account, the candidate pass
+    returns an institution_last4 proposal and SUPPRESSES the weak name signal.
+    The seeded display_name deliberately equals the source account_name so the
+    name branch WOULD fire if not short-circuited — making the `no name candidate`
+    assertion non-vacuous.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="acct_ofx",
+        last_four="4267",
+        institution_name="WELLS FARGO",
+        display_name="WF Checking 4267",
+    )
+    resolver = AccountResolver(db, actor="system")
+    candidates = resolver._find_candidates(  # type: ignore[reportPrivateUsage]  # pin candidate-pass precedence
+        _src(
+            institution="Wells Fargo",
+            last_four="4267",
+            account_name="WF Checking 4267",
+        ),
+        exclude_account_id="prov_new",
+    )
+    assert any(
+        c.signal == "institution_last4" and c.account_id == "acct_ofx"
+        for c in candidates
+    ), candidates
+    assert not any(c.signal == "name" for c in candidates), (
+        "name must not fire when institution+last4 matches (bridge precedence)"
+    )
 
 
 def test_mint_claims_full_number_strong_ref_for_later_adopt(db: Database) -> None:

@@ -348,6 +348,14 @@ class AccountResolver:
         (cross-connection identity), then scoped full_number (cross-source format).
         The ref_kind is surfaced so propose() can populate adopted_via accurately.
         """
+        # A source_native ref is the EXACT source_account_key (a slug). For a
+        # mutable-label source (CSV / aggregator export) that slug derives from
+        # the account label, so a RENAMED account yields a DIFFERENT slug and
+        # misses here by design — it then falls through to the candidate pass,
+        # which re-associates it onto the original account via institution+last4
+        # as a review PROPOSAL (never a silent merge). Decision 8
+        # (account-identity-resolution.md): a mutable label is a Tier-B
+        # suggestion, not a hard auto-adopt key.
         row = self._db.execute(
             f"SELECT account_id FROM {ACCOUNT_LINKS.full_name} "  # noqa: S608  # TableRef + parameterized values
             "WHERE status = 'accepted' AND ref_kind = 'source_native' "

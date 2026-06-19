@@ -212,6 +212,30 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
 - **`reports health` CLI stub** — an unimplemented placeholder with no backing
   spec.
 
+### Fixed
+- **Cross-source account linking now actually fires (M1S.7).** `core.dim_accounts.last_four`
+  is now derived from each source's native field (OFX `<ACCTID>` digits, Plaid
+  `mask`, tabular account number/label) instead of being NULL for every
+  file-imported account. The account matcher's `institution + last4` bridge can
+  therefore propose linking a CSV account to its OFX/Plaid twin — previously it
+  only worked when forced with an explicit `account_bindings`. Weak matches stay
+  review-only: an interactive import surfaces a confirmation, an agent import
+  leaves a `pending` proposal in the account-link queue, and two accounts sharing
+  a last 4 both surface for review rather than auto-merging. (#257)
+- **Account display names now include the last 4 again (M1S.7).** File-imported
+  accounts rendered as `Institution Type` with the last-4 fragment dropped
+  because `last_four` was NULL; `core.dim_accounts.display_name` now shows the
+  derived last 4 (`Institution Type …NNNN`). (#257)
+- **Multi-account (Tiller-style) imports record each account's own institution
+  (M1S.9).** For a multi-account exporter format with a per-row Institution
+  column, every account now gets its own institution (which the cross-source
+  bridge can use) instead of a single shared exporter/tool name stamped on all of
+  them. (#258)
+- **Saved tabular formats no longer store an account label as their institution
+  (M1S.8).** An auto-saved format records its resolved (filename/format)
+  institution or `unknown`, never the per-account `--account-name` — a format
+  describes a column layout, not an account. (#258)
+
 ### Added
 - **PDF import (seed path).** Native-text PDFs import via `moneybin import <file.pdf>` and the inbox; their tables land as a queryable JSON seed (`raw.pdf_seeds`) with an auto-generated typed view (`raw.pdf_<alias>`), reversible like any import. Mapping PDFs to transactions/core is a later phase.
 - **Report auto-generation framework — one runner generates every surface.**

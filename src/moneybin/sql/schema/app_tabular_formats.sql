@@ -4,7 +4,7 @@
    --save-format. User formats override built-ins of the same name. */
 CREATE TABLE IF NOT EXISTS app.tabular_formats (
     name VARCHAR PRIMARY KEY,                   -- Machine identifier for this format (e.g. "chase_credit", "tiller", "mint")
-    institution_name VARCHAR NOT NULL,          -- Human-readable institution or tool name (e.g. "Chase", "Tiller", "Mint")
+    institution_name VARCHAR NOT NULL,          -- Institution for single-institution formats; for multi_account exporter formats (Tiller/Mint/Monarch) this is the tool/exporter name, NOT a per-account institution (those come from row data, Decision 8)
     file_type VARCHAR NOT NULL DEFAULT 'auto',  -- Expected file type: csv, tsv, xlsx, parquet, feather, pipe, or "auto" for any type
     delimiter VARCHAR,                          -- Explicit delimiter character for text formats; NULL means auto-detected at import time
     encoding VARCHAR NOT NULL DEFAULT 'utf-8',  -- Character encoding for text formats (e.g. utf-8, latin-1, windows-1252)
