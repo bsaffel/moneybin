@@ -443,3 +443,95 @@ def test_import_emits_account_link_metrics(
         assert gauge == 1.0
     finally:
         db.close()
+
+
+def test_bare_single_account_surfaces_account_confirmation(
+    mock_secret_store: MagicMock, tmp_path: Path
+) -> None:
+    """A single-account file with no identity elicits account_confirmation.
+
+    Was: raised a hard ValueError('Single-account files require …').
+    """
+    db = _db(mock_secret_store, tmp_path)
+    try:
+        create_core_tables(db)
+        svc = ImportService(db)
+        with pytest.raises(ImportConfirmationRequiredError) as exc:
+            svc.import_file(
+                _STANDARD_CSV,
+                refresh=False,
+                confirm=True,
+                actor_kind="human",
+            )
+        outcome = exc.value.outcome
+        assert outcome.reason == "account_confirmation"
+        # One no-candidate proposal carrying a stable, bindable source key.
+        assert len(outcome.account_proposals) == 1
+        proposal = outcome.account_proposals[0]
+        assert proposal["source_account_key"] == "standard"
+        assert proposal["candidates"] == []
+        assert proposal["is_new"] is True
+        # No rows loaded — the gate raised before transform/load.
+        n = db.execute("SELECT COUNT(*) FROM raw.tabular_transactions").fetchone()
+        assert n is not None and n[0] == 0
+    finally:
+        db.close()
+
+
+def test_bare_single_account_binding_new_mints_and_loads(
+    mock_secret_store: MagicMock, tmp_path: Path
+) -> None:
+    """Round-trip: import_confirm + account_binding <key>=new loads rows.
+
+    Rows land on a freshly-minted standalone account.
+    """
+    db = _db(mock_secret_store, tmp_path)
+    try:
+        create_core_tables(db)
+        svc = ImportService(db)
+        result = svc.import_file(
+            _STANDARD_CSV,
+            refresh=False,
+            confirm=True,
+            actor_kind="human",
+            account_bindings={"standard": "new"},
+        )
+        assert result.transactions > 0
+        row = db.execute(
+            "SELECT account_id FROM app.account_links WHERE ref_kind='source_native' "
+            "AND ref_value=? AND status='accepted'",
+            ["standard"],
+        ).fetchone()
+        assert row is not None and row[0]  # a real minted id
+        n = db.execute(
+            "SELECT COUNT(*) FROM app.account_link_decisions WHERE status='pending'"
+        ).fetchone()
+        assert n is not None and n[0] == 0
+    finally:
+        db.close()
+
+
+def test_bare_single_account_binding_adopts_existing_and_loads(
+    mock_secret_store: MagicMock, tmp_path: Path
+) -> None:
+    """--account-binding <key>=<existing_id> adopts the chosen account."""
+    db = _db(mock_secret_store, tmp_path)
+    try:
+        _seed_existing_account(db, account_id="acct_chosen01", display_name="Chosen")
+        svc = ImportService(db)
+        result = svc.import_file(
+            _STANDARD_CSV,
+            refresh=False,
+            confirm=True,
+            actor_kind="human",
+            account_bindings={"standard": "acct_chosen01"},
+        )
+        assert result.transactions > 0
+        row = db.execute(
+            "SELECT account_id FROM app.account_links WHERE ref_kind='source_native' "
+            "AND ref_value=? AND status='accepted'",
+            ["standard"],
+        ).fetchone()
+        assert row is not None and row[0] == "acct_chosen01"
+    finally:
+        db.close()

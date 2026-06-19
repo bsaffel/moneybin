@@ -1433,9 +1433,73 @@ class ImportService:
                 for native_key in acct_id_to_name
             )
         else:
-            raise ValueError(
-                "Single-account files require --account-name or --account-id"
+            # Single-account file with no caller-supplied identity (no
+            # --account-name/--account-id and no account-name column). The
+            # account is real but unnamed — surface it through the
+            # account_confirmation envelope like every other import ambiguity,
+            # not a hard error ("magic stays visible"). The synthetic source key
+            # is stable across the confirm round-trip, so an --account-binding
+            # answer re-enumerates and applies in Phase 2; --account-name takes
+            # the branch above instead.
+            native_key = slugify(file_path.stem) or "account"
+            account_ids = native_key
+            placeholder_name = file_path.stem or native_key
+            acct_id_to_name[native_key] = placeholder_name
+            label_parsed_by_key[native_key] = (placeholder_name, None)
+            if acct_num_col and acct_num_col in df.columns:
+                for value in df[acct_num_col].to_list():
+                    if l4 := _last4_from_account_number(value):
+                        number_last4_by_key[native_key] = l4
+                        break
+            source_accounts.append(
+                SourceAccount(
+                    source_type=source_type,
+                    source_origin=source_origin,
+                    source_account_key=native_key,
+                    account_name=placeholder_name,
+                    institution=institution,
+                    last_four=number_last4_by_key.get(native_key),
+                )
             )
+            # No binding answer yet → surface the no-candidate account
+            # confirmation (no rows load). A later import_confirm with
+            # --account-binding <native_key>=<account_id|new> re-enters here and
+            # proceeds through Phase 2; --account-name re-enters the branch above.
+            if native_key not in bindings:
+                from moneybin.extractors.confidence import Confidence
+                from moneybin.services.account_resolution_types import (
+                    AccountProposal,
+                )
+                from moneybin.services.import_confirmation import (
+                    ConfirmationRequired,
+                    ImportConfirmationRequiredError,
+                    ProposedMapping,
+                )
+
+                raise ImportConfirmationRequiredError(
+                    ConfirmationRequired(
+                        channel="tabular",
+                        # Layout is settled; only the account identity is open.
+                        confidence=Confidence(
+                            score=1.0, tier="high", flagged=(), missing_required=()
+                        ),
+                        proposed=ProposedMapping(
+                            field_mapping=dict(resolved.field_mapping),
+                            sample_values={},
+                            unmapped_columns=(),
+                        ),
+                        reason="account_confirmation",
+                        account_proposals=[
+                            AccountProposal(
+                                source_account_key=native_key,
+                                proposed_account_id=None,
+                                is_new=True,
+                                candidates=(),
+                                adopted_via=None,
+                            ).to_dict()
+                        ],
+                    )
+                )
 
         # Phase 2 — apply explicit bindings, then gate on weak account proposals.
         # The gate raises ImportConfirmationRequiredError (no rows load) for an
