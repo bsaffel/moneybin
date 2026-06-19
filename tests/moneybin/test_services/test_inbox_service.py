@@ -473,7 +473,7 @@ class TestSyncRefreshOnce:
 
 
 class TestSyncFailure:
-    """Failed imports get moved to failed/ with YAML sidecar."""
+    """Failed imports move to failed/; a bare no-name file routes to pending/."""
 
     def test_single_account_no_name_lands_in_pending(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

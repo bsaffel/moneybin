@@ -481,6 +481,7 @@ def test_bare_single_account_surfaces_account_confirmation(
 def test_bare_single_account_binding_new_mints_and_loads(
     mock_secret_store: MagicMock, tmp_path: Path
 ) -> None:
+    """Bare file: binding its content key to `new` mints a fresh account and loads."""
     db = _db(mock_secret_store, tmp_path)
     try:
         create_core_tables(db)
@@ -515,6 +516,7 @@ def test_bare_single_account_binding_new_mints_and_loads(
 def test_bare_single_account_binding_adopts_existing_and_loads(
     mock_secret_store: MagicMock, tmp_path: Path
 ) -> None:
+    """Bare file: binding its content key to an existing id adopts that account."""
     db = _db(mock_secret_store, tmp_path)
     try:
         _seed_existing_account(db, account_id="acct_chosen01", display_name="Chosen")

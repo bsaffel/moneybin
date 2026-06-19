@@ -94,13 +94,17 @@ class ConfirmationRequired:
     the proposed mapping carries the failing signal; for PDF this re-
     escalates to the bridge per `smart-import-pdf.md`. `reason=
     'account_confirmation'` surfaces a resolved layout whose *account*
-    identity is ambiguous (weak merge candidates) — the column mapping in
-    `proposed` is already accepted; the caller ratifies the account binding
-    via `account_proposals`.
+    identity needs ratification — either a detected source account with
+    weak merge candidates (the caller picks one or mints new), or a bare
+    single-account file with no identity signal at all (no candidates; the
+    caller names or binds the account). The column mapping in `proposed` is
+    already accepted; the caller ratifies the account binding via
+    `account_proposals`.
 
     `account_proposals` carries the `AccountProposal.to_dict()` payload for
-    each detected source account whose resolution surfaced weak candidates.
-    Empty for mapping-only confirmations.
+    each detected source account whose resolution needs ratification — weak
+    candidates to choose among, or a no-candidate proposal for the bare
+    single-account case. Empty for mapping-only confirmations.
     """
 
     channel: Channel
