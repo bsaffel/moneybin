@@ -337,6 +337,87 @@ class TestCategorizationPipeline:
         result.assert_success()
 
 
+class TestSingleAccountConfirmPipeline:
+    """Workflow N: bare single-account import elicits account_confirmation + resolves via import confirm."""
+
+    def test_bare_single_account_elicits_and_resolves(
+        self, _mutating_profile_template: Path, e2e_home: Path
+    ) -> None:
+        env = make_workflow_env_fast(
+            e2e_home, "wf-single-acct", _mutating_profile_template
+        )
+
+        fixture = FIXTURES_DIR / "tabular" / "standard.csv"
+
+        # Step 1: Elicit — bare CSV (no account column, no --account-id) with
+        # --confirm so the layout mapping gate is auto-accepted and the import
+        # reaches the account identity gate.
+        result = run_cli(
+            "import",
+            "files",
+            str(fixture),
+            "--confirm",
+            "--no-refresh",
+            "--output",
+            "json",
+            env=env,
+        )
+        # import files exits 0 even on confirmation_required in --output json mode;
+        # the body's data.status is the discriminant.
+        assert result.exit_code == 0, (
+            f"Expected exit 0 from import files (confirmation_required exits 0 "
+            f"in JSON mode)\nstdout: {result.stdout}\nstderr: {result.stderr}"
+        )
+        payload = json.loads(result.stdout)
+        data = payload["data"]
+        assert data["status"] == "confirmation_required", (
+            f"Expected confirmation_required, got {data.get('status')!r}\n"
+            f"Full payload: {result.stdout}"
+        )
+        assert data["reason"] == "account_confirmation", (
+            f"Expected reason='account_confirmation', got {data.get('reason')!r}\n"
+            f"Full payload: {result.stdout}"
+        )
+        proposals = data["account_proposals"]
+        assert len(proposals) >= 1, (
+            f"Expected at least one account proposal, got {proposals!r}"
+        )
+        source_key = proposals[0]["source_account_key"]
+        assert source_key, f"source_account_key must be non-empty, got {source_key!r}"
+
+        # Step 2: Resolve — accept the mapping and bind the proposed source key to
+        # a new account so the import can complete.
+        result = run_cli(
+            "import",
+            "confirm",
+            str(fixture),
+            "--accept",
+            "--account-binding",
+            f"{source_key}=new",
+            env=env,
+        )
+        result.assert_success()
+
+        # Step 3: Prove rows landed — run transforms then query core transactions.
+        result = run_cli("transform", "apply", env=env, timeout=180)
+        result.assert_success()
+
+        result = run_cli(
+            "db",
+            "query",
+            "SELECT COUNT(*) AS n FROM core.fct_transactions",
+            "--output",
+            "csv",
+            env=env,
+        )
+        result.assert_success()
+        count = int(result.stdout.strip().split("\n")[-1].strip())
+        assert count > 0, (
+            f"Expected rows in core.fct_transactions after single-account confirm, "
+            f"got {count}"
+        )
+
+
 class TestAutoRulePipeline:
     """Workflow 6: import → transform → categorize apply → auto-accept → verify rule promoted.
 
