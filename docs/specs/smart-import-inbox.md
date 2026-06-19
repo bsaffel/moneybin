@@ -40,7 +40,7 @@ The existing `~/.moneybin/` location is the older Unix dotdir form of platform c
    - **Per-profile isolation.** All inbox operations act on the active profile's subdirectory only. Cross-profile imports are not silently possible — switching profiles (via `--profile` flag or `MoneyBinSettings.profile`) switches which inbox is drained. This mirrors the existing `~/.moneybin/profiles/<profile>/` isolation for app state.
 2. **Auto-create.** All three directories are created on first call to any inbox CLI command or MCP tool. Missing directories are not an error condition; they are reified.
 3. **File permissions.** Inbox parent and all three subdirectories are created with mode `0700` (owner read/write/execute only), matching the database-file posture defined by `privacy-data-protection.md`.
-4. **Account-by-subfolder.** A file located at `inbox/<account-slug>/<filename>` is imported with `account_name=<account-slug>` (slug fed through the existing fuzzy resolver in `ImportService`). A file in the `inbox/` root is imported with no account hint; OFX files and multi-account CSVs auto-detect. A bare single-account tabular file (no embedded account info and no caller-supplied identity) surfaces `account_confirmation` (written to `pending/`, recoverable via `import confirm --account-binding`).
+4. **Account-by-subfolder.** A file located at `inbox/<account-slug>/<filename>` is imported with `account_name=<account-slug>` (slug fed through the existing fuzzy resolver in `ImportService`). A file in the `inbox/` root is imported with no account hint; OFX files and multi-account CSVs auto-detect. A bare single-account tabular file (no embedded account info and no caller-supplied identity) surfaces `account_confirmation` (written to `pending/`, recoverable via `import confirm --accept --account-binding`).
 5. **Drain semantics.** A successful import moves the file to `processed/YYYY-MM/<original-filename>`. A failed import moves the file to `failed/YYYY-MM/<original-filename>` and writes a sidecar `<original-filename>.error.yml` with structured error details. Filename collisions in destination directories are resolved by appending a numeric suffix (`-1`, `-2`, …) before the extension.
 6. **Error sidecar contract.** Failure sidecars are YAML with at least these fields: `error_code` (machine-readable identifier), `stage` (which import stage failed), `message` (human-readable summary), `suggestion` (when applicable, what the user can do next), and structured hints relevant to the error. Pending sidecars (for `account_confirmation` and column-mapping confirmation) use `.pending.yml` instead of `.error.yml` and carry `reason`, `proposed_mapping`, `account_proposals`, and `actions` hints.
 7. **Idempotent re-runs.** Re-running sync over an empty inbox is a no-op success. Re-importing an already-processed file (user copies it back into inbox) is handled by the existing content-hash dedup; the file moves to `processed/` again with a numeric suffix and the import is recorded as a duplicate (zero new transactions).
@@ -125,8 +125,8 @@ $ moneybin import inbox
 ✓ chase-checking/march.ofx              →  imported (118 transactions)
 👀 unknown-bank.csv                     →  pending confirmation (tier=low)
    Account identity needed — run 'moneybin import confirm
-   pending/2026-05/unknown-bank.csv --account-binding <source_key>=<account_id|new>'
-   (or move the file into inbox/<account-slug>/ and re-sync).
+   pending/2026-05/unknown-bank.csv --accept --account-binding <source_key>=<account_id|new>'
+   (--accept ratifies the settled mapping; or move the file into inbox/<account-slug>/ and re-sync).
    See the .pending.yml sidecar for the source key.
 Done: 1 imported, 0 failed, 1 pending.
 ```
@@ -157,7 +157,7 @@ Two new tools under the existing `import.*` namespace.
     "ignored": [{"path": ".DS_Store", "reason": "hidden_file"}]
   }
   ```
-- **Actions hints:** when any `account_confirmation` pending entries are returned: `"Some pending files need an account identity — run moneybin import confirm <pending-path> --account-binding <source_key>=<account_id|new> (source_key is in the .pending.yml sidecar's account_proposals), or move the file into inbox/<account-slug>/ and re-sync."`
+- **Actions hints:** when any `account_confirmation` pending entries are returned: `"Some pending files need an account identity — run moneybin import confirm <pending-path> --accept --account-binding <source_key>=<account_id|new> (--accept ratifies the settled mapping; source_key is in the .pending.yml sidecar's account_proposals), or move the file into inbox/<account-slug>/ and re-run import_inbox_sync."`
 
 ### `import_inbox_pending`
 
