@@ -728,20 +728,22 @@ class InboxService:
         actions: list[str] = []
         if reason == "account_confirmation":
             # The column layout is settled; only the account identity is open.
-            # The mapping --accept/--mapping hints don't apply (an --accept with
-            # no binding loops back to the gate). Offer the two account answers:
-            # bind/name directly, or use the inbox/<account-slug>/ convention.
+            # --accept ratifies the settled mapping (the confirm guard requires
+            # --accept or --mapping); the account answer rides alongside it as
+            # --account-binding/--account-name. We don't offer a standalone
+            # --accept/--mapping action (an --accept with no binding loops back
+            # to the account gate). Also offer the inbox/<account-slug>/ path.
             keys = [str(p.get("source_account_key", "")) for p in proposals] or [
                 "<source_key>"
             ]
             for key in keys:
                 actions.append(
-                    f"moneybin import confirm {moved_path} "
+                    f"moneybin import confirm {moved_path} --accept "
                     f"--account-binding {key}=<account_id|new> "
                     "(adopt an existing account, or 'new' to mint a distinct one)"
                 )
             actions.append(
-                f"moneybin import confirm {moved_path} --account-name <name> "
+                f"moneybin import confirm {moved_path} --accept --account-name <name> "
                 "(name a new account directly)"
             )
             actions.append(

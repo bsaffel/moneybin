@@ -192,6 +192,8 @@ def test_inbox_drain_renders_account_confirmation_pending(
 
     assert result.exit_code == 0, result.stderr
     assert "statement.csv" in result.stderr
-    assert "--account-binding" in result.stderr
+    # --accept (ratifies the settled mapping) is paired with the binding so the
+    # copy-pasted command passes the `import confirm` guard; no --mapping override.
+    assert "--accept --account-binding" in result.stderr
     assert "1 pending" in result.stderr
     assert "--mapping" not in result.stderr

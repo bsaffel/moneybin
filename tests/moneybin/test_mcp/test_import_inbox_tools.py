@@ -72,9 +72,13 @@ class TestImportInboxSync:
             ],
         )
         envelope = await import_inbox_sync()
-        assert any("--account-binding" in a for a in envelope.actions)
         assert any("inbox/<account-slug>" in a for a in envelope.actions)
-        assert not any("--accept" in a or "--mapping" in a for a in envelope.actions)
+        # account_confirmation pairs --accept (ratifies the settled mapping) with
+        # --account-binding; it never offers a standalone --mapping override.
+        assert any(
+            "--accept" in a and "--account-binding" in a for a in envelope.actions
+        )
+        assert not any("--mapping" in a for a in envelope.actions)
 
     async def test_no_failure_no_resolution_hint(
         self, patch_service: MagicMock

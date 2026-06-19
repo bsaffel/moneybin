@@ -964,8 +964,8 @@ class TestPendingSidecarAccountHint:
     ) -> None:
         """An account_confirmation pending sidecar emits account-binding hints.
 
-        Offers --account-binding (with the real source key) + the
-        inbox/<account-slug>/ convention, not the mapping --accept/--mapping hints.
+        Offers --accept paired with --account-binding (the real source key) +
+        the inbox/<account-slug>/ convention; no standalone --mapping override.
         """
         from pathlib import Path as _Path
 
@@ -1005,9 +1005,12 @@ class TestPendingSidecarAccountHint:
         actions = payload["actions"]
         assert any("--account-binding statement=" in a for a in actions), actions
         assert any("inbox/<account-slug>" in a for a in actions), actions
-        # Mapping hints don't apply to an account_confirmation.
+        # --accept ratifies the settled mapping and pairs with the binding; no
+        # standalone --mapping override for an account_confirmation.
         assert not any("--mapping" in a for a in actions), actions
-        assert not any("--accept" in a for a in actions), actions
+        assert all("--accept" in a for a in actions if "--account-binding" in a), (
+            actions
+        )
         assert payload["account_proposals"][0]["source_account_key"] == "statement"
 
 

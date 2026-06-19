@@ -46,14 +46,15 @@ def _print_sync_text(result: InboxSyncResult) -> None:
         if reason == "account_confirmation":
             typer.echo(
                 f"   Account identity needed — run 'moneybin import confirm "
-                f"{moved_to} --account-binding <source_key>=<account_id|new>' "
-                "(or move the file into inbox/<account-slug>/ and re-sync). "
+                f"{moved_to} --accept --account-binding <source_key>=<account_id|new>' "
+                "(--accept ratifies the settled mapping; or move the file into "
+                "inbox/<account-slug>/ and re-sync). "
                 "See the .pending.yml sidecar for the source key.",
                 err=True,
             )
         else:
             typer.echo(
-                f"   Run 'moneybin import confirm {moved_to}' to ratify "
+                f"   Run 'moneybin import confirm {moved_to} --accept' to ratify "
                 "(or re-run with --mapping to override).",
                 err=True,
             )

@@ -76,12 +76,14 @@ def import_inbox_sync(refresh: bool = True) -> ResponseEnvelope[ImportInboxSyncP
         actions.insert(
             0,
             "Some pending files need an account identity — run `moneybin import "
-            "confirm <pending-path> --account-binding <source_key>=<account_id|new>` "
-            "(source_key is in the .pending.yml sidecar's account_proposals), or "
-            "move the file into inbox/<account-slug>/ and re-run import_inbox_sync",
+            "confirm <pending-path> --accept --account-binding "
+            "<source_key>=<account_id|new>` (--accept ratifies the settled "
+            "mapping; source_key is in the .pending.yml sidecar's "
+            "account_proposals), or move the file into inbox/<account-slug>/ and "
+            "re-run import_inbox_sync",
         )
     # Mapping confirmations only — account_confirmation entries are handled
-    # above and take --account-binding, not --accept/--mapping.
+    # above and take --accept plus --account-binding (not a --mapping override).
     mapping_pending = [
         p for p in sync_result.pending if p.get("reason") != "account_confirmation"
     ]
