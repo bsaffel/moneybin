@@ -163,3 +163,34 @@ def test_inbox_path_prints_active_profile_root(
 
     assert result.exit_code == 0
     assert str(patch_inbox.root) in result.stdout.strip()
+
+
+def test_inbox_drain_renders_account_confirmation_pending(
+    runner: CliRunner, patch_inbox: MagicMock
+) -> None:
+    """An account_confirmation pending entry tells the user to bind/name the account.
+
+    Asserts the --account-binding hint appears instead of the generic --mapping text.
+    """
+    patch_inbox.sync.return_value = InboxSyncResult(
+        processed=[],
+        failed=[],
+        pending=[
+            {
+                "filename": "statement.csv",
+                "channel": "tabular",
+                "tier": "high",
+                "score": 1.0,
+                "reason": "account_confirmation",
+                "moved_to": "pending/2026-05/statement.csv",
+                "sidecar": "pending/2026-05/statement.csv.pending.yml",
+            }
+        ],
+    )
+
+    result = runner.invoke(app, ["import", "inbox"])
+
+    assert result.exit_code == 0, result.stderr
+    assert "statement.csv" in result.stderr
+    assert "--account-binding" in result.stderr
+    assert "1 pending" in result.stderr

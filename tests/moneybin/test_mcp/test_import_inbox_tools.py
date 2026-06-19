@@ -56,13 +56,23 @@ class TestImportInboxSync:
         assert envelope.summary.sensitivity == "medium"
         assert envelope.data.processed[0]["filename"] == "a.csv"
 
-    async def test_failure_includes_actions_hint(
+    async def test_account_confirmation_pending_includes_binding_hint(
         self, patch_service: MagicMock
     ) -> None:
         patch_service.sync.return_value = InboxSyncResult(
-            failed=[{"filename": "x.csv", "error_code": "needs_account_name"}],
+            pending=[
+                {
+                    "filename": "statement.csv",
+                    "channel": "tabular",
+                    "tier": "high",
+                    "score": 1.0,
+                    "reason": "account_confirmation",
+                    "moved_to": "pending/2026-05/statement.csv",
+                }
+            ],
         )
         envelope = await import_inbox_sync()
+        assert any("--account-binding" in a for a in envelope.actions)
         assert any("inbox/<account-slug>" in a for a in envelope.actions)
 
     async def test_no_failure_no_resolution_hint(

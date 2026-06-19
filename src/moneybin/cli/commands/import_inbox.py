@@ -38,15 +38,25 @@ def _print_sync_text(result: InboxSyncResult) -> None:
     for item in pending:
         moved_to = item.get("moved_to", item["filename"])
         tier = item.get("tier", "unknown")
+        reason = item.get("reason", "")
         typer.echo(
             f"👀 {item['filename']}  →  pending confirmation (tier={tier})",
             err=True,
         )
-        typer.echo(
-            f"   Run 'moneybin import confirm {moved_to}' to ratify "
-            "(or re-run with --mapping to override).",
-            err=True,
-        )
+        if reason == "account_confirmation":
+            typer.echo(
+                f"   Account identity needed — run 'moneybin import confirm "
+                f"{moved_to} --account-binding <source_key>=<account_id|new>' "
+                "(or move the file into inbox/<account-slug>/ and re-sync). "
+                "See the .pending.yml sidecar for the source key.",
+                err=True,
+            )
+        else:
+            typer.echo(
+                f"   Run 'moneybin import confirm {moved_to}' to ratify "
+                "(or re-run with --mapping to override).",
+                err=True,
+            )
 
     typer.echo(
         f"Done: {len(processed)} imported, {len(failed)} failed, "

@@ -69,6 +69,17 @@ def import_inbox_sync(refresh: bool = True) -> ResponseEnvelope[ImportInboxSyncP
         sync_result = service.sync(refresh=refresh)
 
     actions: list[str] = ["Use transactions.search to view newly imported transactions"]
+    account_pending = [
+        p for p in sync_result.pending if p.get("reason") == "account_confirmation"
+    ]
+    if account_pending:
+        actions.insert(
+            0,
+            "Some pending files need an account identity — run `moneybin import "
+            "confirm <pending-path> --account-binding <source_key>=<account_id|new>` "
+            "(source_key is in the .pending.yml sidecar's account_proposals), or "
+            "move the file into inbox/<account-slug>/ and re-run import_inbox_sync",
+        )
     if sync_result.pending:
         # Tier-aware action: --accept is only meaningful when at least one
         # pending file is non-low (resolve_or_confirm refuses Accept at the
@@ -97,7 +108,8 @@ def import_inbox_sync(refresh: bool = True) -> ResponseEnvelope[ImportInboxSyncP
     if sync_result.failed:
         actions.insert(
             0,
-            "Move failed files into inbox/<account-slug>/ and re-run import_inbox_sync",
+            "Some files failed — see each .error.yml sidecar's `suggestion` "
+            "field for the recovery step",
         )
 
     threshold = get_settings().categorization.assist_offer_threshold
