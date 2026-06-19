@@ -52,10 +52,20 @@ def _print_sync_text(result: InboxSyncResult) -> None:
                 "See the .pending.yml sidecar for the source key.",
                 err=True,
             )
-        else:
+        elif tier != "low":
             typer.echo(
                 f"   Run 'moneybin import confirm {moved_to} --accept' to ratify "
                 "(or re-run with --mapping to override).",
+                err=True,
+            )
+        else:
+            # Low-tier mapping confirmation: resolve_or_confirm re-surfaces these
+            # on --accept rather than loading them, so --accept would loop. Only
+            # the --mapping override path is usable here.
+            typer.echo(
+                f"   Run 'moneybin import confirm {moved_to} --mapping "
+                "field=column' to override (low-confidence detection; "
+                "--accept would be rejected).",
                 err=True,
             )
 

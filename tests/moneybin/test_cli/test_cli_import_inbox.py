@@ -123,7 +123,43 @@ def test_inbox_drain_renders_pending_files(
     assert "unknown-statement.csv" in result.stderr
     assert "pending confirmation" in result.stderr
     assert "moneybin import confirm" in result.stderr
+    # Non-low tier: --accept ratifies the detected mapping.
+    assert "--accept" in result.stderr
     assert "1 pending" in result.stderr
+
+
+def test_inbox_drain_low_tier_mapping_hint_omits_accept(
+    runner: CliRunner, patch_inbox: MagicMock
+) -> None:
+    """A low-tier mapping confirmation points at --mapping, never --accept.
+
+    resolve_or_confirm re-surfaces low-tier proposals on --accept (it never
+    loads them), so an --accept hint would loop the user; only --mapping works.
+    """
+    patch_inbox.sync.return_value = InboxSyncResult(
+        processed=[],
+        failed=[],
+        pending=[
+            {
+                "filename": "fuzzy.csv",
+                "channel": "tabular",
+                "tier": "low",
+                "score": 0.3,
+                "reason": "unknown_layout",
+                "moved_to": "pending/2026-05/fuzzy.csv",
+                "sidecar": "pending/2026-05/fuzzy.csv.pending.yml",
+            }
+        ],
+    )
+
+    result = runner.invoke(app, ["import", "inbox"])
+
+    assert result.exit_code == 0, result.stderr
+    assert "fuzzy.csv" in result.stderr
+    # The suggested command points at --mapping, not --accept. (The only
+    # "--accept" in the output is the explanatory "--accept would be rejected".)
+    assert "fuzzy.csv --mapping" in result.stderr
+    assert "fuzzy.csv --accept" not in result.stderr
 
 
 def test_inbox_drain_json_output(runner: CliRunner, patch_inbox: MagicMock) -> None:
