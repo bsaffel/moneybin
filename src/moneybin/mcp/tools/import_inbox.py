@@ -80,15 +80,18 @@ def import_inbox_sync(refresh: bool = True) -> ResponseEnvelope[ImportInboxSyncP
             "(source_key is in the .pending.yml sidecar's account_proposals), or "
             "move the file into inbox/<account-slug>/ and re-run import_inbox_sync",
         )
-    if sync_result.pending:
+    # Mapping confirmations only — account_confirmation entries are handled
+    # above and take --account-binding, not --accept/--mapping.
+    mapping_pending = [
+        p for p in sync_result.pending if p.get("reason") != "account_confirmation"
+    ]
+    if mapping_pending:
         # Tier-aware action: --accept is only meaningful when at least one
         # pending file is non-low (resolve_or_confirm refuses Accept at the
         # low-tier gate, so a blanket --accept hint would loop indefinitely
         # for low-tier-only batches). Each .pending.yml sidecar carries
         # tier-correct per-file recovery hints regardless.
-        has_non_low_pending = any(
-            _tier_of(entry) != "low" for entry in sync_result.pending
-        )
+        has_non_low_pending = any(_tier_of(entry) != "low" for entry in mapping_pending)
         if has_non_low_pending:
             actions.insert(
                 0,

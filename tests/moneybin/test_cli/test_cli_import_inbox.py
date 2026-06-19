@@ -194,3 +194,4 @@ def test_inbox_drain_renders_account_confirmation_pending(
     assert "statement.csv" in result.stderr
     assert "--account-binding" in result.stderr
     assert "1 pending" in result.stderr
+    assert "--mapping" not in result.stderr
