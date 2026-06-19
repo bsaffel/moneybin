@@ -716,8 +716,8 @@ class InboxService:
         is appended as ``--account-name <hint>`` to the action lines so a
         single-account CSV that arrived via ``inbox/<account>/`` confirms
         cleanly when the user runs the suggested command verbatim. Without
-        it, ImportService rejects the call with
-        "Single-account files require --account-name or --account-id".
+        it, a single-account CSV with no subfolder hint elicits an
+        ``account_confirmation`` — the hint supplies the identity directly.
 
         ``account_proposals`` is passed for ``reason="account_confirmation"``
         so the sidecar can name the real source key in the --account-binding

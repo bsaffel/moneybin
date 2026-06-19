@@ -893,10 +893,9 @@ class TestPendingSidecarAccountHint:
 
     When a file arrives via inbox/<account>/, the generated
     `moneybin import confirm` actions in the pending sidecar MUST include
-    `--account-name <hint>`. Without it, ImportService rejects the call
-    on single-account CSVs with "Single-account files require
-    --account-name or --account-id" — the user follows the suggested
-    command verbatim and immediately hits a wall.
+    `--account-name <hint>`. Without the subfolder hint a bare single-account
+    CSV elicits an ``account_confirmation``; the hint supplies the account
+    identity directly so the suggested command resolves in one step.
     """
 
     def test_actions_include_account_name_when_subfolder_hint_present(
