@@ -602,6 +602,20 @@ when `self_accept` is enabled for its `actor_kind` (both defined in M1H,
 recovery"); or (c) leaves proposals for the `accounts_links` queue. The agent
 never disambiguates a masked `****4267`.
 
+**Fallback candidates at the gate (decision support, not auto-merge).** The
+auto-resolve ladder above is unchanged: a bare single-account source with no
+account number and no institution match still mints (or, when interactive,
+*gates* for `account_confirmation`) — it never silently merges. But a gate whose
+`candidates: []` is a dead end: the human/agent is told "confirm the account"
+with nothing to pick. So `AccountResolver.propose()` (the **preview** that fills
+the gate envelope, not `resolve()`) supplies a **fallback** candidate list when
+the real matchers return nothing — the institution-scoped accounts if any match
+the source's institution, else *all* accounts (capped at `_FALLBACK_CANDIDATE_CAP`),
+tagged `signal="institution"` / `signal="fallback"` at low confidence (0.2 / 0.1).
+These are gate-only decision support: they widen what the confirmer can pick, and
+are **never eligible for silent auto-adopt** (only `explicit` / strong-ref signals
+are). `resolve()` is untouched — confirming "new" still mints with zero candidates.
+
 **Surfacing rule — magic stays visible.** A live-testing finding drove this: the
 column-mapping confirm M1H built went *unseen* because the agent path self-accepted
 high-confidence layouts silently. Account identity must not repeat that. **Silent

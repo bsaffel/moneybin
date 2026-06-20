@@ -397,6 +397,150 @@ def test_find_candidates_prefers_institution_last4_over_name(db: Database) -> No
     )
 
 
+def test_find_candidates_fallback_surfaces_accounts_when_no_signal(
+    db: Database,
+) -> None:
+    """Gate fallback: no last4/institution/name match -> surface existing accounts.
+
+    The bare single-account import gate had no decision support (candidates: []);
+    fallback=True surfaces the user's accounts as a low-confidence pick-list so a
+    human picks from a list instead of supplying a raw account_id.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db, account_id="acct_a", display_name="Chase Checking", institution_name="CHASE"
+    )
+    _seed_dim_account(
+        db, account_id="acct_b", display_name="Citi Savings", institution_name="CITI"
+    )
+    resolver = AccountResolver(db, actor="system")
+    src = _src(account_name="Imported Statement", last_four=None, institution=None)
+    candidates = resolver._find_candidates(  # type: ignore[reportPrivateUsage]  # exercise fallback directly
+        src, exclude_account_id="prov", fallback=True
+    )
+    assert {c.account_id for c in candidates} == {"acct_a", "acct_b"}, candidates
+    assert all(c.signal == "fallback" for c in candidates)
+
+
+def test_find_candidates_no_fallback_by_default_keeps_backfill_quiet(
+    db: Database,
+) -> None:
+    """Fallback defaults False so the backfill link queue isn't flooded with all-accounts."""
+    create_core_tables(db)
+    _seed_dim_account(
+        db, account_id="acct_a", display_name="Chase Checking", institution_name="CHASE"
+    )
+    resolver = AccountResolver(db, actor="system")
+    src = _src(account_name="Imported Statement", last_four=None, institution=None)
+    assert (
+        resolver._find_candidates(src, exclude_account_id="prov") == []  # type: ignore[reportPrivateUsage]  # default no-fallback
+    )
+
+
+def test_find_candidates_fallback_scopes_to_institution_when_known(
+    db: Database,
+) -> None:
+    """When the source resolves an institution, the fallback pick-list scopes to it."""
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="acct_chase",
+        display_name="Chase Checking",
+        institution_name="CHASE",
+    )
+    _seed_dim_account(
+        db, account_id="acct_citi", display_name="Citi Savings", institution_name="CITI"
+    )
+    resolver = AccountResolver(db, actor="system")
+    src = _src(account_name="Imported Statement", last_four=None, institution="chase")
+    candidates = resolver._find_candidates(  # type: ignore[reportPrivateUsage]  # exercise fallback scoping
+        src, exclude_account_id="prov", fallback=True
+    )
+    assert {c.account_id for c in candidates} == {"acct_chase"}
+    assert all(c.signal == "institution" for c in candidates)
+
+
+def test_find_candidates_fallback_lists_all_when_institution_scope_empty(
+    db: Database,
+) -> None:
+    """Institution-scoping must never produce an empty pick-list when accounts exist.
+
+    The CSV-resolved institution slug often doesn't match dim_accounts'
+    institution_name (cross-source slug drift, or an account name polluting a
+    saved format's institution). When institution-scoping matches nothing,
+    fall through to listing all accounts — the whole point of the fallback is a
+    non-empty pick-list, so a mismatched scope must not re-create candidates: [].
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db, account_id="acct_wf1", display_name="WF Checking", institution_name="WF"
+    )
+    _seed_dim_account(
+        db, account_id="acct_wf2", display_name="WF Savings", institution_name="WF"
+    )
+    resolver = AccountResolver(db, actor="system")
+    # institution resolves to a slug that matches no dim account (WF vs the
+    # polluted "wf_checking_9940").
+    src = _src(
+        account_name="Imported Statement",
+        last_four=None,
+        institution="wf_checking_9940",
+    )
+    candidates = resolver._find_candidates(  # type: ignore[reportPrivateUsage]  # exercise scope-empty fallthrough
+        src, exclude_account_id="prov", fallback=True
+    )
+    assert {c.account_id for c in candidates} == {"acct_wf1", "acct_wf2"}
+    assert all(c.signal == "fallback" for c in candidates)
+
+
+def test_propose_surfaces_fallback_pick_list_at_gate(db: Database) -> None:
+    """propose(fallback=True) (the bare gate) returns existing accounts when nothing clears."""
+    create_core_tables(db)
+    _seed_dim_account(
+        db, account_id="acct_a", display_name="Chase Checking", institution_name="CHASE"
+    )
+    resolver = AccountResolver(db, actor="system")
+    proposal = resolver.propose(
+        _src(account_name="Imported Statement", last_four=None, institution=None),
+        fallback=True,
+    )
+    assert proposal.is_new is True
+    assert {c.account_id for c in proposal.candidates} == {"acct_a"}
+
+
+def test_propose_no_fallback_by_default_keeps_multi_account_mint_silent(
+    db: Database,
+) -> None:
+    """propose() default (multi-account gate) does NOT fall back to a pick-list.
+
+    A no-match named account in a multi-account file must mint silently, not gate
+    the whole import — so the default propose() returns no candidates here.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db, account_id="acct_a", display_name="Chase Checking", institution_name="CHASE"
+    )
+    resolver = AccountResolver(db, actor="system")
+    proposal = resolver.propose(
+        _src(account_name="Imported Statement", last_four=None, institution=None)
+    )
+    assert proposal.is_new is True
+    assert proposal.candidates == ()
+
+
+def test_propose_existing_does_not_flood_with_fallback(db: Database) -> None:
+    """Backfill returns None (no proposal) rather than an all-accounts fallback."""
+    create_core_tables(db)
+    _seed_dim_account(
+        db, account_id="acct_a", display_name="Chase Checking", institution_name="CHASE"
+    )
+    _seed_dim_account(
+        db, account_id="acct_b", display_name="Citi Savings", institution_name="CITI"
+    )
+    resolver = AccountResolver(db, actor="system")
+    assert resolver.propose_existing("acct_a") is None
+
+
 def test_mint_claims_full_number_strong_ref_for_later_adopt(db: Database) -> None:
     """A minted account claims its scoped full_number so a later source adopts it.
 

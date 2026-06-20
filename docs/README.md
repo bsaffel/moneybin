@@ -57,6 +57,7 @@ For builders. The first two links are the developer surface; the third is for en
 - **[Direct SQL access](guides/sql-access.md)** — Open the encrypted DuckDB file from the DuckDB CLI, a UI, or your own scripts.
 - **[Data model](reference/data-model.md)** — Schema reference (also linked under Daily use); use this when writing queries.
 - **[Data sources](reference/data-sources.md)** — Every supported import format and integration, what it preserves, where it lands.
+- **[Account matching](reference/account-matching.md)** — How records from different sources resolve to one canonical account: the identity signals used, where each comes from per format, and when MoneyBin asks you to confirm.
 
 ### Architecture orientation
 

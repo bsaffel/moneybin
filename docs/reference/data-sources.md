@@ -1,7 +1,7 @@
 <!-- Last reviewed: 2026-05-17 -->
 # Data Sources
 
-Every supported data source — what file formats and API integrations MoneyBin can ingest, what fields each preserves, where the data lands. For the how-to (running the import), see [`docs/guides/data-import.md`](../guides/data-import.md). For the resulting schema, see [`docs/reference/data-model.md`](data-model.md).
+Every supported data source — what file formats and API integrations MoneyBin can ingest, what fields each preserves, where the data lands. For the how-to (running the import), see [`docs/guides/data-import.md`](../guides/data-import.md). For the resulting schema, see [`docs/reference/data-model.md`](data-model.md). For how these sources resolve to one canonical account — which identity signal each format provides — see [`docs/reference/account-matching.md`](account-matching.md).
 
 Reference for engineers wiring automation against the import path and for migrants evaluating what MoneyBin can eat. Every claim below is verified against current source (loaders in `src/moneybin/loaders/`, extractors in `src/moneybin/extractors/`, format profiles in `src/moneybin/data/tabular_formats/`, raw schema in `src/moneybin/sql/schema/`).
 

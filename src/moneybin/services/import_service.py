@@ -1489,16 +1489,15 @@ class ImportService:
                     if l4 := _last4_from_account_number(value):
                         number_last4_by_key[native_key] = l4
                         break
-            source_accounts.append(
-                SourceAccount(
-                    source_type=source_type,
-                    source_origin=source_origin,
-                    source_account_key=native_key,
-                    account_name=placeholder_name,
-                    institution=institution,
-                    last_four=number_last4_by_key.get(native_key),
-                )
+            bare_src = SourceAccount(
+                source_type=source_type,
+                source_origin=source_origin,
+                source_account_key=native_key,
+                account_name=placeholder_name,
+                institution=institution,
+                last_four=number_last4_by_key.get(native_key),
             )
+            source_accounts.append(bare_src)
             # No binding answer yet → surface the no-candidate account
             # confirmation (no rows load). A later import_confirm with
             # --account-binding <native_key>=<account_id|new> re-enters here and
@@ -1514,15 +1513,15 @@ class ImportService:
                 source_type, source_origin, native_key
             ):
                 from moneybin.extractors.confidence import Confidence
-                from moneybin.services.account_resolution_types import (
-                    AccountProposal,
-                )
                 from moneybin.services.import_confirmation import (
                     ConfirmationRequired,
                     ImportConfirmationRequiredError,
                     ProposedMapping,
                 )
 
+                # propose() (read-only) surfaces a fallback pick-list of existing
+                # accounts so the gate isn't an empty candidates: [] forcing a raw
+                # account_id; matches the multi-account gate's shape.
                 raise ImportConfirmationRequiredError(
                     ConfirmationRequired(
                         channel="tabular",
@@ -1537,13 +1536,7 @@ class ImportService:
                         ),
                         reason="account_confirmation",
                         account_proposals=[
-                            AccountProposal(
-                                source_account_key=native_key,
-                                proposed_account_id=None,
-                                is_new=True,
-                                candidates=(),
-                                adopted_via=None,
-                            ).to_dict()
+                            resolver.propose(bare_src, fallback=True).to_dict()
                         ],
                     )
                 )

@@ -33,7 +33,10 @@ class AccountCandidate:
     account_id: str
     display_name: str
     confidence: float
-    signal: str  # "institution_last4" | "name"
+    # "institution_last4" | "name" | "institution" | "fallback". The last two are
+    # the interactive import gate's last-resort pick-list (existing accounts shown
+    # when no real signal cleared); never emitted on the backfill link queue.
+    signal: str
 
 
 @dataclass(frozen=True)

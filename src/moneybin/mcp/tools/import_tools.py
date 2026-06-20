@@ -1007,6 +1007,14 @@ def import_confirm(
             exc_info=True,
         )
 
+    # Complete the pending-file lifecycle: a file confirmed out of the inbox's
+    # pending/ bucket moves to processed/ and its .pending.yml sidecar is
+    # dropped (no-op for a path that never entered the inbox). Done after the
+    # sample_values re-read above, which still reads the file at `path`.
+    from moneybin.services.inbox_service import InboxService
+
+    InboxService.for_active_profile_no_db().archive_confirmed_file(path)
+
     return build_envelope(
         sensitivity="medium",
         data=ImportConfirmPayload(

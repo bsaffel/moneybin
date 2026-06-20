@@ -465,7 +465,9 @@ def test_bare_single_account_surfaces_account_confirmation(
             )
         outcome = exc.value.outcome
         assert outcome.reason == "account_confirmation"
-        # One no-candidate proposal carrying a stable, bindable source key.
+        # One proposal carrying a stable, bindable source key. No candidates here
+        # because dim_accounts is empty (first import) — nothing to pick from. The
+        # fallback pick-list is exercised in the next test, with accounts present.
         assert len(outcome.account_proposals) == 1
         proposal = outcome.account_proposals[0]
         assert proposal["source_account_key"].startswith("standard-")
@@ -474,6 +476,33 @@ def test_bare_single_account_surfaces_account_confirmation(
         # No rows loaded — the gate raised before transform/load.
         n = db.execute("SELECT COUNT(*) FROM raw.tabular_transactions").fetchone()
         assert n is not None and n[0] == 0
+    finally:
+        db.close()
+
+
+def test_bare_single_account_surfaces_fallback_candidates(
+    mock_secret_store: MagicMock, tmp_path: Path
+) -> None:
+    """Bare file WITH existing accounts: the gate offers them as a fallback pick-list.
+
+    Regression for the candidates: [] AX gap — a bare single-account import with no
+    last4/institution/name signal must still surface the user's existing accounts so
+    a human picks from a list instead of supplying a raw account_id.
+    """
+    db = _db(mock_secret_store, tmp_path)
+    try:
+        _seed_existing_account(
+            db, account_id="acct_existing1", display_name="Chase Checking"
+        )
+        svc = ImportService(db)
+        with pytest.raises(ImportConfirmationRequiredError) as exc:
+            svc.import_file(
+                _STANDARD_CSV, refresh=False, confirm=True, actor_kind="human"
+            )
+        proposal = exc.value.outcome.account_proposals[0]
+        cand_ids = [c["account_id"] for c in proposal["candidates"]]
+        assert cand_ids == ["acct_existing1"], proposal
+        assert proposal["is_new"] is True
     finally:
         db.close()
 

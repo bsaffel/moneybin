@@ -282,6 +282,45 @@ class InboxService:
         staging.rename(final)
         return final
 
+    def archive_confirmed_file(self, path: Path) -> Path | None:
+        """Archive a confirmed pending file to processed/ and drop its sidecar.
+
+        Completes the pending-file lifecycle after a successful ``import
+        confirm``, the same way :meth:`sync` archives inbox files on success.
+        No-ops (returns ``None``) when ``path`` is not inside the pending
+        bucket — a file passed directly to ``import_files`` that triggered
+        confirmation never entered the inbox buckets, so there is nothing to
+        archive — or when the file has already been moved.
+        """
+        if not path.resolve().is_relative_to(self.pending_dir.resolve()):
+            return None
+        if not path.exists():
+            return None
+        # Preserve the file's existing YYYY-MM bucket; fall back to the current
+        # month if it sat directly under pending/ with no month subdir.
+        parent_name = path.parent.name
+        year_month = (
+            parent_name
+            if _YEAR_MONTH_RE.fullmatch(parent_name)
+            else datetime.now(UTC).strftime("%Y-%m")
+        )
+        # The import already committed by the time we archive — this is
+        # best-effort cleanup, so a move failure must not surface as an import
+        # failure (mirrors sync()'s guarded move_to_outcome). Move first, then
+        # drop the now-derived sidecar, so a failed move never orphans it.
+        try:
+            moved = self.move_to_outcome(
+                path, outcome="processed", year_month=year_month
+            )
+        except OSError as move_err:
+            logger.warning(
+                f"Could not archive confirmed pending file to processed/: "
+                f"{move_err.__class__.__name__}"
+            )
+            return None
+        path.with_name(path.name + ".pending.yml").unlink(missing_ok=True)
+        return moved
+
     def _encode_staging_name(self, src: Path) -> str:
         """Reversibly encode src's inbox-relative path into a flat filename.
 
@@ -629,6 +668,10 @@ class InboxService:
         entry = _base_entry()
         entry["moved_to"] = str(moved.relative_to(self.root))
         entry["sidecar"] = str(sidecar.relative_to(self.root))
+        # Carry the (rekeyed) proposals in the envelope, not only the on-disk
+        # sidecar: a REST/MCP client can't read the sidecar, and a CLI/JSON
+        # consumer shouldn't have to. Same list the sidecar persists.
+        entry["account_proposals"] = pending_proposals
         result.pending.append(entry)
         INBOX_SYNC_TOTAL.labels(outcome="pending").inc()
         logger.info(log_line)
