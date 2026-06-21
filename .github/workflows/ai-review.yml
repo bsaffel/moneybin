@@ -28,7 +28,7 @@ jobs:
       issues: write
       id-token: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # Opt out of automated review for a specific push by putting [skip-review]
       # (or [skip review]) in the tip commit message — used when merging an
