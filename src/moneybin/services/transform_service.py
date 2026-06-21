@@ -128,8 +128,16 @@ class TransformService:
             except Exception as e:  # noqa: BLE001 — surface SQLMesh failure as structured result
                 elapsed = time.monotonic() - t0
                 error_type = type(e).__name__
+                # Envelope carries only the type name (str(e) can embed file
+                # paths / SQL fragments and may cross to a cloud LLM). The local
+                # log carries the full message + traceback so the failure is
+                # diagnosable via `moneybin logs` — SanitizedLogFormatter masks
+                # PII patterns there. Coherent with the match/categorize steps
+                # in refresh.py, which already log {exc} + exc_info.
                 logger.warning(
-                    f"SQLMesh transforms failed after {elapsed:.2f}s: {error_type}"
+                    f"SQLMesh transforms failed after {elapsed:.2f}s: "
+                    f"{error_type}: {e}",
+                    exc_info=True,
                 )
                 return ApplyResult(
                     applied=False, duration_seconds=elapsed, error=error_type

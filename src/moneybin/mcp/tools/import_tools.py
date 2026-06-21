@@ -763,6 +763,18 @@ def _import_confirm_bridge(
             f"the document; the {result.actual_row_count} reconciled rows were "
             f"loaded. Inspect the recipe if the difference is unexpected.",
         )
+
+    # Complete the pending-file lifecycle for a bridge-confirmed inbox PDF the
+    # same way the tabular confirm path does — otherwise a PDF that escalated
+    # through the inbox lingers in pending/ after a successful load. Only on
+    # the success path: an "invalid" outcome (handled above) loaded nothing, so
+    # the file must stay in pending/ for another attempt. No-op for a PDF
+    # passed directly to import_files (it never entered the inbox buckets).
+    from moneybin.services.inbox_service import (
+        InboxService,  # noqa: PLC0415 — defer import
+    )
+
+    InboxService.for_active_profile_no_db().archive_confirmed_file(path)
     return build_envelope(
         sensitivity="medium",
         data={
@@ -1006,6 +1018,16 @@ def import_confirm(
             "Could not build sample_values for import_confirm response",
             exc_info=True,
         )
+
+    # Complete the pending-file lifecycle: a file confirmed out of the inbox's
+    # pending/ bucket moves to processed/ and its .pending.yml sidecar is
+    # dropped (no-op for a path that never entered the inbox). Done after the
+    # sample_values re-read above, which still reads the file at `path`.
+    from moneybin.services.inbox_service import (
+        InboxService,  # noqa: PLC0415 — defer import
+    )
+
+    InboxService.for_active_profile_no_db().archive_confirmed_file(path)
 
     return build_envelope(
         sensitivity="medium",

@@ -282,6 +282,65 @@ class InboxService:
         staging.rename(final)
         return final
 
+    def archive_confirmed_file(self, path: Path) -> Path | None:
+        """Archive a confirmed pending file to processed/ and drop its sidecar.
+
+        Completes the pending-file lifecycle after a successful ``import
+        confirm``, the same way :meth:`sync` archives inbox files on success.
+        No-ops (returns ``None``) when ``path`` is not inside the pending
+        bucket — a file passed directly to ``import_files`` that triggered
+        confirmation never entered the inbox buckets, so there is nothing to
+        archive — or when the file has already been moved.
+        """
+        if not path.resolve().is_relative_to(self.pending_dir.resolve()):
+            return None
+        if not path.exists():
+            return None
+        # Preserve the file's existing YYYY-MM bucket; fall back to the current
+        # month if it sat directly under pending/ with no month subdir.
+        parent_name = path.parent.name
+        year_month = (
+            parent_name
+            if _YEAR_MONTH_RE.fullmatch(parent_name)
+            else datetime.now(UTC).strftime("%Y-%m")
+        )
+        # Move with a single direct rename, NOT via move_to_outcome: that
+        # helper encodes an inbox-relative staging name for crash recovery, but
+        # `path` lives under pending/, not inbox/. A leftover
+        # processed/staging-<name> would be decoded by recover_staging() as an
+        # inbox file and resurrected into inbox/ for re-import. A plain rename
+        # is atomic on one filesystem, so a crash leaves the file in pending/
+        # or at its destination — never a staging marker recovery misreads.
+        #
+        # The import already committed by the time we archive — this is
+        # best-effort cleanup, so a move failure must not surface as an import
+        # failure. Move first, then drop the now-derived sidecar, so a failed
+        # move never orphans it.
+        dest_dir = self.root / "processed" / year_month
+        try:
+            dest_dir.mkdir(parents=True, exist_ok=True, mode=_DIR_MODE)
+            dest_dir.chmod(_DIR_MODE)  # mkdir's mode is masked by umask
+            moved = self._next_available_path(dest_dir / path.name)
+            path.rename(moved)
+        except OSError as move_err:
+            logger.warning(
+                f"Could not archive confirmed pending file to processed/: "
+                f"{move_err.__class__.__name__}"
+            )
+            return None
+        # Sidecar removal is best-effort too: the import has committed and the
+        # file already moved, so a locked/transient sidecar must not surface as
+        # an import failure. A stale sidecar is harmless — its data file is gone
+        # from pending/, so it cannot drive a re-confirm loop.
+        try:
+            path.with_name(path.name + ".pending.yml").unlink(missing_ok=True)
+        except OSError as unlink_err:
+            logger.warning(
+                f"Could not remove confirmed pending sidecar: "
+                f"{unlink_err.__class__.__name__}"
+            )
+        return moved
+
     def _encode_staging_name(self, src: Path) -> str:
         """Reversibly encode src's inbox-relative path into a flat filename.
 
@@ -629,6 +688,10 @@ class InboxService:
         entry = _base_entry()
         entry["moved_to"] = str(moved.relative_to(self.root))
         entry["sidecar"] = str(sidecar.relative_to(self.root))
+        # Carry the (rekeyed) proposals in the envelope, not only the on-disk
+        # sidecar: a REST/MCP client can't read the sidecar, and a CLI/JSON
+        # consumer shouldn't have to. Same list the sidecar persists.
+        entry["account_proposals"] = pending_proposals
         result.pending.append(entry)
         INBOX_SYNC_TOTAL.labels(outcome="pending").inc()
         logger.info(log_line)

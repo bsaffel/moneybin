@@ -147,6 +147,14 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   removed after one minor release.
 
 ### Changed
+- **Inbox-sync pending entries now carry their account proposals in the response
+  envelope.** Each `account_confirmation` entry returned by `import_inbox_sync` /
+  `moneybin import inbox` now includes `account_proposals[]` (source key,
+  proposed account, and the candidate pick-list) directly in the response, not
+  only in the on-disk `.pending.yml` sidecar. A REST/MCP/CLI-JSON caller can now
+  render the pick-list and bind an account without reading the sidecar off disk;
+  the CLI human-readable output lists the candidate accounts inline instead of
+  pointing at the sidecar.
 - **`Database.__init__()` and `get_database()` now require `read_only` as a
   keyword-only argument.** The prior `read_only: bool = False` default is
   removed; every call site declares intent explicitly. This is the physical
@@ -219,11 +227,25 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   `account_bindings`, and no account-name column — previously failed with a
   `ValueError` (inbox: `failed/` with `needs_account_name`). It now returns the
   M1S.4 `confirmation_required` envelope (`reason="account_confirmation"`)
-  carrying a no-candidate proposal, answered through the existing `import_confirm`
+  carrying an account proposal, answered through the existing `import_confirm`
   account-binding channel (`account_bindings={source_key: account_id|"new"}` /
   `--account-binding`) or `--account-name`/`--account-id`. Inbox sync routes the
   file to `pending/` (recoverable) with an account-binding sidecar; the
   `needs_account_name` error code is retired.
+- **Bare-import account gate now offers a pick-list instead of a dead end.** When
+  a bare single-account file (no account number, no institution match) gates for
+  `account_confirmation`, the proposal previously carried `candidates: []` — the
+  confirmer was told to pick an account with nothing to pick from. The resolver
+  now supplies a **fallback** candidate list (the institution-scoped existing
+  accounts when the source's institution is known, otherwise all accounts, capped)
+  so the human or agent can adopt an existing account directly. These fallback
+  candidates are decision support only — they are never eligible for silent
+  auto-adopt, and confirming "new" still mints a standalone account.
+- **Confirmed pending files are now archived out of `pending/`.** A successful
+  `import confirm` (`import_confirm` / `moneybin import confirm`) that ratifies a
+  file sitting in `pending/` now moves the file to `processed/YYYY-MM/` and
+  removes its `.pending.yml` sidecar, matching inbox drain semantics. Previously
+  a confirmed file lingered in `pending/`, where a later sync could re-surface it.
 - **Cross-source account linking now actually fires (M1S.7).** `core.dim_accounts.last_four`
   is now derived from each source's native field (OFX `<ACCTID>` digits, Plaid
   `mask`, tabular account number/label) instead of being NULL for every

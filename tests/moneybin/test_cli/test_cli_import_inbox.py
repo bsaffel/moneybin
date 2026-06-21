@@ -173,6 +173,52 @@ def test_inbox_drain_json_output(runner: CliRunner, patch_inbox: MagicMock) -> N
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
     assert payload["data"]["processed"][0]["filename"] == "a.csv"
+    # No pending entries → only paths and counts → low.
+    assert payload["summary"]["sensitivity"] == "low"
+
+
+def test_inbox_drain_json_pending_is_medium_sensitivity(
+    runner: CliRunner, patch_inbox: MagicMock
+) -> None:
+    """Pending entries carry account display names — declare medium, not low.
+
+    The CLI has no privacy middleware, so the envelope's declared
+    ``summary.sensitivity`` is the only tier signal a JSON consumer sees. A
+    pending ``account_confirmation`` entry embeds ``account_proposals`` whose
+    candidates carry account display names (DESCRIPTION/medium), so the
+    envelope must declare medium — matching the MCP ``import_files`` rule
+    (medium when pending entries exist). A low envelope would ship account
+    names under a consent tier that doesn't gate them.
+    """
+    patch_inbox.sync.return_value = InboxSyncResult(
+        processed=[],
+        pending=[
+            {
+                "filename": "statement.csv",
+                "reason": "account_confirmation",
+                "tier": "high",
+                "moved_to": "pending/2026-05/statement.csv",
+                "sidecar": "pending/2026-05/statement.csv.pending.yml",
+                "account_proposals": [
+                    {
+                        "source_account_key": "csv:abcd",
+                        "candidates": [
+                            {
+                                "account_id": "9f8e7d6c5b4a",
+                                "display_name": "Wells Fargo Checking ••9940",
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+    )
+
+    result = runner.invoke(app, ["import", "inbox", "--output", "json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["summary"]["sensitivity"] == "medium"
 
 
 def test_inbox_list_prints_would_process(

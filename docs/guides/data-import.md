@@ -3,6 +3,12 @@
 
 MoneyBin ingests financial data from files you already have (CSV, TSV, Excel, Parquet, Feather, OFX/QFX/QBO) and from Plaid-connected banks. Every file lands in `raw.*`, flows through the SQLMesh pipeline into `core.fct_transactions` / `core.dim_accounts`, and is queryable by the CLI, MCP server, and any DuckDB client. This guide walks through the entry points by source tool and by file format, plus the housekeeping commands you'll reach for after the first import.
 
+> **How does MoneyBin know two files are the same account?** When you import the
+> same account from more than one source (a QFX and a CSV, history files plus
+> Plaid), MoneyBin collapses them into one canonical account and asks you to
+> confirm when it isn't sure. The full signal-by-signal breakdown — and what each
+> file format provides — is in [Account Matching](../reference/account-matching.md).
+
 ## Before you import
 
 You only need a profile and an initialized database to import. If you've already done `moneybin profile create` and `moneybin db init`, skip ahead. Otherwise:

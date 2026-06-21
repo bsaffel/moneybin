@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+from typing import Any
 
 import typer
 
@@ -47,11 +48,24 @@ def _print_sync_text(result: InboxSyncResult) -> None:
             typer.echo(
                 f"   Account identity needed — run 'moneybin import confirm "
                 f"{moved_to} --accept --account-binding <source_key>=<account_id|new>' "
-                "(--accept ratifies the settled mapping; or move the file into "
-                "inbox/<account-slug>/ and re-sync). "
-                "See the .pending.yml sidecar for the source key.",
+                "(=account_id adopts an existing account, =new mints one; or move "
+                "the file into inbox/<account-slug>/ and re-sync):",
                 err=True,
             )
+            raw_props: Any = item.get("account_proposals")
+            proposals: list[Any] = raw_props if isinstance(raw_props, list) else []
+            for p in proposals:
+                typer.echo(
+                    f"     source key: {p.get('source_account_key', '<source_key>')}",
+                    err=True,
+                )
+                raw_cands: Any = p.get("candidates")
+                cands: list[Any] = raw_cands if isinstance(raw_cands, list) else []
+                for c in cands:
+                    typer.echo(
+                        f"       {c.get('account_id')}  {c.get('display_name', '')}",
+                        err=True,
+                    )
         elif tier != "low":
             typer.echo(
                 f"   Run 'moneybin import confirm {moved_to} --accept' to ratify "
@@ -97,8 +111,15 @@ def inbox_default(
         from moneybin.cli.output import render_or_json
         from moneybin.protocol.envelope import build_envelope
 
+        # Pending entries carry detector proposals — account pick-lists whose
+        # candidates include account display names (DESCRIPTION/medium). The
+        # CLI has no privacy middleware, so the envelope's declared tier is the
+        # only sensitivity signal a JSON consumer sees; declare medium when any
+        # pending entry exists (mirrors the MCP import_files rule). Processed,
+        # failed, skipped, and ignored entries carry only paths and counts (low).
+        sensitivity = "medium" if result.pending else "low"
         render_or_json(
-            build_envelope(data=dataclasses.asdict(result), sensitivity="low"),
+            build_envelope(data=dataclasses.asdict(result), sensitivity=sensitivity),
             output,
             cli_actor="inbox_default",
         )

@@ -540,6 +540,80 @@ class TestSyncFailure:
         assert loaded["reason"] == "account_confirmation"
         assert any("--account-binding" in a for a in loaded["actions"])
 
+    def test_pending_entry_carries_account_proposals_in_envelope(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """inbox_sync's pending entry carries account_proposals (with candidates).
+
+        The candidate pick-list must ride in the response envelope, not only the
+        on-disk .pending.yml sidecar: a REST/MCP client can't read the sidecar,
+        and a CLI/JSON consumer shouldn't have to.
+        """
+        from typing import Any
+
+        from moneybin.extractors.confidence import Confidence
+        from moneybin.services import inbox_service as mod
+        from moneybin.services.account_resolution_types import AccountProposalDict
+        from moneybin.services.import_confirmation import (
+            ConfirmationRequired,
+            ImportConfirmationRequiredError,
+            ProposedMapping,
+        )
+
+        proposal: AccountProposalDict = {
+            "source_account_key": "unknown",
+            "proposed_account_id": "prov123",
+            "is_new": True,
+            "adopted_via": None,
+            "requires_confirm": True,
+            "candidates": [
+                {
+                    "account_id": "acct_a",
+                    "display_name": "WF CHECKING …4267",
+                    "confidence": 0.1,
+                    "signal": "fallback",
+                }
+            ],
+        }
+
+        class FakeImportService:
+            def __init__(self, db: object) -> None:
+                pass
+
+            def import_file(self, path: str, **kwargs: object) -> object:
+                raise ImportConfirmationRequiredError(
+                    ConfirmationRequired(
+                        channel="tabular",
+                        confidence=Confidence(
+                            score=1.0, tier="high", flagged=(), missing_required=()
+                        ),
+                        proposed=ProposedMapping(
+                            field_mapping={"Date": "transaction_date"},
+                            sample_values={},
+                            unmapped_columns=(),
+                        ),
+                        reason="account_confirmation",
+                        account_proposals=[proposal],
+                    )
+                )
+
+        monkeypatch.setattr(mod, "ImportService", FakeImportService)
+
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        (svc.inbox_dir / "unknown.csv").write_text("Date\n2026-05-01\n")
+
+        result = svc.sync(year_month="2026-05")
+
+        assert len(result.pending) == 1
+        entry = result.pending[0]
+        proposals: Any = entry["account_proposals"]
+        assert len(proposals) == 1
+        candidates: Any = proposals[0]["candidates"]
+        assert [c["account_id"] for c in candidates] == ["acct_a"]
+        assert candidates[0]["signal"] == "fallback"
+
     def test_unknown_error_uses_generic_code(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1187,3 +1261,134 @@ class TestSyncVanishedSource:
         assert entry["error_code"] == "import_error"
         assert "sidecar" not in entry  # no sidecar since file vanished
         assert not (svc.failed_dir / "2026-05" / "ghost.csv").exists()
+
+
+class TestArchiveConfirmedFile:
+    """archive_confirmed_file() archives a confirmed pending file to processed/."""
+
+    def test_moves_pending_file_to_processed_and_removes_sidecar(
+        self, tmp_path: Path, inbox_service: InboxService
+    ) -> None:
+        inbox_service.ensure_layout()
+        pending_month = inbox_service.pending_dir / "2026-06"
+        pending_month.mkdir(parents=True)
+        src = pending_month / "WF-BusinessChecking.csv"
+        src.write_text("a,b\n1,2\n")
+        sidecar = pending_month / "WF-BusinessChecking.csv.pending.yml"
+        sidecar.write_text("reason: account_confirmation\n")
+
+        final = inbox_service.archive_confirmed_file(src)
+
+        assert final is not None
+        assert (
+            final == inbox_service.processed_dir / "2026-06" / "WF-BusinessChecking.csv"
+        )
+        assert final.exists()
+        assert not src.exists()
+        assert not sidecar.exists()
+
+    def test_noops_for_path_outside_pending_bucket(
+        self, tmp_path: Path, inbox_service: InboxService
+    ) -> None:
+        inbox_service.ensure_layout()
+        # A file passed to import_files directly never entered the inbox buckets;
+        # confirming it must not move or delete anything.
+        outside = tmp_path / "elsewhere" / "foo.csv"
+        outside.parent.mkdir(parents=True)
+        outside.write_text("a,b\n1,2\n")
+
+        result = inbox_service.archive_confirmed_file(outside)
+
+        assert result is None
+        assert outside.exists()
+
+    def test_noops_when_file_already_gone(
+        self, tmp_path: Path, inbox_service: InboxService
+    ) -> None:
+        inbox_service.ensure_layout()
+        pending_month = inbox_service.pending_dir / "2026-06"
+        pending_month.mkdir(parents=True)
+        missing = pending_month / "vanished.csv"
+
+        result = inbox_service.archive_confirmed_file(missing)
+
+        assert result is None
+
+    def test_sidecar_cleanup_failure_does_not_fail_archive(
+        self,
+        tmp_path: Path,
+        inbox_service: InboxService,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A locked/transient sidecar must not turn a committed import to failure.
+
+        By the time ``archive_confirmed_file`` runs, the import has committed and
+        the file has moved to ``processed/``. A failure deleting the
+        ``.pending.yml`` sidecar is best-effort cleanup — it must be logged, not
+        raised, or the caller reports ``import confirm`` as failed with no data
+        file left at the pending path to retry.
+        """
+        inbox_service.ensure_layout()
+        pending_month = inbox_service.pending_dir / "2026-06"
+        pending_month.mkdir(parents=True)
+        src = pending_month / "stmt.csv"
+        src.write_text("a,b\n1,2\n")
+        sidecar = pending_month / "stmt.csv.pending.yml"
+        sidecar.write_text("reason: account_confirmation\n")
+
+        real_unlink = Path.unlink
+
+        def _unlink(self_path: Path, missing_ok: bool = False) -> None:
+            if self_path.name.endswith(".pending.yml"):
+                raise OSError("sidecar locked")
+            real_unlink(self_path, missing_ok=missing_ok)
+
+        monkeypatch.setattr(Path, "unlink", _unlink)
+        final = inbox_service.archive_confirmed_file(src)
+
+        assert final is not None
+        assert final.exists()  # file archived despite the sidecar failure
+        assert not src.exists()
+
+    def test_crash_mid_archive_does_not_resurrect_file_into_inbox(
+        self,
+        tmp_path: Path,
+        inbox_service: InboxService,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A crash before final placement must not push the file into inbox/.
+
+        ``archive_confirmed_file`` moves a file under ``pending/`` — not under
+        ``inbox/`` — so it must not use the inbox-relative staging format that
+        ``sync`` uses for crash recovery. If it did, a crash between the
+        staging rename and the final rename would leave a
+        ``processed/staging-<name>`` that ``recover_staging()`` decodes as an
+        inbox file and moves into ``inbox/``, re-importing an already-committed
+        file. A direct move leaves a failed archive in ``pending/`` and
+        produces no inbox-decodable staging artifact.
+        """
+        inbox_service.ensure_layout()
+        pending_month = inbox_service.pending_dir / "2026-06"
+        pending_month.mkdir(parents=True)
+        src = pending_month / "stmt.csv"
+        src.write_text("a,b\n1,2\n")
+
+        # Crash just before the final placement under processed/YYYY-MM/, after
+        # any intermediate rename. Old staging-based code leaves a recoverable
+        # staging-* file; the direct move leaves the file in pending/.
+        real_rename = Path.rename
+
+        def _crash_on_final(self_path: Path, target: Path) -> Path:
+            if Path(target).parent.name == "2026-06":
+                raise OSError("crash before final placement")
+            return real_rename(self_path, target)
+
+        monkeypatch.setattr(Path, "rename", _crash_on_final)
+        result = inbox_service.archive_confirmed_file(src)
+        monkeypatch.undo()
+
+        assert result is None
+        assert src.exists()  # stayed in pending/, not lost
+        recovered = inbox_service.recover_staging()
+        assert recovered == []
+        assert not list(inbox_service.inbox_dir.rglob("*"))

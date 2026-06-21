@@ -71,6 +71,13 @@ def fetch_display_name(db: Database, account_id: str) -> str:
     return str(row[0]) if row and row[0] is not None else ""
 
 
+# Cap on the fallback pick-list (existing accounts surfaced for the human to pick
+# from when no real signal cleared). Bounds an otherwise-unbounded "list all
+# accounts" so a large book doesn't dump everything; a personal-finance user
+# rarely exceeds this.
+_FALLBACK_CANDIDATE_CAP = 25
+
+
 @dataclass(frozen=True)
 class _Candidate:
     """A weak-signal candidate for a pending merge proposal.
@@ -80,7 +87,7 @@ class _Candidate:
     """
 
     account_id: str
-    signal: str  # "institution_last4" | "name"
+    signal: str  # "institution_last4" | "name" | "institution" | "fallback"
     value: str
     confidence: float
 
@@ -190,13 +197,24 @@ class AccountResolver:
             outcome="pending_review",
         )
 
-    def propose(self, src: SourceAccount) -> AccountProposal:
+    def propose(self, src: SourceAccount, *, fallback: bool = False) -> AccountProposal:
         """Compute the resolver verdict without writing anything (read-only preview).
 
-        Mirrors the resolve() ladder exactly — explicit binding, strong ref,
-        candidate pass — but performs no writes: no mint is persisted, no
-        account_links row is inserted, no account_link_decisions row is created.
-        Safe to call at any point in the import flow, including before confirm.
+        Follows the resolve() ladder — explicit binding, strong ref, candidate
+        pass — but performs no writes: no mint is persisted, no account_links row
+        is inserted, no account_link_decisions row is created. Safe to call at any
+        point in the import flow, including before confirm.
+
+        ``fallback`` (default False) controls the candidate pass only. When True,
+        a candidate pass that finds no real last4/name match still returns a
+        decision-support pick-list of existing accounts (see _fallback_candidates)
+        instead of an empty set. Only the bare single-account import gate opts in
+        — there is genuinely no signal there, so an empty pick-list would force a
+        raw account id. The multi-account gate leaves it False: a no-match named
+        account mints a new standalone account (it never auto-merges), and turning
+        on fallback there would gate every fresh multi-account import. resolve()
+        never uses fallback, so these candidates are preview-only — confirming
+        "new" still mints.
 
         The proposed_account_id in the mint path (is_new=True) is a preview id
         (uuid4[:12]) that is NOT written anywhere; resolve() will produce a
@@ -231,8 +249,13 @@ class AccountResolver:
                 adopted_via="explicit",
             )
         # Step 2 - candidate pass. Mint a preview id (NOT written anywhere).
+        # fallback is caller-controlled (see docstring): the bare single-account
+        # gate opts in for a decision-support pick-list; the multi-account gate
+        # leaves it off so a no-match named account still mints silently.
         preview_id = uuid.uuid4().hex[:12]
-        raw_candidates = self._find_candidates(src, exclude_account_id=preview_id)
+        raw_candidates = self._find_candidates(
+            src, exclude_account_id=preview_id, fallback=fallback
+        )
         candidates = tuple(
             AccountCandidate(
                 account_id=c.account_id,
@@ -456,12 +479,18 @@ class AccountResolver:
             )
 
     def _find_candidates(
-        self, src: SourceAccount, *, exclude_account_id: str
+        self, src: SourceAccount, *, exclude_account_id: str, fallback: bool = False
     ) -> list[_Candidate]:
         """Weak-signal candidates from core.dim_accounts (institution+last4, then name).
 
         Each is a review proposal, never an auto-merge. Returns no candidates if
         core.dim_accounts is not yet materialized (first import before any transform).
+
+        ``fallback`` (interactive import gate only — never the backfill link
+        queue): when no last4/name signal clears, surface existing accounts as a
+        low-confidence pick-list so the human picks from a list instead of an
+        empty set. Off by default so ``accounts_links_run`` isn't flooded with an
+        all-accounts proposal for every provisional account.
         """
         try:
             out: list[_Candidate] = []
@@ -526,7 +555,54 @@ class AccountResolver:
                     for c in result.candidates
                     if c["account_id"]
                 )
+            if not out and fallback:
+                out = self._fallback_candidates(src, exclude_account_id)
             return out
         except duckdb.CatalogException:
             logger.debug("core.dim_accounts unavailable; no candidates")
             return []
+
+    def _fallback_candidates(
+        self, src: SourceAccount, exclude_account_id: str
+    ) -> list[_Candidate]:
+        """Existing accounts as a last-resort review pick-list (gate only).
+
+        Reached when no last4/name signal cleared. Prefers an institution-scoped
+        list (signal ``institution``) when the source resolved an institution
+        that matches existing accounts; otherwise lists all accounts (signal
+        ``fallback``). Capped at ``_FALLBACK_CANDIDATE_CAP``. Always low
+        confidence and review-only — never auto-adopted ("magic stays visible").
+
+        Institution-scoping must never *shrink* the list to empty: the
+        CSV-resolved institution slug frequently doesn't match
+        ``dim_accounts.institution_name`` (cross-source slug drift, or an
+        account name polluting a saved format's institution). When the scoped
+        pass matches nothing, fall through to all accounts — the entire point of
+        the fallback is a non-empty pick-list, so a mismatched scope must not
+        recreate ``candidates: []``.
+        """
+        rows = self._db.execute(
+            f"SELECT account_id, institution_name FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef + parameterized value
+            "WHERE account_id != ? ORDER BY institution_name, account_id",
+            [exclude_account_id],
+        ).fetchall()
+        target_inst = slugify(src.institution) if src.institution else None
+        if target_inst:
+            scoped = [
+                _Candidate(
+                    account_id=str(r[0]),
+                    signal="institution",
+                    value=target_inst,
+                    confidence=0.2,
+                )
+                for r in rows
+                if r[1] and slugify(str(r[1])) == target_inst
+            ]
+            if scoped:
+                return scoped[:_FALLBACK_CANDIDATE_CAP]
+        return [
+            _Candidate(
+                account_id=str(r[0]), signal="fallback", value="", confidence=0.1
+            )
+            for r in rows
+        ][:_FALLBACK_CANDIDATE_CAP]

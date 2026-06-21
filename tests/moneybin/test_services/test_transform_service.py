@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Generator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -240,6 +241,54 @@ def test_apply_soft_fails_with_error_type_on_sqlmesh_exception(
     assert result.applied is False
     assert result.error == "RuntimeError"
     assert result.duration_seconds >= 0
+
+
+def test_apply_logs_exception_message_for_debuggability(
+    tmp_path: Path,
+    mock_secret_store: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """apply() logs the exception MESSAGE so failures are diagnosable.
+
+    The envelope stays type-name-only for privacy (locked by the test above),
+    but the local log — PII-masked by SanitizedLogFormatter — must carry the
+    detail. Without this, a `SQLMeshError` (e.g. a version-migration prompt)
+    is invisible everywhere and undebuggable. Coherent with the match/
+    categorize steps in refresh.py, which already log ``{exc}`` + exc_info.
+    """
+    from contextlib import contextmanager
+
+    detail = "version '0.235.3' ahead of '0.234.1'; run a migration"
+
+    @contextmanager
+    def fake_sqlmesh_context(_db: Database):  # type: ignore[no-untyped-def]
+        raise RuntimeError(detail)
+        yield  # unreachable; satisfies the contextmanager generator contract
+
+    def fake_seed(_self: object) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "moneybin.services.transform_service.sqlmesh_context",
+        fake_sqlmesh_context,
+    )
+    monkeypatch.setattr(
+        "moneybin.services.matching_service.MatchingService.seed_priority",
+        fake_seed,
+    )
+
+    db = _open_db(tmp_path, mock_secret_store)
+    try:
+        with caplog.at_level(
+            logging.WARNING, logger="moneybin.services.transform_service"
+        ):
+            result = TransformService(db).apply()
+    finally:
+        db.close()
+
+    assert result.error == "RuntimeError"  # envelope contract unchanged
+    assert detail in caplog.text  # the message reached the log
 
 
 def test_import_service_run_transforms_delegates_to_transform_service(
