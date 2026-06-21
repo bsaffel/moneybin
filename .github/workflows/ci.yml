@@ -183,10 +183,14 @@ jobs:
         run: uv run pytest tests/ -m integration -v --durations=25
 
   test-e2e:
-    name: E2E tests
+    name: E2E tests (shard ${{ matrix.group }})
     needs: [changes]
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [1, 2]
     steps:
       - uses: actions/checkout@v7
 
@@ -203,5 +207,13 @@ jobs:
           curl -fsSL https://install.duckdb.org | sh
           echo "$HOME/.duckdb/cli/latest" >> $GITHUB_PATH
 
+      # Shard the e2e suite with pytest-split, same pattern as test-unit.
+      # 2-way is enough: overall PR time is floored by the ~5 min Scenarios
+      # workflow, so halving e2e (~6 min -> ~3 min) already clears it. Count-
+      # based split is fine -- e2e tests are uniform and this job no longer
+      # gates the critical path. No coverage here, so no combine job.
       - name: Test
-        run: uv run pytest tests/ -m e2e -v --durations=25
+        run: |
+          uv run pytest tests/ -m e2e -v \
+            --splits ${{ strategy.job-total }} --group ${{ matrix.group }} \
+            --durations=25
