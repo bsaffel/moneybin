@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 import yaml
 
+from moneybin.connectors.sync_client import SyncAPIError
 from moneybin.connectors.sync_models import (
     ConnectedInstitution,
     ConnectInitiateResponse,
@@ -65,6 +66,9 @@ def test_pull_happy_path(
         reset_cursor=False,
     )
     mock_client.get_data.assert_called_once_with(sync_data.metadata.job_id)
+    # Canonical happy-path witness also asserts the ack, so an accidental removal
+    # of the cursor-ack call is caught here, not only in the dedicated ack test.
+    mock_client.ack.assert_called_once_with(sync_data.metadata.job_id)
     assert result.transactions_loaded == 3
     assert result.accounts_loaded == 2
     assert result.balances_loaded == 2
@@ -73,6 +77,47 @@ def test_pull_happy_path(
     # PullResult.transactions_removed reflects rows touched, not IDs requested.
     assert result.transactions_removed == 0
     assert result.institutions[0].provider_item_id == "item_chase_abc"
+
+
+def test_pull_acks_after_successful_load(
+    mock_client: MagicMock,
+    db: Database,
+    loader: PlaidExtractor,
+    sync_data: SyncDataResponse,
+) -> None:
+    """A successful pull acks the broker so it advances cursors.
+
+    Ack is unconditional once the load is durable — it persists the broker's
+    held cursors and releases the served window. The job_id passed is the
+    trigger response's job_id.
+    """
+    service = SyncService(client=mock_client, db=db, loader=loader)
+    service.pull()
+    mock_client.ack.assert_called_once_with(sync_data.metadata.job_id)
+
+
+def test_pull_ack_failure_does_not_fail_the_pull(
+    mock_client: MagicMock,
+    db: Database,
+    loader: PlaidExtractor,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An ack failure soft-fails: raw data stays loaded, pull succeeds.
+
+    Ack is best-effort post-load: the data is already durable, so a broker
+    blip just leaves the cursor un-advanced and the next pull re-pulls and
+    dedups — loss-free. The failure must not flip the pull's success
+    accounting or raise.
+    """
+    mock_client.ack.side_effect = SyncAPIError("broker unreachable")
+    service = SyncService(client=mock_client, db=db, loader=loader)
+    with caplog.at_level("WARNING"):
+        result = service.pull()
+
+    assert result.transactions_loaded == 3
+    assert result.accounts_loaded == 2
+    assert result.balances_loaded == 2
+    assert any("ack" in r.message.lower() for r in caplog.records)
 
 
 def test_pull_with_institution_resolves_to_provider_item_id(

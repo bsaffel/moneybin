@@ -128,6 +128,19 @@ class SyncService:
             SYNC_PULL_TRANSACTIONS_LOADED.labels(provider=_PROVIDER).inc(
                 load_result.transactions_loaded
             )
+            # Ack the broker so it advances its per-institution cursors. Done
+            # unconditionally once the load is durable (even an empty completed
+            # sync advanced cursors broker-side; acking persists them and frees
+            # the held window). Best-effort: the data is already durable, so an
+            # ack failure (network blip, broker 5xx/410) just leaves the cursor
+            # un-advanced — the next pull re-pulls from it and the loader dedups,
+            # loss-free. So a failure must not flip this pull's success.
+            try:
+                self.client.ack(trigger_resp.job_id)
+            except Exception as e:  # noqa: BLE001  # best-effort post-load ack
+                logger.warning(
+                    f"Ack failed after pull (job_id={trigger_resp.job_id}): {e}"
+                )
             # Populate app.account_links for each synced account (mirrors the
             # import path, A6/A7). Best-effort: raw rows are already durable and
             # this pull has been counted a success, so a resolver failure must
