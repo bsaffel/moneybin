@@ -12,7 +12,10 @@ from pathlib import Path
 
 import polars as pl
 
-from moneybin.extractors.tabular.date_detection import detect_date_format
+from moneybin.extractors.tabular.date_detection import (
+    detect_date_format,
+    parse_amount_str,
+)
 from moneybin.extractors.tabular.format_detector import FormatInfo
 
 logger = logging.getLogger(__name__)
@@ -197,14 +200,8 @@ def _detect_header(path: Path, encoding: str, delimiter: str) -> tuple[int, bool
     except OSError:
         return 0, True
 
-    # Collect qualifying rows up front, then look for a real header before
-    # falling back to headerless. A header reads as labels (low numeric ratio)
-    # and does not itself parse as a transaction (no date+amount), so scanning
-    # the whole window for one skips any number of data-like preamble rows —
-    # opening/closing-balance summary lines — sitting above the header instead
-    # of mistaking the first of them for a headerless table. Only when no
-    # header row exists is the file genuinely headerless: the Wells Fargo case,
-    # where every row leads with a date and so none reads as a header.
+    # Two passes (see docstring): find a label row followed by data, else fall
+    # back to the first data row as headerless.
     qualifying: list[tuple[int, list[str]]] = []
     for i, line in enumerate(lines):
         if not line.strip():
@@ -237,58 +234,59 @@ def _detect_header(path: Path, encoding: str, delimiter: str) -> tuple[int, bool
 def _looks_like_data_row(cells: list[str]) -> bool:
     """Return True if a row already parses as a transaction record.
 
-    A genuine data row carries both a parseable date and a numeric amount; a
+    A genuine data row carries both a parseable date and a parseable amount; a
     header row carries neither (``Date``/``Amount`` are labels, not values).
     Used to detect headerless files before the first row is consumed as a
-    header. Reuses ``detect_date_format`` so date recognition stays coherent
-    with the rest of the tabular pipeline.
+    header. Reuses ``detect_date_format`` and ``parse_amount_str`` so date and
+    amount recognition stay coherent with the rest of the tabular pipeline.
 
     Args:
         cells: Non-empty, unquoted cell strings from one row.
 
     Returns:
-        True when at least one cell is a date and at least one is numeric.
+        True when at least one cell is a date and at least one is an amount.
     """
     has_date = any(detect_date_format([c])[0] is not None for c in cells)
-    has_amount = any(_is_numeric(c) for c in cells)
+    has_amount = any(_is_amount(c) for c in cells)
     return has_date and has_amount
 
 
 def _looks_like_header(cells: list[str]) -> bool:
     """Return True if a row reads as a header rather than a data record.
 
-    A header carries mostly non-numeric labels (``Date``, ``Amount``,
-    ``Description``), so its numeric ratio is low. Mirrors the inline header
-    test in ``_detect_header`` so the peek-ahead and the main scan agree.
+    A header carries mostly non-amount labels (``Date``, ``Amount``,
+    ``Description``), so few of its cells parse as amounts.
 
     Args:
         cells: Non-empty, unquoted cell strings from one row.
 
     Returns:
-        True when the row has at least two cells and fewer than half are
-        numeric.
+        True when the row has at least two cells and fewer than half parse as
+        amounts.
     """
     if len(cells) < 2:
         return False
-    numeric_count = sum(1 for c in cells if _is_numeric(c))
-    return numeric_count / len(cells) < 0.5
+    amount_count = sum(1 for c in cells if _is_amount(c))
+    return amount_count / len(cells) < 0.5
 
 
-def _is_numeric(s: str) -> bool:
-    """Return True if the string represents a numeric value.
+def _is_amount(s: str) -> bool:
+    """Return True if the string parses as a transaction amount.
+
+    Reuses ``parse_amount_str`` — the importer's amount parser — so header
+    detection recognizes exactly the formats the loader does: parentheses
+    negatives (``(42.50)``), DR/CR suffixes, currency symbols, and thousands
+    separators, not a narrower float-only subset. Probes with the ``us``
+    convention (as ``column_mapper`` does); the boolean result is
+    format-agnostic, since european-formatted values still parse non-None.
 
     Args:
-        s: String to test.
+        s: Cell string to test.
 
     Returns:
-        True if parseable as a float after stripping currency symbols.
+        True if the cell parses as an amount.
     """
-    s = s.replace(",", "").replace("$", "").replace("€", "").strip()
-    try:
-        float(s)
-        return True
-    except ValueError:
-        return False
+    return parse_amount_str(s, "us") is not None
 
 
 def _remove_trailing_rows(

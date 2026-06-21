@@ -915,7 +915,9 @@ def import_confirm_command(
     # Confirmed out of the inbox's pending/ bucket → archive to processed/ and
     # drop the .pending.yml sidecar (no-op for a path that never entered the
     # inbox, e.g. a file passed directly to `import files`).
-    from moneybin.services.inbox_service import InboxService  # noqa: PLC0415
+    from moneybin.services.inbox_service import (
+        InboxService,  # noqa: PLC0415 — defer import
+    )
 
     InboxService.for_active_profile_no_db().archive_confirmed_file(file_path)
 

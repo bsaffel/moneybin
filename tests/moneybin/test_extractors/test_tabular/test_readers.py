@@ -115,6 +115,31 @@ class TestCSVReader:
         assert len(result.df) == 2
         assert result.skip_rows == 2
 
+    def test_parenthesized_amount_rows_recognized_in_header_scan(
+        self, tmp_path: Path
+    ) -> None:
+        """Header detection must recognize the amount formats the importer does.
+
+        The loader's ``parse_amount_str`` accepts ``(42.50)`` as a negative, but
+        a narrower float check does not. If header detection can't see those as
+        amounts, a summary preamble carrying a parenthesized amount above the
+        real header is not classified as data, the follow-by-data gate refuses
+        the real header, and the file falls back to treating the preamble as the
+        header. Recognizing the amount keeps the real header winning.
+        """
+        f = _write_csv(
+            tmp_path / "paren.csv",
+            "2026-01-01,(100.00)\n"
+            "Date,Amount,Description\n"
+            "2026-01-02,(42.50),Refund\n"
+            "2026-01-03,(10.00),Fee\n",
+        )
+        info = FormatInfo(file_type="csv", delimiter=",", encoding="utf-8")
+        result = read_file(f, info)
+        assert list(result.df.columns) == ["Date", "Amount", "Description"]
+        assert len(result.df) == 2
+        assert result.skip_rows == 1
+
     def test_headerless_with_footer_not_mistaken_for_header(
         self, tmp_path: Path
     ) -> None:
