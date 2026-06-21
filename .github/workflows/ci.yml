@@ -108,6 +108,9 @@ jobs:
       - name: Test
         env:
           COVERAGE_FILE: .coverage.${{ matrix.group }}
+          # sys.monitoring-based coverage (PEP 669) on Python 3.12 — far lower
+          # tracing overhead than the default C tracer. Needs coverage >= 7.4.
+          COVERAGE_CORE: sysmon
         run: |
           uv run pytest tests/ -m unit -v \
             --splits ${{ strategy.job-total }} --group ${{ matrix.group }} \
