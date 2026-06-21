@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import httpx
@@ -14,7 +15,7 @@ from moneybin.connectors.sync_client import (
     SyncClient,
 )
 from moneybin.connectors.sync_errors import SyncAuthError, SyncConnectError
-from moneybin.connectors.sync_models import SyncDataResponse
+from moneybin.connectors.sync_models import SyncAckResponse, SyncDataResponse
 
 
 @pytest.fixture
@@ -440,3 +441,18 @@ def test_get_data_returns_parsed_sync_data(sync_client: SyncClient) -> None:
     assert isinstance(result, SyncDataResponse)
     assert result.metadata.job_id == "job-abc"
     assert len(result.transactions) == 1
+
+
+@respx.mock
+def test_ack_posts_job_id_and_returns_ack_response(sync_client: SyncClient) -> None:
+    sync_client._store_tokens(access_token="jwt", refresh_token="r")  # type: ignore[reportPrivateUsage]  # noqa: S106  # test fixture, not a real credential
+    route = respx.post("https://test.api/sync/ack").mock(
+        return_value=httpx.Response(200, json={"job_id": "job-123", "status": "acked"})
+    )
+
+    result = sync_client.ack("job-123")
+
+    assert isinstance(result, SyncAckResponse)
+    assert result.job_id == "job-123"
+    assert result.status == "acked"
+    assert json.loads(route.calls.last.request.content) == {"job_id": "job-123"}

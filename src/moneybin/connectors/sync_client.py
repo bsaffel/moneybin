@@ -41,6 +41,7 @@ from moneybin.connectors.sync_models import (
     ConnectedInstitution,
     ConnectInitiateResponse,
     ConnectStatusResponse,
+    SyncAckResponse,
     SyncDataResponse,
     SyncTriggerResponse,
 )
@@ -397,10 +398,24 @@ class SyncClient:
         return SyncTriggerResponse.model_validate(resp.json())
 
     def get_data(self, job_id: str) -> SyncDataResponse:
-        """GET /sync/data — one-shot read; server deletes from TTL store after."""
+        """GET /sync/data — re-readable until ack or the broker's hold TTL expires.
+
+        Reading does not advance cursors or drop the window; the broker holds the
+        sync's data until POST /sync/ack confirms a durable load (or the TTL lapses).
+        """
         resp = self._authed_request(
             "GET",
             "/sync/data",
             params={"job_id": job_id},
         )
         return SyncDataResponse.model_validate(resp.json())
+
+    def ack(self, job_id: str) -> SyncAckResponse:
+        """POST /sync/ack — confirm durable load so the broker advances cursors.
+
+        Idempotent: a re-ack of an already-acked job is a no-op 200. Until the
+        client acks, the broker holds the sync's advanced cursors and re-serves
+        the data, so a crash before ack yields a loss-free re-pull.
+        """
+        resp = self._authed_request("POST", "/sync/ack", json_body={"job_id": job_id})
+        return SyncAckResponse.model_validate(resp.json())
