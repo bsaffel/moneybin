@@ -53,6 +53,13 @@ class SyncTriggerResponse(BaseModel):
     transaction_count: int | None = None
 
 
+class SyncAckResponse(BaseModel):
+    """Response from POST /sync/ack."""
+
+    job_id: str
+    status: Literal["acked"]
+
+
 class SyncAccount(BaseModel):
     """One account entry in GET /sync/data response."""
 
