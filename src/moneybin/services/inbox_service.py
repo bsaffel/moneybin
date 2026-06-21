@@ -304,14 +304,24 @@ class InboxService:
             if _YEAR_MONTH_RE.fullmatch(parent_name)
             else datetime.now(UTC).strftime("%Y-%m")
         )
+        # Move with a single direct rename, NOT via move_to_outcome: that
+        # helper encodes an inbox-relative staging name for crash recovery, but
+        # `path` lives under pending/, not inbox/. A leftover
+        # processed/staging-<name> would be decoded by recover_staging() as an
+        # inbox file and resurrected into inbox/ for re-import. A plain rename
+        # is atomic on one filesystem, so a crash leaves the file in pending/
+        # or at its destination — never a staging marker recovery misreads.
+        #
         # The import already committed by the time we archive — this is
         # best-effort cleanup, so a move failure must not surface as an import
-        # failure (mirrors sync()'s guarded move_to_outcome). Move first, then
-        # drop the now-derived sidecar, so a failed move never orphans it.
+        # failure. Move first, then drop the now-derived sidecar, so a failed
+        # move never orphans it.
+        dest_dir = self.root / "processed" / year_month
         try:
-            moved = self.move_to_outcome(
-                path, outcome="processed", year_month=year_month
-            )
+            dest_dir.mkdir(parents=True, exist_ok=True, mode=_DIR_MODE)
+            dest_dir.chmod(_DIR_MODE)  # mkdir's mode is masked by umask
+            moved = self._next_available_path(dest_dir / path.name)
+            path.rename(moved)
         except OSError as move_err:
             logger.warning(
                 f"Could not archive confirmed pending file to processed/: "

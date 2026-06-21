@@ -111,8 +111,15 @@ def inbox_default(
         from moneybin.cli.output import render_or_json
         from moneybin.protocol.envelope import build_envelope
 
+        # Pending entries carry detector proposals — account pick-lists whose
+        # candidates include account display names (DESCRIPTION/medium). The
+        # CLI has no privacy middleware, so the envelope's declared tier is the
+        # only sensitivity signal a JSON consumer sees; declare medium when any
+        # pending entry exists (mirrors the MCP import_files rule). Processed,
+        # failed, skipped, and ignored entries carry only paths and counts (low).
+        sensitivity = "medium" if result.pending else "low"
         render_or_json(
-            build_envelope(data=dataclasses.asdict(result), sensitivity="low"),
+            build_envelope(data=dataclasses.asdict(result), sensitivity=sensitivity),
             output,
             cli_actor="inbox_default",
         )

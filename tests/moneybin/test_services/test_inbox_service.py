@@ -1313,3 +1313,46 @@ class TestArchiveConfirmedFile:
         result = inbox_service.archive_confirmed_file(missing)
 
         assert result is None
+
+    def test_crash_mid_archive_does_not_resurrect_file_into_inbox(
+        self,
+        tmp_path: Path,
+        inbox_service: InboxService,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A crash before final placement must not push the file into inbox/.
+
+        ``archive_confirmed_file`` moves a file under ``pending/`` — not under
+        ``inbox/`` — so it must not use the inbox-relative staging format that
+        ``sync`` uses for crash recovery. If it did, a crash between the
+        staging rename and the final rename would leave a
+        ``processed/staging-<name>`` that ``recover_staging()`` decodes as an
+        inbox file and moves into ``inbox/``, re-importing an already-committed
+        file. A direct move leaves a failed archive in ``pending/`` and
+        produces no inbox-decodable staging artifact.
+        """
+        inbox_service.ensure_layout()
+        pending_month = inbox_service.pending_dir / "2026-06"
+        pending_month.mkdir(parents=True)
+        src = pending_month / "stmt.csv"
+        src.write_text("a,b\n1,2\n")
+
+        # Crash just before the final placement under processed/YYYY-MM/, after
+        # any intermediate rename. Old staging-based code leaves a recoverable
+        # staging-* file; the direct move leaves the file in pending/.
+        real_rename = Path.rename
+
+        def _crash_on_final(self_path: Path, target: Path) -> Path:
+            if Path(target).parent.name == "2026-06":
+                raise OSError("crash before final placement")
+            return real_rename(self_path, target)
+
+        monkeypatch.setattr(Path, "rename", _crash_on_final)
+        result = inbox_service.archive_confirmed_file(src)
+        monkeypatch.undo()
+
+        assert result is None
+        assert src.exists()  # stayed in pending/, not lost
+        recovered = inbox_service.recover_staging()
+        assert recovered == []
+        assert not list(inbox_service.inbox_dir.rglob("*"))
