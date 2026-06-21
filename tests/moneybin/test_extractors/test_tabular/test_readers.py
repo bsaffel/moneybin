@@ -90,6 +90,31 @@ class TestCSVReader:
         assert len(result.df) == 2
         assert result.skip_rows == 1
 
+    def test_multiple_summary_rows_above_header_not_headerless(
+        self, tmp_path: Path
+    ) -> None:
+        """Several data-like preamble rows above the header are all skipped.
+
+        A statement can carry both an opening-balance and a closing-balance
+        line (each a date + amount, so each looks like data) before the real
+        header. A single-row peek isn't enough — the scan must look past every
+        data-like preamble row and still find the ``Date,Amount,Description``
+        header, skipping both summary lines.
+        """
+        f = _write_csv(
+            tmp_path / "two_summary.csv",
+            "2026-01-01,100.00\n"
+            "2026-01-31,150.00\n"
+            "Date,Amount,Description\n"
+            "2026-01-02,42.50,Coffee\n"
+            "2026-01-03,10.00,Tea\n",
+        )
+        info = FormatInfo(file_type="csv", delimiter=",", encoding="utf-8")
+        result = read_file(f, info)
+        assert list(result.df.columns) == ["Date", "Amount", "Description"]
+        assert len(result.df) == 2
+        assert result.skip_rows == 2
+
     def test_bom_handled(self, tmp_path: Path) -> None:
         f = tmp_path / "bom.csv"
         f.write_bytes(b"\xef\xbb\xbfDate,Amount\n2026-01-01,42.50\n")

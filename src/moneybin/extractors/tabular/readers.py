@@ -158,16 +158,20 @@ def _read_text(
 def _detect_header(path: Path, encoding: str, delimiter: str) -> tuple[int, bool]:
     """Locate the header row, or determine the file is headerless.
 
-    Scans the first content row (after any preamble) and classifies it:
+    Scans up to the first 30 content rows and decides between two outcomes:
 
-    - If it already parses as a data record — a real date plus a numeric
-      amount — the file is **headerless**. Returns ``(row_index, False)`` so
-      the reader keeps that row instead of consuming it as a header. This is
+    - **Header present.** The first row that reads as labels (low numeric
+      ratio) and does *not* itself parse as a transaction is the header.
+      Returns ``(row_index, True)``. Scanning the whole window means any
+      number of data-like preamble rows above the header — opening- and
+      closing-balance summary lines such as ``2026-01-01,100.00`` — are
+      skipped rather than mistaken for the first row of a headerless file.
+    - **Headerless.** When no row reads as a header, the first row that
+      parses as a data record (date plus numeric amount) starts the data.
+      Returns ``(row_index, False)`` so the reader keeps that row. This is
       the Wells Fargo case: ``Date,Amount,*,,Description`` with no header
-      line, where row 0 leads with a date and carries a description (low
-      numeric ratio) and was previously mistaken for a header.
-    - Otherwise the first row with a low numeric ratio is the **header**.
-      Returns ``(row_index, True)``.
+      line, where every row leads with a date (low numeric ratio) and so
+      none reads as a header.
 
     Args:
         path: File path.
@@ -190,9 +194,14 @@ def _detect_header(path: Path, encoding: str, delimiter: str) -> tuple[int, bool
     except OSError:
         return 0, True
 
-    # Collect qualifying rows up front so headerless detection can peek at the
-    # next row before committing — a lone date+amount line can be a summary
-    # preamble above the real header, not the first row of a headerless file.
+    # Collect qualifying rows up front, then look for a real header before
+    # falling back to headerless. A header reads as labels (low numeric ratio)
+    # and does not itself parse as a transaction (no date+amount), so scanning
+    # the whole window for one skips any number of data-like preamble rows —
+    # opening/closing-balance summary lines — sitting above the header instead
+    # of mistaking the first of them for a headerless table. Only when no
+    # header row exists is the file genuinely headerless: the Wells Fargo case,
+    # where every row leads with a date and so none reads as a header.
     qualifying: list[tuple[int, list[str]]] = []
     for i, line in enumerate(lines):
         if not line.strip():
@@ -205,24 +214,12 @@ def _detect_header(path: Path, encoding: str, delimiter: str) -> tuple[int, bool
             continue
         qualifying.append((i, non_empty))
 
-    for idx, (i, non_empty) in enumerate(qualifying):
-        if _looks_like_data_row(non_empty):
-            # An opening-balance / statement-summary line (one date + one
-            # amount) can sit above the real header. Require the next
-            # qualifying row to not look like a header before declaring the
-            # file headerless; if it does look like a header, treat this row
-            # as preamble and keep scanning. A following data row (Wells Fargo
-            # multi-row export) or no following row keeps the headerless call.
-            next_row = qualifying[idx + 1][1] if idx + 1 < len(qualifying) else None
-            if (
-                next_row is not None
-                and not _looks_like_data_row(next_row)
-                and _looks_like_header(next_row)
-            ):
-                continue
-            return i, False
-        if _looks_like_header(non_empty):
+    for i, non_empty in qualifying:
+        if _looks_like_header(non_empty) and not _looks_like_data_row(non_empty):
             return i, True
+    for i, non_empty in qualifying:
+        if _looks_like_data_row(non_empty):
+            return i, False
 
     return 0, True
 
