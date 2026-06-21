@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
 
+# Cancel superseded runs on the same ref so rapid pushes (common with agents)
+# don't pile up behind stale runs. Mirrors scenarios.yml.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # Detect whether any non-docs files changed. For pushes to main we always
   # run the full suite; for PRs we skip code jobs when only docs changed.
@@ -68,10 +74,16 @@ jobs:
   # `unit` when no category marker is present and errors on conflicts,
   # so each job can use a plain `-m <category>` selection.
   test-unit:
-    name: Unit tests
+    name: Unit tests (shard ${{ matrix.group }})
     needs: [changes]
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
+    strategy:
+      # Don't cancel sibling shards on one failure — surface every failing
+      # test across the suite in a single run, not just the first shard's.
+      fail-fast: false
+      matrix:
+        group: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v7
 
@@ -88,8 +100,56 @@ jobs:
           curl -fsSL https://install.duckdb.org | sh
           echo "$HOME/.duckdb/cli/latest" >> $GITHUB_PATH
 
+      # pytest-split shards the unit suite across the matrix so wall-clock
+      # scales with the number of free standard runners. strategy.job-total is
+      # the matrix size, so --splits stays in lockstep with the `group` array.
+      # Each shard writes its own coverage data file; the `coverage` job below
+      # combines them into a single report.
       - name: Test
-        run: uv run pytest tests/ -m unit -v --cov=src --cov-report=xml --durations=25
+        env:
+          COVERAGE_FILE: .coverage.${{ matrix.group }}
+        run: |
+          uv run pytest tests/ -m unit -v \
+            --splits ${{ strategy.job-total }} --group ${{ matrix.group }} \
+            --cov=src --cov-report= --durations=25
+
+      - name: Upload coverage data
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: coverage-data-${{ matrix.group }}
+          path: .coverage.${{ matrix.group }}
+          include-hidden-files: true
+
+  # Combine the per-shard coverage data into one report. Runs even when a
+  # shard failed, so partial coverage still lands; waits on every shard.
+  coverage:
+    name: Coverage report
+    needs: [changes, test-unit]
+    if: ${{ always() && needs.changes.outputs.code == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --group dev
+
+      - name: Download coverage data
+        uses: actions/download-artifact@v7
+        with:
+          pattern: coverage-data-*
+          merge-multiple: true
+
+      - name: Combine and report
+        run: |
+          uv run coverage combine
+          uv run coverage xml
+          uv run coverage report
 
       - name: Upload coverage report
         uses: actions/upload-artifact@v7
