@@ -161,12 +161,15 @@ def _detect_header(path: Path, encoding: str, delimiter: str) -> tuple[int, bool
     Scans up to the first 30 content rows and decides between two outcomes:
 
     - **Header present.** The first row that reads as labels (low numeric
-      ratio) and does *not* itself parse as a transaction is the header.
-      Returns ``(row_index, True)``. Scanning the whole window means any
-      number of data-like preamble rows above the header — opening- and
-      closing-balance summary lines such as ``2026-01-01,100.00`` — are
-      skipped rather than mistaken for the first row of a headerless file.
-    - **Headerless.** When no row reads as a header, the first row that
+      ratio), does *not* itself parse as a transaction, *and* is followed by
+      a data row is the header. Returns ``(row_index, True)``. Scanning the
+      whole window means any number of data-like preamble rows above the
+      header — opening- and closing-balance summary lines such as
+      ``2026-01-01,100.00`` — are skipped rather than mistaken for the first
+      row of a headerless file. The follow-by-data check is what keeps a
+      footer/trailer that also reads as labels (``Downloaded On,2026-04-17``,
+      sitting *below* the data in a headerless file) from winning.
+    - **Headerless.** When no row qualifies as a header, the first row that
       parses as a data record (date plus numeric amount) starts the data.
       Returns ``(row_index, False)`` so the reader keeps that row. This is
       the Wells Fargo case: ``Date,Amount,*,,Description`` with no header
@@ -214,9 +217,16 @@ def _detect_header(path: Path, encoding: str, delimiter: str) -> tuple[int, bool
             continue
         qualifying.append((i, non_empty))
 
-    for i, non_empty in qualifying:
+    for idx, (i, non_empty) in enumerate(qualifying):
         if _looks_like_header(non_empty) and not _looks_like_data_row(non_empty):
-            return i, True
+            # A real header sits above the data, so a data row must follow it.
+            # This rejects a footer/trailer that also reads as labels (e.g.
+            # "Downloaded On,2026-04-17": a date, no amount, low numeric ratio)
+            # but appears after the data in a headerless file — without the
+            # follow check it would win header detection and the rows above it
+            # would be skipped as preamble.
+            if any(_looks_like_data_row(later) for _, later in qualifying[idx + 1 :]):
+                return i, True
     for i, non_empty in qualifying:
         if _looks_like_data_row(non_empty):
             return i, False

@@ -115,6 +115,33 @@ class TestCSVReader:
         assert len(result.df) == 2
         assert result.skip_rows == 2
 
+    def test_headerless_with_footer_not_mistaken_for_header(
+        self, tmp_path: Path
+    ) -> None:
+        """A date-bearing footer in a headerless file must not become the header.
+
+        A genuinely headerless export (Wells-Fargo-style, every row a
+        date+amount) can carry a trailer like ``Downloaded On,2026-04-17``
+        within the first 30 lines. That row reads as labels (low numeric ratio)
+        and is not a data row (a date but no amount), so a header scan that
+        ignores position would pick the footer as the header and skip every
+        real data row above it. The file is headerless: the data rows survive
+        and the footer is stripped as a trailing row.
+        """
+        f = _write_csv(
+            tmp_path / "wf_footer.csv",
+            '"04/16/2026","150.00","*","","RECURRING TRANSFER FROM ACME"\n'
+            '"04/15/2026","-150.00","*","","RECURRING TRANSFER TO ACME"\n'
+            "Downloaded On,2026-04-17\n",
+        )
+        info = FormatInfo(file_type="csv", delimiter=",", encoding="utf-8")
+        result = read_file(f, info)
+        assert result.skip_rows == 0
+        assert len(result.df) == 2
+        # The most recent transaction (row 0) survived rather than being
+        # consumed as a skipped pre-header row.
+        assert "04/16/2026" in str(result.df.row(0))
+
     def test_bom_handled(self, tmp_path: Path) -> None:
         f = tmp_path / "bom.csv"
         f.write_bytes(b"\xef\xbb\xbfDate,Amount\n2026-01-01,42.50\n")

@@ -877,6 +877,84 @@ class TestImportConfirmBridge:
         assert data["rows_loaded"] == 12
         assert any("import_revert" in a for a in result.actions)
 
+    async def test_applied_archives_pending_file(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """A successful bridge confirm archives the PDF out of pending/.
+
+        Mirrors the tabular confirm path: a bridge-confirmed inbox PDF must
+        complete the inbox lifecycle rather than lingering in pending/ after a
+        successful load.
+        """
+        from moneybin.services.import_service import BridgeApplyResult
+
+        pdf = self._patch(monkeypatch, tmp_path)
+        mock_service = MagicMock()
+        mock_service.apply_pdf_bridge_response.return_value = BridgeApplyResult(
+            outcome="applied",
+            import_id="imp123",
+            rows_loaded=12,
+            format_name="chase_abc123",
+            expected_row_count=12,
+            actual_row_count=12,
+            rows_diverged=False,
+        )
+        mock_inbox_cls = MagicMock()
+        with (
+            patch(
+                "moneybin.services.import_service.ImportService",
+                return_value=mock_service,
+            ),
+            patch(
+                "moneybin.services.inbox_service.InboxService",
+                mock_inbox_cls,
+            ),
+        ):
+            await import_confirm(
+                file_path=str(pdf),
+                bridge_response={"recipe": {}, "rows": []},
+            )
+
+        archive = mock_inbox_cls.for_active_profile_no_db.return_value
+        archive.archive_confirmed_file.assert_called_once()
+
+    async def test_invalid_does_not_archive(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """An invalid reconciliation loaded nothing, so nothing is archived."""
+        from moneybin.services.import_service import BridgeApplyResult
+
+        pdf = self._patch(monkeypatch, tmp_path)
+        mock_service = MagicMock()
+        mock_service.apply_pdf_bridge_response.return_value = BridgeApplyResult(
+            outcome="invalid",
+            import_id=None,
+            rows_loaded=0,
+            format_name=None,
+            expected_row_count=10,
+            actual_row_count=8,
+            rows_diverged=True,
+            reject_reason="reconciliation_failed",
+        )
+        mock_inbox_cls = MagicMock()
+        with (
+            patch(
+                "moneybin.services.import_service.ImportService",
+                return_value=mock_service,
+            ),
+            patch(
+                "moneybin.services.inbox_service.InboxService",
+                mock_inbox_cls,
+            ),
+        ):
+            await import_confirm(
+                file_path=str(pdf),
+                bridge_response={"recipe": {}, "rows": []},
+            )
+
+        archive = mock_inbox_cls.for_active_profile_no_db.return_value
+        archive.archive_confirmed_file.assert_not_called()
+
     async def test_invalid_reconciliation(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
     ) -> None:
