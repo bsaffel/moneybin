@@ -328,7 +328,17 @@ class InboxService:
                 f"{move_err.__class__.__name__}"
             )
             return None
-        path.with_name(path.name + ".pending.yml").unlink(missing_ok=True)
+        # Sidecar removal is best-effort too: the import has committed and the
+        # file already moved, so a locked/transient sidecar must not surface as
+        # an import failure. A stale sidecar is harmless — its data file is gone
+        # from pending/, so it cannot drive a re-confirm loop.
+        try:
+            path.with_name(path.name + ".pending.yml").unlink(missing_ok=True)
+        except OSError as unlink_err:
+            logger.warning(
+                f"Could not remove confirmed pending sidecar: "
+                f"{unlink_err.__class__.__name__}"
+            )
         return moved
 
     def _encode_staging_name(self, src: Path) -> str:

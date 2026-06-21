@@ -1314,6 +1314,42 @@ class TestArchiveConfirmedFile:
 
         assert result is None
 
+    def test_sidecar_cleanup_failure_does_not_fail_archive(
+        self,
+        tmp_path: Path,
+        inbox_service: InboxService,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A locked/transient sidecar must not turn a committed import to failure.
+
+        By the time ``archive_confirmed_file`` runs, the import has committed and
+        the file has moved to ``processed/``. A failure deleting the
+        ``.pending.yml`` sidecar is best-effort cleanup — it must be logged, not
+        raised, or the caller reports ``import confirm`` as failed with no data
+        file left at the pending path to retry.
+        """
+        inbox_service.ensure_layout()
+        pending_month = inbox_service.pending_dir / "2026-06"
+        pending_month.mkdir(parents=True)
+        src = pending_month / "stmt.csv"
+        src.write_text("a,b\n1,2\n")
+        sidecar = pending_month / "stmt.csv.pending.yml"
+        sidecar.write_text("reason: account_confirmation\n")
+
+        real_unlink = Path.unlink
+
+        def _unlink(self_path: Path, missing_ok: bool = False) -> None:
+            if self_path.name.endswith(".pending.yml"):
+                raise OSError("sidecar locked")
+            real_unlink(self_path, missing_ok=missing_ok)
+
+        monkeypatch.setattr(Path, "unlink", _unlink)
+        final = inbox_service.archive_confirmed_file(src)
+
+        assert final is not None
+        assert final.exists()  # file archived despite the sidecar failure
+        assert not src.exists()
+
     def test_crash_mid_archive_does_not_resurrect_file_into_inbox(
         self,
         tmp_path: Path,
