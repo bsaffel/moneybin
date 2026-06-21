@@ -17,9 +17,15 @@ concurrency:
 
 jobs:
   run-scenarios:
-    name: Run Scenarios
+    name: Run Scenarios (shard ${{ matrix.group }})
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # 2-way pytest-split shard (count-based; ~70 scenarios -> 35/35) so the
+    # scenario suite drops from ~5 min to ~3 min. Mirrors the ci.yml shards.
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [1, 2]
     steps:
       - uses: actions/checkout@v7
 
@@ -45,19 +51,20 @@ jobs:
         run: |
           set -o pipefail
           uv run pytest tests/ -m scenarios -v \
-            --json-report --json-report-file=scenarios.json \
+            --splits ${{ strategy.job-total }} --group ${{ matrix.group }} \
+            --json-report --json-report-file=scenarios-${{ matrix.group }}.json \
             --durations=25
 
       - name: Per-scenario summary
         if: always()
         run: |
-          echo "## Scenario results" >> "$GITHUB_STEP_SUMMARY"
+          echo "## Scenario results (shard ${{ matrix.group }})" >> "$GITHUB_STEP_SUMMARY"
           jq -r '.tests[] | "- \(.nodeid | split("::") | last): \(.outcome | ascii_upcase) (\(((.setup.duration // 0) + (.call.duration // 0) + (.teardown.duration // 0)) | floor)s)"' \
-            scenarios.json >> "$GITHUB_STEP_SUMMARY" || true
+            scenarios-${{ matrix.group }}.json >> "$GITHUB_STEP_SUMMARY" || true
 
       - name: Upload artifact
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: scenarios-results
-          path: scenarios.json
+          name: scenarios-results-${{ matrix.group }}
+          path: scenarios-${{ matrix.group }}.json
