@@ -243,9 +243,9 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   auto-adopt, and confirming "new" still mints a standalone account.
 - **Confirmed pending files are now archived out of `pending/`.** A successful
   `import confirm` (`import_confirm` / `moneybin import confirm`) that ratifies a
-  file sitting in `pending/` now moves the file and its `.pending.yml` sidecar to
-  `processed/YYYY-MM/`, matching inbox drain semantics. Previously a confirmed
-  file lingered in `pending/`, where a later sync could re-surface it.
+  file sitting in `pending/` now moves the file to `processed/YYYY-MM/` and
+  removes its `.pending.yml` sidecar, matching inbox drain semantics. Previously
+  a confirmed file lingered in `pending/`, where a later sync could re-surface it.
 - **Cross-source account linking now actually fires (M1S.7).** `core.dim_accounts.last_four`
   is now derived from each source's native field (OFX `<ACCTID>` digits, Plaid
   `mask`, tabular account number/label) instead of being NULL for every

@@ -190,6 +190,10 @@ def _detect_header(path: Path, encoding: str, delimiter: str) -> tuple[int, bool
     except OSError:
         return 0, True
 
+    # Collect qualifying rows up front so headerless detection can peek at the
+    # next row before committing — a lone date+amount line can be a summary
+    # preamble above the real header, not the first row of a headerless file.
+    qualifying: list[tuple[int, list[str]]] = []
     for i, line in enumerate(lines):
         if not line.strip():
             continue
@@ -199,11 +203,25 @@ def _detect_header(path: Path, encoding: str, delimiter: str) -> tuple[int, bool
         non_empty = [p.strip().strip('"').strip("'") for p in parts if p.strip()]
         if not non_empty:
             continue
+        qualifying.append((i, non_empty))
+
+    for idx, (i, non_empty) in enumerate(qualifying):
         if _looks_like_data_row(non_empty):
+            # An opening-balance / statement-summary line (one date + one
+            # amount) can sit above the real header. Require the next
+            # qualifying row to not look like a header before declaring the
+            # file headerless; if it does look like a header, treat this row
+            # as preamble and keep scanning. A following data row (Wells Fargo
+            # multi-row export) or no following row keeps the headerless call.
+            next_row = qualifying[idx + 1][1] if idx + 1 < len(qualifying) else None
+            if (
+                next_row is not None
+                and not _looks_like_data_row(next_row)
+                and _looks_like_header(next_row)
+            ):
+                continue
             return i, False
-        numeric_count = sum(1 for p in non_empty if _is_numeric(p))
-        numeric_ratio = numeric_count / len(non_empty) if non_empty else 1.0
-        if numeric_ratio < 0.5 and len(non_empty) >= 2:
+        if _looks_like_header(non_empty):
             return i, True
 
     return 0, True
@@ -227,6 +245,26 @@ def _looks_like_data_row(cells: list[str]) -> bool:
     has_date = any(detect_date_format([c])[0] is not None for c in cells)
     has_amount = any(_is_numeric(c) for c in cells)
     return has_date and has_amount
+
+
+def _looks_like_header(cells: list[str]) -> bool:
+    """Return True if a row reads as a header rather than a data record.
+
+    A header carries mostly non-numeric labels (``Date``, ``Amount``,
+    ``Description``), so its numeric ratio is low. Mirrors the inline header
+    test in ``_detect_header`` so the peek-ahead and the main scan agree.
+
+    Args:
+        cells: Non-empty, unquoted cell strings from one row.
+
+    Returns:
+        True when the row has at least two cells and fewer than half are
+        numeric.
+    """
+    if len(cells) < 2:
+        return False
+    numeric_count = sum(1 for c in cells if _is_numeric(c))
+    return numeric_count / len(cells) < 0.5
 
 
 def _is_numeric(s: str) -> bool:

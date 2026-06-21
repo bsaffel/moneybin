@@ -67,6 +67,29 @@ class TestCSVReader:
         result = read_file(f, info)
         assert len(result.df) == 3
 
+    def test_summary_row_above_header_not_headerless(self, tmp_path: Path) -> None:
+        """A summary/opening-balance line above the real header is preamble.
+
+        A single date+amount row (e.g. an opening-balance line) before the real
+        header used to trip headerless detection: the scanner saw row 0 parse
+        as a data record and returned ``(0, headerless)`` before reaching the
+        ``Date,Amount,Description`` header. Polars then ingested the header as a
+        data row under generated column names, breaking downstream mapping.
+        The real header must win, with the summary line skipped as preamble.
+        """
+        f = _write_csv(
+            tmp_path / "summary.csv",
+            "2026-01-01,100.00\n"
+            "Date,Amount,Description\n"
+            "2026-01-02,42.50,Coffee\n"
+            "2026-01-03,10.00,Tea\n",
+        )
+        info = FormatInfo(file_type="csv", delimiter=",", encoding="utf-8")
+        result = read_file(f, info)
+        assert list(result.df.columns) == ["Date", "Amount", "Description"]
+        assert len(result.df) == 2
+        assert result.skip_rows == 1
+
     def test_bom_handled(self, tmp_path: Path) -> None:
         f = tmp_path / "bom.csv"
         f.write_bytes(b"\xef\xbb\xbfDate,Amount\n2026-01-01,42.50\n")
