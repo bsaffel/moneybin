@@ -23,6 +23,8 @@ from moneybin.migrations import (
 )
 from tests.moneybin.migration_helpers import insert_rows
 
+pytestmark = pytest.mark.fresh_db
+
 _FAILURE_COLUMNS = (
     "version",
     "filename",

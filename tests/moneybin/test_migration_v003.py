@@ -1,7 +1,11 @@
 """Tests for V003: add import_id/source_type/source_origin to raw.ofx_* tables."""
 
+import pytest
+
 from moneybin.database import Database
 from moneybin.sql.migrations.V003__ofx_import_batch_columns import migrate
+
+pytestmark = pytest.mark.fresh_db
 
 
 class TestV003Migration:

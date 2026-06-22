@@ -15,8 +15,12 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from moneybin.database import Database
 from moneybin.sql.migrations.V007__transaction_curation import migrate
+
+pytestmark = pytest.mark.fresh_db
 
 
 def _drop_and_recreate_legacy_notes(db: Database) -> None:

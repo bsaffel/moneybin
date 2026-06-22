@@ -803,6 +803,7 @@ class TestGetDatabaseNew:
         db.close()
 
 
+@pytest.mark.fresh_db
 class TestCheckCoreSchemaDrift:
     """check_core_schema_drift() — detect missing columns on FULL core tables."""
 

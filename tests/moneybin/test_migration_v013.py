@@ -22,6 +22,8 @@ from moneybin.sql.migrations.V013__add_content_hash_to_schema_migrations import 
 )
 from tests.moneybin.migration_helpers import column_exists, insert_rows, run_migration
 
+pytestmark = pytest.mark.fresh_db
+
 _SEED_COLUMNS = ("version", "filename", "checksum", "success")
 
 

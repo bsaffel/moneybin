@@ -16,6 +16,8 @@ from moneybin.migrations import (
     record_version,
 )
 
+pytestmark = pytest.mark.fresh_db
+
 
 class TestMigrationSchema:
     """Verify migration tracking tables are created by init_schemas."""

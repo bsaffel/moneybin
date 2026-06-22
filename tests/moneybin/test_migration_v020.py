@@ -26,6 +26,8 @@ from moneybin.database import Database
 from moneybin.sql.migrations.V020__create_app_gsheet_connections import migrate
 from tests.moneybin.migration_helpers import column_exists, run_migration
 
+pytestmark = pytest.mark.fresh_db
+
 _ALL_COLUMNS: tuple[str, ...] = (
     "connection_id",
     "spreadsheet_id",

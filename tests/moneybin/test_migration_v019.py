@@ -21,6 +21,8 @@ from moneybin.sql.migrations.V019__add_deleted_from_source_at_to_tabular import 
 )
 from tests.moneybin.migration_helpers import column_exists, run_migration
 
+pytestmark = pytest.mark.fresh_db
+
 CSV_TXN_ID = "csv_aaaa11112222bbbb"
 TSV_TXN_ID = "tsv_cccc33334444dddd"
 EXCEL_TXN_ID = "xls_eeee55556666ffff"

@@ -18,6 +18,8 @@ from moneybin.database import Database
 from moneybin.sql.migrations.V016__add_rule_id_to_proposed_rules import migrate
 from tests.moneybin.migration_helpers import run_migration
 
+pytestmark = pytest.mark.fresh_db
+
 LINKED_PATTERN = "STARBUCKS"
 ORPHAN_PATTERN = "WHOLE_FOODS"
 PENDING_PATTERN = "TARGET"

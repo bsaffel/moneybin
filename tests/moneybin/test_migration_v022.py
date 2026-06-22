@@ -9,6 +9,8 @@ from moneybin.database import Database
 from moneybin.sql.migrations.V022__create_app_ai_consent_grants import migrate
 from tests.moneybin.migration_helpers import column_exists, run_migration
 
+pytestmark = pytest.mark.fresh_db
+
 _ALL_COLUMNS: tuple[str, ...] = (
     "grant_id",
     "feature_category",
