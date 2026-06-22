@@ -3,12 +3,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Generator
 from datetime import date
 from decimal import Decimal
-from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -60,17 +57,6 @@ def _make_result(
 
 class TestSyntheticWriter:
     """Test writing generated data to raw tables."""
-
-    @pytest.fixture
-    def db(self, tmp_path: Path, mock_secret_store: MagicMock) -> Generator[Database]:
-        db = Database(
-            tmp_path / "test.duckdb",
-            secret_store=mock_secret_store,
-            no_auto_upgrade=True,
-            read_only=False,
-        )
-        yield db
-        db.close()
 
     def test_write_ofx_account(self, db: Database) -> None:
         from moneybin.synthetic.writer import SyntheticWriter

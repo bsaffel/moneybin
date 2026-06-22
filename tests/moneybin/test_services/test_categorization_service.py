@@ -7,7 +7,6 @@ matching, prompt construction, and response parsing.
 from collections import Counter
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
 import yaml
@@ -66,21 +65,9 @@ def get_active_categories(db: Database) -> list[dict[str, str | bool | None]]:
     return CategorizationService(db).get_active_categories()
 
 
-@pytest.fixture()
-def db(tmp_path: Path) -> Database:
-    """Create a Database with all schemas for testing."""
-    mock_store = MagicMock()
-    mock_store.get_key.return_value = "test-encryption-key-for-tests"
-    database = Database(
-        tmp_path / "test.duckdb",
-        secret_store=mock_store,
-        no_auto_upgrade=True,
-        read_only=False,
-    )
-    # Core tables are managed by SQLMesh in production; create concrete
-    # tables here so tests can INSERT fixture data directly.
-    create_core_tables(database)
-    return database
+@pytest.fixture(autouse=True)
+def _core_tables(db: Database) -> None:  # pyright: ignore[reportUnusedFunction]
+    create_core_tables(db)
 
 
 @pytest.fixture()
@@ -636,17 +623,8 @@ class TestCategoriesView:
 
 
 @pytest.fixture()
-def real_db(tmp_path: Path) -> Database:
+def real_db(db: Database) -> Database:
     """Real DB with core + app schema, used by service-facade tests."""
-    mock_store = MagicMock()
-    mock_store.get_key.return_value = "test-key"
-    db = Database(
-        tmp_path / "test.duckdb",
-        secret_store=mock_store,
-        no_auto_upgrade=True,
-        read_only=False,
-    )
-    create_core_tables(db)
     return db
 
 
@@ -884,8 +862,7 @@ def test_categorize_items_creates_auto_rule_proposal(real_db: Database) -> None:
 
 def test_categorize_items_uses_constant_number_of_db_calls(
     monkeypatch: pytest.MonkeyPatch,
-    mock_secret_store: MagicMock,
-    tmp_path: Path,
+    db: Database,
 ) -> None:
     """categorize_items should not scale DB round-trips with item count.
 
@@ -894,13 +871,6 @@ def test_categorize_items_uses_constant_number_of_db_calls(
     """
     from moneybin.tables import FCT_TRANSACTIONS
 
-    db = Database(
-        tmp_path / "perf.duckdb",
-        secret_store=mock_secret_store,
-        no_auto_upgrade=True,
-        read_only=False,
-    )
-    create_core_tables(db)
     # Seed 25 transactions and 25 corresponding category items.
     for i in range(25):
         db.execute(
@@ -947,19 +917,11 @@ def test_categorize_items_uses_constant_number_of_db_calls(
 
 
 def test_categorize_items_dedupes_merchant_creation_within_batch(
-    mock_secret_store: MagicMock,
-    tmp_path: Path,
+    db: Database,
 ) -> None:
     """Two items with the same description create exactly one merchant."""
     from moneybin.tables import FCT_TRANSACTIONS, MERCHANTS
 
-    db = Database(
-        tmp_path / "dedup.duckdb",
-        secret_store=mock_secret_store,
-        no_auto_upgrade=True,
-        read_only=False,
-    )
-    create_core_tables(db)
     for i in range(3):
         db.execute(
             f"""
@@ -1092,17 +1054,8 @@ def test_find_matching_rule_uses_txn_row_override(real_db: Database) -> None:
 
 
 @pytest.fixture()
-def db_with_uncategorized_txns(
-    tmp_path: Path, mock_secret_store: MagicMock
-) -> Database:
+def db_with_uncategorized_txns(db: Database) -> Database:
     """Database seeded with 10 uncategorized transactions in core.fct_transactions."""
-    db = Database(
-        tmp_path / "assist.duckdb",
-        secret_store=mock_secret_store,
-        no_auto_upgrade=True,
-        read_only=False,
-    )
-    create_core_tables(db)
     descriptions = [
         "STARBUCKS #1234",
         "AMZN MKTP US*ABCD",

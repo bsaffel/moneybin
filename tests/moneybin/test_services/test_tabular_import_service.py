@@ -1,7 +1,7 @@
 """Tests for the tabular import service layer."""
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from _pytest.logging import LogCaptureFixture
@@ -114,7 +114,7 @@ def test_resolved_mapping_round_trip() -> None:
 
 
 def test_reimport_writes_single_accepted_source_native_link(
-    mock_secret_store: MagicMock, tmp_path: Path
+    db: Database,
 ) -> None:
     """Re-importing the same single-account CSV is idempotent in app.account_links.
 
@@ -128,41 +128,32 @@ def test_reimport_writes_single_accepted_source_native_link(
     """
     from moneybin.services.import_service import ImportService
 
-    db = Database(
-        tmp_path / "reimport.duckdb",
-        secret_store=mock_secret_store,
-        no_auto_upgrade=True,
-        read_only=False,
-    )
-    try:
-        svc = ImportService(db)
-        for _ in range(2):
-            result = svc.import_file(
-                _STANDARD_CSV,
-                account_name="Reimport Test",
-                refresh=False,
-                confirm=True,
-                auto_accept=True,
-            )
-            assert result.import_id is not None
+    svc = ImportService(db)
+    for _ in range(2):
+        result = svc.import_file(
+            _STANDARD_CSV,
+            account_name="Reimport Test",
+            refresh=False,
+            confirm=True,
+            auto_accept=True,
+        )
+        assert result.import_id is not None
 
-        # slugify("Reimport Test") is the native key; source_origin falls back
-        # to the same slug when no registered format matched.
-        row = db.execute(
-            """
-            SELECT COUNT(*) FROM app.account_links
-            WHERE status = 'accepted' AND ref_kind = 'source_native'
-              AND source_type = 'csv' AND ref_value = ?
-            """,
-            ["reimport-test"],
-        ).fetchone()
-        assert row is not None and row[0] == 1
-    finally:
-        db.close()
+    # slugify("Reimport Test") is the native key; source_origin falls back
+    # to the same slug when no registered format matched.
+    row = db.execute(
+        """
+        SELECT COUNT(*) FROM app.account_links
+        WHERE status = 'accepted' AND ref_kind = 'source_native'
+          AND source_type = 'csv' AND ref_value = ?
+        """,
+        ["reimport-test"],
+    ).fetchone()
+    assert row is not None and row[0] == 1
 
 
 def test_single_account_csv_captures_last4_from_label(
-    mock_secret_store: MagicMock, tmp_path: Path
+    db: Database,
 ) -> None:
     """Parsed last4 from account label lands in raw.tabular_accounts.account_number_masked.
 
@@ -172,30 +163,21 @@ def test_single_account_csv_captures_last4_from_label(
     """
     from moneybin.services.import_service import ImportService
 
-    db = Database(
-        tmp_path / "capture.duckdb",
-        secret_store=mock_secret_store,
-        no_auto_upgrade=True,
-        read_only=False,
+    svc = ImportService(db)
+    svc.import_file(
+        _STANDARD_CSV,
+        account_name="WF Checking (...4267)",
+        refresh=False,
+        confirm=True,
+        auto_accept=True,
     )
-    try:
-        svc = ImportService(db)
-        svc.import_file(
-            _STANDARD_CSV,
-            account_name="WF Checking (...4267)",
-            refresh=False,
-            confirm=True,
-            auto_accept=True,
-        )
-        masked = db.execute(
-            """
-            SELECT account_number_masked FROM raw.tabular_accounts
-            WHERE source_type IN ('csv', 'tsv', 'excel')
-            """
-        ).fetchone()
-        assert masked is not None and masked[0] == "****4267", masked
-    finally:
-        db.close()
+    masked = db.execute(
+        """
+        SELECT account_number_masked FROM raw.tabular_accounts
+        WHERE source_type IN ('csv', 'tsv', 'excel')
+        """
+    ).fetchone()
+    assert masked is not None and masked[0] == "****4267", masked
 
 
 # ---------------------------------------------------------------------------
@@ -211,88 +193,62 @@ class TestTabularConfirmationFlow:
     detection heuristics.
     """
 
-    def _make_db(self, mock_secret_store: MagicMock, tmp_path: Path) -> Database:
-        return Database(
-            tmp_path / "conf_flow.duckdb",
-            secret_store=mock_secret_store,
-            no_auto_upgrade=True,
-            read_only=False,
-        )
-
-    def test_low_confidence_raises_confirmation_required(
-        self, mock_secret_store: MagicMock, tmp_path: Path
-    ) -> None:
+    def test_low_confidence_raises_confirmation_required(self, db: Database) -> None:
         """Low-tier detection must raise ImportConfirmationRequiredError."""
         from moneybin.services.import_confirmation import (
             ImportConfirmationRequiredError,
         )
         from moneybin.services.import_service import ImportService
 
-        db = self._make_db(mock_secret_store, tmp_path)
-        try:
-            low_result = _make_mapping_result(score=0.3, confidence="low")
-            with patch(
-                "moneybin.extractors.tabular.column_mapper.map_columns",
-                return_value=low_result,
-            ):
-                with pytest.raises(ImportConfirmationRequiredError) as exc_info:
-                    ImportService(db).import_file(
-                        _STANDARD_CSV, account_name="test", refresh=False
-                    )
-            assert exc_info.value.outcome.channel == "tabular"
-            assert exc_info.value.outcome.confidence.tier == "low"
-        finally:
-            db.close()
+        low_result = _make_mapping_result(score=0.3, confidence="low")
+        with patch(
+            "moneybin.extractors.tabular.column_mapper.map_columns",
+            return_value=low_result,
+        ):
+            with pytest.raises(ImportConfirmationRequiredError) as exc_info:
+                ImportService(db).import_file(
+                    _STANDARD_CSV, account_name="test", refresh=False
+                )
+        assert exc_info.value.outcome.channel == "tabular"
+        assert exc_info.value.outcome.confidence.tier == "low"
 
-    def test_medium_confidence_now_gates(
-        self, mock_secret_store: MagicMock, tmp_path: Path
-    ) -> None:
+    def test_medium_confidence_now_gates(self, db: Database) -> None:
         """Medium-tier no longer waves through; must raise ImportConfirmationRequiredError."""
         from moneybin.services.import_confirmation import (
             ImportConfirmationRequiredError,
         )
         from moneybin.services.import_service import ImportService
 
-        db = self._make_db(mock_secret_store, tmp_path)
-        try:
-            med_result = _make_mapping_result(score=0.75, confidence="medium")
-            with patch(
-                "moneybin.extractors.tabular.column_mapper.map_columns",
-                return_value=med_result,
-            ):
-                with pytest.raises(ImportConfirmationRequiredError) as exc_info:
-                    ImportService(db).import_file(
-                        _STANDARD_CSV, account_name="test", refresh=False
-                    )
-            assert exc_info.value.outcome.confidence.tier == "medium"
-        finally:
-            db.close()
+        med_result = _make_mapping_result(score=0.75, confidence="medium")
+        with patch(
+            "moneybin.extractors.tabular.column_mapper.map_columns",
+            return_value=med_result,
+        ):
+            with pytest.raises(ImportConfirmationRequiredError) as exc_info:
+                ImportService(db).import_file(
+                    _STANDARD_CSV, account_name="test", refresh=False
+                )
+        assert exc_info.value.outcome.confidence.tier == "medium"
 
-    def test_high_confidence_human_still_gates(
-        self, mock_secret_store: MagicMock, tmp_path: Path
-    ) -> None:
+    def test_high_confidence_human_still_gates(self, db: Database) -> None:
         """High-tier, human caller, no signal -> ConfirmationRequired (first encounter)."""
         from moneybin.services.import_confirmation import (
             ImportConfirmationRequiredError,
         )
         from moneybin.services.import_service import ImportService
 
-        db = self._make_db(mock_secret_store, tmp_path)
-        try:
-            high_result = _make_mapping_result(score=0.95, confidence="high")
-            with patch(
-                "moneybin.extractors.tabular.column_mapper.map_columns",
-                return_value=high_result,
-            ):
-                with pytest.raises(ImportConfirmationRequiredError):
-                    ImportService(db).import_file(
-                        _STANDARD_CSV, account_name="test", refresh=False
-                    )
-        finally:
-            db.close()
+        high_result = _make_mapping_result(score=0.95, confidence="high")
+        with patch(
+            "moneybin.extractors.tabular.column_mapper.map_columns",
+            return_value=high_result,
+        ):
+            with pytest.raises(ImportConfirmationRequiredError):
+                ImportService(db).import_file(
+                    _STANDARD_CSV, account_name="test", refresh=False
+                )
 
     def test_agent_actor_kind_no_self_accept_when_gate_closed(
-        self, mock_secret_store: MagicMock, tmp_path: Path
+        self, db: Database
     ) -> None:
         """actor_kind='agent' with self_accept_high=False still surfaces."""
         from moneybin.services.import_confirmation import (
@@ -300,27 +256,22 @@ class TestTabularConfirmationFlow:
         )
         from moneybin.services.import_service import ImportService
 
-        db = self._make_db(mock_secret_store, tmp_path)
-        try:
-            high_result = _make_mapping_result(score=0.95, confidence="high")
-            with patch(
-                "moneybin.extractors.tabular.column_mapper.map_columns",
-                return_value=high_result,
-            ):
-                with pytest.raises(ImportConfirmationRequiredError):
-                    ImportService(db).import_file(
-                        _STANDARD_CSV,
-                        account_name="test",
-                        refresh=False,
-                        actor_kind="agent",
-                    )
-        finally:
-            db.close()
+        high_result = _make_mapping_result(score=0.95, confidence="high")
+        with patch(
+            "moneybin.extractors.tabular.column_mapper.map_columns",
+            return_value=high_result,
+        ):
+            with pytest.raises(ImportConfirmationRequiredError):
+                ImportService(db).import_file(
+                    _STANDARD_CSV,
+                    account_name="test",
+                    refresh=False,
+                    actor_kind="agent",
+                )
 
     def test_agent_self_accepts_when_gate_open(
         self,
-        mock_secret_store: MagicMock,
-        tmp_path: Path,
+        db: Database,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """actor_kind='agent' + self_accept_high=True via settings + high -> data loads.
@@ -343,71 +294,55 @@ class TestTabularConfirmationFlow:
         set_current_profile("test")
         assert get_settings().import_.self_accept_high is True
 
-        db = self._make_db(mock_secret_store, tmp_path)
-        try:
-            high_result = _make_mapping_result(score=0.95, confidence="high")
-            with patch(
-                "moneybin.extractors.tabular.column_mapper.map_columns",
-                return_value=high_result,
-            ):
-                result = ImportService(db).import_file(
-                    _STANDARD_CSV,
-                    account_name="test",
-                    refresh=False,
-                    actor_kind="agent",
-                )
-            assert result.import_id is not None
-        finally:
-            db.close()
+        high_result = _make_mapping_result(score=0.95, confidence="high")
+        with patch(
+            "moneybin.extractors.tabular.column_mapper.map_columns",
+            return_value=high_result,
+        ):
+            result = ImportService(db).import_file(
+                _STANDARD_CSV,
+                account_name="test",
+                refresh=False,
+                actor_kind="agent",
+            )
+        assert result.import_id is not None
 
-    def test_confirm_true_accepts_high(
-        self, mock_secret_store: MagicMock, tmp_path: Path
-    ) -> None:
+    def test_confirm_true_accepts_high(self, db: Database) -> None:
         """confirm=True acts as Accept signal; Resolved -> data loads."""
         from moneybin.services.import_service import ImportService
 
-        db = self._make_db(mock_secret_store, tmp_path)
-        try:
-            high_result = _make_mapping_result(score=0.95, confidence="high")
-            with patch(
-                "moneybin.extractors.tabular.column_mapper.map_columns",
-                return_value=high_result,
-            ):
-                result = ImportService(db).import_file(
-                    _STANDARD_CSV,
-                    account_name="test",
-                    refresh=False,
-                    confirm=True,
-                )
-            assert result.import_id is not None
-        finally:
-            db.close()
+        high_result = _make_mapping_result(score=0.95, confidence="high")
+        with patch(
+            "moneybin.extractors.tabular.column_mapper.map_columns",
+            return_value=high_result,
+        ):
+            result = ImportService(db).import_file(
+                _STANDARD_CSV,
+                account_name="test",
+                refresh=False,
+                confirm=True,
+            )
+        assert result.import_id is not None
 
-    def test_partial_mapping_override_loads(
-        self, mock_secret_store: MagicMock, tmp_path: Path
-    ) -> None:
+    def test_partial_mapping_override_loads(self, db: Database) -> None:
         """overrides= acts as Override signal; partial-merge resolves -> data loads."""
         from moneybin.services.import_service import ImportService
 
-        db = self._make_db(mock_secret_store, tmp_path)
-        try:
-            med_result = _make_mapping_result(score=0.75, confidence="medium")
-            with patch(
-                "moneybin.extractors.tabular.column_mapper.map_columns",
-                return_value=med_result,
-            ):
-                result = ImportService(db).import_file(
-                    _STANDARD_CSV,
-                    account_name="test",
-                    refresh=False,
-                    overrides={"description": "Description"},
-                )
-            assert result.import_id is not None
-        finally:
-            db.close()
+        med_result = _make_mapping_result(score=0.75, confidence="medium")
+        with patch(
+            "moneybin.extractors.tabular.column_mapper.map_columns",
+            return_value=med_result,
+        ):
+            result = ImportService(db).import_file(
+                _STANDARD_CSV,
+                account_name="test",
+                refresh=False,
+                overrides={"description": "Description"},
+            )
+        assert result.import_id is not None
 
     def test_split_debit_credit_passes_required_fields_validation(
-        self, mock_secret_store: MagicMock, tmp_path: Path
+        self, db: Database
     ) -> None:
         """Layouts with debit_amount + credit_amount (no single 'amount') must validate.
 
@@ -419,63 +354,54 @@ class TestTabularConfirmationFlow:
         """
         from moneybin.services.import_service import ImportService
 
-        db = self._make_db(mock_secret_store, tmp_path)
-        try:
-            # citi_credit.csv: Status,Date,Description,Debit,Credit,Member Name
-            split_result = _make_mapping_result(
-                score=1.0,
-                confidence="high",
-                field_mapping={
-                    "transaction_date": "Date",
-                    "debit_amount": "Debit",
-                    "credit_amount": "Credit",
-                    "description": "Description",
-                },
+        # citi_credit.csv: Status,Date,Description,Debit,Credit,Member Name
+        split_result = _make_mapping_result(
+            score=1.0,
+            confidence="high",
+            field_mapping={
+                "transaction_date": "Date",
+                "debit_amount": "Debit",
+                "credit_amount": "Credit",
+                "description": "Description",
+            },
+        )
+        with patch(
+            "moneybin.extractors.tabular.column_mapper.map_columns",
+            return_value=split_result,
+        ):
+            result = ImportService(db).import_file(
+                _CITI_CSV,
+                account_name="test",
+                refresh=False,
+                confirm=True,
             )
-            with patch(
-                "moneybin.extractors.tabular.column_mapper.map_columns",
-                return_value=split_result,
-            ):
-                result = ImportService(db).import_file(
-                    _CITI_CSV,
-                    account_name="test",
-                    refresh=False,
-                    confirm=True,
-                )
-            assert result.import_id is not None
-        finally:
-            db.close()
+        assert result.import_id is not None
 
     def test_sign_convention_warning_still_present(
         self,
-        mock_secret_store: MagicMock,
-        tmp_path: Path,
+        db: Database,
         caplog: LogCaptureFixture,
     ) -> None:
         """Sign-convention warning still fires when sign is ambiguous (confirm=True path)."""
         from moneybin.services.import_service import ImportService
 
-        db = self._make_db(mock_secret_store, tmp_path)
-        try:
-            high_ambig = _make_mapping_result(
-                score=0.95, confidence="high", sign_needs_confirmation=True
+        high_ambig = _make_mapping_result(
+            score=0.95, confidence="high", sign_needs_confirmation=True
+        )
+        with (
+            patch(
+                "moneybin.extractors.tabular.column_mapper.map_columns",
+                return_value=high_ambig,
+            ),
+            caplog.at_level("WARNING"),
+        ):
+            ImportService(db).import_file(
+                _STANDARD_CSV,
+                account_name="test",
+                refresh=False,
+                confirm=True,
             )
-            with (
-                patch(
-                    "moneybin.extractors.tabular.column_mapper.map_columns",
-                    return_value=high_ambig,
-                ),
-                caplog.at_level("WARNING"),
-            ):
-                ImportService(db).import_file(
-                    _STANDARD_CSV,
-                    account_name="test",
-                    refresh=False,
-                    confirm=True,
-                )
-            assert (
-                "sign convention" in caplog.text.lower()
-                or "ambiguous" in caplog.text.lower()
-            )
-        finally:
-            db.close()
+        assert (
+            "sign convention" in caplog.text.lower()
+            or "ambiguous" in caplog.text.lower()
+        )

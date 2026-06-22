@@ -75,19 +75,11 @@ def test_doctor_report_is_frozen() -> None:
 
 
 @pytest.fixture()
-def doctor_db(tmp_path: Path) -> Generator[Database, None, None]:
+def doctor_db(db: Database) -> Database:
     """Minimal DB with core tables for DoctorService tests."""
-    mock_store = MagicMock()
-    mock_store.get_key.return_value = "test-encryption-key-256bit-placeholder"
-    database = Database(
-        tmp_path / "doctor.duckdb",
-        secret_store=mock_store,
-        no_auto_upgrade=True,
-        read_only=False,
-    )
-    create_core_tables(database)
+    create_core_tables(db)
     # Seed one valid account and two transactions (both resolve)
-    database.execute("""
+    db.execute("""
         INSERT INTO core.dim_accounts (
             account_id, routing_number, account_type, institution_name,
             institution_fid, source_type, source_file, extracted_at, loaded_at,
@@ -97,7 +89,7 @@ def doctor_db(tmp_path: Path) -> Generator[Database, None, None]:
                   'a.qfx', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
                   CURRENT_TIMESTAMP, 'Bank CHECKING', 'USD', FALSE, TRUE)
     """)  # noqa: S608 — test input, not user data
-    database.execute("""
+    db.execute("""
         INSERT INTO core.fct_transactions (
             transaction_id, account_id, transaction_date, amount,
             amount_absolute, transaction_direction, description,
@@ -114,8 +106,7 @@ def doctor_db(tmp_path: Path) -> Generator[Database, None, None]:
          'CREDIT', false, 'USD', 'ofx', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
          2026, 1, 2, 4, '2026-01', '2026-Q1')
     """)  # noqa: S608 — test input, not user data
-    yield database
-    database.close()
+    return db
 
 
 def _seed_prep_unioned(db: Database, row_count: int) -> None:

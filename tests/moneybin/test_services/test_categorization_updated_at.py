@@ -8,28 +8,12 @@ UPDATE by the service layer.
 from __future__ import annotations
 
 import time
-from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
 from moneybin.database import Database
 from moneybin.services.categorization import CategorizationService
-from tests.moneybin.db_helpers import create_core_tables, seed_categories_view
-
-
-@pytest.fixture()
-def db(tmp_path: Path) -> Database:
-    mock_store = MagicMock()
-    mock_store.get_key.return_value = "test-key"
-    database = Database(
-        tmp_path / "test.duckdb",
-        secret_store=mock_store,
-        no_auto_upgrade=True,
-        read_only=False,
-    )
-    create_core_tables(database)
-    return database
+from tests.moneybin.db_helpers import seed_categories_view
 
 
 class TestUserCategoriesUpdatedAt:

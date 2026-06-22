@@ -7,8 +7,6 @@ invariants — silencing ``reportPrivateUsage`` for this file is deliberate.
 # pyright: reportPrivateUsage=false
 
 import json
-from collections.abc import Generator
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -76,19 +74,10 @@ def test_extract_pattern_falls_back_to_normalized_memo_when_description_empty() 
 
 
 @pytest.fixture
-def real_db(tmp_path: Path) -> Generator[Database, None, None]:
+def real_db(db: Database) -> Database:
     """A real DB with schema initialized."""
-    mock_store = MagicMock()
-    mock_store.get_key.return_value = "test-key"
-    db = Database(
-        tmp_path / "test.duckdb",
-        secret_store=mock_store,
-        no_auto_upgrade=True,
-        read_only=False,
-    )
     create_core_tables(db)
-    yield db
-    db.close()
+    return db
 
 
 def _seed_transaction(

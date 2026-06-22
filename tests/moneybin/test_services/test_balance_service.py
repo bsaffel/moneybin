@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Generator
 from datetime import date
 from decimal import Decimal
-from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -23,26 +20,17 @@ from tests.moneybin.db_helpers import create_core_tables
 
 
 @pytest.fixture()
-def assertion_db(
-    tmp_path: Path, mock_secret_store: MagicMock
-) -> Generator[Database, None, None]:
+def assertion_db(db: Database) -> Database:
     """Database with core tables + seeded dim_accounts rows for assertion CRUD tests."""
-    database = Database(
-        tmp_path / "assertion_test.duckdb",
-        secret_store=mock_secret_store,
-        no_auto_upgrade=True,
-        read_only=False,
-    )
-    create_core_tables(database)
-    database.execute(
+    create_core_tables(db)
+    db.execute(
         """
         INSERT INTO core.dim_accounts (account_id, account_type, institution_name, source_type)
         VALUES ('acct_a', 'CHECKING', 'Test Bank', 'ofx'),
                ('acct_b', 'SAVINGS', 'Other Bank', 'ofx')
         """
     )
-    yield database
-    database.close()
+    return db
 
 
 def _seed_fct_balances_daily(

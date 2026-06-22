@@ -4,10 +4,6 @@ These tests load real data into DuckDB, run the matching engine,
 and verify the gold records in core.fct_transactions.
 """
 
-from collections.abc import Generator
-from pathlib import Path
-from unittest.mock import MagicMock
-
 import pytest
 
 from moneybin.config import MatchingSettings
@@ -19,19 +15,6 @@ from moneybin.matching.persistence import (
 )
 from moneybin.matching.priority import seed_source_priority
 from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
-
-
-@pytest.fixture()
-def db(tmp_path: Path, mock_secret_store: MagicMock) -> Generator[Database, None, None]:
-    """Provide a test Database with all schemas needed for dedup integration tests."""
-    database = Database(
-        tmp_path / "test.duckdb",
-        secret_store=mock_secret_store,
-        no_auto_upgrade=True,
-        read_only=False,
-    )
-    yield database
-    database.close()
 
 
 def _seed_test_data(db: Database) -> None:

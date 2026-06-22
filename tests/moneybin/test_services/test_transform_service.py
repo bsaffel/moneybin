@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 from collections.abc import Generator
 from datetime import UTC, datetime
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -38,19 +37,8 @@ def _ts(year: int, month: int, day: int, hour: int = 0, minute: int = 0) -> date
     return datetime(year, month, day, hour, minute)
 
 
-def _open_db(tmp_path: Path, mock_secret_store: MagicMock) -> Database:
-    return Database(
-        tmp_path / "test.duckdb",
-        secret_store=mock_secret_store,
-        no_auto_upgrade=True,
-        read_only=False,
-    )
-
-
 @pytest.fixture()
-def freshness_db(
-    tmp_path: Path, mock_secret_store: MagicMock
-) -> Generator[Database, None, None]:
+def freshness_db(db: Database) -> Database:
     """Empty DB with core.dim_accounts shimmed in (raw.* are auto-created).
 
     The shimmed dim has both ``extracted_at`` (the propagated raw value
@@ -60,17 +48,13 @@ def freshness_db(
     inserts round-trip predictably through the ``updated_at::TIMESTAMP``
     cast in :meth:`TransformService._max_dim_accounts_updated_at`.
     """
-    db = _open_db(tmp_path, mock_secret_store)
-    try:
-        db.execute("SET TimeZone = 'UTC'")
-        db.execute(
-            "CREATE TABLE core.dim_accounts "
-            "(account_id VARCHAR, extracted_at TIMESTAMP, "
-            "updated_at TIMESTAMP WITH TIME ZONE)"
-        )
-        yield db
-    finally:
-        db.close()
+    db.execute("SET TimeZone = 'UTC'")
+    db.execute(
+        "CREATE TABLE core.dim_accounts "
+        "(account_id VARCHAR, extracted_at TIMESTAMP, "
+        "updated_at TIMESTAMP WITH TIME ZONE)"
+    )
+    return db
 
 
 def test_freshness_pending_when_raw_newer_than_dim(
@@ -101,31 +85,23 @@ def test_freshness_not_pending_when_dim_caught_up(freshness_db: Database) -> Non
 
 
 def test_freshness_pending_when_dim_table_missing(
-    tmp_path: Path, mock_secret_store: MagicMock
+    db: Database,
 ) -> None:
     """Pre-first-transform: dim_accounts doesn't exist; pending if any raw rows."""
-    db = _open_db(tmp_path, mock_secret_store)
-    try:
-        db.execute(_INSERT_RAW_ACCOUNT, ["a", _ts(2026, 5, 13, 18, 24), None])
-        f = TransformService(db).freshness()
-        assert f.pending is True
-        assert f.last_apply_at is None
-    finally:
-        db.close()
+    db.execute(_INSERT_RAW_ACCOUNT, ["a", _ts(2026, 5, 13, 18, 24), None])
+    f = TransformService(db).freshness()
+    assert f.pending is True
+    assert f.last_apply_at is None
 
 
 def test_freshness_no_raw_no_pending(
-    tmp_path: Path, mock_secret_store: MagicMock
+    db: Database,
 ) -> None:
     """No raw rows yet: pending=False (nothing waiting to be refreshed)."""
-    db = _open_db(tmp_path, mock_secret_store)
-    try:
-        f = TransformService(db).freshness()
-        assert f.pending is False
-        assert f.last_apply_at is None
-        assert f.latest_import_at is None
-    finally:
-        db.close()
+    f = TransformService(db).freshness()
+    assert f.pending is False
+    assert f.last_apply_at is None
+    assert f.latest_import_at is None
 
 
 def test_freshness_filters_reverted_and_failed_imports(
@@ -161,7 +137,7 @@ def test_freshness_counts_partial_imports(freshness_db: Database) -> None:
 
 
 def test_apply_returns_apply_result_shape(
-    tmp_path: Path, mock_secret_store: MagicMock, monkeypatch: pytest.MonkeyPatch
+    db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """apply() returns ApplyResult(applied=True, duration_seconds>=0) on success."""
     from contextlib import contextmanager
@@ -191,11 +167,7 @@ def test_apply_returns_apply_result_shape(
         fake_refresh,
     )
 
-    db = _open_db(tmp_path, mock_secret_store)
-    try:
-        result = TransformService(db).apply()
-    finally:
-        db.close()
+    result = TransformService(db).apply()
 
     assert result.applied is True
     assert result.duration_seconds >= 0
@@ -204,7 +176,7 @@ def test_apply_returns_apply_result_shape(
 
 
 def test_apply_soft_fails_with_error_type_on_sqlmesh_exception(
-    tmp_path: Path, mock_secret_store: MagicMock, monkeypatch: pytest.MonkeyPatch
+    db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """apply() returns ApplyResult(applied=False, error=<TypeName>) when SQLMesh raises.
 
@@ -232,11 +204,7 @@ def test_apply_soft_fails_with_error_type_on_sqlmesh_exception(
         fake_seed,
     )
 
-    db = _open_db(tmp_path, mock_secret_store)
-    try:
-        result = TransformService(db).apply()
-    finally:
-        db.close()
+    result = TransformService(db).apply()
 
     assert result.applied is False
     assert result.error == "RuntimeError"
@@ -244,8 +212,7 @@ def test_apply_soft_fails_with_error_type_on_sqlmesh_exception(
 
 
 def test_apply_logs_exception_message_for_debuggability(
-    tmp_path: Path,
-    mock_secret_store: MagicMock,
+    db: Database,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -278,21 +245,15 @@ def test_apply_logs_exception_message_for_debuggability(
         fake_seed,
     )
 
-    db = _open_db(tmp_path, mock_secret_store)
-    try:
-        with caplog.at_level(
-            logging.WARNING, logger="moneybin.services.transform_service"
-        ):
-            result = TransformService(db).apply()
-    finally:
-        db.close()
+    with caplog.at_level(logging.WARNING, logger="moneybin.services.transform_service"):
+        result = TransformService(db).apply()
 
     assert result.error == "RuntimeError"  # envelope contract unchanged
     assert detail in caplog.text  # the message reached the log
 
 
 def test_import_service_run_transforms_delegates_to_transform_service(
-    tmp_path: Path, mock_secret_store: MagicMock, monkeypatch: pytest.MonkeyPatch
+    db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """ImportService.run_transforms() delegates to TransformService.apply()."""
     from moneybin.services.import_service import ImportService
@@ -306,18 +267,14 @@ def test_import_service_run_transforms_delegates_to_transform_service(
 
     monkeypatch.setattr(TransformService, "apply", fake_apply)
 
-    db = _open_db(tmp_path, mock_secret_store)
-    try:
-        result = ImportService(db).run_transforms()
-    finally:
-        db.close()
+    result = ImportService(db).run_transforms()
 
     assert result is True
     assert calls == ["apply"]
 
 
 def test_status_uninitialized_environment(
-    tmp_path: Path, mock_secret_store: MagicMock, monkeypatch: pytest.MonkeyPatch
+    db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Fresh DB: no SQLMesh env → initialized=False, pending=False."""
     from contextlib import contextmanager
@@ -334,11 +291,7 @@ def test_status_uninitialized_environment(
         fake_sqlmesh_context,
     )
 
-    db = _open_db(tmp_path, mock_secret_store)
-    try:
-        s: TransformStatus = TransformService(db).status()
-    finally:
-        db.close()
+    s: TransformStatus = TransformService(db).status()
 
     assert s.environment == "prod"
     assert s.initialized is False
@@ -347,7 +300,7 @@ def test_status_uninitialized_environment(
 
 
 def test_status_initialized_with_finalized_ts(
-    tmp_path: Path, mock_secret_store: MagicMock, monkeypatch: pytest.MonkeyPatch
+    db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """SQLMesh env exists and is finalized → initialized=True, last_apply_at set."""
     from contextlib import contextmanager
@@ -372,11 +325,7 @@ def test_status_initialized_with_finalized_ts(
         fake_sqlmesh_context,
     )
 
-    db = _open_db(tmp_path, mock_secret_store)
-    try:
-        s: TransformStatus = TransformService(db).status()
-    finally:
-        db.close()
+    s: TransformStatus = TransformService(db).status()
 
     assert s.environment == "prod"
     assert s.initialized is True
@@ -384,9 +333,7 @@ def test_status_initialized_with_finalized_ts(
     assert abs((s.last_apply_at - expected_naive).total_seconds()) < 1.0
 
 
-def test_plan_no_changes(
-    tmp_path: Path, mock_secret_store: MagicMock, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_plan_no_changes(db: Database, monkeypatch: pytest.MonkeyPatch) -> None:
     """plan() returns has_changes=False when SQLMesh Plan is empty."""
     from contextlib import contextmanager
 
@@ -407,11 +354,7 @@ def test_plan_no_changes(
         "moneybin.services.transform_service.sqlmesh_context", fake_sqlmesh_context
     )
 
-    db = _open_db(tmp_path, mock_secret_store)
-    try:
-        p = TransformService(db).plan()
-    finally:
-        db.close()
+    p = TransformService(db).plan()
 
     assert p.has_changes is False
     assert p.directly_modified == []
@@ -421,7 +364,7 @@ def test_plan_no_changes(
 
 
 def test_plan_lists_changed_models(
-    tmp_path: Path, mock_secret_store: MagicMock, monkeypatch: pytest.MonkeyPatch
+    db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """plan() surfaces directly_modified + indirectly_modified snapshot names."""
     from contextlib import contextmanager
@@ -449,11 +392,7 @@ def test_plan_lists_changed_models(
         "moneybin.services.transform_service.sqlmesh_context", fake_sqlmesh_context
     )
 
-    db = _open_db(tmp_path, mock_secret_store)
-    try:
-        p = TransformService(db).plan()
-    finally:
-        db.close()
+    p = TransformService(db).plan()
 
     assert p.has_changes is True
     assert p.directly_modified == ["core.dim_accounts"]
@@ -461,7 +400,7 @@ def test_plan_lists_changed_models(
 
 
 def test_validate_passes_when_plan_builds(
-    tmp_path: Path, mock_secret_store: MagicMock, monkeypatch: pytest.MonkeyPatch
+    db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """validate() returns valid=True when SQLMesh builds the plan without raising."""
     from contextlib import contextmanager
@@ -477,18 +416,14 @@ def test_validate_passes_when_plan_builds(
         "moneybin.services.transform_service.sqlmesh_context", fake_sqlmesh_context
     )
 
-    db = _open_db(tmp_path, mock_secret_store)
-    try:
-        v = TransformService(db).validate()
-    finally:
-        db.close()
+    v = TransformService(db).validate()
 
     assert v.valid is True
     assert v.errors == []
 
 
 def test_validate_reports_errors_on_raise(
-    tmp_path: Path, mock_secret_store: MagicMock, monkeypatch: pytest.MonkeyPatch
+    db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """validate() returns valid=False with error detail when SQLMesh raises."""
     from contextlib import contextmanager
@@ -502,11 +437,7 @@ def test_validate_reports_errors_on_raise(
         "moneybin.services.transform_service.sqlmesh_context", fake_sqlmesh_context
     )
 
-    db = _open_db(tmp_path, mock_secret_store)
-    try:
-        v = TransformService(db).validate()
-    finally:
-        db.close()
+    v = TransformService(db).validate()
 
     assert v.valid is False
     assert len(v.errors) == 1
@@ -516,7 +447,7 @@ def test_validate_reports_errors_on_raise(
 
 
 def test_audit_aggregates_pass_fail_counts(
-    tmp_path: Path, mock_secret_store: MagicMock, monkeypatch: pytest.MonkeyPatch
+    db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """audit() derives passed/failed counts from per-snapshot audit results."""
     from contextlib import contextmanager
@@ -544,11 +475,7 @@ def test_audit_aggregates_pass_fail_counts(
         "moneybin.services.transform_service.sqlmesh_context", fake_sqlmesh_context
     )
 
-    db = _open_db(tmp_path, mock_secret_store)
-    try:
-        result = TransformService(db).audit(start="2026-01-01", end="2026-12-31")
-    finally:
-        db.close()
+    result = TransformService(db).audit(start="2026-01-01", end="2026-12-31")
 
     assert result.passed == 1
     assert result.failed == 1

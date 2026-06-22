@@ -6,10 +6,7 @@
 # pyright: reportPrivateUsage=false
 from __future__ import annotations
 
-from collections.abc import Generator
 from decimal import Decimal
-from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -84,17 +81,9 @@ class TestHolderCategoryClassifier:
 
 
 @pytest.fixture()
-def account_db(tmp_path: Path) -> Generator[Database, None, None]:
-    """Yield a Database with core + raw tables and test data seeded."""
-    mock_store = MagicMock()
-    mock_store.get_key.return_value = "test-encryption-key-256bit-placeholder"
-    database = Database(
-        tmp_path / "test.duckdb",
-        secret_store=mock_store,
-        no_auto_upgrade=True,
-        read_only=False,
-    )
-    conn = database.conn
+def account_db(db: Database) -> Database:
+    """Return a Database with core + raw tables and test data seeded."""
+    conn = db.conn
     create_core_tables_raw(conn)
 
     # Insert test accounts — use named columns so DDL-added defaults apply to
@@ -124,8 +113,7 @@ def account_db(tmp_path: Path) -> Generator[Database, None, None]:
          15000.00, 'other.qfx', '2025-01-24', CURRENT_TIMESTAMP, NULL, 'ofx')
     """)  # noqa: S608  # test input, not executing SQL
 
-    yield database
-    database.close()
+    return db
 
 
 class TestListAccounts:
@@ -232,32 +220,21 @@ class TestAccountSettingsModel:
 
 
 @pytest.fixture()
-def test_db(
-    tmp_path: Path, mock_secret_store: MagicMock
-) -> Generator[Database, None, None]:
+def test_db(db: Database) -> Database:
     """Test database with all schemas + a seeded dim_accounts row for mutator tests.
 
     Seeds account_id='acct_a' so mutator tests (rename, archive, etc.) can call
     _assert_account_exists without failing on a missing row.
     """
-    database = Database(
-        tmp_path / "test.duckdb",
-        secret_store=mock_secret_store,
-        no_auto_upgrade=True,
-        read_only=False,
-    )
-    create_core_tables(database)
-    database.execute(
+    create_core_tables(db)
+    db.execute(
         """
         INSERT INTO core.dim_accounts
             (account_id, account_type, institution_name, source_type)
         VALUES ('acct_a', 'CHECKING', 'Test Bank', 'ofx')
         """
     )
-    try:
-        yield database
-    finally:
-        database.close()
+    return db
 
 
 class TestAccountSettingsLoad:
@@ -284,18 +261,9 @@ class TestEmptyResults:
     """Tests for service behavior with no data in tables."""
 
     @pytest.fixture()
-    def empty_db(self, tmp_path: Path) -> Generator[Database, None, None]:
-        mock_store = MagicMock()
-        mock_store.get_key.return_value = "test-encryption-key-256bit-placeholder"
-        database = Database(
-            tmp_path / "test.duckdb",
-            secret_store=mock_store,
-            no_auto_upgrade=True,
-            read_only=False,
-        )
-        create_core_tables_raw(database.conn)
-        yield database
-        database.close()
+    def empty_db(self, db: Database) -> Database:
+        create_core_tables_raw(db.conn)
+        return db
 
     @pytest.mark.unit
     def test_list_accounts_empty_db(self, empty_db: Database) -> None:
@@ -550,21 +518,10 @@ def _insert_dim_account(
 
 
 @pytest.fixture()
-def extended_db(
-    tmp_path: Path, mock_secret_store: MagicMock
-) -> Generator[Database, None, None]:
+def extended_db(db: Database) -> Database:
     """Database with full Phase-2 dim_accounts DDL for extended-read tests."""
-    database = Database(
-        tmp_path / "extended_test.duckdb",
-        secret_store=mock_secret_store,
-        no_auto_upgrade=True,
-        read_only=False,
-    )
-    create_core_tables(database)
-    try:
-        yield database
-    finally:
-        database.close()
+    create_core_tables(db)
+    return db
 
 
 class TestAccountServiceListExtended:

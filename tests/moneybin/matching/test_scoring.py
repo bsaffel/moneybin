@@ -1,9 +1,5 @@
 """Tests for candidate blocking and scoring."""
 
-from collections.abc import Generator
-from pathlib import Path
-from unittest.mock import MagicMock
-
 import pytest
 
 from moneybin.database import Database
@@ -13,19 +9,6 @@ from moneybin.matching.scoring import (
     get_candidates_cross_source,
     get_candidates_within_source,
 )
-
-
-@pytest.fixture()
-def db(tmp_path: Path, mock_secret_store: MagicMock) -> Generator[Database, None, None]:
-    """Provide a fresh test database for scoring tests."""
-    database = Database(
-        tmp_path / "test.duckdb",
-        secret_store=mock_secret_store,
-        no_auto_upgrade=True,
-        read_only=False,
-    )
-    yield database
-    database.close()
 
 
 def _insert_unioned_row(

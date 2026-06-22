@@ -5,10 +5,6 @@ rows nor against other manual rows — across Tier 2b (within-source), Tier 3
 (cross-source), or Tier 4 (transfer detection).
 """
 
-from collections.abc import Generator
-from pathlib import Path
-from unittest.mock import MagicMock
-
 import pytest
 
 from moneybin.config import MatchingSettings
@@ -17,18 +13,6 @@ from moneybin.matching.engine import TransactionMatcher
 from moneybin.matching.persistence import get_active_matches, get_pending_matches
 
 pytestmark = pytest.mark.unit
-
-
-@pytest.fixture()
-def db(tmp_path: Path, mock_secret_store: MagicMock) -> Generator[Database, None, None]:
-    database = Database(
-        tmp_path / "test.duckdb",
-        secret_store=mock_secret_store,
-        no_auto_upgrade=True,
-        read_only=False,
-    )
-    yield database
-    database.close()
 
 
 def _create_test_table(db: Database) -> None:

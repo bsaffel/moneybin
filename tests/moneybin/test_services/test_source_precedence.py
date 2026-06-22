@@ -7,9 +7,6 @@ A higher-priority source can never be overwritten by a lower-priority source.
 
 from __future__ import annotations
 
-from pathlib import Path
-from unittest.mock import MagicMock
-
 import pytest
 from prometheus_client import REGISTRY
 
@@ -27,16 +24,8 @@ from tests.moneybin.db_helpers import create_core_tables
 
 
 @pytest.fixture()
-def real_db(tmp_path: Path) -> Database:
+def real_db(db: Database) -> Database:
     """Real DB with core + app schema."""
-    mock_store = MagicMock()
-    mock_store.get_key.return_value = "test-key"
-    db = Database(
-        tmp_path / "test.duckdb",
-        secret_store=mock_store,
-        no_auto_upgrade=True,
-        read_only=False,
-    )
     create_core_tables(db)
     return db
 
