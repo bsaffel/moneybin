@@ -382,9 +382,15 @@ def db(
     creation, migration, or init (so they exercise the real mechanism rather
     than a pre-baked copy). See ``test_template_copy_matches_fresh_build`` for
     the invariant that keeps the two paths equivalent.
+
+    Fast-path key constraint: the template is encrypted with the conftest
+    default key (``"test-encryption-key-for-unit-tests"``). A module that
+    overrides ``mock_secret_store`` with a *different* key MUST also mark
+    ``fresh_db`` — otherwise the copied template fails to decrypt with a raw
+    DuckDB error. (See ``test_database.py``'s ``TestCheckCoreSchemaDrift``.)
     """
     db_path = tmp_path / "test.duckdb"
-    if request.node.get_closest_marker("fresh_db"):  # type: ignore[reportUnknownMemberType]  # pytest stub incomplete
+    if request.node.get_closest_marker("fresh_db"):  # pyright: ignore[reportUnknownMemberType]  # pytest stub incomplete
         database = Database(
             db_path,
             secret_store=mock_secret_store,
