@@ -8,11 +8,6 @@ sets up rows via the repo and exercises the read projections in
 """
 
 import uuid
-from collections.abc import Generator
-from pathlib import Path
-from unittest.mock import MagicMock
-
-import pytest
 
 from moneybin.database import Database
 from moneybin.matching.persistence import (
@@ -25,19 +20,6 @@ from moneybin.matching.persistence import (
     get_rejected_pairs,
 )
 from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
-
-
-@pytest.fixture()
-def db(tmp_path: Path, mock_secret_store: MagicMock) -> Generator[Database, None, None]:
-    """Provide a fresh test database with all schemas initialised."""
-    database = Database(
-        tmp_path / "test.duckdb",
-        secret_store=mock_secret_store,
-        no_auto_upgrade=True,
-        read_only=False,
-    )
-    yield database
-    database.close()
 
 
 def _make_match_id() -> str:

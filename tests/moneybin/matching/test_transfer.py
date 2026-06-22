@@ -1,9 +1,6 @@
 """Tests for transfer detection scoring and blocking."""
 
-from collections.abc import Generator
 from decimal import Decimal
-from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -103,19 +100,6 @@ class TestComputeTransferConfidence:
                     weights=_DEFAULT_WEIGHTS,
                 )
                 assert 0.0 <= score <= 1.0
-
-
-@pytest.fixture()
-def db(tmp_path: Path, mock_secret_store: MagicMock) -> Generator[Database, None, None]:
-    """Provide a fresh test database for transfer tests."""
-    database = Database(
-        tmp_path / "test.duckdb",
-        secret_store=mock_secret_store,
-        no_auto_upgrade=True,
-        read_only=False,
-    )
-    yield database
-    database.close()
 
 
 def _insert_transfer_row(

@@ -1,9 +1,6 @@
 """Integration tests for the transfer detection pipeline."""
 
 import json
-from collections.abc import Generator
-from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -15,19 +12,6 @@ from moneybin.matching.persistence import (
     get_pending_matches,
 )
 from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
-
-
-@pytest.fixture()
-def db(tmp_path: Path, mock_secret_store: MagicMock) -> Generator[Database, None, None]:
-    """Provide a test Database with match_decisions table."""
-    database = Database(
-        tmp_path / "test.duckdb",
-        secret_store=mock_secret_store,
-        no_auto_upgrade=True,
-        read_only=False,
-    )
-    yield database
-    database.close()
 
 
 def _setup_tables(db: Database) -> None:

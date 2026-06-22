@@ -1,27 +1,8 @@
 """Tests for source priority seeding."""
 
-from collections.abc import Generator
-from pathlib import Path
-from unittest.mock import MagicMock
-
-import pytest
-
 from moneybin.config import MatchingSettings
 from moneybin.database import Database
 from moneybin.matching.priority import seed_source_priority
-
-
-@pytest.fixture()
-def db(tmp_path: Path, mock_secret_store: MagicMock) -> Generator[Database, None, None]:
-    """Provide a temporary test database with app schema initialized."""
-    database = Database(
-        tmp_path / "test.duckdb",
-        secret_store=mock_secret_store,
-        no_auto_upgrade=True,
-        read_only=False,
-    )
-    yield database
-    database.close()
 
 
 class TestSeedSourcePriority:

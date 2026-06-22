@@ -2,10 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Generator
-from pathlib import Path
-from unittest.mock import MagicMock
-
 import pytest
 
 from moneybin import error_codes
@@ -17,19 +13,6 @@ from moneybin.matching.persistence import (
 )
 from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
 from moneybin.services.matching_service import MatchingService
-
-
-@pytest.fixture()
-def db(tmp_path: Path, mock_secret_store: MagicMock) -> Generator[Database, None, None]:
-    """Provide a fresh test database with all schemas initialised."""
-    database = Database(
-        tmp_path / "test.duckdb",
-        secret_store=mock_secret_store,
-        no_auto_upgrade=True,
-        read_only=False,
-    )
-    yield database
-    database.close()
 
 
 def _seed(db: Database, match_id: str, status: MatchStatus) -> None:

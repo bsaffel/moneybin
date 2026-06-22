@@ -1,11 +1,7 @@
 """Tests for TransactionMatcher orchestrator."""
 
-from collections.abc import Generator
 from datetime import UTC, datetime
-from pathlib import Path
 from unittest.mock import MagicMock
-
-import pytest
 
 from moneybin.config import MatchingSettings
 from moneybin.database import Database
@@ -75,19 +71,6 @@ class TestClassifyPair:
         for tier in ("2b", "3"):
             result = matcher._classify_pair(_make_pair(0.50), tier)  # type: ignore[arg-type]  # pyright: ignore[reportPrivateUsage]
             assert result is None, f"Expected None for tier {tier!r}"
-
-
-@pytest.fixture()
-def db(tmp_path: Path, mock_secret_store: MagicMock) -> Generator[Database, None, None]:
-    """Provide a test Database instance scoped to this module."""
-    database = Database(
-        tmp_path / "test.duckdb",
-        secret_store=mock_secret_store,
-        no_auto_upgrade=True,
-        read_only=False,
-    )
-    yield database
-    database.close()
 
 
 class TestFetchActiveDedupDecisions:

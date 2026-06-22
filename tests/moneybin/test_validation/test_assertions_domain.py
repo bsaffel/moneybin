@@ -176,17 +176,6 @@ def test_date_continuity_flags_account_with_all_null_dates(
     assert r.details["gap_count"] == 1
 
 
-@pytest.fixture()
-def db(tmp_path: Path, mock_secret_store: MagicMock) -> Database:
-    """Provide an empty test Database for tests that create their own table ``t``."""
-    return Database(
-        tmp_path / "test.duckdb",
-        secret_store=mock_secret_store,
-        no_auto_upgrade=True,
-        read_only=False,
-    )
-
-
 def test_amount_precision_passes_for_decimal_18_2_column(db: Database) -> None:
     db.execute("CREATE TABLE t (amount DECIMAL(18,2))")
     db.execute("INSERT INTO t VALUES (47.99), (-1500.00), (0.01)")
