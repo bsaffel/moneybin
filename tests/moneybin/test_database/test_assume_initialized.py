@@ -68,6 +68,7 @@ def test_assume_initialized_rejects_read_only(tmp_path: Path) -> None:
         Database(
             template,
             secret_store=_store(),
+            no_auto_upgrade=True,
             assume_initialized=True,
             read_only=True,
         )
@@ -85,7 +86,7 @@ def test_assume_initialized_rejects_missing_file(tmp_path: Path) -> None:
 
 
 def _catalog(db: Database) -> dict[str, object]:
-    """Full schema fingerprint: tables, columns (+types), views, and comments."""
+    """Full schema fingerprint: tables, columns (+types), views, comments, constraints."""
     tables = db.execute(
         "SELECT schema_name, table_name, comment FROM duckdb_tables() "
         "ORDER BY schema_name, table_name"
@@ -98,31 +99,47 @@ def _catalog(db: Database) -> dict[str, object]:
         "SELECT schema_name, view_name FROM duckdb_views() "
         "ORDER BY schema_name, view_name"
     ).fetchall()
-    return {"tables": tables, "columns": columns, "views": views}
+    # Constraints (PK/unique/check/not-null) — the dimension test_repo_metadata's
+    # PK check relies on; included so schema drift in keys can't slip past.
+    constraints = db.execute(
+        "SELECT schema_name, table_name, constraint_type, constraint_text "
+        "FROM duckdb_constraints() "
+        "ORDER BY schema_name, table_name, constraint_type, constraint_text"
+    ).fetchall()
+    return {
+        "tables": tables,
+        "columns": columns,
+        "views": views,
+        "constraints": constraints,
+    }
 
 
 def test_template_copy_matches_fresh_build(tmp_path: Path) -> None:
-    # A fresh, real init build:
-    fresh_path = tmp_path / "fresh.duckdb"
-    fresh = Database(
-        fresh_path, secret_store=_store(), no_auto_upgrade=True, read_only=False
-    )
-
-    # The template-copy path the fast `db` fixture uses:
+    # Build the copy artifacts first, so a failure here opens no connection.
     template = tmp_path / "template.duckdb"
     _build_template(template)
     copy = tmp_path / "copy.duckdb"
     shutil.copy(template, copy)
     copy.chmod(0o600)
-    copied = Database(
-        copy,
+
+    # A fresh, real init build vs the template-copy path the fast `db` fixture uses.
+    fresh = Database(
+        tmp_path / "fresh.duckdb",
         secret_store=_store(),
         no_auto_upgrade=True,
-        assume_initialized=True,
         read_only=False,
     )
     try:
-        assert _catalog(copied) == _catalog(fresh)
+        copied = Database(
+            copy,
+            secret_store=_store(),
+            no_auto_upgrade=True,
+            assume_initialized=True,
+            read_only=False,
+        )
+        try:
+            assert _catalog(copied) == _catalog(fresh)
+        finally:
+            copied.close()
     finally:
-        copied.close()
         fresh.close()
