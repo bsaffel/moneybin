@@ -12,8 +12,8 @@ class SyncAuthError(SyncError):
     """Authentication failed: missing token, refresh failed, user denied device flow."""
 
 
-class SyncConnectError(SyncError):
-    """Connect session terminated with status='failed' on the server."""
+class SyncLinkError(SyncError):
+    """Link session terminated with status='failed' on the server."""
 
 
 class SyncTimeoutError(SyncError):

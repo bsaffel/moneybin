@@ -11,7 +11,7 @@ Secret Service, some Docker setups).
 
 Timeouts:
 - _DEFAULT_TIMEOUT (15s) for most endpoints
-- _LONG_TIMEOUT (120s) for POST /sync/trigger and connect polling deadline
+- _LONG_TIMEOUT (120s) for POST /sync/trigger and link polling deadline
 Per design — no per-endpoint configuration knobs unless evidence demands them.
 """
 
@@ -33,14 +33,14 @@ from keyring.errors import KeyringError
 from moneybin.connectors.sync_errors import (
     SyncAPIError,
     SyncAuthError,
-    SyncConnectError,
+    SyncLinkError,
     SyncTimeoutError,
 )
 from moneybin.connectors.sync_models import (
     AuthToken,
     ConnectedInstitution,
-    ConnectInitiateResponse,
-    ConnectStatusResponse,
+    LinkInitiateResponse,
+    LinkStatusResponse,
     SyncAckResponse,
     SyncDataResponse,
     SyncTriggerResponse,
@@ -55,7 +55,7 @@ _KEYRING_REFRESH_KEY = "refresh_token"
 
 _DEFAULT_TIMEOUT = httpx.Timeout(15.0, connect=10.0)
 _LONG_TIMEOUT = httpx.Timeout(120.0, connect=10.0)
-_CONNECT_POLL_INTERVAL = 3.0
+_LINK_POLL_INTERVAL = 3.0
 
 
 class SyncClient:
@@ -314,62 +314,62 @@ class SyncClient:
         """Remove a connected institution by its connection ID."""
         self._authed_request("DELETE", f"/institutions/{connection_id}")
 
-    # ------------------------------ Connect flow ------------------------------
+    # ------------------------------ Link flow ------------------------------
 
-    def initiate_connect(
+    def initiate_link(
         self,
         *,
         provider: str = "plaid",
         provider_item_id: str | None = None,
         return_to: str | None = None,
-    ) -> ConnectInitiateResponse:
+    ) -> LinkInitiateResponse:
         """Start a Plaid Link session; returns session_id and hosted link_url."""
         body: dict[str, object] = {"provider": provider}
         if provider_item_id:
             body["provider_item_id"] = provider_item_id
         if return_to:
             body["return_to"] = return_to
-        resp = self._authed_request("POST", "/sync/connect/initiate", json_body=body)
-        return ConnectInitiateResponse.model_validate(resp.json())
+        resp = self._authed_request("POST", "/sync/link/initiate", json_body=body)
+        return LinkInitiateResponse.model_validate(resp.json())
 
-    def get_connect_status(self, session_id: str) -> ConnectStatusResponse:
-        """Single-shot GET /sync/connect/status — returns whatever state the server holds.
+    def get_link_status(self, session_id: str) -> LinkStatusResponse:
+        """Single-shot GET /sync/link/status — returns whatever state the server holds.
 
         Used by CLI `sync link-status` and MCP `sync_link_status`; both are
         event-driven (caller decides when to check) rather than blocking. Use
-        `poll_connect_status` instead when the caller needs to block until a
+        `poll_link_status` instead when the caller needs to block until a
         terminal state.
         """
         resp = self._authed_request(
             "GET",
-            "/sync/connect/status",
+            "/sync/link/status",
             params={"session_id": session_id},
         )
-        return ConnectStatusResponse.model_validate(resp.json())
+        return LinkStatusResponse.model_validate(resp.json())
 
-    def poll_connect_status(self, session_id: str) -> ConnectStatusResponse:
-        """Poll GET /sync/connect/status until status reaches a terminal state.
+    def poll_link_status(self, session_id: str) -> LinkStatusResponse:
+        """Poll GET /sync/link/status until status reaches a terminal state.
 
-        Terminal: 'connected' (returns) or 'failed' (raises SyncConnectError).
+        Terminal: 'linked' (returns) or 'failed' (raises SyncLinkError).
         Times out after _LONG_TIMEOUT seconds → SyncTimeoutError.
         """
         read_timeout: float = _LONG_TIMEOUT.read or 120.0
         deadline = time.time() + read_timeout
         while time.time() < deadline:
-            self._sleep(_CONNECT_POLL_INTERVAL)
+            self._sleep(_LINK_POLL_INTERVAL)
             resp = self._authed_request(
                 "GET",
-                "/sync/connect/status",
+                "/sync/link/status",
                 params={"session_id": session_id},
             )
-            status = ConnectStatusResponse.model_validate(resp.json())
-            if status.status == "connected":
+            status = LinkStatusResponse.model_validate(resp.json())
+            if status.status == "linked":
                 return status
             if status.status == "failed":
-                raise SyncConnectError(status.error or "connect session failed")
+                raise SyncLinkError(status.error or "link session failed")
             # status == "pending" → continue
         raise SyncTimeoutError(
-            "connect flow timed out — user may have abandoned the browser"
+            "link flow timed out — user may have abandoned the browser"
         )
 
     # ------------------------------ Sync trigger and data ------------------------------

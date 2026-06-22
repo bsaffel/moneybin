@@ -45,12 +45,12 @@ Every endpoint below is exercised by `SyncClient`. Paths and methods are taken d
 | `POST` | `/auth/refresh` | refresh token | Exchange a refresh token for a new access token (with a rotated refresh token). |
 | `GET` | `/institutions` | bearer | List the user's connected institutions across providers. |
 | `DELETE` | `/institutions/{id}` | bearer | Disconnect an institution by its internal connection ID. |
-| `POST` | `/sync/connect/initiate` | bearer | Start a connect session (Plaid Link today). Returns a hosted `link_url` for the user to open. |
-| `GET` | `/sync/connect/status` | bearer | Read the current state of a connect session (`pending` / `connected` / `failed`). |
+| `POST` | `/sync/link/initiate` | bearer | Start a link session (Plaid Link today). Returns a hosted `link_url` for the user to open. |
+| `GET` | `/sync/link/status` | bearer | Read the current state of a link session (`pending` / `linked` / `failed`). |
 | `POST` | `/sync/trigger` | bearer | Run a sync. Synchronous from the client's perspective — blocks until the server completes the pull. |
 | `GET` | `/sync/data` | bearer | One-shot read of the most recent sync payload by `job_id`. Server deletes from its TTL store after read. |
 
-Properties across the catalog: bearer-token auth everywhere except the device-flow bootstrap (no cookies, no sessions); JSON request and response bodies (errors included); synchronous semantics — `POST /sync/trigger` blocks until the server-side pull completes, then `GET /sync/data` returns the payload. No webhooks; polling exists only for the connect flow, where the user takes the wheel.
+Properties across the catalog: bearer-token auth everywhere except the device-flow bootstrap (no cookies, no sessions); JSON request and response bodies (errors included); synchronous semantics — `POST /sync/trigger` blocks until the server-side pull completes, then `GET /sync/data` returns the payload. No webhooks; polling exists only for the link flow, where the user takes the wheel.
 
 ### Sync sequence (canonical)
 
@@ -169,9 +169,9 @@ Any non-200 response clears both tokens on the client and requires re-login.
 
 **Errors:** `404` if the connection does not exist or belongs to another user.
 
-### `POST /sync/connect/initiate`
+### `POST /sync/link/initiate`
 
-Begin a connect session. The response includes a hosted URL the user opens in a browser; the user completes provider-side flows there (Plaid Link, in today's deployment).
+Begin a link session. The response includes a hosted URL the user opens in a browser; the user completes provider-side flows there (Plaid Link, in today's deployment).
 
 **Request:**
 
@@ -189,34 +189,34 @@ Begin a connect session. The response includes a hosted URL the user opens in a 
 | `provider_item_id` | string \| null | no | If set, opens an **update-mode** Link session for an existing connection (e.g., to resolve `ITEM_LOGIN_REQUIRED`). |
 | `return_to` | string \| null | no | Where the hosted UI should send the user after completion. Server-defined semantics. |
 
-**Response (200):** `ConnectInitiateResponse`
+**Response (200):** `LinkInitiateResponse`
 
 ```json
 {
   "session_id": "sess_abc123",
   "link_url": "https://link.example.com/sessions/sess_abc123",
-  "connect_type": "widget_flow",
+  "link_type": "widget_flow",
   "expiration": "2026-05-17T15:00:00Z"
 }
 ```
 
 | Field | Notes |
 |---|---|
-| `session_id` | Opaque token; the client passes it to `GET /sync/connect/status`. |
+| `session_id` | Opaque token; the client passes it to `GET /sync/link/status`. |
 | `link_url` | Hosted URL the client opens in the user's browser. |
-| `connect_type` | `"widget_flow"` (Plaid Link in a hosted browser) or `"token_paste"` (manual token entry, reserved for headless flows). |
-| `expiration` | After this timestamp, the session can no longer transition to `connected`. |
+| `link_type` | `"widget_flow"` (Plaid Link in a hosted browser) or `"token_paste"` (manual token entry, reserved for headless flows). |
+| `expiration` | After this timestamp, the session can no longer transition to `linked`. |
 
-### `GET /sync/connect/status`
+### `GET /sync/link/status`
 
-**Query parameter:** `session_id` from `/sync/connect/initiate`.
+**Query parameter:** `session_id` from `/sync/link/initiate`.
 
-**Response (200):** `ConnectStatusResponse`
+**Response (200):** `LinkStatusResponse`
 
 ```json
 {
   "session_id": "sess_abc123",
-  "status": "connected",
+  "status": "linked",
   "provider_item_id": "item_abc123...",
   "institution_name": "Chase",
   "error": null,
@@ -226,12 +226,12 @@ Begin a connect session. The response includes a hosted URL the user opens in a 
 
 | Field | Type | Notes |
 |---|---|---|
-| `status` | enum | `"pending"` \| `"connected"` \| `"failed"`. |
-| `provider_item_id` | string \| null | Populated once `status == "connected"`. |
-| `institution_name` | string \| null | Populated once `status == "connected"`. |
+| `status` | enum | `"pending"` \| `"linked"` \| `"failed"`. |
+| `provider_item_id` | string \| null | Populated once `status == "linked"`. |
+| `institution_name` | string \| null | Populated once `status == "linked"`. |
 | `error` | string \| null | Populated when `status == "failed"`. |
 
-`pending` → keep polling. `connected` → success. `failed` → surface `error` to the user. Polling cadence and overall deadline are client-side policy, not part of the contract.
+`pending` → keep polling. `linked` → success. `failed` → surface `error` to the user. Polling cadence and overall deadline are client-side policy, not part of the contract.
 
 ### `POST /sync/trigger`
 
@@ -398,12 +398,12 @@ What the server returns and how the client classifies it:
 | `401` on an authed call | Refresh once, retry. A second `401` clears tokens and prompts re-login. |
 | `403` on `/auth/device/token` | Treated as "user denied authorization." Re-login required. |
 | `400` on `/auth/device/token` | Treated as "device code expired." Re-login required. |
-| Connect session `status == "failed"` | Surfaces the server's `error` string verbatim to the user. |
+| Link session `status == "failed"` | Surfaces the server's `error` string verbatim to the user. |
 | Any other `>= 400` | Surfaces `<METHOD> <path> returned <status>: <truncated body>` to the user. |
 | Connection refused / DNS failure / TLS error | Surfaces "sync server unreachable at &lt;url&gt;". |
 | Client deadline elapsed (connect poll, trigger long timeout) | Surfaces a timeout message; the server-side job may still complete. |
 
-The client wraps each of these into one of `SyncAuthError`, `SyncConnectError`, `SyncTimeoutError`, or `SyncAPIError` — the precise subclass hierarchy is a client implementation detail, defined in `src/moneybin/connectors/sync_errors.py`.
+The client wraps each of these into one of `SyncAuthError`, `SyncLinkError`, `SyncTimeoutError`, or `SyncAPIError` — the precise subclass hierarchy is a client implementation detail, defined in `src/moneybin/connectors/sync_errors.py`.
 
 The contract does **not** mandate a uniform error envelope. The client treats any `>= 400` status with an unstructured body as a generic API error. A future revision may tighten this to a structured `{ "error": { "code": "...", "message": "..." } }` shape; until then, the client relies on Pydantic validation to catch malformed success responses and on HTTP status to gate refresh-and-retry behavior.
 
@@ -463,7 +463,7 @@ What the contract guarantees when things partially fail.
 
 - **TTL atomicity for `/sync/data`.** The contract intent is that the server drops the payload only after handing a complete `200` response to the client; a mid-read drop should leave the payload available for one retry. The exact mechanism is server-implementation detail and not pinned down today. **If the client lost the payload, the safe recovery is to call `POST /sync/trigger` again** — sync is idempotent against the cursor, so re-triggering re-pulls the same incremental window without double-counting.
 - **Concurrent `/sync/trigger` calls.** No `Idempotency-Key` header, no specified lock or queue model. The client never issues concurrent triggers; treat concurrent triggers as undefined behavior in any other client until the contract pins this down.
-- **Connect session reuse.** Opening `link_url` twice is provider-side behavior (Plaid Link manages its own session). The client treats whatever terminal state `/sync/connect/status` reports as authoritative.
+- **Link session reuse.** Opening `link_url` twice is provider-side behavior (Plaid Link manages its own session). The client treats whatever terminal state `/sync/link/status` reports as authoritative.
 - **Payload size for `/sync/data`.** Single JSON body, no chunking, no documented maximum. Initial syncs with multi-year history can be large; the client validates the whole payload in memory. Servers emitting payloads above a few hundred MB will cause client-side memory pressure — a known sharp edge.
 
 ## Versioning

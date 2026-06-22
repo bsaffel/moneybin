@@ -9,8 +9,8 @@ import pytest
 from fastmcp import FastMCP
 
 from moneybin.connectors.sync_models import (
-    ConnectInitiateResponse,
     InstitutionResult,
+    LinkInitiateResponse,
     PullResult,
     SyncConnectionView,
 )
@@ -76,10 +76,10 @@ async def test_sync_link_returns_link_url_with_medium_sensitivity(
     mock_client_builder: MagicMock,
 ) -> None:
     client = MagicMock()
-    client.initiate_connect.return_value = ConnectInitiateResponse(
+    client.initiate_link.return_value = LinkInitiateResponse(
         session_id="sess_abc",
         link_url="https://hosted.plaid.com/link/xyz",
-        connect_type="widget_flow",
+        link_type="widget_flow",
         expiration=datetime(2026, 5, 13, 13, 30, tzinfo=UTC),
     )
     mock_client_builder.return_value = client
@@ -99,12 +99,12 @@ async def test_sync_link_returns_link_url_with_medium_sensitivity(
 async def test_sync_link_status_pending(mock_client_builder: MagicMock) -> None:
     from datetime import UTC, datetime
 
-    from moneybin.connectors.sync_models import ConnectStatusResponse
+    from moneybin.connectors.sync_models import LinkStatusResponse
 
     client = MagicMock()
-    # MCP sync_link_status uses the public get_connect_status single-shot
+    # MCP sync_link_status uses the public get_link_status single-shot
     # method on the client (was reaching into _authed_request before).
-    client.get_connect_status.return_value = ConnectStatusResponse(
+    client.get_link_status.return_value = LinkStatusResponse(
         session_id="sess_abc",
         status="pending",
         expiration=datetime(2026, 5, 13, 13, 30, tzinfo=UTC),
@@ -143,10 +143,10 @@ async def test_sync_connect_alias_warns_and_forwards(
 ) -> None:
     """The deprecated `sync_connect` alias warns but still forwards to `sync_link`."""
     client = MagicMock()
-    client.initiate_connect.return_value = ConnectInitiateResponse(
+    client.initiate_link.return_value = LinkInitiateResponse(
         session_id="sess_abc",
         link_url="https://hosted.plaid.com/link/xyz",
-        connect_type="widget_flow",
+        link_type="widget_flow",
         expiration=datetime(2026, 5, 13, 13, 30, tzinfo=UTC),
     )
     mock_client_builder.return_value = client
@@ -154,7 +154,7 @@ async def test_sync_connect_alias_warns_and_forwards(
 
     envelope = await sync_connect()
     # sync_connect is now the deprecated alias → forwards to sync_link and
-    # returns the same typed SyncConnectPayload (link_url: DESCRIPTION → MEDIUM).
+    # returns the same typed SyncLinkPayload (link_url: DESCRIPTION → MEDIUM).
     assert envelope.summary.sensitivity == "medium"
     assert envelope.data.session_id == "sess_abc"
     assert envelope.data.link_url == "https://hosted.plaid.com/link/xyz"
@@ -176,10 +176,10 @@ async def test_sync_connect_status_alias_warns_and_forwards(
     mock_client_builder: MagicMock, mock_logger: MagicMock
 ) -> None:
     """The deprecated `sync_connect_status` alias warns but still forwards."""
-    from moneybin.connectors.sync_models import ConnectStatusResponse
+    from moneybin.connectors.sync_models import LinkStatusResponse
 
     client = MagicMock()
-    client.get_connect_status.return_value = ConnectStatusResponse(
+    client.get_link_status.return_value = LinkStatusResponse(
         session_id="sess_abc",
         status="pending",
         expiration=datetime(2026, 5, 13, 13, 30, tzinfo=UTC),

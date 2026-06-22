@@ -25,20 +25,20 @@ class AuthToken(BaseModel):
     token_type: Literal["Bearer"] = "Bearer"  # noqa: S105  # literal constant, not a hardcoded password
 
 
-class ConnectInitiateResponse(BaseModel):
-    """Response from POST /sync/connect/initiate."""
+class LinkInitiateResponse(BaseModel):
+    """Response from POST /sync/link/initiate."""
 
     session_id: str = Field(min_length=1, max_length=128)
     link_url: str
-    connect_type: Literal["widget_flow", "token_paste"]
+    link_type: Literal["widget_flow", "token_paste"]
     expiration: datetime
 
 
-class ConnectStatusResponse(BaseModel):
-    """Response from GET /sync/connect/status."""
+class LinkStatusResponse(BaseModel):
+    """Response from GET /sync/link/status."""
 
     session_id: str
-    status: Literal["pending", "connected", "failed"]
+    status: Literal["pending", "linked", "failed"]
     provider_item_id: str | None = None
     institution_name: str | None = None
     error: str | None = None
@@ -159,12 +159,8 @@ class PullResult(BaseModel):
     transforms_error: str | None = None
 
 
-class ConnectResult(BaseModel):
-    """Return value from SyncService.link().
-
-    Named `ConnectResult` for historical reasons — predates the _link/_connect
-    verb split. Kept stable to avoid rippling renames into connector code.
-    """
+class LinkResult(BaseModel):
+    """Return value from SyncService.link()."""
 
     provider_item_id: str
     institution_name: str | None = None
