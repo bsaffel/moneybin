@@ -27,6 +27,8 @@ from moneybin.database import Database
 from moneybin.sql.migrations.V015__relax_user_categories_text_unique import migrate
 from tests.moneybin.migration_helpers import run_migration
 
+pytestmark = pytest.mark.fresh_db
+
 
 @pytest.fixture()
 def v015_db(db: Database) -> Database:

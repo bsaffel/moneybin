@@ -29,6 +29,8 @@ from tests.moneybin.migration_helpers import (
     run_migration,
 )
 
+pytestmark = pytest.mark.fresh_db
+
 
 def _reset_to_pre_v011_state(db: Database) -> None:
     """Drop the V011 `updated_at` column so the migration has work to do."""

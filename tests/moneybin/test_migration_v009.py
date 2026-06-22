@@ -20,6 +20,8 @@ from moneybin.database import Database
 from moneybin.sql.migrations.V009__purge_redundant_table_migrations import migrate
 from tests.moneybin.migration_helpers import insert_rows, run_migration
 
+pytestmark = pytest.mark.fresh_db
+
 _SCHEMA_MIGRATIONS_COLS = (
     "version",
     "filename",

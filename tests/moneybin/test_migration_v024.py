@@ -24,6 +24,8 @@ from moneybin.database import Database
 from moneybin.sql.migrations.V024__add_undo_columns_to_audit_log import migrate
 from tests.moneybin.migration_helpers import column_info, run_migration
 
+pytestmark = pytest.mark.fresh_db
+
 # Realistic pre-spec audit rows: full 32-hex audit_ids + their op group ids.
 _LEGACY_ROWS: tuple[tuple[str, str, str, str], ...] = (
     ("a1b2c3d4e5f60718293a4b5c6d7e8f90", "cli", "note.add", "op_" + "1" * 32),

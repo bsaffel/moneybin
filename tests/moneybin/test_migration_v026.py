@@ -39,6 +39,8 @@ from moneybin.sql.migrations.V026__add_transaction_id_to_manual_transactions imp
 )
 from tests.moneybin.migration_helpers import column_exists, run_migration
 
+pytestmark = pytest.mark.fresh_db
+
 
 def _expected_hash(source_transaction_id: str, account_id: str) -> str:
     """V026's frozen backfill hash: ``manual|source_transaction_id|account_id``.
