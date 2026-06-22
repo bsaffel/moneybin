@@ -34,10 +34,10 @@ def test_all_repos_declare_metadata() -> None:
         )
 
 
-def test_pk_columns_match_catalog(db: Database) -> None:
+def test_pk_columns_match_catalog(module_db: Database) -> None:
     for cls in concrete_repo_classes():
         ref = cls.table_ref
-        row = db.execute(
+        row = module_db.execute(
             "SELECT constraint_column_names FROM duckdb_constraints() "
             "WHERE schema_name = ? AND table_name = ? "
             "AND constraint_type = 'PRIMARY KEY'",
