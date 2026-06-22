@@ -1173,6 +1173,13 @@ def sqlmesh_context(
 
         config = Config(
             default_gateway=_DATABASE_ALIAS,
+            # Pin the SQLMesh cache beside this DB instead of the shared
+            # sqlmesh/.cache. The cache is keyed by model fingerprint, not by
+            # environment, so one cache shared across concurrent restate plans
+            # on different DBs (parallel scenario-test workers) poisons each
+            # other's snapshots and raises ConflictingPlanError. Per-DB scopes
+            # it to one profile (prod) / one test tmpdir (tests).
+            cache_dir=str(db_path.parent / ".sqlmesh-cache"),
             gateways={
                 _DATABASE_ALIAS: GatewayConfig(
                     connection=DuckDBConnectionConfig(database=str(db_path)),

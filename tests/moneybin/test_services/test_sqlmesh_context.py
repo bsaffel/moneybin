@@ -60,6 +60,40 @@ class TestSQLMeshContext:
 
     @patch("sqlmesh.core.engine_adapter.duckdb.DuckDBEngineAdapter")
     @patch("sqlmesh.Context")
+    def test_cache_dir_isolated_per_db(
+        self,
+        mock_ctx_cls: MagicMock,
+        mock_adapter_cls: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """cache_dir is derived from the db path, not the shared project cache.
+
+        SQLMesh's on-disk cache is keyed by model fingerprint, independent of
+        which DB/environment a plan targets. Sharing one cache across concurrent
+        restate plans on different DBs (xdist scenario workers) poisons snapshots
+        and raises ConflictingPlanError. Pinning cache_dir under the db's own
+        directory isolates it per-profile (prod) and per-test tmpdir (tests).
+        """
+        mock_db = MagicMock()
+        mock_db._conn = MagicMock()
+        db_path = tmp_path / "profile_a" / "moneybin.duckdb"
+        mock_db._db_path = db_path
+
+        cache: dict[str, object] = {}
+        with patch(
+            "sqlmesh.core.config.connection.BaseDuckDBConnectionConfig._data_file_to_adapter",
+            cache,
+        ):
+            from moneybin.database import sqlmesh_context
+
+            with sqlmesh_context(mock_db):
+                pass
+
+        config = mock_ctx_cls.call_args.kwargs["config"]
+        assert config.cache_dir == str(db_path.parent / ".sqlmesh-cache")
+
+    @patch("sqlmesh.core.engine_adapter.duckdb.DuckDBEngineAdapter")
+    @patch("sqlmesh.Context")
     def test_cleans_up_on_failure(
         self,
         mock_ctx_cls: MagicMock,
