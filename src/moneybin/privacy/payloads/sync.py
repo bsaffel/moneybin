@@ -10,9 +10,9 @@ Tier derivation summary:
                                         contains SyncPullInstitutionRow list)
   - ``SyncConnectionRow``             → Tier.MEDIUM (guidance = DESCRIPTION)
   - ``SyncStatusPayload``             → Tier.MEDIUM (via SyncConnectionRow)
-  - ``SyncConnectPayload``            → Tier.MEDIUM (link_url = DESCRIPTION —
+  - ``SyncLinkPayload``               → Tier.MEDIUM (link_url = DESCRIPTION —
                                         link is a sensitive one-time credential)
-  - ``SyncConnectStatusPayload``      → Tier.MEDIUM (error = DESCRIPTION)
+  - ``SyncLinkStatusPayload``         → Tier.MEDIUM (error = DESCRIPTION)
   - ``SyncDisconnectPayload``         → Tier.LOW (INSTITUTION + TXN_TYPE only)
   - ``SyncSchedulePlaceholderPayload``→ Tier.LOW (stub; not-implemented payloads)
 """
@@ -93,13 +93,13 @@ class SyncStatusPayload:
 
 
 # ---------------------------------------------------------------------------
-# sync_connect — initiate connection payload
+# sync_link — initiate link payload
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
-class SyncConnectPayload:
-    """Payload for ``sync_connect`` — link URL + session ID."""
+class SyncLinkPayload:
+    """Payload for ``sync_link`` — link URL + session ID."""
 
     session_id: Annotated[str, DataClass.RECORD_ID]
     link_url: Annotated[str, DataClass.DESCRIPTION]
@@ -107,13 +107,13 @@ class SyncConnectPayload:
 
 
 # ---------------------------------------------------------------------------
-# sync_connect_status — connection session status payload
+# sync_link_status — link session status payload
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
-class SyncConnectStatusPayload:
-    """Payload for ``sync_connect_status`` — connection session check."""
+class SyncLinkStatusPayload:
+    """Payload for ``sync_link_status`` — link session check."""
 
     session_id: Annotated[str, DataClass.RECORD_ID]
     status: Annotated[str, DataClass.TXN_TYPE]

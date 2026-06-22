@@ -22,9 +22,9 @@ from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.privacy.payloads.sync import (
     SyncConnectionRow,
-    SyncConnectPayload,
-    SyncConnectStatusPayload,
     SyncDisconnectPayload,
+    SyncLinkPayload,
+    SyncLinkStatusPayload,
     SyncPullInstitutionRow,
     SyncPullPayload,
     SyncStatusPayload,
@@ -137,7 +137,7 @@ def sync_status() -> ResponseEnvelope[SyncStatusPayload]:
 @mcp_tool(read_only=False, idempotent=False, open_world=True)
 def sync_link(
     institution: str | None = None,
-) -> ResponseEnvelope[SyncConnectPayload]:
+) -> ResponseEnvelope[SyncLinkPayload]:
     """Link a bank account via Plaid (formerly: sync_connect).
 
     Initiates a bank-connection flow via moneybin-server's Plaid Hosted Link.
@@ -173,9 +173,9 @@ def sync_link(
             provider_item_id = matches[0].provider_item_id
         # else: name doesn't match any existing connection → new-connection flow
         # per design Section 8; let the server's Link flow name the institution.
-    initiate = client.initiate_connect(provider_item_id=provider_item_id)
+    initiate = client.initiate_link(provider_item_id=provider_item_id)
     return build_envelope(
-        data=SyncConnectPayload(
+        data=SyncLinkPayload(
             session_id=initiate.session_id,
             link_url=initiate.link_url,
             expiration=initiate.expiration.isoformat(),
@@ -192,28 +192,28 @@ def sync_link(
 @mcp_tool()
 def sync_link_status(
     session_id: str,
-) -> ResponseEnvelope[SyncConnectStatusPayload]:
+) -> ResponseEnvelope[SyncLinkStatusPayload]:
     """Poll a sync_link session for completion (formerly: sync_connect_status).
 
     Check whether a bank-connection session has completed. Call after the user
     indicates they've finished the Plaid Link flow in their browser. Returns
-    connected, pending, or failed. Does NOT loop internally — the agent should
+    linked, pending, or failed. Does NOT loop internally — the agent should
     invoke this when the user signals completion, not poll repeatedly.
     """
     client = _build_sync_client()
-    status = client.get_connect_status(session_id)
+    status = client.get_link_status(session_id)
     actions: list[str] = []
     if status.status == "pending":
         actions = [
             "Connection has not completed yet. Ask the user to finish the flow in their browser, or wait and check again.",
             "If the session expiration has passed, start a new link flow with sync_link.",
         ]
-    elif status.status == "connected":
+    elif status.status == "linked":
         actions = ["Run sync_pull to fetch transactions from the new institution."]
     elif status.status == "failed":
         actions = ["Run sync_link to retry the connection."]
     return build_envelope(
-        data=SyncConnectStatusPayload(
+        data=SyncLinkStatusPayload(
             session_id=status.session_id,
             status=status.status,
             provider_item_id=status.provider_item_id,
@@ -233,7 +233,7 @@ def sync_link_status(
 @mcp_tool(read_only=False, idempotent=False, open_world=True)
 def sync_connect(
     institution: str | None = None,
-) -> ResponseEnvelope[SyncConnectPayload]:
+) -> ResponseEnvelope[SyncLinkPayload]:
     """Deprecated alias for `sync_link`. Will be removed in the next minor release."""
     logger.warning(
         "MCP tool `sync_connect` is deprecated; use `sync_link`. "
@@ -255,7 +255,7 @@ def sync_connect(
 @mcp_tool()
 def sync_connect_status(
     session_id: str,
-) -> ResponseEnvelope[SyncConnectStatusPayload]:
+) -> ResponseEnvelope[SyncLinkStatusPayload]:
     """Deprecated alias for `sync_link_status`. Will be removed in the next minor release."""
     logger.warning(
         "MCP tool `sync_connect_status` is deprecated; use `sync_link_status`. "

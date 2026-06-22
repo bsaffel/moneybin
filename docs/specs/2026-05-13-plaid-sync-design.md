@@ -27,23 +27,23 @@ Key inputs:
 
 Plaid Hosted Link hosts the Link UI on Plaid's infrastructure. The server creates a Link token with `hosted_link: {}`, exposes the resulting `hosted_link_url` to the client, and receives a `SESSION_FINISHED` webhook when the user finishes. The server then exchanges the public token for an access token entirely server-side. **The client never holds Plaid credentials, never sees the public token, and never calls an exchange endpoint.**
 
-### `connect_type` discriminator
+### `link_type` discriminator
 
-The connect API is provider-agnostic via a `connect_type` field in the initiate response. Phase 1 implements only `widget_flow`; the discriminator exists so future providers slot in without breaking the client.
+The link API is provider-agnostic via a `link_type` field in the initiate response. Phase 1 implements only `widget_flow`; the discriminator exists so future providers slot in without breaking the client.
 
-| `connect_type` | Server pattern | Phase 1 status |
+| `link_type` | Server pattern | Phase 1 status |
 |---|---|---|
 | `widget_flow` | Server returns a hosted URL; webhook signals completion | Implemented (Plaid) |
 | `token_paste` | User obtains token externally; CLI submits via separate endpoint | Deferred to Phase 2 (SimpleFIN) |
 
-The client parses `connect_type`. If the value isn't `widget_flow` in Phase 1, the client raises `NotImplementedError("connect_type 'X' is not supported in this version")`.
+The client parses `link_type`. If the value isn't `widget_flow` in Phase 1, the client raises `NotImplementedError("link_type 'X' is not supported in this version")`.
 
 ### Endpoints
 
 **New:**
 
 ```
-POST /sync/connect/initiate
+POST /sync/link/initiate
   Body: {
     "provider": "plaid",
     "provider_item_id": "item_abc",     # optional — update mode for re-auth
@@ -52,16 +52,16 @@ POST /sync/connect/initiate
   Response 200: {
     "session_id": "sess_abc123",
     "link_url": "https://hosted.plaid.com/link/...",
-    "connect_type": "widget_flow",
+    "link_type": "widget_flow",
     "expiration": "2026-05-13T13:30:00Z"
   }
 
-GET /sync/connect/status?session_id=sess_abc123
+GET /sync/link/status?session_id=sess_abc123
   Response 200: {
     "session_id": "sess_abc123",
-    "status": "pending" | "connected" | "failed",
-    "provider_item_id": "item_abc123",   # only when status == "connected"
-    "institution_name": "Chase",          # only when status == "connected"
+    "status": "pending" | "linked" | "failed",
+    "provider_item_id": "item_abc123",   # only when status == "linked"
+    "institution_name": "Chase",          # only when status == "linked"
     "error": null,                        # error message when status == "failed"
     "expiration": "2026-05-13T13:30:00Z"  # session expiration; agent can decide when to give up
   }
@@ -79,7 +79,7 @@ POST /webhooks/plaid                      # internal, not in client API surface
 **Renamed:** `item_id` → `provider_item_id` everywhere in client-visible responses (`GET /institutions`, `GET /sync/status.results[]`, `GET /sync/data.metadata.institutions[]`).
 
 **Removed from client API:**
-- `POST /sync/link-token` (replaced by `POST /sync/connect/initiate`)
+- `POST /sync/link-token` (replaced by `POST /sync/link/initiate`)
 - `POST /sync/exchange-token` (now internal webhook handler)
 
 **Retained:**
@@ -90,13 +90,13 @@ POST /webhooks/plaid                      # internal, not in client API surface
 
 ### `return_to` (forward-compat for web UI)
 
-The `return_to` field is added now so the M3D Web UI doesn't require a breaking API change. CLI sends `null`; the server tells Plaid to display its default "session complete" page; CLI polls `GET /sync/connect/status` for completion. The future web UI sends its callback URL; the server passes it to Plaid Hosted Link's `redirect_uri` config; Plaid redirects the user's browser back to the web app after they finish. The status endpoint remains the authoritative completion signal even when redirect-based UX is in use, since the webhook may race the browser redirect.
+The `return_to` field is added now so the M3D Web UI doesn't require a breaking API change. CLI sends `null`; the server tells Plaid to display its default "session complete" page; CLI polls `GET /sync/link/status` for completion. The future web UI sends its callback URL; the server passes it to Plaid Hosted Link's `redirect_uri` config; Plaid redirects the user's browser back to the web app after they finish. The status endpoint remains the authoritative completion signal even when redirect-based UX is in use, since the webhook may race the browser redirect.
 
 ### Update mode (re-authentication)
 
 When an institution returns `ITEM_LOGIN_REQUIRED`, the user needs to re-authenticate without losing transaction history. Plaid supports "update mode": create a Link token tied to an existing `item_id`; the same `item_id` survives.
 
-The client passes `provider_item_id` to `POST /sync/connect/initiate`; the server detects this and creates an update-mode Link token instead of a new-connection token. From the client's perspective the response shape is identical.
+The client passes `provider_item_id` to `POST /sync/link/initiate`; the server detects this and creates an update-mode Link token instead of a new-connection token. From the client's perspective the response shape is identical.
 
 ---
 
@@ -141,36 +141,36 @@ Refresh is transparent to method callers — they see either success or `SyncAut
 - Default: call `webbrowser.open()`; whether it returns True or False, always also print the URL to stderr so a headless user can copy it
 - `--no-browser` flag: skip the `webbrowser.open()` call entirely; print URL only
 
-### Connect flow
+### Link flow
 
 ```python
-def connect(self, provider_item_id: str | None = None, return_to: str | None = None) -> ConnectResult:
+def initiate_link(self, provider_item_id: str | None = None, return_to: str | None = None) -> LinkInitiateResponse:
     body = {"provider": "plaid"}
     if provider_item_id:
         body["provider_item_id"] = provider_item_id   # update mode
     if return_to:
         body["return_to"] = return_to                  # web UI redirect
-    resp = self._post("/sync/connect/initiate", body)
-    initiate = ConnectInitiateResponse.model_validate(resp)
-    if initiate.connect_type != "widget_flow":
+    resp = self._post("/sync/link/initiate", body)
+    initiate = LinkInitiateResponse.model_validate(resp)
+    if initiate.link_type != "widget_flow":
         raise NotImplementedError(
-            f"connect_type '{initiate.connect_type}' is not supported in this version"
+            f"link_type '{initiate.link_type}' is not supported in this version"
         )
     self._open_url(initiate.link_url)        # honors --no-browser
-    return self._poll_connect(initiate.session_id)
+    return self._poll_link(initiate.session_id)
 
-def _poll_connect(self, session_id: str) -> ConnectResult:
+def _poll_link(self, session_id: str) -> LinkResult:
     deadline = time.time() + _LONG_TIMEOUT
     interval = 3.0
     while time.time() < deadline:
         time.sleep(interval)
-        r = self._get(f"/sync/connect/status?session_id={session_id}")
-        status = ConnectStatusResponse.model_validate(r)
-        if status.status == "connected":
-            return ConnectResult(provider_item_id=status.provider_item_id, ...)
+        r = self._get(f"/sync/link/status?session_id={session_id}")
+        status = LinkStatusResponse.model_validate(r)
+        if status.status == "linked":
+            return LinkResult(provider_item_id=status.provider_item_id, ...)
         if status.status == "failed":
-            raise SyncConnectError(status.error or "connect failed")
-    raise SyncTimeoutError("connect flow timed out — user may have abandoned the browser")
+            raise SyncLinkError(status.error or "link session failed")
+    raise SyncTimeoutError("link flow timed out — user may have abandoned the browser")
 ```
 
 ### Timeouts
@@ -181,7 +181,7 @@ Two constants, not config knobs:
 _DEFAULT_TIMEOUT = httpx.Timeout(15.0, connect=10.0)  # most endpoints
 _LONG_TIMEOUT = httpx.Timeout(
     120.0, connect=10.0
-)  # POST /sync/trigger, connect-poll deadline
+)  # POST /sync/trigger, link-poll deadline
 ```
 
 Promote to `SyncConfig` only when a real user file says they need different values. Don't add knobs speculatively.
@@ -190,7 +190,7 @@ Promote to `SyncConfig` only when a real user file says they need different valu
 
 `SyncClient` raises typed exceptions:
 - `SyncAuthError` — auth failure (401 after refresh attempt, user denied device flow)
-- `SyncConnectError` — connect session failed (`status: "failed"` from server)
+- `SyncLinkError` — link session failed (`status: "failed"` from server)
 - `SyncTimeoutError` — operation exceeded its timeout
 - `SyncAPIError` — generic server error (5xx, unexpected response shape)
 
@@ -220,16 +220,16 @@ class AuthToken(BaseModel):
     token_type: Literal["Bearer"] = "Bearer"
 
 
-class ConnectInitiateResponse(BaseModel):
+class LinkInitiateResponse(BaseModel):
     session_id: str = Field(min_length=1, max_length=128)
     link_url: str
-    connect_type: Literal["widget_flow", "token_paste"]
+    link_type: Literal["widget_flow", "token_paste"]
     expiration: datetime
 
 
-class ConnectStatusResponse(BaseModel):
+class LinkStatusResponse(BaseModel):
     session_id: str
-    status: Literal["pending", "connected", "failed"]
+    status: Literal["pending", "linked", "failed"]
     provider_item_id: str | None = None
     institution_name: str | None = None
     error: str | None = None
@@ -314,7 +314,7 @@ class PullResult(BaseModel):
     institutions: list[InstitutionResult]  # passthrough from sync metadata
 
 
-class ConnectResult(BaseModel):
+class LinkResult(BaseModel):
     provider_item_id: str
     institution_name: str
     pull_result: PullResult | None = None  # populated when auto_pull=True
@@ -350,13 +350,13 @@ class SyncService:
     def pull(
         self, *, institution: str | None = None, force: bool = False
     ) -> PullResult: ...
-    def connect(
+    def link(
         self,
         *,
         institution: str | None = None,
         auto_pull: bool = True,
         return_to: str | None = None,
-    ) -> ConnectResult: ...
+    ) -> LinkResult: ...
     def disconnect(self, *, institution: str) -> None: ...
     def list_connections(self) -> list[SyncConnectionView]: ...
 
@@ -701,7 +701,7 @@ Per `.claude/rules/cli.md`, every mutating command also accepts `--output json` 
 
 The agent then calls `sync link-status --session-id sess_abc123 --output json` to verify.
 
-**`sync link --output json`** (without `--no-browser`): blocks until connected, returns the full result including the auto-pull summary if applicable.
+**`sync link --output json`** (without `--no-browser`): blocks until linked, returns the full result including the auto-pull summary if applicable.
 
 ### `sync link` decision tree
 
@@ -713,7 +713,7 @@ Without `--institution` flag:
   - Non-interactive (`--yes` OR no TTY): exit code 2 with a clear error: "Found 1 institution needing re-auth. Pass `--institution {name}` to confirm intent, or pass `--institution NEW` to create a new connection." Agents must be explicit.
 - **Multiple institutions in `status='error'`:** list them; exit code 2 directing user to pass `--institution NAME`. Even interactive — too easy to pick the wrong one.
 
-With `--institution NAME`: resolve NAME → `provider_item_id` via `GET /institutions`; pass to `POST /sync/connect/initiate` (server detects update mode). If NAME doesn't match any existing connection, treat as new-connection request and let the server's connect flow handle naming.
+With `--institution NAME`: resolve NAME → `provider_item_id` via `GET /institutions`; pass to `POST /sync/link/initiate` (server detects update mode). If NAME doesn't match any existing connection, treat as new-connection request and let the server's link flow handle naming.
 
 `--yes` flag's semantics: skip the single-institution re-auth confirmation prompt only. It never selects an institution on its own — selection is always explicit via `--institution`. This matches `.claude/rules/cli.md` non-interactive parity without papering over ambiguity.
 
@@ -724,7 +724,7 @@ With `--institution NAME`: resolve NAME → `provider_item_id` via `GET /institu
 If the connection succeeds but the auto-pull fails, the connection is kept and the error is reported with a clear next step:
 
 ```
-✅ Connected Chase
+✅ Linked Chase
 ❌ Auto-pull failed: server returned 503
 💡 Run `moneybin sync pull --institution Chase` to retry
 ```
@@ -835,15 +835,15 @@ The prompt is registered alongside the tools via FastMCP's prompts API.
 - `login()` user denied → raises `SyncAuthError`
 - 401 → refresh (with rotation) → retry → success; assert new refresh token stored
 - 401 → refresh fails → raise `SyncAuthError`; assert stored tokens cleared
-- Connect flow polls until `connected`; respects `_LONG_TIMEOUT`
+- Link flow polls until `linked`; respects `_LONG_TIMEOUT`
 - `trigger_sync()` returns synchronous result; honors `_LONG_TIMEOUT`
 
 `tests/test_sync_service.py`:
 - `pull()` happy path → SyncClient + PlaidLoader called in order; returns `PullResult` with correct counts
 - Partial failure (one institution `failed`, one `completed`) → both reflected in `PullResult.institutions`
-- Re-auth path: `connect(institution="Schwab")` resolves name via `GET /institutions` → passes `provider_item_id` to `connect/initiate`
-- `connect(auto_pull=True)` → returns `ConnectResult` with `pull_result` populated
-- `connect(auto_pull=True)` with pull failure → returns `ConnectResult` with `pull_result=None` and a clear error
+- Re-auth path: `link(institution="Schwab")` resolves name via `GET /institutions` → passes `provider_item_id` to `link/initiate`
+- `link(auto_pull=True)` → returns `LinkResult` with `pull_result` populated
+- `link(auto_pull=True)` with pull failure → returns `LinkResult` with `pull_result=None` and a clear error
 
 ### SQL tests
 
@@ -866,8 +866,8 @@ The Phase 1 client doesn't work end-to-end until the moneybin-server implements 
 
 ### Endpoints (new or changed)
 
-- **`POST /sync/connect/initiate`** — body `{provider, provider_item_id?, return_to?}`; response `{session_id, link_url, connect_type, expiration}`. Body shape MUST be supported even when all fields are absent (defaults to new-connection flow for Plaid). With `provider_item_id` → update mode against the existing item. With `return_to` → server configures Plaid Hosted Link's `redirect_uri`; without `return_to` → Plaid displays default completion page.
-- **`GET /sync/connect/status?session_id=...`** — response includes `expiration` so the client can decide when to give up. Filter by `auth.user_id` — session table MUST have a `user_id` column and the endpoint MUST 404 on cross-user lookups.
+- **`POST /sync/link/initiate`** — body `{provider, provider_item_id?, return_to?}`; response `{session_id, link_url, link_type, expiration}`. Body shape MUST be supported even when all fields are absent (defaults to new-connection flow for Plaid). With `provider_item_id` → update mode against the existing item. With `return_to` → server configures Plaid Hosted Link's `redirect_uri`; without `return_to` → Plaid displays default completion page.
+- **`GET /sync/link/status?session_id=...`** — response includes `expiration` so the client can decide when to give up. Filter by `auth.user_id` — session table MUST have a `user_id` column and the endpoint MUST 404 on cross-user lookups.
 - **`POST /auth/refresh`** — body `{refresh_token}`; response `{access_token, refresh_token, expires_in}`. Refresh tokens MUST rotate (single-use): each call returns a new refresh token and invalidates the old one. Proxies refresh to Auth0 with refresh-token rotation enabled.
 - **`POST /webhooks/plaid`** — internal; handles `SESSION_FINISHED` (and `ITEM_LOGIN_REQUIRED`, `ERROR` for re-auth). Implementation requirements below.
 - **Rename in responses:** `item_id` → `provider_item_id` throughout client-visible responses (`GET /institutions`, `GET /sync/status.results[]`, `GET /sync/data.metadata.institutions[]`, `POST /sync/trigger` request body).
@@ -884,8 +884,8 @@ The Phase 1 client doesn't work end-to-end until the moneybin-server implements 
   - **Request-size limit:** cap webhook body at e.g. 1 MB; reject larger.
   - **Rate limiting:** apply rate limits at the IP and at the JWT-issuer level to mitigate webhook flooding attacks (publicly reachable, unauthenticated by JWT).
   - **Idempotency:** dedupe per webhook type. For `SESSION_FINISHED`: dedupe on `link_session_id` (Plaid's stable session identifier; the `webhook_id` field is not reliably present). For item-lifecycle webhooks: dedupe on `(item_id, webhook_code, environment)`. First arrival wins; duplicates are 200-acked without reprocessing.
-  - **On `SESSION_FINISHED`:** lookup session by `link_token`, call `plaid.itemPublicTokenExchange()`. On success: encrypt `access_token` with the existing AES-256-GCM `ENCRYPTION_KEY`, store in `plaid_items`, update session row to `status='connected'` with `provider_item_id` and `institution_name` populated.
-  - **On exchange failure (Plaid 5xx, network blip, retries exhausted):** update session row to `status='failed'` with a clear `error` message. **Sessions must not stay `pending` indefinitely** — the client's `GET /sync/connect/status` poll must eventually see a terminal state.
+  - **On `SESSION_FINISHED`:** lookup session by `link_token`, call `plaid.itemPublicTokenExchange()`. On success: encrypt `access_token` with the existing AES-256-GCM `ENCRYPTION_KEY`, store in `plaid_items`, update session row to `status='linked'` with `provider_item_id` and `institution_name` populated.
+  - **On exchange failure (Plaid 5xx, network blip, retries exhausted):** update session row to `status='failed'` with a clear `error` message. **Sessions must not stay `pending` indefinitely** — the client's `GET /sync/link/status` poll must eventually see a terminal state.
   - **On `ITEM_LOGIN_REQUIRED` / `ERROR`:** update `plaid_items.status` so the next `POST /sync/trigger` for that item reports the error code in `results[]`.
 
 ### Server-side cursor ack (required before launch, not Phase 1)
@@ -907,12 +907,12 @@ Client PR (this branch) and server PR ship paired. Until the server endpoints la
 - Post-quantum cryptography (Phase 4 — designed in `sync-overview.md`)
 - Plaid Investments product (separate spec, gated on `investments-data-model.md`)
 - Plaid Liabilities product
-- SimpleFIN, MX, TrueLayer integration (Phase 2/3 — `connect_type` discriminator is in place for forward compat; `POST /sync/connect/submit` endpoint and the `token_paste` client path are NOT in this PR)
+- SimpleFIN, MX, TrueLayer integration (Phase 2/3 — `link_type` discriminator is in place for forward compat; `POST /sync/link/submit` endpoint and the `token_paste` client path are NOT in this PR)
 - Local web server callback for OAuth on the CLI (Phase 1 polish — no server API changes needed; deferred)
 - Plaid Production OAuth approval — submit the application during this PR's review cycle given the 4–8 week approval timeline; can run in parallel with remaining implementation work
 - Provider sequencing rationale (SimpleFIN/MX/TrueLayer detailed plan) — tracked separately in product strategy docs
 - Server-side cursor ack — required before M3 launch but not blocking Phase 1 client work; see Section 11
-- Web UI surface (M3D) — the `return_to` parameter on `connect/initiate` is forward-compatible, but the actual web UI is out of scope here
+- Web UI surface (M3D) — the `return_to` parameter on `link/initiate` is forward-compatible, but the actual web UI is out of scope here
 
 ---
 
@@ -927,12 +927,12 @@ Client PR (this branch) and server PR ship paired. Until the server endpoints la
 | New table: schema file + migration, or schema file only? | Neither — we don't introduce a new local table (see next row). Convention shift for future cases still applies. |
 | Local mirror of server connection state in `app.sync_connections`? | Dropped. Server is the system of record; `sync status` reads `GET /institutions` per invocation. Avoids drift when web UI lands. |
 | Crash-recovery file for in-flight sync? | Dropped. Server-side cursor-ack is the real fix and tracked as required-before-launch. Phase 1 logs loud warnings on crash; user re-runs `sync pull`. |
-| Forward-compat for web UI's connect-redirect needs? | Added `return_to: string \| null` to `POST /sync/connect/initiate` body. CLI sends null; future web UI sends its callback URL. |
+| Forward-compat for web UI's connect-redirect needs? | Added `return_to: string \| null` to `POST /sync/link/initiate` body. CLI sends null; future web UI sends its callback URL. |
 | Response models: Pydantic everywhere, partial, or dicts? | Pydantic at every API boundary. Single `sync_models.py` module imported by client + loader; service-layer result types live alongside. |
 | Service layer scope: `SyncConnectionService` or broader `SyncService`? | `SyncService` — owns orchestration; no local connection-table operations (state lives on server). |
 | Provider ladder section in design doc: full detail, trimmed, or none? | Trimmed. Public design doc mentions the discriminator; sequencing/rationale stays in strategy docs. |
 | Auto-pull after connect? | Yes, by default. `--no-pull` to opt out. |
 | Per-endpoint timeout configuration? | Two constants in `sync_client.py` (15s default, 120s long-op). No config knobs without evidence of need. |
-| CLI `--output json` on mutating commands? | Yes for `pull`, `connect`, `connect-status`, `disconnect` per agent-surface rule. |
+| CLI `--output json` on mutating commands? | Yes for `pull`, `link`, `link-status`, `disconnect` per agent-surface rule. |
 | Missing `sync link-status` CLI command? | Added (CLI symmetry with `sync_link_status` MCP tool). |
 | `sync_link` MCP sensitivity? | Bumped from `low` to `medium` — `link_url` is a one-time bearer credential. |
