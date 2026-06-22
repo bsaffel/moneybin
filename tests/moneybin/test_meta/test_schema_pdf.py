@@ -7,9 +7,9 @@ from moneybin.tables import PDF_SEEDS
 
 
 @pytest.mark.integration
-def test_pdf_seeds_table_exists_after_init(db: Database) -> None:
+def test_pdf_seeds_table_exists_after_init(module_db: Database) -> None:
     """Verify raw.pdf_seeds table exists with correct columns after schema init."""
-    cols = db.execute(
+    cols = module_db.execute(
         "SELECT column_name FROM information_schema.columns "
         "WHERE table_schema = 'raw' AND table_name = 'pdf_seeds' "
         "ORDER BY column_name"
