@@ -276,6 +276,7 @@ class Database:
         read_only: bool,
         secret_store: SecretStore | None = None,
         no_auto_upgrade: bool | None = None,
+        assume_initialized: bool = False,
     ) -> None:
         """Initialize and open the encrypted database connection.
 
@@ -288,6 +289,12 @@ class Database:
                 creates a new one.
             no_auto_upgrade: If True, skip versioned migrations and SQLMesh
                 migrate on startup. If None, reads from config.
+            assume_initialized: If True, skip ``init_schemas``, the migration
+                block, and ``refresh_views`` entirely. The caller asserts the
+                file is already schema-current — i.e. a copy of a
+                fully-initialized template DB. Default ``False``; production
+                opens always leave this ``False`` and run the full sequence.
+                Intended only for the test template-copy fixture.
 
         Raises:
             DatabaseKeyError: If the encryption key cannot be retrieved.
@@ -295,6 +302,8 @@ class Database:
                 not exist.
             DatabaseLockError: If DuckDB reports a conflicting lock or
                 configuration mismatch on ATTACH.
+            ValueError: If assume_initialized=True combined with read_only=True,
+                or if assume_initialized=True but db_path does not exist.
         """
         self._db_path = db_path
         self._conn: duckdb.DuckDBPyConnection | None = None
@@ -309,6 +318,17 @@ class Database:
             raise DatabaseNotInitializedError(
                 f"Database not found at {db_path}.\n"
                 f"Run 'moneybin db init' to initialize it first."
+            )
+
+        if assume_initialized and read_only:
+            raise ValueError(
+                "assume_initialized is incompatible with read_only "
+                "(read-only opens never initialize the schema)."
+            )
+        if assume_initialized and not db_path.exists():
+            raise ValueError(
+                "assume_initialized requires an existing, already-initialized "
+                "database file (e.g. a copy of a built template)."
             )
 
         store = secret_store or SecretStore()
@@ -374,6 +394,20 @@ class Database:
 
             if not is_new and sys.platform != "win32":
                 self._check_permissions(db_path)
+
+            if assume_initialized:
+                # Caller asserts the attached file is already schema-current — a
+                # copy of a fully-initialized template DB. Skip the idempotent but
+                # expensive schema build (init_schemas + migration check +
+                # refresh_views) so per-test fixtures don't re-pay it ~1,600×.
+                # Test-only contract: production opens leave this False and always
+                # run the full sequence below. The construct-or-rollback ExitStack
+                # still guards the attach/USE above.
+                stack.pop_all()
+                logger.debug(
+                    f"Database connection established (assume_initialized): {db_path}"
+                )
+                return
 
             from moneybin.schema import init_schemas
 
