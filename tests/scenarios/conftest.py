@@ -1,32 +1,19 @@
 """Shared fixtures for scenario tests.
 
-Uses an in-memory keyring + ephemeral encryption key so the runner can open
-encrypted scenario tempdirs without touching the real keychain or requiring
-the production encryption key.
+Provides an ephemeral encryption key (the in-memory keyring backend itself
+comes from the root conftest's autouse net) so the runner can open encrypted
+scenario tempdirs without touching the real keychain or requiring the
+production encryption key.
 """
 
 from __future__ import annotations
 
 from collections.abc import Generator
 
-import keyring
 import pytest
 
 import moneybin.database as db_module
 from tests.e2e.conftest import FAST_ARGON2_ENV
-from tests.e2e.memory_keyring import MemoryKeyring
-
-
-@pytest.fixture(autouse=True)
-def _scenario_keyring() -> Generator[None, None, None]:  # pyright: ignore[reportUnusedFunction]  # pytest autouse fixture
-    """Swap in the dict-backed keyring for every scenario test."""
-    previous = keyring.get_keyring()
-    keyring.set_keyring(MemoryKeyring())
-    try:
-        yield
-    finally:
-        MemoryKeyring.clear()
-        keyring.set_keyring(previous)
 
 
 @pytest.fixture(autouse=True)

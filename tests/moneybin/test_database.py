@@ -80,6 +80,47 @@ class TestNewExceptions:
 class TestDatabaseInit:
     """Database initialization and encrypted attachment."""
 
+    def test_explicit_secret_store_overrides_cached_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An explicit secret_store wins over a stale process key cache.
+
+        The process caches the encryption key to skip repeat keyring lookups,
+        but that cache must never override a key a caller passes explicitly:
+        a key cached in one context would otherwise corrupt an encrypted DB
+        opened with a different explicit key in another (the cross-category
+        ``_db_template`` test contamination this guards against).
+        """
+        import moneybin.database as db_module
+
+        store = MagicMock()
+        store.get_key.return_value = "explicit-store-key-aaaaaaaaaaaaaaaa"
+        db_path = tmp_path / "explicit.duckdb"
+
+        # Create the encrypted DB with the explicit store's key.
+        Database(
+            db_path, secret_store=store, no_auto_upgrade=True, read_only=False
+        ).close()
+
+        # Simulate a different key cached by a prior open in this process.
+        # monkeypatch restores the prior value on teardown — no module-state leak.
+        monkeypatch.setattr(
+            db_module, "_cached_encryption_key", "leaked-from-another-context-bbbbbb"
+        )
+
+        # Reopening with the SAME explicit store must succeed — honoring the
+        # store, not the leaked cache. (Wrong key -> InvalidInputException.)
+        Database(
+            db_path,
+            secret_store=store,
+            no_auto_upgrade=True,
+            assume_initialized=True,
+            read_only=False,
+        ).close()
+
+        # Both opens consulted the explicit store, never the leaked cache.
+        assert store.get_key.call_count == 2
+
     def test_creates_encrypted_database(
         self, db_dir: Path, mock_secret_store: MagicMock, encryption_key: str
     ) -> None:
@@ -503,31 +544,29 @@ class TestEncryptionKeyCache:
     def test_second_init_skips_store_get_key(
         self,
         tmp_path: Path,
-        mock_secret_store: MagicMock,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        """The default (secret_store=None) path caches the key across opens.
+
+        The cache only short-circuits the default path — an explicit
+        secret_store is always read fresh (see
+        ``test_explicit_secret_store_overrides_cached_key``).
+        """
         import moneybin.database as db_module
 
+        store = MagicMock()
+        store.get_key.return_value = "test-encryption-key-256bit-placeholder"
+        # The default path constructs SecretStore() internally; patch it to spy.
+        monkeypatch.setattr(db_module, "SecretStore", lambda: store)
         monkeypatch.setattr(db_module, "_cached_encryption_key", None)
         db_path = tmp_path / "cached.duckdb"
-        # First open — calls store.get_key once
-        db1 = Database(
-            db_path,
-            secret_store=mock_secret_store,
-            no_auto_upgrade=True,
-            read_only=False,
-        )
-        db1.close()
-        call_count_after_first = mock_secret_store.get_key.call_count
-        # Second open — key is cached; store.get_key NOT called again
-        db2 = Database(
-            db_path,
-            secret_store=mock_secret_store,
-            no_auto_upgrade=True,
-            read_only=False,
-        )
-        db2.close()
-        assert mock_secret_store.get_key.call_count == call_count_after_first
+        # First open (no explicit store) — calls store.get_key once and caches.
+        Database(db_path, no_auto_upgrade=True, read_only=False).close()
+        call_count_after_first = store.get_key.call_count
+        assert call_count_after_first >= 1
+        # Second open (no explicit store) — key is cached; get_key NOT called again.
+        Database(db_path, no_auto_upgrade=True, read_only=False).close()
+        assert store.get_key.call_count == call_count_after_first
         # Cleanup cache
         monkeypatch.setattr(db_module, "_cached_encryption_key", None)
 
