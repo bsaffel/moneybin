@@ -300,6 +300,28 @@ def module_db(
     database.close()
 
 
+@pytest.fixture(scope="session")
+def _db_template(  # pyright: ignore[reportUnusedFunction]  # pytest fixture referenced by parameter name
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Path:
+    """Build the encrypted, schema-only DB once per session; return its path.
+
+    A real ``Database()`` open runs the full schema build (init_schemas +
+    refresh_views) exactly once per xdist worker; no data is inserted, so the
+    template matches what the function-scoped ``db`` fixture used to produce
+    fresh per test. Closed before returning so the file is safe to copy
+    (DuckDB flushes on a clean close — see testing.md Performance Patterns).
+    The fast ``db`` fixture copies this file instead of rebuilding the schema.
+    """
+    store = MagicMock()
+    store.get_key.return_value = "test-encryption-key-for-unit-tests"
+    template_path = tmp_path_factory.mktemp("db_template") / "template.duckdb"
+    Database(
+        template_path, secret_store=store, no_auto_upgrade=True, read_only=False
+    ).close()
+    return template_path
+
+
 @pytest.fixture()
 def simple_statement_pdf() -> Path:
     """Path to the committed simple-statement fixture PDF.
@@ -342,29 +364,42 @@ def empty_statement_pdf() -> Path:
 
 
 @pytest.fixture()
-def db(tmp_path: Path, mock_secret_store: MagicMock) -> Generator[Database, None, None]:
+def db(
+    request: pytest.FixtureRequest,
+    tmp_path: Path,
+    mock_secret_store: MagicMock,
+    _db_template: Path,
+) -> Generator[Database, None, None]:
     """Provide a test Database instance with encryption.
 
-    Creates a temporary encrypted database suitable for unit and integration
-    tests. The database is initialized with all base schemas (raw, core, app)
-    but contains no pre-populated data.
+    Fast by default: copies the session-scoped template (built once via a real
+    schema init) into this test's tmp_path and opens it with
+    ``assume_initialized=True`` — skipping the per-test schema rebuild. The
+    object, schema, and per-test isolation are identical to a fresh build.
 
-    For tests that need specific core tables (dim_accounts, fct_transactions),
-    use db_helpers.create_core_tables(db) or create_core_tables_raw(db.conn).
-
-    Args:
-        tmp_path: pytest temporary directory fixture.
-        mock_secret_store: Mocked SecretStore that provides a test key.
-
-    Yields:
-        A Database instance ready for test queries.
+    Mark a test or module ``@pytest.mark.fresh_db`` to force a real per-test
+    schema build instead — required for tests whose *subject* is schema
+    creation, migration, or init (so they exercise the real mechanism rather
+    than a pre-baked copy). See ``test_template_copy_matches_fresh_build`` for
+    the invariant that keeps the two paths equivalent.
     """
     db_path = tmp_path / "test.duckdb"
-    database = Database(
-        db_path,
-        secret_store=mock_secret_store,
-        no_auto_upgrade=True,
-        read_only=False,
-    )
+    if request.node.get_closest_marker("fresh_db"):  # type: ignore[reportUnknownMemberType]  # pytest stub incomplete
+        database = Database(
+            db_path,
+            secret_store=mock_secret_store,
+            no_auto_upgrade=True,
+            read_only=False,
+        )
+    else:
+        shutil.copy(_db_template, db_path)
+        db_path.chmod(0o600)  # match the 0600 a fresh open sets; keep output pristine
+        database = Database(
+            db_path,
+            secret_store=mock_secret_store,
+            no_auto_upgrade=True,
+            assume_initialized=True,
+            read_only=False,
+        )
     yield database
     database.close()

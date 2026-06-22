@@ -340,6 +340,7 @@ markers = [
     "e2e: marks tests as end-to-end subprocess tests",
     "scenarios: marks whole-pipeline scenario tests (slow, real DB, real SQLMesh)",
     "perf: marks performance regression tests (require a fully-loaded persona DB)",
+    "fresh_db: build a real per-test schema instead of copying the fast session template; for tests whose subject is schema creation / migration / init",
 ]
 filterwarnings = [
     # Ignore deprecation warnings from third-party libraries we don't control
