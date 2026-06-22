@@ -80,7 +80,9 @@ class TestNewExceptions:
 class TestDatabaseInit:
     """Database initialization and encrypted attachment."""
 
-    def test_explicit_secret_store_overrides_cached_key(self, tmp_path: Path) -> None:
+    def test_explicit_secret_store_overrides_cached_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """An explicit secret_store wins over a stale process key cache.
 
         The process caches the encryption key to skip repeat keyring lookups,
@@ -101,7 +103,10 @@ class TestDatabaseInit:
         ).close()
 
         # Simulate a different key cached by a prior open in this process.
-        db_module._cached_encryption_key = "leaked-from-another-context-bbbbbb"  # pyright: ignore[reportPrivateUsage]
+        # monkeypatch restores the prior value on teardown — no module-state leak.
+        monkeypatch.setattr(
+            db_module, "_cached_encryption_key", "leaked-from-another-context-bbbbbb"
+        )
 
         # Reopening with the SAME explicit store must succeed — honoring the
         # store, not the leaked cache. (Wrong key -> InvalidInputException.)
@@ -112,6 +117,9 @@ class TestDatabaseInit:
             assume_initialized=True,
             read_only=False,
         ).close()
+
+        # Both opens consulted the explicit store, never the leaked cache.
+        assert store.get_key.call_count == 2
 
     def test_creates_encrypted_database(
         self, db_dir: Path, mock_secret_store: MagicMock, encryption_key: str

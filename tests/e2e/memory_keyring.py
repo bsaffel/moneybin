@@ -18,11 +18,6 @@ class MemoryKeyring(KeyringBackend):
 
     _store: dict[tuple[str, str], str] = {}
 
-    @classmethod
-    def clear(cls) -> None:
-        """Reset all stored credentials. Use in test teardown."""
-        cls._store.clear()
-
     def set_password(self, service: str, username: str, password: str) -> None:
         MemoryKeyring._store[(service, username)] = password
 
