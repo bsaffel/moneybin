@@ -2,7 +2,7 @@
 
 CLI and MCP layers are thin wrappers around this service. Owns:
 - pull() orchestration (trigger → fetch → load)
-- connect() with optional auto-pull
+- link() with optional auto-pull
 - list_connections() with error-code → user-guidance mapping
 - disconnect() with institution name → connection_id resolution
 
@@ -17,8 +17,8 @@ from collections.abc import Callable
 from moneybin.connectors.sync_client import SyncClient
 from moneybin.connectors.sync_models import (
     ConnectedInstitution,
-    ConnectInitiateResponse,
-    ConnectResult,
+    LinkInitiateResponse,
+    LinkResult,
     PullResult,
     SyncConnectionView,
     SyncDataResponse,
@@ -53,7 +53,7 @@ _ERROR_GUIDANCE: dict[str, str] = {
 
 
 class SyncService:
-    """Orchestrates Plaid sync operations: pull, connect, list, disconnect."""
+    """Orchestrates Plaid sync operations: pull, link, list, disconnect."""
 
     def __init__(
         self,
@@ -221,14 +221,14 @@ class SyncService:
             )
             ACCOUNT_LINK_OUTCOMES_TOTAL.labels(result=resolved_account.outcome).inc()
 
-    # ------------------------------ Connect ------------------------------
+    # ------------------------------ Link ------------------------------
 
-    def initiate_connect(
+    def initiate_link(
         self,
         *,
         institution: str | None = None,
         return_to: str | None = None,
-    ) -> ConnectInitiateResponse:
+    ) -> LinkInitiateResponse:
         """Resolve institution and start a Plaid Link session — does not poll.
 
         Used by JSON-mode CLI and MCP sync_link, where the caller surfaces
@@ -245,29 +245,24 @@ class SyncService:
             inst = self._find_institution(institution)
             if inst is not None:
                 provider_item_id = inst.provider_item_id
-        initiate = self.client.initiate_connect(
+        initiate = self.client.initiate_link(
             provider_item_id=provider_item_id,
             return_to=return_to,
         )
-        if initiate.connect_type != "widget_flow":
+        if initiate.link_type != "widget_flow":
             raise NotImplementedError(
-                f"connect_type '{initiate.connect_type}' is not supported in this version"
+                f"link_type '{initiate.link_type}' is not supported in this version"
             )
         return initiate
 
-    # `ConnectInitiateResponse` / `ConnectResult` keep their names for historical
-    # reasons — they predate the _link/_connect verb split formalized in
-    # `connect-gsheet.md`. The method is the user-visible surface; the internal
-    # response types remain stable to avoid rippling renames into the connectors
-    # layer.
     def link(
         self,
         *,
         institution: str | None = None,
         auto_pull: bool = True,
         return_to: str | None = None,
-        on_initiate: Callable[[ConnectInitiateResponse], None] | None = None,
-    ) -> ConnectResult:
+        on_initiate: Callable[[LinkInitiateResponse], None] | None = None,
+    ) -> LinkResult:
         """Link new institution OR re-authenticate existing one.
 
         When `institution` matches an existing connection, runs Plaid update mode
@@ -275,32 +270,32 @@ class SyncService:
         request (per design Section 8); the server's Link flow handles naming.
         Ambiguous matches (same name on multiple connections) raise.
 
-        `on_initiate` is invoked synchronously with the ConnectInitiateResponse before
+        `on_initiate` is invoked synchronously with the LinkInitiateResponse before
         the service starts polling. The CLI uses this hook to display `link_url`
         and optionally open the user's browser. Without it, the service blocks on
         polling without surfacing the URL — only safe for callers that surface it
         themselves (MCP returns the URL in its envelope and never enters this path).
         """
-        initiate = self.initiate_connect(institution=institution, return_to=return_to)
+        initiate = self.initiate_link(institution=institution, return_to=return_to)
         if on_initiate is not None:
             on_initiate(initiate)
         try:
-            status = self.client.poll_connect_status(initiate.session_id)
+            status = self.client.poll_link_status(initiate.session_id)
         except Exception:
-            # poll_connect_status raises SyncConnectError on terminal 'failed'
+            # poll_link_status raises SyncLinkError on terminal 'failed'
             # status, and SyncTimeoutError when the user abandons the browser.
-            # Surface both as failed-connect outcomes; the CLI/MCP layer
+            # Surface both as failed-link outcomes; the CLI/MCP layer
             # re-raises with the specific exception type.
             SYNC_CONNECT_OUTCOMES.labels(status="failed").inc()
             raise
-        SYNC_CONNECT_OUTCOMES.labels(status=status.status or "connected").inc()
+        SYNC_CONNECT_OUTCOMES.labels(status=status.status or "linked").inc()
         pull_result: PullResult | None = None
         if auto_pull:
             try:
                 pull_result = self.pull(provider_item_id=status.provider_item_id)
             except Exception as e:
-                logger.warning(f"Auto-pull failed after connect: {e}")
-        return ConnectResult(
+                logger.warning(f"Auto-pull failed after link: {e}")
+        return LinkResult(
             provider_item_id=status.provider_item_id or "",
             institution_name=status.institution_name,
             pull_result=pull_result,

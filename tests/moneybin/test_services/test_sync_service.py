@@ -12,8 +12,8 @@ import yaml
 from moneybin.connectors.sync_client import SyncAPIError
 from moneybin.connectors.sync_models import (
     ConnectedInstitution,
-    ConnectInitiateResponse,
-    ConnectStatusResponse,
+    LinkInitiateResponse,
+    LinkStatusResponse,
     SyncDataResponse,
     SyncTriggerResponse,
 )
@@ -181,21 +181,21 @@ def test_pull_with_force_passes_reset_cursor(
     )
 
 
-def test_connect_new_institution_auto_pulls(
+def test_link_new_institution_auto_pulls(
     mock_client: MagicMock,
     db: Database,
     loader: PlaidExtractor,
     sync_data: SyncDataResponse,
 ) -> None:
-    mock_client.initiate_connect.return_value = ConnectInitiateResponse(
+    mock_client.initiate_link.return_value = LinkInitiateResponse(
         session_id="sess_x",
         link_url="https://hosted.plaid.com/link/x",
-        connect_type="widget_flow",
+        link_type="widget_flow",
         expiration=datetime(2026, 5, 13, 13, 30, tzinfo=UTC),
     )
-    mock_client.poll_connect_status.return_value = ConnectStatusResponse(
+    mock_client.poll_link_status.return_value = LinkStatusResponse(
         session_id="sess_x",
-        status="connected",
+        status="linked",
         provider_item_id="item_chase_abc",
         institution_name="Chase",
         expiration=datetime(2026, 5, 13, 13, 30, tzinfo=UTC),
@@ -212,18 +212,18 @@ def test_connect_new_institution_auto_pulls(
     )
 
 
-def test_connect_no_pull_returns_without_pull_result(
+def test_link_no_pull_returns_without_pull_result(
     mock_client: MagicMock, db: Database, loader: PlaidExtractor
 ) -> None:
-    mock_client.initiate_connect.return_value = ConnectInitiateResponse(
+    mock_client.initiate_link.return_value = LinkInitiateResponse(
         session_id="sess_x",
         link_url="https://hosted.plaid.com/link/x",
-        connect_type="widget_flow",
+        link_type="widget_flow",
         expiration=datetime(2026, 5, 13, 13, 30, tzinfo=UTC),
     )
-    mock_client.poll_connect_status.return_value = ConnectStatusResponse(
+    mock_client.poll_link_status.return_value = LinkStatusResponse(
         session_id="sess_x",
-        status="connected",
+        status="linked",
         provider_item_id="item_new",
         institution_name="Bank",
         expiration=datetime(2026, 5, 13, 13, 30, tzinfo=UTC),
@@ -234,7 +234,7 @@ def test_connect_no_pull_returns_without_pull_result(
     mock_client.trigger_sync.assert_not_called()
 
 
-def test_connect_re_auth_resolves_institution_name(
+def test_link_re_auth_resolves_institution_name(
     mock_client: MagicMock, db: Database, loader: PlaidExtractor
 ) -> None:
     mock_client.list_institutions.return_value = [
@@ -247,28 +247,28 @@ def test_connect_re_auth_resolves_institution_name(
             created_at=datetime(2026, 3, 15, tzinfo=UTC),
         ),
     ]
-    mock_client.initiate_connect.return_value = ConnectInitiateResponse(
+    mock_client.initiate_link.return_value = LinkInitiateResponse(
         session_id="sess_x",
         link_url="https://hosted.plaid.com/link/x",
-        connect_type="widget_flow",
+        link_type="widget_flow",
         expiration=datetime(2026, 5, 13, 13, 30, tzinfo=UTC),
     )
-    mock_client.poll_connect_status.return_value = ConnectStatusResponse(
+    mock_client.poll_link_status.return_value = LinkStatusResponse(
         session_id="sess_x",
-        status="connected",
+        status="linked",
         provider_item_id="item_existing",
         institution_name="Chase",
         expiration=datetime(2026, 5, 13, 13, 30, tzinfo=UTC),
     )
     service = SyncService(client=mock_client, db=db, loader=loader)
     service.link(institution="Chase", auto_pull=False)
-    mock_client.initiate_connect.assert_called_once_with(
+    mock_client.initiate_link.assert_called_once_with(
         provider_item_id="item_existing",
         return_to=None,
     )
 
 
-def test_connect_falls_through_to_new_when_institution_not_matched(
+def test_link_falls_through_to_new_when_institution_not_matched(
     mock_client: MagicMock, db: Database, loader: PlaidExtractor
 ) -> None:
     """Unknown institution name falls through to new-connection flow.
@@ -277,15 +277,15 @@ def test_connect_falls_through_to_new_when_institution_not_matched(
     intent, not an error — let the server's Link flow name the institution.
     """
     mock_client.list_institutions.return_value = []  # no existing connections
-    mock_client.initiate_connect.return_value = ConnectInitiateResponse(
+    mock_client.initiate_link.return_value = LinkInitiateResponse(
         session_id="sess_x",
         link_url="https://hosted.plaid.com/link/x",
-        connect_type="widget_flow",
+        link_type="widget_flow",
         expiration=datetime(2026, 5, 13, 13, 30, tzinfo=UTC),
     )
-    mock_client.poll_connect_status.return_value = ConnectStatusResponse(
+    mock_client.poll_link_status.return_value = LinkStatusResponse(
         session_id="sess_x",
-        status="connected",
+        status="linked",
         provider_item_id="item_new",
         institution_name="Bank",
         expiration=datetime(2026, 5, 13, 13, 30, tzinfo=UTC),
@@ -293,35 +293,35 @@ def test_connect_falls_through_to_new_when_institution_not_matched(
     service = SyncService(client=mock_client, db=db, loader=loader)
     service.link(institution="Wells Fargo", auto_pull=False)
     # provider_item_id is None — new-connection flow, not update mode
-    mock_client.initiate_connect.assert_called_once_with(
+    mock_client.initiate_link.assert_called_once_with(
         provider_item_id=None,
         return_to=None,
     )
 
 
-def test_connect_invokes_on_initiate_callback_before_polling(
+def test_link_invokes_on_initiate_callback_before_polling(
     mock_client: MagicMock, db: Database, loader: PlaidExtractor
 ) -> None:
-    """on_initiate fires after initiate_connect, before polling.
+    """on_initiate fires after initiate_link, before polling.
 
     The CLI uses on_initiate to print link_url + open the browser. Verify
-    the service invokes it between initiate_connect and poll_connect_status.
+    the service invokes it between initiate_link and poll_link_status.
     """
-    initiate_resp = ConnectInitiateResponse(
+    initiate_resp = LinkInitiateResponse(
         session_id="sess_x",
         link_url="https://hosted.plaid.com/link/x",
-        connect_type="widget_flow",
+        link_type="widget_flow",
         expiration=datetime(2026, 5, 13, 13, 30, tzinfo=UTC),
     )
-    mock_client.initiate_connect.return_value = initiate_resp
-    mock_client.poll_connect_status.return_value = ConnectStatusResponse(
+    mock_client.initiate_link.return_value = initiate_resp
+    mock_client.poll_link_status.return_value = LinkStatusResponse(
         session_id="sess_x",
-        status="connected",
+        status="linked",
         provider_item_id="item_new",
         institution_name="Bank",
         expiration=datetime(2026, 5, 13, 13, 30, tzinfo=UTC),
     )
-    captured: list[ConnectInitiateResponse] = []
+    captured: list[LinkInitiateResponse] = []
     service = SyncService(client=mock_client, db=db, loader=loader)
     service.link(auto_pull=False, on_initiate=captured.append)
     assert captured == [initiate_resp]

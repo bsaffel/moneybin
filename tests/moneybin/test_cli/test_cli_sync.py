@@ -11,8 +11,8 @@ from typer.testing import CliRunner
 
 from moneybin.cli.main import app
 from moneybin.connectors.sync_models import (
-    ConnectResult,
     InstitutionResult,
+    LinkResult,
     PullResult,
     SyncConnectionView,
 )
@@ -195,7 +195,7 @@ def test_sync_link_status_command_exists() -> None:
 def test_sync_link_new_institution(mock_build: MagicMock) -> None:
     service = MagicMock()
     service.list_connections.return_value = []
-    service.link.return_value = ConnectResult(
+    service.link.return_value = LinkResult(
         provider_item_id="item_new",
         institution_name="Chase",
         pull_result=_fake_pull_result(),
@@ -221,7 +221,7 @@ def test_sync_link_surfaces_transforms_error_from_auto_pull(
     """
     service = MagicMock()
     service.list_connections.return_value = []
-    service.link.return_value = ConnectResult(
+    service.link.return_value = LinkResult(
         provider_item_id="item_new",
         institution_name="Chase",
         pull_result=_fake_pull_result(
@@ -240,7 +240,7 @@ def test_sync_link_surfaces_transforms_error_from_auto_pull(
 def test_sync_link_no_pull(mock_build: MagicMock) -> None:
     service = MagicMock()
     service.list_connections.return_value = []
-    service.link.return_value = ConnectResult(
+    service.link.return_value = LinkResult(
         provider_item_id="item_new",
         institution_name="Chase",
     )
@@ -255,7 +255,7 @@ def test_sync_link_no_pull(mock_build: MagicMock) -> None:
 @patch("moneybin.cli.commands.sync._build_sync_service")
 def test_sync_link_explicit_institution(mock_build: MagicMock) -> None:
     service = MagicMock()
-    service.link.return_value = ConnectResult(
+    service.link.return_value = LinkResult(
         provider_item_id="item_x",
         institution_name="Schwab",
     )
@@ -274,14 +274,14 @@ def test_sync_link_status_command(mock_build: MagicMock) -> None:
     from moneybin.connectors.sync_client import SyncClient
 
     client = MagicMock(spec=SyncClient)
-    # CLI link-status is single-shot via the public get_connect_status,
-    # not the blocking poll_connect_status loop.
-    client.get_connect_status.return_value = MagicMock(
+    # CLI link-status is single-shot via the public get_link_status,
+    # not the blocking poll_link_status loop.
+    client.get_link_status.return_value = MagicMock(
         session_id="sess_x",
-        status="connected",
+        status="linked",
         provider_item_id="item_new",
         institution_name="Chase",
-        model_dump_json=lambda **k: '{"status": "connected"}',  # type: ignore[misc]
+        model_dump_json=lambda **k: '{"status": "linked"}',  # type: ignore[misc]
     )
     # link-status uses the client directly, not the service
     with patch("moneybin.cli.commands.sync._build_sync_client", return_value=client):
@@ -290,7 +290,7 @@ def test_sync_link_status_command(mock_build: MagicMock) -> None:
             ["sync", "link-status", "--session-id", "sess_x", "--output", "json"],
         )
     assert result.exit_code == 0, result.output
-    assert "connected" in result.stdout
+    assert "linked" in result.stdout
 
 
 @pytest.mark.unit
@@ -302,7 +302,7 @@ def test_sync_connect_alias_warns_and_forwards(
     """The deprecated `sync connect` alias warns but still forwards to `sync link`."""
     service = MagicMock()
     service.list_connections.return_value = []
-    service.link.return_value = ConnectResult(
+    service.link.return_value = LinkResult(
         provider_item_id="item_new",
         institution_name="Chase",
     )
@@ -327,12 +327,12 @@ def test_sync_connect_status_alias_warns_and_forwards(mock_logger: MagicMock) ->
     from moneybin.connectors.sync_client import SyncClient
 
     client = MagicMock(spec=SyncClient)
-    client.get_connect_status.return_value = MagicMock(
+    client.get_link_status.return_value = MagicMock(
         session_id="sess_x",
-        status="connected",
+        status="linked",
         provider_item_id="item_new",
         institution_name="Chase",
-        model_dump_json=lambda **k: '{"status": "connected"}',  # type: ignore[misc]
+        model_dump_json=lambda **k: '{"status": "linked"}',  # type: ignore[misc]
     )
     with patch("moneybin.cli.commands.sync._build_sync_client", return_value=client):
         result = runner.invoke(
@@ -340,7 +340,7 @@ def test_sync_connect_status_alias_warns_and_forwards(mock_logger: MagicMock) ->
             ["sync", "connect-status", "--session-id", "sess_x", "--output", "json"],
         )
     assert result.exit_code == 0, result.output
-    assert "connected" in result.stdout
+    assert "linked" in result.stdout
     assert mock_logger.warning.called
     assert any(
         "deprecated" in str(call.args[0]).lower()

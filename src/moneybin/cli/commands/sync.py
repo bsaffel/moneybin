@@ -10,7 +10,7 @@ import typer
 
 from moneybin.cli.output import OutputFormat, output_option, quiet_option
 from moneybin.cli.utils import handle_cli_errors
-from moneybin.connectors.sync_models import ConnectInitiateResponse
+from moneybin.connectors.sync_models import LinkInitiateResponse
 
 from .stubs import _not_implemented
 
@@ -75,9 +75,7 @@ def sync_logout() -> None:
         typer.echo("✅ Logged out.")
 
 
-def _surface_connect_link(
-    initiate: ConnectInitiateResponse, *, open_browser: bool
-) -> None:
+def _surface_link(initiate: LinkInitiateResponse, *, open_browser: bool) -> None:
     """Print the Plaid Hosted Link URL to stderr and optionally open the browser.
 
     Always prints to stderr so headless users can copy the URL even when
@@ -170,12 +168,12 @@ def sync_link(
                 # Event-driven: emit initiate response and exit. Agent verifies
                 # completion via `sync link-status` after the user finishes
                 # the Plaid Hosted Link flow out-of-band.
-                initiate = service.initiate_connect(institution=institution)
+                initiate = service.initiate_link(institution=institution)
                 typer.echo(initiate.model_dump_json(indent=2))
                 return
 
-            def _on_initiate(init: ConnectInitiateResponse) -> None:
-                _surface_connect_link(init, open_browser=not no_browser)
+            def _on_initiate(init: LinkInitiateResponse) -> None:
+                _surface_link(init, open_browser=not no_browser)
 
             result = service.link(
                 institution=institution,
@@ -183,7 +181,7 @@ def sync_link(
                 on_initiate=_on_initiate,
             )
 
-    typer.echo(f"✅ Connected {result.institution_name}")
+    typer.echo(f"✅ Linked {result.institution_name}")
     if result.pull_result is not None:
         typer.echo(f"   Pulled {result.pull_result.transactions_loaded} transactions")
         if result.pull_result.transforms_error:
@@ -210,7 +208,7 @@ def sync_link_status(
     """
     with handle_cli_errors():
         client = _build_sync_client()
-        result = client.get_connect_status(session_id)
+        result = client.get_link_status(session_id)
 
     if output == OutputFormat.JSON:
         typer.echo(result.model_dump_json(indent=2))

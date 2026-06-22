@@ -9,9 +9,9 @@ from pydantic import ValidationError
 from moneybin.connectors.sync_models import (
     AuthToken,
     ConnectedInstitution,
-    ConnectInitiateResponse,
-    ConnectStatusResponse,
     InstitutionResult,
+    LinkInitiateResponse,
+    LinkStatusResponse,
     SyncDataResponse,
     SyncTransaction,
     SyncTriggerResponse,
@@ -33,28 +33,28 @@ def test_auth_token_rejects_zero_expires_in() -> None:
         AuthToken(access_token="x", refresh_token="y", expires_in=0)  # noqa: S106  # test fixture, not a real credential
 
 
-def test_connect_initiate_valid_widget_flow() -> None:
-    resp = ConnectInitiateResponse(
+def test_link_initiate_valid_widget_flow() -> None:
+    resp = LinkInitiateResponse(
         session_id="sess_abc",
         link_url="https://hosted.plaid.com/link/x",
-        connect_type="widget_flow",
+        link_type="widget_flow",
         expiration=datetime(2026, 5, 13, 13, 30, tzinfo=UTC),
     )
-    assert resp.connect_type == "widget_flow"
+    assert resp.link_type == "widget_flow"
 
 
-def test_connect_initiate_rejects_unknown_connect_type() -> None:
+def test_link_initiate_rejects_unknown_link_type() -> None:
     with pytest.raises(ValidationError):
-        ConnectInitiateResponse(
+        LinkInitiateResponse(
             session_id="sess_abc",
             link_url="https://hosted.plaid.com/link/x",
-            connect_type="oauth_redirect",  # type: ignore[arg-type]  # not in Literal
+            link_type="oauth_redirect",  # type: ignore[arg-type]  # not in Literal
             expiration=datetime(2026, 5, 13, 13, 30, tzinfo=UTC),
         )
 
 
-def test_connect_status_pending() -> None:
-    resp = ConnectStatusResponse(
+def test_link_status_pending() -> None:
+    resp = LinkStatusResponse(
         session_id="sess_abc",
         status="pending",
         expiration=datetime(2026, 5, 13, 13, 30, tzinfo=UTC),

@@ -85,13 +85,13 @@ sequenceDiagram
 
     Note over User,DB: Phase 2: Link
     User->>CLI: moneybin sync link
-    CLI->>Server: POST /sync/link-token
-    Server-->>CLI: link_token
+    CLI->>Server: POST /sync/link/initiate
+    Server-->>CLI: session_id, link_url
     CLI->>User: Open provider UI in browser
     User->>Server: Complete connection in browser
     Server->>Provider: Exchange token, store access
-    CLI->>Server: Poll for connection confirmation
-    Server-->>CLI: item_id, institution_name
+    CLI->>Server: Poll GET /sync/link/status
+    Server-->>CLI: status=linked, provider_item_id, institution_name
     CLI->>DB: Store in app.sync_connections
 
     Note over User,DB: Phase 3: Pull
@@ -123,12 +123,12 @@ sequenceDiagram
 - Automatic refresh via Auth0 refresh token when JWT expires.
 - One-time setup; subsequent commands use the stored token silently.
 
-### Phase 2: Connect
+### Phase 2: Link
 
-- Client calls `POST /sync/link-token` to get a provider connection token.
+- Client calls `POST /sync/link/initiate` to start a link session and receive `session_id` + `link_url`.
 - Server opens provider's connection UI in the user's browser (e.g., Plaid Link).
 - After the user completes the connection flow, the provider redirects to a server callback endpoint. The server stores the access token and confirms the connection.
-- Client polls the server until the connection is confirmed, then receives `item_id` and institution metadata.
+- Client polls `GET /sync/link/status` until status reaches `linked`, then receives `provider_item_id` and institution metadata.
 - Connection metadata stored locally in `app.sync_connections` for health tracking.
 
 ### Phase 3: Pull
@@ -287,7 +287,7 @@ $ moneybin sync link
 ⚙️  Opening bank connection...
 Visit: https://api.moneybin.app/link/abc123
 Waiting for connection...
-✅ Connected Chase (****1234, ****5678)
+✅ Linked Chase (****1234, ****5678)
 
 $ moneybin sync pull
 ⚙️  Starting sync for all connected institutions...
