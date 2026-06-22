@@ -3,10 +3,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Generator
 from decimal import Decimal
-from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -25,17 +22,9 @@ from tests.moneybin.db_helpers import create_core_tables_raw
 
 
 @pytest.fixture()
-def transaction_db(tmp_path: Path) -> Generator[Database, None, None]:
-    """Yield a Database with core + app tables and test transactions."""
-    mock_store = MagicMock()
-    mock_store.get_key.return_value = "test-encryption-key-256bit-placeholder"
-    database = Database(
-        tmp_path / "test.duckdb",
-        secret_store=mock_store,
-        no_auto_upgrade=True,
-        read_only=False,
-    )
-    conn = database.conn
+def transaction_db(db: Database) -> Database:
+    """Return a Database with core + app tables and test transactions."""
+    conn = db.conn
     create_core_tables_raw(conn)
 
     # Insert test transactions across multiple months (used by tags rename and other tests)
@@ -76,26 +65,16 @@ def transaction_db(tmp_path: Path) -> Generator[Database, None, None]:
         ('T1', 'Food & Drink', 'Coffee Shops', CURRENT_TIMESTAMP, 'user')
     """)  # noqa: S608  # test input, not executing SQL
 
-    yield database
-    database.close()
+    return db
 
 
 class TestEmptyResults:
     """Tests for service behavior with no data in tables."""
 
     @pytest.fixture()
-    def empty_db(self, tmp_path: Path) -> Generator[Database, None, None]:
-        mock_store = MagicMock()
-        mock_store.get_key.return_value = "test-encryption-key-256bit-placeholder"
-        database = Database(
-            tmp_path / "test.duckdb",
-            secret_store=mock_store,
-            no_auto_upgrade=True,
-            read_only=False,
-        )
-        create_core_tables_raw(database.conn)
-        yield database
-        database.close()
+    def empty_db(self, db: Database) -> Database:
+        create_core_tables_raw(db.conn)
+        return db
 
     @pytest.mark.unit
     def test_get_empty_db(self, empty_db: Database) -> None:

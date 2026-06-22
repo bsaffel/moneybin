@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Generator
 from datetime import date, datetime
-from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -32,17 +29,9 @@ _INSERT_TRANSACTIONS = """
 
 
 @pytest.fixture()
-def system_db(tmp_path: Path) -> Generator[Database, None, None]:
+def system_db(db: Database) -> Database:
     """Database with core + raw tables for SystemService tests."""
-    mock_store = MagicMock()
-    mock_store.get_key.return_value = "test-encryption-key-256bit-placeholder"
-    database = Database(
-        tmp_path / "test.duckdb",
-        secret_store=mock_store,
-        no_auto_upgrade=True,
-        read_only=False,
-    )
-    conn = database.conn
+    conn = db.conn
     create_core_tables_raw(conn)
 
     conn.execute("""
@@ -57,8 +46,7 @@ def system_db(tmp_path: Path) -> Generator[Database, None, None]:
 
     conn.execute(_INSERT_TRANSACTIONS)
 
-    yield database
-    database.close()
+    return db
 
 
 @pytest.mark.unit
@@ -111,26 +99,15 @@ def test_status_date_range(system_db: Database) -> None:
 
 
 @pytest.mark.unit
-def test_status_date_range_empty_db(tmp_path: Path) -> None:
+def test_status_date_range_empty_db(db: Database) -> None:
     """transactions_date_range is (None, None) when no transactions exist."""
-    mock_store = MagicMock()
-    mock_store.get_key.return_value = "test-encryption-key-256bit-placeholder"
-    database = Database(
-        tmp_path / "empty.duckdb",
-        secret_store=mock_store,
-        no_auto_upgrade=True,
-        read_only=False,
-    )
-    create_core_tables_raw(database.conn)
-    try:
-        svc = SystemService(db=database)
-        result = svc.status()
-        assert result.accounts_count == 0
-        assert result.transactions_count == 0
-        assert result.transactions_date_range == (None, None)
-        assert result.last_import_at is None
-    finally:
-        database.close()
+    create_core_tables_raw(db.conn)
+    svc = SystemService(db=db)
+    result = svc.status()
+    assert result.accounts_count == 0
+    assert result.transactions_count == 0
+    assert result.transactions_date_range == (None, None)
+    assert result.last_import_at is None
 
 
 @pytest.mark.unit
@@ -220,72 +197,39 @@ def _insert_dim_account(
 
 @pytest.mark.unit
 def test_status_transforms_pending_when_raw_newer_than_dim(
-    tmp_path: Path,
+    db: Database,
 ) -> None:
     """transforms_pending is True when a raw account row postdates dim_accounts.extracted_at."""
-    mock_store = MagicMock()
-    mock_store.get_key.return_value = "test-encryption-key-256bit-placeholder"
-    database = Database(
-        tmp_path / "pending.duckdb",
-        secret_store=mock_store,
-        no_auto_upgrade=True,
-        read_only=False,
-    )
-    try:
-        create_core_tables_raw(database.conn)
-        dim_updated = datetime(2026, 5, 10, 12, 0)
-        _insert_dim_account(database, datetime(2025, 1, 1), dim_updated)
-        _seed_raw_ofx_account(database, datetime(2026, 5, 13, 18, 24), "import-1")
-        _seed_import_log(database, datetime(2026, 5, 13, 18, 24))
+    create_core_tables_raw(db.conn)
+    dim_updated = datetime(2026, 5, 10, 12, 0)
+    _insert_dim_account(db, datetime(2025, 1, 1), dim_updated)
+    _seed_raw_ofx_account(db, datetime(2026, 5, 13, 18, 24), "import-1")
+    _seed_import_log(db, datetime(2026, 5, 13, 18, 24))
 
-        status = SystemService(db=database).status()
-        assert status.transforms_pending is True
-        assert status.transforms_last_apply_at == dim_updated
-    finally:
-        database.close()
+    status = SystemService(db=db).status()
+    assert status.transforms_pending is True
+    assert status.transforms_last_apply_at == dim_updated
 
 
 @pytest.mark.unit
-def test_status_transforms_not_pending_after_apply(tmp_path: Path) -> None:
+def test_status_transforms_not_pending_after_apply(db: Database) -> None:
     """transforms_pending is False when dim_accounts.extracted_at >= raw max extracted_at."""
-    mock_store = MagicMock()
-    mock_store.get_key.return_value = "test-encryption-key-256bit-placeholder"
-    database = Database(
-        tmp_path / "fresh.duckdb",
-        secret_store=mock_store,
-        no_auto_upgrade=True,
-        read_only=False,
-    )
-    try:
-        create_core_tables_raw(database.conn)
-        dim_updated = datetime(2026, 5, 13, 19, 0)
-        extracted = datetime(2026, 5, 13, 18, 24)
-        _insert_dim_account(database, extracted, dim_updated)
-        _seed_raw_ofx_account(database, extracted, "import-1")
-        _seed_import_log(database, datetime(2026, 5, 13, 18, 30))
+    create_core_tables_raw(db.conn)
+    dim_updated = datetime(2026, 5, 13, 19, 0)
+    extracted = datetime(2026, 5, 13, 18, 24)
+    _insert_dim_account(db, extracted, dim_updated)
+    _seed_raw_ofx_account(db, extracted, "import-1")
+    _seed_import_log(db, datetime(2026, 5, 13, 18, 30))
 
-        status = SystemService(db=database).status()
-        assert status.transforms_pending is False
-        assert status.transforms_last_apply_at == dim_updated
-    finally:
-        database.close()
+    status = SystemService(db=db).status()
+    assert status.transforms_pending is False
+    assert status.transforms_last_apply_at == dim_updated
 
 
 @pytest.mark.unit
-def test_status_transforms_pending_false_with_no_imports(tmp_path: Path) -> None:
+def test_status_transforms_pending_false_with_no_imports(db: Database) -> None:
     """transforms_pending is False on a fresh DB with no imports."""
-    mock_store = MagicMock()
-    mock_store.get_key.return_value = "test-encryption-key-256bit-placeholder"
-    database = Database(
-        tmp_path / "empty.duckdb",
-        secret_store=mock_store,
-        no_auto_upgrade=True,
-        read_only=False,
-    )
-    try:
-        # No core.dim_accounts and no imports → freshness returns pending=False.
-        status = SystemService(db=database).status()
-        assert status.transforms_pending is False
-        assert status.transforms_last_apply_at is None
-    finally:
-        database.close()
+    # No core.dim_accounts and no imports → freshness returns pending=False.
+    status = SystemService(db=db).status()
+    assert status.transforms_pending is False
+    assert status.transforms_last_apply_at is None

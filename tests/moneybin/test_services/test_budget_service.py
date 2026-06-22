@@ -3,10 +3,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Generator
 from decimal import Decimal
-from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -25,17 +22,9 @@ from tests.moneybin.db_helpers import create_core_tables_raw, seed_categories_vi
 
 
 @pytest.fixture()
-def budget_db(tmp_path: Path) -> Generator[Database, None, None]:
-    """Yield a Database with core + app tables and test data seeded."""
-    mock_store = MagicMock()
-    mock_store.get_key.return_value = "test-encryption-key-256bit-placeholder"
-    database = Database(
-        tmp_path / "test.duckdb",
-        secret_store=mock_store,
-        no_auto_upgrade=True,
-        read_only=False,
-    )
-    conn = database.conn
+def budget_db(db: Database) -> Database:
+    """Return a Database with core + app tables and test data seeded."""
+    conn = db.conn
     create_core_tables_raw(conn)
 
     # Insert transactions for budget status tests
@@ -69,8 +58,7 @@ def budget_db(tmp_path: Path) -> Generator[Database, None, None]:
         ('T2', 'Food & Drink', 'Bakeries', CURRENT_TIMESTAMP, 'user')
     """)  # noqa: S608  # test input, not executing SQL
 
-    yield database
-    database.close()
+    return db
 
 
 class TestSetBudget:

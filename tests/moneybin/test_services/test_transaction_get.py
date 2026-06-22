@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Generator
 from decimal import Decimal
-from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -19,17 +16,9 @@ from tests.moneybin.db_helpers import create_core_tables_raw
 
 
 @pytest.fixture()
-def txn_db(tmp_path: Path) -> Generator[Database, None, None]:
+def txn_db(db: Database) -> Database:
     """Database with core+app tables and 4 test transactions."""
-    mock_store = MagicMock()
-    mock_store.get_key.return_value = "test-encryption-key-256bit-placeholder"
-    database = Database(
-        tmp_path / "test.duckdb",
-        secret_store=mock_store,
-        no_auto_upgrade=True,
-        read_only=False,
-    )
-    conn = database.conn
+    conn = db.conn
     create_core_tables_raw(conn)
 
     conn.execute("""
@@ -76,8 +65,7 @@ def txn_db(tmp_path: Path) -> Generator[Database, None, None]:
          NULL, NULL, NULL, NULL, NULL)
     """)  # noqa: S608  # test input, not executing SQL
 
-    yield database
-    database.close()
+    return db
 
 
 class TestTransactionGet:
@@ -244,18 +232,8 @@ class TestTransactionGet:
             TransactionService(txn_db).get(cursor=bad)
 
     @pytest.mark.unit
-    def test_uncategorized_only_includes_source_categorized(
-        self, tmp_path: Path
-    ) -> None:
+    def test_uncategorized_only_includes_source_categorized(self, db: Database) -> None:
         """uncategorized_only returns rows with source-provided category but no user categorization."""
-        mock_store = MagicMock()
-        mock_store.get_key.return_value = "test-encryption-key-256bit-placeholder"
-        db = Database(
-            tmp_path / "src_cat.duckdb",
-            secret_store=mock_store,
-            no_auto_upgrade=True,
-            read_only=False,
-        )
         create_core_tables_raw(db.conn)
         # T_src: source-provided category ('Groceries'), categorized_by=NULL (no user/AI/rule)
         db.conn.execute("""
@@ -279,19 +257,10 @@ class TestTransactionGet:
         assert len(result.transactions) == 1
         assert result.transactions[0].transaction_id == "T_src"
         assert result.transactions[0].category == "Groceries"
-        db.close()
 
     @pytest.mark.unit
-    def test_filter_by_memo(self, tmp_path: Path) -> None:
+    def test_filter_by_memo(self, db: Database) -> None:
         """Description filter matches via the memo OR branch."""
-        mock_store = MagicMock()
-        mock_store.get_key.return_value = "test-encryption-key-256bit-placeholder"
-        db = Database(
-            tmp_path / "memo.duckdb",
-            secret_store=mock_store,
-            no_auto_upgrade=True,
-            read_only=False,
-        )
         create_core_tables_raw(db.conn)
         db.conn.execute("""
             INSERT INTO core.fct_transactions (
@@ -314,4 +283,3 @@ class TestTransactionGet:
         assert len(result.transactions) == 1
         assert result.transactions[0].transaction_id == "M1"
         assert result.transactions[0].memo == "coffee shop"
-        db.close()

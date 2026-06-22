@@ -3,29 +3,12 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Generator
-from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
 from moneybin.database import Database
 from moneybin.services._validators import InvalidSlugError
 from moneybin.services.import_service import ImportService
-
-
-@pytest.fixture()
-def db(tmp_path: Path) -> Generator[Database, None, None]:
-    mock_store = MagicMock()
-    mock_store.get_key.return_value = "test-key"
-    database = Database(
-        tmp_path / "labels.duckdb",
-        secret_store=mock_store,
-        no_auto_upgrade=True,
-        read_only=False,
-    )
-    yield database
-    database.close()
 
 
 @pytest.mark.unit

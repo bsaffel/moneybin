@@ -1,10 +1,6 @@
 # tests/moneybin/test_services/test_spending_service.py
 """Tests for SpendingService."""
 
-from collections.abc import Generator
-from pathlib import Path
-from unittest.mock import MagicMock
-
 import pytest
 
 from moneybin.database import Database
@@ -18,33 +14,16 @@ from tests.moneybin.db_helpers import create_core_tables_raw
 
 
 @pytest.fixture()
-def empty_db(tmp_path: Path) -> Generator[Database, None, None]:
-    """Yield a Database with tables created but no data."""
-    mock_store = MagicMock()
-    mock_store.get_key.return_value = "test-encryption-key-256bit-placeholder"
-    database = Database(
-        tmp_path / "test.duckdb",
-        secret_store=mock_store,
-        no_auto_upgrade=True,
-        read_only=False,
-    )
-    create_core_tables_raw(database.conn)
-    yield database
-    database.close()
+def empty_db(db: Database) -> Database:
+    """Return a Database with tables created but no data."""
+    create_core_tables_raw(db.conn)
+    return db
 
 
 @pytest.fixture()
-def spending_db(tmp_path: Path) -> Generator[Database, None, None]:
-    """Yield a Database with core + app tables and test transactions seeded."""
-    mock_store = MagicMock()
-    mock_store.get_key.return_value = "test-encryption-key-256bit-placeholder"
-    database = Database(
-        tmp_path / "test.duckdb",
-        secret_store=mock_store,
-        no_auto_upgrade=True,
-        read_only=False,
-    )
-    conn = database.conn
+def spending_db(db: Database) -> Database:
+    """Return a Database with core + app tables and test transactions seeded."""
+    conn = db.conn
     create_core_tables_raw(conn)
 
     # Insert test transactions spanning 2 months
@@ -72,8 +51,7 @@ def spending_db(tmp_path: Path) -> Generator[Database, None, None]:
         ('T3', 'Food & Drink', 'Groceries', CURRENT_TIMESTAMP, 'user')
     """)  # noqa: S608  # test input, not executing SQL
 
-    yield database
-    database.close()
+    return db
 
 
 class TestSpendingSummary:
