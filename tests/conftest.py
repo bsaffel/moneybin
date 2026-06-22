@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from collections.abc import Generator
 from pathlib import Path
 
 import pytest
@@ -83,3 +84,34 @@ os.environ["MONEYBIN_HOME"] = str(_worker_home)
 _worker_inbox_root = _worker_home / "inbox-root"
 _worker_inbox_root.mkdir(parents=True, exist_ok=True)
 os.environ["MONEYBIN_IMPORT___INBOX_ROOT"] = str(_worker_inbox_root)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _in_memory_keyring() -> Generator[None, None, None]:  # pyright: ignore[reportUnusedFunction]  # pytest autouse fixture
+    """Swap the OS keychain for an in-memory backend for the whole session.
+
+    No automated test should reach the real platform keyring: it prompts or
+    denies under sandbox + headless CI (the ``PasswordSetError -60008`` this
+    prevents) and is platform-specific, so a green run on one OS proves
+    nothing about another. Tests that exercise ``SecretStore``'s own logic
+    patch ``moneybin.secrets.keyring`` directly (see test_secrets.py) and so
+    are unaffected by this backend swap. The ``keyring`` library itself is
+    upstream-tested — we only need a writable, controlled backend so that
+    encrypted-DB opens can round-trip a key without the OS.
+
+    Session-scoped (not per-test) so the in-memory store persists across the
+    worker's tests — matching the real keychain's persistence. The per-worker
+    ``MONEYBIN_HOME`` profile DB is reused across tests, so the key that
+    created it must stay retrievable; clearing per test would orphan it and
+    surface as "Wrong encryption key used to open the database file".
+    """
+    import keyring
+
+    from tests.e2e.memory_keyring import MemoryKeyring
+
+    previous = keyring.get_keyring()
+    keyring.set_keyring(MemoryKeyring())
+    try:
+        yield
+    finally:
+        keyring.set_keyring(previous)

@@ -334,7 +334,12 @@ class Database:
         store = secret_store or SecretStore()
 
         global _cached_encryption_key  # noqa: PLW0603
-        if _cached_encryption_key is not None:
+        # An explicitly-passed secret_store is authoritative: read its key and
+        # neither consult nor populate the process cache. The cache only spares
+        # the default (secret_store=None) path repeat keyring lookups; letting it
+        # override an explicit store would let a key cached in one context
+        # decrypt-fail a DB opened with a different explicit key in another.
+        if secret_store is None and _cached_encryption_key is not None:
             encryption_key = _cached_encryption_key
         else:
             try:
@@ -345,7 +350,8 @@ class Database:
                     f"Run 'moneybin db init' to create a new database, or set "
                     f"MONEYBIN_{_KEY_NAME} for CI/headless environments."
                 ) from e
-            _cached_encryption_key = encryption_key
+            if secret_store is None:
+                _cached_encryption_key = encryption_key
 
         if read_only:
             self._conn = duckdb.connect()
