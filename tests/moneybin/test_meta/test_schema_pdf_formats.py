@@ -7,9 +7,9 @@ from moneybin.tables import PDF_FORMATS
 
 
 @pytest.mark.integration
-def test_pdf_formats_table_exists_after_init(db: Database) -> None:
+def test_pdf_formats_table_exists_after_init(module_db: Database) -> None:
     """Verify app.pdf_formats table exists with correct columns after schema init."""
-    cols = db.execute(
+    cols = module_db.execute(
         "SELECT column_name FROM information_schema.columns "
         "WHERE table_schema = 'app' AND table_name = 'pdf_formats' "
         "ORDER BY ordinal_position"
