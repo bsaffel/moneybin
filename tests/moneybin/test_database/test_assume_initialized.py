@@ -82,3 +82,47 @@ def test_assume_initialized_rejects_missing_file(tmp_path: Path) -> None:
             assume_initialized=True,
             read_only=False,
         )
+
+
+def _catalog(db: Database) -> dict[str, object]:
+    """Full schema fingerprint: tables, columns (+types), views, and comments."""
+    tables = db.execute(
+        "SELECT schema_name, table_name, comment FROM duckdb_tables() "
+        "ORDER BY schema_name, table_name"
+    ).fetchall()
+    columns = db.execute(
+        "SELECT schema_name, table_name, column_name, data_type, comment "
+        "FROM duckdb_columns() ORDER BY schema_name, table_name, column_name"
+    ).fetchall()
+    views = db.execute(
+        "SELECT schema_name, view_name FROM duckdb_views() "
+        "ORDER BY schema_name, view_name"
+    ).fetchall()
+    return {"tables": tables, "columns": columns, "views": views}
+
+
+def test_template_copy_matches_fresh_build(tmp_path: Path) -> None:
+    # A fresh, real init build:
+    fresh_path = tmp_path / "fresh.duckdb"
+    fresh = Database(
+        fresh_path, secret_store=_store(), no_auto_upgrade=True, read_only=False
+    )
+
+    # The template-copy path the fast `db` fixture uses:
+    template = tmp_path / "template.duckdb"
+    _build_template(template)
+    copy = tmp_path / "copy.duckdb"
+    shutil.copy(template, copy)
+    copy.chmod(0o600)
+    copied = Database(
+        copy,
+        secret_store=_store(),
+        no_auto_upgrade=True,
+        assume_initialized=True,
+        read_only=False,
+    )
+    try:
+        assert _catalog(copied) == _catalog(fresh)
+    finally:
+        copied.close()
+        fresh.close()
