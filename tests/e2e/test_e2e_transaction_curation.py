@@ -359,15 +359,6 @@ class TestImportLabelsGoldenPath:
         assert "needs-review" in labels
 
 
-@pytest.mark.skip(
-    reason=(
-        "CategorizationService.set_category emits category.set audit events, "
-        "but the only CLI/MCP surface today (categorize_items via "
-        "transactions categorize commit-from-file) does not invoke set_category — "
-        "it inserts via direct SQL UPSERT without audit emission. Wiring that "
-        "is out of scope for Task 14 (polish/docs only)."
-    )
-)
 class TestCategoryEditAudit:
     """Editing a transaction's category writes an audit event with before/after."""
 
@@ -394,7 +385,9 @@ class TestCategoryEditAudit:
         txn_id = _loads(result.stdout)["data"]["transaction_id"]
         run_cli("transform", "apply", env=env, timeout=180).assert_success()
 
-        # Apply a category via commit-from-file (writes through CategorizationService.set_category).
+        # Apply a category via commit-from-file. The batch path
+        # (categorize_items → write_categorization → TransactionCategoriesRepo
+        # .upsert_guarded) emits a category.set audit on every landed write.
         bulk = [{"transaction_id": txn_id, "category": "Shopping"}]
         bulk_path = Path(env["MONEYBIN_HOME"]) / "categorize.json"
         bulk_path.write_text(json.dumps(bulk))
