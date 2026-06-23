@@ -23,6 +23,28 @@ class TestSQLMeshContext:
             with sqlmesh_context(mock_db):
                 pass
 
+    def test_rejects_mock_db_with_non_path_db_path(self) -> None:
+        """A mock db that slips past the conn check fails loudly, never littering.
+
+        Regression for the #11 junk-dir leak: a test driving the real
+        ``sqlmesh_context`` with a bare ``MagicMock`` (``_db_path`` left as an
+        auto-mock) and ``sqlmesh.Context`` un-patched silently mkdir'd
+        ``sqlmesh/<MagicMock ...>/`` under the project root — because
+        ``cache_dir=str(db._db_path.parent / ...)`` stringified the mock. The
+        guard converts that into an immediate ``TypeError`` (raised before any
+        ``Context`` is built) whose traceback names the offending test, so the
+        intermittent leak can never recur silently.
+        """
+        from moneybin.database import sqlmesh_context
+
+        mock_db = MagicMock()
+        mock_db._conn = MagicMock()  # truthy → passes the closed-connection check
+        # _db_path deliberately left as an auto-mock — the exact bug condition.
+
+        with pytest.raises(TypeError, match="requires an open Database"):
+            with sqlmesh_context(mock_db):
+                pass
+
     @patch("sqlmesh.core.engine_adapter.duckdb.DuckDBEngineAdapter")
     @patch("sqlmesh.Context")
     def test_injects_and_cleans_adapter_cache(

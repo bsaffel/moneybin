@@ -1159,6 +1159,18 @@ def sqlmesh_context(
     # Use the supplied db's actual path, not settings — during `profile create`
     # the new profile isn't yet the active one, so get_settings() would fail.
     db_path = db._db_path  # pyright: ignore[reportPrivateUsage]
+    # Contract guard: a real Database always has a Path here. A test that drives
+    # the real sqlmesh_context with a bare mock db (and forgets to patch
+    # sqlmesh.Context) reaches this line with an auto-mock _db_path, then
+    # silently mkdir's sqlmesh/<MagicMock ...>/ from the stringified cache_dir
+    # below. Fail loudly here instead — the traceback names the offending test.
+    if not isinstance(db_path, Path):  # pyright: ignore[reportUnnecessaryIsInstance]  # static type is Path; the guard exists for tests that pass a mock that violates it at runtime
+        raise TypeError(
+            "sqlmesh_context requires an open Database; got "
+            f"{type(db).__name__} whose _db_path is {type(db_path).__name__}, "
+            "not a Path. A test is driving the real sqlmesh_context with a mock "
+            "db — patch sqlmesh_context (or pass a real Database) in that test."
+        )
 
     cache_key = str(db_path)
     try:
