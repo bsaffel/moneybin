@@ -156,7 +156,7 @@ flowchart TB
 
 ### Web UI runtime model
 
-`transport-http` issues same-origin `fetch` calls to a **new, thin FastAPI surface** over the *existing service layer* — no business logic in the routes. Locally this is `moneybin ui`; hosted, it is moneybin-sync serving the same bundle and routes.
+`transport-http` issues same-origin `fetch` calls to a **new, thin FastAPI surface** over the *existing service layer* — no business logic in the routes. Locally this is `moneybin ui`; hosted, a MoneyBin app server serves the same bundle and routes.
 
 ## Type generation
 
