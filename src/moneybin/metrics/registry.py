@@ -423,7 +423,7 @@ audit_undo_rows_reversed_total = Counter(
     "Audit rows inverted by successful undos (markers and no-ops excluded).",
 )
 
-# ── Sync (moneybin-server pull/connect lifecycle) ────────────────────────────
+# ── Sync (moneybin-sync pull/connect lifecycle) ────────────────────────────
 
 SYNC_PULL_DURATION_SECONDS = Histogram(
     "moneybin_sync_pull_duration_seconds",

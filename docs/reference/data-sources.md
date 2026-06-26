@@ -171,7 +171,7 @@ One extractor, three formats — Open Financial Exchange and its Quicken (QFX) a
 
 ## Plaid sync
 
-Live banking sync brokered through `moneybin-server`. Implementation: `src/moneybin/loaders/plaid_loader.py`, `src/moneybin/services/sync_service.py`, `src/moneybin/connectors/sync_client.py`. The client never talks to Plaid directly — it talks to the moneybin-server API, which holds the Plaid integration as an implementation detail.
+Live banking sync brokered through `moneybin-sync`. Implementation: `src/moneybin/loaders/plaid_loader.py`, `src/moneybin/services/sync_service.py`, `src/moneybin/connectors/sync_client.py`. The client never talks to Plaid directly — it talks to the moneybin-sync API, which holds the Plaid integration as an implementation detail.
 
 **What's pulled per sync:**
 
@@ -288,7 +288,7 @@ Per-source error surfaces. CLI exits 1 with the exception class name visible in 
 | Tabular | `ValueError` | Smart-import confidence `low` (date / amount / description not all mapped); unknown `--format` name; zero data rows; single-account profile with no `--account-name` / `--account-id`; unsupported extension; size-limit trip (use `--no-size-limit`). |
 | OFX | `ValueError` | Malformed OFX payload or read error (wraps the underlying parser exception). |
 | OFX | `InstitutionResolutionError` | Institution chain exhausted with no match and no `--institution` override (non-interactive only). |
-| Plaid | `httpx`-shaped errors via `sync_client` | Auth / network / rate-limit failures from moneybin-server. |
+| Plaid | `httpx`-shaped errors via `sync_client` | Auth / network / rate-limit failures from moneybin-sync. |
 | All | `DatabaseKeyError`, `DatabaseLockError`, `DatabaseNotInitializedError` | Database lifecycle; surfaced with `db unlock` guidance. |
 
 ## Manual entry

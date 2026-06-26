@@ -59,7 +59,7 @@ def sync_login(
         False, "--no-browser", help="Print URL only; don't try to open a browser."
     ),
 ) -> None:
-    """Authenticate with moneybin-server via Device Authorization Flow."""
+    """Authenticate with moneybin-sync via Device Authorization Flow."""
     with handle_cli_errors():
         client = _build_sync_client()
         client.login(open_browser=not no_browser)

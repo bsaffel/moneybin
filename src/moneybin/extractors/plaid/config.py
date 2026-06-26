@@ -14,7 +14,7 @@ class PlaidProviderConfig(ProviderConfig):
     """Configuration for the Plaid provider.
 
     Plaid's auth lives in the SyncResponse payload (delivered by
-    moneybin-server's mediated Hosted Link flow); this config holds
+    moneybin-sync's mediated Hosted Link flow); this config holds
     only client-side knobs.
 
     Currently empty — placeholder for future client-side options. The

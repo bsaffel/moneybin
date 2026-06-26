@@ -731,7 +731,7 @@ Cross-cutting decisions deferred to implementation or future work.
 - The pre-existing bulk-commit tool (now `transactions_categorize_commit`; this spec adds the *first-run prompt layer* and the cold-start workflow around it)
 - Direct LLM API calls from CLI (e.g., `moneybin categorize llm --provider claude`) — manual-bridge serves the use case in v1
 - Local LLM (Ollama) integration — future spec
-- Server-side merchant DB enrichment via moneybin-server — followup, future paid feature work
+- Server-side merchant DB enrichment via moneybin-sync — followup, future paid feature work
 - Recurring transaction detection — recommended future spec
 - Interactive CLI categorization UX improvements — orthogonal to cold-start
 - Headless/automated LLM-assist for cron jobs — future direction

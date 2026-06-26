@@ -63,7 +63,7 @@ Do **not** bundle the privacy-middleware-to-transform migration. That's security
 
 - **`NamespaceRegistry` improvements beyond visibility.** Once the visibility migration lands, evaluate whether the provider model (custom `MoneyBinNamespaceProvider`) buys anything beyond what visibility alone gives us. Probably no, but worth a follow-up review.
 - **Privacy middleware → transform model.** Security-critical migration. Wants its own ADR, its own PR, its own test sweep.
-- **`ProxyProvider` for `moneybin-server`.** Precondition not met — `moneybin-server` doesn't expose an MCP surface today. Revisit when it does.
+- **`ProxyProvider` for `moneybin-sync`.** Precondition not met — `moneybin-sync` doesn't expose an MCP surface today. Revisit when it does.
 
 ## Alternatives Considered
 
@@ -124,7 +124,7 @@ Migrate sensitivity gates, consent enforcement, and audit logging onto the 3.x t
 - **Progressive disclosure becomes a one-liner per tool.** `domain="categorize"` on the `mcp_tool` decorator (translated to `tags={"categorize"}` at registration) plus one `Visibility(False, tags={domain})` transform per extended namespace replaces the entire `NamespaceRegistry` class. `moneybin_discover` is reduced to a single `enable_components(ctx, tags={domain})` call — no enumeration, no parallel constant list.
 - **Per-session visibility matches MCP semantics.** Different clients with different consent or disclosure state are tracked independently. The current global-mutation behavior is arguably a latent bug; this fixes it.
 - **Decorated tools remain callable from tests.** 3.x's decorators return functions, not component objects — keeps non-MCP test paths simple.
-- **Path forward for future migrations.** Provider model unlocks `ProxyProvider` for `moneybin-server`; transform model unlocks privacy-middleware migration. No commitment yet, but the option is open.
+- **Path forward for future migrations.** Provider model unlocks `ProxyProvider` for `moneybin-sync`; transform model unlocks privacy-middleware migration. No commitment yet, but the option is open.
 - **Cleaner FastAPI prep.** Relocating `ResponseEnvelope` out of `mcp/` makes the cross-transport contract explicit. A future local-webapp HTTP surface becomes a parallel adapter layer (HTTP → service-layer dataclasses → envelope), not a copy-paste of MCP code. `OpenAPIProvider` in 3.x is also available as a hedge — if FastAPI lands later, its OpenAPI spec can be projected back into MCP tools without per-tool re-registration.
 
 ### Negative / accepted tradeoffs

@@ -5,11 +5,11 @@
 implemented
 
 ## Goal
-Implement the first sync provider for MoneyBin: Plaid Transactions. Pull checking, savings, and credit card transactions from connected banks through moneybin-server, load into provider-specific raw tables, and flow through the data warehouse into core alongside OFX, CSV, and tabular-imported data.
+Implement the first sync provider for MoneyBin: Plaid Transactions. Pull checking, savings, and credit card transactions from connected banks through moneybin-sync, load into provider-specific raw tables, and flow through the data warehouse into core alongside OFX, CSV, and tabular-imported data.
 
 ## Background
 - [`sync-overview.md`](sync-overview.md) — umbrella spec defining the interaction model, client infrastructure, CLI/MCP surface, encryption design, and provider contract this spec implements.
-- Server contract (the moneybin-server HTTP API for `/sync/*` endpoints, data format, and error responses) is the authoritative integration surface; endpoint shapes are restated inline below where the client depends on them.
+- Server contract (the moneybin-sync HTTP API for `/sync/*` endpoints, data format, and error responses) is the authoritative integration surface; endpoint shapes are restated inline below where the client depends on them.
 - [ADR-007: JSON over Parquet](../decisions/007-json-over-parquet-for-sync.md) — why sync uses JSON instead of Parquet.
 - [`privacy-data-protection.md`](privacy-data-protection.md) — `Database` connection factory, encryption at rest. All writes go through `get_database()`.
 - [`matching-overview.md`](matching-overview.md) — transaction matching consumes Plaid data alongside OFX/CSV. `source_type = 'plaid'` feeds the matching engine's blocking and scoring pipeline.
@@ -38,7 +38,7 @@ The connect flow uses a server-hosted callback pattern. The client never communi
 sequenceDiagram
     actor User
     participant CLI as moneybin CLI
-    participant Server as moneybin-server
+    participant Server as moneybin-sync
     participant Plaid as Plaid API
     participant Browser as User's Browser
 
@@ -521,7 +521,7 @@ These fixtures should be generated deterministically (seeded) and stored as gold
 
 | Requirement | Notes |
 |---|---|
-| Running moneybin-server | Phases 1–2 complete (auth + sync endpoints) |
+| Running moneybin-sync | Phases 1–2 complete (auth + sync endpoints) |
 | Auth0 tenant | Configured with Device Authorization Flow enabled |
 | Plaid Sandbox credentials | For testing (free, separate from production) |
 | Plaid Production approval | For real bank data (requires security review by Plaid) |
@@ -534,9 +534,9 @@ These fixtures should be generated deterministically (seeded) and stored as gold
 |---|---|
 | Plaid Investments product | Gated on `investments-data-model.md` (needs the ledger/securities/holdings contracts). Future child spec: `sync-plaid-investments.md`. |
 | Plaid Liabilities product | Future child spec. |
-| E2E encryption of sync payloads | Designed in `sync-overview.md`. Implementation gated on moneybin-server Phase 5. |
+| E2E encryption of sync payloads | Designed in `sync-overview.md`. Implementation gated on moneybin-sync Phase 5. |
 | Webhook-based real-time sync | Polling is sufficient for MVP. Server would need webhook receiver infrastructure. |
 | Offline queue for sync commands | If server is unreachable, fail with clear error. No local queue. |
 | MCP App UI for Plaid Link | Phase 2 MCP Apps initiative. Current flow uses browser. |
 | Cross-currency transaction handling | Single-currency only in v1. Multi-currency transactions deferred to `multi-currency.md`. |
-| Server-side Plaid behavior | Token encryption, cursor management, webhook handling — owned by the moneybin-server project; client treats the server as opaque per `sync-overview.md` scope boundary. |
+| Server-side Plaid behavior | Token encryption, cursor management, webhook handling — owned by the moneybin-sync project; client treats the server as opaque per `sync-overview.md` scope boundary. |

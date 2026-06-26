@@ -4,7 +4,7 @@
 
 ## Context
 
-The original moneybin-server design (Phase 3 spec) called for the server to convert Plaid API responses into Parquet files, package them as a tar archive, and serve them for download. The client would unpack the archive and load Parquet files into DuckDB via `read_parquet()`.
+The original moneybin-sync design (Phase 3 spec) called for the server to convert Plaid API responses into Parquet files, package them as a tar archive, and serve them for download. The client would unpack the archive and load Parquet files into DuckDB via `read_parquet()`.
 
 This required a heavy server-side dependency (`@duckdb/node` ~50MB native binary, or `parquet-wasm`) solely to produce Parquet output. It also introduced temp file management, tar archive packaging/unpacking, TTL-based cleanup of in-memory Parquet buffers, and an entire test suite for Parquet schema validation.
 

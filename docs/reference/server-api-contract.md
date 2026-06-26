@@ -1,9 +1,9 @@
 <!-- Last reviewed: 2026-05-17 -->
 # Server API Contract
 
-`moneybin-server` is a thin HTTP service that brokers connections to upstream banking providers (Plaid today). The MoneyBin client treats it as opaque — this page documents the contract the client *expects*, so a self-hoster running their own `moneybin-server` (or anyone evaluating the architecture) can reason about the surface from the client's perspective.
+`moneybin-sync` is a thin HTTP service that brokers connections to upstream banking providers (Plaid today). The MoneyBin client treats it as opaque — this page documents the contract the client *expects*, so a self-hoster running their own `moneybin-sync` (or anyone evaluating the architecture) can reason about the surface from the client's perspective.
 
-This is **not** a server implementation guide. Every endpoint here corresponds to a method on `SyncClient` (`src/moneybin/connectors/sync_client.py`); every response shape corresponds to a Pydantic model in `src/moneybin/connectors/sync_models.py` that the client validates at the boundary. Anything not documented here is not part of the contract — even if your `moneybin-server` happens to implement it. See [Versioning](#versioning) for the pre-launch posture.
+This is **not** a server implementation guide. Every endpoint here corresponds to a method on `SyncClient` (`src/moneybin/connectors/sync_client.py`); every response shape corresponds to a Pydantic model in `src/moneybin/connectors/sync_models.py` that the client validates at the boundary. Anything not documented here is not part of the contract — even if your `moneybin-sync` happens to implement it. See [Versioning](#versioning) for the pre-launch posture.
 
 ## Design philosophy
 
@@ -11,19 +11,19 @@ Three properties drive the shape of this contract:
 
 - **The client is offline-first.** The encrypted DuckDB profile holds your data. The server is invoked only when you connect a new bank or pull a sync. It is a broker, not a system of record.
 - **Raw credentials never touch the server.** The Plaid Link flow runs in your browser against Plaid's hosted UI. The server sees the short-lived `public_token` that Plaid returns *after* the user authorizes — not the bank password. The client never sees the long-lived `access_token` either; the server holds it encrypted on the user's behalf.
-- **The server is replaceable.** Because the contract is narrow (a handful of endpoints, JSON payloads only) and the client validates every response, a self-hoster can run their own `moneybin-server` against their own Plaid credentials. `moneybin-server` is a separate project; setup instructions live in its repository.
+- **The server is replaceable.** Because the contract is narrow (a handful of endpoints, JSON payloads only) and the client validates every response, a self-hoster can run their own `moneybin-sync` against their own Plaid credentials. `moneybin-sync` is a separate project; setup instructions live in its repository.
 
 ## Local-only mode
 
-This entire surface is optional. MoneyBin runs end-to-end without ever contacting `moneybin-server` when you use file-based imports — OFX, QFX, QBO, CSV, and PDF paths never touch the network and never read `sync.server_url`.
+This entire surface is optional. MoneyBin runs end-to-end without ever contacting `moneybin-sync` when you use file-based imports — OFX, QFX, QBO, CSV, and PDF paths never touch the network and never read `sync.server_url`.
 
 When `sync.server_url` is unset (the default), every `moneybin sync ...` command fails fast with a configuration error pointing at `MONEYBIN_SYNC__SERVER_URL`. Nothing else in the client probes the sync surface — startup, transforms, imports, and reports all proceed normally.
 
-Bank-direct sync via `moneybin-server` is an additive capability for users who want automated pulls. Skip it entirely and you skip every concern on this page.
+Bank-direct sync via `moneybin-sync` is an additive capability for users who want automated pulls. Skip it entirely and you skip every concern on this page.
 
 ## Identity and auth
 
-The client authenticates to `moneybin-server` with a per-user OAuth2 access token. The token is acquired through the **Device Authorization Grant** (RFC 8628) so that headless CLI environments work without a callback URL.
+The client authenticates to `moneybin-sync` with a per-user OAuth2 access token. The token is acquired through the **Device Authorization Grant** (RFC 8628) so that headless CLI environments work without a callback URL.
 
 | Concern | Behavior |
 |---|---|
@@ -419,7 +419,7 @@ Per-institution failures inside an otherwise-successful sync do **not** raise �
 
 What stays on the client, what crosses to the server, and what never appears on either:
 
-| Data | Client (your machine) | `moneybin-server` | Notes |
+| Data | Client (your machine) | `moneybin-sync` | Notes |
 |---|---|---|---|
 | Bank password / online banking credentials | Never | Never | Entered into Plaid's hosted UI in your browser; goes directly from your browser to Plaid. |
 | Plaid `public_token` | Briefly (in URL fragment during redirect) | Yes — exchanged for `access_token` | Short-lived, single-use. |
@@ -432,7 +432,7 @@ The narrowest possible exposure on the server side is the design intent: the ser
 
 ## Self-host overview
 
-`moneybin-server` is a separate project in the same GitHub organization as MoneyBin. Setup, configuration, conformance checklist, and the server-side threat model live in its own repository — consult its README directly.
+`moneybin-sync` is a separate project in the same GitHub organization as MoneyBin. Setup, configuration, conformance checklist, and the server-side threat model live in its own repository — consult its README directly.
 
 A self-hosted deployment needs, at a high level:
 
@@ -468,7 +468,7 @@ What the contract guarantees when things partially fail.
 
 ## Versioning
 
-Pre-launch. No `/v1/` URL prefix, no `MoneyBin-API-Version` header, no formal version negotiation. The contract evolves in lockstep with the client release cycle; the reference `moneybin-server` deployment is updated alongside the client.
+Pre-launch. No `/v1/` URL prefix, no `MoneyBin-API-Version` header, no formal version negotiation. The contract evolves in lockstep with the client release cycle; the reference `moneybin-sync` deployment is updated alongside the client.
 
 The post-launch versioning mechanism (header? path prefix? content-type?) is genuinely TBD. The intent stated in `docs/architecture.md` is additive changes preferred, deprecate-then-remove across two releases for anything breaking — but the wire-level handle for signalling a break hasn't been picked.
 

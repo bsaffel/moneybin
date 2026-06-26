@@ -49,10 +49,10 @@ Concretely:
   your own data, on your own laptop. No public obligation, even if you've
   modified the code. AGPL doesn't trigger because no one else is a "user"
   of your running instance.
-- **Self-hosted moneybin-server, only you as user.** Same as above. You
+- **Self-hosted moneybin-sync, only you as user.** Same as above. You
   are both the operator and the only user; nobody else is connecting to
   the service.
-- **Self-hosted moneybin-server, multiple users.** AGPL triggers. The
+- **Self-hosted moneybin-sync, multiple users.** AGPL triggers. The
   other users have the right to receive the corresponding source code of
   the version you're running, including any modifications you made.
 - **Hosted MoneyBin as a service to customers.** AGPL triggers. The same

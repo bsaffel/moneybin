@@ -2,7 +2,7 @@
 
 > Companions: [`smart-import-tabular.md`](smart-import-tabular.md) (reused pipeline, Stages 1–5), [`smart-import-confirmation.md`](smart-import-confirmation.md) (confirm/confidence layer; confidence bands and `--column-mapping` partial-merge aligned here), [`smart-import-transform.md`](smart-import-transform.md) (refresh pipeline + transform handoff), [`sync-overview.md`](sync-overview.md) (provider-agnostic sync framework — gsheet is **not** part of it; see "Why not `sync`" below), [`matching-overview.md`](matching-overview.md) (cross-source dedup), [`categorization-overview.md`](categorization-overview.md), [`app-integrity-invariant.md`](app-integrity-invariant.md) (audit-paired mutations), [`privacy-data-protection.md`](privacy-data-protection.md) (encryption + SecretStore), [`mcp-architecture.md`](mcp-architecture.md), [`moneybin-cli.md`](moneybin-cli.md).
 
-First entry in the `connect-*` family: live tabular sources connected via direct user OAuth, sitting alongside (not inside) the moneybin-server-mediated `sync` framework. Future siblings: `connect-airtable.md`, `connect-smartsheet.md`, `connect-notion.md`, etc.
+First entry in the `connect-*` family: live tabular sources connected via direct user OAuth, sitting alongside (not inside) the moneybin-sync-mediated `sync` framework. Future siblings: `connect-airtable.md`, `connect-smartsheet.md`, `connect-notion.md`, etc.
 
 ## Status
 <!-- draft | ready | in-progress | implemented -->
@@ -23,7 +23,7 @@ Connect time chooses the adapter: high-confidence transactions detection → `tr
 
 - [`smart-import-tabular.md`](smart-import-tabular.md) — the five-stage tabular pipeline this spec reuses unchanged for detection (Stages 1–3), transform (Stage 4), and load (Stage 5). New code lives upstream of Stage 1 and around Stage 5 (diff + soft-delete).
 - [`smart-import-transform.md`](smart-import-transform.md) — the `refresh_run` umbrella (PR #173) that this spec extends with a new `gsheet` step.
-- [`sync-overview.md`](sync-overview.md) — the provider-agnostic sync framework for moneybin-server-mediated financial providers (Plaid). gsheet is direct OAuth and does not route through moneybin-server — see "Why not `sync`" below.
+- [`sync-overview.md`](sync-overview.md) — the provider-agnostic sync framework for moneybin-sync-mediated financial providers (Plaid). gsheet is direct OAuth and does not route through moneybin-sync — see "Why not `sync`" below.
 - [`matching-overview.md`](matching-overview.md) — cross-source dedup that operates on `source_type` taxonomy. gsheet data participates via `source_type='gsheet'` with zero matching-engine changes.
 - [`app-integrity-invariant.md`](app-integrity-invariant.md) — mutation routing: every change to `app.gsheet_connections` flows through a `GSheetConnectionsRepo` that emits a paired `app.audit_log` row in the same DuckDB transaction.
 - [`privacy-data-protection.md`](privacy-data-protection.md) — OAuth tokens stored in `SecretStore` (keyring), not DuckDB. All raw and app tables encrypted at rest.
@@ -52,14 +52,14 @@ What this enables:
 | Soft-fail on transient failures (auth, rate-limit, network) | Refresh keeps working with stale gsheet data + visible warning, rather than blocking all of MoneyBin on a transient Google API issue. |
 | Pluggable adapter abstraction; **v1 ships two adapters** (`transactions` + `seed`) | The connection lifecycle (auth, fetch, drift, soft-delete) is shared across all future targets. The `transactions` adapter covers the integrated path (matching/categorization/reports); the `seed` adapter is the catch-all escape hatch so any sheet works to some level. Without the seed adapter, v1 is "Tiller transactions only" — meaningfully thinner than the multi-purpose framing intended. Categories/budgets/asset-valuations/net-worth adapters are additive on top. |
 | Seed adapter uses plain DuckDB views (not SQLMesh seeds or EXTERNAL models) in v1 | SQLMesh's `SEED` primitive is for static git-versioned CSV files — soft-delete fights its replace-on-load contract, and per-pull apply overhead is fundamental. SQLMesh Python models couple OAuth to apply timing. Plain DuckDB views match how `raw.tabular_*` is handled today (coherence per design-principles.md). v2 can add `EXTERNAL` model declarations for lineage tracking once evidence justifies it — see Out of Scope. |
-| Top-level `gsheet` CLI group | `sync` is moneybin-server-mediated providers; `import` is one-shot file imports. gsheet is its own thing. If a second `connect-*` provider materializes, refactor to `moneybin connect <provider>` then. |
+| Top-level `gsheet` CLI group | `sync` is moneybin-sync-mediated providers; `import` is one-shot file imports. gsheet is its own thing. If a second `connect-*` provider materializes, refactor to `moneybin connect <provider>` then. |
 | Pre-refresh hook **plus** explicit verb | "Refresh = make everything current including sheets" is the magical default. Explicit `gsheet pull` exists for refresh-without-refresh and per-connection retry. |
 
 ### Why not `sync`
 
-The `sync` framework (`sync-overview.md`) describes provider-agnostic data flow through moneybin-server: client authenticates with the server → server connects to the financial provider (Plaid, SimpleFIN, MX) → server pulls and decrypts data → client loads into raw. The client never speaks the provider's API directly.
+The `sync` framework (`sync-overview.md`) describes provider-agnostic data flow through moneybin-sync: client authenticates with the server → server connects to the financial provider (Plaid, SimpleFIN, MX) → server pulls and decrypts data → client loads into raw. The client never speaks the provider's API directly.
 
-gsheet inverts that model. The client speaks Google's API directly. moneybin-server is uninvolved. The data is user-controlled storage (their own document), not third-party financial data subject to privacy intermediation. Putting gsheet under `sync` would conflate two distinct trust models and force moneybin-server to be involved in something it has no purpose mediating.
+gsheet inverts that model. The client speaks Google's API directly. moneybin-sync is uninvolved. The data is user-controlled storage (their own document), not third-party financial data subject to privacy intermediation. Putting gsheet under `sync` would conflate two distinct trust models and force moneybin-sync to be involved in something it has no purpose mediating.
 
 `connect-*` is the right category: client-direct OAuth to user-owned data sources.
 
@@ -897,7 +897,7 @@ All three are PyPA-blessed, widely used, and Google-maintained. Compatible with 
 
 ### System
 
-None new. OAuth flow uses the user's default browser (already required by the moneybin-server Plaid Link flow).
+None new. OAuth flow uses the user's default browser (already required by the moneybin-sync Plaid Link flow).
 
 ### Prerequisite features
 
@@ -946,7 +946,7 @@ None new. OAuth flow uses the user's default browser (already required by the mo
 - M3H — hosted launch
 - **M1F — Connect: live tabular sources** (this spec, plus future siblings)
 
-Independent of M1G: no moneybin-server dependency. Could ship before or after the other M1 sub-milestones; placement after M1G is conservative since M1G establishes service-layer patterns this spec relies on (sync_models, SyncClient credential storage patterns).
+Independent of M1G: no moneybin-sync dependency. Could ship before or after the other M1 sub-milestones; placement after M1G is conservative since M1G establishes service-layer patterns this spec relies on (sync_models, SyncClient credential storage patterns).
 
 ---
 

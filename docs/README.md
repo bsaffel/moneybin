@@ -75,7 +75,7 @@ For builders. The first two links are the developer surface; the third is for en
 Deep mechanics — not required reading, but useful when you're debugging or extending.
 
 - **[Account identifiers and PII handling](architecture/account-identifiers.md)** — The identifiers MoneyBin uses for accounts and where PII is masked.
-- **[Server API contract](reference/server-api-contract.md)** — The HTTP surface the client expects from `moneybin-server` (Plaid broker).
+- **[Server API contract](reference/server-api-contract.md)** — The HTTP surface the client expects from `moneybin-sync` (Plaid broker).
 - **[Auto-rule pipeline](tech/auto-rule-pipeline.md)** — How edits become proposed rules, how proposals get promoted, how rollback works.
 - **[CLI startup flow](tech/cli-startup-flow.md)** — What happens between `moneybin <cmd>` and your code running.
 

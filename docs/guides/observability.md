@@ -132,7 +132,7 @@ Families (see `src/moneybin/metrics/registry.py` for the complete list):
 - **Categorization** — auto-rate, rule firings, matcher outcomes, write-skip-by-precedence, post-commit snowball latency, per-merchant exemplar counts.
 - **Account matching** — outcome counters during tabular import.
 - **MCP server** — per-tool call counts and duration.
-- **Sync (Plaid via `moneybin-server`)** — pull duration and outcomes, transactions loaded, per-institution errors by code, refresh-token rotation, connect-flow outcomes.
+- **Sync (Plaid via `moneybin-sync`)** — pull duration and outcomes, transactions loaded, per-institution errors by code, refresh-token rotation, connect-flow outcomes.
 - **Audit log**, **Database** (query duration), **Synthetic data** — counters and durations.
 
 `@tracked` / `track_duration()` additionally write `moneybin_tracked_calls_total`, `moneybin_tracked_duration_seconds`, and `moneybin_tracked_errors_total` — generic series for cross-cutting concerns where a named family doesn't fit.

@@ -108,7 +108,7 @@ Numbered, testable. Tagged by phase.
    import records `iso_currency_code` (and `unofficial_currency_code` where present)
    for both transactions and balances. The Plaid path requires adding the field to the
    sync contract (`SyncTransaction`, `SyncBalance` in
-   `src/moneybin/connectors/sync_models.py`) and to moneybin-server's mapping — an
+   `src/moneybin/connectors/sync_models.py`) and to moneybin-sync's mapping — an
    **additive, optional** contract change (one-way door: additive only).
 2. **The union stops hardcoding `'USD'`.** `int_transactions__unioned.sql` reads the
    captured currency for the OFX and Plaid arms and leaves it `NULL` when the source omits
@@ -281,7 +281,7 @@ flowchart LR
 - **M1K.2 / M1K.3** follow investments (M1J): M1K.2 is the unifying conversion layer
   over cash *and* investment grains; M1K.3 reuses the cost-basis engine.
 - External: Frankfurter (M1K.2). Cross-repo: the sync-contract currency field (M1K.1)
-  touches moneybin-server.
+  touches moneybin-sync.
 
 ## CLI Interface
 
@@ -337,7 +337,7 @@ realized FX gain/loss on the conversion pairs.
 
 - **Investments (M1J)** — prerequisite for M1K.2 and M1K.3 (not M1K.1).
 - **Frankfurter** (ECB reference rates; free, no auth) — M1K.2; fallbacks documented.
-- **moneybin-server** — the M1K.1 sync-contract currency field (additive).
+- **moneybin-sync** — the M1K.1 sync-contract currency field (additive).
 - DuckDB / SQLMesh migration tooling — additive schema migration (M1K.1).
 
 ## Key Decisions

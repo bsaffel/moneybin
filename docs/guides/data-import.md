@@ -293,12 +293,12 @@ moneybin import revert <import_id>
 
 ## Live banking sync (Plaid)
 
-Plaid-connected sync pulls transactions, balances, and accounts directly from supported US banks. The connection brokers through `moneybin-server` (the Plaid integration backend you can self-host).
+Plaid-connected sync pulls transactions, balances, and accounts directly from supported US banks. The connection brokers through `moneybin-sync` (the Plaid integration backend you can self-host).
 
 One-time setup:
 
 ```bash
-moneybin sync login                                # device auth flow with moneybin-server
+moneybin sync login                                # device auth flow with moneybin-sync
 moneybin sync link --institution "Chase"           # opens Plaid Hosted Link in your browser
 ```
 
@@ -322,7 +322,7 @@ moneybin sync status                               # connected institutions, las
 
 ## Live tabular sync (Google Sheets)
 
-Google Sheets connects via direct OAuth — no aggregator, no moneybin-server mediation — and re-pulls on every `moneybin refresh`. Use for a Tiller-style ledger sheet (full matching/categorization pipeline) or any other sheet you maintain (lands as queryable JSON + typed views).
+Google Sheets connects via direct OAuth — no aggregator, no moneybin-sync mediation — and re-pulls on every `moneybin refresh`. Use for a Tiller-style ledger sheet (full matching/categorization pipeline) or any other sheet you maintain (lands as queryable JSON + typed views).
 
 ```bash
 moneybin gsheet auth                                            # one-time OAuth (browser flow)

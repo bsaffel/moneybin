@@ -3,7 +3,7 @@
 
 What MoneyBin protects against, and what it does not. This page is the honest list — written so a privacy-conscious user can decide whether MoneyBin meets their threat model, not so MoneyBin looks good. If you're trusting MoneyBin with real financial data, read this in full before you decide.
 
-The neighboring docs cover the mechanisms: the [Database & Security guide](database-security.md) is the depth on encryption-at-rest and key lifecycle; the [MCP server guide](mcp-server.md) is the depth on what tool results actually contain; the [server API contract](../reference/server-api-contract.md) is the depth on the Plaid / `moneybin-server` boundary. This page does not duplicate them — it enumerates threats and points back.
+The neighboring docs cover the mechanisms: the [Database & Security guide](database-security.md) is the depth on encryption-at-rest and key lifecycle; the [MCP server guide](mcp-server.md) is the depth on what tool results actually contain; the [server API contract](../reference/server-api-contract.md) is the depth on the Plaid / `moneybin-sync` boundary. This page does not duplicate them — it enumerates threats and points back.
 
 **Review cadence.** Reviewed at launch and whenever a substantive security boundary or surface changes. See [CHANGELOG.md](../../CHANGELOG.md) for the trail of changes since the last review date above.
 
@@ -92,24 +92,24 @@ If malware, a backdoored dependency, or a debugger has process-level access whil
 
 Plaid is the upstream banking provider. When you use sync:
 
-- Your bank credentials go directly from your browser to Plaid's hosted Link UI — they never touch MoneyBin or `moneybin-server`.
+- Your bank credentials go directly from your browser to Plaid's hosted Link UI — they never touch MoneyBin or `moneybin-sync`.
 - Plaid sees every transaction and balance it pulls on your behalf, by design.
 - Plaid retains transaction history for as long as the item remains linked, per Plaid's policies. Disconnecting via `moneybin sync disconnect --institution <id>` does not retroactively delete history Plaid already pulled.
 
 If "Plaid sees my transactions" is incompatible with your threat model, use file-based imports (OFX/QFX/QBO/CSV/PDF) only. Those paths never touch the network.
 
-### `moneybin-server` (broker) compromise
+### `moneybin-sync` (broker) compromise
 
-`moneybin-server` is the thin broker that holds your Plaid `access_token` and runs sync pulls on your behalf. If you use a hosted broker, that operator sees:
+`moneybin-sync` is the thin broker that holds your Plaid `access_token` and runs sync pulls on your behalf. If you use a hosted broker, that operator sees:
 
 - Your long-lived Plaid `access_token` (stored server-side, encrypted at rest, but readable to anyone who controls the server).
 - Transaction payloads transiently during the pull, then in a short-TTL store until your client fetches them.
 
-See [Self-hosted moneybin-server trust delta](#self-hosted-moneybin-server-trust-delta) below for what self-hosting changes and what it doesn't, and the [server API contract](../reference/server-api-contract.md) for the data-flow table that maps which secret lives where.
+See [Self-hosted moneybin-sync trust delta](#self-hosted-moneybin-sync-trust-delta) below for what self-hosting changes and what it doesn't, and the [server API contract](../reference/server-api-contract.md) for the data-flow table that maps which secret lives where.
 
 ### Network-level surveillance
 
-TLS protects the wire between client and `moneybin-server`, and between `moneybin-server` and Plaid. It does NOT hide:
+TLS protects the wire between client and `moneybin-sync`, and between `moneybin-sync` and Plaid. It does NOT hide:
 
 - Which institutions you sync (DNS, SNI, and connection metadata leak that).
 - That you're a MoneyBin user at all.
@@ -184,7 +184,7 @@ flowchart LR
     MBmcp <--> DB[(Encrypted<br/>DuckDB)]
     User -->|"CLI: import OFX/CSV/PDF"| CLI[moneybin CLI]
     CLI <--> DB
-    User -->|"CLI: sync"| Broker["moneybin-server<br/>(hosted or self-hosted)"]
+    User -->|"CLI: sync"| Broker["moneybin-sync<br/>(hosted or self-hosted)"]
     Broker --> Plaid[Plaid]
     Plaid --> Banks[Your banks]
     Broker <--> DB
@@ -206,9 +206,9 @@ A firewall ruleset for the MoneyBin client alone — without an MCP client runni
 
 No telemetry, no analytics, no update checks, no enrichment lookups. The MCP client running alongside MoneyBin makes its own outbound calls per its own privacy policy — that is out of MoneyBin's control.
 
-### Self-hosted moneybin-server trust delta
+### Self-hosted moneybin-sync trust delta
 
-Self-hosting `moneybin-server` collapses the broker operator to you and your own infrastructure. From the client's perspective the wire protocol is unchanged; what moves is who runs the process that holds your Plaid `access_token`, refresh tokens, and short-TTL transaction cache. Plaid remains upstream regardless of where the broker runs, so the "Plaid sees my transactions" risk does not change.
+Self-hosting `moneybin-sync` collapses the broker operator to you and your own infrastructure. From the client's perspective the wire protocol is unchanged; what moves is who runs the process that holds your Plaid `access_token`, refresh tokens, and short-TTL transaction cache. Plaid remains upstream regardless of where the broker runs, so the "Plaid sees my transactions" risk does not change.
 
 The DuckDB encryption key never reaches the server in either deployment.
 
@@ -336,7 +336,7 @@ Concrete actions a privacy-conscious user can take now, ranked by impact.
 
 ### Consider
 
-- **Self-host `moneybin-server` (or skip sync entirely)** if you don't want a hosted broker to see your Plaid access tokens. File-based imports (OFX/CSV/PDF) bypass the broker and never touch the network.
+- **Self-host `moneybin-sync` (or skip sync entirely)** if you don't want a hosted broker to see your Plaid access tokens. File-based imports (OFX/CSV/PDF) bypass the broker and never touch the network.
 - **Choose your MCP client deliberately.** Review the client's data-use policy. If a question is sensitive enough that "the model provider sees it" is unacceptable, ask the CLI instead.
 
 ---

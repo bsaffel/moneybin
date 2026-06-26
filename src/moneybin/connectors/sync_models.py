@@ -1,4 +1,4 @@
-"""Pydantic models for SyncClient ↔ moneybin-server API contract.
+"""Pydantic models for SyncClient ↔ moneybin-sync API contract.
 
 Single source of truth for request/response shapes. All server responses
 validated at the boundary. Service-layer result types live here too so
