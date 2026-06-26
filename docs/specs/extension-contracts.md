@@ -517,7 +517,7 @@ class FilePath:
 @dataclass(frozen=True, slots=True)
 class SyncResponse:
     """A pre-fetched payload from a mediated sync provider (e.g., Plaid Hosted Link
-    delivers a SyncDataResponse via moneybin-server)."""
+    delivers a SyncDataResponse via moneybin-sync)."""
 
     payload: Any
     job_id: str | None = None

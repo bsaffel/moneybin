@@ -793,7 +793,7 @@ This shapes agent behavior toward "ask user, then verify once" rather than a tig
 
 ### `sync_pull` description
 
-> Pull transactions, accounts, and balances from connected institutions through moneybin-server. Amounts in loaded data follow MoneyBin convention (negative = expense, positive = income); the Plaid sign flip happens during ingestion. Returns per-institution results including `error_code` for any failed institutions. Mutates `raw.plaid_*` tables and propagates through SQLMesh to core; not directly revertable but idempotent on re-run (transactions upsert by `(transaction_id, provider_item_id)`).
+> Pull transactions, accounts, and balances from connected institutions through moneybin-sync. Amounts in loaded data follow MoneyBin convention (negative = expense, positive = income); the Plaid sign flip happens during ingestion. Returns per-institution results including `error_code` for any failed institutions. Mutates `raw.plaid_*` tables and propagates through SQLMesh to core; not directly revertable but idempotent on re-run (transactions upsert by `(transaction_id, provider_item_id)`).
 
 ### `sync_review` MCP prompt
 
@@ -862,7 +862,7 @@ Plaid Sandbox tests run only when `MONEYBIN_SYNC__TEST_SERVER_URL` is set; marke
 
 ## Section 11: Server-Side Dependencies
 
-The Phase 1 client doesn't work end-to-end until the moneybin-server implements the corresponding endpoints and integrations. Listed inline (no cross-repo path links per project convention):
+The Phase 1 client doesn't work end-to-end until the moneybin-sync implements the corresponding endpoints and integrations. Listed inline (no cross-repo path links per project convention):
 
 ### Endpoints (new or changed)
 

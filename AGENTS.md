@@ -71,7 +71,7 @@ Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, sim
 
 ## Design Philosophy
 
-- **Sync server is opaque.** The client communicates only with moneybin-server's API surface. External service providers are implementation details hidden behind the server.
+- **Sync server is opaque.** The client communicates only with moneybin-sync's API surface. External service providers are implementation details hidden behind the server.
 
 ## Critical Rules
 

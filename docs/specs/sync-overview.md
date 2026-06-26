@@ -3,12 +3,12 @@
 > Last updated: 2026-05-17
 > Status: In-progress — umbrella doc for the sync initiative. Phase 1 shipped in [`sync-plaid.md`](sync-plaid.md) (PR #151 added the post-pull refresh umbrella; PR #160 made `MONEYBIN_PROFILE` honored from non-CLI SQLMesh entry points). Phase 2 (scheduling) is unstarted; Phases 3-4 (E2E encryption, post-quantum) remain forward-looking design sketches within this doc.
 > Companions: [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) (AI data flow governance, consent model), [`matching-overview.md`](matching-overview.md) (peer initiative, dedup of synced data), [`moneybin-mcp.md`](moneybin-mcp.md) (MCP tool conventions), `CLAUDE.md` "Architecture: Data Layers"
-> Server contract: the moneybin-server HTTP API is the authoritative integration surface. Endpoint shapes are restated inline where this spec depends on them; cross-repo paths intentionally omitted to keep this doc self-contained.
+> Server contract: the moneybin-sync HTTP API is the authoritative integration surface. Endpoint shapes are restated inline where this spec depends on them; cross-repo paths intentionally omitted to keep this doc self-contained.
 > Replaces: `plaid-integration.md` and `sync-client-integration.md` (moved to `archived/`)
 
 ## Purpose
 
-Sync is MoneyBin's framework for pulling financial data from external providers (banks, brokerages, aggregators) through moneybin-server. This doc is the umbrella: it defines the client-side interaction model, infrastructure, CLI/MCP surface, E2E encryption design, error handling, and the contract for plugging in new providers. Provider-specific design and implementation details live in the child specs it points to.
+Sync is MoneyBin's framework for pulling financial data from external providers (banks, brokerages, aggregators) through moneybin-sync. This doc is the umbrella: it defines the client-side interaction model, infrastructure, CLI/MCP surface, E2E encryption design, error handling, and the contract for plugging in new providers. Provider-specific design and implementation details live in the child specs it points to.
 
 ## Vision
 
@@ -16,7 +16,7 @@ Sync is MoneyBin's framework for pulling financial data from external providers 
 
 Three commitments, in order:
 
-1. **Provider-agnostic framework.** The client speaks a single protocol: authenticate with moneybin-server, connect an institution, pull data, load into DuckDB. The server handles provider-specific API calls (Plaid, SimpleFIN, MX). The client never knows which aggregator backs a connection — that's a server implementation detail.
+1. **Provider-agnostic framework.** The client speaks a single protocol: authenticate with moneybin-sync, connect an institution, pull data, load into DuckDB. The server handles provider-specific API calls (Plaid, SimpleFIN, MX). The client never knows which aggregator backs a connection — that's a server implementation detail.
 2. **Provider-specific raw schemas.** Each provider gets its own raw tables that preserve the provider's native data shape. No generic "sync schema" that forces every provider into a least-common-denominator format. The data warehouse layers (prep → core) handle homogenization through staging views and `UNION ALL`.
 3. **Financial-grade security.** E2E encryption is designed into the protocol from day one. v1 ships with TLS + encrypted-at-rest (acceptable baseline). v2 adds full zero-knowledge encryption where the server cannot read financial data, even under subpoena. The `EncryptionBackend` abstraction supports algorithm upgrades (X25519 → hybrid post-quantum) without protocol changes.
 
@@ -48,7 +48,7 @@ Sync is the bridge between MoneyBin's power-user core and mainstream usability:
 - Auth0 configuration details (server proxies auth; client calls `/auth/*`)
 - Plaid Link implementation, webhook handling, cursor management
 
-Server behavior is documented in the moneybin-server project. The client treats the server as opaque — it consumes the API contract, nothing more, and endpoint shapes are restated inline in this spec where the client depends on them.
+Server behavior is documented in the moneybin-sync project. The client treats the server as opaque — it consumes the API contract, nothing more, and endpoint shapes are restated inline in this spec where the client depends on them.
 
 ### What this spec does NOT define (provider-specific)
 
@@ -69,7 +69,7 @@ The sync lifecycle has five phases. Every provider follows the same sequence —
 sequenceDiagram
     actor User
     participant CLI as moneybin CLI
-    participant Server as moneybin-server
+    participant Server as moneybin-sync
     participant Provider as Provider API<br/>(Plaid, SimpleFIN, etc.)
     participant DB as Local DuckDB
 
@@ -244,7 +244,7 @@ All sync commands live under the `moneybin sync` subgroup. This namespace maps t
 
 | Command | Description |
 |---|---|
-| `moneybin sync login` | Authenticate with moneybin-server via Device Authorization Flow |
+| `moneybin sync login` | Authenticate with moneybin-sync via Device Authorization Flow |
 | `moneybin sync logout` | Clear stored JWT from keychain/file |
 | `moneybin sync link` | Link a bank account — opens provider UI in browser, polls for completion |
 | `moneybin sync disconnect --institution NAME` | Remove an institution (resolves name → id via `GET /institutions`) |
@@ -508,7 +508,7 @@ The error code vocabulary is owned by the server. As providers are added, new er
 
 | Error | Cause | Client behavior |
 |---|---|---|
-| Server unreachable | Network or server down | Retry with exponential backoff (3 attempts). Clear error: "Cannot reach moneybin-server at {url}." |
+| Server unreachable | Network or server down | Retry with exponential backoff (3 attempts). Clear error: "Cannot reach moneybin-sync at {url}." |
 | Sync job timeout | Polling exceeded max wait | Log `job_id` for manual recovery. "Sync job {id} timed out — run `moneybin sync status` to check." |
 | Load failure | DuckDB write error during load | Roll back partial load (transaction). No raw data corruption. |
 | Transform failure | `sqlmesh run` error after load | Raw data is safely loaded. User can re-run `moneybin transform apply` (or `moneybin refresh run`) independently. |
@@ -640,7 +640,7 @@ The legacy `raw.csv_transactions` table and its staging views should be removed 
 
 ### Tests with no server dependency
 
-All unit tests and SQL tests run against mocked HTTP responses and in-memory DuckDB. No moneybin-server instance required.
+All unit tests and SQL tests run against mocked HTTP responses and in-memory DuckDB. No moneybin-sync instance required.
 
 | Area | What's tested |
 |---|---|
@@ -656,7 +656,7 @@ All unit tests and SQL tests run against mocked HTTP responses and in-memory Duc
 
 ### Tests requiring a running server
 
-Integration tests require a coordinated test environment: a running moneybin-server instance configured with provider sandbox credentials (e.g., Plaid Sandbox), a test user in Auth0, and at least one linked sandbox institution.
+Integration tests require a coordinated test environment: a running moneybin-sync instance configured with provider sandbox credentials (e.g., Plaid Sandbox), a test user in Auth0, and at least one linked sandbox institution.
 
 | Scenario | What's tested |
 |---|---|
@@ -665,12 +665,12 @@ Integration tests require a coordinated test environment: a running moneybin-ser
 | Partial failure | One institution fails, others succeed — data loads, errors reported |
 | Re-auth flow | Simulate `ITEM_LOGIN_REQUIRED`, verify error guidance |
 
-**Integration test environment** is a separate concern that will get its own spec. Server-side test environment setup is documented in moneybin-server, not here. Integration tests are:
+**Integration test environment** is a separate concern that will get its own spec. Server-side test environment setup is documented in moneybin-sync, not here. Integration tests are:
 
 - Marked `@pytest.mark.integration`
 - Skipped by default in `uv run pytest tests/`
 - Gated by `MONEYBIN_SYNC__TEST_SERVER_URL` env var
-- Documented setup instructions reference moneybin-server's test environment docs
+- Documented setup instructions reference moneybin-sync's test environment docs
 
 ### Synthetic data interaction
 
@@ -707,7 +707,7 @@ The [`testing-overview.md`](testing-overview.md) umbrella spec deferred Plaid Sa
 - `POST /auth/register-key` integration
 - Auto-negotiation (`application/json` vs `application/age`)
 - `moneybin sync key rotate` command
-- Blocked on moneybin-server Phase 5
+- Blocked on moneybin-sync Phase 5
 
 ### Phase 4: Post-quantum upgrade
 

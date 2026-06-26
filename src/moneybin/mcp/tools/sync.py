@@ -69,7 +69,7 @@ def _build_sync_service() -> Generator[Any, None, None]:
 def sync_pull(
     institution: str | None = None, force: bool = False, refresh: bool = True
 ) -> ResponseEnvelope[SyncPullPayload]:
-    """Pull transactions, accounts, balances from connected institutions via moneybin-server.
+    """Pull transactions, accounts, balances from connected institutions via moneybin-sync.
 
     Amounts in loaded data follow MoneyBin accounting convention: negative = expense,
     positive = income; the Plaid sign flip happens during ingestion. Returns per-institution
@@ -140,7 +140,7 @@ def sync_link(
 ) -> ResponseEnvelope[SyncLinkPayload]:
     """Link a bank account via Plaid (formerly: sync_connect).
 
-    Initiates a bank-connection flow via moneybin-server's Plaid Hosted Link.
+    Initiates a bank-connection flow via moneybin-sync's Plaid Hosted Link.
     Returns a URL the user opens in their browser to complete the Plaid UI.
     Does NOT wait for completion — after the user confirms they've finished,
     call sync_link_status with the returned session_id to verify. The
@@ -279,7 +279,7 @@ def sync_connect_status(
     open_world=True,
 )
 def sync_disconnect(institution: str) -> ResponseEnvelope[SyncDisconnectPayload]:
-    """Remove a bank connection on moneybin-server. Permanent — no revert path.
+    """Remove a bank connection on moneybin-sync. Permanent — no revert path.
 
     Local pulled transactions are preserved in raw.plaid_* and core.fct_transactions;
     the institution simply stops appearing in sync_status and can no longer be

@@ -16,7 +16,7 @@ This is the first entry in the `connect-*` family. Future siblings — Airtable,
 **This is not:**
 
 - A two-way sync. MoneyBin only reads from your sheet (`spreadsheets.readonly` OAuth scope); it never writes back.
-- An aggregator integration like Plaid. MoneyBin's client speaks Google's API directly — no moneybin-server mediation, no shared client secret.
+- An aggregator integration like Plaid. MoneyBin's client speaks Google's API directly — no moneybin-sync mediation, no shared client secret.
 - A schema designer. You bring your sheet's shape; MoneyBin detects it. If you want to restructure, do it in the sheet and run `gsheet reconnect`.
 
 ## `_link` vs `_connect` — which family is this?

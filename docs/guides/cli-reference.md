@@ -183,11 +183,11 @@ File imports and inbox drain. `import files` auto-detects type (CSV / OFX / QFX 
 
 ### `sync`
 
-Pull transactions from external services through the moneybin-server proxy. **`sync login` is required first** — most subcommands fail without a valid JWT.
+Pull transactions from external services through the moneybin-sync proxy. **`sync login` is required first** — most subcommands fail without a valid JWT.
 
 | Command | Purpose | Key flags |
 |---|---|---|
-| `sync login` | Authenticate with moneybin-server via Device Authorization Flow. | `--no-browser` |
+| `sync login` | Authenticate with moneybin-sync via Device Authorization Flow. | `--no-browser` |
 | `sync logout` | Clear the stored JWT. | — |
 | `sync link [<institution>]` | Link a new institution via Plaid Hosted Link. Prints URL to stderr and (optionally) opens the browser. | `--no-browser` |
 | `sync link-status` | Show pending link state (after `sync link` started). | — |

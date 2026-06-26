@@ -1,4 +1,4 @@
-"""HTTP client for moneybin-server.
+"""HTTP client for moneybin-sync.
 
 Pure transport — no business logic, no database access. Methods correspond
 1:1 to server endpoints. Service-layer orchestration lives in SyncService.
@@ -59,7 +59,7 @@ _LINK_POLL_INTERVAL = 3.0
 
 
 class SyncClient:
-    """HTTP client wrapping moneybin-server endpoints.
+    """HTTP client wrapping moneybin-sync endpoints.
 
     Construction:
         SyncClient(server_url, token_path=None)

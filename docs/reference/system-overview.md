@@ -13,12 +13,12 @@ Five runtime components plus three cross-cutting concerns. The data they share i
 | **CLI** | Runtime (per-invocation) | Typer-based command surface (Typer is the argparse-style CLI framework); first-class agent peer to MCP. Every command supports `--output json` and returns the same response envelope as the matching MCP tool. | [`cli-reference.md`](../guides/cli-reference.md) |
 | **MCP server** | Runtime (per session) | FastMCP-based local server (FastMCP is the Python MCP server library). Registers around seventy tools across roughly a dozen domains. Stdio transport today; Streamable HTTP planned. | [`mcp-server.md`](../guides/mcp-server.md) |
 | **SQLMesh pipeline** | Runtime (on-demand) | Compiles and runs the `raw → prep → core → reports` transformations. SQLMesh owns every write to `prep.*`, `core.*`, `reports.*`, `meta.*`, and `seeds.*`. | [`data-pipeline.md`](../guides/data-pipeline.md) |
-| **Sync client** | Runtime (on-demand) | Talks to `moneybin-server` to broker Plaid pulls. The server is opaque — the client only knows the API surface. | [`server-api-contract.md`](server-api-contract.md) |
+| **Sync client** | Runtime (on-demand) | Talks to `moneybin-sync` to broker Plaid pulls. The server is opaque — the client only knows the API surface. | [`server-api-contract.md`](server-api-contract.md) |
 | **Privacy middleware** | Cross-cutting | Tool decorator (`@mcp_tool`) plus FastMCP middleware that enforces sensitivity tiers, redaction, and the read/write allowlist for every MCP call. DDL is rejected; managed writes target `app.*` and `raw.*` only. | [`docs/specs/mcp-architecture.md`](../specs/mcp-architecture.md) |
 | **Observability** | Cross-cutting | Structured logs through `SanitizedLogFormatter` (always on), Prometheus-style metrics persisted to `app.metrics`, daily-rotating log files per profile. | [`observability.md`](../guides/observability.md) |
 | **Migrations** | Cross-cutting | Forward-only versioned migrations in `app.schema_migrations`; self-heal stuck rows when the migration body changes; `no_auto_upgrade` gate for explicit operator control. Runs at every `Database` open. | [`docs/specs/architecture-shared-primitives.md`](../specs/architecture-shared-primitives.md) |
 
-`moneybin-server` is not listed here because it is not part of the client install — it runs separately, either self-hosted or as a hosted reference instance. The client reaches it only through the sync client.
+`moneybin-sync` is not listed here because it is not part of the client install — it runs separately, either self-hosted or as a hosted reference instance. The client reaches it only through the sync client.
 
 ## Data flow
 
@@ -28,7 +28,7 @@ flowchart LR
   client["MoneyBin client<br/>CLI · MCP server · SQLMesh"]
   store["Local encrypted DuckDB<br/>raw · prep · core · app · reports"]
   agents["AI assistants<br/>Claude · Cursor · Codex · …"]
-  server["moneybin-server<br/>Plaid broker"]
+  server["moneybin-sync<br/>Plaid broker"]
   sql["SQL clients<br/>DuckDB shell · notebooks · BI"]
 
   sources --> client
@@ -39,7 +39,7 @@ flowchart LR
   store --> sql
 ```
 
-The client is the only writer to the local store. Agents reach the data through MCP tools the client exposes; external SQL clients read the file directly (with the encryption key from `moneybin db key`). The sync client is the only outbound network path — it talks to `moneybin-server`, which talks to Plaid.
+The client is the only writer to the local store. Agents reach the data through MCP tools the client exposes; external SQL clients read the file directly (with the encryption key from `moneybin db key`). The sync client is the only outbound network path — it talks to `moneybin-sync`, which talks to Plaid.
 
 ## How components fit together
 
@@ -54,7 +54,7 @@ flowchart TD
   db["Database<br/>(encrypted DuckDB)"]
   sm["SQLMesh pipeline"]
   sync["Sync client"]
-  srv["moneybin-server"]
+  srv["moneybin-sync"]
 
   cli --> svc
   tool --> mw --> svc
@@ -70,7 +70,7 @@ Concretely:
 - **CLI and MCP both call the service layer.** Neither invokes the other. CLI commands import services directly (e.g., `from moneybin.services.transaction_service import TransactionService`); MCP tool bodies do the same. Same redaction, same audit log, same response envelope.
 - **The privacy middleware sits in front of every MCP call.** The `@mcp_tool` decorator wraps each tool body with sensitivity tagging, a wall-clock timeout, error classification, and envelope assembly; FastMCP's `ValidationErrorMiddleware` translates argument-validation failures into friendly error envelopes before the body runs. CLI commands skip the decorator (they reach the service layer directly) but emit the same audit primitives.
 - **The SQLMesh pipeline is invoked from the service layer**, never from CLI/MCP code directly. `services/refresh.py` and `services/transform_service.py` open a `sqlmesh_context(db)` from `moneybin.database` and apply plans against the open DuckDB connection.
-- **`moneybin-server` is reached only via the sync client** (`src/moneybin/connectors/sync_client.py`) when `moneybin sync *` commands or `sync_*` MCP tools fire. File-based imports (OFX, CSV, PDF) and inbox watch never touch the network.
+- **`moneybin-sync` is reached only via the sync client** (`src/moneybin/connectors/sync_client.py`) when `moneybin sync *` commands or `sync_*` MCP tools fire. File-based imports (OFX, CSV, PDF) and inbox watch never touch the network.
 - **The categorization service** runs from three callers: the orchestrator during `refresh` (best-effort, after SQLMesh apply), the `transactions categorize *` CLI commands, and the `transactions_categorize_*` MCP tools.
 - **The migration runner** runs at process startup (inside `Database.__init__`, gated by `no_auto_upgrade`) and as a manual command (`db migrate apply`). Every process that opens the database checks the migration log first.
 
@@ -82,7 +82,7 @@ There is no daemon and no background worker. Components are either always presen
 - **On-demand per CLI invocation:** the Typer entrypoint (one process per command), the service layer it imports, the DuckDB connection it opens, and — for `refresh` / `transform` — the SQLMesh adapter.
 - **On-demand per MCP session:** the MCP server child process, launched by the client when the session opens and torn down when it closes. The server holds one DuckDB connection open for the lifetime of the session.
 - **Optional / opt-in:** the sync client (only when `moneybin sync *` fires), the LLM-assist step in categorization (only when `transactions categorize assist` runs, and only the user's hosted LLM sees the prompt — amounts and account identifiers are stripped first).
-- **Never running locally:** `moneybin-server` itself runs separately (self-hosted or hosted reference instance). The client has no listener, no background sync, no scheduler.
+- **Never running locally:** `moneybin-sync` itself runs separately (self-hosted or hosted reference instance). The client has no listener, no background sync, no scheduler.
 
 A command runs, the relevant connection opens against the encrypted DuckDB file, work happens, the connection closes. That's the whole runtime model.
 
@@ -182,7 +182,7 @@ There is no user account, no login, and no remote identity provider. The profile
 
 ## Sync and external services
 
-The only outbound network path in the core product is the sync client talking to `moneybin-server`. The server brokers Plaid pulls and returns the transaction, balance, and account data the client lands in `raw.plaid_*`. The client/server boundary is documented in the API contract — providers behind the server (Plaid today; others later) are implementation details the client does not see. → [`server-api-contract.md`](server-api-contract.md)
+The only outbound network path in the core product is the sync client talking to `moneybin-sync`. The server brokers Plaid pulls and returns the transaction, balance, and account data the client lands in `raw.plaid_*`. The client/server boundary is documented in the API contract — providers behind the server (Plaid today; others later) are implementation details the client does not see. → [`server-api-contract.md`](server-api-contract.md)
 
 Import-only flows (files, inbox watch, manual entry) require no network access.
 

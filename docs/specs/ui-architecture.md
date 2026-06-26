@@ -156,7 +156,7 @@ flowchart TB
 
 ### Web UI runtime model
 
-`transport-http` issues same-origin `fetch` calls to a **new, thin FastAPI surface** over the *existing service layer* — no business logic in the routes. Locally this is `moneybin ui`; hosted, it is moneybin-server serving the same bundle and routes.
+`transport-http` issues same-origin `fetch` calls to a **new, thin FastAPI surface** over the *existing service layer* — no business logic in the routes. Locally this is `moneybin ui`; hosted, a MoneyBin app server serves the same bundle and routes.
 
 ## Type generation
 
@@ -181,7 +181,7 @@ The React bundle is **built once at release time and embedded in the Python pack
 - `pyproject.toml` `force-include`s `src/moneybin/ui/dist` into the wheel. A build hook runs `pnpm install && pnpm build` before the Python build. (Exact hook integration depends on the build backend; resolved in the implementation plan.)
 - Runtime: the MCP server reads the `mcp-app` bundle via `importlib.resources` and serves it as the `ui://` resource; FastAPI serves the `web` bundle as static files.
 - sdist also pre-builds the bundle, so sdist installs do not require Node.
-- **Hosted:** moneybin-server consumes the same `src/moneybin/ui/dist/` bundle (via the `moneybin` dependency), serving the identical Web UI. One bundle, both deployments — preserving the "same MoneyBin, your choice of deployment" property.
+- **Hosted:** a MoneyBin app server consumes the same `src/moneybin/ui/dist/` bundle (via the `moneybin` dependency), serving the identical Web UI. One bundle, both deployments — preserving the "same MoneyBin, your choice of deployment" property.
 
 Contributor impact: Python-only contributors need no Node. Frontend contributors need Node 20+ and pnpm. New `make` targets: `ui-dev`, `ui-build`, `ui-types`, `ui-test`.
 

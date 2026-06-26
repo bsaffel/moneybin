@@ -27,7 +27,7 @@ class FilePath:
 class SyncResponse:
     """An already-fetched response payload from a mediated sync provider.
 
-    Plaid Hosted Link delivers a SyncDataResponse via moneybin-server; the
+    Plaid Hosted Link delivers a SyncDataResponse via moneybin-sync; the
     response payload is passed in directly rather than re-fetched.
     """
 

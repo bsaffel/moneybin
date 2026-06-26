@@ -135,7 +135,7 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- labels                     -- Manage labels on imports
 |
 +-- sync
-|   +-- login                      -- Authenticate with moneybin-server (device flow)
+|   +-- login                      -- Authenticate with moneybin-sync (device flow)
 |   +-- logout                     -- Clear stored JWT from keychain
 |   +-- link                       -- Link a bank via mediated provider (Plaid: opens Link UI)
 |   +-- link-status                -- Poll the in-flight link session
