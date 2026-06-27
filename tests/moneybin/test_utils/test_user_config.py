@@ -271,7 +271,9 @@ class TestProfileConfigYaml:
         data = yaml.safe_load(config_path.read_text())
         assert data["database"]["encryption_key_mode"] == "auto"
         assert data["logging"]["level"] == "INFO"
-        assert data["sync"]["enabled"] is False
+        # No vestigial sync block: SyncSettings.enabled was never read (gating is
+        # server-side per the sync auth model), so the template no longer seeds it.
+        assert "sync" not in data
 
     def test_generate_profile_config_creates_directory(self, tmp_path: Path) -> None:
         """generate_profile_config creates the profile directory if missing."""

@@ -343,10 +343,6 @@ class SyncConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    enabled: bool = Field(
-        default=False,
-        description="Enable MoneyBin Sync service (paid tier)",
-    )
     server_url: str | None = Field(
         default=None,
         description="MoneyBin Sync server URL (e.g., https://sync.moneybin.app)",

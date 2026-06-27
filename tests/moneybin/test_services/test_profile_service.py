@@ -276,10 +276,10 @@ class TestProfileSet:
         monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
         svc = ProfileService()
         svc.create("alice")
-        svc.set("alice", "sync.enabled", "true")
+        svc.set("alice", "logging.log_to_file", "false")
         config_path = tmp_path / "profiles" / "alice" / "config.yaml"
         data = yaml.safe_load(config_path.read_text())
-        assert data["sync"]["enabled"] is True
+        assert data["logging"]["log_to_file"] is False
 
     def test_set_integer_value(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

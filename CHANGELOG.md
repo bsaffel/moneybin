@@ -219,6 +219,10 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   and the `budget_*` mutation tools are unaffected.
 - **`reports health` CLI stub** — an unimplemented placeholder with no backing
   spec.
+- **`sync.enabled` config field.** It was seeded into every profile's
+  `config.yaml` and shown by `moneybin profile show` but never read — sync
+  gating is server-side. Existing `config.yaml` files keep working (the stale
+  key is ignored).
 
 ### Fixed
 - **Bare single-account imports now elicit account confirmation instead of
@@ -268,6 +272,18 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   (M1S.8).** An auto-saved format records its resolved (filename/format)
   institution or `unknown`, never the per-account `--account-name` — a format
   describes a column layout, not an account. (#258)
+- **`refresh` now rebuilds materialized models after a data-only load.** A
+  second import or sync pull (new `raw.*` rows, unchanged model SQL) left
+  `core.dim_accounts` — the only `FULL` model — stale and `transforms_pending`
+  stuck true, because the refresh drove SQLMesh with `plan` alone (which acts on
+  model-definition changes, not data). `refresh`/transform `apply` now also runs
+  SQLMesh data processing (`run`) and restates `FULL` models, so newly-pulled
+  accounts appear and the pending flag clears.
+- **Quieter refresh/import output.** The per-connection `Synced N privacy
+  classification comment(s)` line dropped from INFO to DEBUG, and sqlglot's
+  `REGEXP_REPLACE with non-literal position` transpile warnings (emitted several
+  times per transform) are now suppressed within the SQLMesh boundary — neither
+  is actionable signal for users or agents driving the CLI/MCP.
 
 ### Added
 - **PDF import (seed path).** Native-text PDFs import via `moneybin import <file.pdf>` and the inbox; their tables land as a queryable JSON seed (`raw.pdf_seeds`) with an auto-generated typed view (`raw.pdf_<alias>`), reversible like any import. Mapping PDFs to transactions/core is a later phase.
