@@ -88,5 +88,9 @@ def sync_classification_comments(conn: duckdb.DuckDBPyConnection) -> int:
         updates += 1
 
     if updates:
-        logger.info(f"Synced {updates} privacy classification comment(s)")
+        # DEBUG, not INFO: SQLMesh recreates VIEW models on every apply, wiping
+        # their column comments, so this re-applies classification sigils after
+        # every refresh/import. That is routine housekeeping, not user/agent-
+        # facing signal — keep it off the default CLI/MCP output stream.
+        logger.debug(f"Synced {updates} privacy classification comment(s)")
     return updates

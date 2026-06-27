@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from moneybin.database import Database
@@ -139,3 +141,32 @@ def test_sync_strips_sigil_for_unregistered_column(
     cs.sync_classification_comments(populated_db.conn)
 
     assert _get_comment(populated_db, schema, table, col) == "Account identifier"
+
+
+def test_sync_count_logged_at_debug_not_info(
+    populated_db: Database, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The 'Synced N …' housekeeping line must not surface at INFO.
+
+    SQLMesh recreates VIEW models on every apply, wiping their column
+    comments, so this sync re-applies sigils after every refresh/import.
+    That is expected work, not user/agent-facing signal — it belongs at
+    DEBUG so it stays off the default CLI/MCP output stream.
+    """
+    schema, table, col, _cls = _pick_classified_column(populated_db)
+    _set_comment(populated_db, schema, table, col, "Human description")
+
+    with caplog.at_level(logging.DEBUG, logger="moneybin.privacy.comment_sync"):
+        updated = sync_classification_comments(populated_db.conn)
+
+    assert updated >= 1, "fixture should produce at least one comment write"
+    synced = [
+        r for r in caplog.records if "privacy classification comment" in r.getMessage()
+    ]
+    assert synced, "expected the sync to log its count"
+    offenders = [
+        logging.getLevelName(r.levelno) for r in synced if r.levelno > logging.DEBUG
+    ]
+    assert not offenders, (
+        f"'Synced N …' must be logged at DEBUG, but saw it at {offenders}"
+    )
