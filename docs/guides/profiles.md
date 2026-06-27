@@ -107,11 +107,11 @@ Prints the resolved settings for a profile (defaults to the active one). Fields:
 
 ### `moneybin profile set <section>.<field> <value>`
 
-Writes a value into the profile-level `config.yaml`. Keys are two-level dotted (`logging.level`, `sync.enabled`, `database.encryption_key_mode`). Boolean strings (`true`, `false`) and digit-only strings are coerced to native types before writing. Targets the active profile unless `--profile/-p` overrides it.
+Writes a value into the profile-level `config.yaml`. Keys are two-level dotted (`logging.level`, `logging.log_to_file`, `database.encryption_key_mode`). Boolean strings (`true`, `false`) and digit-only strings are coerced to native types before writing. Targets the active profile unless `--profile/-p` overrides it.
 
 ```bash
 moneybin profile set logging.level DEBUG
-moneybin profile set sync.enabled true --profile business
+moneybin profile set logging.log_to_file false --profile business
 ```
 
 This only updates the per-profile YAML — env-var overrides like `MONEYBIN_DATABASE__PATH` still take precedence at load time.

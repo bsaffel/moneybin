@@ -1144,6 +1144,13 @@ def sqlmesh_context(
     # still reaches the sqlmesh_*.log file via the stdlib loggers.
     set_console(NoopConsole())
 
+    # sqlglot emits WARNING-level dialect-fidelity notes while generating model
+    # SQL (e.g. "REGEXP_REPLACE with non-literal position" from dim_accounts),
+    # spamming stderr several times per transform. We only ever target DuckDB —
+    # there is no cross-dialect transpile — so these are non-actionable noise.
+    # Quiet to ERROR; genuine sqlglot failures still surface.
+    logging.getLogger("sqlglot").setLevel(logging.ERROR)
+
     root = sqlmesh_root or _SQLMESH_ROOT
 
     # Reuse the caller-supplied connection — DuckDB only allows one

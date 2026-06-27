@@ -206,9 +206,6 @@ def generate_profile_config(profile_dir: Path, profile_name: str) -> Path:
             "level": "INFO",
             "log_to_file": True,
         },
-        "sync": {
-            "enabled": False,
-        },
     }
 
     header = f"# Profile: {profile_name}\n# Created: {date.today()}\n\n"

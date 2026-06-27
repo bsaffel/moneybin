@@ -28,8 +28,10 @@ from moneybin.services.transform_service import TransformService
 
 @contextmanager
 def _fake_sqlmesh_context(_db: object) -> Generator[MagicMock, None, None]:
-    """Yield a mock SQLMesh context whose plan() is a no-op."""
-    yield MagicMock()
+    """Yield a mock SQLMesh context whose plan() is a no-op and run() succeeds."""
+    ctx = MagicMock()
+    ctx.run.return_value.is_failure = False
+    yield ctx
 
 
 def test_transform_apply_emits_post_transform_checkpoint() -> None:

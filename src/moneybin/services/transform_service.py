@@ -122,7 +122,44 @@ class TransformService:
                 # instead of propagating raw to MCP/CLI callers.
                 MatchingService(self._db).seed_priority()
                 with sqlmesh_context(self._db) as ctx:
+                    # raw.* tables are loaded by Python OUTSIDE SQLMesh, so SQLMesh
+                    # gets no signal that data changed. Three steps cover every
+                    # model kind after an import/pull:
+                    #   1. plan()  — absorb model-DEFINITION changes (no-op when
+                    #      the SQL is unchanged) and bootstrap a fresh env.
+                    #   2. run()   — process new intervals for INCREMENTAL models.
+                    #      ignore_cron so a same-day re-pull isn't gated by the
+                    #      per-model cron cadence. (No incremental models exist
+                    #      today, so this is currently a no-op — wired now so the
+                    #      pipeline is correct when one lands.)
+                    #   3. restate FULL models — a FULL model's interval is
+                    #      already "complete" after step 1, so run() skips it; only
+                    #      restatement forces the full rebuild that picks up new
+                    #      raw rows. Scoped to is_full so INCREMENTAL models are
+                    #      NOT blanket-restated (that would reprocess all history
+                    #      every refresh and defeat incrementality).
+                    # DEPRECATED-WHEN: the first INCREMENTAL model lands — verify
+                    # step 2 keeps it fresh and that it stays out of the restate
+                    # set below.
                     ctx.plan(auto_apply=True, no_prompts=True)
+                    # ctx.run() returns a CompletionStatus; unlike plan() it does
+                    # NOT raise on scheduler/audit/model failure (SQLMesh's own
+                    # CLI checks is_failure and raises "Run failed"). Surface a
+                    # failed data-processing pass so the except below converts it
+                    # to ApplyResult(applied=False) instead of silently proceeding
+                    # to the restate and reporting success.
+                    run_status = ctx.run(ignore_cron=True)
+                    if run_status.is_failure:
+                        raise RuntimeError("SQLMesh run reported a failure status")
+                    full_models = [
+                        name for name, model in ctx.models.items() if model.kind.is_full
+                    ]
+                    if full_models:
+                        ctx.plan(
+                            restate_models=full_models,
+                            auto_apply=True,
+                            no_prompts=True,
+                        )
                 # Full plan rebuilds seeds.* too, so refresh views that read them.
                 refresh_views(self._db)
             except Exception as e:  # noqa: BLE001 — surface SQLMesh failure as structured result
