@@ -143,6 +143,7 @@ def test_apply_returns_apply_result_shape(
     from contextlib import contextmanager
 
     fake_ctx = MagicMock()
+    fake_ctx.run.return_value.is_failure = False
 
     @contextmanager
     def fake_sqlmesh_context(_db: Database):  # type: ignore[no-untyped-def]
@@ -173,6 +174,54 @@ def test_apply_returns_apply_result_shape(
     assert result.duration_seconds >= 0
     assert result.error is None
     fake_ctx.plan.assert_called_once_with(auto_apply=True, no_prompts=True)
+
+
+def test_apply_soft_fails_when_run_reports_failure(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """apply() must fail when ctx.run() returns a failure status.
+
+    SQLMesh's Context.run() returns a CompletionStatus and does NOT raise on
+    scheduler/audit/model errors — it returns is_failure=True (its own CLI
+    checks the status and raises "Run failed"). apply() must detect that and
+    surface applied=False, not proceed to the FULL-model restate and falsely
+    report success.
+    """
+    from contextlib import contextmanager
+
+    fake_ctx = MagicMock()
+    fake_ctx.run.return_value.is_failure = True
+
+    @contextmanager
+    def fake_sqlmesh_context(_db: Database):  # type: ignore[no-untyped-def]
+        yield fake_ctx
+
+    def fake_seed(_self: object) -> None:
+        return None
+
+    def fake_refresh(_db: object) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "moneybin.services.transform_service.sqlmesh_context",
+        fake_sqlmesh_context,
+    )
+    monkeypatch.setattr(
+        "moneybin.services.matching_service.MatchingService.seed_priority",
+        fake_seed,
+    )
+    monkeypatch.setattr(
+        "moneybin.services.transform_service.refresh_views",
+        fake_refresh,
+    )
+
+    result = TransformService(db).apply()
+
+    assert result.applied is False
+    assert result.error is not None
+    # A run failure short-circuits before the FULL-model restate: only the
+    # definition plan ran, never a second restate plan.
+    assert fake_ctx.plan.call_count == 1
 
 
 def test_apply_soft_fails_with_error_type_on_sqlmesh_exception(

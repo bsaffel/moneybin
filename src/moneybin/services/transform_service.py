@@ -142,7 +142,15 @@ class TransformService:
                     # step 2 keeps it fresh and that it stays out of the restate
                     # set below.
                     ctx.plan(auto_apply=True, no_prompts=True)
-                    ctx.run(ignore_cron=True)
+                    # ctx.run() returns a CompletionStatus; unlike plan() it does
+                    # NOT raise on scheduler/audit/model failure (SQLMesh's own
+                    # CLI checks is_failure and raises "Run failed"). Surface a
+                    # failed data-processing pass so the except below converts it
+                    # to ApplyResult(applied=False) instead of silently proceeding
+                    # to the restate and reporting success.
+                    run_status = ctx.run(ignore_cron=True)
+                    if run_status.is_failure:
+                        raise RuntimeError("SQLMesh run reported a failure status")
                     full_models = [
                         name for name, model in ctx.models.items() if model.kind.is_full
                     ]
