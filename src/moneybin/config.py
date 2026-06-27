@@ -856,7 +856,12 @@ class MoneyBinSettings(BaseSettings):
         )
 
     model_config = SettingsConfigDict(
-        env_file=".env",  # Default, but overridden by settings_customise_sources
+        # No default env_file: settings_customise_sources builds the real,
+        # profile-aware dotenv source from get_base_dir(), so a CWD-relative
+        # ".env" default is redundant — and pydantic stats/reads it eagerly at
+        # construction, which breaks sandboxed runs that deny the repo-root .env
+        # (PermissionError). See tests/moneybin/test_config_dotenv_isolation.py.
+        env_file=None,
         env_file_encoding="utf-8",
         env_prefix="MONEYBIN_",
         env_nested_delimiter="__",
