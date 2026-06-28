@@ -332,6 +332,18 @@ ACCOUNT_LINK_CONFIDENCE = Histogram(
     "Resolution confidence for account-link candidate proposals.",
 )
 
+# ── Merchant identity resolution ─────────────────────────────────────────────
+
+MERCHANT_LINK_REVIEW_PENDING = Gauge(
+    "moneybin_merchant_link_review_pending",
+    "Current count of pending merchant_link_decisions (distinct provider ids).",
+)
+
+MERCHANT_LINK_CONFIDENCE = Histogram(
+    "moneybin_merchant_link_confidence",
+    "Resolution confidence for merchant-link candidate proposals.",
+)
+
 # ── MCP server ────────────────────────────────────────────────────────────────
 
 MCP_TOOL_CALLS_TOTAL = Counter(

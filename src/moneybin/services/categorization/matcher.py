@@ -80,6 +80,7 @@ def _match_exemplar(
                 "canonical_name": m.canonical_name,
                 "category": m.category,
                 "subcategory": m.subcategory,
+                "strength": "exact" if m.match_type in ("oneOf", "exact") else "fuzzy",
             }
     return None
 
@@ -133,6 +134,7 @@ def _match_text(
                 "canonical_name": m.canonical_name,
                 "category": m.category,
                 "subcategory": m.subcategory,
+                "strength": "exact" if m.match_type in ("oneOf", "exact") else "fuzzy",
             }
 
     CATEGORIZE_MATCH_OUTCOME_TOTAL.labels(outcome="none", shape=shape).inc()
