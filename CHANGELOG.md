@@ -225,6 +225,10 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   key is ignored).
 
 ### Fixed
+- **The Plaid `sync link` flow no longer times out mid-approval.** The browser
+  link-completion poll now allows 5 minutes (its own `_LINK_POLL_DEADLINE`,
+  decoupled from the 120s `/sync/trigger` timeout), so completing a real bank's
+  OAuth + MFA no longer aborts the link. (#282)
 - **Bare single-account imports now elicit account confirmation instead of
   erroring (M1S.4 extension).** A single-account tabular file (CSV/TSV/Excel)
   imported with no account identifier — no `--account-name`/`--account-id`, no
