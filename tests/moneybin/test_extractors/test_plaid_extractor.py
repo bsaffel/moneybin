@@ -67,6 +67,39 @@ def test_loader_writes_transactions_preserving_plaid_sign(
     assert income[0] == Decimal("-1500.00")
 
 
+def test_loader_writes_extended_plaid_fields(
+    db: Database, sync_data: SyncDataResponse
+) -> None:
+    loader = PlaidExtractor(db)
+    loader.load(sync_data, job_id=sync_data.metadata.job_id)
+
+    row = db.execute(
+        """
+        SELECT original_description, iso_currency_code, authorized_date,
+               payment_channel, location_city, location_latitude,
+               merchant_entity_id, category_detailed, category_confidence
+        FROM raw.plaid_transactions WHERE transaction_id = 'txn_001'
+        """
+    ).fetchone()
+    assert row is not None
+    assert row[0] == "SQ *STARBUCKS 1234 SEATTLE WA"
+    assert row[1] == "USD"
+    assert str(row[2]) == "2026-04-06"
+    assert row[3] == "in store"
+    assert row[4] == "Seattle"
+    assert row[5] == 47.6062
+    assert row[6] == "entity_starbucks_001"
+    assert row[7] == "FOOD_AND_DRINK_COFFEE"
+    assert row[8] == "VERY_HIGH"
+
+    # txn_002 omits the extended fields -> they load as NULL.
+    sparse = db.execute(
+        "SELECT original_description, location_city FROM raw.plaid_transactions "
+        "WHERE transaction_id = 'txn_002'"
+    ).fetchone()
+    assert sparse == (None, None)
+
+
 def test_loader_upserts_on_same_transaction_id_and_source_origin(
     db: Database, sync_data: SyncDataResponse
 ) -> None:

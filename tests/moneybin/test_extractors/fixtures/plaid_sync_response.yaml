@@ -24,6 +24,22 @@ transactions:
     merchant_name: Starbucks
     category: FOOD_AND_DRINK
     pending: false
+    original_description: "SQ *STARBUCKS 1234 SEATTLE WA"
+    iso_currency_code: USD
+    authorized_date: "2026-04-06"
+    pending_transaction_id: null
+    payment_channel: "in store"
+    check_number: null
+    merchant_entity_id: entity_starbucks_001
+    location_address: "123 Pike St"
+    location_city: Seattle
+    location_region: WA
+    location_postal_code: "98101"
+    location_country: US
+    location_latitude: 47.6062
+    location_longitude: -122.3321
+    category_detailed: FOOD_AND_DRINK_COFFEE
+    category_confidence: VERY_HIGH
   - transaction_id: txn_002
     account_id: acc_chase_check
     transaction_date: "2026-04-06"
