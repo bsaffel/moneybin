@@ -39,6 +39,7 @@ FCT_TRANSACTIONS_SCHEMA: dict[str, str] = {
     "amount_absolute": "DECIMAL(18,2)",
     "transaction_direction": "VARCHAR",
     "description": "VARCHAR",
+    "original_description": "VARCHAR",
     "merchant_name": "VARCHAR",
     "merchant_id": "VARCHAR",
     "memo": "VARCHAR",

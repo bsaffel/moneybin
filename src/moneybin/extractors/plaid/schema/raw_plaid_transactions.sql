@@ -7,6 +7,22 @@ CREATE TABLE IF NOT EXISTS raw.plaid_transactions (
     description VARCHAR,                -- Plaid name field
     merchant_name VARCHAR,              -- Plaid merchant_name; NULL when Plaid cannot identify
     category VARCHAR,                   -- Plaid personal_finance_category.primary
+    original_description VARCHAR,       -- Plaid original_description; raw bank text, distinct from description=name; NULL for non-Plaid
+    iso_currency_code VARCHAR,          -- Plaid iso_currency_code (ISO 4217)
+    authorized_date DATE,               -- Plaid authorized_date
+    pending_transaction_id VARCHAR,     -- Plaid pending_transaction_id; links pending -> posted
+    payment_channel VARCHAR,            -- Plaid payment_channel: online, in store, other
+    check_number VARCHAR,               -- Plaid check_number; NULL for non-check
+    merchant_entity_id VARCHAR,         -- Plaid merchant_entity_id; stable merchant id (Tier-2a, not yet wired to core)
+    location_address VARCHAR,           -- Plaid location.address
+    location_city VARCHAR,              -- Plaid location.city
+    location_region VARCHAR,            -- Plaid location.region
+    location_postal_code VARCHAR,       -- Plaid location.postal_code
+    location_country VARCHAR,           -- Plaid location.country
+    location_latitude DOUBLE,           -- Plaid location.lat
+    location_longitude DOUBLE,          -- Plaid location.lon
+    category_detailed VARCHAR,          -- Plaid personal_finance_category.detailed (Tier-2b)
+    category_confidence VARCHAR,        -- Plaid personal_finance_category.confidence_level (Tier-2b)
     pending BOOLEAN DEFAULT FALSE,
     source_file VARCHAR NOT NULL,       -- Logical identifier: sync_{job_id} (last sync to touch this row)
     source_type VARCHAR NOT NULL DEFAULT 'plaid',

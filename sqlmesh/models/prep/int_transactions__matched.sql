@@ -174,6 +174,7 @@ SELECT
   u.authorized_date,
   u.amount,
   u.description,
+  u.original_description,
   u.merchant_name,
   u.memo,
   u.category,

@@ -52,6 +52,7 @@ WITH notes_agg AS (
     ABS(t.amount) AS amount_absolute,
     CASE WHEN t.amount < 0 THEN 'expense' WHEN t.amount > 0 THEN 'income' ELSE 'zero' END AS transaction_direction,
     t.description,
+    t.original_description,
     COALESCE(m.canonical_name, t.merchant_name) AS merchant_name,
     m.merchant_id,
     t.memo,
@@ -118,6 +119,7 @@ SELECT
   amount_absolute, /* Absolute value of amount; avoids sign handling in aggregations */
   transaction_direction, /* Derived from amount sign: expense, income, or zero */
   description, /* Payee or merchant description from highest-priority source */
+  original_description, /* Raw, unmodified bank-statement description from the source (Plaid original_description); NULL when the source has no separate raw form. Distinct from description (cleaned) and memo (supplementary). */
   merchant_name, /* Normalized merchant name from core.dim_merchants; falls back to source value */
   merchant_id, /* Foreign key to core.dim_merchants.merchant_id; NULL when no canonical merchant has been resolved for this transaction. Reports should GROUP/PARTITION on this FK; merchant_name is for display. */
   memo, /* Additional notes from highest-priority source */

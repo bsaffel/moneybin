@@ -13,6 +13,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 M2 closing out and M3 underway. M2A curator state shipped (transaction notes, tags, splits, manual entry, audit log). M2B architecture reference shipped (`architecture-shared-primitives.md`; writer-coordination contract via short-lived per-call connections). M2C brand surface advancing: `moneybin system doctor` integrity command, `reports.*` recipe library (eight curated views), and the `transform_*` MCP toolset closing the agent ingest loop. M3A Plaid Transactions sync shipped (Phase 1). Doc surface tightened for the personas reachable today; MCP surface hardened with protocol-standard annotations, `accounts_resolve`, list-parameter cap, structured error envelopes, and shell completion. Categorization correctness pass: memo-aware matcher, exemplar accumulation, source-precedence enforcement, auto-fan-out after apply; seed merchant catalogs retired in favor of user-driven and LLM-assist-driven merchant creation.
 
 ### Added
+- **Plaid max-data capture.** Plaid sync now captures the institution's original
+  (raw) description as a new `original_description` column on
+  `core.fct_transactions`, distinct from Plaid's cleaned `description`. The sync
+  path also populates currency, authorized date, pending-transaction link, payment
+  channel, check number, and merchant location on `core.fct_transactions`
+  (previously NULL for Plaid). Merchant entity id and Plaid's detailed
+  personal-finance category are captured into `raw.plaid_transactions` for later
+  merchant-resolution / categorization work. Run `moneybin sync pull --force` to
+  backfill existing transactions. (#283)
 - **Import-time account-binding confirmation (M1S.4).** Tabular `import_confirm`
   now surfaces the account resolver's verdict at import time. When an
   interactive human imports a file whose source account resolves to weak merge

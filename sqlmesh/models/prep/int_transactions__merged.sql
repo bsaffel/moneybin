@@ -29,6 +29,14 @@ SELECT
     END
   ) AS description,
   ARG_MIN(
+    m.original_description,
+    CASE
+      WHEN NOT m.original_description IS NULL
+      THEN COALESCE(sp.priority, 2147483647)
+      ELSE 2147483647
+    END
+  ) AS original_description,
+  ARG_MIN(
     m.merchant_name,
     CASE
       WHEN NOT m.merchant_name IS NULL
