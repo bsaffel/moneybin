@@ -45,6 +45,14 @@ SELECT
     END
   ) AS merchant_name,
   ARG_MIN(
+    m.merchant_entity_id,
+    CASE
+      WHEN NOT m.merchant_entity_id IS NULL
+      THEN COALESCE(sp.priority, 2147483647)
+      ELSE 2147483647
+    END
+  ) AS merchant_entity_id, /* Plaid provider entity id; NULL for non-Plaid sources */
+  ARG_MIN(
     m.memo,
     CASE
       WHEN NOT m.memo IS NULL

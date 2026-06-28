@@ -176,6 +176,7 @@ SELECT
   u.description,
   u.original_description,
   u.merchant_name,
+  u.merchant_entity_id,
   u.memo,
   u.category,
   u.subcategory,
