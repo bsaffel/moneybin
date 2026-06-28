@@ -460,6 +460,7 @@ CREATE TABLE IF NOT EXISTS prep.int_transactions__unioned (
     authorized_date       DATE,
     amount                DECIMAL(18, 2),
     description           VARCHAR,
+    original_description  VARCHAR,
     merchant_name         VARCHAR,
     memo                  VARCHAR,
     category              VARCHAR,
