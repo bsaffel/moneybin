@@ -11,6 +11,9 @@ import respx
 
 from moneybin.connectors.sync_client import (
     _DEFAULT_TIMEOUT,  # type: ignore[reportPrivateUsage]
+    _KEYRING_JWT_KEY,  # type: ignore[reportPrivateUsage]
+    _KEYRING_REFRESH_KEY,  # type: ignore[reportPrivateUsage]
+    _KEYRING_SERVICE,  # type: ignore[reportPrivateUsage]
     _LONG_TIMEOUT,  # type: ignore[reportPrivateUsage]
     SyncClient,
 )
@@ -571,3 +574,53 @@ def test_tokens_are_isolated_per_profile(monkeypatch: pytest.MonkeyPatch) -> Non
 
     assert alice._read_token() == "jwt-a"  # type: ignore[reportPrivateUsage]
     assert bob._read_token() is None  # type: ignore[reportPrivateUsage]
+
+
+def test_logout_clears_scoped_and_legacy_keyring_slots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Logout clears the profile's scoped keys and the legacy unscoped keys.
+
+    Other profiles' tokens stay intact. Exercises the keyring path of
+    _clear_tokens (the _token_path fixture used by other tests short-circuits
+    it); HOME is redirected so the fallback-file cleanup never touches the real
+    ~/.moneybin.
+    """
+    _clear_proxy_env(monkeypatch)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    store: dict[tuple[str, str], str] = {}
+
+    def _set(service: str, user: str, pw: str) -> None:
+        store[(service, user)] = pw
+
+    def _get(service: str, user: str) -> str | None:
+        return store.get((service, user))
+
+    def _delete(service: str, user: str) -> None:
+        store.pop((service, user), None)
+
+    monkeypatch.setattr("moneybin.connectors.sync_client.keyring.set_password", _set)
+    monkeypatch.setattr("moneybin.connectors.sync_client.keyring.get_password", _get)
+    monkeypatch.setattr(
+        "moneybin.connectors.sync_client.keyring.delete_password", _delete
+    )
+
+    # A legacy (unscoped) token left by a pre-per-profile version of the client.
+    store[(_KEYRING_SERVICE, _KEYRING_JWT_KEY)] = "legacy-jwt"
+    store[(_KEYRING_SERVICE, _KEYRING_REFRESH_KEY)] = "legacy-ref"
+
+    alice = SyncClient(server_url="https://test.api", profile_id="aaaaaaaaaaaa")
+    bob = SyncClient(server_url="https://test.api", profile_id="bbbbbbbbbbbb")
+    alice._store_tokens(access_token="jwt-a", refresh_token="ref-a")  # type: ignore[reportPrivateUsage]  # noqa: S106  # test fixture
+    bob._store_tokens(access_token="jwt-b", refresh_token="ref-b")  # type: ignore[reportPrivateUsage]  # noqa: S106  # test fixture
+
+    alice.logout()
+
+    # Alice's scoped slots are gone; the legacy unscoped slots are wiped too.
+    assert alice._read_token() is None  # type: ignore[reportPrivateUsage]
+    assert alice._read_refresh_token() is None  # type: ignore[reportPrivateUsage]
+    assert (_KEYRING_SERVICE, _KEYRING_JWT_KEY) not in store
+    assert (_KEYRING_SERVICE, _KEYRING_REFRESH_KEY) not in store
+    # Bob's scoped slots are untouched.
+    assert bob._read_token() == "jwt-b"  # type: ignore[reportPrivateUsage]
+    assert bob._read_refresh_token() == "ref-b"  # type: ignore[reportPrivateUsage]
