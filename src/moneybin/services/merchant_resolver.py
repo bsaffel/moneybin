@@ -36,6 +36,14 @@ def refresh_merchant_link_pending_gauge(db: Database) -> None:
 
 
 @dataclass(frozen=True)
+class HarvestResult:
+    """Result from MerchantResolver.harvest(): counts of bindings written and conflicts routed."""
+
+    bound: int
+    conflicts: int
+
+
+@dataclass(frozen=True)
 class MerchantResolution:
     """Resolution outcome from MerchantResolver.resolve()."""
 
@@ -145,3 +153,42 @@ class MerchantResolver:
         )
         MERCHANT_LINK_CONFIDENCE.observe(_FUZZY_CONFIDENCE)
         refresh_merchant_link_pending_gauge(self._db)
+
+    def harvest(self) -> HarvestResult:
+        """Bind established (provider id -> assigned merchant) facts from existing categorizations.
+
+        Routes one-id-many-merchants conflicts to the review queue without binding.
+        Idempotent: the insert guard in _bind skips already-bound entity ids.
+        """
+        rows = self._db.execute(
+            """
+            SELECT mt.canonical_source_type AS source_type,
+                   mt.merchant_entity_id, c.merchant_id, COUNT(*) AS n
+            FROM prep.int_transactions__merged AS mt
+            JOIN app.transaction_categories AS c ON c.transaction_id = mt.transaction_id
+            WHERE mt.merchant_entity_id IS NOT NULL AND c.merchant_id IS NOT NULL
+            GROUP BY mt.canonical_source_type, mt.merchant_entity_id, c.merchant_id
+            """  # noqa: S608  # static identifiers
+        ).fetchall()
+        by_id: dict[tuple[str, str], list[tuple[str, int]]] = {}
+        for source_type, ent, mid, n in rows:
+            by_id.setdefault((str(source_type), str(ent)), []).append((
+                str(mid),
+                int(n),
+            ))
+        bound = conflicts = 0
+        existing = self.load_bindings()
+        for (source_type, ent), pairs in by_id.items():
+            if (source_type, ent) in existing:
+                continue  # already bound (idempotent)
+            merchants = {mid for mid, _ in pairs}
+            if len(merchants) == 1:
+                self._bind(ent, source_type, next(iter(merchants)), decided_by="system")
+                bound += 1
+            else:
+                dominant = max(pairs, key=lambda p: p[1])[0]
+                self._propose(ent, source_type, None, dominant)
+                conflicts += 1
+        if conflicts:
+            refresh_merchant_link_pending_gauge(self._db)
+        return HarvestResult(bound=bound, conflicts=conflicts)
