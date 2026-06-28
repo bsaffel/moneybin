@@ -55,6 +55,24 @@ def test_full_sync_pipeline_to_core(db: Database) -> None:
     assert row is not None
     assert row[0] == Decimal("-42.50")
 
+    # Tier-1 extended fields flow from Plaid all the way to core.fct_transactions:
+    # original_description is a new column (raw bank text); the rest fill columns
+    # the Plaid CTE previously hardcoded NULL/'USD'.
+    enriched = db.execute(
+        """
+        SELECT original_description, currency_code, authorized_date,
+               payment_channel, location_city
+        FROM core.fct_transactions
+        WHERE source_type = 'plaid' AND description LIKE '%STARBUCKS%'
+        """
+    ).fetchone()
+    assert enriched is not None
+    assert enriched[0] == "SQ *STARBUCKS 1234 SEATTLE WA"
+    assert enriched[1] == "USD"
+    assert str(enriched[2]) == "2026-04-06"
+    assert enriched[3] == "in store"
+    assert enriched[4] == "Seattle"
+
     row = db.execute(
         """
         SELECT amount FROM core.fct_transactions

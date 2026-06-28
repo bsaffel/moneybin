@@ -528,6 +528,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "merchant_name": DataClass.MERCHANT_NAME,
         "note_count": DataClass.AGGREGATE,
         "notes": DataClass.USER_NOTE,
+        "original_description": DataClass.DESCRIPTION,
         "payment_channel": DataClass.TXN_TYPE,
         "pending_transaction_id": DataClass.RECORD_ID,
         "source_count": DataClass.AGGREGATE,
