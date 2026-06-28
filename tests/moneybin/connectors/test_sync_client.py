@@ -515,14 +515,15 @@ def test_tokens_are_isolated_per_profile(monkeypatch: pytest.MonkeyPatch) -> Non
     """Two profiles must not share a keychain slot — tokens encode a per-profile subject."""
     _clear_proxy_env(monkeypatch)
     store: dict[tuple[str, str], str] = {}
-    monkeypatch.setattr(
-        "moneybin.connectors.sync_client.keyring.set_password",
-        lambda service, user, pw: store.__setitem__((service, user), pw),
-    )
-    monkeypatch.setattr(
-        "moneybin.connectors.sync_client.keyring.get_password",
-        lambda service, user: store.get((service, user)),
-    )
+
+    def _set(service: str, user: str, pw: str) -> None:
+        store[(service, user)] = pw
+
+    def _get(service: str, user: str) -> str | None:
+        return store.get((service, user))
+
+    monkeypatch.setattr("moneybin.connectors.sync_client.keyring.set_password", _set)
+    monkeypatch.setattr("moneybin.connectors.sync_client.keyring.get_password", _get)
 
     alice = SyncClient(server_url="https://test.api", profile_id="aaaaaaaaaaaa")
     bob = SyncClient(server_url="https://test.api", profile_id="bbbbbbbbbbbb")
