@@ -456,3 +456,78 @@ def test_ack_posts_job_id_and_returns_ack_response(sync_client: SyncClient) -> N
     assert result.job_id == "job-123"
     assert result.status == "acked"
     assert json.loads(route.calls.last.request.content) == {"job_id": "job-123"}
+
+
+def _clear_proxy_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for var in (
+        "ALL_PROXY",
+        "all_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+
+@respx.mock
+def test_login_sends_profile_id_when_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The client forwards its opaque profile_id so the broker namespaces the subject."""
+    _clear_proxy_env(monkeypatch)
+    client = SyncClient(
+        server_url="https://test.api",
+        token_path=tmp_path / ".sync_token",
+        profile_id="prof12345678",
+    )
+    respx.post("https://test.api/auth/device/code").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "device_code": "dev",
+                "user_code": "X",
+                "verification_uri_complete": "https://x",
+                "interval": 0,
+                "expires_in": 900,
+            },
+        )
+    )
+    token_route = respx.post("https://test.api/auth/device/token").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "access_token": "jwt",  # noqa: S106  # test fixture, not a real credential
+                "refresh_token": "ref",  # noqa: S106  # test fixture, not a real credential
+                "expires_in": 3600,
+                "token_type": "Bearer",
+            },
+        )
+    )
+
+    client.login(open_browser=False)
+
+    sent = json.loads(token_route.calls.last.request.content)
+    assert sent["profile_id"] == "prof12345678"
+
+
+def test_tokens_are_isolated_per_profile(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two profiles must not share a keychain slot — tokens encode a per-profile subject."""
+    _clear_proxy_env(monkeypatch)
+    store: dict[tuple[str, str], str] = {}
+    monkeypatch.setattr(
+        "moneybin.connectors.sync_client.keyring.set_password",
+        lambda service, user, pw: store.__setitem__((service, user), pw),
+    )
+    monkeypatch.setattr(
+        "moneybin.connectors.sync_client.keyring.get_password",
+        lambda service, user: store.get((service, user)),
+    )
+
+    alice = SyncClient(server_url="https://test.api", profile_id="aaaaaaaaaaaa")
+    bob = SyncClient(server_url="https://test.api", profile_id="bbbbbbbbbbbb")
+
+    alice._store_tokens(access_token="jwt-a", refresh_token="ref-a")  # type: ignore[reportPrivateUsage]  # noqa: S106  # test fixture
+
+    assert alice._read_token() == "jwt-a"  # type: ignore[reportPrivateUsage]
+    assert bob._read_token() is None  # type: ignore[reportPrivateUsage]

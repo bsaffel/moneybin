@@ -301,3 +301,34 @@ class TestProfileConfigYaml:
         generate_profile_config(profile_dir, "bob")
         content = (profile_dir / "config.yaml").read_text()
         assert "# Profile: bob" in content
+
+
+class TestProfileId:
+    """Test suite for the stable, opaque per-profile id."""
+
+    def test_generates_opaque_id_and_persists(self, tmp_path: Path) -> None:
+        """First call generates a 12-hex id and writes it to <profile_dir>/profile_id."""
+        from moneybin.utils.user_config import get_or_create_profile_id
+
+        profile_dir = tmp_path / "alice"
+        profile_dir.mkdir()
+
+        profile_id = get_or_create_profile_id(profile_dir)
+
+        # 12 hex chars (truncated UUID4, per the identifiers convention).
+        assert len(profile_id) == 12
+        assert all(c in "0123456789abcdef" for c in profile_id)
+        # Persisted verbatim so the id is stable across processes.
+        assert (profile_dir / "profile_id").read_text().strip() == profile_id
+
+    def test_returns_same_id_on_subsequent_calls(self, tmp_path: Path) -> None:
+        """The id is stable: a second call returns the first call's value."""
+        from moneybin.utils.user_config import get_or_create_profile_id
+
+        profile_dir = tmp_path / "alice"
+        profile_dir.mkdir()
+
+        first = get_or_create_profile_id(profile_dir)
+        second = get_or_create_profile_id(profile_dir)
+
+        assert first == second

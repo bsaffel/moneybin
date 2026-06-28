@@ -30,6 +30,7 @@ def _build_sync_client():
     """Construct a SyncClient from current settings. Extracted for test mocking."""
     from moneybin.config import get_settings  # noqa: PLC0415
     from moneybin.connectors.sync_client import SyncClient  # noqa: PLC0415
+    from moneybin.utils.user_config import get_or_create_profile_id  # noqa: PLC0415
 
     settings = get_settings()
     if settings.sync.server_url is None:
@@ -37,7 +38,11 @@ def _build_sync_client():
             "sync.server_url is not configured. "
             "Set MONEYBIN_SYNC__SERVER_URL in your environment."
         )
-    return SyncClient(server_url=str(settings.sync.server_url))
+    # Derive the active profile's directory from the resolved DB path
+    # (<profile_dir>/moneybin.duckdb) so the broker scopes this profile's
+    # identity separately from every other profile's.
+    profile_id = get_or_create_profile_id(settings.database.path.parent)
+    return SyncClient(server_url=str(settings.sync.server_url), profile_id=profile_id)
 
 
 @contextmanager
