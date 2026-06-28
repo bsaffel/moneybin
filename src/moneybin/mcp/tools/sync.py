@@ -39,9 +39,16 @@ logger = logging.getLogger(__name__)
 
 
 def _build_sync_client() -> Any:
-    """Construct a SyncClient from current settings."""
+    """Construct a SyncClient from current settings.
+
+    Mirrors the CLI builder (``cli/commands/sync.py``) exactly — including the
+    per-profile identity — so MCP and CLI read and write the same scoped token
+    slot. (The two builders are duplicated; consolidating them is tracked as a
+    follow-up.)
+    """
     from moneybin.config import get_settings  # noqa: PLC0415
     from moneybin.connectors.sync_client import SyncClient  # noqa: PLC0415
+    from moneybin.utils.user_config import get_or_create_profile_id  # noqa: PLC0415
 
     settings = get_settings()
     if settings.sync.server_url is None:
@@ -49,7 +56,10 @@ def _build_sync_client() -> Any:
             "sync.server_url is not configured. "
             "Set MONEYBIN_SYNC__SERVER_URL in your environment."
         )
-    return SyncClient(server_url=str(settings.sync.server_url))
+    # Scope the broker identity to the active profile so each profile
+    # authenticates as a distinct user.
+    profile_id = get_or_create_profile_id(settings.profile_dir)
+    return SyncClient(server_url=str(settings.sync.server_url), profile_id=profile_id)
 
 
 @contextmanager

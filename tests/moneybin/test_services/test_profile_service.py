@@ -212,6 +212,38 @@ class TestProfileDelete:
         with pytest.raises(ValueError, match="Cannot delete the active profile"):
             svc.delete("alice")
 
+    def test_delete_clears_scoped_sync_tokens(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Deleting a profile clears its scoped broker sync tokens by profile_id."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        svc = ProfileService()
+        svc.create("alice")
+        # The sync id is normally written lazily on first sync; seed it here.
+        (tmp_path / "profiles" / "alice" / "profile_id").write_text("ab12cd34ef56")
+
+        with patch(
+            "moneybin.connectors.sync_client.SyncClient.clear_tokens_for_profile"
+        ) as mock_clear:
+            svc.delete("alice")
+
+        mock_clear.assert_called_once_with("ab12cd34ef56")
+
+    def test_delete_without_sync_id_skips_token_cleanup(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A profile with no profile_id file deletes without attempting token cleanup."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        svc = ProfileService()
+        svc.create("alice")  # create() does not write a profile_id file
+
+        with patch(
+            "moneybin.connectors.sync_client.SyncClient.clear_tokens_for_profile"
+        ) as mock_clear:
+            svc.delete("alice")
+
+        mock_clear.assert_not_called()
+
 
 class TestProfileShow:
     """Test profile show (resolved settings)."""

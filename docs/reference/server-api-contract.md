@@ -89,8 +89,13 @@ The client reads `user_code` (display), `verification_uri_complete` (open in bro
 **Request:**
 
 ```json
-{ "device_code": "Ag_EE..." }
+{ "device_code": "Ag_EE...", "profile_id": "ab12cd34ef56" }
 ```
+
+`profile_id` is optional — an opaque, stable per-profile identifier the client
+sends so each local profile maps to a distinct broker identity. Omit it for the
+legacy single-identity behavior. When present it must match
+`^[A-Za-z0-9_-]{1,64}$`; the broker namespaces the minted token's subject by it.
 
 **Response (200, approved):** `AuthToken`
 

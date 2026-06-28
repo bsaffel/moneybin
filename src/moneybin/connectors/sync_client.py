@@ -69,10 +69,27 @@ class SyncClient:
     # Test hook — overridable for fast tests (e.g. client._sleep = list.append)
     _sleep = staticmethod(time.sleep)
 
-    def __init__(self, server_url: str, token_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        server_url: str,
+        token_path: Path | None = None,
+        profile_id: str | None = None,
+    ) -> None:
         """Set up the HTTP client and optional test-only token path override."""
         self._server_url = server_url.rstrip("/")
         self._token_path = token_path  # if set, bypass keyring entirely (tests)
+        self._profile_id = profile_id
+        # Namespace token storage by profile so two profiles never share a slot —
+        # each profile's token encodes a distinct broker subject. Absent a
+        # profile_id, fall back to the legacy unscoped keys.
+        self._jwt_key = (
+            f"{profile_id}:{_KEYRING_JWT_KEY}" if profile_id else _KEYRING_JWT_KEY
+        )
+        self._refresh_key = (
+            f"{profile_id}:{_KEYRING_REFRESH_KEY}"
+            if profile_id
+            else _KEYRING_REFRESH_KEY
+        )
         self._client = httpx.Client(base_url=self._server_url, timeout=_DEFAULT_TIMEOUT)
 
     # ------------------------------ Token storage ------------------------------
@@ -82,8 +99,8 @@ class SyncClient:
             self._write_token_file(access_token, refresh_token)
             return
         try:
-            keyring.set_password(_KEYRING_SERVICE, _KEYRING_JWT_KEY, access_token)
-            keyring.set_password(_KEYRING_SERVICE, _KEYRING_REFRESH_KEY, refresh_token)
+            keyring.set_password(_KEYRING_SERVICE, self._jwt_key, access_token)
+            keyring.set_password(_KEYRING_SERVICE, self._refresh_key, refresh_token)
         except KeyringError as e:
             logger.warning(f"Keyring unavailable ({e}); falling back to file storage.")
             self._write_token_file(access_token, refresh_token)
@@ -92,7 +109,7 @@ class SyncClient:
         if self._token_path is not None:
             return self._read_token_file().get("jwt")
         try:
-            return keyring.get_password(_KEYRING_SERVICE, _KEYRING_JWT_KEY)
+            return keyring.get_password(_KEYRING_SERVICE, self._jwt_key)
         except KeyringError:
             return self._read_token_file().get("jwt")
 
@@ -100,7 +117,7 @@ class SyncClient:
         if self._token_path is not None:
             return self._read_token_file().get("refresh_token")
         try:
-            return keyring.get_password(_KEYRING_SERVICE, _KEYRING_REFRESH_KEY)
+            return keyring.get_password(_KEYRING_SERVICE, self._refresh_key)
         except KeyringError:
             return self._read_token_file().get("refresh_token")
 
@@ -108,22 +125,51 @@ class SyncClient:
         """Remove stored tokens from keychain (or fallback file)."""
         self._clear_tokens()
 
+    @classmethod
+    def clear_tokens_for_profile(cls, profile_id: str) -> None:
+        """Delete a single profile's scoped broker tokens (keyring + fallback file).
+
+        For profile deletion: removes only that profile's scoped slots — never the
+        legacy unscoped slots (which may belong to another or legacy identity) or
+        another profile's slots. Best-effort; missing entries are ignored.
+        """
+        for key in (
+            f"{profile_id}:{_KEYRING_JWT_KEY}",
+            f"{profile_id}:{_KEYRING_REFRESH_KEY}",
+        ):
+            try:
+                keyring.delete_password(_KEYRING_SERVICE, key)
+            except KeyringError:
+                pass
+        fallback = Path.home() / ".moneybin" / f".sync_token-{profile_id}"
+        if fallback.exists():
+            fallback.unlink()
+
     def _clear_tokens(self) -> None:
         if self._token_path is not None:
             if self._token_path.exists():
                 self._token_path.unlink()
             return
-        try:
-            keyring.delete_password(_KEYRING_SERVICE, _KEYRING_JWT_KEY)
-        except KeyringError:
-            pass
-        try:
-            keyring.delete_password(_KEYRING_SERVICE, _KEYRING_REFRESH_KEY)
-        except KeyringError:
-            pass
-        fallback = Path.home() / ".moneybin" / ".sync_token"
-        if fallback.exists():
-            fallback.unlink()
+        # Clear this profile's scoped slots AND the legacy unscoped slots, so a
+        # user upgrading from the pre-per-profile version doesn't leave an
+        # orphaned token behind on logout. The set dedups when no profile is set
+        # (scoped keys == legacy keys).
+        for key in {
+            self._jwt_key,
+            self._refresh_key,
+            _KEYRING_JWT_KEY,
+            _KEYRING_REFRESH_KEY,
+        }:
+            try:
+                keyring.delete_password(_KEYRING_SERVICE, key)
+            except KeyringError:
+                pass
+        for path in {
+            self._effective_token_path(),
+            Path.home() / ".moneybin" / ".sync_token",
+        }:
+            if path.exists():
+                path.unlink()
 
     def _write_token_file(
         self,
@@ -157,7 +203,8 @@ class SyncClient:
     def _effective_token_path(self) -> Path:
         if self._token_path is not None:
             return self._token_path
-        return Path.home() / ".moneybin" / ".sync_token"
+        name = f".sync_token-{self._profile_id}" if self._profile_id else ".sync_token"
+        return Path.home() / ".moneybin" / name
 
     # ------------------------------ Login ------------------------------
 
@@ -188,12 +235,17 @@ class SyncClient:
             except webbrowser.Error:
                 pass  # fall through; URL already printed
 
+        # Send profile_id only when set, so the request to a legacy server (no
+        # such field) is byte-for-byte unchanged. The broker namespaces the JWT
+        # subject per profile when present.
+        token_body: dict[str, str] = {"device_code": device_code}
+        if self._profile_id:
+            token_body["profile_id"] = self._profile_id
+
         while True:
             self._sleep(interval)
             try:
-                poll = self._client.post(
-                    "/auth/device/token", json={"device_code": device_code}
-                )
+                poll = self._client.post("/auth/device/token", json=token_body)
             except httpx.RequestError as e:
                 raise SyncAPIError(
                     f"sync server unreachable at {self._server_url}: {e}"

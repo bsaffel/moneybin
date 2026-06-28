@@ -6,6 +6,7 @@ including default profile settings and user preferences.
 
 import logging
 import re
+import uuid
 from datetime import date
 from pathlib import Path
 
@@ -214,6 +215,34 @@ def generate_profile_config(profile_dir: Path, profile_name: str) -> Path:
         yaml.safe_dump(config_data, f, default_flow_style=False, sort_keys=False)
 
     return config_path
+
+
+def get_or_create_profile_id(profile_dir: Path) -> str:
+    """Return the profile's stable, opaque id, generating it on first use.
+
+    The id is a truncated UUID4 stored in ``<profile_dir>/profile_id``. It is
+    opaque on purpose: it is sent to moneybin-sync to namespace the JWT subject,
+    so it must never carry the (potentially personal) profile name. Generated
+    lazily — profiles created before this existed get one on first sync — and
+    stable across processes once written. The id is not a credential — it names
+    a profile's broker identity; access still requires the loopback-minted
+    token — so the file is left at the umask default rather than tightened.
+
+    Args:
+        profile_dir: The profile's directory (``<base>/profiles/<name>``).
+
+    Returns:
+        The 12-character hex profile id.
+    """
+    id_path = profile_dir / "profile_id"
+    if id_path.exists():
+        existing = id_path.read_text().strip()
+        if existing:
+            return existing
+    profile_id = uuid.uuid4().hex[:12]
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    id_path.write_text(profile_id)
+    return profile_id
 
 
 def prompt_for_profile_name() -> str:
