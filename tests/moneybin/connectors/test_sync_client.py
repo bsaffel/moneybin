@@ -479,7 +479,7 @@ def test_login_sends_profile_id_when_set(
     client = SyncClient(
         server_url="https://test.api",
         token_path=tmp_path / ".sync_token",
-        profile_id="prof12345678",
+        profile_id="ab12cd34ef56",
     )
     respx.post("https://test.api/auth/device/code").mock(
         return_value=httpx.Response(
@@ -508,7 +508,7 @@ def test_login_sends_profile_id_when_set(
     client.login(open_browser=False)
 
     sent = json.loads(token_route.calls.last.request.content)
-    assert sent["profile_id"] == "prof12345678"
+    assert sent["profile_id"] == "ab12cd34ef56"
 
 
 @respx.mock

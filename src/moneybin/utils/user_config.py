@@ -224,9 +224,9 @@ def get_or_create_profile_id(profile_dir: Path) -> str:
     opaque on purpose: it is sent to moneybin-sync to namespace the JWT subject,
     so it must never carry the (potentially personal) profile name. Generated
     lazily — profiles created before this existed get one on first sync — and
-    stable across processes once written. The file's own mode follows the
-    umask, but the enclosing profile directory is created mode ``0o700``, so
-    only the owner can traverse into it to read the id.
+    stable across processes once written. The id is not a credential — it names
+    a profile's broker identity; access still requires the loopback-minted
+    token — so the file is left at the umask default rather than tightened.
 
     Args:
         profile_dir: The profile's directory (``<base>/profiles/<name>``).
