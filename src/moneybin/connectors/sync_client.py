@@ -125,6 +125,26 @@ class SyncClient:
         """Remove stored tokens from keychain (or fallback file)."""
         self._clear_tokens()
 
+    @classmethod
+    def clear_tokens_for_profile(cls, profile_id: str) -> None:
+        """Delete a single profile's scoped broker tokens (keyring + fallback file).
+
+        For profile deletion: removes only that profile's scoped slots — never the
+        legacy unscoped slots (which may belong to another or legacy identity) or
+        another profile's slots. Best-effort; missing entries are ignored.
+        """
+        for key in (
+            f"{profile_id}:{_KEYRING_JWT_KEY}",
+            f"{profile_id}:{_KEYRING_REFRESH_KEY}",
+        ):
+            try:
+                keyring.delete_password(_KEYRING_SERVICE, key)
+            except KeyringError:
+                pass
+        fallback = Path.home() / ".moneybin" / f".sync_token-{profile_id}"
+        if fallback.exists():
+            fallback.unlink()
+
     def _clear_tokens(self) -> None:
         if self._token_path is not None:
             if self._token_path.exists():
