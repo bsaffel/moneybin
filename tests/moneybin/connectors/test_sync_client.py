@@ -14,10 +14,15 @@ from moneybin.connectors.sync_client import (
     _KEYRING_JWT_KEY,  # type: ignore[reportPrivateUsage]
     _KEYRING_REFRESH_KEY,  # type: ignore[reportPrivateUsage]
     _KEYRING_SERVICE,  # type: ignore[reportPrivateUsage]
+    _LINK_POLL_DEADLINE,  # type: ignore[reportPrivateUsage]
     _LONG_TIMEOUT,  # type: ignore[reportPrivateUsage]
     SyncClient,
 )
-from moneybin.connectors.sync_errors import SyncAuthError, SyncLinkError
+from moneybin.connectors.sync_errors import (
+    SyncAuthError,
+    SyncLinkError,
+    SyncTimeoutError,
+)
 from moneybin.connectors.sync_models import SyncAckResponse, SyncDataResponse
 
 
@@ -59,9 +64,10 @@ def test_sync_client_clear_tokens(sync_client: SyncClient) -> None:
 
 
 def test_timeout_constants() -> None:
-    """Two timeout constants — default and long — per design decision (no per-endpoint config knobs)."""
+    """Timeout constants per design decision (no per-endpoint config knobs)."""
     assert _DEFAULT_TIMEOUT.read == 15.0  # type: ignore[reportPrivateUsage]
     assert _LONG_TIMEOUT.read == 120.0  # type: ignore[reportPrivateUsage]
+    assert _LINK_POLL_DEADLINE == 300.0  # type: ignore[reportPrivateUsage]
 
 
 @respx.mock
@@ -362,6 +368,48 @@ def test_poll_link_failed_raises(sync_client: SyncClient) -> None:
     sync_client._sleep = lambda _: None  # type: ignore[method-assign]
     with pytest.raises(SyncLinkError, match="user cancelled"):
         sync_client.poll_link_status("sess_abc")
+
+
+class _FakeClock:
+    """A deterministic clock: each .time() call returns the next preset value."""
+
+    def __init__(self, values: list[float]) -> None:
+        self._it = iter(values)
+
+    def time(self) -> float:
+        return next(self._it)
+
+
+@respx.mock
+def test_poll_link_status_keeps_polling_past_old_two_minute_deadline(
+    sync_client: SyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The link deadline is 5 min, decoupled from the 120s sync-trigger HTTP
+    # timeout: completing a real bank's OAuth + MFA can take minutes. A simulated
+    # clock that crosses the OLD 120s mark while the session is still pending must
+    # keep polling rather than time out.
+    sync_client._store_tokens(access_token="jwt", refresh_token="r")  # type: ignore[reportPrivateUsage]  # noqa: S106  # test fixture, not a real credential
+    route = respx.get("https://test.api/sync/link/status").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "session_id": "sess_abc",
+                "status": "pending",
+                "expiration": "2026-05-13T13:30:00Z",
+            },
+        )
+    )
+    sync_client._sleep = lambda _: None  # type: ignore[method-assign]
+    # deadline = first time.time() (0.0) + _LINK_POLL_DEADLINE (300) = 300. The
+    # checks at t=130 and t=200 are past the old 120s deadline but under 300, so
+    # two polls happen; t=301 ends the loop → SyncTimeoutError.
+    monkeypatch.setattr(
+        "moneybin.connectors.sync_client.time",
+        _FakeClock([0.0, 130.0, 200.0, 301.0]),
+    )
+    with pytest.raises(SyncTimeoutError):
+        sync_client.poll_link_status("sess_abc")
+    assert route.call_count == 2
 
 
 @respx.mock

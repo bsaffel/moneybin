@@ -11,7 +11,9 @@ Secret Service, some Docker setups).
 
 Timeouts:
 - _DEFAULT_TIMEOUT (15s) for most endpoints
-- _LONG_TIMEOUT (120s) for POST /sync/trigger and link polling deadline
+- _LONG_TIMEOUT (120s) for POST /sync/trigger
+- _LINK_POLL_DEADLINE (300s) for the browser link flow (decoupled from the HTTP
+  timeouts: completing a bank's OAuth + MFA can take minutes)
 Per design — no per-endpoint configuration knobs unless evidence demands them.
 """
 
@@ -56,6 +58,10 @@ _KEYRING_REFRESH_KEY = "refresh_token"
 _DEFAULT_TIMEOUT = httpx.Timeout(15.0, connect=10.0)
 _LONG_TIMEOUT = httpx.Timeout(120.0, connect=10.0)
 _LINK_POLL_INTERVAL = 3.0
+# How long the CLI waits for the user to finish the browser link flow before
+# giving up. Decoupled from the HTTP timeouts above: completing a real bank's
+# OAuth + MFA can legitimately take minutes, far longer than any single request.
+_LINK_POLL_DEADLINE = 300.0
 
 
 class SyncClient:
@@ -403,10 +409,9 @@ class SyncClient:
         """Poll GET /sync/link/status until status reaches a terminal state.
 
         Terminal: 'linked' (returns) or 'failed' (raises SyncLinkError).
-        Times out after _LONG_TIMEOUT seconds → SyncTimeoutError.
+        Times out after _LINK_POLL_DEADLINE seconds → SyncTimeoutError.
         """
-        read_timeout: float = _LONG_TIMEOUT.read or 120.0
-        deadline = time.time() + read_timeout
+        deadline = time.time() + _LINK_POLL_DEADLINE
         while time.time() < deadline:
             self._sleep(_LINK_POLL_INTERVAL)
             resp = self._authed_request(
