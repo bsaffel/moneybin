@@ -76,6 +76,9 @@ class SyncTransaction(BaseModel):
 
     NOTE: amount preserves Plaid convention (positive = expense). The sign
     flip happens in prep.stg_plaid__transactions, NOT here, NOT in the loader.
+    Every field below ``pending`` is Plaid's additional default-returned data
+    (location/PFC flattened to scalars by the broker); each is optional so a
+    broker that predates the capture change still validates.
     """
 
     transaction_id: str
@@ -86,6 +89,22 @@ class SyncTransaction(BaseModel):
     merchant_name: str | None = None
     category: str | None = None
     pending: bool = False
+    original_description: str | None = None
+    iso_currency_code: str | None = None
+    authorized_date: date | None = None
+    pending_transaction_id: str | None = None
+    payment_channel: str | None = None
+    check_number: str | None = None
+    merchant_entity_id: str | None = None
+    location_address: str | None = None
+    location_city: str | None = None
+    location_region: str | None = None
+    location_postal_code: str | None = None
+    location_country: str | None = None
+    location_latitude: float | None = None
+    location_longitude: float | None = None
+    category_detailed: str | None = None
+    category_confidence: str | None = None
 
 
 class SyncBalance(BaseModel):

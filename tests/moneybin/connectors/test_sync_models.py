@@ -76,6 +76,48 @@ def test_sync_transaction_preserves_decimal() -> None:
     assert isinstance(txn.amount, Decimal)
 
 
+def test_sync_transaction_parses_extended_plaid_fields() -> None:
+    txn = SyncTransaction.model_validate({
+        "transaction_id": "txn_001",
+        "account_id": "acc_001",
+        "transaction_date": "2026-06-13",
+        "amount": "42.50",
+        "description": "COFFEE SHOP",
+        "original_description": "SQ *COFFEE SHOP 00123 SEATTLE WA",
+        "iso_currency_code": "USD",
+        "authorized_date": "2026-06-12",
+        "pending_transaction_id": None,
+        "payment_channel": "in store",
+        "check_number": None,
+        "merchant_entity_id": "entity_coffee_001",
+        "location_city": "Seattle",
+        "location_latitude": 47.6,
+        "category_detailed": "FOOD_AND_DRINK_COFFEE",
+        "category_confidence": "VERY_HIGH",
+    })
+    assert txn.original_description == "SQ *COFFEE SHOP 00123 SEATTLE WA"
+    assert txn.iso_currency_code == "USD"
+    assert txn.authorized_date == date(2026, 6, 12)
+    assert txn.location_latitude == 47.6
+    assert txn.merchant_entity_id == "entity_coffee_001"
+    assert txn.category_confidence == "VERY_HIGH"
+
+
+def test_sync_transaction_extended_fields_default_none() -> None:
+    # A broker that predates the capture change omits the extended fields; they
+    # must default to None rather than failing validation.
+    txn = SyncTransaction(
+        transaction_id="t",
+        account_id="a",
+        transaction_date=date(2026, 6, 13),
+        amount=Decimal("1.00"),
+    )
+    assert txn.original_description is None
+    assert txn.location_city is None
+    assert txn.merchant_entity_id is None
+    assert txn.category_detailed is None
+
+
 def test_sync_data_response_parses_full_payload() -> None:
     payload = {
         "accounts": [
