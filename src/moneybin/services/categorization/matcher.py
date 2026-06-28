@@ -30,6 +30,7 @@ from moneybin.services.categorization._shared import (
 from moneybin.tables import (
     CATEGORIZATION_RULES,
     FCT_TRANSACTIONS,
+    INT_TRANSACTIONS_MERGED,
     MERCHANTS,
     TRANSACTION_CATEGORIES,
 )
@@ -247,26 +248,52 @@ class CategorizationMatcher:
         :meth:`categorize_pending`. Returns ``None`` if the source tables don't
         exist (DB pre-migration); returns ``[]`` when there are no pending rows.
 
-        Columns: ``(transaction_id, description, amount, account_id, memo)`` —
-        the superset of what either consumer needs; ``apply_merchant_categories``
-        ignores ``amount`` and ``account_id``.
+        Columns: ``(transaction_id, description, amount, account_id, memo,
+        merchant_entity_id, source_type, merchant_name)`` — the superset of what
+        either consumer needs. ``apply_rules`` uses only the first five;
+        ``apply_merchant_categories`` additionally consults the trailing three
+        for rung-0 entity resolution (M1T). ``merchant_entity_id`` comes from
+        ``prep.int_transactions__merged`` (Task 5 stops it at prep), joined on
+        the gold ``transaction_id``.
         """
-        try:
-            return self._db.execute(
-                f"""
-                SELECT t.transaction_id, t.description, t.amount, t.account_id, t.memo
-                FROM {FCT_TRANSACTIONS.full_name} t
-                LEFT JOIN {TRANSACTION_CATEGORIES.full_name} c
-                    ON t.transaction_id = c.transaction_id
+        where = """
                 WHERE c.transaction_id IS NULL
                     AND (
                         (t.description IS NOT NULL AND t.description != '')
                         OR (t.memo IS NOT NULL AND t.memo != '')
                     )
-                """,
-            ).fetchall()
-        except duckdb.CatalogException:
-            return None
+        """
+        cat_join = (
+            f"LEFT JOIN {TRANSACTION_CATEGORIES.full_name} c "
+            "ON t.transaction_id = c.transaction_id"
+        )
+        # Preferred: pull merchant_entity_id from prep.int_transactions__merged
+        # (Task 5 stops it at prep). Fallback drops the prep join with a NULL
+        # entity id so unit/pre-transform DBs — where core.fct_transactions
+        # exists without the prep layer — still categorize by name.
+        with_entity = f"""
+                SELECT t.transaction_id, t.description, t.amount, t.account_id,
+                       t.memo, m.merchant_entity_id, t.source_type, t.merchant_name
+                FROM {FCT_TRANSACTIONS.full_name} t
+                {cat_join}
+                LEFT JOIN {INT_TRANSACTIONS_MERGED.full_name} m
+                    ON t.transaction_id = m.transaction_id
+                {where}
+        """  # noqa: S608 — table names are compile-time TableRef constants
+        without_entity = f"""
+                SELECT t.transaction_id, t.description, t.amount, t.account_id,
+                       t.memo, NULL AS merchant_entity_id, t.source_type,
+                       t.merchant_name
+                FROM {FCT_TRANSACTIONS.full_name} t
+                {cat_join}
+                {where}
+        """  # noqa: S608 — table names are compile-time TableRef constants
+        for query in (with_entity, without_entity):
+            try:
+                return self._db.execute(query).fetchall()
+            except duckdb.CatalogException:
+                continue  # prep layer (or fct itself) absent — try the fallback
+        return None
 
     def fetch_active_rules(self) -> list[tuple[Any, ...]]:
         """Return all active rules in priority order (priority ASC, created_at ASC)."""

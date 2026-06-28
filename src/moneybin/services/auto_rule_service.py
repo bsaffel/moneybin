@@ -95,6 +95,8 @@ class TxnRow:
     account_id: str | None
     memo: str | None = None
     source_type: str | None = None
+    merchant_entity_id: str | None = None
+    merchant_name: str | None = None
 
 
 @dataclass(slots=True)
@@ -125,6 +127,21 @@ class RecordingContext:
         """Return the memo for the given transaction_id, or None if not loaded."""
         row = self.txn_rows.get(transaction_id)
         return row.memo if row else None
+
+    def merchant_entity_id_for(self, transaction_id: str) -> str | None:
+        """Return the provider merchant_entity_id, or None if not loaded/non-Plaid."""
+        row = self.txn_rows.get(transaction_id)
+        return row.merchant_entity_id if row else None
+
+    def source_type_for(self, transaction_id: str) -> str | None:
+        """Return the canonical source_type for the given transaction_id, or None."""
+        row = self.txn_rows.get(transaction_id)
+        return row.source_type if row else None
+
+    def merchant_name_for(self, transaction_id: str) -> str | None:
+        """Return the provider merchant_name for the given transaction_id, or None."""
+        row = self.txn_rows.get(transaction_id)
+        return row.merchant_name if row else None
 
     def merchant_row_for(self, merchant_id: str) -> Merchant | None:
         """Return the cached merchant row for the given merchant_id, or None."""

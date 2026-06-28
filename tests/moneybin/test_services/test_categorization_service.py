@@ -871,6 +871,16 @@ def test_categorize_items_uses_constant_number_of_db_calls(
     """
     from moneybin.tables import FCT_TRANSACTIONS
 
+    # In production core.fct_transactions is a view over
+    # prep.int_transactions__merged, so the batched description fetch joins prep
+    # to read merchant_entity_id (M1T rung-0). Provide an (empty) prep view so
+    # this perf test exercises the real single-query production path.
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS prep.int_transactions__merged "
+        "(transaction_id VARCHAR, merchant_entity_id VARCHAR)"
+    )
+
     # Seed 25 transactions and 25 corresponding category items.
     for i in range(25):
         db.execute(

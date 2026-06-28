@@ -96,6 +96,7 @@ SEED_CATEGORIES = TableRef("seeds", "categories")
 # -- Prep / staging views (built by SQLMesh transforms) --
 INT_TRANSACTIONS_UNIONED = TableRef("prep", "int_transactions__unioned")
 INT_TRANSACTIONS_MATCHED = TableRef("prep", "int_transactions__matched")
+INT_TRANSACTIONS_MERGED = TableRef("prep", "int_transactions__merged")
 
 # -- Meta schema (cross-source provenance + lineage) --
 FCT_TRANSACTION_PROVENANCE = TableRef("meta", "fct_transaction_provenance")
