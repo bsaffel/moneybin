@@ -113,6 +113,22 @@ CREATE TABLE IF NOT EXISTS raw.plaid_transactions (
     description VARCHAR,               -- Plaid name field; merchant or payee description
     merchant_name VARCHAR,             -- Plaid merchant_name; normalized merchant name; NULL when Plaid cannot identify
     category VARCHAR,                  -- Plaid personal_finance_category.primary; broad spending category
+    original_description VARCHAR,      -- Plaid original_description; raw, unmodified bank text (distinct from description=name)
+    iso_currency_code VARCHAR,         -- Plaid iso_currency_code (ISO 4217)
+    authorized_date DATE,              -- Plaid authorized_date
+    pending_transaction_id VARCHAR,    -- Plaid pending_transaction_id; links pending -> posted
+    payment_channel VARCHAR,           -- Plaid payment_channel: online, in store, other
+    check_number VARCHAR,              -- Plaid check_number
+    merchant_entity_id VARCHAR,        -- Plaid merchant_entity_id; stable merchant id (captured for future merchant resolution)
+    location_address VARCHAR,          -- Plaid location.address
+    location_city VARCHAR,             -- Plaid location.city
+    location_region VARCHAR,           -- Plaid location.region
+    location_postal_code VARCHAR,      -- Plaid location.postal_code
+    location_country VARCHAR,          -- Plaid location.country
+    location_latitude DOUBLE,          -- Plaid location.lat
+    location_longitude DOUBLE,         -- Plaid location.lon
+    category_detailed VARCHAR,         -- Plaid personal_finance_category.detailed (captured for future categorization)
+    category_confidence VARCHAR,       -- Plaid personal_finance_category.confidence_level (captured for future categorization)
     pending BOOLEAN                    -- True if transaction has not yet settled
         DEFAULT false,
     source_file VARCHAR NOT NULL,      -- Logical identifier: sync_{job_id}
@@ -126,6 +142,18 @@ CREATE TABLE IF NOT EXISTS raw.plaid_transactions (
     PRIMARY KEY (transaction_id, source_file)
 );
 ```
+
+Tier-1 fields (`original_description`, `iso_currency_code`, `authorized_date`,
+`pending_transaction_id`, `payment_channel`, `check_number`, `location_*`) flow
+through staging into `core.fct_transactions` — filling columns the Plaid CTE in
+`int_transactions__unioned` previously left `NULL`/`'USD'`, with
+`original_description` added as a new first-class column (distinct from the cleaned
+`description` and from `memo`). The Tier-2 fields (`merchant_entity_id`,
+`category_detailed`, `category_confidence`) are captured but not yet consumed:
+`merchant_entity_id` is reserved for canonical merchant-identity resolution and the
+PFC detail/confidence for auto-categorization. Plaid fields with no current consumer
+(account owner, payment metadata, counterparties, logos) are intentionally not
+captured.
 
 #### `raw.plaid_balances`
 
