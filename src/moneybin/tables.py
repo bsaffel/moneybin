@@ -86,6 +86,10 @@ ACCOUNT_LINKS = TableRef("app", "account_links")
 ACCOUNT_LINK_DECISIONS = TableRef("app", "account_link_decisions")
 TRANSACTION_ID_ALIASES = TableRef("app", "transaction_id_aliases")
 
+# -- App merchant-identity tables (M1T) --
+MERCHANT_LINKS = TableRef("app", "merchant_links")
+MERCHANT_LINK_DECISIONS = TableRef("app", "merchant_link_decisions")
+
 # -- Seed tables (materialized by SQLMesh from CSV) --
 SEED_CATEGORIES = TableRef("seeds", "categories")
 
