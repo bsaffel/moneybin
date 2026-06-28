@@ -130,17 +130,26 @@ class SyncClient:
             if self._token_path.exists():
                 self._token_path.unlink()
             return
-        try:
-            keyring.delete_password(_KEYRING_SERVICE, self._jwt_key)
-        except KeyringError:
-            pass
-        try:
-            keyring.delete_password(_KEYRING_SERVICE, self._refresh_key)
-        except KeyringError:
-            pass
-        fallback = self._effective_token_path()
-        if fallback.exists():
-            fallback.unlink()
+        # Clear this profile's scoped slots AND the legacy unscoped slots, so a
+        # user upgrading from the pre-per-profile version doesn't leave an
+        # orphaned token behind on logout. The set dedups when no profile is set
+        # (scoped keys == legacy keys).
+        for key in {
+            self._jwt_key,
+            self._refresh_key,
+            _KEYRING_JWT_KEY,
+            _KEYRING_REFRESH_KEY,
+        }:
+            try:
+                keyring.delete_password(_KEYRING_SERVICE, key)
+            except KeyringError:
+                pass
+        for path in {
+            self._effective_token_path(),
+            Path.home() / ".moneybin" / ".sync_token",
+        }:
+            if path.exists():
+                path.unlink()
 
     def _write_token_file(
         self,

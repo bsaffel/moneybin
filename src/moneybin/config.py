@@ -884,6 +884,16 @@ class MoneyBinSettings(BaseSettings):
         """Active profile's inbox parent: <inbox_root>/<profile>/."""
         return self.import_.inbox_root / self.profile
 
+    @property
+    def profile_dir(self) -> Path:
+        """Active profile's directory: <base>/profiles/<profile>/.
+
+        Derived from the profile name (not the database path) so callers that
+        need profile-scoped identity — e.g. the sync client's per-profile id —
+        don't couple to where the DB file happens to live.
+        """
+        return get_base_dir() / "profiles" / self.profile
+
 
 # Global settings - single instance for current profile
 _current_settings: MoneyBinSettings | None = None

@@ -511,6 +511,45 @@ def test_login_sends_profile_id_when_set(
     assert sent["profile_id"] == "prof12345678"
 
 
+@respx.mock
+def test_login_omits_profile_id_when_not_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Legacy-server compat: profile_id must be absent from the token body when not set."""
+    _clear_proxy_env(monkeypatch)
+    client = SyncClient(
+        server_url="https://test.api", token_path=tmp_path / ".sync_token"
+    )
+    respx.post("https://test.api/auth/device/code").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "device_code": "dev",
+                "user_code": "X",
+                "verification_uri_complete": "https://x",
+                "interval": 0,
+                "expires_in": 900,
+            },
+        )
+    )
+    token_route = respx.post("https://test.api/auth/device/token").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "access_token": "jwt",  # noqa: S106  # test fixture, not a real credential
+                "refresh_token": "ref",  # noqa: S106  # test fixture, not a real credential
+                "expires_in": 3600,
+                "token_type": "Bearer",
+            },
+        )
+    )
+
+    client.login(open_browser=False)
+
+    sent = json.loads(token_route.calls.last.request.content)
+    assert "profile_id" not in sent
+
+
 def test_tokens_are_isolated_per_profile(monkeypatch: pytest.MonkeyPatch) -> None:
     """Two profiles must not share a keychain slot — tokens encode a per-profile subject."""
     _clear_proxy_env(monkeypatch)

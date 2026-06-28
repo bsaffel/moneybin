@@ -38,10 +38,9 @@ def _build_sync_client():
             "sync.server_url is not configured. "
             "Set MONEYBIN_SYNC__SERVER_URL in your environment."
         )
-    # Derive the active profile's directory from the resolved DB path
-    # (<profile_dir>/moneybin.duckdb) so the broker scopes this profile's
-    # identity separately from every other profile's.
-    profile_id = get_or_create_profile_id(settings.database.path.parent)
+    # Scope the broker identity to the active profile so each profile
+    # authenticates as a distinct user.
+    profile_id = get_or_create_profile_id(settings.profile_dir)
     return SyncClient(server_url=str(settings.sync.server_url), profile_id=profile_id)
 
 
