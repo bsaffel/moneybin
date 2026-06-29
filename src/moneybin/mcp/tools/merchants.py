@@ -5,7 +5,7 @@ Tools:
     - merchants_create — Create merchant name mappings (low sensitivity)
     - merchants_links_pending — Pending merchant-link decisions (medium sensitivity)
     - merchants_links_set — Accept or reject one pending decision (low sensitivity)
-    - merchants_links_history — Recent merchant-link decisions (low sensitivity)
+    - merchants_links_history — Recent merchant-link decisions (medium sensitivity)
     - merchants_links_run — Harvest pending proposals from existing data (low sensitivity)
 """
 
@@ -177,7 +177,8 @@ def merchants_links_set(
     Mutates app.merchant_link_decisions (sets status) and, on accept,
     writes an accepted binding in app.merchant_links from the provider
     entity id onto target_merchant_id. On reject (target_merchant_id
-    = null), marks only this decision rejected.
+    = null), marks this decision and all pending sibling candidates for the
+    same provider entity id rejected.
 
     target_merchant_id MUST be passed explicitly — there is no default:
     - Pass the decision's own candidate_merchant_id to BIND (confirming
@@ -303,10 +304,11 @@ def register_merchants_tools(mcp: FastMCP) -> None:
         "Pass target_merchant_id = candidate_merchant_id to BIND the provider "
         "entity id to that canonical merchant (target must equal the decision's "
         "own candidate_merchant_id — a confirming safety check). Pass null to "
-        "REJECT — the provider entity id stays unbound; the declined pairing is "
-        "not re-proposed, and the resolver mints a new merchant for the id on "
-        "its next categorization pass. target_merchant_id has no default: pass "
-        "it explicitly to avoid accidental rejection. "
+        "REJECT — ALL pending candidates for this provider entity id are rejected; "
+        "the entity id stays unbound, the declined pairings are not re-proposed, "
+        "and the resolver mints a new merchant for the id on its next categorization "
+        "pass. target_merchant_id has no default: pass it explicitly to avoid "
+        "accidental rejection. "
         "Writes app.merchant_link_decisions + app.merchant_links; revert via "
         "app.audit_log (no undo tool yet). Discover pending decisions with "
         "merchants_links_pending.",

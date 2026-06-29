@@ -265,7 +265,8 @@ class MerchantResolver:
             rows = self._db.execute(
                 f"""
                 SELECT mt.merchant_entity_source_type AS source_type,
-                       mt.merchant_entity_id, c.merchant_id, COUNT(*) AS n
+                       mt.merchant_entity_id, c.merchant_id, COUNT(*) AS n,
+                       MAX(mt.merchant_name) AS provider_name
                 FROM {INT_TRANSACTIONS_MERGED.full_name} AS mt
                 JOIN {TRANSACTION_CATEGORIES.full_name} AS c
                     ON c.transaction_id = mt.transaction_id
@@ -277,11 +278,11 @@ class MerchantResolver:
         except (duckdb.CatalogException, duckdb.BinderException):
             return HarvestResult(bound=0, conflicts=0)
         by_id: dict[tuple[str, str], list[tuple[str, int]]] = {}
-        for source_type, ent, mid, n in rows:
-            by_id.setdefault((str(source_type), str(ent)), []).append((
-                str(mid),
-                int(n),
-            ))
+        names: dict[tuple[str, str], str | None] = {}
+        for source_type, ent, mid, n, provider_name in rows:
+            key = (str(source_type), str(ent))
+            by_id.setdefault(key, []).append((str(mid), int(n)))
+            names.setdefault(key, provider_name)  # consistent per entity id; first seen
         bound = conflicts = 0
         existing = self.load_bindings()
         rejected = self.load_rejected()
@@ -308,7 +309,9 @@ class MerchantResolver:
                 dominant = max(live_pairs, key=lambda p: (p[1], p[0]))[0]
                 # Count only conflicts actually queued — _propose returns False when an
                 # existing pending/rejected decision already blocks re-proposal.
-                if self._propose(ent, source_type, None, dominant):
+                if self._propose(
+                    ent, source_type, names.get((source_type, ent)), dominant
+                ):
                     conflicts += 1
         if conflicts:
             refresh_merchant_link_pending_gauge(self._db)

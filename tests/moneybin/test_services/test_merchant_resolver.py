@@ -465,7 +465,8 @@ def _setup_merged_table(db: Database) -> None:
         "CREATE TABLE IF NOT EXISTS prep.int_transactions__merged ("
         "  transaction_id VARCHAR PRIMARY KEY, "
         "  merchant_entity_id VARCHAR, "
-        "  merchant_entity_source_type VARCHAR"
+        "  merchant_entity_source_type VARCHAR, "
+        "  merchant_name VARCHAR"
         ")"
     )
 
@@ -483,8 +484,8 @@ def test_harvest_conflict_not_counted_when_already_queued(db: Database) -> None:
     # This creates a conflict scenario for harvest().
     db.execute(
         "INSERT INTO prep.int_transactions__merged VALUES "
-        "('txn_c1', 'ent_conflict', 'plaid'), "
-        "('txn_c2', 'ent_conflict', 'plaid')"
+        "('txn_c1', 'ent_conflict', 'plaid', NULL), "
+        "('txn_c2', 'ent_conflict', 'plaid', NULL)"
     )
     db.execute(
         "INSERT INTO app.transaction_categories "
@@ -529,8 +530,8 @@ def test_harvest_conflict_counted_when_fresh(db: Database) -> None:
     # Same conflict scenario, no pre-existing pending decision.
     db.execute(
         "INSERT INTO prep.int_transactions__merged VALUES "
-        "('txn_f1', 'ent_fresh_c', 'plaid'), "
-        "('txn_f2', 'ent_fresh_c', 'plaid')"
+        "('txn_f1', 'ent_fresh_c', 'plaid', NULL), "
+        "('txn_f2', 'ent_fresh_c', 'plaid', NULL)"
     )
     db.execute(
         "INSERT INTO app.transaction_categories "
@@ -578,7 +579,8 @@ def _setup_merged_table_with_entity(db: Database) -> None:
         "CREATE TABLE IF NOT EXISTS prep.int_transactions__merged ("
         "  transaction_id VARCHAR PRIMARY KEY, "
         "  merchant_entity_id VARCHAR, "
-        "  merchant_entity_source_type VARCHAR"
+        "  merchant_entity_source_type VARCHAR, "
+        "  merchant_name VARCHAR"
         ")"
     )
 
@@ -592,7 +594,7 @@ def test_harvest_skips_rejected_sole_merchant(db: Database) -> None:
     """
     _setup_merged_table_with_entity(db)
     db.execute(
-        "INSERT INTO prep.int_transactions__merged VALUES ('txn_r1', 'ent_rej', 'plaid')"
+        "INSERT INTO prep.int_transactions__merged VALUES ('txn_r1', 'ent_rej', 'plaid', NULL)"
     )
     db.execute(
         "INSERT INTO app.transaction_categories "
@@ -630,7 +632,7 @@ def test_harvest_binds_non_rejected_sole_merchant(db: Database) -> None:
     """Control: single non-rejected merchant IS bound (current behavior preserved)."""
     _setup_merged_table_with_entity(db)
     db.execute(
-        "INSERT INTO prep.int_transactions__merged VALUES ('txn_nr1', 'ent_ok', 'plaid')"
+        "INSERT INTO prep.int_transactions__merged VALUES ('txn_nr1', 'ent_ok', 'plaid', NULL)"
     )
     db.execute(
         "INSERT INTO app.transaction_categories "
@@ -658,10 +660,10 @@ def test_harvest_proposes_non_rejected_candidate_in_conflict(db: Database) -> No
     # m_zzz and m_aaa each appear once → genuine conflict after filtering.
     db.execute(
         "INSERT INTO prep.int_transactions__merged VALUES "
-        "('txn_pr1', 'ent_prc', 'plaid'), "
-        "('txn_pr2', 'ent_prc', 'plaid'), "
-        "('txn_pr3', 'ent_prc', 'plaid'), "
-        "('txn_pr4', 'ent_prc', 'plaid')"
+        "('txn_pr1', 'ent_prc', 'plaid', NULL), "
+        "('txn_pr2', 'ent_prc', 'plaid', NULL), "
+        "('txn_pr3', 'ent_prc', 'plaid', NULL), "
+        "('txn_pr4', 'ent_prc', 'plaid', NULL)"
     )
     db.execute(
         "INSERT INTO app.transaction_categories "
@@ -698,3 +700,37 @@ def test_harvest_proposes_non_rejected_candidate_in_conflict(db: Database) -> No
     assert len(pending_for_ent) == 1
     proposed = pending_for_ent[0]["candidate_merchant_id"]
     assert proposed != "m_rejected", "the rejected merchant must never be proposed"
+
+
+def test_harvest_conflict_carries_provider_name(db: Database) -> None:
+    """harvest() conflict proposals carry provider_merchant_name from the merged view.
+
+    When a harvest conflict is queued, _propose must receive the merchant_name
+    from int_transactions__merged so the review queue shows the provider name
+    rather than None.
+    """
+    _setup_merged_table(db)
+
+    # Same entity id, two different merchant_ids, with a merchant_name set.
+    db.execute(
+        "INSERT INTO prep.int_transactions__merged VALUES "
+        "('txn_pn1', 'ent_pn', 'plaid', 'Starbucks'), "
+        "('txn_pn2', 'ent_pn', 'plaid', 'Starbucks')"
+    )
+    db.execute(
+        "INSERT INTO app.transaction_categories "
+        "(transaction_id, category, merchant_id) VALUES "
+        "('txn_pn1', 'Restaurants', 'mf_x'), "
+        "('txn_pn2', 'Restaurants', 'mf_y')"
+    )
+
+    r = MerchantResolver(db)
+    result = r.harvest()
+
+    assert result.conflicts == 1
+    pending = r._decisions.list_pending()  # pyright: ignore[reportPrivateUsage]
+    pending_for_ent = [d for d in pending if d["ref_value"] == "ent_pn"]
+    assert len(pending_for_ent) == 1
+    assert pending_for_ent[0]["provider_merchant_name"] == "Starbucks", (
+        "harvest conflict proposals must carry provider_merchant_name from the merged view"
+    )
