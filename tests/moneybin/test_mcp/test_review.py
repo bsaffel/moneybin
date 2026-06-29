@@ -45,16 +45,20 @@ async def test_review_data_shape(mcp_db: object) -> None:
 
 @pytest.mark.unit
 async def test_review_actions_mention_drill_down_queues(mcp_db: object) -> None:
-    """actions[] guides the agent to the three queues that have drill-down tools.
+    """actions[] guides the agent to all four queues, each with a drill-down tool.
 
-    Merchant-links is counted in the review sweep but has no dedicated
-    drill-down tool yet (arrives in a later increment), so it has no action.
+    All four review queues now have dedicated drill-down tools:
+    - transactions_matches_pending for the matches queue
+    - transactions_categorize_pending for the categorize queue
+    - accounts_links_pending for the account-links queue
+    - merchants_links_pending for the merchant-links queue (added in M1T)
     """
     parsed = (await review()).to_dict()
     actions_text = " ".join(parsed["actions"])
     assert "transactions_matches_pending" in actions_text
     assert "transactions_categorize_pending" in actions_text
     assert "accounts_links_pending" in actions_text
+    assert "merchants_links_pending" in actions_text
 
 
 @pytest.mark.unit

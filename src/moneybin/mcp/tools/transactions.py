@@ -146,6 +146,7 @@ def _build_review_envelope() -> ResponseEnvelope[ReviewStatusPayload]:
             "Use transactions_categorize_pending to fetch the categorize queue",
             "Use transactions_matches_pending to fetch the matches queue",
             "Use accounts_links_pending to fetch the account-links queue",
+            "Use merchants_links_pending to fetch the merchant-links queue",
         ],
     )
 
@@ -162,6 +163,8 @@ def review() -> ResponseEnvelope[ReviewStatusPayload]:
     decide each pair with ``transactions_matches_set``.
     For account links, fetch the queue via ``accounts_links_pending`` and
     decide each group with ``accounts_links_set``.
+    For merchant links, fetch the queue via ``merchants_links_pending`` and
+    decide each group with ``merchants_links_set``.
     """
     return _build_review_envelope()
 
@@ -340,7 +343,8 @@ def register_transactions_tools(mcp: FastMCP) -> None:
         "Call this to answer 'what needs my attention?' in one sweep. "
         "Drill into `transactions_matches_pending` for match proposals, "
         "`transactions_categorize_pending` for uncategorized transactions, "
-        "and `accounts_links_pending` for account-link decisions.",
+        "`accounts_links_pending` for account-link decisions, "
+        "and `merchants_links_pending` for merchant-link decisions.",
     )
     register(
         mcp,

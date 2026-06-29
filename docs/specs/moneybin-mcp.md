@@ -578,6 +578,54 @@ Backfill account-link proposals for accounts already in `core.dim_accounts` that
 
 ---
 
+## 5b. `merchants_links_*` — Merchant-link review workflow (M1T)
+
+**Service class:** `MerchantLinksService`
+
+These four tools implement the merchant-link review surface: the agent-facing peer to the Task 10 CLI. Provider entity ids (e.g. Plaid `merchant_entity_id`) arrive in the pending queue; the agent reviews and binds each to a canonical merchant in `core.dim_merchants`, or rejects so the resolver can mint a fresh proposal.
+
+> **Note:** An undo variant (`merchants_links_undo`) remains deliberately out of scope, deferred to the M1L audit-undo consumer.
+
+### `merchants_links_pending`
+
+- **Sensitivity:** `medium` — `ref_value` and `candidate_merchant_id` are `RECORD_ID` (low); `provider_merchant_name` and `candidate_canonical_name` are `MERCHANT_NAME` (medium).
+- **Unique parameters:** None.
+- **Behavior:** Returns all provider entity ids that have pending merge candidates, each grouped with their candidate list. Each candidate carries `decision_id`, `candidate_merchant_id`, `candidate_canonical_name`, and `confidence`. Use `merchants_links_set` with the candidate's `merchant_id` as `target_merchant_id` to bind, or `null` to reject.
+- **Service:** `MerchantLinksService(db, actor="mcp").pending()` + `.count_pending()`
+- **CLI:** `moneybin merchants links pending`
+- **read_only:** true
+
+### `merchants_links_set`
+
+- **Sensitivity:** `low` — returns `decision_id` (RECORD_ID) and `status` (TXN_TYPE) only.
+- **Parameters:** `decision_id: str`, `target_merchant_id: str | None`
+- **Behavior:** Accepts (binds) or rejects one pending merchant-link decision. `target_merchant_id = candidate_merchant_id` → BIND (writes accepted binding in `app.merchant_links`; auto-rejects sibling candidates for same `ref_value`). `target_merchant_id = null` → REJECT (marks this decision rejected; resolver re-proposes on next `run()`).
+- **Mutation surface:** writes `app.merchant_link_decisions` + `app.merchant_links`; revert via `app.audit_log` (no undo tool; deferred to M1L).
+- **Service:** `MerchantLinksService(db, actor="mcp").set(decision_id, target_merchant_id=..., decided_by="user")`
+- **CLI:** `moneybin merchants links set`
+- **read_only:** false
+
+### `merchants_links_history`
+
+- **Sensitivity:** `medium` — history rows carry `provider_merchant_name` (MERCHANT_NAME); the envelope derives the tier from the highest field, so the row's id/status fields don't lower it.
+- **Parameters:** `limit: int = 50`
+- **Behavior:** Returns all merchant-link decisions (any status), newest first. Filter by `limit`.
+- **Service:** `MerchantLinksService(db, actor="mcp").history(limit=limit)`
+- **CLI:** `moneybin merchants links history`
+- **read_only:** true
+
+### `merchants_links_run`
+
+- **Sensitivity:** `low` — returns counts only.
+- **Unique parameters:** None.
+- **Behavior:** Harvests merchant-link proposals from existing categorization facts. Binds provider entity ids that point unambiguously to a single canonical merchant; routes conflicts to the pending review queue. Returns `data.new_proposals` (bindings + conflicts written).
+- **Mutation surface:** writes `app.merchant_links` + `app.merchant_link_decisions`; revert via `app.audit_log` (no undo tool; deferred to M1L).
+- **Service:** `MerchantLinksService(db, actor="mcp").run()`
+- **CLI:** `moneybin merchants links run`
+- **read_only:** false
+
+---
+
 ## 6. `transactions.*` — Transaction-level operations (matches and categorize workflows nested)
 
 **Service class:** `TransactionService` (search, correct, annotate), `MatchService` (matches sub-domain)
@@ -600,7 +648,7 @@ Orientation tool: pending counts across **all four** review queues (matches + ca
 
 - **Sensitivity:** `low` — counts only.
 - **Unique parameters:** None.
-- **Behavior:** Returns `{matches_pending: int, categorize_pending: int, account_links_pending: int, merchant_links_pending: int, total: int}` so the agent can answer "what needs my attention?" in one sweep. Drill into `transactions_categorize_pending` for categorization items, `transactions_matches_pending` for match proposals, and `accounts_links_pending` for account-link decisions.
+- **Behavior:** Returns `{matches_pending: int, categorize_pending: int, account_links_pending: int, merchant_links_pending: int, total: int}` so the agent can answer "what needs my attention?" in one sweep. Drill into `transactions_categorize_pending` for categorization items, `transactions_matches_pending` for match proposals, `accounts_links_pending` for account-link decisions, and `merchants_links_pending` for merchant-link decisions.
 - **Service:** `ReviewService(MatchingService, CategorizationService, AccountLinksService, MerchantLinksService).status()`
 - **CLI:** `moneybin review`
 

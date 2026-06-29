@@ -115,10 +115,10 @@ not-yet-built.
 | 52| Backfill pending account-link proposals for existing accounts (cross-source twin discovery) | `accounts_links_run` *(returns `data.new_proposals`)* | `accounts links run` *(`--output json`)* | — | live |
 | 53| "What needs my attention?" — pending counts across all four review queues in one sweep | `review` *(returns `{matches_pending, categorize_pending, account_links_pending, merchant_links_pending, total}`)* | `moneybin review --status` *(`--type`, `--output json`)* | — | live |
 | 54| Confirm account identity at import time (which account is this file?) | `import_confirm` *(`account_bindings={source_key: account_id\|"new"}` ratifies an `account_confirmation`; `account_metadata` captures display_name/subtype/last_four/currency for `"new"` accounts; interactive-human imports gate on weak candidates, agents load + queue; a single-account file with no account identity also returns `account_confirmation` — a 1-entry no-candidate proposal — for both human and agent callers)* | `import confirm <file> --account-binding source_key=ACCOUNT_ID\|new [--account-meta source_key:field=value]` | — | live |
-| 55| List pending merchant-link decisions grouped by provider entity id | *pending (T11)* | `merchants links pending` *(`--output json`)* | — | live (CLI) |
-| 56| Accept (bind) or reject one pending merchant-link decision | *pending (T11)* | `merchants links set <decision_id> --into <merchant_id>` (bind) / `--new` (reject; mints new merchant on next run) | — | live (CLI) |
-| 57| Show recent merchant-link decisions (all statuses) | *pending (T11)* | `merchants links history` *(`--limit`, `--output json`)* | — | live (CLI) |
-| 58| Harvest pending merchant-link proposals from existing categorization facts | *pending (T11)* | `merchants links run` *(`--output json`; returns `data.new_proposals`)* | — | live (CLI) |
+| 55| List pending merchant-link decisions grouped by provider entity id | `merchants_links_pending` | `merchants links pending` *(`--output json`)* | — | live |
+| 56| Accept (bind) or reject one pending merchant-link decision | `merchants_links_set` *(`decision_id`, `target_merchant_id: str\|null` — no default; null = reject)* | `merchants links set <decision_id> --into <merchant_id>` (bind) / `--new` (reject; mints new merchant on next run) | — | live |
+| 57| Show recent merchant-link decisions (all statuses) | `merchants_links_history` *(`limit=50`)* | `merchants links history` *(`--limit`, `--output json`)* | — | live |
+| 58| Harvest pending merchant-link proposals from existing categorization facts | `merchants_links_run` *(returns `data.new_proposals`)* | `merchants links run` *(`--output json`; returns `data.new_proposals`)* | — | live |
 
 *(Bootstrap rows only; full table populates incrementally as
 follow-up work closes the parity backlog. A prior row covering
