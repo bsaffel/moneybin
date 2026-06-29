@@ -287,3 +287,26 @@ def test_entity_id_binds_on_issuing_provider_not_merge_winner() -> None:
             "OFX-deduped row and the Plaid-only sibling — no split. "
             f"got {resolved_ids}"
         )
+
+        # --- [1] Entity-bearing member wins even when 'plaid' is absent from
+        # source_priority. Drop plaid from the priority seed and re-read the
+        # merged VIEW (recomputes on read): merchant_entity_source_type must
+        # STILL be 'plaid'. Under the old sentinel the entity-bearing plaid
+        # member and the entity-less ofx member tied at 2147483647 and ARG_MIN
+        # could pick 'ofx' → the cross-source split returns. The 2147483646
+        # sentinel for entity-bearing members breaks the tie toward the issuer
+        # regardless of priority config.
+        db.execute("DELETE FROM app.seed_source_priority WHERE source_type = 'plaid'")
+        reread = db.execute(
+            """
+            SELECT merchant_entity_source_type
+            FROM prep.int_transactions__merged
+            WHERE merchant_entity_id = ? AND source_count = 2
+            """,
+            [_ENTITY],
+        ).fetchone()
+        assert reread is not None and reread[0] == "plaid", (
+            "with plaid absent from source_priority, the entity-issuing member "
+            f"must still win merchant_entity_source_type; got "
+            f"{reread[0] if reread else None!r}"
+        )

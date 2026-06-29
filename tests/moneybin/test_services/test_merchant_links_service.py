@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import pytest
 
+from moneybin import error_codes
 from moneybin.database import Database
+from moneybin.errors import UserError
 from moneybin.repositories.merchant_link_decisions_repo import MerchantLinkDecisionsRepo
 from moneybin.repositories.merchant_links_repo import MerchantLinksRepo
 from moneybin.services.merchant_links_service import MerchantLinksService
@@ -24,6 +26,22 @@ _DECISION_ID = "d_seeded"
 _REF_VALUE = "ent_pending"
 _SOURCE_TYPE = "plaid"
 _CANDIDATE_MERCHANT_ID = "mCandidate"
+
+
+def _seed_merchants(db: Database, *merchant_ids: str) -> None:
+    """Make the given merchant ids resolvable in ``core.dim_merchants``.
+
+    The dim is a view over ``app.user_merchants``; seeding the source rows is
+    what makes the accept-path existence check pass. The accept validator
+    rejects a ``target_merchant_id`` absent from this catalog (no dangling FK).
+    """
+    for mid in merchant_ids:
+        db.execute(
+            "INSERT INTO app.user_merchants "
+            "(merchant_id, match_type, canonical_name, created_by) "
+            "VALUES (?, 'oneOf', ?, 'user')",
+            [mid, f"Name {mid}"],
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -75,6 +93,7 @@ def test_set_accept_binds_and_clears_pending(
     db: Database, seeded_pending_decision: None
 ) -> None:
     """Accept creates the binding and clears the pending count to 0."""
+    _seed_merchants(db, _CANDIDATE_MERCHANT_ID)
     svc = MerchantLinksService(db, actor="cli")
     assert svc.count_pending() == 1
 
@@ -113,6 +132,7 @@ def test_set_accept_auto_rejects_siblings(db: Database) -> None:
         actor="system",
     )
 
+    _seed_merchants(db, "mPrimary")
     svc = MerchantLinksService(db, actor="cli")
     assert svc.count_pending() == 1  # 2 decisions but 1 distinct ref_value
 
@@ -142,6 +162,123 @@ def test_set_reject_clears_pending_without_binding(
     assert svc.count_pending() == 0
     # No binding should exist.
     assert MerchantLinksRepo(db).lookup(_SOURCE_TYPE, _REF_VALUE) is None
+
+
+def test_set_empty_string_target_rejects_without_binding(
+    db: Database, seeded_pending_decision: None
+) -> None:
+    """[4] An empty-string target_merchant_id REJECTS (never binds merchant_id='')."""
+    svc = MerchantLinksService(db, actor="cli")
+
+    svc.set(_DECISION_ID, target_merchant_id="")
+
+    assert svc.count_pending() == 0
+    assert MerchantLinksRepo(db).lookup(_SOURCE_TYPE, _REF_VALUE) is None
+    decision = MerchantLinkDecisionsRepo(db).fetch_by_id(_DECISION_ID)
+    assert decision is not None and decision["status"] == "rejected"
+
+
+def test_set_reject_sweeps_all_siblings(db: Database) -> None:
+    """[7] Reject (--new) rejects the named decision AND every pending sibling."""
+    decisions = MerchantLinkDecisionsRepo(db)
+    decisions.insert(
+        decision_id="d_rej_a",
+        ref_kind="merchant_entity_id",
+        ref_value=_REF_VALUE,
+        source_type=_SOURCE_TYPE,
+        candidate_merchant_id="mA",
+        confidence_score=0.5,
+        match_signals={"signal": "fuzzy_name", "value": "a"},
+        decided_by="auto",
+        actor="system",
+    )
+    decisions.insert(
+        decision_id="d_rej_b",
+        ref_kind="merchant_entity_id",
+        ref_value=_REF_VALUE,
+        source_type=_SOURCE_TYPE,
+        candidate_merchant_id="mB",
+        confidence_score=0.4,
+        match_signals={"signal": "fuzzy_name", "value": "b"},
+        decided_by="auto",
+        actor="system",
+    )
+
+    svc = MerchantLinksService(db, actor="cli")
+    assert svc.count_pending() == 1  # 2 decisions, 1 distinct ref_value
+
+    svc.set("d_rej_a", target_merchant_id=None)
+
+    assert svc.count_pending() == 0
+    for did in ("d_rej_a", "d_rej_b"):
+        row = decisions.fetch_by_id(did)
+        assert row is not None and row["status"] == "rejected", (
+            f"{did} must be rejected"
+        )
+    # No binding written by a reject sweep.
+    assert MerchantLinksRepo(db).lookup(_SOURCE_TYPE, _REF_VALUE) is None
+
+
+def test_set_accept_unknown_merchant_raises_and_writes_nothing(
+    db: Database, seeded_pending_decision: None
+) -> None:
+    """[3] Accept into a merchant absent from core.dim_merchants raises UserError, no binding."""
+    _seed_merchants(db, "mReal")  # a different real merchant exists; target does NOT
+
+    svc = MerchantLinksService(db, actor="cli")
+    with pytest.raises(UserError) as exc:
+        svc.set(_DECISION_ID, target_merchant_id="mDoesNotExist")
+
+    assert exc.value.code == error_codes.MUTATION_NOT_FOUND
+    # Nothing written; decision rolled back to pending.
+    assert MerchantLinksRepo(db).lookup(_SOURCE_TYPE, _REF_VALUE) is None
+    assert svc.count_pending() == 1
+
+
+def test_set_accept_known_merchant_binds(
+    db: Database, seeded_pending_decision: None
+) -> None:
+    """[3] Accept into a merchant present in core.dim_merchants binds successfully."""
+    _seed_merchants(db, _CANDIDATE_MERCHANT_ID)
+
+    svc = MerchantLinksService(db, actor="cli")
+    svc.set(_DECISION_ID, target_merchant_id=_CANDIDATE_MERCHANT_ID)
+
+    assert (
+        MerchantLinksRepo(db).lookup(_SOURCE_TYPE, _REF_VALUE) == _CANDIDATE_MERCHANT_ID
+    )
+    assert svc.count_pending() == 0
+
+
+def test_set_accept_uniqueness_conflict_raises_usererror(
+    db: Database, seeded_pending_decision: None
+) -> None:
+    """[10] When the entity is already bound to a different merchant, accept surfaces a UserError.
+
+    No raw ``ValueError`` leaks to CLI/MCP, and the message must not embed the
+    provider entity id (``ref_value``).
+    """
+    # The candidate must exist so validation passes and we reach the bind step.
+    _seed_merchants(db, _CANDIDATE_MERCHANT_ID)
+    # Pre-bind the same (source_type, ref_value) to a different merchant.
+    MerchantLinksRepo(db).insert(
+        link_id="lk_pre",
+        merchant_id="mOther",
+        ref_kind="merchant_entity_id",
+        ref_value=_REF_VALUE,
+        source_type=_SOURCE_TYPE,
+        decided_by="auto",
+        actor="system",
+    )
+
+    svc = MerchantLinksService(db, actor="cli")
+    with pytest.raises(UserError) as exc:
+        svc.set(_DECISION_ID, target_merchant_id=_CANDIDATE_MERCHANT_ID)
+
+    assert exc.value.code == error_codes.MUTATION_CONSTRAINT_VIOLATION
+    assert _REF_VALUE not in str(exc.value), (
+        "error must not leak the provider entity id"
+    )
 
 
 # ---------------------------------------------------------------------------

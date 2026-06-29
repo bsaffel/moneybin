@@ -118,7 +118,7 @@ not-yet-built.
 | 55| List pending merchant-link decisions grouped by provider entity id | `merchants_links_pending` | `merchants links pending` *(`--output json`)* | — | live |
 | 56| Accept (bind) or reject one pending merchant-link decision | `merchants_links_set` *(`decision_id`, `target_merchant_id: str\|null` — no default; null = reject)* | `merchants links set <decision_id> --into <merchant_id>` (bind) / `--new` (reject; mints new merchant on next run) | — | live |
 | 57| Show recent merchant-link decisions (all statuses) | `merchants_links_history` *(`limit=50`)* | `merchants links history` *(`--limit`, `--output json`)* | — | live |
-| 58| Harvest pending merchant-link proposals from existing categorization facts | `merchants_links_run` *(returns `data.new_proposals`)* | `merchants links run` *(`--output json`; returns `data.new_proposals`)* | — | live |
+| 58| Harvest pending merchant-link proposals from existing categorization facts | `merchants_links_run` *(returns `data.bound` + `data.conflicts`)* | `merchants links run` *(`--output json`; returns `data.bound` + `data.conflicts`)* | — | live |
 
 *(Bootstrap rows only; full table populates incrementally as
 follow-up work closes the parity backlog. A prior row covering

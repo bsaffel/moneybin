@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import duckdb
 
@@ -24,6 +24,9 @@ from moneybin.errors import UserError
 from moneybin.repositories.merchant_link_decisions_repo import MerchantLinkDecisionsRepo
 from moneybin.repositories.merchant_links_repo import MerchantLinksRepo
 from moneybin.tables import MERCHANT_LINK_DECISIONS, MERCHANTS
+
+if TYPE_CHECKING:
+    from moneybin.services.merchant_resolver import HarvestResult
 
 logger = logging.getLogger(__name__)
 
@@ -91,19 +94,16 @@ class MerchantLinksService:
 
         The review unit is the provider entity id, not the raw decision row —
         one entity id with two candidate proposals counts as one item, not two.
-        Returns 0 when the table does not yet exist.
+        Returns 0 when the table does not yet exist. Single source of truth
+        shared with the observability gauge via
+        ``count_pending_merchant_link_decisions`` (imported lazily — the
+        resolver must not import this service back).
         """
-        try:
-            row = self._db.execute(
-                f"""
-                SELECT COUNT(DISTINCT ref_value)
-                FROM {MERCHANT_LINK_DECISIONS.full_name}
-                WHERE status = 'pending' AND reversed_at IS NULL
-                """,  # noqa: S608  # TableRef constant, no user values
-            ).fetchone()
-            return int(row[0]) if row else 0
-        except duckdb.CatalogException:
-            return 0
+        from moneybin.services.merchant_resolver import (  # noqa: PLC0415
+            count_pending_merchant_link_decisions,
+        )
+
+        return count_pending_merchant_link_decisions(self._db)
 
     def pending(self) -> list[PendingMerchantLinkGroup]:
         """Return pending decisions grouped by provider entity id (ref_value).
@@ -164,19 +164,67 @@ class MerchantLinksService:
         """Read one decision row by id. Returns None when not found."""
         return self._decisions.fetch_by_id(decision_id)
 
+    def _merchant_exists(self, merchant_id: str) -> bool:
+        """True when ``merchant_id`` is present in ``core.dim_merchants``.
+
+        Degrades to ``True`` (skip validation) when the dim is not yet
+        materialized (``CatalogException`` guard) — a pre-transform DB has no
+        merchant catalog to check against, so binding proceeds as before;
+        once the view exists, an unknown id is a real dangling FK and rejects.
+        """
+        try:
+            row = self._db.execute(
+                f"SELECT 1 FROM {MERCHANTS.full_name} "  # noqa: S608  # TableRef constant + parameterized value
+                "WHERE merchant_id = ? LIMIT 1",
+                [merchant_id],
+            ).fetchone()
+        except duckdb.CatalogException:
+            return True
+        return row is not None
+
+    def _reject_pending_siblings(
+        self, ref_value: str, *, exclude: str, decided_by: str
+    ) -> None:
+        """Reject every pending, non-reversed decision for ``ref_value`` except ``exclude``.
+
+        Shared by both the accept sweep (auto-reject losing candidates) and the
+        reject sweep (``--new`` = reject ALL candidates for the entity). Runs
+        inside the caller's open transaction (``in_outer_txn=True``).
+        """
+        sibling_rows = self._db.execute(
+            f"""
+            SELECT decision_id FROM {MERCHANT_LINK_DECISIONS.full_name}
+            WHERE ref_value = ?
+              AND decision_id != ?
+              AND status = 'pending'
+              AND reversed_at IS NULL
+            """,  # noqa: S608  # TableRef constant + parameterized values
+            [ref_value, exclude],
+        ).fetchall()
+        for (sid,) in sibling_rows:
+            self._decisions.update_status(
+                sid,
+                status="rejected",
+                decided_by=decided_by,
+                actor=self._actor,
+                in_outer_txn=True,
+            )
+
     # ------------------------------------------------------------------
     # Mutations
     # ------------------------------------------------------------------
 
-    def run(self, *, decided_by: str = "auto") -> int:
+    def run(self) -> HarvestResult:
         """Harvest existing categorization facts into accepted merchant bindings.
 
         Delegates to ``MerchantResolver.harvest()``: binds provider entity ids
         that point unambiguously to a single canonical merchant, and routes
-        conflicts to the review queue. Returns ``bound + conflicts``.
+        conflicts to the review queue. Returns the ``HarvestResult`` so callers
+        report silently-accepted bindings (``bound``) and queued-for-review
+        conflicts (``conflicts``) distinctly — ``bound`` are NOT pending.
         """
         # Import here to avoid a circular-import at module level
-        # (MerchantResolver <- MerchantLinkDecisionsRepo <- MerchantLinksService would cycle).
+        # (the resolver pulls in the categorization stack, which reaches back here).
         from moneybin.services.merchant_resolver import (  # noqa: PLC0415
             MerchantResolver,
             refresh_merchant_link_pending_gauge,
@@ -184,11 +232,10 @@ class MerchantLinksService:
 
         result = MerchantResolver(self._db, actor=self._actor).harvest()
         refresh_merchant_link_pending_gauge(self._db)
-        total = result.bound + result.conflicts
         logger.info(
             f"merchant_links_run: bound={result.bound} conflicts={result.conflicts}"
         )
-        return total
+        return result
 
     def set(  # noqa: A003  # mirrors the existing set_status verb shape; "set" is the surface verb
         self,
@@ -199,16 +246,21 @@ class MerchantLinksService:
     ) -> None:
         """Accept or reject a pending merchant-link decision atomically.
 
-        ``target_merchant_id`` is not None (accept):
-          1. Inserts an accepted binding for the decision's ``ref_value`` →
+        ``target_merchant_id`` truthy (accept):
+          1. Validates ``target_merchant_id`` exists in ``core.dim_merchants``;
+             raises ``UserError`` when the catalog is present and the id is
+             absent (no dangling FK).
+          2. Inserts an accepted binding for the decision's ``ref_value`` →
              ``target_merchant_id`` via ``MerchantLinksRepo.insert``.
-          2. Marks the named decision ``accepted``.
-          3. Auto-rejects every other pending, non-reversed decision for the
+          3. Marks the named decision ``accepted``.
+          4. Auto-rejects every other pending, non-reversed decision for the
              same ``ref_value`` (sibling candidates).
 
-        ``target_merchant_id`` is None (reject):
-          Marks only the named decision ``rejected``. The resolver will mint a
-          new proposal on the next ``run()``.
+        ``target_merchant_id`` falsy — ``None`` or ``""`` (reject):
+          Marks the named decision AND every sibling pending decision for the
+          same ``ref_value`` ``rejected`` — ``--new`` means "reject ALL
+          candidates". The resolver mints a new proposal on the next ``run()``.
+          An empty-string ``target_merchant_id`` rejects (it never binds).
 
         All writes run inside one ``db.begin()`` / ``db.commit()`` transaction.
         Each repo method is called with ``in_outer_txn=True`` so it joins the
@@ -217,6 +269,10 @@ class MerchantLinksService:
         Raises ``UserError`` when:
         - ``decision_id`` is not found (MUTATION_NOT_FOUND).
         - The decision is not in ``pending`` status (MUTATION_CONSTRAINT_VIOLATION).
+        - ``target_merchant_id`` is absent from ``core.dim_merchants``
+          (MUTATION_NOT_FOUND).
+        - The provider entity id is already bound to a different merchant
+          (MUTATION_CONSTRAINT_VIOLATION).
         """
         self._db.begin()
         try:
@@ -234,20 +290,35 @@ class MerchantLinksService:
 
             ref_value = decision["ref_value"]
 
-            if target_merchant_id is not None:
-                # Accept path: bind ref_value → target_merchant_id, accept the
-                # named decision, auto-reject sibling pending decisions.
-                self._links.insert(
-                    link_id=uuid.uuid4().hex[:12],
-                    merchant_id=target_merchant_id,
-                    ref_kind="merchant_entity_id",
-                    ref_value=ref_value,
-                    source_type=decision["source_type"],
-                    decided_by=decided_by,
-                    actor=self._actor,
-                    status="accepted",
-                    in_outer_txn=True,
-                )
+            if target_merchant_id:
+                # Accept path: validate the target, bind ref_value →
+                # target_merchant_id, accept the named decision, auto-reject
+                # sibling pending decisions.
+                if not self._merchant_exists(target_merchant_id):
+                    raise UserError(
+                        f"No merchant found for id {target_merchant_id!r}.",
+                        code=error_codes.MUTATION_NOT_FOUND,
+                    )
+                try:
+                    self._links.insert(
+                        link_id=uuid.uuid4().hex[:12],
+                        merchant_id=target_merchant_id,
+                        ref_kind="merchant_entity_id",
+                        ref_value=ref_value,
+                        source_type=decision["source_type"],
+                        decided_by=decided_by,
+                        actor=self._actor,
+                        status="accepted",
+                        in_outer_txn=True,
+                    )
+                except ValueError as exc:
+                    # _guard_uniqueness: the entity id is already bound to a
+                    # different merchant. Surface a clean UserError (no
+                    # ref_value / PII in the message).
+                    raise UserError(
+                        "This provider entity id is already bound to a merchant.",
+                        code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+                    ) from exc
                 self._decisions.update_status(
                     decision_id,
                     status="accepted",
@@ -255,33 +326,21 @@ class MerchantLinksService:
                     actor=self._actor,
                     in_outer_txn=True,
                 )
-                # Auto-reject sibling pending decisions for the same ref_value.
-                sibling_rows = self._db.execute(
-                    f"""
-                    SELECT decision_id FROM {MERCHANT_LINK_DECISIONS.full_name}
-                    WHERE ref_value = ?
-                      AND decision_id != ?
-                      AND status = 'pending'
-                      AND reversed_at IS NULL
-                    """,  # noqa: S608  # TableRef constant + parameterized values
-                    [ref_value, decision_id],
-                ).fetchall()
-                for (sid,) in sibling_rows:
-                    self._decisions.update_status(
-                        sid,
-                        status="rejected",
-                        decided_by=decided_by,
-                        actor=self._actor,
-                        in_outer_txn=True,
-                    )
+                self._reject_pending_siblings(
+                    ref_value, exclude=decision_id, decided_by=decided_by
+                )
             else:
-                # Reject path: mark only the named decision rejected.
+                # Reject path (--new): reject the named decision AND all of its
+                # pending siblings for the same ref_value.
                 self._decisions.update_status(
                     decision_id,
                     status="rejected",
                     decided_by=decided_by,
                     actor=self._actor,
                     in_outer_txn=True,
+                )
+                self._reject_pending_siblings(
+                    ref_value, exclude=decision_id, decided_by=decided_by
                 )
 
             self._db.commit()

@@ -115,7 +115,9 @@ def links_set(
     if into is not None and new:
         logger.error("❌ --into and --new are mutually exclusive")
         raise typer.Exit(2)
-    if into is None and not new:
+    # Truthiness, not `is None`: an empty `--into ""` is not a valid merchant id
+    # and must not silently fall through to the bind path.
+    if not into and not new:
         logger.error("❌ Specify either --into <merchant_id> or --new")
         raise typer.Exit(2)
 
@@ -185,20 +187,20 @@ def links_history(
 def links_run(
     output: OutputFormat = output_option,
 ) -> None:
-    """Harvest existing categorization facts into pending merchant-link proposals.
+    """Harvest existing categorization facts into merchant-link bindings.
 
     Binds provider entity ids that point unambiguously to a single canonical
-    merchant, and routes conflicts to the review queue. Returns the total of
-    new bindings plus conflicts written.
+    merchant (recorded immediately, no review), and routes one-id-many-merchant
+    conflicts to the pending review queue. Reports the two outcomes distinctly.
 
     Run this after importing transactions with merchant_entity_id data to
     surface binding decisions for review.
     """
     with handle_cli_errors():
         with get_database(read_only=False) as db:
-            new_proposals = MerchantLinksService(db, actor="cli").run()
+            result = MerchantLinksService(db, actor="cli").run()
 
-    payload = MerchantLinksRunPayload(new_proposals=new_proposals)
+    payload = MerchantLinksRunPayload(bound=result.bound, conflicts=result.conflicts)
 
     if output == OutputFormat.JSON:
         from moneybin.cli.output import render_or_json  # noqa: PLC0415 — defer import
@@ -210,8 +212,11 @@ def links_run(
         )
         return
 
-    if new_proposals == 0:
-        typer.echo("No new merchant-link proposals written.")
+    if result.bound == 0 and result.conflicts == 0:
+        typer.echo("No merchant-link bindings or conflicts found.")
     else:
-        typer.echo(f"✅ Wrote {new_proposals} new pending merchant-link proposal(s).")
+        typer.echo(
+            f"✅ Recorded {result.bound} merchant binding(s); "
+            f"queued {result.conflicts} conflict(s) for review."
+        )
     typer.echo("Run `merchants links pending` to review.")

@@ -56,10 +56,10 @@ SELECT
     m.source_type,
     CASE
       WHEN NOT m.merchant_entity_id IS NULL
-      THEN COALESCE(sp.priority, 2147483647)
+      THEN COALESCE(sp.priority, 2147483646)
       ELSE 2147483647
     END
-  ) AS merchant_entity_source_type, /* source_type of the member that issued merchant_entity_id; meaningful only where merchant_entity_id IS NOT NULL (entity-less rows carry an arbitrary member's value that no reader consumes) */
+  ) AS merchant_entity_source_type, /* source_type of the member that issued merchant_entity_id; an entity-bearing member always wins over an entity-less one (sentinel 2147483646 < the entity-less 2147483647) even when its source_type is absent from seed_source_priority, so the entity id binds under its issuing provider regardless of priority config; meaningful only where merchant_entity_id IS NOT NULL (entity-less rows carry an arbitrary member's value that no reader consumes) */
   ARG_MIN(
     m.memo,
     CASE

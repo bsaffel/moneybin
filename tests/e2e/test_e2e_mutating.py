@@ -1421,6 +1421,91 @@ class TestAccountLinksMutating:
         assert "Traceback (most recent call last)" not in result.stderr
 
 
+class TestMerchantLinksMutating:
+    """E2E smoke tests for `merchants links run` and `merchants links set`.
+
+    Deep accept/reject behavior is covered at the unit (test_merchant_links_service)
+    and scenario (test_merchant_harvest) tiers — seeding a pending decision across
+    the subprocess + encrypted-DB boundary is brittle, so these smoke the wiring,
+    exit codes, and JSON envelope the way the `accounts links` e2e tests do.
+    """
+
+    def test_merchants_links_run(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """`merchants links run` exits 0; nothing to harvest on empty data is success."""
+        env = make_workflow_env_fast(tmp_path, "mlinks-run", _mutating_profile_template)
+        result = run_cli("merchants", "links", "run", env=env)
+        result.assert_success()
+
+    def test_merchants_links_run_json(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """`merchants links run --output json` returns an envelope with bound + conflicts."""
+        env = make_workflow_env_fast(
+            tmp_path, "mlinks-run-json", _mutating_profile_template
+        )
+        result = run_cli("merchants", "links", "run", "--output", "json", env=env)
+        result.assert_success()
+        payload = json.loads(result.stdout)
+        assert "data" in payload
+        assert isinstance(payload["data"]["bound"], int)
+        assert isinstance(payload["data"]["conflicts"], int)
+
+    def test_merchants_links_set_not_found(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """`merchants links set <nonexistent_id> --new` fails not-found, no traceback.
+
+        No pending decisions exist on a fresh profile — the service raises
+        UserError(MUTATION_NOT_FOUND) which handle_cli_errors converts to exit 1.
+        ``--new`` (reject) avoids needing a real merchant target.
+        """
+        env = make_workflow_env_fast(
+            tmp_path, "mlinks-set-nf", _mutating_profile_template
+        )
+        result = run_cli(
+            "merchants", "links", "set", "nonexistent-decision-id", "--new", env=env
+        )
+        assert result.exit_code != 0
+        assert "Traceback (most recent call last)" not in result.stderr
+
+    def test_merchants_links_set_missing_flag_is_usage_error(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """`merchants links set <id>` without --into or --new exits 2 (usage error)."""
+        env = make_workflow_env_fast(
+            tmp_path, "mlinks-set-usage", _mutating_profile_template
+        )
+        result = run_cli("merchants", "links", "set", "any-id", env=env)
+        assert result.exit_code == 2
+        assert "Traceback (most recent call last)" not in result.stderr
+
+    def test_merchants_links_set_empty_into_is_usage_error(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """`merchants links set <id> --into ""` exits 2 — empty target never silently binds."""
+        env = make_workflow_env_fast(
+            tmp_path, "mlinks-set-empty", _mutating_profile_template
+        )
+        result = run_cli("merchants", "links", "set", "any-id", "--into", "", env=env)
+        assert result.exit_code == 2
+        assert "Traceback (most recent call last)" not in result.stderr
+
+    def test_merchants_links_set_mutual_exclusion_error(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """`merchants links set <id> --into X --new` exits 2 (mutually exclusive)."""
+        env = make_workflow_env_fast(
+            tmp_path, "mlinks-set-mutex", _mutating_profile_template
+        )
+        result = run_cli(
+            "merchants", "links", "set", "any-id", "--into", "CAND001", "--new", env=env
+        )
+        assert result.exit_code == 2
+        assert "Traceback (most recent call last)" not in result.stderr
+
+
 class TestPrivacyConsent:
     """Consent ledger CLI commands (grant / revoke / revoke-all)."""
 

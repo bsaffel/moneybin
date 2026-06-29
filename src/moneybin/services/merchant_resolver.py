@@ -22,19 +22,38 @@ from moneybin.metrics.registry import (
 from moneybin.repositories.merchant_link_decisions_repo import MerchantLinkDecisionsRepo
 from moneybin.repositories.merchant_links_repo import MerchantLinksRepo
 from moneybin.services.categorization.applier import MatchApplier
-from moneybin.tables import MERCHANT_LINK_DECISIONS
+from moneybin.tables import (
+    INT_TRANSACTIONS_MERGED,
+    MERCHANT_LINK_DECISIONS,
+    TRANSACTION_CATEGORIES,
+)
 
 logger = logging.getLogger(__name__)
 _FUZZY_CONFIDENCE = 0.5
 
 
+def count_pending_merchant_link_decisions(db: Database) -> int:
+    """Distinct provider entity ids with pending, non-reversed decisions (queue depth).
+
+    Single source of truth for the review-queue count, shared by
+    ``refresh_merchant_link_pending_gauge`` (observability) and
+    ``MerchantLinksService.count_pending`` (surface). Returns 0 when the table
+    does not yet exist (``CatalogException`` guard) so a fresh DB reports an
+    empty queue rather than raising.
+    """
+    try:
+        row = db.execute(
+            f"SELECT COUNT(DISTINCT ref_value) FROM {MERCHANT_LINK_DECISIONS.full_name} "  # noqa: S608  # TableRef constant
+            "WHERE status = 'pending' AND reversed_at IS NULL"
+        ).fetchone()
+    except duckdb.CatalogException:
+        return 0
+    return int(row[0]) if row else 0
+
+
 def refresh_merchant_link_pending_gauge(db: Database) -> None:
     """Set MERCHANT_LINK_REVIEW_PENDING from the live queue depth (distinct provider ids)."""
-    row = db.execute(
-        f"SELECT COUNT(DISTINCT ref_value) FROM {MERCHANT_LINK_DECISIONS.full_name} "  # noqa: S608  # TableRef constant
-        "WHERE status = 'pending' AND reversed_at IS NULL"
-    ).fetchone()
-    MERCHANT_LINK_REVIEW_PENDING.set(int(row[0]) if row else 0)
+    MERCHANT_LINK_REVIEW_PENDING.set(count_pending_merchant_link_decisions(db))
 
 
 @dataclass(frozen=True)
@@ -133,21 +152,26 @@ class MerchantResolver:
             actor=self._actor,
         )
 
-    def _pending_decision_exists(
+    def _decision_blocks_propose(
         self, ref_value: str, candidate_merchant_id: str
     ) -> bool:
-        """True when a pending, non-reversed decision already proposes this binding.
+        """True when an existing decision should suppress re-proposing this binding.
 
         Dedups proposals: N uncategorized txns sharing one unbound fuzzy entity
         must not create N duplicate pending rows, and a re-run of ``run()`` must
-        not re-propose an already-pending conflict. Degrades to ``False`` when
-        the decisions table is absent (``CatalogException`` guard).
+        not re-propose an already-decided conflict. Blocks on a ``pending`` OR a
+        ``rejected`` (non-reversed) decision for ``(ref_value,
+        candidate_merchant_id)`` — re-proposing a user-rejected candidate every
+        run would mean the queue never drains. A ``reversed`` decision is NOT a
+        block (``reversed_at IS NULL``), so a reversal re-opens the proposal.
+        Degrades to ``False`` when the decisions table is absent
+        (``CatalogException`` guard).
         """
         try:
             row = self._db.execute(
                 f"SELECT 1 FROM {MERCHANT_LINK_DECISIONS.full_name} "  # noqa: S608  # TableRef constant + parameterized values
                 "WHERE ref_value = ? AND candidate_merchant_id = ? "
-                "AND status = 'pending' AND reversed_at IS NULL LIMIT 1",
+                "AND status IN ('pending', 'rejected') AND reversed_at IS NULL LIMIT 1",
                 [ref_value, candidate_merchant_id],
             ).fetchone()
         except duckdb.CatalogException:
@@ -161,8 +185,8 @@ class MerchantResolver:
         provider_name: str | None,
         candidate_merchant_id: str,
     ) -> None:
-        if self._pending_decision_exists(ref_value, candidate_merchant_id):
-            return  # already a pending proposal for this (ref_value, candidate)
+        if self._decision_blocks_propose(ref_value, candidate_merchant_id):
+            return  # already proposed (pending) or user-rejected for this (ref_value, candidate)
         self._decisions.insert(
             decision_id=uuid.uuid4().hex[:12],
             ref_kind="merchant_entity_id",
@@ -196,16 +220,16 @@ class MerchantResolver:
         """
         try:
             rows = self._db.execute(
-                """
+                f"""
                 SELECT mt.merchant_entity_source_type AS source_type,
                        mt.merchant_entity_id, c.merchant_id, COUNT(*) AS n
-                FROM prep.int_transactions__merged AS mt
-                JOIN app.transaction_categories AS c
+                FROM {INT_TRANSACTIONS_MERGED.full_name} AS mt
+                JOIN {TRANSACTION_CATEGORIES.full_name} AS c
                     ON c.transaction_id = mt.transaction_id
                 WHERE mt.merchant_entity_id IS NOT NULL AND c.merchant_id IS NOT NULL
                 GROUP BY mt.merchant_entity_source_type, mt.merchant_entity_id,
                          c.merchant_id
-                """  # noqa: S608  # static identifiers
+                """  # noqa: S608  # TableRef constants, no user values
             ).fetchall()
         except duckdb.CatalogException:
             return HarvestResult(bound=0, conflicts=0)

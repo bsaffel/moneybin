@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 from typer.testing import CliRunner
 
 from moneybin.cli.commands.merchants.links import app
+from moneybin.services.merchant_resolver import HarvestResult
 
 runner = CliRunner()
 
@@ -184,6 +185,18 @@ class TestMerchantLinksSet:
         result = runner.invoke(app, ["set", "dec001", "--into", "merch001aa", "--new"])
         assert result.exit_code == 2
 
+    @patch("moneybin.cli.commands.merchants.links.get_database")
+    @patch("moneybin.services.merchant_links_service.MerchantLinksService.set")
+    def test_set_empty_into_does_not_bind(
+        self, mock_set: MagicMock, mock_get_db: MagicMock
+    ) -> None:
+        """[4] `--into ""` must not silently bind: it hits the specify-either usage error."""
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+
+        result = runner.invoke(app, ["set", "dec001", "--into", ""])
+        assert result.exit_code == 2
+        mock_set.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # links history
@@ -265,13 +278,14 @@ class TestMerchantLinksRun:
     @patch("moneybin.cli.commands.merchants.links.get_database")
     @patch("moneybin.services.merchant_links_service.MerchantLinksService.run")
     def test_run_exits_0(self, mock_run: MagicMock, mock_get_db: MagicMock) -> None:
-        """Run exits 0 and prints the new-proposal count."""
+        """Run exits 0 and reports bound bindings and queued conflicts."""
         mock_get_db.return_value.__enter__.return_value = MagicMock()
-        mock_run.return_value = 3
+        mock_run.return_value = HarvestResult(bound=3, conflicts=1)
 
         result = runner.invoke(app, ["run"])
         assert result.exit_code == 0
         assert "3" in result.output
+        assert "1" in result.output
 
     @patch("moneybin.cli.commands.merchants.links.get_database")
     @patch("moneybin.services.merchant_links_service.MerchantLinksService.run")
@@ -280,7 +294,7 @@ class TestMerchantLinksRun:
     ) -> None:
         """Run output hints the user toward `merchants links pending`."""
         mock_get_db.return_value.__enter__.return_value = MagicMock()
-        mock_run.return_value = 2
+        mock_run.return_value = HarvestResult(bound=2, conflicts=0)
 
         result = runner.invoke(app, ["run"])
         assert result.exit_code == 0
@@ -291,9 +305,9 @@ class TestMerchantLinksRun:
     def test_run_zero_proposals_exits_0(
         self, mock_run: MagicMock, mock_get_db: MagicMock
     ) -> None:
-        """Run with 0 new proposals still exits 0."""
+        """Run with nothing bound or queued still exits 0."""
         mock_get_db.return_value.__enter__.return_value = MagicMock()
-        mock_run.return_value = 0
+        mock_run.return_value = HarvestResult(bound=0, conflicts=0)
 
         result = runner.invoke(app, ["run"])
         assert result.exit_code == 0
@@ -303,12 +317,13 @@ class TestMerchantLinksRun:
     def test_run_json_output_shape(
         self, mock_run: MagicMock, mock_get_db: MagicMock
     ) -> None:
-        """--output json returns an envelope with new_proposals in data."""
+        """--output json returns an envelope with bound + conflicts in data."""
         mock_get_db.return_value.__enter__.return_value = MagicMock()
-        mock_run.return_value = 7
+        mock_run.return_value = HarvestResult(bound=7, conflicts=2)
 
         result = runner.invoke(app, ["run", "--output", "json"])
         assert result.exit_code == 0
         parsed = json.loads(result.output)
         assert "data" in parsed
-        assert parsed["data"]["new_proposals"] == 7
+        assert parsed["data"]["bound"] == 7
+        assert parsed["data"]["conflicts"] == 2

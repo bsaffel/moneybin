@@ -184,6 +184,13 @@ class MerchantLinksHistoryPayload:
 
 @dataclass(frozen=True, slots=True)
 class MerchantLinksRunPayload:
-    """Payload for merchants_links_run — count of new pending proposals written."""
+    """Payload for merchants_links_run — harvest outcome counts.
 
-    new_proposals: Annotated[int, DataClass.AGGREGATE]
+    ``bound`` are provider entity ids silently bound to a single unambiguous
+    merchant (no review needed); ``conflicts`` are one-id-many-merchant cases
+    queued as pending decisions for review. They are reported distinctly — a
+    bound binding is NOT a pending proposal.
+    """
+
+    bound: Annotated[int, DataClass.AGGREGATE]
+    conflicts: Annotated[int, DataClass.AGGREGATE]

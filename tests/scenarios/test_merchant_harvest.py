@@ -329,3 +329,31 @@ def test_harvest_routes_conflict_to_review() -> None:
             "re-running harvest must not stack duplicate pending conflict rows: "
             f"{len(pending_after_first)} → {len(pending_after_second)}"
         )
+
+        # --- [5] A user-rejected conflict must NOT be re-proposed on re-run ---
+        # Reject the pending conflict the real way (user picks "new"), then
+        # re-harvest: the rejected (non-reversed) decision must suppress
+        # re-proposal so the queue drains instead of re-filling every run.
+        from moneybin.services.merchant_links_service import (  # noqa: PLC0415
+            MerchantLinksService,
+        )
+
+        conflict_decision_id = next(
+            d["decision_id"]
+            for d in pending_after_second
+            if d["ref_value"] == _ENTITY_CONFLICT
+        )
+        MerchantLinksService(db, actor="cli").set(
+            conflict_decision_id, target_merchant_id=None
+        )
+
+        r.harvest()
+        pending_after_reject = [
+            d
+            for d in r._decisions.list_pending()  # pyright: ignore[reportPrivateUsage]
+            if d["ref_value"] == _ENTITY_CONFLICT
+        ]
+        assert pending_after_reject == [], (
+            "a rejected conflict must not be re-proposed by a subsequent harvest; "
+            f"got {len(pending_after_reject)} pending for {_ENTITY_CONFLICT!r}"
+        )

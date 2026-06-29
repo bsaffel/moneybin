@@ -475,6 +475,49 @@ class TestApplyMerchantCategories:
 
 
 # ---------------------------------------------------------------------------
+# fetch_uncategorized_rows fallback ([2])
+# ---------------------------------------------------------------------------
+
+
+class TestFetchUncategorizedRowsFallback:
+    """[2] fetch_uncategorized_rows degrades when the prep view lacks entity columns."""
+
+    @pytest.mark.unit
+    def test_missing_entity_columns_falls_back(self, db: Database) -> None:
+        """Prep view present but without merchant_entity_* columns → BinderException → fallback.
+
+        Simulates a post-code-upgrade, pre-re-transform DB: the prep view exists
+        but predates the M1T entity columns. The ``with_entity`` query raises a
+        ``duckdb.BinderException`` (missing column, NOT a catalog error). The
+        fetch must catch it and fall back to ``without_entity`` so categorize-run
+        still returns the uncategorized rows instead of crashing.
+        """
+        from moneybin.services.categorization.matcher import CategorizationMatcher
+
+        # prep view EXISTS but WITHOUT the M1T entity columns.
+        db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+        db.execute("DROP TABLE IF EXISTS prep.int_transactions__merged")
+        db.execute(
+            "CREATE TABLE prep.int_transactions__merged (transaction_id VARCHAR)"
+        )
+        db.execute("INSERT INTO prep.int_transactions__merged VALUES ('TXNB1')")
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+            "VALUES ('TXNB1', 'ACC1', '2025-06-01', -5.00, 'COFFEE SHOP', 'ofx')"
+        )
+
+        rows = CategorizationMatcher(db).fetch_uncategorized_rows()
+
+        assert rows is not None, "must degrade to without_entity, not raise/return None"
+        row = next((r for r in rows if r[0] == "TXNB1"), None)
+        assert row is not None, "uncategorized TXNB1 must be returned via fallback"
+        # without_entity projects NULL for merchant_entity_id (pos 5) and
+        # merchant_entity_source_type (pos 8).
+        assert row[5] is None and row[8] is None
+
+
+# ---------------------------------------------------------------------------
 # Deterministic categorization pipeline
 # ---------------------------------------------------------------------------
 

@@ -239,16 +239,18 @@ def merchants_links_run() -> ResponseEnvelope[MerchantLinksRunPayload]:
 
     Mutation surface: writes ``app.merchant_links`` + ``app.merchant_link_decisions``.
     Revert is via the audit log in ``app.audit_log`` (no undo tool yet; deferred to M1L).
-    Review new proposals with ``merchants_links_pending``.
+    Review queued conflicts with ``merchants_links_pending``.
 
     Returns:
-        Envelope with ``data.new_proposals`` — count of bindings + conflicts written.
+        Envelope with ``data.bound`` (entity ids silently bound to a single
+        merchant) and ``data.conflicts`` (one-id-many-merchant cases queued for
+        review). Bound bindings are NOT pending — only conflicts need review.
     """
     with get_database(read_only=False) as db:
-        new_proposals = MerchantLinksService(db, actor="mcp").run()
+        result = MerchantLinksService(db, actor="mcp").run()
     return build_envelope(
-        data=MerchantLinksRunPayload(new_proposals=new_proposals),
-        actions=["Use merchants_links_pending to review the proposed merges"],
+        data=MerchantLinksRunPayload(bound=result.bound, conflicts=result.conflicts),
+        actions=["Use merchants_links_pending to review the queued conflicts"],
     )
 
 
@@ -284,10 +286,12 @@ def register_merchants_tools(mcp: FastMCP) -> None:
         "Binds unambiguous provider entity id → merchant pairings and routes "
         "conflicts to the pending review queue. Writes app.merchant_links + "
         "app.merchant_link_decisions; skips pairs already proposed or decided. "
-        "Returns data.new_proposals (bindings + conflicts written). "
+        "Returns data.bound (entity ids silently bound to one merchant) and "
+        "data.conflicts (one-id-many-merchant cases queued for review) — bound "
+        "bindings are NOT pending. "
         "Mutation surface: writes app.merchant_links + app.merchant_link_decisions; "
         "revert via app.audit_log (no undo tool yet). "
-        "Review results with merchants_links_pending.",
+        "Review queued conflicts with merchants_links_pending.",
     )
     register(
         mcp,

@@ -618,7 +618,7 @@ These four tools implement the merchant-link review surface: the agent-facing pe
 
 - **Sensitivity:** `low` — returns counts only.
 - **Unique parameters:** None.
-- **Behavior:** Harvests merchant-link proposals from existing categorization facts. Binds provider entity ids that point unambiguously to a single canonical merchant; routes conflicts to the pending review queue. Returns `data.new_proposals` (bindings + conflicts written).
+- **Behavior:** Harvests merchant-link proposals from existing categorization facts. Binds provider entity ids that point unambiguously to a single canonical merchant; routes conflicts to the pending review queue. Returns `data.bound` (entity ids silently bound to one merchant) and `data.conflicts` (one-id-many-merchant cases queued for review) — bound bindings are not pending.
 - **Mutation surface:** writes `app.merchant_links` + `app.merchant_link_decisions`; revert via `app.audit_log` (no undo tool; deferred to M1L).
 - **Service:** `MerchantLinksService(db, actor="mcp").run()`
 - **CLI:** `moneybin merchants links run`

@@ -296,8 +296,12 @@ class CategorizationMatcher:
         for query in (with_entity, without_entity):
             try:
                 return self._db.execute(query).fetchall()
-            except duckdb.CatalogException:
-                continue  # prep layer (or fct itself) absent — try the fallback
+            except (duckdb.CatalogException, duckdb.BinderException):
+                # CatalogException: prep layer (or fct itself) absent.
+                # BinderException: prep view exists but lacks the entity columns
+                # (post-upgrade, pre-re-transform) — both fall back to the
+                # entity-less query.
+                continue
         return None
 
     def fetch_active_rules(self) -> list[tuple[Any, ...]]:

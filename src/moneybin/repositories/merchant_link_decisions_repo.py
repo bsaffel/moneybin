@@ -244,13 +244,15 @@ class MerchantLinkDecisionsRepo(BaseRepo):
 
         Returns an empty list when the table does not yet exist
         (``CatalogException`` guard). A negative ``limit`` is clamped to 0 —
-        DuckDB rejects a negative LIMIT (``BinderException``). No audit emitted.
+        DuckDB rejects a negative LIMIT (``BinderException``). The
+        ``decision_id`` tie-break makes the LIMIT boundary deterministic when
+        rows share a ``decided_at`` (mirrors ``list_pending``). No audit emitted.
         """
         limit = max(limit, 0)
         try:
             rows = self._db.execute(
                 f"SELECT {_COLS} FROM {MERCHANT_LINK_DECISIONS.full_name} "  # noqa: S608  # constant column list + TableRef + parameterized limit
-                "ORDER BY decided_at DESC NULLS LAST LIMIT ?",
+                "ORDER BY decided_at DESC NULLS LAST, decision_id DESC LIMIT ?",
                 [limit],
             ).fetchall()
         except duckdb.CatalogException:

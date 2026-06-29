@@ -143,3 +143,55 @@ def test_propose_dedups_pending_decisions(db: Database) -> None:
     assert len(dup_pending) == 1, (
         f"expected exactly one pending decision for entDup; got {len(dup_pending)}"
     )
+
+
+def test_rejected_decision_not_reproposed(db: Database, applier: MatchApplier) -> None:
+    """A user-rejected (non-reversed) decision suppresses re-proposing the same binding.
+
+    Regression for the M1T review finding: ``_pending_decision_exists`` matched
+    only ``status='pending'``, so a rejected harvest/resolve conflict was
+    re-proposed on every subsequent run and the queue never drained. The dedup
+    guard must also block on a ``rejected`` decision (``reversed_at IS NULL``).
+    """
+    r = MerchantResolver(db)
+    name_match = {"merchant_id": "mRej", "strength": "fuzzy"}
+
+    # First contact → one pending proposal.
+    r.resolve(
+        merchant_entity_id="entRej",
+        source_type="plaid",
+        provider_merchant_name="Star Bucks",
+        name_match=name_match,
+        bindings={},
+        applier=applier,
+    )
+    pending = [
+        d
+        for d in r._decisions.list_pending()  # pyright: ignore[reportPrivateUsage]
+        if d["ref_value"] == "entRej"
+    ]
+    assert len(pending) == 1
+    decision_id = pending[0]["decision_id"]
+
+    # User rejects it.
+    r._decisions.update_status(  # pyright: ignore[reportPrivateUsage]
+        decision_id, status="rejected", decided_by="user", actor="cli"
+    )
+
+    # Re-contact the same unbound fuzzy entity → must NOT re-propose.
+    r.resolve(
+        merchant_entity_id="entRej",
+        source_type="plaid",
+        provider_merchant_name="Star Bucks",
+        name_match=name_match,
+        bindings={},
+        applier=applier,
+    )
+    pending_after = [
+        d
+        for d in r._decisions.list_pending()  # pyright: ignore[reportPrivateUsage]
+        if d["ref_value"] == "entRej"
+    ]
+    assert len(pending_after) == 0, (
+        "a rejected candidate must not be re-proposed (queue would never drain)"
+    )

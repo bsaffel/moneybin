@@ -22,6 +22,7 @@ from moneybin.mcp.tools.merchants import (
     merchants_links_set,
     register_merchants_tools,
 )
+from moneybin.services.merchant_resolver import HarvestResult
 
 pytestmark = pytest.mark.usefixtures("mcp_db")
 
@@ -72,6 +73,22 @@ def _insert_decision(
                 None,
                 None,
             ],
+        )
+
+
+def _seed_merchant(merchant_id: str) -> None:
+    """Make ``merchant_id`` resolvable in core.dim_merchants (via app.user_merchants).
+
+    The accept path validates the target exists in the merchant catalog; the
+    dim is a view over app.user_merchants, so seeding the source row is what
+    lets an accept bind instead of raising.
+    """
+    with get_database(read_only=False) as db:
+        db.execute(
+            "INSERT INTO app.user_merchants "
+            "(merchant_id, match_type, canonical_name, created_by) "
+            "VALUES (?, 'oneOf', ?, 'user')",
+            [merchant_id, f"Name {merchant_id}"],
         )
 
 
@@ -182,6 +199,7 @@ class TestMerchantsLinksSet:
     async def test_accept_returns_envelope(self, mcp_db: object) -> None:
         """merchants_links_set (accept) returns a valid ResponseEnvelope."""
         _insert_decision(decision_id="ms001", ref_value="entity_S1")
+        _seed_merchant("merch000001")
         parsed = (
             await merchants_links_set(
                 decision_id="ms001", target_merchant_id="merch000001"
@@ -193,6 +211,7 @@ class TestMerchantsLinksSet:
     async def test_accept_payload_status_accepted(self, mcp_db: object) -> None:
         """Accepting a decision returns status='accepted' in payload."""
         _insert_decision(decision_id="ms010", ref_value="entity_S2")
+        _seed_merchant("merch000001")
         data = (
             await merchants_links_set(
                 decision_id="ms010", target_merchant_id="merch000001"
@@ -300,7 +319,7 @@ class TestMerchantsLinksRun:
         """merchants_links_run returns a valid ResponseEnvelope."""
         mock_db = MagicMock()
         mock_get_db.return_value.__enter__.return_value = mock_db
-        mock_run.return_value = 3
+        mock_run.return_value = HarvestResult(bound=3, conflicts=0)
 
         parsed = (await merchants_links_run()).to_dict()
         assert "summary" in parsed
@@ -309,16 +328,17 @@ class TestMerchantsLinksRun:
 
     @patch("moneybin.mcp.tools.merchants.get_database")
     @patch("moneybin.services.merchant_links_service.MerchantLinksService.run")
-    async def test_run_payload_contains_count(
+    async def test_run_payload_contains_counts(
         self, mock_run: MagicMock, mock_get_db: MagicMock
     ) -> None:
-        """data.new_proposals reflects the count returned by service.run()."""
+        """data.bound + data.conflicts reflect the HarvestResult from service.run()."""
         mock_db = MagicMock()
         mock_get_db.return_value.__enter__.return_value = mock_db
-        mock_run.return_value = 5
+        mock_run.return_value = HarvestResult(bound=5, conflicts=2)
 
         data = (await merchants_links_run()).to_dict()["data"]
-        assert data["new_proposals"] == 5
+        assert data["bound"] == 5
+        assert data["conflicts"] == 2
 
     @patch("moneybin.mcp.tools.merchants.get_database")
     @patch("moneybin.services.merchant_links_service.MerchantLinksService.run")
@@ -328,7 +348,7 @@ class TestMerchantsLinksRun:
         """merchants_links_run has low sensitivity (counts only)."""
         mock_db = MagicMock()
         mock_get_db.return_value.__enter__.return_value = mock_db
-        mock_run.return_value = 0
+        mock_run.return_value = HarvestResult(bound=0, conflicts=0)
 
         parsed = (await merchants_links_run()).to_dict()
         assert parsed["summary"]["sensitivity"] == "low"
@@ -341,7 +361,7 @@ class TestMerchantsLinksRun:
         """actions[] after run points at merchants_links_pending."""
         mock_db = MagicMock()
         mock_get_db.return_value.__enter__.return_value = mock_db
-        mock_run.return_value = 2
+        mock_run.return_value = HarvestResult(bound=2, conflicts=1)
 
         result = (await merchants_links_run()).to_dict()
         actions_text = " ".join(result["actions"])
