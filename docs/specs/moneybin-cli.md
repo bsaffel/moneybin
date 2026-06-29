@@ -215,7 +215,7 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |       +-- pending [--output json] [--quiet]
 |       |         List provisional accounts + candidate merge proposals; each candidate
 |       |         shows decision_id, candidate_account_id, display name, confidence, signal.
-|       +-- set <decision_id> --into <account_id> | --standalone [--quiet]
+|       +-- set <decision_id> --into <account_id> | --standalone
 |       |         Merge the provisional into the candidate (--into) or keep as standalone
 |       |         (--standalone). The two flags are mutually exclusive; omitting both exits 2.
 |       +-- history [--limit N] [--output json] [--quiet]
@@ -300,9 +300,26 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- set <category_id> --active/--inactive
 |   +-- delete <category_id> [--force]
 |
-+-- merchants                      -- Merchant mappings (reference data)
++-- merchants                      -- Merchant mappings (reference data) and link-review
 |   +-- list
 |   +-- create <pattern> <canonical_name> [--default-category]
+|   +-- links                      -- Review and manage merchant-link binding decisions
+|       +-- pending [--output json] [--quiet]
+|       |         List provider entity ids + candidate merchant proposals; each candidate
+|       |         shows decision_id, merchant_id, canonical name, and confidence.
+|       +-- set <decision_id> --into <merchant_id> | --new
+|       |         Bind the provider entity id to the given merchant (--into) or reject all
+|       |         candidates so the resolver mints a new merchant on next run (--new).
+|       |         The two flags are mutually exclusive; omitting both exits 2.
+|       +-- history [--limit N] [--output json] [--quiet]
+|       |         Recent decisions (all statuses), newest first.
+|       +-- run [--output json]
+|                 Harvest existing categorization facts into pending merchant-link proposals.
+|                 Binds unambiguous entity id → merchant mappings; routes conflicts to review.
+|                 Prints count of new proposals written; hints user toward `merchants links pending`.
+|   Note: `merchants links undo` is deliberately NOT registered (deferred to M1L audit-undo
+|         consumer; same as `accounts links undo`).
+|
 |
 +-- reports                        -- Cross-domain analytical and aggregation views (read-only)
 |   |   # The six view-backed reports below (cashflow, spending, recurring,

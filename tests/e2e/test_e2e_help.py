@@ -139,6 +139,12 @@ _HELP_COMMANDS: list[list[str]] = [
     ["accounts", "links", "set"],
     ["accounts", "links", "history"],
     ["accounts", "links", "run"],
+    # merchants links subgroup + leaves
+    ["merchants", "links"],
+    ["merchants", "links", "pending"],
+    ["merchants", "links", "set"],
+    ["merchants", "links", "history"],
+    ["merchants", "links", "run"],
 ]
 
 _runner = CliRunner()

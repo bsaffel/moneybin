@@ -447,6 +447,45 @@ class TestDBReadOnlyCommands:
         assert "decisions" in envelope["data"]
         assert isinstance(envelope["data"]["decisions"], list)
 
+    # ── merchants links (read-only) ──────────────────────────────────────
+
+    def test_merchants_links_pending(self, e2e_profile: dict[str, str]) -> None:
+        """`moneybin merchants links pending` exits 0 on an empty queue."""
+        result = run_cli("merchants", "links", "pending", env=e2e_profile)
+        result.assert_success()
+
+    def test_merchants_links_pending_json(self, e2e_profile: dict[str, str]) -> None:
+        """`moneybin merchants links pending --output json` returns an envelope with groups[] and n_pending."""
+        import json
+
+        result = run_cli(
+            "merchants", "links", "pending", "--output", "json", env=e2e_profile
+        )
+        result.assert_success()
+        envelope = json.loads(result.stdout)
+        assert "data" in envelope
+        assert "groups" in envelope["data"]
+        assert isinstance(envelope["data"]["groups"], list)
+        assert "n_pending" in envelope["data"]
+
+    def test_merchants_links_history(self, e2e_profile: dict[str, str]) -> None:
+        """`moneybin merchants links history` exits 0 on a fresh profile."""
+        result = run_cli("merchants", "links", "history", env=e2e_profile)
+        result.assert_success()
+
+    def test_merchants_links_history_json(self, e2e_profile: dict[str, str]) -> None:
+        """`moneybin merchants links history --output json` returns an envelope with decisions[]."""
+        import json
+
+        result = run_cli(
+            "merchants", "links", "history", "--output", "json", env=e2e_profile
+        )
+        result.assert_success()
+        envelope = json.loads(result.stdout)
+        assert "data" in envelope
+        assert "decisions" in envelope["data"]
+        assert isinstance(envelope["data"]["decisions"], list)
+
     # ── stats ───────────────────────────────────────────────────────────
 
     def test_stats_show(self, e2e_profile: dict[str, str]) -> None:

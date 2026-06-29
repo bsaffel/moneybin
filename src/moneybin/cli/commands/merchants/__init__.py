@@ -1,13 +1,15 @@
-"""Merchant mapping management (list, create)."""
+"""Merchant mapping management (list, create) and link-review subgroup."""
 
 import typer
 
 from ..stubs import _not_implemented
+from . import links
 
 app = typer.Typer(
     help="Merchant mappings management",
     no_args_is_help=True,
 )
+app.add_typer(links.app, name="links")
 
 
 @app.command("list")
