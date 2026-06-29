@@ -247,6 +247,9 @@ class MerchantResolver:
 
         Routes one-id-many-merchants conflicts to the review queue without binding.
         Idempotent: the insert guard in _bind skips already-bound entity ids.
+        Skips merchant_ids the user already rejected for an entity id — re-binding
+        one would silently re-adopt a rejected merchant; leaving it unbound lets the
+        next categorization pass mint a new merchant for the id (spec Decision 6).
 
         Keys on ``merchant_entity_source_type`` — the source_type of the merge
         member that issued the entity id — NOT the merge-winner
@@ -254,8 +257,9 @@ class MerchantResolver:
         dedup binds under ``('plaid', E)`` like its Plaid-only siblings.
 
         Degrades to ``HarvestResult(0, 0)`` when ``prep.int_transactions__merged``
-        is absent (never-transformed DB) — mirrors the ``CatalogException`` guard
-        in ``list_pending`` / ``count_pending`` so the MCP path doesn't raise raw.
+        is absent (never-transformed DB — CatalogException) or exists but predates
+        the entity columns (stale-view upgrade — BinderException) so the MCP path
+        doesn't raise raw.
         """
         try:
             rows = self._db.execute(
@@ -270,7 +274,7 @@ class MerchantResolver:
                          c.merchant_id
                 """  # noqa: S608  # TableRef constants, no user values
             ).fetchall()
-        except duckdb.CatalogException:
+        except (duckdb.CatalogException, duckdb.BinderException):
             return HarvestResult(bound=0, conflicts=0)
         by_id: dict[tuple[str, str], list[tuple[str, int]]] = {}
         for source_type, ent, mid, n in rows:
@@ -280,22 +284,30 @@ class MerchantResolver:
             ))
         bound = conflicts = 0
         existing = self.load_bindings()
+        rejected = self.load_rejected()
         for (source_type, ent), pairs in by_id.items():
             if (source_type, ent) in existing:
                 continue  # already bound (idempotent)
-            merchants = {mid for mid, _ in pairs}
+            # Drop merchants the user already rejected for this entity id — re-binding
+            # one would silently re-adopt a rejected merchant. harvest() must respect
+            # rejections like resolve() does (spec Decision 6).
+            live_pairs = [
+                (mid, n) for mid, n in pairs if (source_type, ent, mid) not in rejected
+            ]
+            if not live_pairs:
+                continue  # every observed merchant was rejected → leave unbound; the
+                # next categorization pass mints a new merchant for the id
+            merchants = {mid for mid, _ in live_pairs}
             if len(merchants) == 1:
                 self._bind(ent, source_type, next(iter(merchants)), decided_by="system")
                 bound += 1
             else:
-                # Highest count wins; tie-break on merchant_id so the chosen
-                # dominant is stable across runs (the GROUP BY has no inherent
-                # row order). Without this, a tied conflict could propose a
-                # different candidate each run and defeat the _propose dedup.
-                dominant = max(pairs, key=lambda p: (p[1], p[0]))[0]
+                # Highest count wins; tie-break on merchant_id for stable choice
+                # across runs (GROUP BY has no inherent order), or the _propose dedup
+                # could pick a different candidate each run.
+                dominant = max(live_pairs, key=lambda p: (p[1], p[0]))[0]
                 # Count only conflicts actually queued — _propose returns False when an
-                # existing pending/rejected decision already blocks re-proposal, so a
-                # re-run does not re-report already-decided conflicts as freshly queued.
+                # existing pending/rejected decision already blocks re-proposal.
                 if self._propose(ent, source_type, None, dominant):
                     conflicts += 1
         if conflicts:

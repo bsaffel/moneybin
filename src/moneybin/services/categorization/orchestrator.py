@@ -45,6 +45,7 @@ from moneybin.metrics.registry import (
     CATEGORIZE_ERRORS_TOTAL,
     CATEGORIZE_ITEMS_TOTAL,
     CATEGORIZE_MATCH_OUTCOME_TOTAL,
+    MERCHANT_RESOLUTION_OUTCOME_TOTAL,
 )
 from moneybin.privacy.payloads.categorize import CategorizeCommitPayload
 from moneybin.services._text import build_match_inputs
@@ -553,6 +554,8 @@ class CategorizationOrchestrator:
             return current_merchant_id
         if res.merchant_id is None:
             return current_merchant_id
+        # Spec-mandated ladder-outcome counter (one per resolved transaction).
+        MERCHANT_RESOLUTION_OUTCOME_TOTAL.labels(outcome=res.outcome).inc()
         if res.outcome in ("adopted", "auto_bound", "minted"):
             CATEGORIZE_MATCH_OUTCOME_TOTAL.labels(
                 outcome="entity_id", shape="both"

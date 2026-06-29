@@ -541,3 +541,160 @@ def test_harvest_conflict_counted_when_fresh(db: Database) -> None:
 
     result = MerchantResolver(db).harvest()
     assert result.conflicts == 1, "a freshly queued conflict must be counted as 1"
+
+
+# ---------------------------------------------------------------------------
+# harvest() BinderException guard (Finding #6)
+# ---------------------------------------------------------------------------
+
+
+def test_harvest_degrades_when_prep_view_stale(db: Database) -> None:
+    """harvest() returns HarvestResult(0, 0) when the merged view lacks entity columns.
+
+    On a DB where ``prep.int_transactions__merged`` exists but predates
+    ``merchant_entity_id`` / ``merchant_entity_source_type`` (e.g. upgraded
+    from an older schema), DuckDB raises ``BinderException`` (missing column).
+    Without the BinderException guard the SELECT escapes and
+    ``merchants_links_run`` (MCP, no ``handle_cli_errors`` wrapper) raises raw.
+    The guard must degrade gracefully like the CatalogException guard.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute("CREATE TABLE prep.int_transactions__merged (transaction_id VARCHAR)")
+    db.execute("INSERT INTO prep.int_transactions__merged VALUES ('txn_stale')")
+
+    r = MerchantResolver(db)
+    assert r.harvest() == HarvestResult(bound=0, conflicts=0)
+
+
+# ---------------------------------------------------------------------------
+# harvest() respects rejected decisions (Finding #5)
+# ---------------------------------------------------------------------------
+
+
+def _setup_merged_table_with_entity(db: Database) -> None:
+    """Create the merged table including entity columns for rejected-filter tests."""
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS prep.int_transactions__merged ("
+        "  transaction_id VARCHAR PRIMARY KEY, "
+        "  merchant_entity_id VARCHAR, "
+        "  merchant_entity_source_type VARCHAR"
+        ")"
+    )
+
+
+def test_harvest_skips_rejected_sole_merchant(db: Database) -> None:
+    """harvest() leaves an entity unbound when its only observed merchant was rejected.
+
+    If the user rejected (source_type, entity_id) → merchant_id, harvest must
+    NOT bind the entity to that rejected merchant — even when it is the only
+    observed merchant for the entity id.
+    """
+    _setup_merged_table_with_entity(db)
+    db.execute(
+        "INSERT INTO prep.int_transactions__merged VALUES ('txn_r1', 'ent_rej', 'plaid')"
+    )
+    db.execute(
+        "INSERT INTO app.transaction_categories "
+        "(transaction_id, category, merchant_id) VALUES "
+        "('txn_r1', 'Shopping', 'mRej')"
+    )
+    r = MerchantResolver(db)
+    # Pre-seed a rejected decision for (plaid, ent_rej, mRej).
+    r._decisions.insert(  # pyright: ignore[reportPrivateUsage]
+        decision_id="d_rej1",
+        ref_kind="merchant_entity_id",
+        ref_value="ent_rej",
+        source_type="plaid",
+        provider_merchant_name=None,
+        candidate_merchant_id="mRej",
+        confidence_score=0.5,
+        match_signals={},
+        decided_by="auto",
+        actor="system",
+        status="pending",
+    )
+    r._decisions.update_status(  # pyright: ignore[reportPrivateUsage]
+        "d_rej1", status="rejected", decided_by="user", actor="cli"
+    )
+
+    result = r.harvest()
+
+    assert result.bound == 0, "rejected sole merchant must NOT be bound"
+    assert r._links.lookup("plaid", "ent_rej") is None, (  # pyright: ignore[reportPrivateUsage]
+        "rejected merchant must not be linked"
+    )
+
+
+def test_harvest_binds_non_rejected_sole_merchant(db: Database) -> None:
+    """Control: single non-rejected merchant IS bound (current behavior preserved)."""
+    _setup_merged_table_with_entity(db)
+    db.execute(
+        "INSERT INTO prep.int_transactions__merged VALUES ('txn_nr1', 'ent_ok', 'plaid')"
+    )
+    db.execute(
+        "INSERT INTO app.transaction_categories "
+        "(transaction_id, category, merchant_id) VALUES "
+        "('txn_nr1', 'Shopping', 'mOk')"
+    )
+
+    result = MerchantResolver(db).harvest()
+
+    assert result.bound == 1
+    assert MerchantResolver(db)._links.lookup("plaid", "ent_ok") == "mOk"  # pyright: ignore[reportPrivateUsage]
+
+
+def test_harvest_proposes_non_rejected_candidate_in_conflict(db: Database) -> None:
+    """harvest() never proposes a rejected merchant; picks a non-rejected dominant instead.
+
+    When the highest-count (dominant) merchant is rejected, harvest must filter
+    it from the candidate set before choosing which candidate to propose. After
+    filtering, the remaining merchants still constitute a conflict → harvest
+    proposes the dominant of the survivors. The rejected merchant must never
+    appear as the proposed candidate.
+    """
+    _setup_merged_table_with_entity(db)
+    # m_rejected appears twice (dominant by count) but is rejected.
+    # m_zzz and m_aaa each appear once → genuine conflict after filtering.
+    db.execute(
+        "INSERT INTO prep.int_transactions__merged VALUES "
+        "('txn_pr1', 'ent_prc', 'plaid'), "
+        "('txn_pr2', 'ent_prc', 'plaid'), "
+        "('txn_pr3', 'ent_prc', 'plaid'), "
+        "('txn_pr4', 'ent_prc', 'plaid')"
+    )
+    db.execute(
+        "INSERT INTO app.transaction_categories "
+        "(transaction_id, category, merchant_id) VALUES "
+        "('txn_pr1', 'Shopping', 'm_rejected'), "
+        "('txn_pr2', 'Shopping', 'm_rejected'), "
+        "('txn_pr3', 'Shopping', 'm_zzz'), "
+        "('txn_pr4', 'Shopping', 'm_aaa')"
+    )
+    r = MerchantResolver(db)
+    r._decisions.insert(  # pyright: ignore[reportPrivateUsage]
+        decision_id="d_prc_rej",
+        ref_kind="merchant_entity_id",
+        ref_value="ent_prc",
+        source_type="plaid",
+        provider_merchant_name=None,
+        candidate_merchant_id="m_rejected",
+        confidence_score=0.5,
+        match_signals={},
+        decided_by="auto",
+        actor="system",
+        status="pending",
+    )
+    r._decisions.update_status(  # pyright: ignore[reportPrivateUsage]
+        "d_prc_rej", status="rejected", decided_by="user", actor="cli"
+    )
+
+    result = r.harvest()
+
+    # live_pairs after filtering = [('m_zzz', 1), ('m_aaa', 1)] — 2 distinct merchants → conflict
+    pending = r._decisions.list_pending()  # pyright: ignore[reportPrivateUsage]
+    pending_for_ent = [d for d in pending if d["ref_value"] == "ent_prc"]
+    assert result.conflicts == 1, "one new conflict must be queued after filtering"
+    assert len(pending_for_ent) == 1
+    proposed = pending_for_ent[0]["candidate_merchant_id"]
+    assert proposed != "m_rejected", "the rejected merchant must never be proposed"

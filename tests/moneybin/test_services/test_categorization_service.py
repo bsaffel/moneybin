@@ -1326,3 +1326,88 @@ class TestSetCategoryAudit:
         assert before["category"] == "Food"
         assert after["category"] == "Travel"
         assert after["subcategory"] == "Flights"
+
+
+# ---------------------------------------------------------------------------
+# MERCHANT_RESOLUTION_OUTCOME_TOTAL counter (Finding #4)
+# ---------------------------------------------------------------------------
+
+
+class TestMerchantResolutionOutcomeMetric:
+    """Spec-mandated MERCHANT_RESOLUTION_OUTCOME_TOTAL counter increments correctly.
+
+    The spec requires one increment per resolved transaction, keyed by the
+    resolution outcome (adopted | auto_bound | proposed | minted). The counter
+    is incremented in _resolve_entity_merchant after the merchant_id is
+    confirmed non-None (covers all four real outcomes).
+    """
+
+    @pytest.mark.unit
+    def test_minted_outcome_increments_counter(self) -> None:
+        """_resolve_entity_merchant increments the metric for the 'minted' outcome."""
+        from unittest.mock import MagicMock
+
+        from moneybin.metrics.registry import MERCHANT_RESOLUTION_OUTCOME_TOTAL
+        from moneybin.services.categorization.orchestrator import (
+            CategorizationOrchestrator,
+        )
+        from moneybin.services.merchant_resolver import MerchantResolution
+
+        resolver = MagicMock()
+        resolver.resolve.return_value = MerchantResolution(
+            merchant_id="m_new", outcome="minted", created=True
+        )
+        before = MERCHANT_RESOLUTION_OUTCOME_TOTAL.labels(outcome="minted")._value.get()  # type: ignore[reportPrivateUsage] — prometheus internals
+
+        result = CategorizationOrchestrator._resolve_entity_merchant(  # pyright: ignore[reportPrivateUsage]
+            resolver,
+            {},
+            MagicMock(),
+            rejected=set(),
+            merchant_entity_id="ent_m1",
+            source_type="plaid",
+            provider_merchant_name="Cafe",
+            name_match=None,
+            current_merchant_id=None,
+        )
+
+        after = MERCHANT_RESOLUTION_OUTCOME_TOTAL.labels(outcome="minted")._value.get()  # type: ignore[reportPrivateUsage]
+        assert result == "m_new"
+        assert after == before + 1, "minted outcome must increment the counter"
+
+    @pytest.mark.unit
+    def test_proposed_outcome_increments_counter(self) -> None:
+        """_resolve_entity_merchant increments the metric for the 'proposed' outcome."""
+        from unittest.mock import MagicMock
+
+        from moneybin.metrics.registry import MERCHANT_RESOLUTION_OUTCOME_TOTAL
+        from moneybin.services.categorization.orchestrator import (
+            CategorizationOrchestrator,
+        )
+        from moneybin.services.merchant_resolver import MerchantResolution
+
+        resolver = MagicMock()
+        resolver.resolve.return_value = MerchantResolution(
+            merchant_id="m_prop", outcome="proposed"
+        )
+        before = MERCHANT_RESOLUTION_OUTCOME_TOTAL.labels(
+            outcome="proposed"
+        )._value.get()  # type: ignore[reportPrivateUsage]
+
+        result = CategorizationOrchestrator._resolve_entity_merchant(  # pyright: ignore[reportPrivateUsage]
+            resolver,
+            {},
+            MagicMock(),
+            rejected=set(),
+            merchant_entity_id="ent_p1",
+            source_type="plaid",
+            provider_merchant_name="Cafe",
+            name_match=None,
+            current_merchant_id=None,
+        )
+
+        after = MERCHANT_RESOLUTION_OUTCOME_TOTAL.labels(
+            outcome="proposed"
+        )._value.get()  # type: ignore[reportPrivateUsage]
+        assert result == "m_prop"
+        assert after == before + 1, "proposed outcome must increment the counter"

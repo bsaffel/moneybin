@@ -344,6 +344,13 @@ MERCHANT_LINK_CONFIDENCE = Histogram(
     "Resolution confidence for merchant-link candidate proposals.",
 )
 
+MERCHANT_RESOLUTION_OUTCOME_TOTAL = Counter(
+    "moneybin_merchant_resolution_outcome_total",
+    "Merchant entity-id resolution ladder outcome per resolved transaction.",
+    # outcome: adopted | auto_bound | proposed | minted
+    ["outcome"],
+)
+
 # ── MCP server ────────────────────────────────────────────────────────────────
 
 MCP_TOOL_CALLS_TOTAL = Counter(
