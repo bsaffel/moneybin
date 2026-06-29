@@ -404,3 +404,140 @@ def test_rejected_decision_not_reproposed(db: Database, applier: MatchApplier) -
     assert len(pending_after) == 0, (
         "a rejected candidate must not be re-proposed (queue would never drain)"
     )
+
+
+# ---------------------------------------------------------------------------
+# _propose return value (Finding B)
+# ---------------------------------------------------------------------------
+
+
+def test_propose_returns_false_when_blocked(db: Database) -> None:
+    """_propose returns False when an existing pending decision blocks re-proposal.
+
+    An already-pending (source, ref_value, candidate) triple must return False
+    so harvest() can distinguish "newly queued" from "already in queue".
+    """
+    r = MerchantResolver(db)
+    # Pre-seed a pending decision for (plaid, E_BP, M_BP).
+    r._decisions.insert(  # pyright: ignore[reportPrivateUsage]
+        decision_id="bp_existing",
+        ref_kind="merchant_entity_id",
+        ref_value="E_BP",
+        source_type="plaid",
+        provider_merchant_name=None,
+        candidate_merchant_id="M_BP",
+        confidence_score=0.5,
+        match_signals={},
+        decided_by="auto",
+        actor="system",
+        status="pending",
+    )
+
+    result = r._propose("E_BP", "plaid", None, "M_BP")  # pyright: ignore[reportPrivateUsage]
+    assert result is False, (
+        "_propose must return False when blocked by existing pending"
+    )
+
+
+def test_propose_returns_true_when_fresh(db: Database) -> None:
+    """_propose returns True when a decision is newly inserted (no existing block)."""
+    r = MerchantResolver(db)
+
+    result = r._propose("E_FRESH", "plaid", None, "M_FRESH")  # pyright: ignore[reportPrivateUsage]
+    assert result is True, "_propose must return True for a fresh (unblocked) insertion"
+
+    # Confirm the decision was actually inserted.
+    pending = r._decisions.list_pending()  # pyright: ignore[reportPrivateUsage]
+    assert any(d["ref_value"] == "E_FRESH" for d in pending), (
+        "a returned-True _propose must have inserted the decision"
+    )
+
+
+# ---------------------------------------------------------------------------
+# harvest() conflict counting (Finding B)
+# ---------------------------------------------------------------------------
+
+
+def _setup_merged_table(db: Database) -> None:
+    """Create prep schema and a real int_transactions__merged table for mutation tests."""
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS prep.int_transactions__merged ("
+        "  transaction_id VARCHAR PRIMARY KEY, "
+        "  merchant_entity_id VARCHAR, "
+        "  merchant_entity_source_type VARCHAR"
+        ")"
+    )
+
+
+def test_harvest_conflict_not_counted_when_already_queued(db: Database) -> None:
+    """harvest() returns conflicts=0 when the conflict is already in the queue.
+
+    If a pending decision already blocks _propose, the conflict must NOT be
+    counted again — re-running harvest on pre-existing data must not inflate
+    the conflict count reported to the user.
+    """
+    _setup_merged_table(db)
+
+    # Seed two transactions: same merchant_entity_id, two different merchant_ids.
+    # This creates a conflict scenario for harvest().
+    db.execute(
+        "INSERT INTO prep.int_transactions__merged VALUES "
+        "('txn_c1', 'ent_conflict', 'plaid'), "
+        "('txn_c2', 'ent_conflict', 'plaid')"
+    )
+    db.execute(
+        "INSERT INTO app.transaction_categories "
+        "(transaction_id, category, merchant_id) VALUES "
+        "('txn_c1', 'Shopping', 'm_dominant'), "
+        "('txn_c2', 'Shopping', 'm_other')"
+    )
+
+    # Pre-insert a pending decision for the dominant candidate (higher count).
+    # dominant = max(pairs, key=lambda p: (p[1], p[0]))[0]
+    # Both have count=1, tie-break by merchant_id str → 'm_other' > 'm_dominant'
+    # so dominant = 'm_other'. Pre-insert for 'm_other'.
+    r = MerchantResolver(db)
+    r._decisions.insert(  # pyright: ignore[reportPrivateUsage]
+        decision_id="pre_queued",
+        ref_kind="merchant_entity_id",
+        ref_value="ent_conflict",
+        source_type="plaid",
+        provider_merchant_name=None,
+        candidate_merchant_id="m_other",
+        confidence_score=0.5,
+        match_signals={},
+        decided_by="auto",
+        actor="system",
+        status="pending",
+    )
+
+    result = r.harvest()
+    assert result.conflicts == 0, (
+        "already-queued conflict must not be re-counted (harvest is idempotent for conflicts)"
+    )
+
+
+def test_harvest_conflict_counted_when_fresh(db: Database) -> None:
+    """harvest() returns conflicts=1 when a genuine new conflict is queued.
+
+    Control test: without a pre-existing decision, the conflict IS newly
+    queued and must be counted as 1.
+    """
+    _setup_merged_table(db)
+
+    # Same conflict scenario, no pre-existing pending decision.
+    db.execute(
+        "INSERT INTO prep.int_transactions__merged VALUES "
+        "('txn_f1', 'ent_fresh_c', 'plaid'), "
+        "('txn_f2', 'ent_fresh_c', 'plaid')"
+    )
+    db.execute(
+        "INSERT INTO app.transaction_categories "
+        "(transaction_id, category, merchant_id) VALUES "
+        "('txn_f1', 'Shopping', 'mf_a'), "
+        "('txn_f2', 'Shopping', 'mf_b')"
+    )
+
+    result = MerchantResolver(db).harvest()
+    assert result.conflicts == 1, "a freshly queued conflict must be counted as 1"

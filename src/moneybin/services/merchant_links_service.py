@@ -106,27 +106,29 @@ class MerchantLinksService:
         return count_pending_merchant_link_decisions(self._db)
 
     def pending(self) -> list[PendingMerchantLinkGroup]:
-        """Return pending decisions grouped by provider entity id (ref_value).
+        """Return pending decisions grouped by (source_type, ref_value).
 
         Reads ``MerchantLinkDecisionsRepo.list_pending()`` (already ordered by
         ``decided_at, decision_id``) and groups into
         ``PendingMerchantLinkGroup`` structs. Candidate display names are
         resolved from ``core.dim_merchants``; empty string when the row is
         absent or the table is not yet materialized (``CatalogException`` guard).
+        Keyed on ``(source_type, ref_value)`` so two providers sharing one opaque
+        ``ref_value`` form distinct review groups rather than folding into one.
         Read-only — no audit emitted.
         """
         rows = self._decisions.list_pending()
         if not rows:
             return []
 
-        # Group by ref_value preserving insertion order.
-        groups: dict[str, list[dict[str, Any]]] = {}
+        # Group by (source_type, ref_value) preserving insertion order.
+        groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
         for row in rows:
-            rv = row["ref_value"]
-            groups.setdefault(rv, []).append(row)
+            key = (row["source_type"], row["ref_value"])
+            groups.setdefault(key, []).append(row)
 
         result: list[PendingMerchantLinkGroup] = []
-        for ref_value, decisions in groups.items():
+        for (source_type, ref_value), decisions in groups.items():
             first = decisions[0]
             candidates = tuple(
                 PendingMerchantLinkCandidate(
@@ -142,7 +144,7 @@ class MerchantLinksService:
             result.append(
                 PendingMerchantLinkGroup(
                     ref_value=ref_value,
-                    source_type=first["source_type"],
+                    source_type=source_type,
                     provider_merchant_name=first.get("provider_merchant_name"),
                     candidates=candidates,
                 )

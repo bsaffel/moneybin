@@ -199,7 +199,7 @@ def merchants_links_set(
         MerchantLinksService(db, actor="mcp").set(
             decision_id, target_merchant_id=target_merchant_id, decided_by="user"
         )
-    status = "accepted" if target_merchant_id is not None else "rejected"
+    status = "accepted" if target_merchant_id else "rejected"
     return build_envelope(
         data=MerchantLinksSetPayload(decision_id=decision_id, status=status),
         actions=[

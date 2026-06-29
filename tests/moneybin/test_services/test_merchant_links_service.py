@@ -422,3 +422,132 @@ def test_history_returns_decisions(db: Database, seeded_pending_decision: None) 
     rows = svc.history()
     assert len(rows) == 1
     assert rows[0]["decision_id"] == _DECISION_ID
+
+
+# ---------------------------------------------------------------------------
+# pending / count_pending — composite (source_type, ref_value) key (Finding A)
+# ---------------------------------------------------------------------------
+
+
+def test_pending_groups_by_composite_key(db: Database) -> None:
+    """Same ref_value under different source_types produces TWO review groups.
+
+    The grouping key is (source_type, ref_value), not ref_value alone.
+    Two providers sharing one opaque ref_value must NOT fold into one group
+    (which would show only the first row's source_type and hide the second
+    provider's candidate).
+    """
+    decisions = MerchantLinkDecisionsRepo(db)
+    decisions.insert(
+        decision_id="d_plaid_comp",
+        ref_kind="merchant_entity_id",
+        ref_value=_REF_VALUE,
+        source_type="plaid",
+        candidate_merchant_id="mPlaidComp",
+        confidence_score=0.5,
+        match_signals={"signal": "fuzzy_name", "value": "plaid"},
+        decided_by="auto",
+        actor="system",
+    )
+    decisions.insert(
+        decision_id="d_sfin_comp",
+        ref_kind="merchant_entity_id",
+        ref_value=_REF_VALUE,
+        source_type="simplefin",
+        candidate_merchant_id="mSfinComp",
+        confidence_score=0.5,
+        match_signals={"signal": "fuzzy_name", "value": "sfin"},
+        decided_by="auto",
+        actor="system",
+    )
+
+    svc = MerchantLinksService(db)
+    groups = svc.pending()
+
+    assert len(groups) == 2, (
+        "same ref_value under different source_types must yield two groups"
+    )
+    source_types = {g.source_type for g in groups}
+    assert source_types == {"plaid", "simplefin"}, (
+        "each group must carry its own source_type from the composite key"
+    )
+
+
+def test_count_pending_composite_key(db: Database) -> None:
+    """count_pending counts distinct (source_type, ref_value) pairs, not just ref_values.
+
+    Two pending decisions sharing ref_value but with different source_types
+    must count as 2, not 1.
+    """
+    decisions = MerchantLinkDecisionsRepo(db)
+    decisions.insert(
+        decision_id="d_plaid_cnt",
+        ref_kind="merchant_entity_id",
+        ref_value=_REF_VALUE,
+        source_type="plaid",
+        candidate_merchant_id="mPlaidCnt",
+        confidence_score=0.5,
+        match_signals={"signal": "fuzzy_name", "value": "plaid"},
+        decided_by="auto",
+        actor="system",
+    )
+    decisions.insert(
+        decision_id="d_sfin_cnt",
+        ref_kind="merchant_entity_id",
+        ref_value=_REF_VALUE,
+        source_type="simplefin",
+        candidate_merchant_id="mSfinCnt",
+        confidence_score=0.5,
+        match_signals={"signal": "fuzzy_name", "value": "sfin"},
+        decided_by="auto",
+        actor="system",
+    )
+
+    svc = MerchantLinksService(db)
+    assert svc.count_pending() == 2, (
+        "distinct (source_type, ref_value) pairs: 2 different source_types × same "
+        "ref_value must count as 2"
+    )
+
+
+def test_pending_same_source_collapses_candidates(db: Database) -> None:
+    """Two candidates under one (source_type, ref_value) collapse into ONE group.
+
+    This is the normal multi-candidate review case: two merchants proposed for
+    the same provider entity id from the same source. They must form one group
+    with two candidates, not two separate groups.
+    """
+    decisions = MerchantLinkDecisionsRepo(db)
+    decisions.insert(
+        decision_id="d_multi_a",
+        ref_kind="merchant_entity_id",
+        ref_value="ent_multi",
+        source_type="plaid",
+        candidate_merchant_id="mMultiA",
+        confidence_score=0.5,
+        match_signals={"signal": "fuzzy_name", "value": "a"},
+        decided_by="auto",
+        actor="system",
+    )
+    decisions.insert(
+        decision_id="d_multi_b",
+        ref_kind="merchant_entity_id",
+        ref_value="ent_multi",
+        source_type="plaid",
+        candidate_merchant_id="mMultiB",
+        confidence_score=0.4,
+        match_signals={"signal": "fuzzy_name", "value": "b"},
+        decided_by="auto",
+        actor="system",
+    )
+
+    svc = MerchantLinksService(db)
+    groups = svc.pending()
+
+    assert len(groups) == 1, (
+        "two candidates under one (source_type, ref_value) must collapse into one group"
+    )
+    assert len(groups[0].candidates) == 2, (
+        "both candidates must appear in the single group"
+    )
+    assert svc.count_pending() == 1, "one (source_type, ref_value) pair must count as 1"

@@ -245,6 +245,34 @@ class TestMerchantsLinksSet:
         actions_text = " ".join(result["actions"])
         assert "merchants_links_pending" in actions_text
 
+    async def test_empty_string_target_returns_rejected_and_db_rejected(
+        self, mcp_db: object
+    ) -> None:
+        """Empty-string target_merchant_id must return status='rejected' in the envelope.
+
+        The service treats falsy target_merchant_id (None OR '') as REJECT. The
+        MCP tool must derive status with truthiness (``if target_merchant_id``)
+        so an empty-string call reports 'rejected', matching the service outcome.
+        Also verifies the DB decision is actually rejected — the service did
+        reject it, and the tool must report that faithfully.
+        """
+        _insert_decision(decision_id="ms050", ref_value="entity_S6")
+        data = (
+            await merchants_links_set(decision_id="ms050", target_merchant_id="")
+        ).to_dict()["data"]
+        assert data["status"] == "rejected", (
+            "empty-string target_merchant_id must report 'rejected', not 'accepted'"
+        )
+        # Verify the DB reflects the rejection — the service rejected it.
+        with get_database(read_only=True) as db:
+            row = db.execute(
+                "SELECT status FROM app.merchant_link_decisions "
+                "WHERE decision_id = 'ms050'"
+            ).fetchone()
+        assert row is not None and row[0] == "rejected", (
+            "DB decision must be 'rejected' after empty-string set"
+        )
+
 
 # ---------------------------------------------------------------------------
 # merchants_links_history

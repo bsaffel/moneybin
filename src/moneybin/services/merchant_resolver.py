@@ -33,18 +33,21 @@ _FUZZY_CONFIDENCE = 0.5
 
 
 def count_pending_merchant_link_decisions(db: Database) -> int:
-    """Distinct provider entity ids with pending, non-reversed decisions (queue depth).
+    """Distinct (source_type, provider entity id) pairs with pending, non-reversed decisions.
 
     Single source of truth for the review-queue count, shared by
     ``refresh_merchant_link_pending_gauge`` (observability) and
-    ``MerchantLinksService.count_pending`` (surface). Returns 0 when the table
-    does not yet exist (``CatalogException`` guard) so a fresh DB reports an
-    empty queue rather than raising.
+    ``MerchantLinksService.count_pending`` (surface). Counts the composite
+    ``(source_type, ref_value)`` pair — the same review unit as ``pending()``
+    — so two providers sharing one opaque ``ref_value`` count as two. Returns
+    0 when the table does not yet exist (``CatalogException`` guard) so a fresh
+    DB reports an empty queue rather than raising.
     """
     try:
         row = db.execute(
-            f"SELECT COUNT(DISTINCT ref_value) FROM {MERCHANT_LINK_DECISIONS.full_name} "  # noqa: S608  # TableRef constant
-            "WHERE status = 'pending' AND reversed_at IS NULL"
+            f"SELECT COUNT(*) FROM (SELECT DISTINCT source_type, ref_value "  # noqa: S608  # TableRef constant
+            f"FROM {MERCHANT_LINK_DECISIONS.full_name} "
+            "WHERE status = 'pending' AND reversed_at IS NULL)"
         ).fetchone()
     except duckdb.CatalogException:
         return 0
@@ -212,9 +215,16 @@ class MerchantResolver:
         source_type: str,
         provider_name: str | None,
         candidate_merchant_id: str,
-    ) -> None:
+    ) -> bool:
+        """Insert a pending decision for this (source_type, ref_value, candidate).
+
+        Returns True when the decision was newly inserted, False when an existing
+        pending or rejected (non-reversed) decision already blocked re-proposal.
+        Callers use the return value to distinguish "newly queued" from "already
+        in queue" — harvest() counts only newly queued conflicts.
+        """
         if self._decision_blocks_propose(ref_value, source_type, candidate_merchant_id):
-            return  # already proposed (pending) or user-rejected for this (source_type, ref_value, candidate)
+            return False  # already proposed (pending) or user-rejected for this (source_type, ref_value, candidate)
         self._decisions.insert(
             decision_id=uuid.uuid4().hex[:12],
             ref_kind="merchant_entity_id",
@@ -230,6 +240,7 @@ class MerchantResolver:
         )
         MERCHANT_LINK_CONFIDENCE.observe(_FUZZY_CONFIDENCE)
         refresh_merchant_link_pending_gauge(self._db)
+        return True
 
     def harvest(self) -> HarvestResult:
         """Bind established (provider id -> assigned merchant) facts from existing categorizations.
@@ -282,8 +293,11 @@ class MerchantResolver:
                 # row order). Without this, a tied conflict could propose a
                 # different candidate each run and defeat the _propose dedup.
                 dominant = max(pairs, key=lambda p: (p[1], p[0]))[0]
-                self._propose(ent, source_type, None, dominant)
-                conflicts += 1
+                # Count only conflicts actually queued — _propose returns False when an
+                # existing pending/rejected decision already blocks re-proposal, so a
+                # re-run does not re-report already-decided conflicts as freshly queued.
+                if self._propose(ent, source_type, None, dominant):
+                    conflicts += 1
         if conflicts:
             refresh_merchant_link_pending_gauge(self._db)
         return HarvestResult(bound=bound, conflicts=conflicts)
