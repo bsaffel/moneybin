@@ -596,12 +596,12 @@ Primary transaction read tool. Returns full transaction records with curation me
 
 ### `review`
 
-Orientation tool: pending counts across **all three** review queues (matches + categorize + account-links).
+Orientation tool: pending counts across **all four** review queues (matches + categorize + account-links + merchant-links).
 
 - **Sensitivity:** `low` — counts only.
 - **Unique parameters:** None.
-- **Behavior:** Returns `{matches_pending: int, categorize_pending: int, account_links_pending: int, total: int}` so the agent can answer "what needs my attention?" in one sweep. Drill into `transactions_categorize_pending` for categorization items, `transactions_matches_pending` for match proposals, and `accounts_links_pending` for account-link decisions.
-- **Service:** `ReviewService(MatchingService, CategorizationService, AccountLinksService).status()`
+- **Behavior:** Returns `{matches_pending: int, categorize_pending: int, account_links_pending: int, merchant_links_pending: int, total: int}` so the agent can answer "what needs my attention?" in one sweep. Drill into `transactions_categorize_pending` for categorization items, `transactions_matches_pending` for match proposals, and `accounts_links_pending` for account-link decisions.
+- **Service:** `ReviewService(MatchingService, CategorizationService, AccountLinksService, MerchantLinksService).status()`
 - **CLI:** `moneybin review`
 
 ### `transactions_review` *(deprecated — removed after one minor release)*

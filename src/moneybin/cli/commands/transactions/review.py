@@ -158,6 +158,7 @@ def _print_status(type_: str, output: OutputFormat) -> None:
     from moneybin.services.account_links_service import AccountLinksService
     from moneybin.services.categorization import CategorizationService
     from moneybin.services.matching_service import MatchingService
+    from moneybin.services.merchant_links_service import MerchantLinksService
     from moneybin.services.review_service import ReviewService
 
     with handle_cli_errors():
@@ -166,6 +167,7 @@ def _print_status(type_: str, output: OutputFormat) -> None:
                 match_service=MatchingService(db, get_settings().matching),
                 categorize_service=CategorizationService(db),
                 account_links_service=AccountLinksService(db),
+                merchant_links_service=MerchantLinksService(db),
             )
             s = review_svc.status()
 
@@ -179,6 +181,7 @@ def _print_status(type_: str, output: OutputFormat) -> None:
                 matches_pending=s.matches_pending,
                 categorize_pending=s.categorize_pending,
                 account_links_pending=s.account_links_pending,
+                merchant_links_pending=s.merchant_links_pending,
                 total=s.total,
             )
         elif type_ == "matches":
@@ -204,4 +207,5 @@ def _print_status(type_: str, output: OutputFormat) -> None:
         typer.echo(f"Matches pending: {s.matches_pending}")
         typer.echo(f"Uncategorized transactions: {s.categorize_pending}")
         typer.echo(f"Account-link decisions pending: {s.account_links_pending}")
+        typer.echo(f"Merchant-link decisions pending: {s.merchant_links_pending}")
         typer.echo(f"Total: {s.total}")

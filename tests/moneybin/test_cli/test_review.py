@@ -24,10 +24,11 @@ def test_review_status_flag(
     result = runner.invoke(app, ["review", "--status"])
     assert result.exit_code == 0
     out = result.output.lower()
-    # All three queues should appear in text output
+    # All four queues should appear in text output
     assert "match" in out or "matches" in out
     assert "categori" in out
-    assert "account" in out or "link" in out
+    assert "account-link" in out
+    assert "merchant-link" in out
 
 
 @patch("moneybin.cli.commands.transactions.review.get_database")
@@ -35,7 +36,7 @@ def test_review_status_flag(
 def test_review_json_output(
     mock_get_settings: MagicMock, mock_get_db: MagicMock
 ) -> None:
-    """`moneybin review --status --output json` emits a three-way envelope."""
+    """`moneybin review --status --output json` emits a four-way envelope."""
     mock_db = MagicMock()
     mock_get_db.return_value.__enter__.return_value = mock_db
     mock_get_settings.return_value = MagicMock()
@@ -48,11 +49,13 @@ def test_review_json_output(
     assert "matches_pending" in payload
     assert "categorize_pending" in payload
     assert "account_links_pending" in payload
+    assert "merchant_links_pending" in payload
     assert "total" in payload
     assert payload["total"] == (
         payload["matches_pending"]
         + payload["categorize_pending"]
         + payload["account_links_pending"]
+        + payload["merchant_links_pending"]
     )
 
 

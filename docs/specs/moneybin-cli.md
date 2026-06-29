@@ -189,7 +189,7 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |     [--confirm-all]                   Non-interactive: confirm all items in scope
 |     [--limit N]                       Cap items per session
 |     [--output text|json] [-q]
-|   Aggregates matches_pending + categorize_pending + account_links_pending in one sweep.
+|   Aggregates matches_pending + categorize_pending + account_links_pending + merchant_links_pending in one sweep.
 |   Use `--status` for counts only; drill into `accounts links pending`,
 |   `transactions matches list`, or `transactions categorize pending` for queue contents.
 |

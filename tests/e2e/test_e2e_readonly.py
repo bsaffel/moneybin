@@ -378,7 +378,7 @@ class TestDBReadOnlyCommands:
         assert "account" in out or "link" in out
 
     def test_review_status_json(self, e2e_profile: dict[str, str]) -> None:
-        """`moneybin review --status --output json` returns a three-field envelope."""
+        """`moneybin review --status --output json` returns a four-field envelope."""
         import json
 
         result = run_cli("review", "--status", "--output", "json", env=e2e_profile)
@@ -388,11 +388,13 @@ class TestDBReadOnlyCommands:
         assert "matches_pending" in payload
         assert "categorize_pending" in payload
         assert "account_links_pending" in payload
+        assert "merchant_links_pending" in payload
         assert "total" in payload
         assert payload["total"] == (
             payload["matches_pending"]
             + payload["categorize_pending"]
             + payload["account_links_pending"]
+            + payload["merchant_links_pending"]
         )
 
     def test_review_type_account_links_status(
