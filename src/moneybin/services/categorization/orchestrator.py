@@ -758,21 +758,27 @@ class CategorizationOrchestrator:
                 name_match=merchant,
                 current_merchant_id=merchant["merchant_id"] if merchant else None,
             )
-            # Choose the category to write:
-            # - name match with a category  → use it (today's behavior);
-            # - resolver returned merchant_id → look up from catalog default;
-            # - otherwise → nothing to write.
-            category: str | None
-            subcategory: str | None
-            if merchant and merchant.get("category"):
-                category = str(merchant["category"])
-                subcategory = merchant["subcategory"]
-            elif merchant_id is not None:
-                # Entity-adoption path: the merchant's default category, which
-                # may be NULL for a Plaid-minted merchant (spec Decision 8).
-                category, subcategory = merchant_cat.get(merchant_id, (None, None))
-            else:
-                category, subcategory = None, None
+            # Choose the category to write.
+            # Rung-1 "skip name matching": the adopted/bound merchant's own
+            # category wins over a disagreeing name match — the entity binding
+            # is the identity source of truth.  Fall back to the name match's
+            # category only when the resolved merchant has no default category
+            # (e.g. a Plaid-minted merchant) or no entity resolution occurred.
+            category: str | None = None
+            subcategory: str | None = None
+            if merchant_id is not None:
+                # Rung-1 "skip name matching": the adopted/bound merchant's own category wins
+                # over a disagreeing name match — the entity binding is the identity source of truth.
+                cat, subcat = merchant_cat.get(merchant_id, (None, None))
+                if cat is not None:
+                    category, subcategory = cat, subcat
+            if category is None and merchant and merchant.get("category"):
+                # Resolved merchant has no default category (fresh plaid mint) or no entity
+                # resolution occurred → fall back to the name match's category.
+                category, subcategory = (
+                    str(merchant["category"]),
+                    merchant["subcategory"],
+                )
             # app.transaction_categories.category is NOT NULL — skip the write
             # when category is None (identity captured by binding; category
             # deferred to rules / LLM / Tier-2b).

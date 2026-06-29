@@ -1654,6 +1654,153 @@ class TestApplyMerchantCategoriesEntityResolution:
         ).fetchone()
         assert row is not None and row[0] == 0
 
+    @pytest.mark.unit
+    def test_adopted_entity_merchant_category_wins_over_name_match(
+        self, db: Database
+    ) -> None:
+        """Rung-1 adopted merchant's category wins over a disagreeing name match.
+
+        When an entity id is bound to merchant A (category C_A) but the
+        transaction text matches a DIFFERENT merchant B (category C_B), the
+        spec says rung-1 "skip name matching" — the binding is the identity
+        source of truth and A's category must win. Bug #9: previously the
+        block wrote B's category with A's merchant_id (inconsistent row).
+        """
+        from moneybin.repositories.merchant_links_repo import MerchantLinksRepo
+
+        _setup_prep_table(db)
+
+        # Merchant A — the entity is bound to this one (category C_A = "Business").
+        mid_a = create_merchant(
+            db,
+            "CORP_A_UNIQUE_PATTERN",
+            "Corp A",
+            match_type="exact",
+            category="Business",
+            subcategory="Services",
+        )
+
+        # Merchant B — the transaction text matches this one (category C_B = "Shopping").
+        _mid_b = create_merchant(
+            db,
+            "SHOPSTORE",
+            "Shop Store",
+            match_type="contains",
+            category="Shopping",
+            subcategory="General",
+        )
+
+        # Bind entity "ent_r9" → merchant A.
+        MerchantLinksRepo(db).insert(
+            link_id="lnk_r9a",
+            merchant_id=mid_a,
+            ref_kind="merchant_entity_id",
+            ref_value="ent_r9",
+            source_type="plaid",
+            decided_by="auto",
+            actor="system",
+            status="accepted",
+        )
+
+        # Transaction description matches "SHOPSTORE" (merchant B), not merchant A.
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+            "VALUES ('TXN_R9A', 'ACC1', DATE '2026-01-01', -30.00, 'SHOPSTORE PURCHASE', 'plaid')"
+        )
+        db.execute(
+            "INSERT INTO prep.int_transactions__merged VALUES "
+            "('TXN_R9A', 'ent_r9', 'plaid', 'Corp A')"
+        )
+
+        count = apply_merchant_categories(db)
+
+        assert count == 1, "entity-adopted transaction must be categorized"
+        row = db.execute(
+            "SELECT category, subcategory, merchant_id "
+            "FROM app.transaction_categories WHERE transaction_id = 'TXN_R9A'"
+        ).fetchone()
+        assert row is not None, "categorization row must be written"
+        assert row[0] == "Business", (
+            f"adopted merchant A's category must win, got {row[0]!r}"
+        )
+        assert row[1] == "Services", (
+            f"adopted merchant A's subcategory must win, got {row[1]!r}"
+        )
+        assert row[2] == mid_a, (
+            f"merchant_id must be A ({mid_a!r}), not name-match B; got {row[2]!r}"
+        )
+
+    @pytest.mark.unit
+    def test_name_match_category_wins_when_entity_merchant_has_no_category(
+        self, db: Database
+    ) -> None:
+        """Name-match category is used when the adopted merchant has no default category.
+
+        When an entity id is bound to merchant A (no category, e.g. Plaid-
+        minted) but the transaction text matches merchant B (category C_B),
+        the name match's category must fill in as the fallback. This pins
+        the fallback path in the #9 fix.
+        """
+        from moneybin.repositories.merchant_links_repo import MerchantLinksRepo
+
+        _setup_prep_table(db)
+
+        # Merchant A — entity bound here, NO category.
+        mid_a_nocat = create_merchant(
+            db,
+            "NOCAT_ENTITY_CORP",
+            "NoCat Entity Corp",
+            match_type="exact",
+        )
+
+        # Merchant B — name match has a category.
+        _mid_b2 = create_merchant(
+            db,
+            "FALLBACKSTORE",
+            "Fallback Store",
+            match_type="contains",
+            category="Food & Drink",
+            subcategory="Restaurants",
+        )
+
+        MerchantLinksRepo(db).insert(
+            link_id="lnk_r9b",
+            merchant_id=mid_a_nocat,
+            ref_kind="merchant_entity_id",
+            ref_value="ent_r9b",
+            source_type="plaid",
+            decided_by="auto",
+            actor="system",
+            status="accepted",
+        )
+
+        # Description matches "FALLBACKSTORE" (merchant B with category).
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+            "VALUES ('TXN_R9B', 'ACC1', DATE '2026-01-01', -12.00, 'FALLBACKSTORE MEAL', 'plaid')"
+        )
+        db.execute(
+            "INSERT INTO prep.int_transactions__merged VALUES "
+            "('TXN_R9B', 'ent_r9b', 'plaid', 'NoCat Entity Corp')"
+        )
+
+        count = apply_merchant_categories(db)
+
+        assert count == 1, "fallback-to-name-match path must categorize the transaction"
+        row = db.execute(
+            "SELECT category, subcategory, merchant_id "
+            "FROM app.transaction_categories WHERE transaction_id = 'TXN_R9B'"
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "Food & Drink", (
+            f"name-match fallback category must be used; got {row[0]!r}"
+        )
+        assert row[2] == mid_a_nocat, (
+            "merchant_id must still be the adopted entity merchant A"
+        )
+
 
 # ---------------------------------------------------------------------------
 # #7 regression: resolver binding written even when categorization is

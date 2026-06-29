@@ -96,6 +96,25 @@ class MerchantResolver:
         ).fetchall()
         return {(str(r[0]), str(r[1])): str(r[2]) for r in rows}
 
+    def load_pending(self) -> set[tuple[str, str]]:
+        """(source_type, ref_value) for all pending, non-reversed decisions.
+
+        Used as a batch cache by ``harvest()``: entities with a pending decision
+        are awaiting user review and must never be auto-bound — doing so would
+        silently accept a match the user has been asked to confirm (a "magic
+        stays visible" violation). Degrades to ``set()`` when the decisions table
+        is absent (``CatalogException`` guard) so a fresh DB returns an empty set.
+        """
+        try:
+            rows = self._db.execute(
+                f"SELECT source_type, ref_value "  # noqa: S608  # TableRef constant
+                f"FROM {MERCHANT_LINK_DECISIONS.full_name} "
+                "WHERE status = 'pending' AND reversed_at IS NULL"
+            ).fetchall()
+        except duckdb.CatalogException:
+            return set()
+        return {(str(r[0]), str(r[1])) for r in rows}
+
     def load_rejected(self) -> set[tuple[str, str, str]]:
         """(source_type, ref_value, candidate_merchant_id) for all rejected, non-reversed decisions.
 
@@ -250,6 +269,9 @@ class MerchantResolver:
         Skips merchant_ids the user already rejected for an entity id — re-binding
         one would silently re-adopt a rejected merchant; leaving it unbound lets the
         next categorization pass mint a new merchant for the id (spec Decision 6).
+        Also skips entities with a pending (under-review) decision — auto-binding
+        one would silently accept a match the user has been asked to confirm, a
+        "magic stays visible" violation.
 
         Keys on ``merchant_entity_source_type`` — the source_type of the merge
         member that issued the entity id — NOT the merge-winner
@@ -286,9 +308,12 @@ class MerchantResolver:
         bound = conflicts = 0
         existing = self.load_bindings()
         rejected = self.load_rejected()
+        pending = self.load_pending()
         for (source_type, ent), pairs in by_id.items():
             if (source_type, ent) in existing:
                 continue  # already bound (idempotent)
+            if (source_type, ent) in pending:
+                continue  # under review — never auto-bind/propose an entity awaiting a user decision
             # Drop merchants the user already rejected for this entity id — re-binding
             # one would silently re-adopt a rejected merchant. harvest() must respect
             # rejections like resolve() does (spec Decision 6).

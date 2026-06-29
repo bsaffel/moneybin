@@ -702,6 +702,146 @@ def test_harvest_proposes_non_rejected_candidate_in_conflict(db: Database) -> No
     assert proposed != "m_rejected", "the rejected merchant must never be proposed"
 
 
+# ---------------------------------------------------------------------------
+# harvest() skips entities with a PENDING decision (Bug #8)
+# ---------------------------------------------------------------------------
+
+
+def test_load_pending_returns_only_pending_non_reversed(db: Database) -> None:
+    """load_pending() returns only (source_type, ref_value) for pending, non-reversed decisions.
+
+    Seeds three decisions: one pending (must be in result), one accepted
+    (must NOT be in result — different status), one pending-then-reversed
+    (must NOT be in result — reversed_at IS NOT NULL).
+    """
+    r = MerchantResolver(db)
+    decisions = r._decisions  # pyright: ignore[reportPrivateUsage]
+
+    # Pending, non-reversed — should appear.
+    decisions.insert(
+        decision_id="lp_pending",
+        ref_kind="merchant_entity_id",
+        ref_value="E_LP_PEND",
+        source_type="plaid",
+        provider_merchant_name=None,
+        candidate_merchant_id="M_LP",
+        confidence_score=0.5,
+        match_signals={},
+        decided_by="auto",
+        actor="system",
+        status="pending",
+    )
+
+    # Accepted — must NOT appear.
+    decisions.insert(
+        decision_id="lp_accepted",
+        ref_kind="merchant_entity_id",
+        ref_value="E_LP_ACC",
+        source_type="plaid",
+        provider_merchant_name=None,
+        candidate_merchant_id="M_LP_A",
+        confidence_score=0.5,
+        match_signals={},
+        decided_by="auto",
+        actor="system",
+        status="pending",
+    )
+    decisions.update_status(
+        "lp_accepted", status="accepted", decided_by="user", actor="cli"
+    )
+
+    # Pending then reversed — must NOT appear.
+    decisions.insert(
+        decision_id="lp_reversed",
+        ref_kind="merchant_entity_id",
+        ref_value="E_LP_REV",
+        source_type="plaid",
+        provider_merchant_name=None,
+        candidate_merchant_id="M_LP_R",
+        confidence_score=0.5,
+        match_signals={},
+        decided_by="auto",
+        actor="system",
+        status="pending",
+    )
+    db.execute(
+        "UPDATE app.merchant_link_decisions SET reversed_at = CURRENT_TIMESTAMP, "
+        "reversed_by = 'user' WHERE decision_id = 'lp_reversed'"
+    )
+
+    result = r.load_pending()
+
+    assert ("plaid", "E_LP_PEND") in result, "pending non-reversed must be in result"
+    assert ("plaid", "E_LP_ACC") not in result, "accepted must not be in result"
+    assert ("plaid", "E_LP_REV") not in result, "reversed pending must not be in result"
+
+
+def test_harvest_skips_entity_with_pending_decision(db: Database) -> None:
+    """harvest() does NOT auto-bind an entity that has a pending (under-review) decision.
+
+    Entity E with a single merchant M in categorizations AND a pre-inserted
+    pending merchant_link_decisions row for E must NOT be bound by harvest().
+    The pending decision signals the entity is under review — auto-binding it
+    would silently accept a match still awaiting user confirmation ("magic stays
+    visible" violation).
+    """
+    _setup_merged_table_with_entity(db)
+    db.execute(
+        "INSERT INTO prep.int_transactions__merged VALUES ('txn_pend1', 'ent_pend', 'plaid', NULL)"
+    )
+    db.execute(
+        "INSERT INTO app.transaction_categories "
+        "(transaction_id, category, merchant_id) VALUES "
+        "('txn_pend1', 'Shopping', 'mPendMerchant')"
+    )
+    r = MerchantResolver(db)
+    # Pre-seed a pending decision for (plaid, ent_pend, mPendMerchant).
+    r._decisions.insert(  # pyright: ignore[reportPrivateUsage]
+        decision_id="d_pend1",
+        ref_kind="merchant_entity_id",
+        ref_value="ent_pend",
+        source_type="plaid",
+        provider_merchant_name=None,
+        candidate_merchant_id="mPendMerchant",
+        confidence_score=0.5,
+        match_signals={},
+        decided_by="auto",
+        actor="system",
+        status="pending",
+    )
+
+    result = r.harvest()
+
+    assert result.bound == 0, "pending entity must NOT be auto-bound"
+    assert r._links.lookup("plaid", "ent_pend") is None, (  # pyright: ignore[reportPrivateUsage]
+        "pending entity must remain unbound — leave it for review"
+    )
+
+
+def test_harvest_binds_entity_with_no_pending_or_rejected_decision(
+    db: Database,
+) -> None:
+    """Control: single merchant E with NO pending/rejected decision IS bound.
+
+    Preserves the existing harvest behavior when no pending decision exists.
+    """
+    _setup_merged_table_with_entity(db)
+    db.execute(
+        "INSERT INTO prep.int_transactions__merged VALUES "
+        "('txn_ctrl1', 'ent_ctrl', 'plaid', NULL)"
+    )
+    db.execute(
+        "INSERT INTO app.transaction_categories "
+        "(transaction_id, category, merchant_id) VALUES "
+        "('txn_ctrl1', 'Shopping', 'mCtrlMerchant')"
+    )
+
+    result = MerchantResolver(db).harvest()
+
+    assert result.bound == 1, "no-decision single-merchant entity must be bound"
+    assert MerchantResolver(db)._links.lookup("plaid", "ent_ctrl") == "mCtrlMerchant"  # pyright: ignore[reportPrivateUsage]
+
+
 def test_harvest_conflict_carries_provider_name(db: Database) -> None:
     """harvest() conflict proposals carry provider_merchant_name from the merged view.
 
