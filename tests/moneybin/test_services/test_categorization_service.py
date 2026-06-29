@@ -518,6 +518,60 @@ class TestFetchUncategorizedRowsFallback:
 
 
 # ---------------------------------------------------------------------------
+# _categorize_items_inner BinderException fallback ([4])
+# ---------------------------------------------------------------------------
+
+
+class TestCategorizationOrchestratorBinderFallback:
+    """[4] _categorize_items_inner falls back when prep view lacks entity columns."""
+
+    @pytest.mark.unit
+    def test_binder_exception_caught_inner_not_outer(
+        self, db: Database, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Prep view exists but lacks M1T entity columns → BinderException → inner fallback.
+
+        Mirrors TestFetchUncategorizedRowsFallback: simulates a post-code-upgrade,
+        pre-re-transform DB where the prep view predates the M1T entity columns.
+        The ``with_entity`` query raises ``duckdb.BinderException`` (missing
+        column). The inner ``except`` must catch it so ``txn_rows`` is populated
+        from the ``without_entity`` fallback — not left empty by the outer guard.
+
+        Proof: the outer catch emits "Could not batch-fetch transaction rows";
+        that warning must NOT appear when the inner fallback handles it.
+        """
+        import logging
+
+        db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+        db.execute("DROP TABLE IF EXISTS prep.int_transactions__merged")
+        db.execute(
+            "CREATE TABLE prep.int_transactions__merged (transaction_id VARCHAR)"
+        )
+        db.execute("INSERT INTO prep.int_transactions__merged VALUES ('TXN_BINDER')")
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+            "VALUES ('TXN_BINDER', 'ACC1', '2025-06-01', -5.00, 'COFFEE SHOP', 'ofx')"
+        )
+
+        svc = CategorizationService(db)
+        with caplog.at_level(logging.WARNING):
+            # Category validation is skipped when the categories view is empty
+            # (the stub returns 0 rows → valid_category_set is falsy → skip).
+            svc.categorize_items([
+                CategorizationItem(
+                    transaction_id="TXN_BINDER",
+                    category="Food & Drink",
+                )
+            ])
+
+        assert "Could not batch-fetch transaction rows" not in caplog.text, (
+            "outer except must NOT fire — BinderException must be caught by "
+            "the inner fallback so txn_rows is populated from without_entity"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Deterministic categorization pipeline
 # ---------------------------------------------------------------------------
 

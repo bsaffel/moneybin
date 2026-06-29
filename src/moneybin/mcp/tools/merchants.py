@@ -180,9 +180,11 @@ def merchants_links_set(
     = null), marks only this decision rejected.
 
     target_merchant_id MUST be passed explicitly — there is no default:
-    - Pass the candidate_merchant_id from merchants_links_pending to BIND.
-    - Pass null to REJECT (the provider entity id stays unbound; the
-      resolver will mint a fresh proposal on the next run).
+    - Pass the decision's own candidate_merchant_id to BIND (confirming
+      safety check: target must equal the decision's candidate).
+    - Pass null to REJECT (the provider entity id stays unbound; the declined
+      pairing is not re-proposed, and the resolver mints a new merchant for the
+      id on its next categorization pass).
 
     Mutation surface: writes app.merchant_link_decisions + app.merchant_links.
     Revert is via the audit log in app.audit_log (no undo tool yet; undo
@@ -299,10 +301,12 @@ def register_merchants_tools(mcp: FastMCP) -> None:
         "merchants_links_set",
         "Accept (bind) or reject one pending merchant-link decision. "
         "Pass target_merchant_id = candidate_merchant_id to BIND the provider "
-        "entity id to that canonical merchant. Pass null to REJECT — the "
-        "provider entity id stays unbound; the resolver will re-propose on the "
-        "next run. target_merchant_id has no default: pass it explicitly to avoid "
-        "accidental rejection. "
+        "entity id to that canonical merchant (target must equal the decision's "
+        "own candidate_merchant_id — a confirming safety check). Pass null to "
+        "REJECT — the provider entity id stays unbound; the declined pairing is "
+        "not re-proposed, and the resolver mints a new merchant for the id on "
+        "its next categorization pass. target_merchant_id has no default: pass "
+        "it explicitly to avoid accidental rejection. "
         "Writes app.merchant_link_decisions + app.merchant_links; revert via "
         "app.audit_log (no undo tool yet). Discover pending decisions with "
         "merchants_links_pending.",

@@ -93,6 +93,25 @@ class MerchantResolver:
         ).fetchall()
         return {(str(r[0]), str(r[1])): str(r[2]) for r in rows}
 
+    def load_rejected(self) -> set[tuple[str, str, str]]:
+        """(source_type, ref_value, candidate_merchant_id) for all rejected, non-reversed decisions.
+
+        Used as a batch cache by ``resolve()``: when a name-matched candidate appears
+        in this set the resolver falls through to rung 4 (mint) instead of returning
+        the rejected candidate, per spec Decision 6. Degrades to ``set()`` when the
+        decisions table is absent (``CatalogException`` guard) so a fresh DB returns
+        an empty rejected set rather than raising.
+        """
+        try:
+            rows = self._db.execute(
+                f"SELECT source_type, ref_value, candidate_merchant_id "  # noqa: S608  # TableRef constant
+                f"FROM {MERCHANT_LINK_DECISIONS.full_name} "
+                "WHERE status = 'rejected' AND reversed_at IS NULL"
+            ).fetchall()
+        except duckdb.CatalogException:
+            return set()
+        return {(str(r[0]), str(r[1]), str(r[2])) for r in rows}
+
     def resolve(
         self,
         *,
@@ -101,6 +120,7 @@ class MerchantResolver:
         provider_merchant_name: str | None,
         name_match: Mapping[str, object] | None,
         bindings: dict[tuple[str, str], str],
+        rejected: set[tuple[str, str, str]],
         applier: MatchApplier,
     ) -> MerchantResolution:
         """Run the adopt-or-mint ladder and return the resolution outcome."""
@@ -115,13 +135,19 @@ class MerchantResolver:
         # Rung 2/3 — there is a name match.
         if name_match is not None and name_match.get("merchant_id"):
             mid = str(name_match["merchant_id"])
-            if name_match.get("strength") == "exact":
-                self._bind(merchant_entity_id, source_type, mid, decided_by="auto")
-                bindings[(source_type, merchant_entity_id)] = mid
-                return MerchantResolution(merchant_id=mid, outcome="auto_bound")
-            # Fuzzy / ambiguous → propose, do NOT bind. Categorization still uses mid.
-            self._propose(merchant_entity_id, source_type, provider_merchant_name, mid)
-            return MerchantResolution(merchant_id=mid, outcome="proposed")
+            if (source_type, merchant_entity_id, mid) not in rejected:
+                if name_match.get("strength") == "exact":
+                    self._bind(merchant_entity_id, source_type, mid, decided_by="auto")
+                    bindings[(source_type, merchant_entity_id)] = mid
+                    return MerchantResolution(merchant_id=mid, outcome="auto_bound")
+                # Fuzzy / ambiguous → propose, do NOT bind. Categorization still uses mid.
+                self._propose(
+                    merchant_entity_id, source_type, provider_merchant_name, mid
+                )
+                return MerchantResolution(merchant_id=mid, outcome="proposed")
+            # else: the matched candidate was user-rejected for this entity id →
+            # fall through to rung 4 (mint a new merchant), per spec Decision 6:
+            # "reject → resolver mints a new merchant for the id on its next pass."
 
         # Rung 4 — no name match: mint a merchant from the provider's data, bind.
         canonical = (
@@ -153,26 +179,28 @@ class MerchantResolver:
         )
 
     def _decision_blocks_propose(
-        self, ref_value: str, candidate_merchant_id: str
+        self, ref_value: str, source_type: str, candidate_merchant_id: str
     ) -> bool:
         """True when an existing decision should suppress re-proposing this binding.
 
         Dedups proposals: N uncategorized txns sharing one unbound fuzzy entity
         must not create N duplicate pending rows, and a re-run of ``run()`` must
         not re-propose an already-decided conflict. Blocks on a ``pending`` OR a
-        ``rejected`` (non-reversed) decision for ``(ref_value,
+        ``rejected`` (non-reversed) decision for ``(source_type, ref_value,
         candidate_merchant_id)`` — re-proposing a user-rejected candidate every
         run would mean the queue never drains. A ``reversed`` decision is NOT a
         block (``reversed_at IS NULL``), so a reversal re-opens the proposal.
+        Keyed on ``source_type`` so two providers sharing one opaque ``ref_value``
+        do not cross-suppress each other.
         Degrades to ``False`` when the decisions table is absent
         (``CatalogException`` guard).
         """
         try:
             row = self._db.execute(
                 f"SELECT 1 FROM {MERCHANT_LINK_DECISIONS.full_name} "  # noqa: S608  # TableRef constant + parameterized values
-                "WHERE ref_value = ? AND candidate_merchant_id = ? "
+                "WHERE ref_value = ? AND source_type = ? AND candidate_merchant_id = ? "
                 "AND status IN ('pending', 'rejected') AND reversed_at IS NULL LIMIT 1",
-                [ref_value, candidate_merchant_id],
+                [ref_value, source_type, candidate_merchant_id],
             ).fetchone()
         except duckdb.CatalogException:
             return False
@@ -185,8 +213,8 @@ class MerchantResolver:
         provider_name: str | None,
         candidate_merchant_id: str,
     ) -> None:
-        if self._decision_blocks_propose(ref_value, candidate_merchant_id):
-            return  # already proposed (pending) or user-rejected for this (ref_value, candidate)
+        if self._decision_blocks_propose(ref_value, source_type, candidate_merchant_id):
+            return  # already proposed (pending) or user-rejected for this (source_type, ref_value, candidate)
         self._decisions.insert(
             decision_id=uuid.uuid4().hex[:12],
             ref_kind="merchant_entity_id",

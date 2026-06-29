@@ -222,12 +222,19 @@ def test_set_reject_sweeps_all_siblings(db: Database) -> None:
 def test_set_accept_unknown_merchant_raises_and_writes_nothing(
     db: Database, seeded_pending_decision: None
 ) -> None:
-    """[3] Accept into a merchant absent from core.dim_merchants raises UserError, no binding."""
-    _seed_merchants(db, "mReal")  # a different real merchant exists; target does NOT
+    """[3] Accept into the decision's candidate (which doesn't exist) raises UserError, no binding.
+
+    The confirming safety check (target == candidate) passes since we pass the
+    decision's own candidate_merchant_id. The merchant-existence check then fires
+    because _CANDIDATE_MERCHANT_ID was never seeded into core.dim_merchants.
+    """
+    # Do NOT seed _CANDIDATE_MERCHANT_ID — we want the existence check to fail.
+    _seed_merchants(db, "mReal")  # a different merchant exists, but target does NOT
 
     svc = MerchantLinksService(db, actor="cli")
     with pytest.raises(UserError) as exc:
-        svc.set(_DECISION_ID, target_merchant_id="mDoesNotExist")
+        # Pass the decision's own candidate (confirming check) but it's absent from dim.
+        svc.set(_DECISION_ID, target_merchant_id=_CANDIDATE_MERCHANT_ID)
 
     assert exc.value.code == error_codes.MUTATION_NOT_FOUND
     # Nothing written; decision rolled back to pending.
@@ -278,6 +285,123 @@ def test_set_accept_uniqueness_conflict_raises_usererror(
     assert exc.value.code == error_codes.MUTATION_CONSTRAINT_VIOLATION
     assert _REF_VALUE not in str(exc.value), (
         "error must not leak the provider entity id"
+    )
+
+
+# ---------------------------------------------------------------------------
+# set — confirming safety check (#3)
+# ---------------------------------------------------------------------------
+
+
+def test_set_wrong_target_raises_user_error(
+    db: Database, seeded_pending_decision: None
+) -> None:
+    """target_merchant_id != decision's candidate_merchant_id → UserError.
+
+    Mirrors test_account_links_service.py::test_set_wrong_target_raises_user_error.
+    Passing a merchant id that is not the decision's candidate must raise
+    MUTATION_INVALID_INPUT before checking whether the merchant exists at all.
+    """
+    _seed_merchants(db, "mOtherMerchant")  # different from _CANDIDATE_MERCHANT_ID
+    svc = MerchantLinksService(db, actor="cli")
+
+    with pytest.raises(UserError, match="does not match"):
+        svc.set(_DECISION_ID, target_merchant_id="mOtherMerchant")
+
+    assert svc.count_pending() == 1  # rolled back; still pending
+
+
+# ---------------------------------------------------------------------------
+# set — sibling sweep scoped to source_type (#2)
+# ---------------------------------------------------------------------------
+
+
+def test_reject_siblings_does_not_sweep_different_source_type(db: Database) -> None:
+    """_reject_pending_siblings only rejects siblings with the SAME source_type.
+
+    Two pending decisions share the same ref_value but have DIFFERENT source_types
+    (plaid vs simplefin). Accepting/rejecting the plaid decision must NOT sweep
+    the simplefin decision — the (source_type, ref_value) pair is the correct
+    dedup key.
+    """
+    decisions = MerchantLinkDecisionsRepo(db)
+    decisions.insert(
+        decision_id="d_plaid",
+        ref_kind="merchant_entity_id",
+        ref_value=_REF_VALUE,
+        source_type="plaid",
+        candidate_merchant_id="mPlaid",
+        confidence_score=0.5,
+        match_signals={"signal": "fuzzy_name", "value": "plaid"},
+        decided_by="auto",
+        actor="system",
+    )
+    decisions.insert(
+        decision_id="d_simplefin",
+        ref_kind="merchant_entity_id",
+        ref_value=_REF_VALUE,
+        source_type="simplefin",
+        candidate_merchant_id="mSimpleFin",
+        confidence_score=0.5,
+        match_signals={"signal": "fuzzy_name", "value": "simplefin"},
+        decided_by="auto",
+        actor="system",
+    )
+
+    _seed_merchants(db, "mPlaid")
+    svc = MerchantLinksService(db, actor="cli")
+
+    # Accept the plaid decision.
+    svc.set("d_plaid", target_merchant_id="mPlaid")
+
+    # The simplefin decision must still be pending — different source_type,
+    # different (source_type, ref_value) pairing, must not be swept.
+    simplefin = decisions.fetch_by_id("d_simplefin")
+    assert simplefin is not None
+    assert simplefin["status"] == "pending", (
+        "simplefin decision must not be swept by a plaid sibling-reject"
+    )
+
+
+def test_reject_siblings_sweeps_same_source_type(db: Database) -> None:
+    """_reject_pending_siblings sweeps a pending sibling with the same source_type.
+
+    Regression guard: the source_type scoping must not accidentally protect
+    same-source siblings — that would break the accept-auto-reject flow.
+    """
+    decisions = MerchantLinkDecisionsRepo(db)
+    decisions.insert(
+        decision_id="d_primary_same",
+        ref_kind="merchant_entity_id",
+        ref_value=_REF_VALUE,
+        source_type=_SOURCE_TYPE,
+        candidate_merchant_id="mPrimSame",
+        confidence_score=0.5,
+        match_signals={"signal": "fuzzy_name", "value": "primary"},
+        decided_by="auto",
+        actor="system",
+    )
+    decisions.insert(
+        decision_id="d_sibling_same",
+        ref_kind="merchant_entity_id",
+        ref_value=_REF_VALUE,
+        source_type=_SOURCE_TYPE,
+        candidate_merchant_id="mSibSame",
+        confidence_score=0.4,
+        match_signals={"signal": "fuzzy_name", "value": "sibling"},
+        decided_by="auto",
+        actor="system",
+    )
+
+    _seed_merchants(db, "mPrimSame")
+    svc = MerchantLinksService(db, actor="cli")
+
+    svc.set("d_primary_same", target_merchant_id="mPrimSame")
+
+    sibling = decisions.fetch_by_id("d_sibling_same")
+    assert sibling is not None
+    assert sibling["status"] == "rejected", (
+        "same-source sibling must still be swept (regression guard)"
     )
 
 

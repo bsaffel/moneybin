@@ -94,12 +94,12 @@ def links_set(
     into: str | None = typer.Option(
         None,
         "--into",
-        help="Accept: bind this provider entity id to the given candidate merchant_id",
+        help="Accept: bind this provider entity id to the decision's candidate merchant_id (confirming safety check)",
     ),
     new: bool = typer.Option(
         False,
         "--new",
-        help="Reject all candidates; resolver mints a new merchant on next run",
+        help="Reject all candidates; resolver mints a new merchant on its next categorization pass",
     ),
 ) -> None:
     """Accept (bind) or reject a pending merchant-link decision.

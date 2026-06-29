@@ -242,8 +242,10 @@ noun. CLI + MCP for parity (functional, not nominal).
 | Run resolution / backfill over unbound ids | `merchants links run` | `merchants_links_run` |
 
 - **`…set(decision_id, target_merchant_id=Y)`** binds the id to merchant `Y`
-  (auto-rejects siblings); `target_merchant_id=None` mints a new merchant for the
-  id. Envelope, sensitivity tier, and `actions[]` per [`mcp.md`](../../.claude/rules/mcp.md).
+  (Y must equal the decision's own `candidate_merchant_id` — a confirming safety
+  check, consistent with the account-links twin); auto-rejects siblings.
+  `target_merchant_id=None` mints a new merchant for the id. Envelope,
+  sensitivity tier, and `actions[]` per [`mcp.md`](../../.claude/rules/mcp.md).
 - **Inline discovery.** Sync / categorization results report *"N merchant-link(s)
   need review"* and point at the queue — the least-astonishing discovery path.
 - **Aggregate into the top-level `review`.** `ReviewService` gains a

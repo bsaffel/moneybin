@@ -183,23 +183,26 @@ class MerchantLinksService:
         return row is not None
 
     def _reject_pending_siblings(
-        self, ref_value: str, *, exclude: str, decided_by: str
+        self, ref_value: str, *, source_type: str, exclude: str, decided_by: str
     ) -> None:
-        """Reject every pending, non-reversed decision for ``ref_value`` except ``exclude``.
+        """Reject every pending, non-reversed decision for ``(source_type, ref_value)`` except ``exclude``.
 
         Shared by both the accept sweep (auto-reject losing candidates) and the
-        reject sweep (``--new`` = reject ALL candidates for the entity). Runs
-        inside the caller's open transaction (``in_outer_txn=True``).
+        reject sweep (``--new`` = reject ALL candidates for the entity). Scoped
+        to ``source_type`` so two providers sharing one opaque ``ref_value`` do
+        not cross-reject each other. Runs inside the caller's open transaction
+        (``in_outer_txn=True``).
         """
         sibling_rows = self._db.execute(
             f"""
             SELECT decision_id FROM {MERCHANT_LINK_DECISIONS.full_name}
             WHERE ref_value = ?
+              AND source_type = ?
               AND decision_id != ?
               AND status = 'pending'
               AND reversed_at IS NULL
             """,  # noqa: S608  # TableRef constant + parameterized values
-            [ref_value, exclude],
+            [ref_value, source_type, exclude],
         ).fetchall()
         for (sid,) in sibling_rows:
             self._decisions.update_status(
@@ -247,20 +250,26 @@ class MerchantLinksService:
         """Accept or reject a pending merchant-link decision atomically.
 
         ``target_merchant_id`` truthy (accept):
-          1. Validates ``target_merchant_id`` exists in ``core.dim_merchants``;
+          1. Validates ``target_merchant_id`` equals the decision's
+             ``candidate_merchant_id`` — a confirming safety check (mirrors
+             :class:`~moneybin.services.account_links_service.AccountLinksService`);
+             raises ``UserError`` when they diverge (MUTATION_INVALID_INPUT).
+          2. Validates ``target_merchant_id`` exists in ``core.dim_merchants``;
              raises ``UserError`` when the catalog is present and the id is
              absent (no dangling FK).
-          2. Inserts an accepted binding for the decision's ``ref_value`` →
+          3. Inserts an accepted binding for the decision's ``ref_value`` →
              ``target_merchant_id`` via ``MerchantLinksRepo.insert``.
-          3. Marks the named decision ``accepted``.
-          4. Auto-rejects every other pending, non-reversed decision for the
-             same ``ref_value`` (sibling candidates).
+          4. Marks the named decision ``accepted``.
+          5. Auto-rejects every other pending, non-reversed decision for the
+             same ``(source_type, ref_value)`` (sibling candidates).
 
         ``target_merchant_id`` falsy — ``None`` or ``""`` (reject):
           Marks the named decision AND every sibling pending decision for the
-          same ``ref_value`` ``rejected`` — ``--new`` means "reject ALL
-          candidates". The resolver mints a new proposal on the next ``run()``.
-          An empty-string ``target_merchant_id`` rejects (it never binds).
+          same ``(source_type, ref_value)`` ``rejected`` — ``--new`` means
+          "reject ALL candidates". The declined pairing is not re-proposed; the
+          resolver mints a new merchant for the id on its next categorization
+          pass (spec Decision 6). An empty-string ``target_merchant_id`` rejects
+          (it never binds).
 
         All writes run inside one ``db.begin()`` / ``db.commit()`` transaction.
         Each repo method is called with ``in_outer_txn=True`` so it joins the
@@ -269,6 +278,8 @@ class MerchantLinksService:
         Raises ``UserError`` when:
         - ``decision_id`` is not found (MUTATION_NOT_FOUND).
         - The decision is not in ``pending`` status (MUTATION_CONSTRAINT_VIOLATION).
+        - ``target_merchant_id`` does not match the decision's
+          ``candidate_merchant_id`` (MUTATION_INVALID_INPUT).
         - ``target_merchant_id`` is absent from ``core.dim_merchants``
           (MUTATION_NOT_FOUND).
         - The provider entity id is already bound to a different merchant
@@ -291,9 +302,16 @@ class MerchantLinksService:
             ref_value = decision["ref_value"]
 
             if target_merchant_id:
-                # Accept path: validate the target, bind ref_value →
-                # target_merchant_id, accept the named decision, auto-reject
-                # sibling pending decisions.
+                # Accept path: confirming safety check, then validate the target,
+                # bind ref_value → target_merchant_id, accept the named decision,
+                # auto-reject sibling pending decisions.
+                if target_merchant_id != decision["candidate_merchant_id"]:
+                    raise UserError(
+                        "target_merchant_id does not match the candidate named in "
+                        f"decision {decision_id!r}; pass the decision's own "
+                        "candidate_merchant_id as a confirming safety check.",
+                        code=error_codes.MUTATION_INVALID_INPUT,
+                    )
                 if not self._merchant_exists(target_merchant_id):
                     raise UserError(
                         f"No merchant found for id {target_merchant_id!r}.",
@@ -327,11 +345,14 @@ class MerchantLinksService:
                     in_outer_txn=True,
                 )
                 self._reject_pending_siblings(
-                    ref_value, exclude=decision_id, decided_by=decided_by
+                    ref_value,
+                    source_type=decision["source_type"],
+                    exclude=decision_id,
+                    decided_by=decided_by,
                 )
             else:
                 # Reject path (--new): reject the named decision AND all of its
-                # pending siblings for the same ref_value.
+                # pending siblings for the same (source_type, ref_value).
                 self._decisions.update_status(
                     decision_id,
                     status="rejected",
@@ -340,7 +361,10 @@ class MerchantLinksService:
                     in_outer_txn=True,
                 )
                 self._reject_pending_siblings(
-                    ref_value, exclude=decision_id, decided_by=decided_by
+                    ref_value,
+                    source_type=decision["source_type"],
+                    exclude=decision_id,
+                    decided_by=decided_by,
                 )
 
             self._db.commit()

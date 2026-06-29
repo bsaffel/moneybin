@@ -582,7 +582,7 @@ Backfill account-link proposals for accounts already in `core.dim_accounts` that
 
 **Service class:** `MerchantLinksService`
 
-These four tools implement the merchant-link review surface: the agent-facing peer to the Task 10 CLI. Provider entity ids (e.g. Plaid `merchant_entity_id`) arrive in the pending queue; the agent reviews and binds each to a canonical merchant in `core.dim_merchants`, or rejects so the resolver can mint a fresh proposal.
+These four tools implement the merchant-link review surface: the agent-facing peer to the Task 10 CLI. Provider entity ids (e.g. Plaid `merchant_entity_id`) arrive in the pending queue; the agent reviews and binds each to a canonical merchant in `core.dim_merchants`, or rejects so the resolver mints a new merchant for the id on its next categorization pass.
 
 > **Note:** An undo variant (`merchants_links_undo`) remains deliberately out of scope, deferred to the M1L audit-undo consumer.
 
@@ -599,7 +599,7 @@ These four tools implement the merchant-link review surface: the agent-facing pe
 
 - **Sensitivity:** `low` — returns `decision_id` (RECORD_ID) and `status` (TXN_TYPE) only.
 - **Parameters:** `decision_id: str`, `target_merchant_id: str | None`
-- **Behavior:** Accepts (binds) or rejects one pending merchant-link decision. `target_merchant_id = candidate_merchant_id` → BIND (writes accepted binding in `app.merchant_links`; auto-rejects sibling candidates for same `ref_value`). `target_merchant_id = null` → REJECT (marks this decision rejected; resolver re-proposes on next `run()`).
+- **Behavior:** Accepts (binds) or rejects one pending merchant-link decision. `target_merchant_id` must equal the decision's own `candidate_merchant_id` (a confirming safety check; raises `MUTATION_INVALID_INPUT` on mismatch) → BIND (writes accepted binding in `app.merchant_links`; auto-rejects sibling candidates for the same `(source_type, ref_value)`). `target_merchant_id = null` → REJECT (marks this decision rejected; the declined pairing is not re-proposed, and the resolver mints a new merchant for the id on its next categorization pass).
 - **Mutation surface:** writes `app.merchant_link_decisions` + `app.merchant_links`; revert via `app.audit_log` (no undo tool; deferred to M1L).
 - **Service:** `MerchantLinksService(db, actor="mcp").set(decision_id, target_merchant_id=..., decided_by="user")`
 - **CLI:** `moneybin merchants links set`
