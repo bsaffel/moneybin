@@ -182,7 +182,7 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |         [--output json] [-q]
 |
 +-- review                         -- What needs my attention? Pending counts across all review queues.
-|     [--type all|matches|categorize|account-links]   Default all; walks matches first then categorize
+|     [--type all|matches|categorize|account-links|merchant-links]   Default all; walks matches first then categorize
 |     [--status]                        Counts only, no interactive loop
 |     [--confirm <id>]                  Non-interactive: confirm one match by ID
 |     [--reject <id>]                   Non-interactive: reject one match by ID
@@ -248,8 +248,8 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- create                     -- Create a manual transaction
 |   +-- audit                      -- Audit one transaction's curation history (notes, tags, splits)
 |   +-- review                     -- DEPRECATED: use `moneybin review` (removed after one minor release)
-|   |                                  Unified review queue (matches + categorize + account-links)
-|   |     [--type all|matches|categorize|account-links]   Default all; walks matches first then categorize
+|   |                                  Unified review queue (matches + categorize + account-links + merchant-links)
+|   |     [--type all|matches|categorize|account-links|merchant-links]   Default all; walks matches first then categorize
 |   |     [--status]                        Counts only, no interactive loop
 |   |     [--confirm <id>]                  Non-interactive: confirm one match or categorize item by ID
 |   |     [--reject <id>]                   Non-interactive: reject one match by ID
