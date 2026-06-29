@@ -148,7 +148,12 @@ reversed_by           TEXT
   the decision `accepted`; sibling decisions for the same `ref_value` auto-
   `reject`. **reject / mint-new** records the declined pairing (so the resolver
   won't re-propose it) and the resolver mints a new merchant for the id on its
-  next pass. **undo** sets `reversed`.
+  next pass. **undo** sets `reversed`. Note: reject unbinds the durable id and
+  routes *future* transactions with that id to a fresh mint; it does **not**
+  rewrite categorizations already justified by an independent name match
+  (consistent with Decision 7 — bindings do not retro-rewrite categorizations).
+  The resulting narrow historical-vs-future split is accepted in this increment;
+  a strict-coherence reconciliation is a possible follow-up.
 
 ## Decision 3 — Resolution ladder (adopt-or-mint)
 
@@ -160,7 +165,7 @@ transaction carrying a provider `merchant_entity_id`:
 |---|---|---|---|
 | 1 | provider id already in `merchant_links` (`accepted`) | **adopt** that `merchant_id` (skip name matching) | silent — near-certain |
 | 2 | unbound; provider `merchant_name` **exact / exemplar** match to an existing merchant | **auto-bind** the id → that merchant, adopt it | silent — near-certain |
-| 3 | unbound; **fuzzy** (`contains`/`regex`) or **multiple** candidate merchants | **propose** — one `pending` `merchant_link_decisions` row per candidate; **do not** bind, **do not** mint | **surfaced** for review |
+| 3 | unbound; **fuzzy** (`contains`/`regex`) or **multiple** candidate merchants | **propose** — the single best name-match candidate (one pending `merchant_link_decisions` row); **do not** bind, **do not** mint | **surfaced** for review |
 | 4 | unbound; no candidate | **mint** a new merchant (`canonical_name` = provider `merchant_name`, `created_by='plaid'`), bind the id | silent — novel, safe |
 
 - Rung 1 is the dedup payoff: the *first* transaction with id `E` resolves/mints a
@@ -173,6 +178,11 @@ transaction carrying a provider `merchant_entity_id`:
   exactly as a pending account-merge proposal never orphans a transaction.
 - Rung 4 makes Plaid a **merchant-identity source**, coherent with it being an
   account-identity source and with the existing `created_by='plaid'` enum value.
+- Rung 3 proposes the **single best name-match candidate** (`match_merchants` is
+  single-best by construction). Binding an entity id to a *different* existing
+  merchant than the proposed candidate is the future merchant-merge surface; the
+  N-candidate review-queue data model (`PendingMerchantLinkGroup.candidates`) already
+  exists as forward-compatible substrate.
 
 This **subsumes** the existing exemplar accumulator for id-bearing transactions:
 the accumulator (`orchestrator.py:372`, `created_by='ai'`) still creates merchants
@@ -274,7 +284,11 @@ queue).
 - **Precedence-safe.** Backfill writes *bindings*; it does **not** retro-rewrite
   categorizations. The resolver writes at the existing `plaid`/`auto` priority via
   `write_categorization`'s guard, so it can only fill merchant identity on rows
-  that lacked one — never clobbering a `user`/`rule`/`ai` categorization.
+  that lacked one — never clobbering a `user`/`rule`/`ai` categorization. The
+  resolver's *binding* write (to `merchant_links` or `merchant_link_decisions`) is
+  intentionally **not** gated on `write_categorization`'s `written` result — the
+  binding is a separate idempotent entity-keyed fact; a precedence skip suppresses
+  only the categorization, never the binding.
 - **Idempotent.** `merchant_links`'s `(source_type, ref_kind, ref_value)`
   uniqueness makes re-harvesting a no-op; the harvest is safe to fold into the
   resolver's first pass after `merchant_entity_id` is present and re-run freely.

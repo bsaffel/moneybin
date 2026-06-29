@@ -355,6 +355,12 @@ class MerchantLinksService:
             else:
                 # Reject path (--new): reject the named decision AND all of its
                 # pending siblings for the same (source_type, ref_value).
+                # Per spec Decision 6: reject unbinds the durable id and routes
+                # FUTURE transactions with that id to a fresh mint, but does NOT
+                # rewrite categorizations already justified by an independent name
+                # match. The historical-vs-future split is accepted in this
+                # increment (Decision 7 — bindings do not retro-rewrite
+                # categorizations).
                 self._decisions.update_status(
                     decision_id,
                     status="rejected",

@@ -363,6 +363,10 @@ class CategorizationOrchestrator:
                 # auto-bind/propose against the name match `existing`. A rung-4
                 # mint sets merchant_id, which correctly gates the exemplar
                 # accumulator off for id-bearing rows below.
+                # The binding/mint/propose is an entity-keyed fact deliberately
+                # committed before write_categorization; a precedence skip
+                # suppresses only the categorization, never the binding
+                # (spec Decision 7 — precedence-safe).
                 merchant_id = self._resolve_entity_merchant(
                     resolver,
                     bindings,
@@ -660,6 +664,15 @@ class CategorizationOrchestrator:
         write would overwrite the rule write at the same ``'rule'`` priority
         under the ``<=`` precedence guard.
 
+        Entity resolution runs unconditionally for every row — an entity-bound
+        transaction (spec Decision 3 rung-1) adopts its bound merchant even
+        when the description text matches no merchant pattern. When the resolver
+        returns a ``merchant_id`` with no name match, the category is sourced
+        from that merchant's catalog default. Rung-4 minting can fire for a
+        novel entity id with no existing binding and no name match; subsequent
+        re-runs hit rung 1 (idempotent binding cache), so re-runs adopt rather
+        than re-mint.
+
         Returns:
             Number of transactions categorized.
         """
@@ -681,6 +694,14 @@ class CategorizationOrchestrator:
         # for the sweep; degrades to (None, {}, set()) when the link tables are absent.
         resolver, bindings, rejected = self._build_merchant_resolver()
 
+        # Category lookup for the entity-adoption path (no name match): when the
+        # resolver returns a merchant_id without a name-matched category, read the
+        # merchant's default category from this map. Built once from the
+        # already-fetched merchant list — no additional query.
+        merchant_cat: dict[str, tuple[str | None, str | None]] = {
+            m.merchant_id: (m.category, m.subcategory) for m in merchants
+        }
+
         categorized_count = 0
         for (
             txn_id,
@@ -696,56 +717,77 @@ class CategorizationOrchestrator:
             if skip_txn_ids is not None and txn_id in skip_txn_ids:
                 continue
             match_text, norm_desc, norm_memo = build_match_inputs(description, memo)
-            if not match_text:
-                continue
-            merchant = match_merchants(
-                match_text,
-                merchants,
-                normalized_description=norm_desc,
-                normalized_memo=norm_memo,
-                description_present=bool(description and str(description).strip()),
-                memo_present=bool(memo and str(memo).strip()),
+            # Compute the name match but do NOT gate the resolver on it: an
+            # entity-bound transaction must adopt its merchant even when the
+            # description matches no pattern (spec Decision 3 rung-1 payoff).
+            merchant = (
+                match_merchants(
+                    match_text,
+                    merchants,
+                    normalized_description=norm_desc,
+                    normalized_memo=norm_memo,
+                    description_present=bool(description and str(description).strip()),
+                    memo_present=bool(memo and str(memo).strip()),
+                )
+                if match_text
+                else None
             )
+            # Merchants don't have a dedicated source-priority slot in the v1
+            # ladder (user/rule/auto_rule/migration/ml/plaid/ai). Recording
+            # merchant matches as 'rule' preserves historical behavior; a
+            # follow-up spec may introduce a dedicated 'merchant' priority
+            # between auto_rule and migration.
+            categorized_by: CategorizedBy = "rule"
+            # The binding/mint/propose is an entity-keyed fact deliberately committed
+            # before write_categorization; a precedence skip suppresses only the
+            # categorization, never the binding (spec Decision 7 — precedence-safe).
+            merchant_id = self._resolve_entity_merchant(
+                resolver,
+                bindings,
+                self._applier,
+                rejected=rejected,
+                merchant_entity_id=str(merchant_entity_id)
+                if merchant_entity_id is not None
+                else None,
+                source_type=str(merchant_entity_source_type)
+                if merchant_entity_source_type is not None
+                else None,
+                provider_merchant_name=str(merchant_name)
+                if merchant_name is not None
+                else None,
+                name_match=merchant,
+                current_merchant_id=merchant["merchant_id"] if merchant else None,
+            )
+            # Choose the category to write:
+            # - name match with a category  → use it (today's behavior);
+            # - resolver returned merchant_id → look up from catalog default;
+            # - otherwise → nothing to write.
+            category: str | None
+            subcategory: str | None
             if merchant and merchant.get("category"):
-                # Merchants don't have a dedicated source-priority slot in the v1
-                # ladder (user/rule/auto_rule/migration/ml/plaid/ai). Recording
-                # merchant matches as 'rule' preserves historical behavior; a
-                # follow-up spec may introduce a dedicated 'merchant' priority
-                # between auto_rule and migration.
-                categorized_by: CategorizedBy = "rule"
-                # Resolve by entity id before writing: rung-1 adopt / rung-2
-                # auto-bind keep the category from the name match while honoring
-                # the entity binding as the merchant-identity source of truth.
-                # Rung-4 minting CAN fire here when the name-matched candidate
-                # was user-rejected for this entity id — the resolver falls
-                # through to mint a new merchant per spec Decision 6.
-                merchant_id = self._resolve_entity_merchant(
-                    resolver,
-                    bindings,
-                    self._applier,
-                    rejected=rejected,
-                    merchant_entity_id=str(merchant_entity_id)
-                    if merchant_entity_id is not None
-                    else None,
-                    source_type=str(merchant_entity_source_type)
-                    if merchant_entity_source_type is not None
-                    else None,
-                    provider_merchant_name=str(merchant_name)
-                    if merchant_name is not None
-                    else None,
-                    name_match=merchant,
-                    current_merchant_id=merchant["merchant_id"],
-                )
-                outcome = self._applier.write_categorization(
-                    transaction_id=txn_id,
-                    category=str(merchant["category"]),
-                    subcategory=merchant["subcategory"],
-                    categorized_by=categorized_by,
-                    merchant_id=merchant_id,
-                    confidence=1.0,
-                )
-                if outcome.written:
-                    categorized_count += 1
+                category = str(merchant["category"])
+                subcategory = merchant["subcategory"]
+            elif merchant_id is not None:
+                # Entity-adoption path: the merchant's default category, which
+                # may be NULL for a Plaid-minted merchant (spec Decision 8).
+                category, subcategory = merchant_cat.get(merchant_id, (None, None))
+            else:
+                category, subcategory = None, None
+            # app.transaction_categories.category is NOT NULL — skip the write
+            # when category is None (identity captured by binding; category
+            # deferred to rules / LLM / Tier-2b).
+            if category is None:
+                continue
+            outcome = self._applier.write_categorization(
+                transaction_id=txn_id,
+                category=category,
+                subcategory=subcategory,
+                categorized_by=categorized_by,
+                merchant_id=merchant_id,
+                confidence=1.0,
+            )
+            if outcome.written:
+                categorized_count += 1
 
         if categorized_count:
             logger.info(
