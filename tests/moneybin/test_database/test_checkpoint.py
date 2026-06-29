@@ -43,12 +43,14 @@ def test_checkpoint_increments_metric_counter_with_reason_label(
     assert after == before + 1
 
 
-def test_checkpoint_logs_at_info_level(
+def test_checkpoint_logs_at_debug_level(
     db: Database, caplog: pytest.LogCaptureFixture
 ) -> None:
-    caplog.set_level(logging.INFO, logger="moneybin.database")
+    caplog.set_level(logging.DEBUG, logger="moneybin.database")
     db.checkpoint("pre_backup")
     assert any(
-        "checkpoint" in record.message.lower() and "pre_backup" in record.message
+        record.levelno == logging.DEBUG
+        and "checkpoint" in record.message.lower()
+        and "pre_backup" in record.message
         for record in caplog.records
     )

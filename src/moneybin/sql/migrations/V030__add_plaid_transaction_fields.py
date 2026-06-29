@@ -76,7 +76,7 @@ _COLUMNS: list[tuple[str, str, str]] = [
 def migrate(conn: object) -> None:
     """Add the extended Plaid transaction columns. Idempotent."""
     for name, sql_type, comment in _COLUMNS:
-        logger.info(f"V030: ADD COLUMN IF NOT EXISTS raw.plaid_transactions.{name}")
+        logger.debug(f"V030: ADD COLUMN IF NOT EXISTS raw.plaid_transactions.{name}")
         conn.execute(  # type: ignore[attr-defined]
             f"ALTER TABLE raw.plaid_transactions ADD COLUMN IF NOT EXISTS {name} {sql_type}"
         )

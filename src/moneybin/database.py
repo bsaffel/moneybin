@@ -787,7 +787,7 @@ class Database:
 
         self.conn.execute("CHECKPOINT")
         DB_CHECKPOINT_TOTAL.labels(reason=reason).inc()
-        logger.info(f"checkpoint: reason={reason}")
+        logger.debug(f"checkpoint: reason={reason}")
 
     def __enter__(self) -> "Database":  # noqa: D105
         return self

@@ -121,6 +121,12 @@ Fixtures must insert **≥3 rows** into each affected table with realistic shape
 
 Tests must also reproduce the runner's enclosing `BEGIN TRANSACTION` wrap when the bug class depends on it. Wrap the `migrate()` call in `BEGIN`/`COMMIT` (or call through `MigrationRunner.apply_one`) so any "outstanding writes" interaction with subsequent DDL surfaces in the test.
 
+### Logging
+
+A `migrate()` body logs step-level detail (`ADD COLUMN`, `CREATE INDEX`, backfill progress) at `logger.debug` — matching the runner's own per-migration `debug` line (`Applying migration …` in `migrations.py`). The `info`-level signal is the runner's count summary (`⚙️ N pending… / ✅ N applied`); warnings and errors stay at their level. The detail returns under `moneybin --verbose`. A migration that adds many columns otherwise emits a wall of `info` lines on the one-time upgrade that applies it.
+
+Don't change an already-shipped migration's log level. Editing an applied migration changes its file checksum, which `check_drift()` flags as `⚠️ … modified since it was applied` in `moneybin db migrate status` on every DB that already ran it. The convention is forward-only; older migrations keep whatever level they shipped with.
+
 ## Table and Column Comments
 
 Every column should have a comment. Use existing schema files as examples for style and content.
