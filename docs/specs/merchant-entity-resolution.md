@@ -1,7 +1,7 @@
 # Merchant Entity Resolution
 
 > Last updated: 2026-06-28
-> Status: draft
+> Status: in-progress
 > Address: M1T (Ingestion Core)
 > Type: Feature
 > Owns: the canonical-merchant-identity contract — `app.merchant_links` +
@@ -237,7 +237,7 @@ noun. CLI + MCP for parity (functional, not nominal).
 |---|---|---|
 | List pending link proposals (grouped by provider id) | `merchants links pending` | `merchants_links_pending` |
 | Resolve one — bind to a candidate, or mint **new** | `merchants links set <id> --into <merchant_id>` / `--new` | `merchants_links_set(decision_id, target_merchant_id=…\|None)` |
-| Reverse a prior decision | `merchants links undo <id>` | (CLI-only, matching `matches undo` / `accounts links undo`) |
+| Reverse a prior decision | `merchants links undo <id>` | (CLI-only, matching `matches undo` / `accounts links undo`) — **deferred to M1L** (audit-undo consumer) |
 | Decision history | `merchants links history` | `merchants_links_history` |
 | Run resolution / backfill over unbound ids | `merchants links run` | `merchants_links_run` |
 
