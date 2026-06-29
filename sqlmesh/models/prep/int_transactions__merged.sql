@@ -48,10 +48,10 @@ SELECT
     m.merchant_entity_id,
     CASE
       WHEN NOT m.merchant_entity_id IS NULL
-      THEN COALESCE(sp.priority, 2147483647)
+      THEN COALESCE(sp.priority, 2147483646)
       ELSE 2147483647
     END
-  ) AS merchant_entity_id, /* Plaid provider entity id; NULL for non-Plaid sources */
+  ) AS merchant_entity_id, /* Plaid provider entity id; NULL for non-Plaid sources; sentinel 2147483646 matches merchant_entity_source_type for consistency — belt-and-suspenders: ARG_MIN ignores NULL-id rows so an entity-bearing member already wins the tie regardless */
   ARG_MIN(
     m.source_type,
     CASE

@@ -1413,6 +1413,48 @@ class TestMerchantResolutionOutcomeMetric:
         assert after == before + 1, "proposed outcome must increment the counter"
 
 
+class TestResolveEntityMerchantSourceTypeGuard:
+    """_resolve_entity_merchant must not create a binding when source_type is absent.
+
+    If the SQL-layer invariant breaks and merchant_entity_source_type arrives
+    as None or "" the guard must short-circuit before resolver.resolve() is
+    called — otherwise a binding is created under source_type="" which is
+    silently invalid.
+    """
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("bad_source_type", [None, ""])
+    def test_empty_source_type_returns_current_merchant_id_without_resolving(
+        self, bad_source_type: str | None
+    ) -> None:
+        """Returns current_merchant_id unchanged; resolver.resolve() never called."""
+        from unittest.mock import MagicMock
+
+        from moneybin.services.categorization.orchestrator import (
+            CategorizationOrchestrator,
+        )
+
+        resolver = MagicMock()
+        current = "existing_merchant_id"
+
+        result = CategorizationOrchestrator._resolve_entity_merchant(  # pyright: ignore[reportPrivateUsage]
+            resolver,
+            {},
+            MagicMock(),
+            rejected=set(),
+            merchant_entity_id="ent_xyz",
+            source_type=bad_source_type,
+            provider_merchant_name="Some Merchant",
+            name_match=None,
+            current_merchant_id=current,
+        )
+
+        assert result == current, (
+            f"source_type={bad_source_type!r}: expected current_merchant_id unchanged"
+        )
+        resolver.resolve.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # apply_merchant_categories — entity resolution (Finding #6 + #7 regression)
 # ---------------------------------------------------------------------------

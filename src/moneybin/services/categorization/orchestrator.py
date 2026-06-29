@@ -538,15 +538,16 @@ class CategorizationOrchestrator:
         """Run rung-0 entity resolution; return the merchant_id to write.
 
         Returns ``current_merchant_id`` unchanged when the resolver is absent or
-        produces no id (no entity id, or degraded). On an adopt/auto-bind/mint
-        outcome, records the entity-id match metric and returns the resolved id.
+        produces no id (no entity id, empty source_type, or degraded). On an
+        adopt/auto-bind/mint outcome, records the entity-id match metric and
+        returns the resolved id.
         """
-        if resolver is None or not merchant_entity_id:
+        if resolver is None or not merchant_entity_id or not source_type:
             return current_merchant_id
         try:
             res = resolver.resolve(
                 merchant_entity_id=merchant_entity_id,
-                source_type=source_type or "",
+                source_type=source_type,
                 provider_merchant_name=provider_merchant_name,
                 name_match=name_match,
                 bindings=bindings,

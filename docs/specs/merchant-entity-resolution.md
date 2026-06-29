@@ -1,7 +1,7 @@
 # Merchant Entity Resolution
 
-> Last updated: 2026-06-28
-> Status: in-progress
+> Last updated: 2026-06-29
+> Status: implemented
 > Address: M1T (Ingestion Core)
 > Type: Feature
 > Owns: the canonical-merchant-identity contract — `app.merchant_links` +
