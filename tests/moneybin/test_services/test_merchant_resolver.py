@@ -7,7 +7,11 @@ import pytest
 from moneybin.database import Database
 from moneybin.services.audit_service import AuditService
 from moneybin.services.categorization.applier import MatchApplier
-from moneybin.services.merchant_resolver import MerchantResolution, MerchantResolver
+from moneybin.services.merchant_resolver import (
+    HarvestResult,
+    MerchantResolution,
+    MerchantResolver,
+)
 
 
 @pytest.fixture()
@@ -87,3 +91,55 @@ def test_rung4_mints_plaid_merchant_and_binds(
     )
     assert res.created and res.outcome == "minted"
     assert r._links.lookup("plaid", "ent4") == res.merchant_id  # pyright: ignore[reportPrivateUsage]
+
+
+def test_harvest_degrades_when_prep_view_absent(db: Database) -> None:
+    """harvest() returns HarvestResult(0, 0) on a never-transformed DB.
+
+    The ``db`` fixture has the app tables (merchant_links, transaction_categories)
+    but SQLMesh has not run, so ``prep.int_transactions__merged`` does not exist.
+    Without the CatalogException guard the harvest SELECT raises raw — and
+    ``merchants_links_run`` (MCP, no ``handle_cli_errors`` wrapper) would surface
+    it. The guard must degrade gracefully like ``list_pending``/``count_pending``.
+    """
+    view_present = db.execute(
+        "SELECT COUNT(*) FROM duckdb_views() "
+        "WHERE schema_name = 'prep' AND view_name = 'int_transactions__merged'"
+    ).fetchone()
+    assert view_present is not None and view_present[0] == 0, (
+        "precondition: prep.int_transactions__merged must be absent for this test "
+        "to exercise the CatalogException guard"
+    )
+
+    r = MerchantResolver(db)
+    assert r.harvest() == HarvestResult(bound=0, conflicts=0)
+
+
+def test_propose_dedups_pending_decisions(db: Database) -> None:
+    """Two proposals for the same (ref_value, candidate) create exactly ONE pending row.
+
+    N uncategorized txns sharing one unbound fuzzy entity must not stack N
+    duplicate pending decisions, and a re-run must not re-propose. The dedup
+    guard in ``_propose`` skips the insert when a pending, non-reversed decision
+    already proposes that binding.
+    """
+    r = MerchantResolver(db)
+    name_match = {"merchant_id": "mFuzzyDup", "strength": "fuzzy"}
+
+    for _ in range(2):
+        res = r.resolve(
+            merchant_entity_id="entDup",
+            source_type="plaid",
+            provider_merchant_name="Star Bucks",
+            name_match=name_match,
+            bindings={},
+            applier=MatchApplier(db, audit=AuditService(db)),
+        )
+        # Categorization still uses the candidate merchant on every call.
+        assert res.merchant_id == "mFuzzyDup" and res.outcome == "proposed"
+
+    pending = r._decisions.list_pending()  # pyright: ignore[reportPrivateUsage]
+    dup_pending = [d for d in pending if d["ref_value"] == "entDup"]
+    assert len(dup_pending) == 1, (
+        f"expected exactly one pending decision for entDup; got {len(dup_pending)}"
+    )

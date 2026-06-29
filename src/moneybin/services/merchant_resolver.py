@@ -12,6 +12,8 @@ import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+import duckdb
+
 from moneybin.database import Database
 from moneybin.metrics.registry import (
     MERCHANT_LINK_CONFIDENCE,
@@ -131,6 +133,27 @@ class MerchantResolver:
             actor=self._actor,
         )
 
+    def _pending_decision_exists(
+        self, ref_value: str, candidate_merchant_id: str
+    ) -> bool:
+        """True when a pending, non-reversed decision already proposes this binding.
+
+        Dedups proposals: N uncategorized txns sharing one unbound fuzzy entity
+        must not create N duplicate pending rows, and a re-run of ``run()`` must
+        not re-propose an already-pending conflict. Degrades to ``False`` when
+        the decisions table is absent (``CatalogException`` guard).
+        """
+        try:
+            row = self._db.execute(
+                f"SELECT 1 FROM {MERCHANT_LINK_DECISIONS.full_name} "  # noqa: S608  # TableRef constant + parameterized values
+                "WHERE ref_value = ? AND candidate_merchant_id = ? "
+                "AND status = 'pending' AND reversed_at IS NULL LIMIT 1",
+                [ref_value, candidate_merchant_id],
+            ).fetchone()
+        except duckdb.CatalogException:
+            return False
+        return row is not None
+
     def _propose(
         self,
         ref_value: str,
@@ -138,6 +161,8 @@ class MerchantResolver:
         provider_name: str | None,
         candidate_merchant_id: str,
     ) -> None:
+        if self._pending_decision_exists(ref_value, candidate_merchant_id):
+            return  # already a pending proposal for this (ref_value, candidate)
         self._decisions.insert(
             decision_id=uuid.uuid4().hex[:12],
             ref_kind="merchant_entity_id",
@@ -159,17 +184,31 @@ class MerchantResolver:
 
         Routes one-id-many-merchants conflicts to the review queue without binding.
         Idempotent: the insert guard in _bind skips already-bound entity ids.
+
+        Keys on ``merchant_entity_source_type`` — the source_type of the merge
+        member that issued the entity id — NOT the merge-winner
+        ``canonical_source_type``, so a Plaid entity id riding an OFX+Plaid
+        dedup binds under ``('plaid', E)`` like its Plaid-only siblings.
+
+        Degrades to ``HarvestResult(0, 0)`` when ``prep.int_transactions__merged``
+        is absent (never-transformed DB) — mirrors the ``CatalogException`` guard
+        in ``list_pending`` / ``count_pending`` so the MCP path doesn't raise raw.
         """
-        rows = self._db.execute(
-            """
-            SELECT mt.canonical_source_type AS source_type,
-                   mt.merchant_entity_id, c.merchant_id, COUNT(*) AS n
-            FROM prep.int_transactions__merged AS mt
-            JOIN app.transaction_categories AS c ON c.transaction_id = mt.transaction_id
-            WHERE mt.merchant_entity_id IS NOT NULL AND c.merchant_id IS NOT NULL
-            GROUP BY mt.canonical_source_type, mt.merchant_entity_id, c.merchant_id
-            """  # noqa: S608  # static identifiers
-        ).fetchall()
+        try:
+            rows = self._db.execute(
+                """
+                SELECT mt.merchant_entity_source_type AS source_type,
+                       mt.merchant_entity_id, c.merchant_id, COUNT(*) AS n
+                FROM prep.int_transactions__merged AS mt
+                JOIN app.transaction_categories AS c
+                    ON c.transaction_id = mt.transaction_id
+                WHERE mt.merchant_entity_id IS NOT NULL AND c.merchant_id IS NOT NULL
+                GROUP BY mt.merchant_entity_source_type, mt.merchant_entity_id,
+                         c.merchant_id
+                """  # noqa: S608  # static identifiers
+            ).fetchall()
+        except duckdb.CatalogException:
+            return HarvestResult(bound=0, conflicts=0)
         by_id: dict[tuple[str, str], list[tuple[str, int]]] = {}
         for source_type, ent, mid, n in rows:
             by_id.setdefault((str(source_type), str(ent)), []).append((
@@ -186,7 +225,11 @@ class MerchantResolver:
                 self._bind(ent, source_type, next(iter(merchants)), decided_by="system")
                 bound += 1
             else:
-                dominant = max(pairs, key=lambda p: p[1])[0]
+                # Highest count wins; tie-break on merchant_id so the chosen
+                # dominant is stable across runs (the GROUP BY has no inherent
+                # row order). Without this, a tied conflict could propose a
+                # different candidate each run and defeat the _propose dedup.
+                dominant = max(pairs, key=lambda p: (p[1], p[0]))[0]
                 self._propose(ent, source_type, None, dominant)
                 conflicts += 1
         if conflicts:

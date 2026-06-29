@@ -249,12 +249,16 @@ class CategorizationMatcher:
         exist (DB pre-migration); returns ``[]`` when there are no pending rows.
 
         Columns: ``(transaction_id, description, amount, account_id, memo,
-        merchant_entity_id, source_type, merchant_name)`` — the superset of what
-        either consumer needs. ``apply_rules`` uses only the first five;
-        ``apply_merchant_categories`` additionally consults the trailing three
-        for rung-0 entity resolution (M1T). ``merchant_entity_id`` comes from
-        ``prep.int_transactions__merged`` (Task 5 stops it at prep), joined on
-        the gold ``transaction_id``.
+        merchant_entity_id, source_type, merchant_name,
+        merchant_entity_source_type)`` — the superset of what either consumer
+        needs. ``apply_rules`` uses only the first five;
+        ``apply_merchant_categories`` additionally consults the trailing four
+        for rung-0 entity resolution (M1T). ``merchant_entity_id`` and
+        ``merchant_entity_source_type`` come from ``prep.int_transactions__merged``
+        (Task 5 stops them at prep), joined on the gold ``transaction_id``.
+        ``merchant_entity_source_type`` — the source_type of the merge member
+        that issued the entity id — is the binding key, NOT the merge-winner
+        ``source_type`` projected from ``core.fct_transactions``.
         """
         where = """
                 WHERE c.transaction_id IS NULL
@@ -273,7 +277,8 @@ class CategorizationMatcher:
         # exists without the prep layer — still categorize by name.
         with_entity = f"""
                 SELECT t.transaction_id, t.description, t.amount, t.account_id,
-                       t.memo, m.merchant_entity_id, t.source_type, t.merchant_name
+                       t.memo, m.merchant_entity_id, t.source_type, t.merchant_name,
+                       m.merchant_entity_source_type
                 FROM {FCT_TRANSACTIONS.full_name} t
                 {cat_join}
                 LEFT JOIN {INT_TRANSACTIONS_MERGED.full_name} m
@@ -283,7 +288,7 @@ class CategorizationMatcher:
         without_entity = f"""
                 SELECT t.transaction_id, t.description, t.amount, t.account_id,
                        t.memo, NULL AS merchant_entity_id, t.source_type,
-                       t.merchant_name
+                       t.merchant_name, NULL AS merchant_entity_source_type
                 FROM {FCT_TRANSACTIONS.full_name} t
                 {cat_join}
                 {where}

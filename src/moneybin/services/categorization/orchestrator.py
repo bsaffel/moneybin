@@ -248,7 +248,8 @@ class CategorizationOrchestrator:
         # core.fct_transactions exists without the prep layer — still load rows.
         with_entity = f"""
             SELECT t.transaction_id, t.description, t.amount, t.account_id,
-                   t.memo, t.source_type, t.merchant_name, m.merchant_entity_id
+                   t.memo, t.source_type, t.merchant_name, m.merchant_entity_id,
+                   m.merchant_entity_source_type
             FROM {FCT_TRANSACTIONS.full_name} AS t
             LEFT JOIN {INT_TRANSACTIONS_MERGED.full_name} AS m
                 ON t.transaction_id = m.transaction_id
@@ -257,7 +258,7 @@ class CategorizationOrchestrator:
         without_entity = f"""
             SELECT t.transaction_id, t.description, t.amount, t.account_id,
                    t.memo, t.source_type, t.merchant_name,
-                   NULL AS merchant_entity_id
+                   NULL AS merchant_entity_id, NULL AS merchant_entity_source_type
             FROM {FCT_TRANSACTIONS.full_name} AS t
             WHERE t.transaction_id IN ({placeholders})
         """  # noqa: S608 — table names are compile-time TableRef constants; values are parameterized
@@ -275,6 +276,9 @@ class CategorizationOrchestrator:
                     source_type=str(row[5]) if row[5] is not None else None,
                     merchant_name=str(row[6]) if row[6] is not None else None,
                     merchant_entity_id=str(row[7]) if row[7] is not None else None,
+                    merchant_entity_source_type=str(row[8])
+                    if row[8] is not None
+                    else None,
                 )
                 for row in rows
             }
@@ -363,7 +367,7 @@ class CategorizationOrchestrator:
                     bindings,
                     self._applier,
                     merchant_entity_id=ctx.merchant_entity_id_for(txn_id),
-                    source_type=ctx.source_type_for(txn_id),
+                    source_type=ctx.merchant_entity_source_type_for(txn_id),
                     provider_merchant_name=ctx.merchant_name_for(txn_id),
                     name_match=existing,
                     current_merchant_id=merchant_id,
@@ -632,9 +636,11 @@ class CategorizationOrchestrator:
         across :meth:`apply_rules` and this method. Rows come from
         :meth:`CategorizationMatcher.fetch_uncategorized_rows`: the leading
         ``(transaction_id, description, amount, account_id, memo)`` columns plus
-        trailing ``(merchant_entity_id, source_type, merchant_name)`` consulted
-        for rung-0 entity resolution. ``amount`` and ``account_id`` are ignored
-        here. When omitted, the rows are fetched.
+        trailing ``(merchant_entity_id, source_type, merchant_name,
+        merchant_entity_source_type)`` consulted for rung-0 entity resolution.
+        ``amount``, ``account_id``, and the merge-winner ``source_type`` are
+        ignored here — the resolver keys on ``merchant_entity_source_type`` (the
+        member that issued the entity id). When omitted, the rows are fetched.
 
         ``skip_txn_ids`` filters rows by transaction_id. :meth:`categorize_pending`
         passes the rule pass's applied set; without that filter the merchant
@@ -670,8 +676,9 @@ class CategorizationOrchestrator:
             _account_id,
             memo,
             merchant_entity_id,
-            source_type,
+            _source_type,
             merchant_name,
+            merchant_entity_source_type,
         ) in uncategorized:
             if skip_txn_ids is not None and txn_id in skip_txn_ids:
                 continue
@@ -705,7 +712,9 @@ class CategorizationOrchestrator:
                     merchant_entity_id=str(merchant_entity_id)
                     if merchant_entity_id is not None
                     else None,
-                    source_type=str(source_type) if source_type is not None else None,
+                    source_type=str(merchant_entity_source_type)
+                    if merchant_entity_source_type is not None
+                    else None,
                     provider_merchant_name=str(merchant_name)
                     if merchant_name is not None
                     else None,

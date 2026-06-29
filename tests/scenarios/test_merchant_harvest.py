@@ -311,7 +311,21 @@ def test_harvest_routes_conflict_to_review() -> None:
             f"harvest must NOT silently bind a conflicted entity_id; "
             f"got {r._links.lookup('plaid', _ENTITY_CONFLICT)!r}"  # pyright: ignore[reportPrivateUsage]
         )
-        assert len(r._decisions.list_pending()) >= 1, (  # pyright: ignore[reportPrivateUsage]
+        pending_after_first = r._decisions.list_pending()  # pyright: ignore[reportPrivateUsage]
+        assert len(pending_after_first) >= 1, (
             "harvest must route the conflict to app.merchant_link_decisions"
         )
         assert isinstance(result, HarvestResult)
+
+        # Second run must be idempotent on the conflict path too: the dedup
+        # guard in _propose skips re-proposing an already-pending conflict, so
+        # the pending-decision count must not grow.
+        result2 = r.harvest()
+        assert result2.bound == 0, (
+            f"second harvest must not bind a still-conflicted entity; got {result2}"
+        )
+        pending_after_second = r._decisions.list_pending()  # pyright: ignore[reportPrivateUsage]
+        assert len(pending_after_second) == len(pending_after_first), (
+            "re-running harvest must not stack duplicate pending conflict rows: "
+            f"{len(pending_after_first)} → {len(pending_after_second)}"
+        )

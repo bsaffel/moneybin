@@ -878,7 +878,8 @@ def test_categorize_items_uses_constant_number_of_db_calls(
     db.execute("CREATE SCHEMA IF NOT EXISTS prep")
     db.execute(
         "CREATE TABLE IF NOT EXISTS prep.int_transactions__merged "
-        "(transaction_id VARCHAR, merchant_entity_id VARCHAR)"
+        "(transaction_id VARCHAR, merchant_entity_id VARCHAR, "
+        "merchant_entity_source_type VARCHAR)"
     )
 
     # Seed 25 transactions and 25 corresponding category items.

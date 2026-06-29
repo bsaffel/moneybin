@@ -53,6 +53,14 @@ SELECT
     END
   ) AS merchant_entity_id, /* Plaid provider entity id; NULL for non-Plaid sources */
   ARG_MIN(
+    m.source_type,
+    CASE
+      WHEN NOT m.merchant_entity_id IS NULL
+      THEN COALESCE(sp.priority, 2147483647)
+      ELSE 2147483647
+    END
+  ) AS merchant_entity_source_type, /* source_type of the member that issued merchant_entity_id; meaningful only where merchant_entity_id IS NOT NULL (entity-less rows carry an arbitrary member's value that no reader consumes) */
+  ARG_MIN(
     m.memo,
     CASE
       WHEN NOT m.memo IS NULL

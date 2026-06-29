@@ -96,6 +96,7 @@ class TxnRow:
     memo: str | None = None
     source_type: str | None = None
     merchant_entity_id: str | None = None
+    merchant_entity_source_type: str | None = None
     merchant_name: str | None = None
 
 
@@ -132,6 +133,15 @@ class RecordingContext:
         """Return the provider merchant_entity_id, or None if not loaded/non-Plaid."""
         row = self.txn_rows.get(transaction_id)
         return row.merchant_entity_id if row else None
+
+    def merchant_entity_source_type_for(self, transaction_id: str) -> str | None:
+        """Return the source_type of the member that issued merchant_entity_id, or None.
+
+        This is the entity-paired source_type — the binding key for merchant
+        resolution — NOT the merge-winner ``canonical_source_type``.
+        """
+        row = self.txn_rows.get(transaction_id)
+        return row.merchant_entity_source_type if row else None
 
     def source_type_for(self, transaction_id: str) -> str | None:
         """Return the canonical source_type for the given transaction_id, or None."""
