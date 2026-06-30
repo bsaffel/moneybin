@@ -21,7 +21,7 @@ import duckdb
 
 from moneybin.database import Database
 from moneybin.metrics.registry import CATEGORIZE_MATCH_OUTCOME_TOTAL
-from moneybin.services._text import build_match_inputs
+from moneybin.services._text import build_match_inputs, normalize_description
 from moneybin.services.categorization._shared import (
     Merchant,
     match_shape_case_sql,
@@ -174,6 +174,60 @@ def match_merchants(
         description_present=description_present,
         memo_present=memo_present,
     )
+
+
+def match_merchant_with_name(
+    merchants: list[Merchant],
+    *,
+    description: str | None,
+    memo: str | None,
+    merchant_name: str | None,
+) -> dict[str, str | None] | None:
+    """Resolve a merchant from description/memo, falling back to provider merchant_name.
+
+    Spec Decision 3 rung 2 requires a provider ``merchant_name`` exact/exemplar
+    match to auto-bind. The description/memo match alone misses the case where the
+    bank description is blank or noisy but ``merchant_name`` names a known merchant.
+    When the description match is absent or fuzzy, match ``merchant_name`` too and
+    prefer an EXACT ``merchant_name`` hit, so the resolver rung-2 auto-binds instead
+    of minting a duplicate (rung 4). A FUZZY ``merchant_name`` match is surfaced for
+    review (rung 3), never silently auto-bound ("magic stays visible").
+    """
+    match_text, norm_desc, norm_memo = build_match_inputs(description, memo)
+    desc_hit = (
+        match_merchants(
+            match_text,
+            merchants,
+            normalized_description=norm_desc,
+            normalized_memo=norm_memo,
+            description_present=bool(description and description.strip()),
+            memo_present=bool(memo and memo.strip()),
+        )
+        if match_text
+        else None
+    )
+    # An exact description/memo match already satisfies rung 2 — keep it.
+    if desc_hit is not None and desc_hit.get("strength") == "exact":
+        return desc_hit
+    norm_name = normalize_description(merchant_name) if merchant_name else ""
+    if norm_name:
+        name_hit = match_merchants(
+            norm_name,
+            merchants,
+            normalized_description=norm_name,
+            normalized_memo="",
+            description_present=True,
+            memo_present=False,
+        )
+        # Use the name match when there was no description match at all, or when
+        # the name match is EXACT (an exact name match upgrades a fuzzy desc match
+        # to a rung-2 auto-bind). A fuzzy name match with a fuzzy desc match keeps
+        # the desc match — both route to rung-3 propose anyway.
+        if name_hit is not None and (
+            desc_hit is None or name_hit.get("strength") == "exact"
+        ):
+            return name_hit
+    return desc_hit
 
 
 class CategorizationMatcher:

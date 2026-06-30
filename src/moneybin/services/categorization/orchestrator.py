@@ -58,7 +58,7 @@ from moneybin.services.categorization._shared import (
 from moneybin.services.categorization.applier import MatchApplier
 from moneybin.services.categorization.matcher import (
     CategorizationMatcher,
-    match_merchants,
+    match_merchant_with_name,
 )
 from moneybin.tables import CATEGORIES, FCT_TRANSACTIONS, INT_TRANSACTIONS_MERGED
 
@@ -336,18 +336,19 @@ class CategorizationOrchestrator:
                 existing: dict[str, Any] | None = None
                 description = ctx.description_for(txn_id)
                 memo = ctx.memo_for(txn_id)
-                match_text, norm_desc, norm_memo = build_match_inputs(description, memo)
-                if match_text and ctx.merchant_mappings:
+                match_text, _norm_desc, _norm_memo = build_match_inputs(
+                    description, memo
+                )
+                # Guard changed from `if match_text` to `if ctx.merchant_mappings`:
+                # match_merchant_with_name can now match on merchant_name even
+                # when description/memo is blank (spec Decision 3 rung 2).
+                if ctx.merchant_mappings:
                     try:
-                        existing = match_merchants(
-                            match_text,
+                        existing = match_merchant_with_name(
                             ctx.merchant_mappings,
-                            normalized_description=norm_desc,
-                            normalized_memo=norm_memo,
-                            description_present=bool(
-                                description and description.strip()
-                            ),
-                            memo_present=bool(memo and memo.strip()),
+                            description=description,
+                            memo=memo,
+                            merchant_name=ctx.merchant_name_for(txn_id),
                         )
                         if existing:
                             merchant_id = existing["merchant_id"]
@@ -737,21 +738,14 @@ class CategorizationOrchestrator:
             merchant_name,
             merchant_entity_source_type,
         ) in uncategorized:
-            match_text, norm_desc, norm_memo = build_match_inputs(description, memo)
-            # Compute the name match but do NOT gate the resolver on it: an
-            # entity-bound transaction must adopt its merchant even when the
-            # description matches no pattern (spec Decision 3 rung-1 payoff).
-            merchant = (
-                match_merchants(
-                    match_text,
-                    merchants,
-                    normalized_description=norm_desc,
-                    normalized_memo=norm_memo,
-                    description_present=bool(description and str(description).strip()),
-                    memo_present=bool(memo and str(memo).strip()),
-                )
-                if match_text
-                else None
+            # Spec Decision 3 rung 2: match the provider merchant_name too, not just
+            # description/memo — otherwise a clean merchant_name with a blank/noisy
+            # description mints a duplicate (rung 4) instead of auto-binding (rung 2).
+            merchant = match_merchant_with_name(
+                merchants,
+                description=str(description) if description is not None else None,
+                memo=str(memo) if memo is not None else None,
+                merchant_name=str(merchant_name) if merchant_name is not None else None,
             )
             # Resolve the entity binding for EVERY row, BEFORE the skip guard: the
             # binding/mint/propose is an entity-keyed fact committed regardless of whether

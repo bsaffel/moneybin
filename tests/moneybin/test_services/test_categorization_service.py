@@ -2204,3 +2204,196 @@ class TestCategorizeItemsMerchantCreated:
             "rung-1 adopt must NOT increment merchants_created; "
             f"got {result.merchants_created}"
         )
+
+
+class TestMerchantNameMatchRung2:
+    """Spec Decision 3 rung 2: provider merchant_name exact match → auto-bind.
+
+    Both categorization paths (apply_merchant_categories and categorize_items)
+    must pass ``merchant_name`` to ``match_merchant_with_name`` so a Plaid row
+    with a blank/noisy description but a clean ``merchant_name`` that exactly
+    matches an existing merchant is auto-bound (rung 2) instead of minting a
+    duplicate (rung 4).
+    """
+
+    @pytest.mark.unit
+    def test_rung2_auto_bind_via_exact_merchant_name(self, db: Database) -> None:
+        """Blank description + exact merchant_name → auto-bind to existing merchant.
+
+        Before the fix: ``match_merchant_with_name`` didn't exist; both call
+        sites used ``build_match_inputs + match_merchants`` on description/memo
+        only, so a blank description produced no name match and rung-4 minted a
+        duplicate. This test must FAIL on old code and PASS after the fix.
+        """
+        _setup_prep_table(db)
+
+        # Existing "Starbucks" merchant with an exact pattern.
+        mid = create_merchant(
+            db,
+            "Starbucks",
+            "Starbucks",
+            match_type="exact",
+            category="Food & Drink",
+        )
+
+        # Transaction: blank description, merchant_name="Starbucks", entity id present.
+        # merchant_name must be in core.fct_transactions because fetch_uncategorized_rows
+        # selects t.merchant_name (not m.merchant_name from the prep table).
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, "
+            "merchant_name, source_type) "
+            "VALUES ('TXN_R2_EXACT', 'ACC1', DATE '2026-01-01', -5.75, '', 'Starbucks', 'plaid')"
+        )
+        db.execute(
+            "INSERT INTO prep.int_transactions__merged VALUES "
+            "('TXN_R2_EXACT', 'ent_r2_exact', 'plaid', 'Starbucks')"
+        )
+
+        apply_merchant_categories(db)
+
+        # The entity must be bound to the EXISTING Starbucks merchant (rung-2 auto-bind).
+        row = db.execute(
+            "SELECT merchant_id FROM app.merchant_links "
+            "WHERE ref_value = ? AND status = 'accepted'",
+            ["ent_r2_exact"],
+        ).fetchone()
+        assert row is not None, "entity must be bound after rung-2 auto-bind"
+        assert row[0] == mid, (
+            f"entity must bind to EXISTING merchant {mid!r}, not a duplicate; "
+            f"got {row[0]!r}"
+        )
+
+        # No duplicate merchant should be minted.
+        count_row = db.execute("SELECT COUNT(*) FROM app.user_merchants").fetchone()
+        assert count_row is not None
+        count = count_row[0]
+        assert count == 1, f"expected 1 merchant (no duplicate), got {count}"
+
+    @pytest.mark.unit
+    def test_rung3_fuzzy_merchant_name_not_auto_bound(self, db: Database) -> None:
+        """Fuzzy merchant_name match → rung-3 propose, NOT auto-bound.
+
+        Guards against over-eager binding: a ``contains`` merchant whose
+        pattern matches the provider ``merchant_name`` must route to rung-3
+        (pending proposal), never rung-2 (auto-bind). Only EXACT name hits
+        earn auto-bind.
+        """
+        _setup_prep_table(db)
+
+        # Merchant matched via "contains" — a fuzzy shape.
+        mid_fuzzy = create_merchant(
+            db,
+            "starbucks",
+            "Starbucks Inc",
+            match_type="contains",
+            category="Food & Drink",
+        )
+
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, "
+            "merchant_name, source_type) "
+            "VALUES ('TXN_R3_FUZZY', 'ACC1', DATE '2026-01-01', -4.50, '', 'Starbucks', 'plaid')"
+        )
+        db.execute(
+            "INSERT INTO prep.int_transactions__merged VALUES "
+            "('TXN_R3_FUZZY', 'ent_r3_fuzzy', 'plaid', 'Starbucks')"
+        )
+
+        apply_merchant_categories(db)
+
+        # The entity must NOT be auto-bound to mid_fuzzy (fuzzy → rung 3 propose).
+        row = db.execute(
+            "SELECT merchant_id FROM app.merchant_links "
+            "WHERE ref_value = ? AND status = 'accepted'",
+            ["ent_r3_fuzzy"],
+        ).fetchone()
+        assert row is None or row[0] != mid_fuzzy, (
+            "fuzzy merchant_name match must NOT auto-bind to the existing merchant; "
+            "rung 3 should only propose"
+        )
+
+    @pytest.mark.unit
+    def test_exact_description_match_wins_over_merchant_name(
+        self, db: Database
+    ) -> None:
+        """Exact description match is used even when merchant_name would match a different merchant.
+
+        Control: the normal description-match path must not regress. When a
+        transaction's description exactly matches merchant A, the resolver
+        must NOT bind to merchant B even if ``merchant_name`` would match B.
+        """
+        _setup_prep_table(db)
+
+        mid_a = create_merchant(
+            db,
+            "FANCY_CORP",
+            "Fancy Corp",
+            match_type="exact",
+            category="Business",
+        )
+        _mid_b = create_merchant(
+            db,
+            "OTHERCORP",
+            "Other Corp",
+            match_type="exact",
+            category="Shopping",
+        )
+
+        # Description exactly matches merchant A; merchant_name matches merchant B.
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, "
+            "merchant_name, source_type) "
+            "VALUES ('TXN_DESC_CTRL', 'ACC1', DATE '2026-01-01', -20.00, 'FANCY_CORP', "
+            "'OTHERCORP', 'plaid')"
+        )
+        db.execute(
+            "INSERT INTO prep.int_transactions__merged VALUES "
+            "('TXN_DESC_CTRL', 'ent_desc_ctrl', 'plaid', 'OTHERCORP')"
+        )
+
+        apply_merchant_categories(db)
+
+        cat_row = db.execute(
+            "SELECT merchant_id FROM app.transaction_categories "
+            "WHERE transaction_id = 'TXN_DESC_CTRL'"
+        ).fetchone()
+        assert cat_row is not None, "transaction must be categorized"
+        assert cat_row[0] == mid_a, (
+            f"exact description match must win; expected merchant {mid_a!r}, "
+            f"got {cat_row[0]!r}"
+        )
+
+    @pytest.mark.unit
+    def test_unknown_merchant_name_still_mints(self, db: Database) -> None:
+        """Blank description + merchant_name matching nothing → rung-4 mint.
+
+        Control: when no merchant catalog entry matches the provider
+        ``merchant_name``, rung-4 minting must still fire and produce a new
+        merchant (preserving current behaviour).
+        """
+        _setup_prep_table(db)
+
+        # No merchants in catalog.
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, "
+            "merchant_name, source_type) "
+            "VALUES ('TXN_MINT_CTRL', 'ACC1', DATE '2026-01-01', -9.99, '', "
+            "'SomeUnknownBrand', 'plaid')"
+        )
+        db.execute(
+            "INSERT INTO prep.int_transactions__merged VALUES "
+            "('TXN_MINT_CTRL', 'ent_mint_ctrl', 'plaid', 'SomeUnknownBrand')"
+        )
+
+        apply_merchant_categories(db)
+
+        count_row = db.execute("SELECT COUNT(*) FROM app.user_merchants").fetchone()
+        assert count_row is not None
+        count = count_row[0]
+        assert count == 1, (
+            f"unknown merchant_name must mint a new merchant (rung 4); got {count}"
+        )
