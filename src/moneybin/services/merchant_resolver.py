@@ -143,6 +143,7 @@ class MerchantResolver:
         name_match: Mapping[str, object] | None,
         bindings: dict[tuple[str, str], str],
         rejected: set[tuple[str, str, str]],
+        pending: set[tuple[str, str]],
         applier: MatchApplier,
     ) -> MerchantResolution:
         """Run the adopt-or-mint ladder and return the resolution outcome."""
@@ -154,15 +155,26 @@ class MerchantResolver:
         if bound is not None:
             return MerchantResolution(merchant_id=bound, outcome="adopted")
 
+        # Check whether this entity is awaiting user review. An entity under
+        # review must never be silently auto-bound or minted — doing so would
+        # bypass the user's pending decision ("magic stays visible" violation).
+        # Rung-1 adopt is unaffected: a pending decision is not an accepted
+        # binding, so bindings.get() already misses above.
+        under_review = (source_type, merchant_entity_id) in pending
+
         # Rung 2/3 — there is a name match.
         if name_match is not None and name_match.get("merchant_id"):
             mid = str(name_match["merchant_id"])
             if (source_type, merchant_entity_id, mid) not in rejected:
-                if name_match.get("strength") == "exact":
+                # Only auto-bind when the entity is NOT under review; if it is,
+                # fall through to the _propose path (dedup-guarded) so the
+                # existing pending decision retains control.
+                if name_match.get("strength") == "exact" and not under_review:
                     self._bind(merchant_entity_id, source_type, mid, decided_by="auto")
                     bindings[(source_type, merchant_entity_id)] = mid
                     return MerchantResolution(merchant_id=mid, outcome="auto_bound")
-                # Fuzzy / ambiguous → propose, do NOT bind. Categorization still uses mid.
+                # Fuzzy / ambiguous, OR exact but under review → propose, do NOT bind.
+                # Categorization still uses mid.
                 self._propose(
                     merchant_entity_id, source_type, provider_merchant_name, mid
                 )
@@ -172,6 +184,11 @@ class MerchantResolver:
             # "reject → resolver mints a new merchant for the id on its next pass."
 
         # Rung 4 — no name match: mint a merchant from the provider's data, bind.
+        # Guard: if the entity is under review, leave it unbound so the pending
+        # decision retains control — minting here would silently create a new
+        # accepted binding while the review is still open.
+        if under_review:
+            return MerchantResolution(merchant_id=None, outcome="none")
         canonical = (
             provider_merchant_name or merchant_entity_id
         ).strip() or merchant_entity_id

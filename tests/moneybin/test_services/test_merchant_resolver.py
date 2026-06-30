@@ -38,6 +38,7 @@ def test_rung1_adopts_bound_id(db: Database, applier: MatchApplier) -> None:
         name_match=None,
         bindings=r.load_bindings(),
         rejected=set(),
+        pending=set(),
         applier=applier,
     )
     assert res == MerchantResolution(
@@ -55,6 +56,7 @@ def test_rung2_exact_name_match_auto_binds(db: Database, applier: MatchApplier) 
         name_match=name_match,
         bindings={},
         rejected=set(),
+        pending=set(),
         applier=applier,
     )
     assert res.merchant_id == "mExact" and res.outcome == "auto_bound"
@@ -73,6 +75,7 @@ def test_rung3_fuzzy_proposes_and_does_not_bind(
         name_match=name_match,
         bindings={},
         rejected=set(),
+        pending=set(),
         applier=applier,
     )
     assert res.merchant_id == "mFuzzy" and res.outcome == "proposed"
@@ -91,6 +94,7 @@ def test_rung4_mints_plaid_merchant_and_binds(
         name_match=None,
         bindings={},
         rejected=set(),
+        pending=set(),
         applier=applier,
     )
     assert res.created and res.outcome == "minted"
@@ -138,6 +142,7 @@ def test_propose_dedups_pending_decisions(db: Database) -> None:
             name_match=name_match,
             bindings={},
             rejected=set(),
+            pending=set(),
             applier=MatchApplier(db, audit=AuditService(db)),
         )
         # Categorization still uses the candidate merchant on every call.
@@ -290,6 +295,7 @@ def test_rejected_fuzzy_candidate_mints_new_merchant(
         name_match=name_match,
         bindings=bindings,
         rejected=rejected,
+        pending=set(),
         applier=applier,
     )
 
@@ -322,6 +328,7 @@ def test_rejected_exact_candidate_also_mints(
         name_match=name_match,
         bindings={},
         rejected=rejected,
+        pending=set(),
         applier=applier,
     )
 
@@ -344,6 +351,7 @@ def test_non_rejected_fuzzy_still_proposes(db: Database, applier: MatchApplier) 
         name_match=name_match,
         bindings={},
         rejected=set(),  # nothing rejected
+        pending=set(),
         applier=applier,
     )
 
@@ -370,6 +378,7 @@ def test_rejected_decision_not_reproposed(db: Database, applier: MatchApplier) -
         name_match=name_match,
         bindings={},
         rejected=set(),
+        pending=set(),
         applier=applier,
     )
     pending = [
@@ -394,6 +403,7 @@ def test_rejected_decision_not_reproposed(db: Database, applier: MatchApplier) -
         name_match=name_match,
         bindings={},
         rejected=set(),
+        pending=set(),
         applier=applier,
     )
     pending_after = [
@@ -840,6 +850,94 @@ def test_harvest_binds_entity_with_no_pending_or_rejected_decision(
 
     assert result.bound == 1, "no-decision single-merchant entity must be bound"
     assert MerchantResolver(db)._links.lookup("plaid", "ent_ctrl") == "mCtrlMerchant"  # pyright: ignore[reportPrivateUsage]
+
+
+# ---------------------------------------------------------------------------
+# resolve() respects pending (under-review) entities — Gap #5
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_skips_mint_when_entity_pending(
+    db: Database, applier: MatchApplier
+) -> None:
+    """Entity pending (in pending set), no name match → outcome='none', no binding.
+
+    A transaction reaching rung-4 (mint) while the entity is under review must
+    NOT mint a new merchant — doing so would silently create an accepted binding
+    while the user's review is still open, bypassing the review outcome
+    ("magic stays visible" violation). Mirrors the guard already in harvest().
+    """
+    r = MerchantResolver(db)
+    pending: set[tuple[str, str]] = {("plaid", "ent_pend_nomatch")}
+    res = r.resolve(
+        merchant_entity_id="ent_pend_nomatch",
+        source_type="plaid",
+        provider_merchant_name="Some Cafe",
+        name_match=None,
+        bindings={},
+        rejected=set(),
+        pending=pending,
+        applier=applier,
+    )
+    assert res.outcome == "none", f"expected none, got {res.outcome!r}"
+    assert res.merchant_id is None
+    assert r._links.lookup("plaid", "ent_pend_nomatch") is None, (  # pyright: ignore[reportPrivateUsage]
+        "pending entity must not be bound by rung-4 mint"
+    )
+
+
+def test_resolve_falls_through_to_propose_when_entity_pending_exact_match(
+    db: Database, applier: MatchApplier
+) -> None:
+    """Entity pending + exact name match → outcome='proposed', NOT auto_bound.
+
+    When the entity is under review and there is an exact name match, rung-2
+    must fall through to the propose path (_propose dedup-guards against
+    re-proposing) instead of auto-binding. The matched merchant id is still
+    returned for categorization, but no accepted binding is written.
+    """
+    r = MerchantResolver(db)
+    pending: set[tuple[str, str]] = {("plaid", "ent_pend_exact")}
+    name_match = {"merchant_id": "mExactPend", "strength": "exact"}
+    res = r.resolve(
+        merchant_entity_id="ent_pend_exact",
+        source_type="plaid",
+        provider_merchant_name="Starbucks",
+        name_match=name_match,
+        bindings={},
+        rejected=set(),
+        pending=pending,
+        applier=applier,
+    )
+    assert res.outcome == "proposed", f"expected proposed, got {res.outcome!r}"
+    assert res.merchant_id == "mExactPend"
+    assert r._links.lookup("plaid", "ent_pend_exact") is None, (  # pyright: ignore[reportPrivateUsage]
+        "pending entity must not have an accepted binding written on exact match"
+    )
+
+
+def test_resolve_mints_when_entity_not_pending(
+    db: Database, applier: MatchApplier
+) -> None:
+    """Control: entity NOT pending, no name match → mints normally (rung 4).
+
+    Preserves current minting behavior when the pending set is empty, so the
+    fix does not regress the happy path.
+    """
+    r = MerchantResolver(db)
+    res = r.resolve(
+        merchant_entity_id="ent_notpending",
+        source_type="plaid",
+        provider_merchant_name="New Cafe",
+        name_match=None,
+        bindings={},
+        rejected=set(),
+        pending=set(),
+        applier=applier,
+    )
+    assert res.outcome == "minted", f"expected minted, got {res.outcome!r}"
+    assert res.created is True
+    assert res.merchant_id is not None
 
 
 def test_harvest_conflict_carries_provider_name(db: Database) -> None:

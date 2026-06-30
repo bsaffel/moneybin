@@ -312,12 +312,12 @@ class CategorizationOrchestrator:
         auto_rule_svc = AutoRuleService(self._db)
 
         # Rung-0 merchant resolution (M1T): resolve a transaction's merchant by
-        # Plaid's merchant_entity_id before name matching. Bindings and rejected
-        # are loaded once for the batch; the resolver mutates the cache in place
-        # as it mints/binds so later items in the same batch adopt earlier mints.
-        # Lazy import mirrors auto_rule_service above — MerchantResolver imports
-        # back into this package (applier), so a module-level import cycles.
-        resolver, bindings, rejected = self._build_merchant_resolver()
+        # Plaid's merchant_entity_id before name matching. Bindings, rejected, and
+        # pending are loaded once for the batch; the resolver mutates the cache in
+        # place as it mints/binds so later items in the same batch adopt earlier
+        # mints. Lazy import mirrors auto_rule_service above — MerchantResolver
+        # imports back into this package (applier), so a module-level import cycles.
+        resolver, bindings, rejected, pending = self._build_merchant_resolver()
 
         # Phase 4 — per-item categorization (writes only)
         for item in items:
@@ -372,6 +372,7 @@ class CategorizationOrchestrator:
                     bindings,
                     self._applier,
                     rejected=rejected,
+                    pending=pending,
                     merchant_entity_id=ctx.merchant_entity_id_for(txn_id),
                     source_type=ctx.merchant_entity_source_type_for(txn_id),
                     provider_merchant_name=ctx.merchant_name_for(txn_id),
@@ -496,18 +497,23 @@ class CategorizationOrchestrator:
     def _build_merchant_resolver(
         self,
     ) -> tuple[
-        MerchantResolver | None, dict[tuple[str, str], str], set[tuple[str, str, str]]
+        MerchantResolver | None,
+        dict[tuple[str, str], str],
+        set[tuple[str, str, str]],
+        set[tuple[str, str]],
     ]:
         """Construct the rung-0 MerchantResolver and load its caches once.
 
-        Loads both the accepted bindings cache (rung 1 adopt) and the rejected
-        decisions set (rung 2/3 guard) so the resolver can mint a new merchant
-        when the name-matched candidate was user-rejected (spec Decision 6).
+        Loads the accepted bindings cache (rung 1 adopt), the rejected decisions
+        set (rung 2/3 guard), and the pending decisions set (rung 2/4 guard) so
+        the resolver skips auto-binding or minting for entities currently under
+        user review (spec "magic stays visible" — mirrors the guard in harvest()).
 
         Best-effort: if the merchant-link tables are missing (pre-migration DB),
-        returns ``(None, {}, set())`` so categorization degrades to name matching only.
-        Lazy import keeps the module dependency one-way — MerchantResolver
-        imports back into this package's applier, so a top-level import cycles.
+        returns ``(None, {}, set(), set())`` so categorization degrades to name
+        matching only. Lazy import keeps the module dependency one-way —
+        MerchantResolver imports back into this package's applier, so a
+        top-level import cycles.
         """
         from moneybin.services.merchant_resolver import (  # noqa: PLC0415 — deferred to avoid circular import
             MerchantResolver,
@@ -517,10 +523,11 @@ class CategorizationOrchestrator:
             resolver = MerchantResolver(self._db, actor="system")
             bindings = resolver.load_bindings()
             rejected = resolver.load_rejected()
+            pending = resolver.load_pending()
         except Exception:  # noqa: BLE001 — best-effort; degrades to no entity resolution
             logger.warning("Could not initialize merchant resolver", exc_info=True)
-            return None, {}, set()
-        return resolver, bindings, rejected
+            return None, {}, set(), set()
+        return resolver, bindings, rejected, pending
 
     @staticmethod
     def _resolve_entity_merchant(
@@ -529,6 +536,7 @@ class CategorizationOrchestrator:
         applier: MatchApplier,
         *,
         rejected: set[tuple[str, str, str]],
+        pending: set[tuple[str, str]],
         merchant_entity_id: str | None,
         source_type: str | None,
         provider_merchant_name: str | None,
@@ -552,6 +560,7 @@ class CategorizationOrchestrator:
                 name_match=name_match,
                 bindings=bindings,
                 rejected=rejected,
+                pending=pending,
                 applier=applier,
             )
         except Exception:  # noqa: BLE001 — entity resolution is best-effort
@@ -648,7 +657,10 @@ class CategorizationOrchestrator:
         """Apply merchant-based categories to uncategorized transactions.
 
         Fetches all merchants once, then matches each uncategorized transaction
-        in Python — avoids a per-transaction DB query.
+        in Python — avoids a per-transaction DB query. An empty merchant catalog
+        (``[]``) still runs entity resolution so rung-4 minting fires for novel
+        provider entity ids before any merchant is authored; only a ``None``
+        return from ``fetch_merchants`` (catalog table absent) exits early.
 
         ``uncategorized`` lets :meth:`categorize_pending` share a single scan
         across :meth:`apply_rules` and this method. Rows come from
@@ -678,8 +690,11 @@ class CategorizationOrchestrator:
             Number of transactions categorized.
         """
         merchants = self._matcher.fetch_merchants()
-        if not merchants:
-            return 0
+        if merchants is None:
+            return 0  # merchant catalog table absent — nothing to do
+        # An EMPTY catalog ([]) still proceeds: entity resolution (rung-4) can mint
+        # the first merchant from a provider entity id even before any merchant is
+        # authored. An empty list is valid input for match_merchants (returns None).
 
         if uncategorized is None:
             rows = self._matcher.fetch_uncategorized_rows()
@@ -692,8 +707,9 @@ class CategorizationOrchestrator:
 
         # Rung-0 (M1T): consult the entity resolver before the merchant_id is
         # written so an existing entity binding wins / auto-binds. Built once
-        # for the sweep; degrades to (None, {}, set()) when the link tables are absent.
-        resolver, bindings, rejected = self._build_merchant_resolver()
+        # for the sweep; degrades to (None, {}, set(), set()) when the link
+        # tables are absent.
+        resolver, bindings, rejected, pending = self._build_merchant_resolver()
 
         # Category lookup for the entity-adoption path (no name match): when the
         # resolver returns a merchant_id without a name-matched category, read the
@@ -747,6 +763,7 @@ class CategorizationOrchestrator:
                 bindings,
                 self._applier,
                 rejected=rejected,
+                pending=pending,
                 merchant_entity_id=str(merchant_entity_id)
                 if merchant_entity_id is not None
                 else None,

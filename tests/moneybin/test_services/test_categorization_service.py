@@ -1364,6 +1364,7 @@ class TestMerchantResolutionOutcomeMetric:
             {},
             MagicMock(),
             rejected=set(),
+            pending=set(),
             merchant_entity_id="ent_m1",
             source_type="plaid",
             provider_merchant_name="Cafe",
@@ -1399,6 +1400,7 @@ class TestMerchantResolutionOutcomeMetric:
             {},
             MagicMock(),
             rejected=set(),
+            pending=set(),
             merchant_entity_id="ent_p1",
             source_type="plaid",
             provider_merchant_name="Cafe",
@@ -1442,6 +1444,7 @@ class TestResolveEntityMerchantSourceTypeGuard:
             {},
             MagicMock(),
             rejected=set(),
+            pending=set(),
             merchant_entity_id="ent_xyz",
             source_type=bad_source_type,
             provider_merchant_name="Some Merchant",
@@ -1841,6 +1844,73 @@ class TestApplyMerchantCategoriesEntityResolution:
         )
         assert row[2] == mid_a_nocat, (
             "merchant_id must still be the adopted entity merchant A"
+        )
+
+    @pytest.mark.unit
+    def test_empty_merchant_catalog_still_runs_entity_resolution(
+        self, db: Database
+    ) -> None:
+        """Empty merchant catalog ([] not None) still runs entity resolution (rung-4).
+
+        Bug #11: `if not merchants` exited on both [] (empty list) and None
+        (catalog table absent). An empty list means the table exists but no
+        merchants have been authored yet. A transaction carrying a
+        merchant_entity_id with no name match must reach rung-4 and create a
+        binding in app.merchant_links even before any merchant is authored.
+        Assert the BINDING, not a category row — the minted merchant starts
+        with category=None so no categorization is written.
+        """
+        from moneybin.repositories.merchant_links_repo import MerchantLinksRepo
+
+        _setup_prep_table(db)
+
+        # No merchant created — fetch_merchants() returns [] from the empty table.
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+            "VALUES ('TXN_11A', 'ACC1', DATE '2026-01-01', -10.00, 'XYZUNKNOWN11', 'plaid')"
+        )
+        db.execute(
+            "INSERT INTO prep.int_transactions__merged VALUES "
+            "('TXN_11A', 'ent_11a', 'plaid', 'Some New Merchant')"
+        )
+
+        apply_merchant_categories(db)
+
+        bound_mid = MerchantLinksRepo(db).lookup("plaid", "ent_11a")
+        assert bound_mid is not None, (
+            "entity id must be bound after rung-4 mint even when merchant catalog is empty"
+        )
+
+    @pytest.mark.unit
+    def test_absent_merchant_catalog_returns_zero(self, db: Database) -> None:
+        """Catalog table absent (fetch_merchants → None) → returns 0 immediately.
+
+        Preserved behavior: when the merchant table does not exist at all,
+        apply_merchant_categories bails early and returns 0. The None guard
+        replaces the old `if not merchants` check so this path is still covered.
+        """
+        from unittest.mock import patch
+
+        from moneybin.services.categorization.matcher import CategorizationMatcher
+
+        _setup_prep_table(db)
+
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+            "VALUES ('TXN_11B', 'ACC1', DATE '2026-01-01', -10.00, 'XYZUNKNOWN11B', 'plaid')"
+        )
+        db.execute(
+            "INSERT INTO prep.int_transactions__merged VALUES "
+            "('TXN_11B', 'ent_11b', 'plaid', 'Some Merchant 11B')"
+        )
+
+        with patch.object(CategorizationMatcher, "fetch_merchants", return_value=None):
+            result = apply_merchant_categories(db)
+
+        assert result == 0, (
+            "absent catalog table (fetch_merchants → None) must return 0"
         )
 
 
