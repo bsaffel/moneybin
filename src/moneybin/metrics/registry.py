@@ -351,6 +351,13 @@ MERCHANT_RESOLUTION_OUTCOME_TOTAL = Counter(
     ["outcome"],
 )
 
+MERCHANT_LINK_OUTCOMES_TOTAL = Counter(
+    "moneybin_merchant_link_outcomes_total",
+    "Outcomes of merchant-link review decisions via merchants_links_set.",
+    # outcome: accepted | rejected
+    ["outcome"],
+)
+
 # ── MCP server ────────────────────────────────────────────────────────────────
 
 MCP_TOOL_CALLS_TOTAL = Counter(

@@ -30,6 +30,7 @@ from moneybin.tables import (
 
 logger = logging.getLogger(__name__)
 _FUZZY_CONFIDENCE = 0.5
+_EXACT_CONFIDENCE = 1.0
 
 
 def count_pending_merchant_link_decisions(db: Database) -> int:
@@ -107,8 +108,8 @@ class MerchantResolver:
         """
         try:
             rows = self._db.execute(
-                f"SELECT source_type, ref_value "  # noqa: S608  # TableRef constant
-                f"FROM {MERCHANT_LINK_DECISIONS.full_name} "
+                "SELECT source_type, ref_value "
+                f"FROM {MERCHANT_LINK_DECISIONS.full_name} "  # noqa: S608  # TableRef constant
                 "WHERE status = 'pending' AND reversed_at IS NULL"
             ).fetchall()
         except duckdb.CatalogException:
@@ -177,8 +178,16 @@ class MerchantResolver:
                 # Categorization still uses mid.
                 # _propose's return (newly-inserted vs already-pending) is not needed here —
                 # categorization always uses mid; only harvest() counts queued conflicts.
+                is_exact = name_match.get("strength") == "exact"
                 self._propose(
-                    merchant_entity_id, source_type, provider_merchant_name, mid
+                    merchant_entity_id,
+                    source_type,
+                    provider_merchant_name,
+                    mid,
+                    confidence_score=_EXACT_CONFIDENCE
+                    if is_exact
+                    else _FUZZY_CONFIDENCE,
+                    match_reason="exact_name" if is_exact else "fuzzy_name",
                 )
                 # Keep the in-batch cache consistent: a later transaction in this batch
                 # with the same entity id must see it as under review (so it won't mint),
@@ -261,6 +270,9 @@ class MerchantResolver:
         source_type: str,
         provider_name: str | None,
         candidate_merchant_id: str,
+        *,
+        confidence_score: float,
+        match_reason: str,
     ) -> bool:
         """Insert a pending decision for this (source_type, ref_value, candidate).
 
@@ -278,13 +290,13 @@ class MerchantResolver:
             source_type=source_type,
             provider_merchant_name=provider_name,
             candidate_merchant_id=candidate_merchant_id,
-            confidence_score=_FUZZY_CONFIDENCE,
-            match_signals={"signal": "fuzzy_name", "value": provider_name},
+            confidence_score=confidence_score,
+            match_signals={"signal": match_reason, "value": provider_name},
             decided_by="auto",
             actor=self._actor,
-            match_reason="fuzzy_name",
+            match_reason=match_reason,
         )
-        MERCHANT_LINK_CONFIDENCE.observe(_FUZZY_CONFIDENCE)
+        MERCHANT_LINK_CONFIDENCE.observe(confidence_score)
         refresh_merchant_link_pending_gauge(self._db)
         return True
 
@@ -363,8 +375,15 @@ class MerchantResolver:
                 dominant = max(live_pairs, key=lambda p: (p[1], p[0]))[0]
                 # Count only conflicts actually queued — _propose returns False when an
                 # existing pending/rejected decision already blocks re-proposal.
+                # Harvest conflicts are always fuzzy (one-id-many-merchants signal);
+                # reclassifying them is a separate concern — intentionally preserved.
                 if self._propose(
-                    ent, source_type, names.get((source_type, ent)), dominant
+                    ent,
+                    source_type,
+                    names.get((source_type, ent)),
+                    dominant,
+                    confidence_score=_FUZZY_CONFIDENCE,
+                    match_reason="fuzzy_name",
                 ):
                     conflicts += 1
         if conflicts:

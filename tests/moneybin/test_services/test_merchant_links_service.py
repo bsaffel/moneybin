@@ -551,3 +551,49 @@ def test_pending_same_source_collapses_candidates(db: Database) -> None:
         "both candidates must appear in the single group"
     )
     assert svc.count_pending() == 1, "one (source_type, ref_value) pair must count as 1"
+
+
+# ---------------------------------------------------------------------------
+# MERCHANT_LINK_OUTCOMES_TOTAL counter (🟡#4)
+# ---------------------------------------------------------------------------
+
+
+def test_accept_increments_merchant_link_outcomes_counter(
+    db: Database, seeded_pending_decision: None
+) -> None:
+    """set() accept path increments MERCHANT_LINK_OUTCOMES_TOTAL{outcome='accepted'} by 1."""
+    from moneybin.metrics.registry import (
+        MERCHANT_LINK_OUTCOMES_TOTAL,  # type: ignore[attr-defined] — added in 🟡#4
+    )
+
+    _seed_merchants(db, _CANDIDATE_MERCHANT_ID)
+    svc = MerchantLinksService(db, actor="cli")
+
+    before = MERCHANT_LINK_OUTCOMES_TOTAL.labels(outcome="accepted")._value.get()  # type: ignore[reportPrivateUsage] — prometheus internals
+
+    svc.set(_DECISION_ID, target_merchant_id=_CANDIDATE_MERCHANT_ID)
+
+    after = MERCHANT_LINK_OUTCOMES_TOTAL.labels(outcome="accepted")._value.get()  # type: ignore[reportPrivateUsage]
+    assert after == before + 1, (
+        "MERCHANT_LINK_OUTCOMES_TOTAL{outcome='accepted'} must increment by 1 on accept"
+    )
+
+
+def test_reject_increments_merchant_link_outcomes_counter(
+    db: Database, seeded_pending_decision: None
+) -> None:
+    """set() reject path increments MERCHANT_LINK_OUTCOMES_TOTAL{outcome='rejected'} by 1."""
+    from moneybin.metrics.registry import (
+        MERCHANT_LINK_OUTCOMES_TOTAL,  # type: ignore[attr-defined] — added in 🟡#4
+    )
+
+    svc = MerchantLinksService(db, actor="cli")
+
+    before = MERCHANT_LINK_OUTCOMES_TOTAL.labels(outcome="rejected")._value.get()  # type: ignore[reportPrivateUsage]
+
+    svc.set(_DECISION_ID, target_merchant_id=None)
+
+    after = MERCHANT_LINK_OUTCOMES_TOTAL.labels(outcome="rejected")._value.get()  # type: ignore[reportPrivateUsage]
+    assert after == before + 1, (
+        "MERCHANT_LINK_OUTCOMES_TOTAL{outcome='rejected'} must increment by 1 on reject"
+    )

@@ -21,6 +21,7 @@ import duckdb
 from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.metrics.registry import MERCHANT_LINK_OUTCOMES_TOTAL
 from moneybin.repositories.merchant_link_decisions_repo import MerchantLinkDecisionsRepo
 from moneybin.repositories.merchant_links_repo import MerchantLinksRepo
 from moneybin.tables import MERCHANT_LINK_DECISIONS, MERCHANTS
@@ -346,6 +347,7 @@ class MerchantLinksService:
                     actor=self._actor,
                     in_outer_txn=True,
                 )
+                MERCHANT_LINK_OUTCOMES_TOTAL.labels(outcome="accepted").inc()
                 self._reject_pending_siblings(
                     ref_value,
                     source_type=decision["source_type"],
@@ -368,6 +370,7 @@ class MerchantLinksService:
                     actor=self._actor,
                     in_outer_txn=True,
                 )
+                MERCHANT_LINK_OUTCOMES_TOTAL.labels(outcome="rejected").inc()
                 self._reject_pending_siblings(
                     ref_value,
                     source_type=decision["source_type"],

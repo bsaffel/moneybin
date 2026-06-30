@@ -52,14 +52,27 @@ SELECT
       ELSE 2147483647
     END
   ) AS merchant_entity_id, /* Plaid provider entity id; NULL for non-Plaid sources; sentinel 2147483646 matches merchant_entity_source_type for consistency — belt-and-suspenders: ARG_MIN ignores NULL-id rows so an entity-bearing member already wins the tie regardless */
-  ARG_MIN(
-    m.source_type,
-    CASE
-      WHEN NOT m.merchant_entity_id IS NULL
-      THEN COALESCE(sp.priority, 2147483646)
-      ELSE 2147483647
-    END
-  ) AS merchant_entity_source_type, /* source_type of the member that issued merchant_entity_id; an entity-bearing member always wins over an entity-less one (sentinel 2147483646 < the entity-less 2147483647) even when its source_type is absent from seed_source_priority, so the entity id binds under its issuing provider regardless of priority config; meaningful only where merchant_entity_id IS NOT NULL (entity-less rows carry an arbitrary member's value that no reader consumes) */
+  CASE
+    WHEN NOT ARG_MIN(
+      m.merchant_entity_id,
+      CASE
+        WHEN NOT m.merchant_entity_id IS NULL
+        THEN COALESCE(sp.priority, 2147483646)
+        ELSE 2147483647
+      END
+    ) IS NULL
+    THEN ARG_MIN(
+      m.source_type,
+      CASE
+        WHEN NOT m.merchant_entity_id IS NULL
+        THEN COALESCE(sp.priority, 2147483646)
+        ELSE 2147483647
+      END
+    )
+  END AS merchant_entity_source_type, /* source_type of the member that issued
+    merchant_entity_id; NULL when no member carried an entity id (was previously an
+    arbitrary member's value — see #3). Entity-bearing member always wins via the
+    2147483646 < 2147483647 sentinel. */
   ARG_MIN(
     m.memo,
     CASE

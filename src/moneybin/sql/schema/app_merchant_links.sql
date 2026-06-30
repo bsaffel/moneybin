@@ -4,6 +4,10 @@
    new source_type, zero schema change. N:1 — one merchant_id may own many provider ids. No source_native
    translation role (unlike account_links): merchant identity is assigned at categorization time, not in
    staging. Written only through MerchantLinksRepo, which pairs every mutation with app.audit_log (Invariant 10). */
+/* Invariant: at most one accepted binding per (source_type, ref_kind, ref_value).
+   Enforced at the repository layer (MerchantLinksRepo._guard_uniqueness) — DuckDB cannot
+   express a partial unique index (WHERE status='accepted') or a unique constraint
+   on a generated column, so this cannot be a storage-level constraint. */
 CREATE TABLE IF NOT EXISTS app.merchant_links (
     link_id VARCHAR NOT NULL,                  -- uuid4[:12] primary key for this binding
     merchant_id VARCHAR NOT NULL,              -- canonical merchant this provider id maps to

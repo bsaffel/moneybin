@@ -3,6 +3,10 @@
    pending/provisional state lives here (that is app.account_link_decisions). Every source account always has an
    accepted source_native mapping, so it is always translatable to a canonical id by the staging JOIN.
    Written only through AccountLinksRepo, which pairs every mutation with an app.audit_log row (Invariant 10). */
+/* Invariant: at most one accepted binding per (source_type, ref_kind, ref_value).
+   Enforced at the repository layer (AccountLinksRepo._guard_uniqueness) — DuckDB cannot
+   express a partial unique index (WHERE status='accepted') or a unique constraint
+   on a generated column, so this cannot be a storage-level constraint. */
 CREATE TABLE IF NOT EXISTS app.account_links (
     link_id VARCHAR NOT NULL,                  -- uuid4[:12] primary key for this mapping
     account_id VARCHAR NOT NULL,               -- canonical (opaque, minted) account this ref maps to

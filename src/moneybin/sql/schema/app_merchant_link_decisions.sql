@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS app.merchant_link_decisions (
     match_signals VARCHAR,                     -- JSON: which signal fired + value (per match_decisions convention)
     status VARCHAR NOT NULL                    -- pending | accepted | rejected | reversed
         CHECK (status IN ('pending', 'accepted', 'rejected', 'reversed')),
-    decided_by VARCHAR NOT NULL                -- auto | user
+    decided_by VARCHAR NOT NULL                -- auto | user (decisions are initiated by auto-categorization or user review; system-harvested backfills write bindings to app.merchant_links directly, never a decision row)
         CHECK (decided_by IN ('auto', 'user')),
     match_reason VARCHAR,                      -- short human reason (e.g. signal name)
     decided_at TIMESTAMP NOT NULL,

@@ -536,7 +536,14 @@ def test_propose_returns_false_when_blocked(db: Database) -> None:
         status="pending",
     )
 
-    result = r._propose("E_BP", "plaid", None, "M_BP")  # pyright: ignore[reportPrivateUsage]
+    result = r._propose(  # pyright: ignore[reportPrivateUsage]
+        "E_BP",
+        "plaid",
+        None,
+        "M_BP",
+        confidence_score=0.5,
+        match_reason="fuzzy_name",
+    )
     assert result is False, (
         "_propose must return False when blocked by existing pending"
     )
@@ -546,7 +553,14 @@ def test_propose_returns_true_when_fresh(db: Database) -> None:
     """_propose returns True when a decision is newly inserted (no existing block)."""
     r = MerchantResolver(db)
 
-    result = r._propose("E_FRESH", "plaid", None, "M_FRESH")  # pyright: ignore[reportPrivateUsage]
+    result = r._propose(  # pyright: ignore[reportPrivateUsage]
+        "E_FRESH",
+        "plaid",
+        None,
+        "M_FRESH",
+        confidence_score=0.5,
+        match_reason="fuzzy_name",
+    )
     assert result is True, "_propose must return True for a fresh (unblocked) insertion"
 
     # Confirm the decision was actually inserted.
@@ -1070,6 +1084,122 @@ def test_harvest_conflict_carries_provider_name(db: Database) -> None:
 # ---------------------------------------------------------------------------
 # resolve() in-batch pending cache (#6)
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# _propose() stamps correct confidence/match_reason from match strength (🔴)
+# ---------------------------------------------------------------------------
+
+
+def test_propose_exact_under_review_stamps_exact_confidence(
+    db: Database, applier: MatchApplier
+) -> None:
+    """Exact-but-under-review proposal stamps confidence=1.0 / match_reason='exact_name'.
+
+    Bug: before the fix, _propose hardcoded fuzzy confidence (0.5) regardless
+    of match strength, so an exact match to a different candidate was mislabeled
+    in app.merchant_link_decisions. This test FAILS before the fix.
+
+    Trigger: entity E pending for candidate A; an exact name match arrives for
+    a DIFFERENT candidate B → _decision_blocks_propose(E, B) is False → _propose
+    is called for E→B. The inserted row must carry confidence=1.0 / 'exact_name'.
+    """
+    r = MerchantResolver(db)
+    # Seed a pending decision for (plaid, E_exact_ur, A) — entity is under review.
+    r._decisions.insert(  # pyright: ignore[reportPrivateUsage]
+        decision_id="pre_A",
+        ref_kind="merchant_entity_id",
+        ref_value="E_exact_ur",
+        source_type="plaid",
+        provider_merchant_name="Starbucks",
+        candidate_merchant_id="A",
+        confidence_score=0.5,
+        match_signals={"signal": "fuzzy_name", "value": "Starbucks"},
+        decided_by="auto",
+        actor="system",
+        status="pending",
+    )
+
+    # Entity E is under review; exact match arrives for a DIFFERENT candidate B.
+    name_match = {"merchant_id": "B", "strength": "exact"}
+    pending: set[tuple[str, str]] = {("plaid", "E_exact_ur")}
+
+    r.resolve(
+        merchant_entity_id="E_exact_ur",
+        source_type="plaid",
+        provider_merchant_name="Starbucks",
+        name_match=name_match,
+        bindings={},
+        rejected=set(),
+        pending=pending,
+        applier=applier,
+    )
+
+    all_pending = r._decisions.list_pending()  # pyright: ignore[reportPrivateUsage]
+    decision_for_b = [
+        d
+        for d in all_pending
+        if d["ref_value"] == "E_exact_ur" and d["candidate_merchant_id"] == "B"
+    ]
+    assert len(decision_for_b) == 1, (
+        "Expected exactly one pending decision for candidate B"
+    )
+    row = decision_for_b[0]
+    assert float(row["confidence_score"]) == 1.0, (
+        f"Exact-match proposal must stamp confidence=1.0; got {row['confidence_score']}"
+    )
+    assert row["match_reason"] == "exact_name", (
+        f"Exact-match proposal must stamp match_reason='exact_name'; got {row['match_reason']!r}"
+    )
+
+
+def test_propose_fuzzy_under_review_stamps_fuzzy_confidence(
+    db: Database, applier: MatchApplier
+) -> None:
+    """Control: fuzzy under-review proposal still stamps confidence=0.5 / 'fuzzy_name'."""
+    r = MerchantResolver(db)
+    r._decisions.insert(  # pyright: ignore[reportPrivateUsage]
+        decision_id="pre_A2",
+        ref_kind="merchant_entity_id",
+        ref_value="E_fuzzy_ur",
+        source_type="plaid",
+        provider_merchant_name="Coffee Co",
+        candidate_merchant_id="A2",
+        confidence_score=0.5,
+        match_signals={"signal": "fuzzy_name", "value": "Coffee Co"},
+        decided_by="auto",
+        actor="system",
+        status="pending",
+    )
+
+    name_match = {"merchant_id": "B2", "strength": "fuzzy"}
+    pending: set[tuple[str, str]] = {("plaid", "E_fuzzy_ur")}
+
+    r.resolve(
+        merchant_entity_id="E_fuzzy_ur",
+        source_type="plaid",
+        provider_merchant_name="Coffee Co",
+        name_match=name_match,
+        bindings={},
+        rejected=set(),
+        pending=pending,
+        applier=applier,
+    )
+
+    all_pending = r._decisions.list_pending()  # pyright: ignore[reportPrivateUsage]
+    decision_for_b2 = [
+        d
+        for d in all_pending
+        if d["ref_value"] == "E_fuzzy_ur" and d["candidate_merchant_id"] == "B2"
+    ]
+    assert len(decision_for_b2) == 1
+    row = decision_for_b2[0]
+    assert float(row["confidence_score"]) == 0.5, (
+        f"Fuzzy proposal must stamp confidence=0.5; got {row['confidence_score']}"
+    )
+    assert row["match_reason"] == "fuzzy_name", (
+        f"Fuzzy proposal must stamp match_reason='fuzzy_name'; got {row['match_reason']!r}"
+    )
 
 
 def test_resolve_updates_pending_cache_after_proposing(
