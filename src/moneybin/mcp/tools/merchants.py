@@ -167,7 +167,7 @@ def merchants_links_pending() -> ResponseEnvelope[MerchantLinksPendingPayload]:
     )
 
 
-@mcp_tool(domain="links", read_only=False)
+@mcp_tool(domain="links", read_only=False, idempotent=False)
 def merchants_links_set(
     decision_id: str,
     target_merchant_id: str | None,

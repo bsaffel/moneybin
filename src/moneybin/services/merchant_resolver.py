@@ -178,6 +178,10 @@ class MerchantResolver:
                 self._propose(
                     merchant_entity_id, source_type, provider_merchant_name, mid
                 )
+                # Keep the in-batch cache consistent: a later transaction in this batch
+                # with the same entity id must see it as under review (so it won't mint),
+                # exactly as bindings is mutated in place on bind/mint.
+                pending.add((source_type, merchant_entity_id))
                 return MerchantResolution(merchant_id=mid, outcome="proposed")
             # else: the matched candidate was user-rejected for this entity id →
             # fall through to rung 4 (mint a new merchant), per spec Decision 6:

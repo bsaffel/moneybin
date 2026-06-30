@@ -972,3 +972,63 @@ def test_harvest_conflict_carries_provider_name(db: Database) -> None:
     assert pending_for_ent[0]["provider_merchant_name"] == "Starbucks", (
         "harvest conflict proposals must carry provider_merchant_name from the merged view"
     )
+
+
+# ---------------------------------------------------------------------------
+# resolve() in-batch pending cache (#6)
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_updates_pending_cache_after_proposing(
+    db: Database, applier: MatchApplier
+) -> None:
+    """resolve() adds (source_type, entity_id) to pending after rung-3 propose.
+
+    When a fuzzy match proposes a new decision, the shared ``pending`` set must
+    be updated so a later call in the same batch with the same entity id (and
+    no name match this time) sees it as under review and returns outcome='none'
+    instead of minting a new merchant.
+
+    Verifies the in-batch cache mutation (#6 fix): without it the second call
+    reaches rung-4 and mints despite the entity already being under review.
+    """
+    r = MerchantResolver(db)
+    shared_pending: set[tuple[str, str]] = set()
+    name_match = {"merchant_id": "mFuzzyBatch", "strength": "fuzzy"}
+
+    # Call 1: fuzzy match → proposes, returns outcome='proposed'.
+    res1 = r.resolve(
+        merchant_entity_id="ent_batch",
+        source_type="plaid",
+        provider_merchant_name="Cafe Batch",
+        name_match=name_match,
+        bindings={},
+        rejected=set(),
+        pending=shared_pending,
+        applier=applier,
+    )
+    assert res1.outcome == "proposed", f"expected proposed, got {res1.outcome!r}"
+    assert res1.merchant_id == "mFuzzyBatch"
+    # After call 1, the shared pending set must contain the entity.
+    assert ("plaid", "ent_batch") in shared_pending, (
+        "resolve() must add (source_type, entity_id) to pending after proposing"
+    )
+
+    # Call 2: same entity, NO name match, same shared pending set.
+    # Must return outcome='none' — entity is now under review, not eligible for mint.
+    res2 = r.resolve(
+        merchant_entity_id="ent_batch",
+        source_type="plaid",
+        provider_merchant_name="Cafe Batch",
+        name_match=None,
+        bindings={},
+        rejected=set(),
+        pending=shared_pending,
+        applier=applier,
+    )
+    assert res2.outcome == "none", (
+        f"expected none (entity under review), got {res2.outcome!r}"
+    )
+    assert res2.merchant_id is None, (
+        "second call must NOT mint — entity is under review in the same batch"
+    )

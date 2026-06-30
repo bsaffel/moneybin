@@ -480,7 +480,55 @@ class TestApplyMerchantCategories:
 
 
 class TestFetchUncategorizedRowsFallback:
-    """[2] fetch_uncategorized_rows degrades when the prep view lacks entity columns."""
+    """fetch_uncategorized_rows includes entity-bearing rows even with blank text.
+
+    Also degrades gracefully when the prep view lacks entity columns.
+    """
+
+    @pytest.mark.unit
+    def test_entity_bearing_row_with_blank_text_is_included(self, db: Database) -> None:
+        """Entity-bearing transaction with empty description and memo must be returned.
+
+        Blank-text entity rows were previously excluded by the text-only WHERE,
+        so apply_merchant_categories never saw them and rung-0/rung-4 never ran.
+        The fix adds ``OR m.merchant_entity_id IS NOT NULL`` to the with_entity
+        WHERE so these rows are always scanned.
+        """
+        from moneybin.services.categorization.matcher import CategorizationMatcher
+
+        # Prep merged view WITH entity columns.
+        db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+        db.execute("DROP TABLE IF EXISTS prep.int_transactions__merged")
+        db.execute(
+            "CREATE TABLE prep.int_transactions__merged ("
+            "  transaction_id VARCHAR PRIMARY KEY, "
+            "  merchant_entity_id VARCHAR, "
+            "  merchant_entity_source_type VARCHAR, "
+            "  merchant_name VARCHAR"
+            ")"
+        )
+        # Entity-bearing row: merchant_entity_id set, description and memo both empty.
+        db.execute(
+            "INSERT INTO prep.int_transactions__merged VALUES "
+            "('TXNE1', 'plaid_ent_123', 'plaid', NULL)"
+        )
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+            "VALUES ('TXNE1', 'ACC1', '2025-06-01', -5.00, '', 'plaid')"
+        )
+
+        rows = CategorizationMatcher(db).fetch_uncategorized_rows()
+
+        assert rows is not None, "must return rows, not None"
+        txn_ids = [r[0] for r in rows]
+        assert "TXNE1" in txn_ids, (
+            "entity-bearing row with blank description must be included in "
+            "fetch_uncategorized_rows (OR m.merchant_entity_id IS NOT NULL)"
+        )
+        # Confirm entity data is projected at position 5.
+        row = next(r for r in rows if r[0] == "TXNE1")
+        assert row[5] == "plaid_ent_123", "merchant_entity_id must be projected"
 
     @pytest.mark.unit
     def test_missing_entity_columns_falls_back(self, db: Database) -> None:

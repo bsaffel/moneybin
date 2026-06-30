@@ -13,13 +13,13 @@ reverse them.
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, ClassVar
 
 import duckdb
 
 from moneybin.repositories.base import BaseRepo
 from moneybin.services.audit_service import AuditEvent
-from moneybin.tables import MERCHANT_LINK_DECISIONS
+from moneybin.tables import MERCHANT_LINK_DECISIONS, TableRef
 
 _MERCHANT_LINK_DECISIONS_COLUMNS = (
     "decision_id",
@@ -61,10 +61,10 @@ def _decode_row(row: tuple[Any, ...]) -> dict[str, Any]:
 class MerchantLinkDecisionsRepo(BaseRepo):
     """Audited CRUD over ``app.merchant_link_decisions``."""
 
-    repository = "merchant_link_decisions"
+    repository: ClassVar[str] = "merchant_link_decisions"
 
-    table_ref = MERCHANT_LINK_DECISIONS
-    pk_columns = ("decision_id",)
+    table_ref: ClassVar[TableRef] = MERCHANT_LINK_DECISIONS
+    pk_columns: ClassVar[tuple[str, ...]] = ("decision_id",)
 
     def _fetch_row(self, decision_id: str) -> dict[str, Any] | None:
         return self._fetch_one(

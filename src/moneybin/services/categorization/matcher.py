@@ -241,12 +241,18 @@ class CategorizationMatcher:
         )
 
     def fetch_uncategorized_rows(self) -> list[tuple[Any, ...]] | None:
-        """Return rows for uncategorized transactions with a non-empty description or memo.
+        """Return rows for uncategorized transactions with a non-empty description, memo, or entity id.
 
         Single scan shared between the facade's :meth:`apply_rules` and
         :meth:`apply_merchant_categories` when called from
         :meth:`categorize_pending`. Returns ``None`` if the source tables don't
         exist (DB pre-migration); returns ``[]`` when there are no pending rows.
+
+        Entity-bearing rows (``merchant_entity_id IS NOT NULL``) are always
+        included even when both description and memo are blank, so rung-0
+        adoption and rung-4 minting run for them. This extra OR clause lives
+        only in the ``with_entity`` query (which has the prep join alias ``m``);
+        the ``without_entity`` fallback retains the text-only filter.
 
         Columns: ``(transaction_id, description, amount, account_id, memo,
         merchant_entity_id, source_type, merchant_name,
@@ -267,6 +273,19 @@ class CategorizationMatcher:
                         OR (t.memo IS NOT NULL AND t.memo != '')
                     )
         """
+        # Entity-bearing rows are scanned regardless of text content: a blank-text
+        # transaction with a merchant_entity_id must still reach apply_merchant_categories
+        # so rung-0 adoption and rung-4 minting run for it. This clause references
+        # m.merchant_entity_id (the prep join alias) so it can only appear in the
+        # with_entity query — the without_entity fallback carries no prep join.
+        where_with_entity = """
+                WHERE c.transaction_id IS NULL
+                    AND (
+                        (t.description IS NOT NULL AND t.description != '')
+                        OR (t.memo IS NOT NULL AND t.memo != '')
+                        OR m.merchant_entity_id IS NOT NULL
+                    )
+        """
         cat_join = (
             f"LEFT JOIN {TRANSACTION_CATEGORIES.full_name} c "
             "ON t.transaction_id = c.transaction_id"
@@ -283,7 +302,7 @@ class CategorizationMatcher:
                 {cat_join}
                 LEFT JOIN {INT_TRANSACTIONS_MERGED.full_name} m
                     ON t.transaction_id = m.transaction_id
-                {where}
+                {where_with_entity}
         """  # noqa: S608 — table names are compile-time TableRef constants
         without_entity = f"""
                 SELECT t.transaction_id, t.description, t.amount, t.account_id,
