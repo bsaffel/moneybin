@@ -1421,7 +1421,9 @@ class TestMerchantResolutionOutcomeMetric:
         )
 
         after = MERCHANT_RESOLUTION_OUTCOME_TOTAL.labels(outcome="minted")._value.get()  # type: ignore[reportPrivateUsage]
-        assert result == "m_new"
+        result_id, result_created = result
+        assert result_id == "m_new"
+        assert result_created is True, "minted outcome must set created=True"
         assert after == before + 1, "minted outcome must increment the counter"
 
     @pytest.mark.unit
@@ -1459,7 +1461,9 @@ class TestMerchantResolutionOutcomeMetric:
         after = MERCHANT_RESOLUTION_OUTCOME_TOTAL.labels(
             outcome="proposed"
         )._value.get()  # type: ignore[reportPrivateUsage]
-        assert result == "m_prop"
+        result_id, result_created = result
+        assert result_id == "m_prop"
+        assert result_created is False, "proposed outcome must not set created=True"
         assert after == before + 1, "proposed outcome must increment the counter"
 
 
@@ -1500,8 +1504,12 @@ class TestResolveEntityMerchantSourceTypeGuard:
             current_merchant_id=current,
         )
 
-        assert result == current, (
+        result_id, result_created = result
+        assert result_id == current, (
             f"source_type={bad_source_type!r}: expected current_merchant_id unchanged"
+        )
+        assert result_created is False, (
+            f"source_type={bad_source_type!r}: guard path must return created=False"
         )
         resolver.resolve.assert_not_called()
 
@@ -2094,4 +2102,105 @@ class TestResolverBindingPrecedesCategorization:
         assert pending is not None and pending[0] >= 1, (
             "resolver must have written a pending proposal for ent_r7 "
             "even though categorization was precedence-skipped"
+        )
+
+
+# ---------------------------------------------------------------------------
+# categorize_items — rung-4 entity mint counted in merchants_created (M1T)
+# ---------------------------------------------------------------------------
+
+
+class TestCategorizeItemsMerchantCreated:
+    """categorize_items must count rung-4 entity mints in CategorizationResult.merchants_created.
+
+    When a transaction carries a merchant_entity_id with no pre-existing
+    binding, the resolver mints a new merchant (rung-4) and the returned
+    CategorizationResult must reflect that mint in merchants_created.
+
+    Regression: _resolve_entity_merchant previously discarded
+    MerchantResolution.created, so merchants_created stayed 0 even when a new
+    Plaid merchant was minted during the AI categorization path.
+    """
+
+    @pytest.mark.unit
+    def test_rung4_mint_increments_merchants_created(self, db: Database) -> None:
+        """categorize_items counts a rung-4 entity mint in merchants_created.
+
+        A transaction with a merchant_entity_id that has no pre-existing
+        binding and no name match triggers rung-4 (mint). The returned
+        CategorizationResult.merchants_created must be >= 1.
+        """
+        _setup_prep_table(db)
+
+        # Transaction with no name-matchable description — forces rung-4 mint.
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+            "VALUES ('TXN_MINT_1', 'ACC1', DATE '2026-01-01', -12.50, 'XYZNOPATTERNMINT1', 'plaid')"
+        )
+        db.execute(
+            "INSERT INTO prep.int_transactions__merged VALUES "
+            "('TXN_MINT_1', 'ent_mint_1', 'plaid', 'Chipotle')"
+        )
+
+        svc = CategorizationService(db)
+        result = svc.categorize_items([
+            CategorizationItem(transaction_id="TXN_MINT_1", category="Food & Drink")
+        ])
+
+        assert result.merchants_created >= 1, (
+            "rung-4 entity mint must increment merchants_created; "
+            f"got {result.merchants_created}"
+        )
+
+    @pytest.mark.unit
+    def test_rung1_adopt_does_not_increment_merchants_created(
+        self, db: Database
+    ) -> None:
+        """categorize_items does NOT count a rung-1 adopt in merchants_created.
+
+        Control: when the entity id is already bound (rung-1 adopt),
+        MerchantResolution.created is False and merchants_created must stay 0.
+        """
+        from moneybin.repositories.merchant_links_repo import MerchantLinksRepo
+
+        _setup_prep_table(db)
+
+        # Create a merchant and pre-bind an entity id to it (rung-1 seed).
+        mid = create_merchant(
+            db,
+            "BOUND_CORP",
+            "Bound Corp",
+            match_type="exact",
+            category="Business",
+        )
+        MerchantLinksRepo(db).insert(
+            link_id="lnk_ctrl1",
+            merchant_id=mid,
+            ref_kind="merchant_entity_id",
+            ref_value="ent_ctrl_1",
+            source_type="plaid",
+            decided_by="auto",
+            actor="system",
+            status="accepted",
+        )
+
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+            "VALUES ('TXN_CTRL_1', 'ACC1', DATE '2026-01-01', -5.00, 'XYZNOPATTERNCTRL', 'plaid')"
+        )
+        db.execute(
+            "INSERT INTO prep.int_transactions__merged VALUES "
+            "('TXN_CTRL_1', 'ent_ctrl_1', 'plaid', 'Bound Corp')"
+        )
+
+        svc = CategorizationService(db)
+        result = svc.categorize_items([
+            CategorizationItem(transaction_id="TXN_CTRL_1", category="Business")
+        ])
+
+        assert result.merchants_created == 0, (
+            "rung-1 adopt must NOT increment merchants_created; "
+            f"got {result.merchants_created}"
         )

@@ -367,7 +367,7 @@ class CategorizationOrchestrator:
                 # committed before write_categorization; a precedence skip
                 # suppresses only the categorization, never the binding
                 # (spec Decision 7 — precedence-safe).
-                merchant_id = self._resolve_entity_merchant(
+                merchant_id, entity_created = self._resolve_entity_merchant(
                     resolver,
                     bindings,
                     self._applier,
@@ -379,6 +379,11 @@ class CategorizationOrchestrator:
                     name_match=existing,
                     current_merchant_id=merchant_id,
                 )
+                if entity_created:
+                    # A rung-4 entity mint created a new merchant — count it alongside the
+                    # exemplar-path mints below so CategorizationResult.merchants_created
+                    # reflects Plaid entity mints, not just AI-named merchants.
+                    merchants_created += 1
 
                 outcome = self._applier.write_categorization(
                     transaction_id=txn_id,
@@ -542,16 +547,17 @@ class CategorizationOrchestrator:
         provider_merchant_name: str | None,
         name_match: dict[str, Any] | None,
         current_merchant_id: str | None,
-    ) -> str | None:
-        """Run rung-0 entity resolution; return the merchant_id to write.
+    ) -> tuple[str | None, bool]:
+        """Run rung-0 entity resolution; return ``(merchant_id, created)``.
 
-        Returns ``current_merchant_id`` unchanged when the resolver is absent or
+        Returns ``(current_merchant_id, False)`` when the resolver is absent or
         produces no id (no entity id, empty source_type, or degraded). On an
         adopt/auto-bind/mint outcome, records the entity-id match metric and
-        returns the resolved id.
+        returns the resolved id. ``created`` is ``True`` only for a rung-4 mint
+        (``MerchantResolution.created``); adopt/auto-bind/proposed are ``False``.
         """
         if resolver is None or not merchant_entity_id or not source_type:
-            return current_merchant_id
+            return current_merchant_id, False
         try:
             res = resolver.resolve(
                 merchant_entity_id=merchant_entity_id,
@@ -565,16 +571,16 @@ class CategorizationOrchestrator:
             )
         except Exception:  # noqa: BLE001 — entity resolution is best-effort
             logger.debug("merchant entity resolution failed", exc_info=True)
-            return current_merchant_id
+            return current_merchant_id, False
         if res.merchant_id is None:
-            return current_merchant_id
+            return current_merchant_id, False
         # Spec-mandated ladder-outcome counter (one per resolved transaction).
         MERCHANT_RESOLUTION_OUTCOME_TOTAL.labels(outcome=res.outcome).inc()
         if res.outcome in ("adopted", "auto_bound", "minted"):
             CATEGORIZE_MATCH_OUTCOME_TOTAL.labels(
                 outcome="entity_id", shape="both"
             ).inc()
-        return res.merchant_id
+        return res.merchant_id, res.created
 
     def apply_rules(
         self, *, uncategorized: list[tuple[Any, ...]] | None = None
@@ -750,7 +756,10 @@ class CategorizationOrchestrator:
             # Resolve the entity binding for EVERY row, BEFORE the skip guard: the
             # binding/mint/propose is an entity-keyed fact committed regardless of whether
             # THIS row's categorization write happens (spec Decision 7 — precedence-safe).
-            merchant_id = self._resolve_entity_merchant(
+            # apply_merchant_categories returns a categorized-row count, not a
+            # merchants_created tally; a rung-4 mint here is still observable via the
+            # MERCHANT_RESOLUTION_OUTCOME_TOTAL{outcome="minted"} counter.
+            merchant_id, _entity_created = self._resolve_entity_merchant(
                 resolver,
                 bindings,
                 self._applier,
