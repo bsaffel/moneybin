@@ -101,6 +101,99 @@ def test_rung4_mints_plaid_merchant_and_binds(
     assert r._links.lookup("plaid", "ent4") == res.merchant_id  # pyright: ignore[reportPrivateUsage]
 
 
+def _lookup_canonical_name(db: Database, merchant_id: str) -> str | None:
+    """Return canonical_name for a minted merchant from app.user_merchants."""
+    row = db.execute(
+        "SELECT canonical_name FROM app.user_merchants WHERE merchant_id = ?",
+        [merchant_id],
+    ).fetchone()
+    return str(row[0]) if row else None
+
+
+def test_rung4_mints_with_placeholder_when_name_is_none(
+    db: Database, applier: MatchApplier
+) -> None:
+    """Rung-4 mint: provider_merchant_name=None → canonical_name '(Plaid merchant)'.
+
+    When Plaid sends an entity id but no merchant name, the stored canonical_name
+    must be the readable placeholder '(Plaid merchant)' — NOT the opaque entity id.
+    The placeholder never collides or merges entities: merchant_id is a fresh UUID
+    PK and canonical_name has no UNIQUE constraint on app.user_merchants.
+    """
+    r = MerchantResolver(db)
+    res = r.resolve(
+        merchant_entity_id="ent_noname_none",
+        source_type="plaid",
+        provider_merchant_name=None,
+        name_match=None,
+        bindings={},
+        rejected=set(),
+        pending=set(),
+        applier=applier,
+    )
+    assert res.outcome == "minted" and res.created is True
+    assert _lookup_canonical_name(db, res.merchant_id or "") == "(Plaid merchant)", (  # type: ignore[arg-type]
+        "nameless Plaid entity must use readable placeholder, not entity id"
+    )
+
+
+def test_rung4_mints_with_placeholder_when_name_is_empty_string(
+    db: Database, applier: MatchApplier
+) -> None:
+    """Rung-4 mint: provider_merchant_name='' → canonical_name '(Plaid merchant)'."""
+    r = MerchantResolver(db)
+    res = r.resolve(
+        merchant_entity_id="ent_noname_empty",
+        source_type="plaid",
+        provider_merchant_name="",
+        name_match=None,
+        bindings={},
+        rejected=set(),
+        pending=set(),
+        applier=applier,
+    )
+    assert res.outcome == "minted" and res.created is True
+    assert _lookup_canonical_name(db, res.merchant_id or "") == "(Plaid merchant)"  # type: ignore[arg-type]
+
+
+def test_rung4_mints_with_placeholder_when_name_is_whitespace(
+    db: Database, applier: MatchApplier
+) -> None:
+    """Rung-4 mint: provider_merchant_name='   ' → canonical_name '(Plaid merchant)'."""
+    r = MerchantResolver(db)
+    res = r.resolve(
+        merchant_entity_id="ent_noname_ws",
+        source_type="plaid",
+        provider_merchant_name="   ",
+        name_match=None,
+        bindings={},
+        rejected=set(),
+        pending=set(),
+        applier=applier,
+    )
+    assert res.outcome == "minted" and res.created is True
+    assert _lookup_canonical_name(db, res.merchant_id or "") == "(Plaid merchant)"  # type: ignore[arg-type]
+
+
+def test_rung4_mints_with_real_name_when_name_is_provided(
+    db: Database, applier: MatchApplier
+) -> None:
+    """Control: provider_merchant_name='Real Merchant' → canonical_name 'Real Merchant'."""
+    r = MerchantResolver(db)
+    res = r.resolve(
+        merchant_entity_id="ent_realname",
+        source_type="plaid",
+        provider_merchant_name="Real Merchant",
+        name_match=None,
+        bindings={},
+        rejected=set(),
+        pending=set(),
+        applier=applier,
+    )
+    assert res.outcome == "minted" and res.created is True
+    assert _lookup_canonical_name(db, res.merchant_id or "") == "Real Merchant"  # type: ignore[arg-type]
+
+
 def test_harvest_degrades_when_prep_view_absent(db: Database) -> None:
     """harvest() returns HarvestResult(0, 0) on a never-transformed DB.
 

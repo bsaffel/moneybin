@@ -166,7 +166,7 @@ transaction carrying a provider `merchant_entity_id`:
 | 1 | provider id already in `merchant_links` (`accepted`) | **adopt** that `merchant_id` (skip name matching) | silent — near-certain |
 | 2 | unbound; provider `merchant_name` **exact / exemplar** match to an existing merchant | **auto-bind** the id → that merchant, adopt it | silent — near-certain |
 | 3 | unbound; **fuzzy** (`contains`/`regex`) or **multiple** candidate merchants | **propose** — the single best name-match candidate (one pending `merchant_link_decisions` row); **do not** bind, **do not** mint | **surfaced** for review |
-| 4 | unbound; no candidate | **mint** a new merchant (`canonical_name` = provider `merchant_name`, `created_by='plaid'`), bind the id | silent — novel, safe |
+| 4 | unbound; no candidate | **mint** a new merchant (`canonical_name` = provider `merchant_name` when present, else `"(Plaid merchant)"` placeholder, `created_by='plaid'`), bind the id | silent — novel, safe |
 
 - Rung 1 is the dedup payoff: the *first* transaction with id `E` resolves/mints a
   merchant and binds `E`; every later transaction with `E` — **even with different

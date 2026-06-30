@@ -195,9 +195,13 @@ class MerchantResolver:
         # accepted binding while the review is still open.
         if under_review:
             return MerchantResolution(merchant_id=None, outcome="none")
-        canonical = (
-            provider_merchant_name or merchant_entity_id
-        ).strip() or merchant_entity_id
+        # No provider-supplied name → a readable placeholder, not the opaque entity
+        # id (which would otherwise surface as the merchant's display name in reports
+        # and MCP, and is harder to spot for a manual rename later). Each nameless
+        # entity still mints a DISTINCT merchant: merchant_id is a fresh UUID PK and
+        # canonical_name carries no UNIQUE constraint (app.user_merchants), so the
+        # shared placeholder never collides or merges entities.
+        canonical = (provider_merchant_name or "").strip() or "(Plaid merchant)"
         new_id = applier.create_merchant_core(
             None,
             canonical,
@@ -288,7 +292,9 @@ class MerchantResolver:
         """Bind established (provider id -> assigned merchant) facts from existing categorizations.
 
         Routes one-id-many-merchants conflicts to the review queue without binding.
-        Idempotent: the insert guard in _bind skips already-bound entity ids.
+        Idempotent: already-bound entity ids are skipped at the harvest-loop
+        level via the `existing` snapshot (a re-bind would otherwise raise in
+        `_guard_uniqueness`).
         Skips merchant_ids the user already rejected for an entity id — re-binding
         one would silently re-adopt a rejected merchant; leaving it unbound lets the
         next categorization pass mint a new merchant for the id (spec Decision 6).

@@ -314,6 +314,25 @@ class TestMerchantLinksRun:
 
     @patch("moneybin.cli.commands.merchants.links.get_database")
     @patch("moneybin.services.merchant_links_service.MerchantLinksService.run")
+    def test_run_noop_does_not_print_pending_hint(
+        self, mock_run: MagicMock, mock_get_db: MagicMock
+    ) -> None:
+        """No-op run (bound=0, conflicts=0) must NOT print the review hint.
+
+        Printing 'Run `merchants links pending` to review.' when nothing was
+        bound or queued is contradictory — there is nothing to review.
+        """
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_run.return_value = HarvestResult(bound=0, conflicts=0)
+
+        result = runner.invoke(app, ["run"])
+        assert result.exit_code == 0
+        assert "pending" not in result.output.lower(), (
+            "no-op run must not print the review hint — nothing to review"
+        )
+
+    @patch("moneybin.cli.commands.merchants.links.get_database")
+    @patch("moneybin.services.merchant_links_service.MerchantLinksService.run")
     def test_run_json_output_shape(
         self, mock_run: MagicMock, mock_get_db: MagicMock
     ) -> None:

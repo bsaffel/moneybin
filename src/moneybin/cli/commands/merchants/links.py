@@ -220,4 +220,4 @@ def links_run(
             f"✅ Recorded {result.bound} merchant binding(s); "
             f"queued {result.conflicts} conflict(s) for review."
         )
-    typer.echo("Run `merchants links pending` to review.")
+        typer.echo("Run `merchants links pending` to review.")
