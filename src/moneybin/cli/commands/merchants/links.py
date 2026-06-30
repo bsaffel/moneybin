@@ -167,9 +167,9 @@ def links_history(
 
     typer.echo(
         f"\n{'Decision ID':<14} {'Ref Value':<22} {'Candidate':<14} "
-        f"{'Status':<10} {'Decided By':<10} {'Conf':>5}"
+        f"{'Status':<10} {'Decided By':<10} {'Signal':<18} {'Conf':>5}"
     )
-    typer.echo("-" * 80)
+    typer.echo("-" * 98)
     for d in payload.decisions:
         conf_str = f"{d.confidence:.2f}" if d.confidence is not None else "  -  "
         typer.echo(
@@ -178,6 +178,7 @@ def links_history(
             f"{d.candidate_merchant_id[:12]:<14} "
             f"{d.status:<10} "
             f"{d.decided_by:<10} "
+            f"{d.signal:<18} "
             f"{conf_str:>5}"
         )
     typer.echo()

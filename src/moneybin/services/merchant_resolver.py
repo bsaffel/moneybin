@@ -175,6 +175,8 @@ class MerchantResolver:
                     return MerchantResolution(merchant_id=mid, outcome="auto_bound")
                 # Fuzzy / ambiguous, OR exact but under review → propose, do NOT bind.
                 # Categorization still uses mid.
+                # _propose's return (newly-inserted vs already-pending) is not needed here —
+                # categorization always uses mid; only harvest() counts queued conflicts.
                 self._propose(
                     merchant_entity_id, source_type, provider_merchant_name, mid
                 )

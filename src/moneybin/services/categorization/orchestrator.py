@@ -731,8 +731,6 @@ class CategorizationOrchestrator:
             merchant_name,
             merchant_entity_source_type,
         ) in uncategorized:
-            if skip_txn_ids is not None and txn_id in skip_txn_ids:
-                continue
             match_text, norm_desc, norm_memo = build_match_inputs(description, memo)
             # Compute the name match but do NOT gate the resolver on it: an
             # entity-bound transaction must adopt its merchant even when the
@@ -749,15 +747,9 @@ class CategorizationOrchestrator:
                 if match_text
                 else None
             )
-            # Merchants don't have a dedicated source-priority slot in the v1
-            # ladder (user/rule/auto_rule/migration/ml/plaid/ai). Recording
-            # merchant matches as 'rule' preserves historical behavior; a
-            # follow-up spec may introduce a dedicated 'merchant' priority
-            # between auto_rule and migration.
-            categorized_by: CategorizedBy = "rule"
-            # The binding/mint/propose is an entity-keyed fact deliberately committed
-            # before write_categorization; a precedence skip suppresses only the
-            # categorization, never the binding (spec Decision 7 — precedence-safe).
+            # Resolve the entity binding for EVERY row, BEFORE the skip guard: the
+            # binding/mint/propose is an entity-keyed fact committed regardless of whether
+            # THIS row's categorization write happens (spec Decision 7 — precedence-safe).
             merchant_id = self._resolve_entity_merchant(
                 resolver,
                 bindings,
@@ -776,6 +768,16 @@ class CategorizationOrchestrator:
                 name_match=merchant,
                 current_merchant_id=merchant["merchant_id"] if merchant else None,
             )
+            # Skip the categorization WRITE for rows a higher-priority rule already
+            # categorized — the entity binding above already committed.
+            if skip_txn_ids is not None and txn_id in skip_txn_ids:
+                continue
+            # Merchants don't have a dedicated source-priority slot in the v1
+            # ladder (user/rule/auto_rule/migration/ml/plaid/ai). Recording
+            # merchant matches as 'rule' preserves historical behavior; a
+            # follow-up spec may introduce a dedicated 'merchant' priority
+            # between auto_rule and migration.
+            categorized_by: CategorizedBy = "rule"
             # Choose the category to write.
             # Rung-1 "skip name matching": the adopted/bound merchant's own
             # category wins over a disagreeing name match — the entity binding

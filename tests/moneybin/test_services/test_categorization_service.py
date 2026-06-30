@@ -1748,6 +1748,55 @@ class TestApplyMerchantCategoriesEntityResolution:
         assert row is not None and row[0] == 0
 
     @pytest.mark.unit
+    def test_skip_txn_ids_entity_still_bound(self, db: Database) -> None:
+        """skip_txn_ids suppresses the categorization write but NOT entity binding.
+
+        Decision 7: a precedence skip (rule-pass already handled the row)
+        must suppress only the categorization write, never the entity binding.
+        After the fix, _resolve_entity_merchant runs ABOVE the skip guard so the
+        entity id is bound in app.merchant_links even for rows in skip_txn_ids.
+
+        Regression for the restructure in apply_merchant_categories: previously
+        the entire loop body was skipped (including the resolver call), so a
+        Plaid transaction categorized by a rule in the same categorize_pending
+        call never got its merchant_entity_id bound.
+        """
+        from moneybin.repositories.merchant_links_repo import MerchantLinksRepo
+
+        _setup_prep_table(db)
+
+        # Transaction with a merchant_entity_id that has NO pre-existing binding.
+        # Resolver will hit rung-4 (no name match, no binding) → mint + auto-bind.
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+            "VALUES ('TXN_D7B', 'ACC1', DATE '2026-01-01', -9.99, 'XYZNOPATTERN99', 'plaid')"
+        )
+        db.execute(
+            "INSERT INTO prep.int_transactions__merged VALUES "
+            "('TXN_D7B', 'ent_d7b', 'plaid', 'Some Provider Merchant')"
+        )
+
+        svc = CategorizationService(db)
+        count = svc.apply_merchant_categories(skip_txn_ids={"TXN_D7B"})
+
+        # Categorization write must be suppressed.
+        assert count == 0, "skip_txn_ids must suppress the categorization write"
+        cat_row = db.execute(
+            "SELECT COUNT(*) FROM app.transaction_categories "
+            "WHERE transaction_id = 'TXN_D7B'"
+        ).fetchone()
+        assert cat_row is not None and cat_row[0] == 0, (
+            "no categorization row must be written for a skip_txn_ids row"
+        )
+
+        # Entity binding must have been written (resolver ran above the skip guard).
+        bound_mid = MerchantLinksRepo(db).lookup("plaid", "ent_d7b")
+        assert bound_mid is not None, (
+            "entity id must be bound in app.merchant_links even when txn is in skip_txn_ids"
+        )
+
+    @pytest.mark.unit
     def test_adopted_entity_merchant_category_wins_over_name_match(
         self, db: Database
     ) -> None:
