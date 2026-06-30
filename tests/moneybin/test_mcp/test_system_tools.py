@@ -34,6 +34,8 @@ async def test_system_status_data_keys(mcp_db: object) -> None:
     assert "accounts" in data
     assert "transactions" in data
     assert "matches" in data
+    assert "account_links" in data
+    assert "merchant_links" in data
     assert "categorization" in data
 
 

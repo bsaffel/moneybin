@@ -88,6 +88,57 @@ def test_review_type_filter_categorize(
 
 @patch("moneybin.cli.commands.transactions.review.get_database")
 @patch("moneybin.config.get_settings")
+def test_review_type_filter_merchant_links(
+    mock_get_settings: MagicMock, mock_get_db: MagicMock
+) -> None:
+    """--type merchant-links limits output to the merchant-link queue count."""
+    mock_db = MagicMock()
+    mock_get_db.return_value.__enter__.return_value = mock_db
+    mock_get_settings.return_value = MagicMock()
+    mock_db.execute.return_value.fetchone.return_value = (0,)
+
+    result = runner.invoke(
+        app, ["transactions", "review", "--type", "merchant-links", "--status"]
+    )
+    assert result.exit_code == 0
+    out = result.output.lower()
+    assert "merchant-link" in out
+    assert "matches pending" not in out
+    assert "uncategorized" not in out
+
+
+@patch("moneybin.cli.commands.transactions.review.get_database")
+@patch("moneybin.config.get_settings")
+def test_review_status_json_type_filter_merchant_links(
+    mock_get_settings: MagicMock, mock_get_db: MagicMock
+) -> None:
+    """--type merchant-links --output json includes only the merchant_links key."""
+    mock_db = MagicMock()
+    mock_get_db.return_value.__enter__.return_value = mock_db
+    mock_get_settings.return_value = MagicMock()
+    mock_db.execute.return_value.fetchone.return_value = (0,)
+
+    result = runner.invoke(
+        app,
+        [
+            "transactions",
+            "review",
+            "--type",
+            "merchant-links",
+            "--status",
+            "--output",
+            "json",
+        ],
+    )
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)["data"]
+    assert "merchant_links_pending" in payload
+    assert "account_links_pending" not in payload
+    assert "total" not in payload
+
+
+@patch("moneybin.cli.commands.transactions.review.get_database")
+@patch("moneybin.config.get_settings")
 def test_review_status_json_output(
     mock_get_settings: MagicMock, mock_get_db: MagicMock
 ) -> None:
@@ -107,6 +158,7 @@ def test_review_status_json_output(
         "matches_pending": 0,
         "categorize_pending": 0,
         "account_links_pending": 0,
+        "merchant_links_pending": 0,
         "total": 0,
     }
 

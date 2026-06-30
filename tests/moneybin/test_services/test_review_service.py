@@ -5,18 +5,33 @@ from unittest.mock import MagicMock
 from moneybin.services.review_service import ReviewService, ReviewStatus
 
 
-def test_review_status_counts_both_queues() -> None:
+def _make_review_service(
+    matches: int = 0,
+    categorize: int = 0,
+    account_links: int = 0,
+    merchant_links: int = 0,
+) -> ReviewService:
+    """Factory that wires four mock services into a ReviewService."""
     match_service = MagicMock()
-    match_service.count_pending.return_value = 3
+    match_service.count_pending.return_value = matches
     cat_service = MagicMock()
-    cat_service.count_uncategorized.return_value = 12
+    cat_service.count_uncategorized.return_value = categorize
     links_service = MagicMock()
-    links_service.count_pending.return_value = 0
+    links_service.count_pending.return_value = account_links
+    merchant_links_service = MagicMock()
+    merchant_links_service.count_pending.return_value = merchant_links
 
-    svc = ReviewService(
+    return ReviewService(
         match_service=match_service,
         categorize_service=cat_service,
         account_links_service=links_service,
+        merchant_links_service=merchant_links_service,
+    )
+
+
+def test_review_status_counts_all_queues() -> None:
+    svc = _make_review_service(
+        matches=3, categorize=12, account_links=0, merchant_links=0
     )
     status = svc.status()
 
@@ -24,28 +39,19 @@ def test_review_status_counts_both_queues() -> None:
     assert status.matches_pending == 3
     assert status.categorize_pending == 12
     assert status.account_links_pending == 0
+    assert status.merchant_links_pending == 0
     assert status.total == 15
 
 
 def test_review_status_zero_queues() -> None:
-    match_service = MagicMock()
-    match_service.count_pending.return_value = 0
-    cat_service = MagicMock()
-    cat_service.count_uncategorized.return_value = 0
-    links_service = MagicMock()
-    links_service.count_pending.return_value = 0
-
-    svc = ReviewService(
-        match_service=match_service,
-        categorize_service=cat_service,
-        account_links_service=links_service,
-    )
+    svc = _make_review_service()
     status = svc.status()
 
     assert status.total == 0
     assert status.matches_pending == 0
     assert status.categorize_pending == 0
     assert status.account_links_pending == 0
+    assert status.merchant_links_pending == 0
 
 
 def test_review_status_delegates_to_services() -> None:
@@ -56,53 +62,46 @@ def test_review_status_delegates_to_services() -> None:
     cat_service.count_uncategorized.return_value = 7
     links_service = MagicMock()
     links_service.count_pending.return_value = 2
+    merchant_links_service = MagicMock()
+    merchant_links_service.count_pending.return_value = 1
 
     svc = ReviewService(
         match_service=match_service,
         categorize_service=cat_service,
         account_links_service=links_service,
+        merchant_links_service=merchant_links_service,
     )
     svc.status()
 
     match_service.count_pending.assert_called_once()
     cat_service.count_uncategorized.assert_called_once()
     links_service.count_pending.assert_called_once()
+    merchant_links_service.count_pending.assert_called_once()
 
 
 def test_review_status_includes_account_links_pending() -> None:
     """account_links_pending is counted and included in total."""
-    match_service = MagicMock()
-    match_service.count_pending.return_value = 0
-    cat_service = MagicMock()
-    cat_service.count_uncategorized.return_value = 0
-    links_service = MagicMock()
-    links_service.count_pending.return_value = 4
-
-    svc = ReviewService(
-        match_service=match_service,
-        categorize_service=cat_service,
-        account_links_service=links_service,
-    )
+    svc = _make_review_service(account_links=4)
     status = svc.status()
 
     assert status.account_links_pending == 4
     assert status.total == 4
 
 
-def test_review_status_total_sums_all_three_queues() -> None:
-    """Total = matches_pending + categorize_pending + account_links_pending."""
-    match_service = MagicMock()
-    match_service.count_pending.return_value = 2
-    cat_service = MagicMock()
-    cat_service.count_uncategorized.return_value = 3
-    links_service = MagicMock()
-    links_service.count_pending.return_value = 5
+def test_review_status_includes_merchant_links_pending() -> None:
+    """merchant_links_pending is counted and included in total."""
+    svc = _make_review_service(merchant_links=7)
+    status = svc.status()
 
-    svc = ReviewService(
-        match_service=match_service,
-        categorize_service=cat_service,
-        account_links_service=links_service,
+    assert status.merchant_links_pending == 7
+    assert status.total == 7
+
+
+def test_review_status_total_sums_all_four_queues() -> None:
+    """Total = matches_pending + categorize_pending + account_links_pending + merchant_links_pending."""
+    svc = _make_review_service(
+        matches=2, categorize=3, account_links=5, merchant_links=4
     )
     status = svc.status()
 
-    assert status.total == 10  # 2 + 3 + 5
+    assert status.total == 14  # 2 + 3 + 5 + 4

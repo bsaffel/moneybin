@@ -21,7 +21,7 @@ import duckdb
 
 from moneybin.database import Database
 from moneybin.metrics.registry import CATEGORIZE_MATCH_OUTCOME_TOTAL
-from moneybin.services._text import build_match_inputs
+from moneybin.services._text import build_match_inputs, normalize_description
 from moneybin.services.categorization._shared import (
     Merchant,
     match_shape_case_sql,
@@ -30,6 +30,7 @@ from moneybin.services.categorization._shared import (
 from moneybin.tables import (
     CATEGORIZATION_RULES,
     FCT_TRANSACTIONS,
+    INT_TRANSACTIONS_MERGED,
     MERCHANTS,
     TRANSACTION_CATEGORIES,
 )
@@ -80,6 +81,7 @@ def _match_exemplar(
                 "canonical_name": m.canonical_name,
                 "category": m.category,
                 "subcategory": m.subcategory,
+                "strength": "exact" if m.match_type in ("oneOf", "exact") else "fuzzy",
             }
     return None
 
@@ -133,6 +135,7 @@ def _match_text(
                 "canonical_name": m.canonical_name,
                 "category": m.category,
                 "subcategory": m.subcategory,
+                "strength": "exact" if m.match_type in ("oneOf", "exact") else "fuzzy",
             }
 
     CATEGORIZE_MATCH_OUTCOME_TOTAL.labels(outcome="none", shape=shape).inc()
@@ -171,6 +174,60 @@ def match_merchants(
         description_present=description_present,
         memo_present=memo_present,
     )
+
+
+def match_merchant_with_name(
+    merchants: list[Merchant],
+    *,
+    description: str | None,
+    memo: str | None,
+    merchant_name: str | None,
+) -> dict[str, str | None] | None:
+    """Resolve a merchant from description/memo, falling back to provider merchant_name.
+
+    Spec Decision 3 rung 2 requires a provider ``merchant_name`` exact/exemplar
+    match to auto-bind. The description/memo match alone misses the case where the
+    bank description is blank or noisy but ``merchant_name`` names a known merchant.
+    When the description match is absent or fuzzy, match ``merchant_name`` too and
+    prefer an EXACT ``merchant_name`` hit, so the resolver rung-2 auto-binds instead
+    of minting a duplicate (rung 4). A FUZZY ``merchant_name`` match is surfaced for
+    review (rung 3), never silently auto-bound ("magic stays visible").
+    """
+    match_text, norm_desc, norm_memo = build_match_inputs(description, memo)
+    desc_hit = (
+        match_merchants(
+            match_text,
+            merchants,
+            normalized_description=norm_desc,
+            normalized_memo=norm_memo,
+            description_present=bool(description and description.strip()),
+            memo_present=bool(memo and memo.strip()),
+        )
+        if match_text
+        else None
+    )
+    # An exact description/memo match already satisfies rung 2 — keep it.
+    if desc_hit is not None and desc_hit.get("strength") == "exact":
+        return desc_hit
+    norm_name = normalize_description(merchant_name) if merchant_name else ""
+    if norm_name:
+        name_hit = match_merchants(
+            norm_name,
+            merchants,
+            normalized_description=norm_name,
+            normalized_memo="",
+            description_present=True,
+            memo_present=False,
+        )
+        # Use the name match when there was no description match at all, or when
+        # the name match is EXACT (an exact name match upgrades a fuzzy desc match
+        # to a rung-2 auto-bind). A fuzzy name match with a fuzzy desc match keeps
+        # the desc match — both route to rung-3 propose anyway.
+        if name_hit is not None and (
+            desc_hit is None or name_hit.get("strength") == "exact"
+        ):
+            return name_hit
+    return desc_hit
 
 
 class CategorizationMatcher:
@@ -238,33 +295,87 @@ class CategorizationMatcher:
         )
 
     def fetch_uncategorized_rows(self) -> list[tuple[Any, ...]] | None:
-        """Return rows for uncategorized transactions with a non-empty description or memo.
+        """Return rows for uncategorized transactions with a non-empty description, memo, or entity id.
 
         Single scan shared between the facade's :meth:`apply_rules` and
         :meth:`apply_merchant_categories` when called from
         :meth:`categorize_pending`. Returns ``None`` if the source tables don't
         exist (DB pre-migration); returns ``[]`` when there are no pending rows.
 
-        Columns: ``(transaction_id, description, amount, account_id, memo)`` —
-        the superset of what either consumer needs; ``apply_merchant_categories``
-        ignores ``amount`` and ``account_id``.
+        Entity-bearing rows (``merchant_entity_id IS NOT NULL``) are always
+        included even when both description and memo are blank, so rung-0
+        adoption and rung-4 minting run for them. This extra OR clause lives
+        only in the ``with_entity`` query (which has the prep join alias ``m``);
+        the ``without_entity`` fallback retains the text-only filter.
+
+        Columns: ``(transaction_id, description, amount, account_id, memo,
+        merchant_entity_id, source_type, merchant_name,
+        merchant_entity_source_type)`` — the superset of what either consumer
+        needs. ``apply_rules`` uses only the first five;
+        ``apply_merchant_categories`` additionally consults the trailing four
+        for rung-0 entity resolution (M1T). ``merchant_entity_id`` and
+        ``merchant_entity_source_type`` come from ``prep.int_transactions__merged``
+        (Task 5 stops them at prep), joined on the gold ``transaction_id``.
+        ``merchant_entity_source_type`` — the source_type of the merge member
+        that issued the entity id — is the binding key, NOT the merge-winner
+        ``source_type`` projected from ``core.fct_transactions``.
         """
-        try:
-            return self._db.execute(
-                f"""
-                SELECT t.transaction_id, t.description, t.amount, t.account_id, t.memo
-                FROM {FCT_TRANSACTIONS.full_name} t
-                LEFT JOIN {TRANSACTION_CATEGORIES.full_name} c
-                    ON t.transaction_id = c.transaction_id
+        where = """
                 WHERE c.transaction_id IS NULL
                     AND (
                         (t.description IS NOT NULL AND t.description != '')
                         OR (t.memo IS NOT NULL AND t.memo != '')
                     )
-                """,
-            ).fetchall()
-        except duckdb.CatalogException:
-            return None
+        """
+        # Entity-bearing rows are scanned regardless of text content: a blank-text
+        # transaction with a merchant_entity_id must still reach apply_merchant_categories
+        # so rung-0 adoption and rung-4 minting run for it. This clause references
+        # m.merchant_entity_id (the prep join alias) so it can only appear in the
+        # with_entity query — the without_entity fallback carries no prep join.
+        where_with_entity = """
+                WHERE c.transaction_id IS NULL
+                    AND (
+                        (t.description IS NOT NULL AND t.description != '')
+                        OR (t.memo IS NOT NULL AND t.memo != '')
+                        OR m.merchant_entity_id IS NOT NULL
+                    )
+        """
+        cat_join = (
+            f"LEFT JOIN {TRANSACTION_CATEGORIES.full_name} c "
+            "ON t.transaction_id = c.transaction_id"
+        )
+        # Preferred: pull merchant_entity_id from prep.int_transactions__merged
+        # (Task 5 stops it at prep). Fallback drops the prep join with a NULL
+        # entity id so unit/pre-transform DBs — where core.fct_transactions
+        # exists without the prep layer — still categorize by name.
+        with_entity = f"""
+                SELECT t.transaction_id, t.description, t.amount, t.account_id,
+                       t.memo, m.merchant_entity_id, t.source_type, t.merchant_name,
+                       m.merchant_entity_source_type
+                FROM {FCT_TRANSACTIONS.full_name} t
+                {cat_join}
+                LEFT JOIN {INT_TRANSACTIONS_MERGED.full_name} m
+                    ON t.transaction_id = m.transaction_id
+                {where_with_entity}
+        """  # noqa: S608 — table names are compile-time TableRef constants
+        without_entity = f"""
+                SELECT t.transaction_id, t.description, t.amount, t.account_id,
+                       t.memo, NULL AS merchant_entity_id, t.source_type,
+                       t.merchant_name, NULL AS merchant_entity_source_type
+                FROM {FCT_TRANSACTIONS.full_name} t
+                {cat_join}
+                {where}
+        """  # noqa: S608 — table names are compile-time TableRef constants
+        for query in (with_entity, without_entity):
+            try:
+                return self._db.execute(query).fetchall()
+            except (duckdb.CatalogException, duckdb.BinderException):
+                # CatalogException: prep layer (or fct itself) absent.
+                # BinderException: prep view exists but lacks the entity columns
+                # (post-upgrade, pre-re-transform) — both fall back to the
+                # entity-less query.
+                continue
+        return None
 
     def fetch_active_rules(self) -> list[tuple[Any, ...]]:
         """Return all active rules in priority order (priority ASC, created_at ASC)."""

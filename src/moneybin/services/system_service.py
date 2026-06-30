@@ -26,6 +26,7 @@ class SystemStatus:
     last_import_at: date | None
     matches_pending: int
     account_links_pending: int
+    merchant_links_pending: int
     categorize_pending: int
     transforms_pending: bool
     transforms_last_apply_at: datetime | None
@@ -57,11 +58,13 @@ class SystemService:
         transactions_count, min_date, max_date = self._query_transactions()
         last_import_at = self._last_import_at()
         from moneybin.services.account_links_service import AccountLinksService
+        from moneybin.services.merchant_links_service import MerchantLinksService
 
         review = ReviewService(
             MatchingService(self._db),
             CategorizationService(self._db),
             AccountLinksService(self._db),
+            MerchantLinksService(self._db),
         ).status()
         freshness = TransformService(self._db).freshness()
         schema_drift = check_core_schema_drift(self._db)
@@ -78,6 +81,7 @@ class SystemService:
             last_import_at=last_import_at,
             matches_pending=review.matches_pending,
             account_links_pending=review.account_links_pending,
+            merchant_links_pending=review.merchant_links_pending,
             categorize_pending=review.categorize_pending,
             transforms_pending=freshness.pending,
             transforms_last_apply_at=freshness.last_apply_at,

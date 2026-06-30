@@ -182,14 +182,14 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |         [--output json] [-q]
 |
 +-- review                         -- What needs my attention? Pending counts across all review queues.
-|     [--type all|matches|categorize|account-links]   Default all; walks matches first then categorize
+|     [--type all|matches|categorize|account-links|merchant-links]   Default all; walks matches first then categorize
 |     [--status]                        Counts only, no interactive loop
 |     [--confirm <id>]                  Non-interactive: confirm one match by ID
 |     [--reject <id>]                   Non-interactive: reject one match by ID
 |     [--confirm-all]                   Non-interactive: confirm all items in scope
 |     [--limit N]                       Cap items per session
 |     [--output text|json] [-q]
-|   Aggregates matches_pending + categorize_pending + account_links_pending in one sweep.
+|   Aggregates matches_pending + categorize_pending + account_links_pending + merchant_links_pending in one sweep.
 |   Use `--status` for counts only; drill into `accounts links pending`,
 |   `transactions matches list`, or `transactions categorize pending` for queue contents.
 |
@@ -215,7 +215,7 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |       +-- pending [--output json] [--quiet]
 |       |         List provisional accounts + candidate merge proposals; each candidate
 |       |         shows decision_id, candidate_account_id, display name, confidence, signal.
-|       +-- set <decision_id> --into <account_id> | --standalone [--quiet]
+|       +-- set <decision_id> --into <account_id> | --standalone
 |       |         Merge the provisional into the candidate (--into) or keep as standalone
 |       |         (--standalone). The two flags are mutually exclusive; omitting both exits 2.
 |       +-- history [--limit N] [--output json] [--quiet]
@@ -248,8 +248,8 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- create                     -- Create a manual transaction
 |   +-- audit                      -- Audit one transaction's curation history (notes, tags, splits)
 |   +-- review                     -- DEPRECATED: use `moneybin review` (removed after one minor release)
-|   |                                  Unified review queue (matches + categorize + account-links)
-|   |     [--type all|matches|categorize|account-links]   Default all; walks matches first then categorize
+|   |                                  Unified review queue (matches + categorize + account-links + merchant-links)
+|   |     [--type all|matches|categorize|account-links|merchant-links]   Default all; walks matches first then categorize
 |   |     [--status]                        Counts only, no interactive loop
 |   |     [--confirm <id>]                  Non-interactive: confirm one match or categorize item by ID
 |   |     [--reject <id>]                   Non-interactive: reject one match by ID
@@ -300,9 +300,26 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- set <category_id> --active/--inactive
 |   +-- delete <category_id> [--force]
 |
-+-- merchants                      -- Merchant mappings (reference data)
++-- merchants                      -- Merchant mappings (reference data) and link-review
 |   +-- list
 |   +-- create <pattern> <canonical_name> [--default-category]
+|   +-- links                      -- Review and manage merchant-link binding decisions
+|       +-- pending [--output json] [--quiet]
+|       |         List provider entity ids + candidate merchant proposals; each candidate
+|       |         shows decision_id, merchant_id, canonical name, and confidence.
+|       +-- set <decision_id> --into <merchant_id> | --new
+|       |         Bind the provider entity id to the given merchant (--into) or reject all
+|       |         candidates so the resolver mints a new merchant on next run (--new).
+|       |         The two flags are mutually exclusive; omitting both exits 2.
+|       +-- history [--limit N] [--output json] [--quiet]
+|       |         Recent decisions (all statuses), newest first.
+|       +-- run [--output json]
+|                 Harvest existing categorization facts into pending merchant-link proposals.
+|                 Binds unambiguous entity id → merchant mappings; routes conflicts to review.
+|                 Prints count of new proposals written; hints user toward `merchants links pending`.
+|   Note: `merchants links undo` is deliberately NOT registered (deferred to M1L audit-undo
+|         consumer; same as `accounts links undo`).
+|
 |
 +-- reports                        -- Cross-domain analytical and aggregation views (read-only)
 |   |   # The six view-backed reports below (cashflow, spending, recurring,

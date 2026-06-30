@@ -156,6 +156,13 @@ class SystemStatusAccountLinksInfo:
 
 
 @dataclass(frozen=True, slots=True)
+class SystemStatusMerchantLinksInfo:
+    """Merchant-link review queue sub-object inside SystemStatusPayload."""
+
+    pending_review: Annotated[int, DataClass.AGGREGATE]
+
+
+@dataclass(frozen=True, slots=True)
 class SystemStatusCategorizationInfo:
     """Categorization queue sub-object inside SystemStatusPayload."""
 
@@ -255,6 +262,7 @@ class SystemStatusPayload:
     transactions: SystemStatusTransactionsInfo
     matches: SystemStatusMatchesInfo
     account_links: SystemStatusAccountLinksInfo
+    merchant_links: SystemStatusMerchantLinksInfo
     categorization: SystemStatusCategorizationInfo
     transforms: SystemStatusTransformsInfo
     schema_drift: SystemStatusSchemaDrift | None

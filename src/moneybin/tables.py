@@ -86,12 +86,17 @@ ACCOUNT_LINKS = TableRef("app", "account_links")
 ACCOUNT_LINK_DECISIONS = TableRef("app", "account_link_decisions")
 TRANSACTION_ID_ALIASES = TableRef("app", "transaction_id_aliases")
 
+# -- App merchant-identity tables (M1T) --
+MERCHANT_LINKS = TableRef("app", "merchant_links")
+MERCHANT_LINK_DECISIONS = TableRef("app", "merchant_link_decisions")
+
 # -- Seed tables (materialized by SQLMesh from CSV) --
 SEED_CATEGORIES = TableRef("seeds", "categories")
 
 # -- Prep / staging views (built by SQLMesh transforms) --
 INT_TRANSACTIONS_UNIONED = TableRef("prep", "int_transactions__unioned")
 INT_TRANSACTIONS_MATCHED = TableRef("prep", "int_transactions__matched")
+INT_TRANSACTIONS_MERGED = TableRef("prep", "int_transactions__merged")
 
 # -- Meta schema (cross-source provenance + lineage) --
 FCT_TRANSACTION_PROVENANCE = TableRef("meta", "fct_transaction_provenance")

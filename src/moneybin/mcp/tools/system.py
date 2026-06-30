@@ -31,6 +31,7 @@ from moneybin.privacy.payloads.system import (
     SystemStatusGsheetInfo,
     SystemStatusGsheetRow,
     SystemStatusMatchesInfo,
+    SystemStatusMerchantLinksInfo,
     SystemStatusPayload,
     SystemStatusReader,
     SystemStatusSchemaDrift,
@@ -265,6 +266,7 @@ def _locked_status_envelope(
             ),
             matches=SystemStatusMatchesInfo(pending_review=0),
             account_links=SystemStatusAccountLinksInfo(pending_review=0),
+            merchant_links=SystemStatusMerchantLinksInfo(pending_review=0),
             categorization=SystemStatusCategorizationInfo(uncategorized=0),
             transforms=SystemStatusTransformsInfo(pending=False, last_apply_at=None),
             schema_drift=None,
@@ -328,7 +330,7 @@ def system_status() -> ResponseEnvelope[SystemStatusPayload]:
 
     schema_drift_payload: SystemStatusSchemaDrift | None = None
     actions = [
-        "Use `review` for per-queue review counts (matches + categorize + account-links)",
+        "Use `review` for per-queue review counts (matches + categorize + account-links + merchant-links)",
         "Use reports_spending for a monthly spending trend snapshot",
     ]
     if status.schema_drift:
@@ -368,6 +370,9 @@ def system_status() -> ResponseEnvelope[SystemStatusPayload]:
             matches=SystemStatusMatchesInfo(pending_review=status.matches_pending),
             account_links=SystemStatusAccountLinksInfo(
                 pending_review=status.account_links_pending
+            ),
+            merchant_links=SystemStatusMerchantLinksInfo(
+                pending_review=status.merchant_links_pending
             ),
             categorization=SystemStatusCategorizationInfo(
                 uncategorized=status.categorize_pending

@@ -475,6 +475,151 @@ class TestApplyMerchantCategories:
 
 
 # ---------------------------------------------------------------------------
+# fetch_uncategorized_rows fallback ([2])
+# ---------------------------------------------------------------------------
+
+
+class TestFetchUncategorizedRowsFallback:
+    """fetch_uncategorized_rows includes entity-bearing rows even with blank text.
+
+    Also degrades gracefully when the prep view lacks entity columns.
+    """
+
+    @pytest.mark.unit
+    def test_entity_bearing_row_with_blank_text_is_included(self, db: Database) -> None:
+        """Entity-bearing transaction with empty description and memo must be returned.
+
+        Blank-text entity rows were previously excluded by the text-only WHERE,
+        so apply_merchant_categories never saw them and rung-0/rung-4 never ran.
+        The fix adds ``OR m.merchant_entity_id IS NOT NULL`` to the with_entity
+        WHERE so these rows are always scanned.
+        """
+        from moneybin.services.categorization.matcher import CategorizationMatcher
+
+        # Prep merged view WITH entity columns.
+        db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+        db.execute("DROP TABLE IF EXISTS prep.int_transactions__merged")
+        db.execute(
+            "CREATE TABLE prep.int_transactions__merged ("
+            "  transaction_id VARCHAR PRIMARY KEY, "
+            "  merchant_entity_id VARCHAR, "
+            "  merchant_entity_source_type VARCHAR, "
+            "  merchant_name VARCHAR"
+            ")"
+        )
+        # Entity-bearing row: merchant_entity_id set, description and memo both empty.
+        db.execute(
+            "INSERT INTO prep.int_transactions__merged VALUES "
+            "('TXNE1', 'plaid_ent_123', 'plaid', NULL)"
+        )
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+            "VALUES ('TXNE1', 'ACC1', '2025-06-01', -5.00, '', 'plaid')"
+        )
+
+        rows = CategorizationMatcher(db).fetch_uncategorized_rows()
+
+        assert rows is not None, "must return rows, not None"
+        txn_ids = [r[0] for r in rows]
+        assert "TXNE1" in txn_ids, (
+            "entity-bearing row with blank description must be included in "
+            "fetch_uncategorized_rows (OR m.merchant_entity_id IS NOT NULL)"
+        )
+        # Confirm entity data is projected at position 5.
+        row = next(r for r in rows if r[0] == "TXNE1")
+        assert row[5] == "plaid_ent_123", "merchant_entity_id must be projected"
+
+    @pytest.mark.unit
+    def test_missing_entity_columns_falls_back(self, db: Database) -> None:
+        """Prep view present but without merchant_entity_* columns → BinderException → fallback.
+
+        Simulates a post-code-upgrade, pre-re-transform DB: the prep view exists
+        but predates the M1T entity columns. The ``with_entity`` query raises a
+        ``duckdb.BinderException`` (missing column, NOT a catalog error). The
+        fetch must catch it and fall back to ``without_entity`` so categorize-run
+        still returns the uncategorized rows instead of crashing.
+        """
+        from moneybin.services.categorization.matcher import CategorizationMatcher
+
+        # prep view EXISTS but WITHOUT the M1T entity columns.
+        db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+        db.execute("DROP TABLE IF EXISTS prep.int_transactions__merged")
+        db.execute(
+            "CREATE TABLE prep.int_transactions__merged (transaction_id VARCHAR)"
+        )
+        db.execute("INSERT INTO prep.int_transactions__merged VALUES ('TXNB1')")
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+            "VALUES ('TXNB1', 'ACC1', '2025-06-01', -5.00, 'COFFEE SHOP', 'ofx')"
+        )
+
+        rows = CategorizationMatcher(db).fetch_uncategorized_rows()
+
+        assert rows is not None, "must degrade to without_entity, not raise/return None"
+        row = next((r for r in rows if r[0] == "TXNB1"), None)
+        assert row is not None, "uncategorized TXNB1 must be returned via fallback"
+        # without_entity projects NULL for merchant_entity_id (pos 5) and
+        # merchant_entity_source_type (pos 8).
+        assert row[5] is None and row[8] is None
+
+
+# ---------------------------------------------------------------------------
+# _categorize_items_inner BinderException fallback ([4])
+# ---------------------------------------------------------------------------
+
+
+class TestCategorizationOrchestratorBinderFallback:
+    """[4] _categorize_items_inner falls back when prep view lacks entity columns."""
+
+    @pytest.mark.unit
+    def test_binder_exception_caught_inner_not_outer(
+        self, db: Database, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Prep view exists but lacks M1T entity columns → BinderException → inner fallback.
+
+        Mirrors TestFetchUncategorizedRowsFallback: simulates a post-code-upgrade,
+        pre-re-transform DB where the prep view predates the M1T entity columns.
+        The ``with_entity`` query raises ``duckdb.BinderException`` (missing
+        column). The inner ``except`` must catch it so ``txn_rows`` is populated
+        from the ``without_entity`` fallback — not left empty by the outer guard.
+
+        Proof: the outer catch emits "Could not batch-fetch transaction rows";
+        that warning must NOT appear when the inner fallback handles it.
+        """
+        import logging
+
+        db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+        db.execute("DROP TABLE IF EXISTS prep.int_transactions__merged")
+        db.execute(
+            "CREATE TABLE prep.int_transactions__merged (transaction_id VARCHAR)"
+        )
+        db.execute("INSERT INTO prep.int_transactions__merged VALUES ('TXN_BINDER')")
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+            "VALUES ('TXN_BINDER', 'ACC1', '2025-06-01', -5.00, 'COFFEE SHOP', 'ofx')"
+        )
+
+        svc = CategorizationService(db)
+        with caplog.at_level(logging.WARNING):
+            # Category validation is skipped when the categories view is empty
+            # (the stub returns 0 rows → valid_category_set is falsy → skip).
+            svc.categorize_items([
+                CategorizationItem(
+                    transaction_id="TXN_BINDER",
+                    category="Food & Drink",
+                )
+            ])
+
+        assert "Could not batch-fetch transaction rows" not in caplog.text, (
+            "outer except must NOT fire — BinderException must be caught by "
+            "the inner fallback so txn_rows is populated from without_entity"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Deterministic categorization pipeline
 # ---------------------------------------------------------------------------
 
@@ -871,6 +1016,17 @@ def test_categorize_items_uses_constant_number_of_db_calls(
     """
     from moneybin.tables import FCT_TRANSACTIONS
 
+    # In production core.fct_transactions is a view over
+    # prep.int_transactions__merged, so the batched description fetch joins prep
+    # to read merchant_entity_id (M1T rung-0). Provide an (empty) prep view so
+    # this perf test exercises the real single-query production path.
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS prep.int_transactions__merged "
+        "(transaction_id VARCHAR, merchant_entity_id VARCHAR, "
+        "merchant_entity_source_type VARCHAR)"
+    )
+
     # Seed 25 transactions and 25 corresponding category items.
     for i in range(25):
         db.execute(
@@ -1218,3 +1374,1026 @@ class TestSetCategoryAudit:
         assert before["category"] == "Food"
         assert after["category"] == "Travel"
         assert after["subcategory"] == "Flights"
+
+
+# ---------------------------------------------------------------------------
+# MERCHANT_RESOLUTION_OUTCOME_TOTAL counter (Finding #4)
+# ---------------------------------------------------------------------------
+
+
+class TestMerchantResolutionOutcomeMetric:
+    """Spec-mandated MERCHANT_RESOLUTION_OUTCOME_TOTAL counter increments correctly.
+
+    The spec requires one increment per resolved transaction, keyed by the
+    resolution outcome (adopted | auto_bound | proposed | minted). The counter
+    is incremented in _resolve_entity_merchant after the merchant_id is
+    confirmed non-None (covers all four real outcomes).
+    """
+
+    @pytest.mark.unit
+    def test_minted_outcome_increments_counter(self) -> None:
+        """_resolve_entity_merchant increments the metric for the 'minted' outcome."""
+        from unittest.mock import MagicMock
+
+        from moneybin.metrics.registry import MERCHANT_RESOLUTION_OUTCOME_TOTAL
+        from moneybin.services.categorization.orchestrator import (
+            CategorizationOrchestrator,
+        )
+        from moneybin.services.merchant_resolver import MerchantResolution
+
+        resolver = MagicMock()
+        resolver.resolve.return_value = MerchantResolution(
+            merchant_id="m_new", outcome="minted", created=True
+        )
+        before = MERCHANT_RESOLUTION_OUTCOME_TOTAL.labels(outcome="minted")._value.get()  # type: ignore[reportPrivateUsage] — prometheus internals
+
+        result = CategorizationOrchestrator._resolve_entity_merchant(  # pyright: ignore[reportPrivateUsage]
+            resolver,
+            {},
+            MagicMock(),
+            rejected=set(),
+            pending=set(),
+            merchant_entity_id="ent_m1",
+            source_type="plaid",
+            provider_merchant_name="Cafe",
+            name_match=None,
+            current_merchant_id=None,
+        )
+
+        after = MERCHANT_RESOLUTION_OUTCOME_TOTAL.labels(outcome="minted")._value.get()  # type: ignore[reportPrivateUsage]
+        result_id, result_created = result
+        assert result_id == "m_new"
+        assert result_created is True, "minted outcome must set created=True"
+        assert after == before + 1, "minted outcome must increment the counter"
+
+    @pytest.mark.unit
+    def test_proposed_outcome_increments_counter(self) -> None:
+        """_resolve_entity_merchant increments the metric for the 'proposed' outcome."""
+        from unittest.mock import MagicMock
+
+        from moneybin.metrics.registry import MERCHANT_RESOLUTION_OUTCOME_TOTAL
+        from moneybin.services.categorization.orchestrator import (
+            CategorizationOrchestrator,
+        )
+        from moneybin.services.merchant_resolver import MerchantResolution
+
+        resolver = MagicMock()
+        resolver.resolve.return_value = MerchantResolution(
+            merchant_id="m_prop", outcome="proposed"
+        )
+        before = MERCHANT_RESOLUTION_OUTCOME_TOTAL.labels(
+            outcome="proposed"
+        )._value.get()  # type: ignore[reportPrivateUsage]
+
+        result = CategorizationOrchestrator._resolve_entity_merchant(  # pyright: ignore[reportPrivateUsage]
+            resolver,
+            {},
+            MagicMock(),
+            rejected=set(),
+            pending=set(),
+            merchant_entity_id="ent_p1",
+            source_type="plaid",
+            provider_merchant_name="Cafe",
+            name_match=None,
+            current_merchant_id=None,
+        )
+
+        after = MERCHANT_RESOLUTION_OUTCOME_TOTAL.labels(
+            outcome="proposed"
+        )._value.get()  # type: ignore[reportPrivateUsage]
+        result_id, result_created = result
+        assert result_id == "m_prop"
+        assert result_created is False, "proposed outcome must not set created=True"
+        assert after == before + 1, "proposed outcome must increment the counter"
+
+
+class TestResolveEntityMerchantSourceTypeGuard:
+    """_resolve_entity_merchant must not create a binding when source_type is absent.
+
+    If the SQL-layer invariant breaks and merchant_entity_source_type arrives
+    as None or "" the guard must short-circuit before resolver.resolve() is
+    called — otherwise a binding is created under source_type="" which is
+    silently invalid.
+    """
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("bad_source_type", [None, ""])
+    def test_empty_source_type_returns_current_merchant_id_without_resolving(
+        self, bad_source_type: str | None
+    ) -> None:
+        """Returns current_merchant_id unchanged; resolver.resolve() never called."""
+        from unittest.mock import MagicMock
+
+        from moneybin.services.categorization.orchestrator import (
+            CategorizationOrchestrator,
+        )
+
+        resolver = MagicMock()
+        current = "existing_merchant_id"
+
+        result = CategorizationOrchestrator._resolve_entity_merchant(  # pyright: ignore[reportPrivateUsage]
+            resolver,
+            {},
+            MagicMock(),
+            rejected=set(),
+            pending=set(),
+            merchant_entity_id="ent_xyz",
+            source_type=bad_source_type,
+            provider_merchant_name="Some Merchant",
+            name_match=None,
+            current_merchant_id=current,
+        )
+
+        result_id, result_created = result
+        assert result_id == current, (
+            f"source_type={bad_source_type!r}: expected current_merchant_id unchanged"
+        )
+        assert result_created is False, (
+            f"source_type={bad_source_type!r}: guard path must return created=False"
+        )
+        resolver.resolve.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# apply_merchant_categories — entity resolution (Finding #6 + #7 regression)
+# ---------------------------------------------------------------------------
+
+
+def _setup_prep_table(db: Database) -> None:
+    """Create ``prep.int_transactions__merged`` for entity-resolution tests.
+
+    ``fetch_uncategorized_rows`` LEFT-JOINs this table for entity columns.
+    Without it the query falls back to the ``without_entity`` path which
+    projects NULL — making entity-resolution unreachable via
+    ``apply_merchant_categories``.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute("DROP TABLE IF EXISTS prep.int_transactions__merged")
+    db.execute(
+        "CREATE TABLE prep.int_transactions__merged ("
+        "  transaction_id VARCHAR PRIMARY KEY, "
+        "  merchant_entity_id VARCHAR, "
+        "  merchant_entity_source_type VARCHAR, "
+        "  merchant_name VARCHAR"
+        ")"
+    )
+
+
+class TestApplyMerchantCategoriesEntityResolution:
+    """Tests for the #6 fix: resolver runs unconditionally in the deterministic pass.
+
+    After the fix, a transaction bearing a ``merchant_entity_id`` that is
+    already bound (rung-1 adopt) adopts its merchant's default category even
+    when the transaction's description text matches no merchant pattern.
+    """
+
+    @pytest.mark.unit
+    def test_entity_binding_adopts_category_without_text_match(
+        self, db: Database
+    ) -> None:
+        """Entity-bound txn adopts the bound merchant's category with no text match.
+
+        Spec Decision 3 rung-1: the *first* transaction resolves/mints a
+        merchant and binds ``E``; every later transaction with ``E`` — even
+        with different description text — hits rung 1 and lands on the same
+        merchant. This test verifies the deterministic merchant pass honours
+        that guarantee (previously the resolver was only called when a
+        name-match was present and had a category).
+        """
+        from moneybin.repositories.merchant_links_repo import MerchantLinksRepo
+
+        _setup_prep_table(db)
+
+        # Create a merchant with a category.
+        mid = create_merchant(
+            db,
+            "FANCY_CORP",
+            "Fancy Corp",
+            match_type="exact",
+            category="Business",
+            subcategory="Services",
+        )
+
+        # Bind entity id "ent_r6a" → that merchant (rung-1 seed).
+        MerchantLinksRepo(db).insert(
+            link_id="lnk_r6a",
+            merchant_id=mid,
+            ref_kind="merchant_entity_id",
+            ref_value="ent_r6a",
+            source_type="plaid",
+            decided_by="auto",
+            actor="system",
+            status="accepted",
+        )
+
+        # Transaction description does NOT match "FANCY_CORP" pattern.
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+            "VALUES ('TXN_R6A', 'ACC1', DATE '2026-01-01', -10.00, 'XYZUNKNOWN STORE', 'plaid')"
+        )
+        db.execute(
+            "INSERT INTO prep.int_transactions__merged VALUES "
+            "('TXN_R6A', 'ent_r6a', 'plaid', 'Fancy Corp')"
+        )
+
+        count = apply_merchant_categories(db)
+
+        assert count == 1, "entity-adopted transaction must count as categorized"
+        row = db.execute(
+            "SELECT category, subcategory, merchant_id "
+            "FROM app.transaction_categories WHERE transaction_id = 'TXN_R6A'"
+        ).fetchone()
+        assert row is not None, "a categorization row must be written"
+        assert row[0] == "Business"
+        assert row[1] == "Services"
+        assert row[2] == mid
+
+    @pytest.mark.unit
+    def test_entity_bound_to_categoryless_merchant_skips_write(
+        self, db: Database
+    ) -> None:
+        """Entity bound to a merchant with no default category → no write.
+
+        A Plaid-minted merchant starts with ``category = NULL`` (spec
+        Decision 8). Adopting such a merchant records identity but defers
+        category to LLM/rules/Tier-2b. This test pins that no NULL-category
+        row is inserted into ``app.transaction_categories``.
+        """
+        from moneybin.repositories.merchant_links_repo import MerchantLinksRepo
+
+        _setup_prep_table(db)
+
+        # Merchant with no category (category=None default).
+        mid = create_merchant(
+            db,
+            "NOCATCORP",
+            "NoCat Corp",
+            match_type="exact",
+        )
+
+        MerchantLinksRepo(db).insert(
+            link_id="lnk_r6b",
+            merchant_id=mid,
+            ref_kind="merchant_entity_id",
+            ref_value="ent_r6b",
+            source_type="plaid",
+            decided_by="auto",
+            actor="system",
+            status="accepted",
+        )
+
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+            "VALUES ('TXN_R6B', 'ACC1', DATE '2026-01-01', -20.00, 'XYZUNKNOWN2 STORE', 'plaid')"
+        )
+        db.execute(
+            "INSERT INTO prep.int_transactions__merged VALUES "
+            "('TXN_R6B', 'ent_r6b', 'plaid', 'NoCat Corp')"
+        )
+
+        count = apply_merchant_categories(db)
+
+        assert count == 0, "category-less entity adoption must NOT write a row"
+        row = db.execute(
+            "SELECT COUNT(*) FROM app.transaction_categories "
+            "WHERE transaction_id = 'TXN_R6B'"
+        ).fetchone()
+        assert row is not None and row[0] == 0
+
+    @pytest.mark.unit
+    def test_name_match_categorizes_identically_to_before(self, db: Database) -> None:
+        """Regression: a name-match-present row still categorizes as before.
+
+        Ensures the restructure does not break the common path where a
+        transaction's description matches a merchant pattern that has a
+        category. The ``merchant_id`` written must equal the resolver's
+        result (rung-1 adopt when a binding exists, or the name-matched
+        merchant when no binding exists).
+        """
+        _setup_prep_table(db)
+
+        mid = create_merchant(
+            db,
+            "AMZN",
+            "Amazon",
+            match_type="contains",
+            category="Shopping",
+        )
+
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+            "VALUES ('TXN_R6C', 'ACC1', DATE '2026-01-01', -25.00, 'AMZN MKTP ORDER #789', 'plaid')"
+        )
+        db.execute(
+            "INSERT INTO prep.int_transactions__merged VALUES "
+            "('TXN_R6C', NULL, NULL, NULL)"
+        )
+
+        count = apply_merchant_categories(db)
+
+        assert count == 1
+        row = db.execute(
+            "SELECT category, merchant_id FROM app.transaction_categories "
+            "WHERE transaction_id = 'TXN_R6C'"
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "Shopping"
+        assert row[1] == mid
+
+    @pytest.mark.unit
+    def test_skip_txn_ids_still_wins(self, db: Database) -> None:
+        """Regression: skip_txn_ids guard prevents categorization for matching ids.
+
+        The rule-precedence guard (via ``skip_txn_ids``) must still suppress
+        the merchant write for a transaction already handled by the rule pass,
+        regardless of whether the transaction has an entity id.
+        """
+        from moneybin.repositories.merchant_links_repo import MerchantLinksRepo
+
+        _setup_prep_table(db)
+
+        mid = create_merchant(
+            db,
+            "STARBUCKS",
+            "Starbucks",
+            match_type="contains",
+            category="Food & Drink",
+        )
+
+        MerchantLinksRepo(db).insert(
+            link_id="lnk_r6d",
+            merchant_id=mid,
+            ref_kind="merchant_entity_id",
+            ref_value="ent_r6d",
+            source_type="plaid",
+            decided_by="auto",
+            actor="system",
+            status="accepted",
+        )
+
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+            "VALUES ('TXN_R6D', 'ACC1', DATE '2026-01-01', -5.00, 'SQ *STARBUCKS', 'plaid')"
+        )
+        db.execute(
+            "INSERT INTO prep.int_transactions__merged VALUES "
+            "('TXN_R6D', 'ent_r6d', 'plaid', 'Starbucks')"
+        )
+
+        # Pass TXN_R6D in skip set — simulates the rule pass having handled it.
+        svc = CategorizationService(db)
+        count = svc.apply_merchant_categories(skip_txn_ids={"TXN_R6D"})
+
+        assert count == 0, "skip_txn_ids guard must suppress the write"
+        row = db.execute(
+            "SELECT COUNT(*) FROM app.transaction_categories "
+            "WHERE transaction_id = 'TXN_R6D'"
+        ).fetchone()
+        assert row is not None and row[0] == 0
+
+    @pytest.mark.unit
+    def test_skip_txn_ids_entity_still_bound(self, db: Database) -> None:
+        """skip_txn_ids suppresses the categorization write but NOT entity binding.
+
+        Decision 7: a precedence skip (rule-pass already handled the row)
+        must suppress only the categorization write, never the entity binding.
+        After the fix, _resolve_entity_merchant runs ABOVE the skip guard so the
+        entity id is bound in app.merchant_links even for rows in skip_txn_ids.
+
+        Regression for the restructure in apply_merchant_categories: previously
+        the entire loop body was skipped (including the resolver call), so a
+        Plaid transaction categorized by a rule in the same categorize_pending
+        call never got its merchant_entity_id bound.
+        """
+        from moneybin.repositories.merchant_links_repo import MerchantLinksRepo
+
+        _setup_prep_table(db)
+
+        # Transaction with a merchant_entity_id that has NO pre-existing binding.
+        # Resolver will hit rung-4 (no name match, no binding) → mint + auto-bind.
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+            "VALUES ('TXN_D7B', 'ACC1', DATE '2026-01-01', -9.99, 'XYZNOPATTERN99', 'plaid')"
+        )
+        db.execute(
+            "INSERT INTO prep.int_transactions__merged VALUES "
+            "('TXN_D7B', 'ent_d7b', 'plaid', 'Some Provider Merchant')"
+        )
+
+        svc = CategorizationService(db)
+        count = svc.apply_merchant_categories(skip_txn_ids={"TXN_D7B"})
+
+        # Categorization write must be suppressed.
+        assert count == 0, "skip_txn_ids must suppress the categorization write"
+        cat_row = db.execute(
+            "SELECT COUNT(*) FROM app.transaction_categories "
+            "WHERE transaction_id = 'TXN_D7B'"
+        ).fetchone()
+        assert cat_row is not None and cat_row[0] == 0, (
+            "no categorization row must be written for a skip_txn_ids row"
+        )
+
+        # Entity binding must have been written (resolver ran above the skip guard).
+        bound_mid = MerchantLinksRepo(db).lookup("plaid", "ent_d7b")
+        assert bound_mid is not None, (
+            "entity id must be bound in app.merchant_links even when txn is in skip_txn_ids"
+        )
+
+    @pytest.mark.unit
+    def test_adopted_entity_merchant_category_wins_over_name_match(
+        self, db: Database
+    ) -> None:
+        """Rung-1 adopted merchant's category wins over a disagreeing name match.
+
+        When an entity id is bound to merchant A (category C_A) but the
+        transaction text matches a DIFFERENT merchant B (category C_B), the
+        spec says rung-1 "skip name matching" — the binding is the identity
+        source of truth and A's category must win. Bug #9: previously the
+        block wrote B's category with A's merchant_id (inconsistent row).
+        """
+        from moneybin.repositories.merchant_links_repo import MerchantLinksRepo
+
+        _setup_prep_table(db)
+
+        # Merchant A — the entity is bound to this one (category C_A = "Business").
+        mid_a = create_merchant(
+            db,
+            "CORP_A_UNIQUE_PATTERN",
+            "Corp A",
+            match_type="exact",
+            category="Business",
+            subcategory="Services",
+        )
+
+        # Merchant B — the transaction text matches this one (category C_B = "Shopping").
+        _mid_b = create_merchant(
+            db,
+            "SHOPSTORE",
+            "Shop Store",
+            match_type="contains",
+            category="Shopping",
+            subcategory="General",
+        )
+
+        # Bind entity "ent_r9" → merchant A.
+        MerchantLinksRepo(db).insert(
+            link_id="lnk_r9a",
+            merchant_id=mid_a,
+            ref_kind="merchant_entity_id",
+            ref_value="ent_r9",
+            source_type="plaid",
+            decided_by="auto",
+            actor="system",
+            status="accepted",
+        )
+
+        # Transaction description matches "SHOPSTORE" (merchant B), not merchant A.
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+            "VALUES ('TXN_R9A', 'ACC1', DATE '2026-01-01', -30.00, 'SHOPSTORE PURCHASE', 'plaid')"
+        )
+        db.execute(
+            "INSERT INTO prep.int_transactions__merged VALUES "
+            "('TXN_R9A', 'ent_r9', 'plaid', 'Corp A')"
+        )
+
+        count = apply_merchant_categories(db)
+
+        assert count == 1, "entity-adopted transaction must be categorized"
+        row = db.execute(
+            "SELECT category, subcategory, merchant_id "
+            "FROM app.transaction_categories WHERE transaction_id = 'TXN_R9A'"
+        ).fetchone()
+        assert row is not None, "categorization row must be written"
+        assert row[0] == "Business", (
+            f"adopted merchant A's category must win, got {row[0]!r}"
+        )
+        assert row[1] == "Services", (
+            f"adopted merchant A's subcategory must win, got {row[1]!r}"
+        )
+        assert row[2] == mid_a, (
+            f"merchant_id must be A ({mid_a!r}), not name-match B; got {row[2]!r}"
+        )
+
+    @pytest.mark.unit
+    def test_name_match_category_wins_when_entity_merchant_has_no_category(
+        self, db: Database
+    ) -> None:
+        """Name-match category is used when the adopted merchant has no default category.
+
+        When an entity id is bound to merchant A (no category, e.g. Plaid-
+        minted) but the transaction text matches merchant B (category C_B),
+        the name match's category must fill in as the fallback. This pins
+        the fallback path in the #9 fix.
+        """
+        from moneybin.repositories.merchant_links_repo import MerchantLinksRepo
+
+        _setup_prep_table(db)
+
+        # Merchant A — entity bound here, NO category.
+        mid_a_nocat = create_merchant(
+            db,
+            "NOCAT_ENTITY_CORP",
+            "NoCat Entity Corp",
+            match_type="exact",
+        )
+
+        # Merchant B — name match has a category.
+        _mid_b2 = create_merchant(
+            db,
+            "FALLBACKSTORE",
+            "Fallback Store",
+            match_type="contains",
+            category="Food & Drink",
+            subcategory="Restaurants",
+        )
+
+        MerchantLinksRepo(db).insert(
+            link_id="lnk_r9b",
+            merchant_id=mid_a_nocat,
+            ref_kind="merchant_entity_id",
+            ref_value="ent_r9b",
+            source_type="plaid",
+            decided_by="auto",
+            actor="system",
+            status="accepted",
+        )
+
+        # Description matches "FALLBACKSTORE" (merchant B with category).
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+            "VALUES ('TXN_R9B', 'ACC1', DATE '2026-01-01', -12.00, 'FALLBACKSTORE MEAL', 'plaid')"
+        )
+        db.execute(
+            "INSERT INTO prep.int_transactions__merged VALUES "
+            "('TXN_R9B', 'ent_r9b', 'plaid', 'NoCat Entity Corp')"
+        )
+
+        count = apply_merchant_categories(db)
+
+        assert count == 1, "fallback-to-name-match path must categorize the transaction"
+        row = db.execute(
+            "SELECT category, subcategory, merchant_id "
+            "FROM app.transaction_categories WHERE transaction_id = 'TXN_R9B'"
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "Food & Drink", (
+            f"name-match fallback category must be used; got {row[0]!r}"
+        )
+        assert row[2] == mid_a_nocat, (
+            "merchant_id must still be the adopted entity merchant A"
+        )
+
+    @pytest.mark.unit
+    def test_empty_merchant_catalog_still_runs_entity_resolution(
+        self, db: Database
+    ) -> None:
+        """Empty merchant catalog ([] not None) still runs entity resolution (rung-4).
+
+        Bug #11: `if not merchants` exited on both [] (empty list) and None
+        (catalog table absent). An empty list means the table exists but no
+        merchants have been authored yet. A transaction carrying a
+        merchant_entity_id with no name match must reach rung-4 and create a
+        binding in app.merchant_links even before any merchant is authored.
+        Assert the BINDING, not a category row — the minted merchant starts
+        with category=None so no categorization is written.
+        """
+        from moneybin.repositories.merchant_links_repo import MerchantLinksRepo
+
+        _setup_prep_table(db)
+
+        # No merchant created — fetch_merchants() returns [] from the empty table.
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+            "VALUES ('TXN_11A', 'ACC1', DATE '2026-01-01', -10.00, 'XYZUNKNOWN11', 'plaid')"
+        )
+        db.execute(
+            "INSERT INTO prep.int_transactions__merged VALUES "
+            "('TXN_11A', 'ent_11a', 'plaid', 'Some New Merchant')"
+        )
+
+        apply_merchant_categories(db)
+
+        bound_mid = MerchantLinksRepo(db).lookup("plaid", "ent_11a")
+        assert bound_mid is not None, (
+            "entity id must be bound after rung-4 mint even when merchant catalog is empty"
+        )
+
+    @pytest.mark.unit
+    def test_absent_merchant_catalog_returns_zero(self, db: Database) -> None:
+        """Catalog table absent (fetch_merchants → None) → returns 0 immediately.
+
+        Preserved behavior: when the merchant table does not exist at all,
+        apply_merchant_categories bails early and returns 0. The None guard
+        replaces the old `if not merchants` check so this path is still covered.
+        """
+        from unittest.mock import patch
+
+        from moneybin.services.categorization.matcher import CategorizationMatcher
+
+        _setup_prep_table(db)
+
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+            "VALUES ('TXN_11B', 'ACC1', DATE '2026-01-01', -10.00, 'XYZUNKNOWN11B', 'plaid')"
+        )
+        db.execute(
+            "INSERT INTO prep.int_transactions__merged VALUES "
+            "('TXN_11B', 'ent_11b', 'plaid', 'Some Merchant 11B')"
+        )
+
+        with patch.object(CategorizationMatcher, "fetch_merchants", return_value=None):
+            result = apply_merchant_categories(db)
+
+        assert result == 0, (
+            "absent catalog table (fetch_merchants → None) must return 0"
+        )
+
+
+# ---------------------------------------------------------------------------
+# #7 regression: resolver binding written even when categorization is
+# precedence-skipped
+# ---------------------------------------------------------------------------
+
+
+class TestResolverBindingPrecedesCategorization:
+    """Pins the by-design ordering: resolver write precedes write_categorization.
+
+    The binding to ``app.merchant_links`` (or a proposal to
+    ``app.merchant_link_decisions``) is an entity-keyed fact committed
+    BEFORE the precedence-guarded ``write_categorization`` call.  A
+    precedence skip suppresses only the categorization — never the binding.
+
+    Test driver: ``categorize_items`` (LLM-assist path), where the ordering
+    is present in ``_categorize_items_inner``.  That path accepts an explicit
+    item list and writes with ``categorized_by='ai'``, which a pre-existing
+    ``user`` categorization outranks — producing a controlled
+    ``written=False`` outcome.
+    """
+
+    @pytest.mark.unit
+    def test_binding_written_when_categorization_precedence_skipped(
+        self, db: Database
+    ) -> None:
+        """Resolver writes the proposal before write_categorization is called.
+
+        Even when a ``user`` category already exists (so the ``ai`` write is
+        blocked by the precedence guard), the resolver must have proposed the
+        entity-id → merchant candidate in ``app.merchant_link_decisions``.
+        """
+        _setup_prep_table(db)
+
+        create_merchant(
+            db,
+            "STARBUCKS",
+            "Starbucks",
+            match_type="contains",
+            category="Food & Drink",
+        )
+
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+            "VALUES ('TXN_R7', 'ACC1', DATE '2026-01-01', -4.50, 'STARBUCKS RESERVE', 'plaid')"
+        )
+        db.execute(
+            "INSERT INTO prep.int_transactions__merged VALUES "
+            "('TXN_R7', 'ent_r7', 'plaid', 'Starbucks')"
+        )
+
+        # Pre-seed a user categorization so write_categorization returns
+        # written=False (user > ai in the precedence ladder).
+        db.execute(
+            "INSERT INTO app.transaction_categories "
+            "(transaction_id, category, categorized_at, categorized_by) "
+            "VALUES ('TXN_R7', 'Entertainment', CURRENT_TIMESTAMP, 'user')"
+        )
+
+        svc = CategorizationService(db)
+        result = svc.categorize_items([
+            CategorizationItem(transaction_id="TXN_R7", category="Food & Drink")
+        ])
+
+        # The ai write must have been blocked (applied=0).
+        assert result.applied == 0, "user category must block the ai write"
+        # The user category must be intact (not overwritten).
+        cat_row = db.execute(
+            "SELECT categorized_by FROM app.transaction_categories "
+            "WHERE transaction_id = 'TXN_R7'"
+        ).fetchone()
+        assert cat_row is not None and cat_row[0] == "user"
+
+        # The resolver must have proposed a merchant-link decision for ent_r7
+        # (rung-3: fuzzy "STARBUCKS contains" match → pending proposal).
+        # This is the binding write that must have happened BEFORE write_categorization.
+        pending = db.execute(
+            "SELECT COUNT(*) FROM app.merchant_link_decisions "
+            "WHERE ref_value = 'ent_r7' AND status = 'pending'"
+        ).fetchone()
+        assert pending is not None and pending[0] >= 1, (
+            "resolver must have written a pending proposal for ent_r7 "
+            "even though categorization was precedence-skipped"
+        )
+
+
+# ---------------------------------------------------------------------------
+# categorize_items — rung-4 entity mint counted in merchants_created (M1T)
+# ---------------------------------------------------------------------------
+
+
+class TestCategorizeItemsMerchantCreated:
+    """categorize_items must count rung-4 entity mints in CategorizationResult.merchants_created.
+
+    When a transaction carries a merchant_entity_id with no pre-existing
+    binding, the resolver mints a new merchant (rung-4) and the returned
+    CategorizationResult must reflect that mint in merchants_created.
+
+    Regression: _resolve_entity_merchant previously discarded
+    MerchantResolution.created, so merchants_created stayed 0 even when a new
+    Plaid merchant was minted during the AI categorization path.
+    """
+
+    @pytest.mark.unit
+    def test_rung4_mint_increments_merchants_created(self, db: Database) -> None:
+        """categorize_items counts a rung-4 entity mint in merchants_created.
+
+        A transaction with a merchant_entity_id that has no pre-existing
+        binding and no name match triggers rung-4 (mint). The returned
+        CategorizationResult.merchants_created must be >= 1.
+        """
+        _setup_prep_table(db)
+
+        # Transaction with no name-matchable description — forces rung-4 mint.
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+            "VALUES ('TXN_MINT_1', 'ACC1', DATE '2026-01-01', -12.50, 'XYZNOPATTERNMINT1', 'plaid')"
+        )
+        db.execute(
+            "INSERT INTO prep.int_transactions__merged VALUES "
+            "('TXN_MINT_1', 'ent_mint_1', 'plaid', 'Chipotle')"
+        )
+
+        svc = CategorizationService(db)
+        result = svc.categorize_items([
+            CategorizationItem(transaction_id="TXN_MINT_1", category="Food & Drink")
+        ])
+
+        assert result.merchants_created >= 1, (
+            "rung-4 entity mint must increment merchants_created; "
+            f"got {result.merchants_created}"
+        )
+
+    @pytest.mark.unit
+    def test_rung1_adopt_does_not_increment_merchants_created(
+        self, db: Database
+    ) -> None:
+        """categorize_items does NOT count a rung-1 adopt in merchants_created.
+
+        Control: when the entity id is already bound (rung-1 adopt),
+        MerchantResolution.created is False and merchants_created must stay 0.
+        """
+        from moneybin.repositories.merchant_links_repo import MerchantLinksRepo
+
+        _setup_prep_table(db)
+
+        # Create a merchant and pre-bind an entity id to it (rung-1 seed).
+        mid = create_merchant(
+            db,
+            "BOUND_CORP",
+            "Bound Corp",
+            match_type="exact",
+            category="Business",
+        )
+        MerchantLinksRepo(db).insert(
+            link_id="lnk_ctrl1",
+            merchant_id=mid,
+            ref_kind="merchant_entity_id",
+            ref_value="ent_ctrl_1",
+            source_type="plaid",
+            decided_by="auto",
+            actor="system",
+            status="accepted",
+        )
+
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+            "VALUES ('TXN_CTRL_1', 'ACC1', DATE '2026-01-01', -5.00, 'XYZNOPATTERNCTRL', 'plaid')"
+        )
+        db.execute(
+            "INSERT INTO prep.int_transactions__merged VALUES "
+            "('TXN_CTRL_1', 'ent_ctrl_1', 'plaid', 'Bound Corp')"
+        )
+
+        svc = CategorizationService(db)
+        result = svc.categorize_items([
+            CategorizationItem(transaction_id="TXN_CTRL_1", category="Business")
+        ])
+
+        assert result.merchants_created == 0, (
+            "rung-1 adopt must NOT increment merchants_created; "
+            f"got {result.merchants_created}"
+        )
+
+
+class TestMerchantNameMatchRung2:
+    """Spec Decision 3 rung 2: provider merchant_name exact match → auto-bind.
+
+    Both categorization paths (apply_merchant_categories and categorize_items)
+    must pass ``merchant_name`` to ``match_merchant_with_name`` so a Plaid row
+    with a blank/noisy description but a clean ``merchant_name`` that exactly
+    matches an existing merchant is auto-bound (rung 2) instead of minting a
+    duplicate (rung 4).
+    """
+
+    @pytest.mark.unit
+    def test_rung2_auto_bind_via_exact_merchant_name(self, db: Database) -> None:
+        """Blank description + exact merchant_name → auto-bind to existing merchant.
+
+        Before the fix: ``match_merchant_with_name`` didn't exist; both call
+        sites used ``build_match_inputs + match_merchants`` on description/memo
+        only, so a blank description produced no name match and rung-4 minted a
+        duplicate. This test must FAIL on old code and PASS after the fix.
+        """
+        _setup_prep_table(db)
+
+        # Existing "Starbucks" merchant with an exact pattern.
+        mid = create_merchant(
+            db,
+            "Starbucks",
+            "Starbucks",
+            match_type="exact",
+            category="Food & Drink",
+        )
+
+        # Transaction: blank description, merchant_name="Starbucks", entity id present.
+        # merchant_name must be in core.fct_transactions because fetch_uncategorized_rows
+        # selects t.merchant_name (not m.merchant_name from the prep table).
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, "
+            "merchant_name, source_type) "
+            "VALUES ('TXN_R2_EXACT', 'ACC1', DATE '2026-01-01', -5.75, '', 'Starbucks', 'plaid')"
+        )
+        db.execute(
+            "INSERT INTO prep.int_transactions__merged VALUES "
+            "('TXN_R2_EXACT', 'ent_r2_exact', 'plaid', 'Starbucks')"
+        )
+
+        apply_merchant_categories(db)
+
+        # The entity must be bound to the EXISTING Starbucks merchant (rung-2 auto-bind).
+        row = db.execute(
+            "SELECT merchant_id FROM app.merchant_links "
+            "WHERE ref_value = ? AND status = 'accepted'",
+            ["ent_r2_exact"],
+        ).fetchone()
+        assert row is not None, "entity must be bound after rung-2 auto-bind"
+        assert row[0] == mid, (
+            f"entity must bind to EXISTING merchant {mid!r}, not a duplicate; "
+            f"got {row[0]!r}"
+        )
+
+        # No duplicate merchant should be minted.
+        count_row = db.execute("SELECT COUNT(*) FROM app.user_merchants").fetchone()
+        assert count_row is not None
+        count = count_row[0]
+        assert count == 1, f"expected 1 merchant (no duplicate), got {count}"
+
+    @pytest.mark.unit
+    def test_rung3_fuzzy_merchant_name_not_auto_bound(self, db: Database) -> None:
+        """Fuzzy merchant_name match → rung-3 propose, NOT auto-bound.
+
+        Guards against over-eager binding: a ``contains`` merchant whose
+        pattern matches the provider ``merchant_name`` must route to rung-3
+        (pending proposal), never rung-2 (auto-bind). Only EXACT name hits
+        earn auto-bind.
+        """
+        _setup_prep_table(db)
+
+        # Merchant matched via "contains" — a fuzzy shape.
+        mid_fuzzy = create_merchant(
+            db,
+            "starbucks",
+            "Starbucks Inc",
+            match_type="contains",
+            category="Food & Drink",
+        )
+
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, "
+            "merchant_name, source_type) "
+            "VALUES ('TXN_R3_FUZZY', 'ACC1', DATE '2026-01-01', -4.50, '', 'Starbucks', 'plaid')"
+        )
+        db.execute(
+            "INSERT INTO prep.int_transactions__merged VALUES "
+            "('TXN_R3_FUZZY', 'ent_r3_fuzzy', 'plaid', 'Starbucks')"
+        )
+
+        apply_merchant_categories(db)
+
+        # The entity must NOT be auto-bound to mid_fuzzy (fuzzy → rung 3 propose).
+        row = db.execute(
+            "SELECT merchant_id FROM app.merchant_links "
+            "WHERE ref_value = ? AND status = 'accepted'",
+            ["ent_r3_fuzzy"],
+        ).fetchone()
+        assert row is None or row[0] != mid_fuzzy, (
+            "fuzzy merchant_name match must NOT auto-bind to the existing merchant; "
+            "rung 3 should only propose"
+        )
+
+    @pytest.mark.unit
+    def test_exact_description_match_wins_over_merchant_name(
+        self, db: Database
+    ) -> None:
+        """Exact description match is used even when merchant_name would match a different merchant.
+
+        Control: the normal description-match path must not regress. When a
+        transaction's description exactly matches merchant A, the resolver
+        must NOT bind to merchant B even if ``merchant_name`` would match B.
+        """
+        _setup_prep_table(db)
+
+        mid_a = create_merchant(
+            db,
+            "FANCY_CORP",
+            "Fancy Corp",
+            match_type="exact",
+            category="Business",
+        )
+        _mid_b = create_merchant(
+            db,
+            "OTHERCORP",
+            "Other Corp",
+            match_type="exact",
+            category="Shopping",
+        )
+
+        # Description exactly matches merchant A; merchant_name matches merchant B.
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, "
+            "merchant_name, source_type) "
+            "VALUES ('TXN_DESC_CTRL', 'ACC1', DATE '2026-01-01', -20.00, 'FANCY_CORP', "
+            "'OTHERCORP', 'plaid')"
+        )
+        db.execute(
+            "INSERT INTO prep.int_transactions__merged VALUES "
+            "('TXN_DESC_CTRL', 'ent_desc_ctrl', 'plaid', 'OTHERCORP')"
+        )
+
+        apply_merchant_categories(db)
+
+        cat_row = db.execute(
+            "SELECT merchant_id FROM app.transaction_categories "
+            "WHERE transaction_id = 'TXN_DESC_CTRL'"
+        ).fetchone()
+        assert cat_row is not None, "transaction must be categorized"
+        assert cat_row[0] == mid_a, (
+            f"exact description match must win; expected merchant {mid_a!r}, "
+            f"got {cat_row[0]!r}"
+        )
+
+    @pytest.mark.unit
+    def test_unknown_merchant_name_still_mints(self, db: Database) -> None:
+        """Blank description + merchant_name matching nothing → rung-4 mint.
+
+        Control: when no merchant catalog entry matches the provider
+        ``merchant_name``, rung-4 minting must still fire and produce a new
+        merchant (preserving current behaviour).
+        """
+        _setup_prep_table(db)
+
+        # No merchants in catalog.
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, "
+            "merchant_name, source_type) "
+            "VALUES ('TXN_MINT_CTRL', 'ACC1', DATE '2026-01-01', -9.99, '', "
+            "'SomeUnknownBrand', 'plaid')"
+        )
+        db.execute(
+            "INSERT INTO prep.int_transactions__merged VALUES "
+            "('TXN_MINT_CTRL', 'ent_mint_ctrl', 'plaid', 'SomeUnknownBrand')"
+        )
+
+        apply_merchant_categories(db)
+
+        count_row = db.execute("SELECT COUNT(*) FROM app.user_merchants").fetchone()
+        assert count_row is not None
+        count = count_row[0]
+        assert count == 1, (
+            f"unknown merchant_name must mint a new merchant (rung 4); got {count}"
+        )

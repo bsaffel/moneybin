@@ -378,7 +378,7 @@ class TestDBReadOnlyCommands:
         assert "account" in out or "link" in out
 
     def test_review_status_json(self, e2e_profile: dict[str, str]) -> None:
-        """`moneybin review --status --output json` returns a three-field envelope."""
+        """`moneybin review --status --output json` returns a four-field envelope."""
         import json
 
         result = run_cli("review", "--status", "--output", "json", env=e2e_profile)
@@ -388,11 +388,13 @@ class TestDBReadOnlyCommands:
         assert "matches_pending" in payload
         assert "categorize_pending" in payload
         assert "account_links_pending" in payload
+        assert "merchant_links_pending" in payload
         assert "total" in payload
         assert payload["total"] == (
             payload["matches_pending"]
             + payload["categorize_pending"]
             + payload["account_links_pending"]
+            + payload["merchant_links_pending"]
         )
 
     def test_review_type_account_links_status(
@@ -438,6 +440,45 @@ class TestDBReadOnlyCommands:
 
         result = run_cli(
             "accounts", "links", "history", "--output", "json", env=e2e_profile
+        )
+        result.assert_success()
+        envelope = json.loads(result.stdout)
+        assert "data" in envelope
+        assert "decisions" in envelope["data"]
+        assert isinstance(envelope["data"]["decisions"], list)
+
+    # ── merchants links (read-only) ──────────────────────────────────────
+
+    def test_merchants_links_pending(self, e2e_profile: dict[str, str]) -> None:
+        """`moneybin merchants links pending` exits 0 on an empty queue."""
+        result = run_cli("merchants", "links", "pending", env=e2e_profile)
+        result.assert_success()
+
+    def test_merchants_links_pending_json(self, e2e_profile: dict[str, str]) -> None:
+        """`moneybin merchants links pending --output json` returns an envelope with groups[] and n_pending."""
+        import json
+
+        result = run_cli(
+            "merchants", "links", "pending", "--output", "json", env=e2e_profile
+        )
+        result.assert_success()
+        envelope = json.loads(result.stdout)
+        assert "data" in envelope
+        assert "groups" in envelope["data"]
+        assert isinstance(envelope["data"]["groups"], list)
+        assert "n_pending" in envelope["data"]
+
+    def test_merchants_links_history(self, e2e_profile: dict[str, str]) -> None:
+        """`moneybin merchants links history` exits 0 on a fresh profile."""
+        result = run_cli("merchants", "links", "history", env=e2e_profile)
+        result.assert_success()
+
+    def test_merchants_links_history_json(self, e2e_profile: dict[str, str]) -> None:
+        """`moneybin merchants links history --output json` returns an envelope with decisions[]."""
+        import json
+
+        result = run_cli(
+            "merchants", "links", "history", "--output", "json", env=e2e_profile
         )
         result.assert_success()
         envelope = json.loads(result.stdout)

@@ -332,6 +332,32 @@ ACCOUNT_LINK_CONFIDENCE = Histogram(
     "Resolution confidence for account-link candidate proposals.",
 )
 
+# ── Merchant identity resolution ─────────────────────────────────────────────
+
+MERCHANT_LINK_REVIEW_PENDING = Gauge(
+    "moneybin_merchant_link_review_pending",
+    "Current count of pending merchant_link_decisions (distinct provider ids).",
+)
+
+MERCHANT_LINK_CONFIDENCE = Histogram(
+    "moneybin_merchant_link_confidence",
+    "Resolution confidence for merchant-link candidate proposals.",
+)
+
+MERCHANT_RESOLUTION_OUTCOME_TOTAL = Counter(
+    "moneybin_merchant_resolution_outcome_total",
+    "Merchant entity-id resolution ladder outcome per resolved transaction.",
+    # outcome: adopted | auto_bound | proposed | minted
+    ["outcome"],
+)
+
+MERCHANT_LINK_OUTCOMES_TOTAL = Counter(
+    "moneybin_merchant_link_outcomes_total",
+    "Outcomes of merchant-link review decisions via merchants_links_set.",
+    # outcome: accepted | rejected
+    ["outcome"],
+)
+
 # ── MCP server ────────────────────────────────────────────────────────────────
 
 MCP_TOOL_CALLS_TOTAL = Counter(

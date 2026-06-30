@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS prep.int_transactions__unioned (
     description           VARCHAR,
     original_description  VARCHAR,
     merchant_name         VARCHAR,
+    merchant_entity_id    VARCHAR,
     memo                  VARCHAR,
     category              VARCHAR,
     subcategory           VARCHAR,

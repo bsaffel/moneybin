@@ -261,6 +261,38 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "source_type_a": DataClass.TXN_TYPE,
         "source_type_b": DataClass.TXN_TYPE,
     },
+    ("app", "merchant_link_decisions"): {
+        "decision_id": DataClass.RECORD_ID,
+        "ref_kind": DataClass.TXN_TYPE,
+        "ref_value": DataClass.RECORD_ID,
+        "source_type": DataClass.TXN_TYPE,
+        # A merchant name — medium tier, not a bare id.
+        "provider_merchant_name": DataClass.MERCHANT_NAME,
+        "candidate_merchant_id": DataClass.RECORD_ID,
+        "confidence_score": DataClass.AGGREGATE,
+        # JSON signal payload may echo the provider merchant_name → classify as MERCHANT_NAME.
+        "match_signals": DataClass.MERCHANT_NAME,
+        "status": DataClass.TXN_TYPE,
+        "decided_by": DataClass.TXN_TYPE,
+        "match_reason": DataClass.USER_NOTE,
+        "decided_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "reversed_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "reversed_by": DataClass.TXN_TYPE,
+    },
+    ("app", "merchant_links"): {
+        "link_id": DataClass.RECORD_ID,
+        "merchant_id": DataClass.RECORD_ID,
+        "ref_kind": DataClass.TXN_TYPE,
+        # Opaque provider merchant id — never an account number, so RECORD_ID (LOW),
+        # NOT the ACCOUNT_IDENTIFIER exception account_links.ref_value carries.
+        "ref_value": DataClass.RECORD_ID,
+        "source_type": DataClass.TXN_TYPE,
+        "status": DataClass.TXN_TYPE,
+        "decided_by": DataClass.TXN_TYPE,
+        "decided_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "reversed_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "reversed_by": DataClass.TXN_TYPE,
+    },
     ("app", "metrics"): {
         "bucket_bounds": DataClass.AGGREGATE,
         "bucket_counts": DataClass.AGGREGATE,

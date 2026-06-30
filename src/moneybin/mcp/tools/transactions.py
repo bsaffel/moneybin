@@ -119,10 +119,11 @@ def _build_review_envelope() -> ResponseEnvelope[ReviewStatusPayload]:
     """Shared impl for the `review` tool and the deprecated `transactions_review` alias.
 
     Opens a short-lived read-only DB connection, calls ReviewService.status()
-    (which queries all three review queues), and returns the envelope.
+    (which queries all four review queues), and returns the envelope.
     """
     from moneybin.services.account_links_service import AccountLinksService
     from moneybin.services.categorization import CategorizationService
+    from moneybin.services.merchant_links_service import MerchantLinksService
     from moneybin.services.review_service import ReviewService
 
     with get_database(read_only=True) as db:
@@ -130,6 +131,7 @@ def _build_review_envelope() -> ResponseEnvelope[ReviewStatusPayload]:
             match_service=MatchingService(db=db),
             categorize_service=CategorizationService(db=db),
             account_links_service=AccountLinksService(db=db),
+            merchant_links_service=MerchantLinksService(db=db),
         ).status()
 
     return build_envelope(
@@ -137,28 +139,32 @@ def _build_review_envelope() -> ResponseEnvelope[ReviewStatusPayload]:
             matches_pending=status.matches_pending,
             categorize_pending=status.categorize_pending,
             account_links_pending=status.account_links_pending,
+            merchant_links_pending=status.merchant_links_pending,
             total=status.total,
         ),
         actions=[
             "Use transactions_categorize_pending to fetch the categorize queue",
             "Use transactions_matches_pending to fetch the matches queue",
             "Use accounts_links_pending to fetch the account-links queue",
+            "Use merchants_links_pending to fetch the merchant-links queue",
         ],
     )
 
 
 @mcp_tool()
 def review() -> ResponseEnvelope[ReviewStatusPayload]:
-    """Return counts of pending reviews across all three queues.
+    """Return counts of pending reviews across all four queues.
 
     Orientation tool: call this to answer "what needs my attention?" in one call.
-    Surfaces matches_pending, categorize_pending, and account_links_pending
-    so the agent can decide which queue to drain first.
+    Surfaces matches_pending, categorize_pending, account_links_pending, and
+    merchant_links_pending so the agent can decide which queue to drain first.
     For categorize, fetch items via ``transactions_categorize_pending``.
     For matches, fetch the queue via ``transactions_matches_pending`` and
     decide each pair with ``transactions_matches_set``.
     For account links, fetch the queue via ``accounts_links_pending`` and
     decide each group with ``accounts_links_set``.
+    For merchant links, fetch the queue via ``merchants_links_pending`` and
+    decide each group with ``merchants_links_set``.
     """
     return _build_review_envelope()
 
@@ -167,7 +173,7 @@ def review() -> ResponseEnvelope[ReviewStatusPayload]:
 def transactions_review() -> ResponseEnvelope[ReviewStatusPayload]:
     """DEPRECATED: use `review` — removed after one minor release.
 
-    Return counts of pending reviews across all three queues.
+    Return counts of pending reviews across all four queues.
     Orientation tool: call this to decide which queue to drain first.
     Prefer the top-level ``review`` tool going forward.
     """
@@ -332,18 +338,21 @@ def register_transactions_tools(mcp: FastMCP) -> None:
         mcp,
         review,
         "review",
-        "Return pending counts across all three review queues (matches, categorize, account-links). "
+        "Return pending counts across all four review queues "
+        "(matches, categorize, account-links, merchant-links). "
         "Call this to answer 'what needs my attention?' in one sweep. "
         "Drill into `transactions_matches_pending` for match proposals, "
         "`transactions_categorize_pending` for uncategorized transactions, "
-        "and `accounts_links_pending` for account-link decisions.",
+        "`accounts_links_pending` for account-link decisions, "
+        "and `merchants_links_pending` for merchant-link decisions.",
     )
     register(
         mcp,
         transactions_review,
         "transactions_review",
         "DEPRECATED: use `review` — removed after one minor release. "
-        "Return pending counts for matches, categorize, and account-links queues. "
+        "Return pending counts for matches, categorize, account-links, and "
+        "merchant-links queues. "
         "Call this to orient before fetching specific queue contents.",
     )
     register(
