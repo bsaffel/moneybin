@@ -97,6 +97,7 @@ SEED_CATEGORIES = TableRef("seeds", "categories")
 INT_TRANSACTIONS_UNIONED = TableRef("prep", "int_transactions__unioned")
 INT_TRANSACTIONS_MATCHED = TableRef("prep", "int_transactions__matched")
 INT_TRANSACTIONS_MERGED = TableRef("prep", "int_transactions__merged")
+STG_PLAID_TRANSACTIONS = TableRef("prep", "stg_plaid__transactions")
 
 # -- Meta schema (cross-source provenance + lineage) --
 FCT_TRANSACTION_PROVENANCE = TableRef("meta", "fct_transaction_provenance")

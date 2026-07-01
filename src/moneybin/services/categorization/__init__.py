@@ -434,6 +434,10 @@ class CategorizationService:
             uncategorized=uncategorized, skip_txn_ids=skip_txn_ids
         )
 
+    def apply_plaid_categories(self) -> int:
+        """Apply Plaid PFC-detailed categories to still-uncategorized Plaid transactions."""
+        return self._orchestrator.apply_plaid_categories()
+
     def categorize_pending(self) -> dict[str, int]:
         """Categorize all pending (uncategorized) transactions."""
         return self._orchestrator.categorize_pending()

@@ -14,6 +14,8 @@ Flow inventory:
   categorization rules.
 - :meth:`apply_merchant_categories` — sweep uncategorized rows against the
   merchant catalog.
+- :meth:`apply_plaid_categories` — sweep still-uncategorized Plaid rows
+  against Plaid's Personal Finance Category (detailed), confidence-gated.
 - :meth:`categorize_pending` — combined snowball: scan uncategorized once,
   run rules pass, then merchants pass (rule wins on overlap).
 
@@ -51,17 +53,25 @@ from moneybin.privacy.payloads.categorize import CategorizeCommitPayload
 from moneybin.services._text import build_match_inputs
 from moneybin.services.categorization._shared import (
     MERCHANT_PROVENANCE_TO_METHOD,
+    PLAID_MIN_CONFIDENCE,
     CategorizationItem,
     CategorizedBy,
     Merchant,
     did_you_mean,
+    plaid_confidence_to_numeric,
 )
 from moneybin.services.categorization.applier import MatchApplier
 from moneybin.services.categorization.matcher import (
     CategorizationMatcher,
     match_merchant_with_name,
 )
-from moneybin.tables import CATEGORIES, FCT_TRANSACTIONS, INT_TRANSACTIONS_MERGED
+from moneybin.tables import (
+    CATEGORIES,
+    FCT_TRANSACTIONS,
+    INT_TRANSACTIONS_MERGED,
+    STG_PLAID_TRANSACTIONS,
+    TRANSACTION_CATEGORIES,
+)
 
 if TYPE_CHECKING:
     from moneybin.services.merchant_resolver import MerchantResolver
@@ -838,6 +848,50 @@ class CategorizationOrchestrator:
                 f"Merchant matching categorized {categorized_count} transactions"
             )
         return categorized_count
+
+    def apply_plaid_categories(self) -> int:
+        """Assign categories from Plaid's Personal Finance Category (detailed).
+
+        Joins each still-uncategorized Plaid transaction's PFC detailed string to
+        the seeded core.dim_categories.plaid_detailed mapping, gated at >= MEDIUM
+        confidence. Writes categorized_by='provider_native', source_type='plaid' at
+        priority 6 — below every deliberate signal, above ai. Runs last of the
+        deterministic categorizers so it only touches the long tail.
+
+        Returns:
+            Number of transactions categorized.
+        """
+        rows = self._db.execute(
+            f"""
+            SELECT s.transaction_id, dc.category, dc.subcategory, s.category_confidence
+            FROM {STG_PLAID_TRANSACTIONS.full_name} AS s
+            JOIN {CATEGORIES.full_name} AS dc ON dc.plaid_detailed = s.category_detailed
+            LEFT JOIN {TRANSACTION_CATEGORIES.full_name} AS tc
+                ON tc.transaction_id = s.transaction_id
+            WHERE tc.transaction_id IS NULL
+              AND s.category_detailed IS NOT NULL
+            """  # noqa: S608 — table names are compile-time TableRef constants; no interpolated values
+        ).fetchall()
+
+        count = 0
+        for txn_id, category, subcategory, level in rows:
+            confidence = plaid_confidence_to_numeric(level)
+            if confidence is None or confidence < PLAID_MIN_CONFIDENCE:
+                continue
+            outcome = self._applier.write_categorization(
+                transaction_id=txn_id,
+                category=category,
+                subcategory=subcategory,
+                categorized_by="provider_native",
+                source_type="plaid",
+                confidence=confidence,
+            )
+            if outcome.written:
+                count += 1
+
+        if count:
+            logger.info(f"Plaid PFC categorization assigned {count} transactions")
+        return count
 
     def categorize_pending(self) -> dict[str, int]:
         """Categorize all pending (uncategorized) transactions.

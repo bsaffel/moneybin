@@ -5,6 +5,7 @@ matching, prompt construction, and response parsing.
 """
 
 from collections import Counter
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +49,11 @@ def apply_rules(db: Database) -> int:
 def apply_merchant_categories(db: Database) -> int:
     """Test shim — delegates to CategorizationService.apply_merchant_categories."""
     return CategorizationService(db).apply_merchant_categories()
+
+
+def apply_plaid_categories(db: Database) -> int:
+    """Test shim — delegates to CategorizationService.apply_plaid_categories."""
+    return CategorizationService(db).apply_plaid_categories()
 
 
 def categorize_pending(db: Database) -> dict[str, int]:
@@ -2485,4 +2491,102 @@ class TestMerchantNameMatchRung2:
         count = count_row[0]
         assert count == 1, (
             f"unknown merchant_name must mint a new merchant (rung 4); got {count}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# apply_plaid_categories — Plaid PFC-detailed categorizer (Task 5)
+# ---------------------------------------------------------------------------
+
+
+def _insert_plaid_txn(
+    db: Database,
+    transaction_id: str,
+    *,
+    category_detailed: str,
+    category_confidence: str,
+) -> None:
+    """Insert a row into ``prep.stg_plaid__transactions`` for categorizer tests.
+
+    ``prep.stg_plaid__transactions`` is a SQLMesh VIEW over
+    ``raw.plaid_transactions`` in production — building it in a unit-test DB
+    would require a full SQLMesh plan (see ``test_stg_plaid.py``'s
+    ``@pytest.mark.integration``/``slow`` tier, which does exactly that for
+    the view's own sign-flip logic). ``apply_plaid_categories`` only reads
+    three columns, so this creates just those columns as a physical table —
+    mirroring the ``prep.int_transactions__merged`` precedent already used
+    above for entity-resolution tests (see ``_setup_prep_table``).
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS prep.stg_plaid__transactions ("
+        "  transaction_id VARCHAR PRIMARY KEY, "
+        "  category_detailed VARCHAR, "
+        "  category_confidence VARCHAR"
+        ")"
+    )
+    db.execute(
+        "INSERT INTO prep.stg_plaid__transactions "
+        "(transaction_id, category_detailed, category_confidence) VALUES (?, ?, ?)",
+        [transaction_id, category_detailed, category_confidence],
+    )
+
+
+def _seed_coffee_category(db: Database) -> None:
+    """Seed core.dim_categories with the real FOOD_AND_DRINK_COFFEE -> FND-COF row.
+
+    Uses the exact row shipped in ``sqlmesh/models/seeds/categories.csv`` so
+    the ``resolve_category_id`` round-trip exercised by
+    ``apply_plaid_categories`` is realistic, not a test-only shape.
+    """
+    seed_categories_view(db)
+    db.execute(
+        "INSERT INTO seeds.categories VALUES "
+        "('FND-COF', 'Food & Drink', 'Coffee Shops', "
+        "'Coffee and tea shops', 'FOOD_AND_DRINK_COFFEE')"
+    )
+
+
+class TestApplyPlaidCategories:
+    """Tests for the Plaid PFC-detailed categorizer."""
+
+    @pytest.mark.unit
+    def test_assigns_gated_category(self, db: Database) -> None:
+        """A MEDIUM+ confidence Plaid txn adopts the seeded FND-COF category."""
+        _seed_coffee_category(db)
+        _insert_plaid_txn(
+            db,
+            "t1",
+            category_detailed="FOOD_AND_DRINK_COFFEE",
+            category_confidence="HIGH",
+        )
+
+        n = apply_plaid_categories(db)
+
+        assert n == 1
+        row = db.execute(
+            "SELECT category_id, categorized_by, source_type, confidence "
+            "FROM app.transaction_categories WHERE transaction_id='t1'"
+        ).fetchone()
+        assert row == ("FND-COF", "provider_native", "plaid", Decimal("0.90"))
+
+    @pytest.mark.unit
+    def test_skips_low_confidence(self, db: Database) -> None:
+        """A LOW confidence Plaid txn is not categorized — no row written."""
+        _seed_coffee_category(db)
+        _insert_plaid_txn(
+            db,
+            "t2",
+            category_detailed="FOOD_AND_DRINK_COFFEE",
+            category_confidence="LOW",
+        )
+
+        n = apply_plaid_categories(db)
+
+        assert n == 0
+        assert (
+            db.execute(
+                "SELECT 1 FROM app.transaction_categories WHERE transaction_id='t2'"
+            ).fetchone()
+            is None
         )
