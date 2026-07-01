@@ -1158,11 +1158,15 @@ def test_categorize_items_snowball_fans_out_to_siblings(real_db: Database) -> No
     ).fetchall()
     assert len(rows) == 3
     assert all(r[0] == "Food & Dining" for r in rows)
-    # t1 was categorized by the LLM-assist commit ('ai'); t2/t3 by the
-    # snowball merchant fan-out, which writes 'rule' provenance.
+    # t1 was categorized by the LLM-assist commit ('ai'). The exemplar
+    # merchant the commit creates is itself created_by='ai' (exemplar
+    # accumulator, orchestrator.py create_merchant_core call), so t2/t3's
+    # snowball merchant-fan-out write also stamps 'ai' provenance (spec
+    # Decision 3: the merchant-default stamp mirrors created_by, not a flat
+    # 'rule').
     assert rows[0][1] == "ai"
-    assert rows[1][1] == "rule"
-    assert rows[2][1] == "rule"
+    assert rows[1][1] == "ai"
+    assert rows[2][1] == "ai"
 
 
 # ---------------------------------------------------------------------------
@@ -2017,6 +2021,91 @@ class TestApplyMerchantCategoriesEntityResolution:
         assert result == 0, (
             "absent catalog table (fetch_merchants → None) must return 0"
         )
+
+
+# ---------------------------------------------------------------------------
+# Task 3: provenance-aware merchant defaults (spec Decision 3)
+# ---------------------------------------------------------------------------
+
+
+class TestApplyMerchantCategoriesProvenance:
+    """Merchant defaults stamp categorized_by by created_by provenance.
+
+    Before this fix, every merchant-default write stamped a flat 'rule',
+    laundering an AI first-touch default up to rule authority (priority 2)
+    instead of ai authority (priority 7). Now the stamp mirrors
+    ``app.user_merchants.created_by`` via ``MERCHANT_PROVENANCE_TO_METHOD``.
+    """
+
+    @pytest.mark.unit
+    def test_ai_merchant_default_writes_as_ai(self, db: Database) -> None:
+        """An ai-created merchant default stamps categorized_by='ai', not 'rule'."""
+        _setup_prep_table(db)
+
+        mid = create_merchant(
+            db,
+            "AMAZON",
+            "Amazon",
+            match_type="contains",
+            category="Shopping",
+            created_by="ai",
+        )
+
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+            "VALUES ('TXN_PROV_AI', 'ACC1', DATE '2026-01-01', -30.00, 'AMAZON MKTP ORDER', 'plaid')"
+        )
+        db.execute(
+            "INSERT INTO prep.int_transactions__merged VALUES "
+            "('TXN_PROV_AI', NULL, NULL, NULL)"
+        )
+
+        count = apply_merchant_categories(db)
+
+        assert count == 1
+        row = db.execute(
+            "SELECT categorized_by, merchant_id FROM app.transaction_categories "
+            "WHERE transaction_id = 'TXN_PROV_AI'"
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "ai", "was 'rule' before Task 3's provenance stamping"
+        assert row[1] == mid
+
+    @pytest.mark.unit
+    def test_user_merchant_default_writes_as_user(self, db: Database) -> None:
+        """A user-declared merchant default stamps categorized_by='user'."""
+        _setup_prep_table(db)
+
+        mid = create_merchant(
+            db,
+            "STARBUX",
+            "Starbucks",
+            match_type="contains",
+            category="Coffee",
+            created_by="user",
+        )
+
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+            "VALUES ('TXN_PROV_USER', 'ACC1', DATE '2026-01-01', -5.00, 'STARBUX #123', 'plaid')"
+        )
+        db.execute(
+            "INSERT INTO prep.int_transactions__merged VALUES "
+            "('TXN_PROV_USER', NULL, NULL, NULL)"
+        )
+
+        count = apply_merchant_categories(db)
+
+        assert count == 1
+        row = db.execute(
+            "SELECT categorized_by, merchant_id FROM app.transaction_categories "
+            "WHERE transaction_id = 'TXN_PROV_USER'"
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "user"
+        assert row[1] == mid
 
 
 # ---------------------------------------------------------------------------

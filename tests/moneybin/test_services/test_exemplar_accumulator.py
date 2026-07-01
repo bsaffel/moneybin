@@ -90,7 +90,10 @@ def test_lookup_via_oneof_exemplar_match(real_db: Database) -> None:
     ).fetchone()
     assert row is not None
     assert row[0] == "Subscriptions"
-    assert row[1] == "rule"  # merchant fan-out writes 'rule' provenance
+    # The exemplar merchant t1 created is created_by='ai' (exemplar
+    # accumulator); the merchant-default stamp mirrors that provenance
+    # (spec Decision 3), not a flat 'rule'.
+    assert row[1] == "ai"
 
 
 def test_aggregator_strings_do_not_overgeneralize(real_db: Database) -> None:

@@ -92,6 +92,20 @@ def priority_case_sql(column_expr: str) -> str:
     return f"CASE {column_expr} {branches} END"
 
 
+# Merchant defaults carry the authority of how the merchant's category was set,
+# not a flat 'rule'. An AI first-touch default (ai=7) thus loses to a fresh
+# provider_native (6) read; a user-declared default (user=1) still wins. No
+# 'plaid' entry: a Plaid-minted merchant (created_by='plaid') has no default
+# category (category_id NULL, per merchant_resolver.py), so
+# apply_merchant_categories skips the write before this map is consulted.
+MERCHANT_PROVENANCE_TO_METHOD: dict[str, CategorizedBy] = {
+    "user": "user",
+    "rule": "rule",
+    "migration": "migration",
+    "ai": "ai",
+}
+
+
 def match_shape_case_sql(column_expr: str) -> str:
     """Render a SQL CASE expression mapping match_type → specificity score.
 
@@ -302,7 +316,10 @@ class Merchant(NamedTuple):
     None for exemplar-only merchants (``match_type='oneOf'``); ``category``
     and ``subcategory`` are nullable when a merchant has no default mapping.
     ``exemplars`` is the set of exact ``match_text`` values for oneOf
-    set-membership lookup.
+    set-membership lookup. ``created_by`` is the provenance of how the
+    merchant's category default was set (``user`` | ``rule`` | ``migration``
+    | ``ai`` | ``plaid``) — ``None`` for in-memory rows not sourced from a
+    catalog fetch (e.g. the exemplar accumulator's freshly-minted row).
 
     Built by :func:`moneybin.services.categorization.matcher._fetch_merchants`
     from DuckDB rows. Tuple-compatible so legacy positional unpacking keeps
@@ -316,6 +333,7 @@ class Merchant(NamedTuple):
     category: str | None
     subcategory: str | None
     exemplars: list[str]
+    created_by: str | None = None
 
     @classmethod
     def from_row(cls, row: tuple[Any, ...]) -> Merchant:
@@ -333,6 +351,7 @@ class Merchant(NamedTuple):
             category=str(row[4]) if row[4] is not None else None,
             subcategory=str(row[5]) if row[5] is not None else None,
             exemplars=list(row[6] or []),
+            created_by=str(row[7]) if row[7] is not None else None,
         )
 
 

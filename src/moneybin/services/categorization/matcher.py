@@ -258,7 +258,8 @@ class CategorizationMatcher:
             rows = self._db.execute(
                 f"""
                 SELECT merchant_id, raw_pattern, match_type,
-                       canonical_name, category, subcategory, exemplars
+                       canonical_name, category, subcategory, exemplars,
+                       created_by
                 FROM {MERCHANTS.full_name}
                 ORDER BY
                     {match_shape_case_sql("match_type")} DESC,

@@ -50,6 +50,7 @@ from moneybin.metrics.registry import (
 from moneybin.privacy.payloads.categorize import CategorizeCommitPayload
 from moneybin.services._text import build_match_inputs
 from moneybin.services.categorization._shared import (
+    MERCHANT_PROVENANCE_TO_METHOD,
     CategorizationItem,
     CategorizedBy,
     Merchant,
@@ -725,6 +726,11 @@ class CategorizationOrchestrator:
         merchant_cat: dict[str, tuple[str | None, str | None]] = {
             m.merchant_id: (m.category, m.subcategory) for m in merchants
         }
+        # Provenance lookup for the stamp below (spec Decision 3): how the
+        # merchant's category default was set, keyed the same as merchant_cat.
+        merchant_created_by: dict[str, str] = {
+            m.merchant_id: m.created_by for m in merchants if m.created_by is not None
+        }
 
         categorized_count = 0
         for (
@@ -775,12 +781,21 @@ class CategorizationOrchestrator:
             # categorized — the entity binding above already committed.
             if skip_txn_ids is not None and txn_id in skip_txn_ids:
                 continue
-            # Merchants don't have a dedicated source-priority slot in the v1
-            # ladder (user/rule/auto_rule/migration/ml/plaid/ai). Recording
-            # merchant matches as 'rule' preserves historical behavior; a
-            # follow-up spec may introduce a dedicated 'merchant' priority
-            # between auto_rule and migration.
-            categorized_by: CategorizedBy = "rule"
+            # Spec Decision 3: a merchant default stamps the provenance of how
+            # the merchant's category was set (created_by), not a flat 'rule'
+            # — an AI first-touch default (ai=7) thus loses to a fresh
+            # provider_native (6) read, while a user-declared default (user=1)
+            # still wins. The computed value is only written when the merchant
+            # carries a category (the `category is None` guard below skips the
+            # write otherwise); a Plaid-minted merchant's own default is always
+            # NULL (per merchant_resolver.py), so no 'plaid' key is needed —
+            # its provenance never stamps through the merchant-default path.
+            created_by: str | None = None
+            if merchant_id is not None:
+                created_by = merchant_created_by.get(merchant_id)
+            categorized_by: CategorizedBy = MERCHANT_PROVENANCE_TO_METHOD.get(
+                created_by or "", "rule"
+            )
             # Choose the category to write.
             # Rung-1 "skip name matching": the adopted/bound merchant's own
             # category wins over a disagreeing name match — the entity binding
