@@ -706,6 +706,7 @@ class MatchApplier:
         merchant_id: str | None = None,
         rule_id: str | None = None,
         confidence: float | None = None,
+        source_type: str = "internal",
         in_outer_txn: bool = False,
     ) -> WriteOutcome:
         """Insert or replace a categorization, respecting source precedence.
@@ -748,6 +749,7 @@ class MatchApplier:
             merchant_id=merchant_id,
             rule_id=rule_id,
             confidence=confidence,
+            source_type=source_type,
             actor="system",
             in_outer_txn=in_outer_txn,
         )

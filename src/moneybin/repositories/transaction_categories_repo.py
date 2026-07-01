@@ -35,6 +35,7 @@ _TRANSACTION_CATEGORIES_COLUMNS = (
     "merchant_id",
     "confidence",
     "rule_id",
+    "source_type",
 )
 
 
@@ -111,6 +112,7 @@ class TransactionCategoriesRepo(BaseRepo):
         merchant_id: str | None,
         rule_id: str | None,
         confidence: float | None,
+        source_type: str = "internal",
         actor: str,
         parent_audit_id: str | None = None,
         in_outer_txn: bool = False,
@@ -142,8 +144,8 @@ class TransactionCategoriesRepo(BaseRepo):
                 INSERT INTO {TRANSACTION_CATEGORIES.full_name}
                     (transaction_id, category, subcategory, category_id,
                      categorized_at, categorized_by, merchant_id, rule_id,
-                     confidence)
-                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?)
+                     confidence, source_type)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?)
                 ON CONFLICT (transaction_id) DO UPDATE SET
                     category = EXCLUDED.category,
                     subcategory = EXCLUDED.subcategory,
@@ -152,7 +154,8 @@ class TransactionCategoriesRepo(BaseRepo):
                     categorized_by = EXCLUDED.categorized_by,
                     merchant_id = EXCLUDED.merchant_id,
                     rule_id = EXCLUDED.rule_id,
-                    confidence = EXCLUDED.confidence
+                    confidence = EXCLUDED.confidence,
+                    source_type = EXCLUDED.source_type
                 WHERE {excluded_priority} <= {existing_priority}
                 RETURNING transaction_id
                 """,  # noqa: S608  # TableRef + CASE from SOURCE_PRIORITY + parameterized values
@@ -165,6 +168,7 @@ class TransactionCategoriesRepo(BaseRepo):
                     merchant_id,
                     rule_id,
                     confidence,
+                    source_type,
                 ],
             ).fetchone()
             # DuckDB returns no rows from RETURNING when the ON CONFLICT … WHERE
