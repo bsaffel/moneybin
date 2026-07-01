@@ -355,6 +355,33 @@ class Merchant(NamedTuple):
         )
 
 
+# Plaid personal_finance_category.confidence_level → numeric. UNKNOWN maps to
+# None so it fails the gate; LOW is retained numerically but sits below the gate.
+_PLAID_CONFIDENCE: dict[str, float] = {
+    "VERY_HIGH": 0.99,
+    "HIGH": 0.90,
+    "MEDIUM": 0.70,
+    "LOW": 0.40,
+}
+PLAID_MIN_CONFIDENCE: float = 0.70  # assign at MEDIUM and above
+
+
+def plaid_confidence_to_numeric(level: str | None) -> float | None:
+    """Convert Plaid's confidence_level enum to a numeric confidence score.
+
+    Args:
+        level: A Plaid confidence_level string (VERY_HIGH, HIGH, MEDIUM, LOW,
+            UNKNOWN, or None) or None.
+
+    Returns:
+        A float confidence score, or None if level is None, unmapped, or UNKNOWN.
+        UNKNOWN and unrecognized values map to None so they fail the gate.
+    """
+    if not level:
+        return None
+    return _PLAID_CONFIDENCE.get(level.upper())
+
+
 def resolve_category_id(
     db: Database, category: str | None, subcategory: str | None
 ) -> str | None:
