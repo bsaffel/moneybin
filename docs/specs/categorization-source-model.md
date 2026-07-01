@@ -1,7 +1,7 @@
 # Categorization Source Model & Plaid PFC Categorizer
 
 > Last updated: 2026-06-30
-> Status: draft
+> Status: in-progress
 > Address: M1U (Ingestion Core)
 > Type: Feature
 > Owns: the category **source-model** contract — the `method` vs `source_type`
