@@ -64,7 +64,9 @@ def score_match_shape(match_type: str) -> int:
 # precedence. The SQL CASE expression in write_categorization is generated
 # from this dict via priority_case_sql() so the Python dict stays the
 # canonical reference and SQL cannot drift from it.
-CategorizedBy = Literal["user", "rule", "auto_rule", "migration", "ml", "plaid", "ai"]
+CategorizedBy = Literal[
+    "user", "rule", "auto_rule", "migration", "ml", "provider_native", "ai"
+]
 
 SOURCE_PRIORITY: dict[str, int] = {
     "user": 1,
@@ -72,7 +74,7 @@ SOURCE_PRIORITY: dict[str, int] = {
     "auto_rule": 3,
     "migration": 4,
     "ml": 5,
-    "plaid": 6,
+    "provider_native": 6,
     "ai": 7,
 }
 

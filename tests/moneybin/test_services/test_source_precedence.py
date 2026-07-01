@@ -67,7 +67,14 @@ def _current_source(real_db: Database, txn_id: str) -> str | None:
 
 def test_user_overwrites_everything(real_db: Database, fresh_txn: str) -> None:
     svc = CategorizationService(real_db)
-    for predecessor in ["ai", "plaid", "ml", "migration", "auto_rule", "rule"]:
+    for predecessor in [
+        "ai",
+        "provider_native",
+        "ml",
+        "migration",
+        "auto_rule",
+        "rule",
+    ]:
         svc.write_categorization(
             transaction_id=fresh_txn,
             category="Initial",
