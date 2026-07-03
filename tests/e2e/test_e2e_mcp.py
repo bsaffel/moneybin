@@ -477,6 +477,41 @@ class TestMatchesTools:
                 assert "transactions_matches_history" in tools
 
 
+class TestMCPServeTransportGate:
+    """The unauthenticated network transport refuses to start without --insecure.
+
+    Exercises the real subprocess so we verify what CliRunner + caplog can't:
+    that `main_callback` has configured logging by the time the gate fires, so
+    the refusal message actually reaches stderr and the process exits non-zero.
+    The gate runs before any profile/DB work, so no MONEYBIN_HOME is needed.
+    """
+
+    async def test_streamable_http_without_insecure_refuses(self) -> None:
+        """`mcp serve --transport streamable-http` exits 2 and names the auth risk."""
+        import asyncio
+
+        proc = await asyncio.create_subprocess_exec(
+            "uv",  # noqa: S607 — uv is on PATH in dev environments
+            "run",
+            "moneybin",
+            "mcp",
+            "serve",
+            "--transport",
+            "streamable-http",
+            env={**os.environ, **FAST_ARGON2_ENV},
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
+        combined = (stdout + stderr).decode()
+
+        assert proc.returncode == 2, (
+            f"expected exit 2, got {proc.returncode}: {combined}"
+        )
+        assert "authentication" in combined.lower()
+        assert "--insecure" in combined
+
+
 class TestMCPFirstRunSetup:
     """First-run setup over real stdio with no pre-existing profile.
 
