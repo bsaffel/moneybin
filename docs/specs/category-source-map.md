@@ -165,9 +165,10 @@ verbatim. Rules:
   category whose semantics match the code's own granularity; MoneyBin-finer
   subcategories the provider cannot distinguish get **no** row. The choice is
   a curated data row, reviewable in the seed.
-- **Coverage gap (42 codes):** recorded as an axis-2 follow-up; unmapped
-  codes fall through. A coverage query (source codes with no row) ships as
-  observability.
+- **Coverage gap (29 codes):** the detailed codes still unmapped after the
+  re-derivation (of 104 total) are recorded as an axis-2 follow-up; unmapped
+  codes fall through. A coverage query (source codes with no row) is **deferred
+  to Tier-2b** — see "Deferred to Tier-2b" below.
 
 The row-by-row curation table is produced in the implementation plan.
 
@@ -222,7 +223,7 @@ spec + `INDEX.md` + `docs/roadmap.md` + CHANGELOG updates.
 - The Tier-2b categorizer itself — the parked branch rebuilds
   `apply_plaid_categories` on this view after this lands.
 - **Axis-2 taxonomy content**: comprehensive / accounting-aligned expansion,
-  the 42-code coverage-gap backfill, an `irs_schedule_c_line` crosswalk,
+  the 29-code coverage-gap backfill, an `irs_schedule_c_line` crosswalk,
   de-duplicating redundant categories (e.g. `HSG-MTG` vs `LNP-MTG` Mortgage),
   and auditing whether the finer MoneyBin subcategories should exist. Each is
   purely additive on top of this bridge; gets its own increment and design.
