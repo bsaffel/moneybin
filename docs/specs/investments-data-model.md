@@ -315,7 +315,11 @@ and consuming them on disposals.
 > implement would silently miscompute basis, so the constraint is a guard, not an
 > oversight. HIFO/LIFO (listed as future methods in `investments-overview.md`) are added
 > by widening the `CHECK` when their engine paths ship — a lightweight `app.*` migration,
-> the same deliberate trade-off as `security_type`.
+> the same deliberate trade-off as `security_type`. When that widening happens,
+> **prioritize HIFO and leave LIFO out absent demand**: a shipped competitor
+> cost-basis engine offers FIFO / HIFO / specific-ID and notably no LIFO, so HIFO
+> carries an external demand signal LIFO does not. Add LIFO only if a real user
+> needs it, not speculatively alongside HIFO.
 
 ### Short-term / long-term split (shared across all methods)
 

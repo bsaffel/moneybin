@@ -1,6 +1,6 @@
 # Sync — Overview
 
-> Last updated: 2026-05-17
+> Last updated: 2026-07-03 — partial-payload provider guard + multi-device merge-at-matcher/provenance note
 > Status: In-progress — umbrella doc for the sync initiative. Phase 1 shipped in [`sync-plaid.md`](sync-plaid.md) (PR #151 added the post-pull refresh umbrella; PR #160 made `MONEYBIN_PROFILE` honored from non-CLI SQLMesh entry points). Phase 2 (scheduling) is unstarted; Phases 3-4 (E2E encryption, post-quantum) remain forward-looking design sketches within this doc.
 > Companions: [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) (AI data flow governance, consent model), [`matching-overview.md`](matching-overview.md) (peer initiative, dedup of synced data), [`moneybin-mcp.md`](moneybin-mcp.md) (MCP tool conventions), `CLAUDE.md` "Architecture: Data Layers"
 > Server contract: the moneybin-sync HTTP API is the authoritative integration surface. Endpoint shapes are restated inline where this spec depends on them; cross-repo paths intentionally omitted to keep this doc self-contained.
@@ -583,6 +583,8 @@ Add `{provider}_transactions` CTE in `fct_transactions.sql`, `{provider}_account
 - `app.sync_connections` — `provider` column discriminates; schema is shared
 - `EncryptionBackend` — encryption is at the transport layer, not the provider layer
 
+**Partial-payload guard (provider robustness).** A provider response can be internally incomplete — some accounts, holdings, or securities present, others missing — while still returning success at the transport layer. This is distinct from [Partial success handling](#partial-success-handling), which is per-institution success/failure across a sync job; here a single institution's response is itself partial. A loader must never treat a partial payload as complete (e.g. inferring an absent account was closed, or that missing holdings mean an empty portfolio). Detect the partial condition, load what arrived, and surface which accounts/entities were skipped so downstream reconciliation and the user can see the gap. This matters most for the investments product (holdings/securities frequently arrive partial), but the guard is provider-agnostic and belongs here so every provider inherits it — a shipped competitor pairs its bank sync with exactly this guardrail.
+
 ### Cross-provider response shape (open design question)
 
 Two architectural decisions intersect when a second provider lands. The artifact-level decision is already made in the "Provider contract" section above: per-provider raw tables, per-provider loaders, per-provider staging views. The **HTTP-layer decision** — what shape the server returns to the client — is currently implicit, and the answer Phase 1 baked in deserves a deliberate revisit before provider #2 ships.
@@ -758,7 +760,7 @@ Infrastructure spec. The `Database` class that sync loaders write through handle
 
 Not designed here. Architectural constraints noted so the current design does not preclude them.
 
-1. **`sync push`** — multi-device sync. Push encrypted DuckDB state (or deltas) to the server so another device can pull it. Would add `moneybin sync push` command and bidirectional protocol extensions.
+1. **`sync push`** — multi-device sync. Push encrypted DuckDB state (or deltas) to the server so another device can pull it. Would add `moneybin sync push` command and bidirectional protocol extensions. **Merge at the matcher/provenance layer, never at raw rows.** A generic row-level three-way merge treats the same real transaction imported on two devices as two distinct rows and "cleanly" duplicates it; MoneyBin's transaction-identity semantics — content-derived identity plus the cross-source matcher and `meta.fct_transaction_provenance` — are exactly what collapse that duplicate. A shipped competitor's whole-file row-diff replication exhibits the duplication this avoids. Any replication design routes conflict resolution through matching/provenance, not raw-row diffing.
 2. **Plaid Investments** — sync holdings, securities, and investment transactions. Gated on `investments-data-model.md` (M1J). New child spec: `sync-plaid-investments.md`.
 3. **Plaid Liabilities** — sync loan, mortgage, and credit card debt details. Separate child spec.
 4. **Webhook-based sync** — server pushes notifications when new data is available, eliminating polling. Requires a client-side listener or notification mechanism.

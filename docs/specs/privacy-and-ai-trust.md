@@ -1,6 +1,6 @@
 # Privacy & AI Trust
 
-> Last updated: 2026-05-29 — deterministic-computation / LLM-prose invariant added
+> Last updated: 2026-07-03 — prose-invariant enforcement design inputs (code-enforced grounding + approved-correction capture)
 > Status: Ready — framework spec for MoneyBin's privacy model across all AI data flows.
 > Companions: [`privacy-security-roadmap.md`](privacy-security-roadmap.md) (data custody tiers), [`ADR-002: Privacy Tiers`](../decisions/002-privacy-tiers.md) (data custody architecture), [`smart-import-overview.md`](smart-import-overview.md) (pillar F depends on this), [`matching-overview.md`](matching-overview.md) (audit log shared), `CLAUDE.md` Security section, `.claude/rules/security.md`
 
@@ -21,6 +21,13 @@ MoneyBin is an AI-first financial application. AI makes it better — smarter im
 3. **Every byte that leaves has a receipt.** The audit log records what was sent, to which backend, when, and what came back. The user can query it at any time. The log stores metadata, not a second copy of sensitive data.
 4. **Capabilities matter alongside privacy.** When a user chooses an AI backend, they should see both the provider's privacy stance and what features it unlocks. MoneyBin does not artificially limit features to the lowest common denominator across providers — it helps the user make an informed choice.
 5. **Deterministic code owns the numbers.** LLMs may explain, summarize, or draft prose from already-computed MoneyBin results; they must not be the source of financial calculations, classifications that bypass review, or report truth. Any AI-written summary cites the deterministic result/report/lineage reference it summarizes.
+
+### Enforcing the prose invariant (design inputs for `llm-prose-summaries.md`)
+
+Principle 5 is a contract; the planned `llm-prose-summaries.md` feature is where it gets enforced. Two requirements land there, captured now so they are not lost:
+
+- **Grounding is a code check, not a prompt instruction.** Before an AI-written summary is returned, code verifies that every number (and every named entity) in the prose appears in the cited `result_ref` / retrieved rows. If any figure is not grounded, the summary is refused — not softened, not warned. A prompt that merely *asks* the model to stay grounded is insufficient; the check is mechanical and post-generation. A shipped competitor already gates its free-form answers this way (the model narrates only numbers present in retrieved data, else it refuses), validating the shape.
+- **Approved corrections become learned routing overrides.** When a user corrects or approves a generated diagnosis/summary, persist that decision as a routing override consulted *before* generation thereafter — so the same question does not re-earn the same correction. The override is mutable `app.*` user state (audited via a `*Repo`), not baked into a prompt.
 
 ## Data sensitivity taxonomy
 
