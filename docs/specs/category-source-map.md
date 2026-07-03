@@ -1,7 +1,7 @@
 # Category Source Mapping — provider-code → canonical-category bridge
 
-> Last updated: 2026-07-02
-> Status: Draft — M1V (Ingestion Core). Feature spec.
+> Last updated: 2026-07-03
+> Status: Implemented — M1V (Ingestion Core). Feature spec.
 > Companions: [`categorization-overview.md`](categorization-overview.md) (umbrella; priority hierarchy — provider pass-through is priority 6), [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) (write-time precedence contract this feeds), [`architecture-shared-primitives.md`](architecture-shared-primitives.md) (layer rules, `source_type` vocabulary), `.claude/rules/identifiers.md` (source-provided IDs, FK Guard 3), `.claude/rules/database.md` (seed vs app layering, migration realism, column comments). Prerequisite for the parked Plaid Tier-2b categorizer (`feat/plaid-pfc-categorizer`).
 
 ## Purpose
@@ -186,7 +186,7 @@ CHANGELOG under `Changed`/`Removed`.
 
 ## Migration
 
-A single forward migration (next sequential `V0NN`):
+A single forward migration, `V032__add_category_source_map_and_class.py`:
 
 - Create `app.category_source_map` (schema DDL + `app_category_source_map.sql`).
 - `ALTER TABLE app.user_categories ADD COLUMN class VARCHAR` (default
@@ -200,18 +200,22 @@ rows, idempotent, wrapped in the runner's `BEGIN`/`COMMIT`) per
 
 ## Observability
 
-Per the app-code-touches-metrics rule: counters on the
-`app.category_source_map` write path (rows added / updated / removed) in
-`src/moneybin/metrics/registry.py`, mirroring existing `app.*` writers. A
-coverage query surfaces source codes with no mapping.
+Per the app-code-touches-metrics rule, the `app.category_source_map` write
+path (rows added / updated / removed) gets counters in
+`src/moneybin/metrics/registry.py`, mirroring existing `app.*` writers — this
+lands with the override writer itself (see "Deferred to Tier-2b" below; no
+writer exists yet in this PR, so there is nothing to instrument). Likewise, a
+coverage query (source codes with no bridge row) ships as observability with
+its first consumer rather than speculatively here.
 
 ## Scope
 
 **In scope (this PR / M1V):** the three tables + view + two-tier contract;
-the `class` column on the category dim; verified-taxonomy re-derivation of
-the seed (fix the 5 invalid tags, formalize the 16 primary rows); hard-cut
-`plaid_detailed`; migration; `TableRef` constants; metrics + coverage query;
-spec + `INDEX.md` + `docs/roadmap.md` + capabilities/CHANGELOG updates.
+the `class` column on the category dim (available on `core.dim_categories`
+and the dict-based `get_active_categories()`); verified-taxonomy
+re-derivation of the seed (fix the 5 invalid tags, formalize the 16 primary
+rows); hard-cut `plaid_detailed`; migration (`V032`); `TableRef` constants;
+spec + `INDEX.md` + `docs/roadmap.md` + CHANGELOG updates.
 
 **Out of scope (deferred):**
 
@@ -224,6 +228,25 @@ spec + `INDEX.md` + `docs/roadmap.md` + capabilities/CHANGELOG updates.
   purely additive on top of this bridge; gets its own increment and design.
 - Map-to-null suppression of a seed mapping; `parent_id` N-level nesting;
   promoting `source_taxonomy_version` into the primary key.
+- See "Deferred to Tier-2b" immediately below for the three items pushed to
+  the next increment by explicit decision.
+
+### Deferred to Tier-2b
+
+Three items were deliberately pushed to the Tier-2b categorizer increment —
+each lands with the consumer that needs it, rather than speculatively here:
+
+1. **Coverage query** (source codes with no bridge row). Lands with Tier-2b,
+   its first real consumer.
+2. **Typed-payload `class` exposure.** `class` is already available on
+   `core.dim_categories` and on the dict-based `get_active_categories()`
+   (`"class"` key, `src/moneybin/services/categorization/queries.py`). The
+   typed `CategoryRow` field (`src/moneybin/privacy/payloads/categories.py`)
+   is deferred to Tier-2b, which is the first consumer that needs it on the
+   typed path.
+3. **Write-path metrics** for `app.category_source_map`. No writer exists yet
+   in this PR — the override writer (axis-2) is what will emit these
+   counters; instrumenting an unwritten path would be speculative.
 
 ## Coordination
 
@@ -235,7 +258,8 @@ are independent of this PR.
 
 ## Open questions
 
-- Confirm the exact next migration number against `main` at implementation.
+- ~~Confirm the exact next migration number against `main` at
+  implementation.~~ Resolved: `V032`.
 - The two-tier `ORDER BY code_level` lookup assumes the caller passes both
   detailed and primary; confirm the Plaid extractor surfaces both on
   `prep`/`raw` transactions before the categorizer consumes the view.

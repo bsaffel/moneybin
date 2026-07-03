@@ -13,6 +13,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 M2 closing out and M3 underway. M2A curator state shipped (transaction notes, tags, splits, manual entry, audit log). M2B architecture reference shipped (`architecture-shared-primitives.md`; writer-coordination contract via short-lived per-call connections). M2C brand surface advancing: `moneybin system doctor` integrity command, `reports.*` recipe library (eight curated views), and the `transform_*` MCP toolset closing the agent ingest loop. M3A Plaid Transactions sync shipped (Phase 1). Doc surface tightened for the personas reachable today; MCP surface hardened with protocol-standard annotations, `accounts_resolve`, list-parameter cap, structured error envelopes, and shell completion. Categorization correctness pass: memo-aware matcher, exemplar accumulation, source-precedence enforcement, auto-fan-out after apply; seed merchant catalogs retired in favor of user-driven and LLM-assist-driven merchant creation.
 
 ### Added
+- **`core.bridge_category_source_map` — provider-code → canonical-category bridge (M1V).**
+  A durable, aggregator-agnostic view resolving any provider's transaction-category
+  code to exactly one canonical MoneyBin category, keyed `(source_type,
+  source_category_code)`. Two-tier lookup (`code_level`: `detailed` preferred,
+  `primary` fallback) so an unmapped detailed code still lands in the right
+  top-level category. Backed by `seeds.category_source_map` (91 rows re-derived
+  against Plaid's verified Personal-Finance-Category taxonomy) unioned with
+  `app.category_source_map` (user overrides always win). Prerequisite for the
+  parked Plaid Tier-2b categorizer.
 - **Resolve transaction merchants by Plaid `merchant_entity_id` before name matching (M1T).** Two new `app.*` tables (`merchant_links` binding + `merchant_link_decisions` review queue) back an adopt-or-mint ladder that fires at categorization time; a backfill `harvest()` records existing assignments with zero review (conflicts-only). New `merchants links pending / set / history / run` CLI subgroup and `merchants_links_pending / _set / _history / _run` MCP tools surface fuzzy-match proposals; the top-level `review` tool gains a merchant-links queue.
 - **Plaid max-data capture.** Plaid sync now captures the institution's original
   (raw) description as a new `original_description` column on
@@ -157,6 +166,11 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   removed after one minor release.
 
 ### Changed
+- **`core.dim_categories` gains an accounting `class` (M1V).** Every category
+  now carries `class` (`income` | `expense` | `transfer` | `debt`), assigned
+  at curation time for seed categories and defaulting to `expense` for user
+  categories. Unlocks income-statement separation and transfer-exclusion from
+  spend reporting.
 - **Inbox-sync pending entries now carry their account proposals in the response
   envelope.** Each `account_confirmation` entry returned by `import_inbox_sync` /
   `moneybin import inbox` now includes `account_proposals[]` (source key,
@@ -222,6 +236,10 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   to match the policy ceiling documented in `database-writer-coordination.md`.
 
 ### Removed
+- **`core.dim_categories.plaid_detailed` (M1V).** The single-aggregator
+  category tag is replaced by `core.bridge_category_source_map`, which
+  supports multiple providers and guarantees a deterministic one-row-per-code
+  reverse lookup.
 - **`reports_budget` MCP tool and `reports budget` CLI command.** They
   synthesized from `BudgetService` rather than reading a `reports.*` view,
   violating the `reports_*` = reads-a-view convention; they return through the
