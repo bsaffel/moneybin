@@ -115,6 +115,13 @@ The ML categorizer works by analyzing the words in transaction descriptions to f
 
 The v1 implementation uses TF-IDF (term frequency–inverse document frequency) to convert descriptions into numeric features and SVM (support vector machine) as the classifier. This combination is lightweight (no GPU, sub-second training on personal-scale data), well-proven for short-text classification, and is the same approach used by Beancount's Smart Importer. The model interface is designed to be swappable — alternative approaches (word embeddings, pre-trained language models) can replace the internals without changing the categorization pipeline or user experience.
 
+### If a semantic tier is added later (design inputs, not v1)
+
+The swappable interface above leaves room for a semantic-similarity tier — embed the transaction, compare against reference vectors — between the deterministic rules and the LLM fallback. Two forks are already decided if that tier is ever built, captured here so they are not re-derived:
+
+- **Embed accumulated exemplars, not static category anchors.** Anchoring category vectors on fixed metadata never learns. Embedding the user's accumulated exemplars (the same `oneOf` exemplars [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) accumulates from every correction) gets *both* correction-learning and generalization to unseen merchant variants. A shipped competitor's semantic tier anchors on static category metadata and cannot learn from corrections — the fork we would not take.
+- **Abstain on a thin margin, not just a low score.** Accept a semantic match only when similarity ≥ `T_sim` **and** its margin over the runner-up category ≥ `T_margin`; otherwise abstain and fall through to the next tier. A bare similarity threshold over-commits on ambiguous ties where two categories are both plausible. A competing implementation uses ≈ 0.78 / 0.06 for these two thresholds — a reference point to recalibrate on our own data, not adopt as-is.
+
 ### Training
 
 **Data sources** — all categorized transactions contribute to training, weighted by source quality:

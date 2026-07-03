@@ -161,6 +161,18 @@ from a real-time call or short cache; everything past is stored. Raw vs.
 split/dividend-adjusted prices is a Pillar C concern (cost basis uses raw ledger
 data; charts often use adjusted).
 
+### Stale prices surface, never masquerade as current (Pillar C)
+
+When a current price is unavailable — market closed, feed gap, or a security the
+feed does not cover — valuation falls back to the most recent stored close, but
+the fallback is always visible. Any priced response carries the `price_date` it
+actually used and a derived `staleness_days`; past a configurable threshold the
+response envelope adds an explicit staleness warning. A stale close is never
+silently presented as the current price. This is the price-side application of
+"magic stays visible": the fallback itself is fine, silently misrepresenting its
+age is not. A shipped competitor already does exactly this (snapshot fallback
+plus gap-day staleness marking), confirming the shape.
+
 ### Currency: column now, conversion later
 
 A `currency` column lands on the ledger, lots, prices, and holdings in the
