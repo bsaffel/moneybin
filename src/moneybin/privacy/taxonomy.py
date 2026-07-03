@@ -498,7 +498,6 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "description": DataClass.CATEGORY,
         "is_active": DataClass.TXN_TYPE,
         "is_default": DataClass.TXN_TYPE,
-        "plaid_detailed": DataClass.CATEGORY,
         "subcategory": DataClass.CATEGORY,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
     },

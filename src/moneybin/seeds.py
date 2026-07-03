@@ -75,8 +75,7 @@ def _ensure_seed_tables_exist(db: Database) -> None:
             category VARCHAR,
             subcategory VARCHAR,
             description VARCHAR,
-            class VARCHAR,
-            plaid_detailed VARCHAR
+            class VARCHAR
         )
         """  # noqa: S608  # SEED_CATEGORIES is a TableRef constant, not user input
     )
@@ -133,7 +132,6 @@ def refresh_views(db: Database) -> None:
             s.subcategory,
             s.description,
             s.class,
-            s.plaid_detailed,
             true AS is_default,
             COALESCE(o.is_active, true) AS is_active,
             NULL::TIMESTAMP AS created_at
@@ -146,7 +144,6 @@ def refresh_views(db: Database) -> None:
             subcategory,
             description,
             class,
-            NULL AS plaid_detailed,
             false AS is_default,
             is_active,
             created_at

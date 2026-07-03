@@ -177,7 +177,6 @@ SELECT CAST(NULL AS VARCHAR) AS category_id,
        CAST(NULL AS VARCHAR) AS subcategory,
        CAST(NULL AS VARCHAR) AS description,
        CAST(NULL AS VARCHAR) AS class,
-       CAST(NULL AS VARCHAR) AS plaid_detailed,
        CAST(NULL AS BOOLEAN) AS is_default,
        CAST(NULL AS BOOLEAN) AS is_active,
        CAST(NULL AS TIMESTAMP) AS created_at,
@@ -306,7 +305,7 @@ def seed_categories_view(db: Database) -> None:
 
     Used by tests that exercise category-toggle behavior on default-category rows.
     The seeded row is
-    ``('FND', 'Food & Drink', NULL, 'Food and beverages', 'expense', 'FOOD_AND_DRINK')``.
+    ``('FND', 'Food & Drink', NULL, 'Food and beverages', 'expense')``.
     """
     from moneybin.seeds import refresh_views
 
@@ -317,13 +316,12 @@ def seed_categories_view(db: Database) -> None:
             category VARCHAR,
             subcategory VARCHAR,
             description VARCHAR,
-            class VARCHAR,
-            plaid_detailed VARCHAR
+            class VARCHAR
         )
     """)
     db.execute("""
         INSERT INTO seeds.categories VALUES
-        ('FND', 'Food & Drink', NULL, 'Food and beverages', 'expense', 'FOOD_AND_DRINK')
+        ('FND', 'Food & Drink', NULL, 'Food and beverages', 'expense')
     """)
     refresh_views(db)
 

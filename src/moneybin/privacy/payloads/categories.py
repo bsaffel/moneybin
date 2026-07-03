@@ -54,7 +54,6 @@ class CategoryRow:
     class_: Annotated[str | None, DataClass.TXN_TYPE]
     is_default: Annotated[bool | None, DataClass.TXN_TYPE]
     is_active: Annotated[bool | None, DataClass.TXN_TYPE]
-    plaid_detailed: Annotated[str | None, DataClass.CATEGORY]
 
 
 @dataclass(frozen=True, slots=True)

@@ -75,11 +75,11 @@ def _recreate_pre_v032_state(db: Database) -> None:
     db.execute("ALTER TABLE seeds.categories DROP COLUMN class")
     db.execute(
         "INSERT INTO seeds.categories "
-        "(category_id, category, subcategory, description, plaid_detailed) VALUES "
-        "('INC-TST', 'Income', 'Test', '', 'INCOME_OTHER'), "
-        "('TRN-TST', 'Transfer', 'Test', '', 'TRANSFER_OUT'), "
-        "('LNP-TST', 'Loan Payments', 'Test', '', 'LOAN_PAYMENTS'), "
-        "('FND-TST', 'Food & Drink', 'Test', '', 'FOOD_AND_DRINK')"
+        "(category_id, category, subcategory, description) VALUES "
+        "('INC-TST', 'Income', 'Test', ''), "
+        "('TRN-TST', 'Transfer', 'Test', ''), "
+        "('LNP-TST', 'Loan Payments', 'Test', ''), "
+        "('FND-TST', 'Food & Drink', 'Test', '')"
     )
 
 
