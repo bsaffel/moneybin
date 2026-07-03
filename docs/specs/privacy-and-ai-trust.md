@@ -1,6 +1,6 @@
 # Privacy & AI Trust
 
-> Last updated: 2026-05-29 — deterministic-computation / LLM-prose invariant added
+> Last updated: 2026-07-03 — prose-invariant enforcement design inputs (code-enforced grounding + approved-correction capture)
 > Status: Ready — framework spec for MoneyBin's privacy model across all AI data flows.
 > Companions: [`privacy-security-roadmap.md`](privacy-security-roadmap.md) (data custody tiers), [`ADR-002: Privacy Tiers`](../decisions/002-privacy-tiers.md) (data custody architecture), [`smart-import-overview.md`](smart-import-overview.md) (pillar F depends on this), [`matching-overview.md`](matching-overview.md) (audit log shared), `CLAUDE.md` Security section, `.claude/rules/security.md`
 

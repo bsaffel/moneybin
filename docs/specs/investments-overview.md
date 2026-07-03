@@ -1,6 +1,6 @@
 # Investments — Overview
 
-> Last updated: 2026-05-29 — 1099-B tie-out reaffirmed as the hard M1J close gate.
+> Last updated: 2026-07-03 — added Pillar C stale-price fallback design input (`price_date` + staleness surfacing).
 > Umbrella doc for the investments initiative (milestone M1J). Child specs listed
 > in [The four pillars](#the-four-pillars) are written separately; the foundation
 > child is [`investments-data-model.md`](investments-data-model.md).

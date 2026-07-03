@@ -586,14 +586,14 @@ This spec's job is to ensure that when the Apps spec arrives, it finds a tool su
 
 ### Remote HTTP transport (future milestone — design inputs)
 
-Today the server ships full-capability stdio plus an **unauthenticated** streamable-HTTP fallback; authenticated remote HTTP is a future milestone, not part of v1. The auth model, token lifecycle, and scope semantics are a one-way-door surface, so capturing the shape now — while it costs nothing — keeps the eventual spec from re-deriving it. Shipped competitor implementations prove out each piece:
+Today the server ships full-capability stdio plus **unauthenticated** HTTP fallbacks (`--transport streamable-http` and `--transport sse` — both run with no auth branch and expose the identical full tool surface); authenticated remote HTTP is a future milestone, not part of v1. The auth model, token lifecycle, and scope semantics are a one-way-door surface, so capturing the shape now — while it costs nothing — keeps the eventual spec from re-deriving it. Shipped competitor implementations prove out each piece:
 
 - **Scope-filtered tool registration at connect.** Tools outside the session's granted scope are never registered, so they never appear in the tool list — better AX than registering everything and refusing at call time. This composes with, rather than reopens, the §3 "full surface at connect" decision: full surface *within the granted scope*.
 - **Self-issued OAuth for self-hosters.** A self-hosted instance mints its own per-client, scope-exact tokens with no dependency on a cloud identity provider — a shipped open-source implementation demonstrates this end to end. A hosted deployment may still front a managed IdP; the self-hosted path must not require one.
 - **User-visible, revocable token lifecycle.** `moneybin mcp tokens list` / `revoke` (CLI, with MCP parity where it fits the taxonomy); RFC 7009 token revocation; dynamic-client-registration clients that auto-expire after a bounded window; a connected-apps view showing what holds a token and when it was last used.
 - **Profile key wrapped under token secrets.** A granted token unlocks only what its scope allows and revocation is meaningful at rest — never a bearer token that hands over the whole encrypted profile.
 
-These are design inputs, not commitments; the milestone itself is large. The constraint that holds regardless: the unauthenticated HTTP fallback stays gated behind an explicit opt-in and is never the recommended path.
+These are design inputs, not commitments; the milestone itself is large. The constraint that holds regardless: both unauthenticated HTTP transports (`streamable-http` and `sse`) stay gated behind an explicit opt-in and are never the recommended path — the future milestone must bring either under the auth model, not just one.
 
 ---
 
