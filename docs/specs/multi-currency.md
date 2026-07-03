@@ -210,14 +210,18 @@ Numbered, testable. Tagged by phase.
 
     **Reserved import shape — single-row FX transfer.** Some source formats express
     an FX transfer as one row carrying *both* legs (the sent amount/currency plus a
-    received amount and target currency), rather than two rows. Reserve the field
-    pair `amount_received` + `currency_to` on the capture grain as the landing spot
-    for that shape, so an importer that meets it has somewhere to put the second leg
-    instead of dropping it or fabricating a paired row. The conversion-pair model
-    consumes either shape; reserving the names now (schema reservation, not yet
-    built) keeps a later importer from inventing an ad-hoc currency column. The
-    directional `_to` suffix matches the existing `from_currency`/`to_currency`
-    convention on `raw.exchange_rates`, not the row's own `currency_code`.
+    received amount and target currency), rather than two rows. Reserve a
+    received-leg column pair — `to_amount` + `to_currency` — on the raw import tables
+    (`raw.*`, e.g. `raw.tabular_transactions`) where a source row lands, so an
+    importer that meets this shape has somewhere to put the second leg instead of
+    dropping it or fabricating a paired row; the row's own `amount`/`currency_code`
+    is then the sent leg, and the conversion-pair model consumes either shape.
+    `to_amount`/`to_currency` follow the directional `from_currency`/`to_currency`
+    prefix convention already used on `raw.exchange_rates` — reserving them now
+    (schema reservation, not yet built) keeps a later importer from coining an
+    ad-hoc, differently-ordered name and compounding the currency-column naming
+    drift §Key Decisions already flags. (A shipped competitor carries this shape as
+    `amount_received` / `currency_to`.)
 18. **Currency-lot accounting.** Realized FX gain/loss on disposing a foreign-currency
     holding is computed via the **investments cost-basis engine** (FIFO / average per
     the elected method in `investments-data-model.md`), treating currency holdings as
