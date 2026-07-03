@@ -122,7 +122,7 @@ class CategorizationQueries:
             rows = self._db.execute(
                 f"""
                 SELECT category_id, category, subcategory, description,
-                       class, is_default, is_active
+                       is_default, is_active
                 FROM {CATEGORIES.full_name}
                 {where}
                 ORDER BY category, subcategory
@@ -138,9 +138,8 @@ class CategorizationQueries:
                     category=r[1],
                     subcategory=r[2],
                     description=r[3],
-                    class_=r[4],
-                    is_default=bool(r[5]) if r[5] is not None else None,
-                    is_active=bool(r[6]) if r[6] is not None else None,
+                    is_default=bool(r[4]) if r[4] is not None else None,
+                    is_active=bool(r[5]) if r[5] is not None else None,
                 )
                 for r in rows
             ]

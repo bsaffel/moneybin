@@ -49,9 +49,6 @@ class CategoryRow:
     category: Annotated[str | None, DataClass.CATEGORY]
     subcategory: Annotated[str | None, DataClass.CATEGORY]
     description: Annotated[str | None, DataClass.CATEGORY]
-    # class_: trailing underscore because `class` is a Python keyword; maps to
-    # the DB column `class` (accounting class: income | expense | transfer | debt).
-    class_: Annotated[str | None, DataClass.TXN_TYPE]
     is_default: Annotated[bool | None, DataClass.TXN_TYPE]
     is_active: Annotated[bool | None, DataClass.TXN_TYPE]
 
