@@ -728,7 +728,8 @@ class TestCategoriesView:
         seed_categories_view(db)
         db.execute("""
             INSERT INTO seeds.categories VALUES
-            ('FND-COF', 'Food & Drink', 'Coffee Shops', 'Coffee', 'FOOD_AND_DRINK_COFFEE')
+            ('FND-COF', 'Food & Drink', 'Coffee Shops', 'Coffee', 'expense',
+             'FOOD_AND_DRINK_COFFEE')
         """)
 
     @pytest.mark.unit

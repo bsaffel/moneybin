@@ -43,7 +43,7 @@ def _table_exists(db: Database, schema: str, table: str) -> bool:
 
 
 def _recreate_pre_v032_state(db: Database) -> None:
-    """Reverse the V032 end-state: drop the bridge table and the `class` column.
+    """Reverse the V032 end-state: drop the bridge table and the `class` columns.
 
     On a fresh DB, `init_schemas` already creates `app.category_source_map`
     and `app.user_categories.class` (this task's own schema edits), so to
@@ -51,6 +51,13 @@ def _recreate_pre_v032_state(db: Database) -> None:
     shape first. `class` sits after the `category_id` PK column, so a plain
     `ALTER TABLE ... DROP COLUMN` is allowed (unlike V030's case where the
     new column preceded a PK-indexed column).
+
+    `seeds.categories.class` is reversed the same way: V014 (run earlier in
+    the migration chain, on every install) always creates `seeds.categories`
+    without `class`, and by the time the `fresh_db` fixture finishes building,
+    the *current* V032 has already added it — so we drop it and seed
+    representative rows (one per class-rule prefix) to exercise the
+    prefix-derived backfill, not just see it already applied as a no-op.
     """
     db.execute("DROP TABLE IF EXISTS app.category_source_map")
     db.execute("ALTER TABLE app.user_categories DROP COLUMN class")
@@ -65,12 +72,31 @@ def _recreate_pre_v032_state(db: Database) -> None:
         "('u_c3d4e5f6a1b2', 'Gifts', 'Given', '', false, "
         "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
     )
+    db.execute("ALTER TABLE seeds.categories DROP COLUMN class")
+    db.execute(
+        "INSERT INTO seeds.categories "
+        "(category_id, category, subcategory, description, plaid_detailed) VALUES "
+        "('INC-TST', 'Income', 'Test', '', 'INCOME_OTHER'), "
+        "('TRN-TST', 'Transfer', 'Test', '', 'TRANSFER_OUT'), "
+        "('LNP-TST', 'Loan Payments', 'Test', '', 'LOAN_PAYMENTS'), "
+        "('FND-TST', 'Food & Drink', 'Test', '', 'FOOD_AND_DRINK')"
+    )
+
+
+def _seed_category_classes(db: Database) -> dict[str, str]:
+    return dict(
+        db.execute(
+            "SELECT category_id, class FROM seeds.categories "
+            "WHERE category_id LIKE '%-TST' ORDER BY category_id"
+        ).fetchall()
+    )
 
 
 def test_v032_creates_bridge_and_class(db: Database) -> None:
     _recreate_pre_v032_state(db)
     assert not _table_exists(db, "app", "category_source_map")
     assert not column_exists(db, "app", "user_categories", "class")
+    assert not column_exists(db, "seeds", "categories", "class")
 
     run_migration(db, migrate)
 
@@ -91,6 +117,14 @@ def test_v032_creates_bridge_and_class(db: Database) -> None:
         for row in db.execute("PRAGMA table_info('app.category_source_map')").fetchall()
     }
     assert _BRIDGE_COLUMNS <= cols
+
+    # seeds.categories.class backfilled by category_id prefix (BLOCK B rule).
+    assert _seed_category_classes(db) == {
+        "INC-TST": "income",
+        "TRN-TST": "transfer",
+        "LNP-TST": "debt",
+        "FND-TST": "expense",
+    }
 
 
 def test_v032_is_idempotent(db: Database) -> None:
@@ -113,6 +147,12 @@ def test_v032_is_idempotent(db: Database) -> None:
         for row in db.execute("PRAGMA table_info('app.category_source_map')").fetchall()
     }
     assert _BRIDGE_COLUMNS <= cols
+    assert _seed_category_classes(db) == {
+        "INC-TST": "income",
+        "TRN-TST": "transfer",
+        "LNP-TST": "debt",
+        "FND-TST": "expense",
+    }
 
 
 def test_v032_idempotent_on_fresh_install(db: Database) -> None:
@@ -124,6 +164,7 @@ def test_v032_idempotent_on_fresh_install(db: Database) -> None:
     assert _table_exists(db, "app", "category_source_map")
     _, is_nullable = column_info(db, "app", "user_categories", "class")
     assert is_nullable is False
+    assert column_exists(db, "seeds", "categories", "class")
 
 
 if __name__ == "__main__":

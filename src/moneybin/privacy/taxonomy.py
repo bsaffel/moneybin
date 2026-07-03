@@ -485,6 +485,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
     ("core", "dim_categories"): {
         "category": DataClass.CATEGORY,
         "category_id": DataClass.CATEGORY,
+        "class": DataClass.TXN_TYPE,
         "created_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "description": DataClass.CATEGORY,
         "is_active": DataClass.TXN_TYPE,

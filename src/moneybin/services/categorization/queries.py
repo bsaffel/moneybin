@@ -89,7 +89,7 @@ class CategorizationQueries:
             rows = self._db.execute(
                 f"""
                 SELECT category_id, category, subcategory, description,
-                       is_default, plaid_detailed
+                       class, is_default, plaid_detailed
                 FROM {CATEGORIES.full_name}
                 WHERE is_active = true
                 ORDER BY category, subcategory
@@ -104,8 +104,9 @@ class CategorizationQueries:
                 "category": r[1],
                 "subcategory": r[2],
                 "description": r[3],
-                "is_default": r[4],
-                "plaid_detailed": r[5],
+                "class": r[4],
+                "is_default": r[5],
+                "plaid_detailed": r[6],
             }
             for r in rows
         ]
@@ -122,7 +123,7 @@ class CategorizationQueries:
             rows = self._db.execute(
                 f"""
                 SELECT category_id, category, subcategory, description,
-                       is_default, is_active, plaid_detailed
+                       class, is_default, is_active, plaid_detailed
                 FROM {CATEGORIES.full_name}
                 {where}
                 ORDER BY category, subcategory
@@ -138,9 +139,10 @@ class CategorizationQueries:
                     category=r[1],
                     subcategory=r[2],
                     description=r[3],
-                    is_default=bool(r[4]) if r[4] is not None else None,
-                    is_active=bool(r[5]) if r[5] is not None else None,
-                    plaid_detailed=r[6],
+                    class_=r[4],
+                    is_default=bool(r[5]) if r[5] is not None else None,
+                    is_active=bool(r[6]) if r[6] is not None else None,
+                    plaid_detailed=r[7],
                 )
                 for r in rows
             ]

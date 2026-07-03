@@ -11,6 +11,7 @@ MODEL (
     category TEXT,
     subcategory TEXT,
     description TEXT,
+    class TEXT,
     plaid_detailed TEXT
   ),
   grain category_id
