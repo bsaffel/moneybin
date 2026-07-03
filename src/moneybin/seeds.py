@@ -2,9 +2,11 @@
 
 Seeds are managed by SQLMesh (``seeds.*`` schema, populated from CSV). The
 canonical resolved dimensions — categories and merchants — are exposed as
-``core.dim_categories`` and ``core.dim_merchants``. These views are also
-declared as SQLMesh models in ``sqlmesh/models/core/dim_*.sql`` (the
-canonical spec for column shapes). ``refresh_views`` builds equivalent
+``core.dim_categories`` and ``core.dim_merchants``. The resolved provider
+category-source bridge is exposed as ``core.bridge_category_source_map``.
+These views are also declared as SQLMesh models in
+``sqlmesh/models/core/dim_*.sql`` and ``bridge_category_source_map.sql``
+(the canonical spec for column shapes). ``refresh_views`` builds equivalent
 views directly via DuckDB so they are available in fresh test databases
 and on every ``Database`` open without requiring a full SQLMesh ``transform
 apply`` first; ``transform apply`` will subsequently ``CREATE OR REPLACE``
@@ -20,10 +22,13 @@ import logging
 from typing import TYPE_CHECKING
 
 from moneybin.tables import (
+    BRIDGE_CATEGORY_SOURCE_MAP,
     CATEGORIES,
     CATEGORY_OVERRIDES,
+    CATEGORY_SOURCE_MAP,
     MERCHANTS,
     SEED_CATEGORIES,
+    SEED_CATEGORY_SOURCE_MAP,
     USER_CATEGORIES,
     USER_MERCHANTS,
 )
@@ -74,6 +79,17 @@ def _ensure_seed_tables_exist(db: Database) -> None:
             plaid_detailed VARCHAR
         )
         """  # noqa: S608  # SEED_CATEGORIES is a TableRef constant, not user input
+    )
+    db.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {SEED_CATEGORY_SOURCE_MAP.full_name} (
+            source_type VARCHAR,
+            source_category_code VARCHAR,
+            code_level VARCHAR,
+            category_id VARCHAR,
+            source_taxonomy_version VARCHAR
+        )
+        """  # noqa: S608  # SEED_CATEGORY_SOURCE_MAP is a TableRef constant, not user input
     )
 
 
@@ -135,6 +151,37 @@ def refresh_views(db: Database) -> None:
             is_active,
             created_at
         FROM {USER_CATEGORIES.full_name}
+        """  # noqa: S608  # all interpolated names are TableRef constants, not user input
+    )
+
+    # Build the two-tier category-source bridge. Mirrors
+    # sqlmesh/models/core/bridge_category_source_map.sql — a user row for
+    # (source_type, source_category_code) always wins over the seed default.
+    db.execute(
+        f"""
+        CREATE OR REPLACE VIEW {BRIDGE_CATEGORY_SOURCE_MAP.full_name} AS
+        SELECT
+            s.source_type,
+            s.source_category_code,
+            s.code_level,
+            s.category_id,
+            s.source_taxonomy_version,
+            true AS is_default
+        FROM {SEED_CATEGORY_SOURCE_MAP.full_name} s
+        WHERE NOT EXISTS (
+            SELECT 1 FROM {CATEGORY_SOURCE_MAP.full_name} a
+            WHERE a.source_type = s.source_type
+            AND a.source_category_code = s.source_category_code
+        )
+        UNION ALL
+        SELECT
+            source_type,
+            source_category_code,
+            code_level,
+            category_id,
+            source_taxonomy_version,
+            false AS is_default
+        FROM {CATEGORY_SOURCE_MAP.full_name}
         """  # noqa: S608  # all interpolated names are TableRef constants, not user input
     )
 

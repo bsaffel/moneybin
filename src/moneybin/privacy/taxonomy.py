@@ -452,6 +452,14 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "version": DataClass.AGGREGATE,
     },
+    ("core", "bridge_category_source_map"): {
+        "category_id": DataClass.RECORD_ID,
+        "code_level": DataClass.TXN_TYPE,
+        "is_default": DataClass.TXN_TYPE,
+        "source_category_code": DataClass.CATEGORY,
+        "source_taxonomy_version": DataClass.AGGREGATE,
+        "source_type": DataClass.TXN_TYPE,
+    },
     ("core", "bridge_transfers"): {
         "amount": DataClass.TXN_AMOUNT,
         "credit_transaction_id": DataClass.RECORD_ID,

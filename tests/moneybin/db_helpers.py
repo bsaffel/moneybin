@@ -201,8 +201,23 @@ WHERE FALSE;
 """
 
 
+# core.bridge_category_source_map — SQLMesh-managed view in production.
+# Tests stub its shape so schema-catalog and classification checks resolve
+# the name. Column shape mirrors the SQLMesh model / seeds.refresh_views.
+CORE_BRIDGE_CATEGORY_SOURCE_MAP_STUB_DDL = """\
+CREATE OR REPLACE VIEW core.bridge_category_source_map AS
+SELECT CAST(NULL AS VARCHAR) AS source_type,
+       CAST(NULL AS VARCHAR) AS source_category_code,
+       CAST(NULL AS VARCHAR) AS code_level,
+       CAST(NULL AS VARCHAR) AS category_id,
+       CAST(NULL AS VARCHAR) AS source_taxonomy_version,
+       CAST(NULL AS BOOLEAN) AS is_default
+WHERE FALSE;
+"""
+
+
 def create_core_dim_stub_views(db: Database) -> None:
-    """Materialize `core.dim_categories` and `core.dim_merchants` as empty views.
+    """Materialize the dim_categories, dim_merchants, and bridge_category_source_map stub views.
 
     Production builds these via SQLMesh; tests stub them so anything
     inspecting the catalog (schema-catalog tests, classification
@@ -210,6 +225,7 @@ def create_core_dim_stub_views(db: Database) -> None:
     """
     db.execute(CORE_DIM_CATEGORIES_STUB_DDL)
     db.execute(CORE_DIM_MERCHANTS_STUB_DDL)
+    db.execute(CORE_BRIDGE_CATEGORY_SOURCE_MAP_STUB_DDL)
 
 
 def create_core_tables(db: Database) -> None:
