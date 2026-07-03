@@ -543,10 +543,13 @@ def _print_chatgpt_desktop_instructions(
     typer.echo("  4. Save. ChatGPT will spawn the server on demand.")
     typer.echo("")
     typer.echo(
-        "Note: ChatGPT Desktop's MCP support is gated by version and plan. "
-        "If your build only accepts HTTP connectors, run "
-        "`moneybin mcp serve --transport streamable-http` and add the resulting "
-        "URL as a custom connector instead."
+        "Note: ChatGPT Desktop's MCP support is gated by version and plan. Use "
+        "the local/stdio connector above — it is the supported, authenticated "
+        "path. MoneyBin's HTTP transport is UNAUTHENTICATED (no HTTP auth exists "
+        "yet): `moneybin mcp serve --transport streamable-http --insecure` opens "
+        "a port anyone who can reach it can read and write your finances through. "
+        "Only use it on a trusted, localhost-only machine as a last resort if "
+        "your build accepts no stdio connector."
     )
 
 
@@ -686,6 +689,38 @@ def mcp_list_prompts(
 # ── serve ────────────────────────────────────────────────────────────────────
 
 
+def _gate_network_transport(transport: str, *, insecure: bool) -> None:
+    """Refuse to start a network transport without an explicit insecure opt-in.
+
+    stdio is local-only and always allowed. Every other transport (sse,
+    streamable-http) binds a network-reachable port, and MoneyBin has no HTTP
+    authentication yet — so an unauthenticated listener exposes all financial
+    data to anyone who can reach the port. Without --insecure, exit with a usage
+    error that names the risk; with it, emit a loud stderr warning and return so
+    the caller can start the server. Keep this gate until authenticated HTTP
+    transport ships.
+    """
+    if transport == "stdio":
+        return
+    if not insecure:
+        logger.error(
+            f"❌ Refusing to start the MCP server on transport '{transport}' "
+            "without authentication. This opens a network-reachable MCP server "
+            "with NO authentication — anyone who can reach the port can read and "
+            "write your financial data. MoneyBin has no HTTP authentication yet; "
+            "use the default stdio transport (`moneybin mcp serve`) for local AI "
+            "clients. To override on a trusted, localhost-only network, re-run "
+            "with --insecure."
+        )
+        raise typer.Exit(2)
+    logger.warning(
+        f"⚠️  Starting the MCP server on transport '{transport}' with NO "
+        "authentication (--insecure). Anyone who can reach this port can read "
+        "and write your financial data. Bind to localhost only and never expose "
+        "this port to an untrusted network."
+    )
+
+
 def _is_unconfigured() -> bool:
     """True when no profile is resolvable without the interactive wizard.
 
@@ -708,16 +743,37 @@ def serve(
         typer.Option(
             "--transport",
             "-t",
-            help="MCP transport type: stdio, sse, or streamable-http",
+            help=(
+                "MCP transport. Default: stdio (local stdin/stdout — the supported "
+                "path for AI clients). The network transports (sse, streamable-http) "
+                "are UNAUTHENTICATED and require --insecure."
+            ),
         ),
     ] = "stdio",
+    insecure: Annotated[
+        bool,
+        typer.Option(
+            "--insecure",
+            help=(
+                "Allow an UNAUTHENTICATED network transport (sse/streamable-http). "
+                "Opens a port with no authentication — anyone who can reach it can "
+                "read and write your financial data. Localhost-only, trusted "
+                "networks only. Ignored for stdio."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Start the MoneyBin MCP server.
 
     This launches an MCP server that gives AI assistants full access to
     your financial data in DuckDB — querying, importing, categorizing,
     and budgeting. The server communicates via stdio (standard input/output)
-    by default, which is the standard transport for local MCP integrations.
+    by default, which is the supported transport for local MCP integrations.
+
+    The network transports (sse, streamable-http) are UNAUTHENTICATED —
+    MoneyBin has no HTTP auth yet — so they refuse to start unless you pass
+    --insecure, and even then only on a trusted, localhost-only network. Use
+    stdio for real AI-client installs (`moneybin mcp install`).
 
     The server uses the currently active profile to determine which
     database to connect to. With no profile configured, it still boots —
@@ -734,6 +790,19 @@ def serve(
 
         # Typically invoked by AI clients, not run manually
     """
+    # Validate the transport and enforce the auth gate before doing any work —
+    # a refused insecure listener must not even import the server stack.
+    if transport not in _VALID_TRANSPORTS:
+        logger.error(
+            f"Invalid transport '{transport}'. Must be one of: {', '.join(_VALID_TRANSPORTS)}"
+        )
+        raise typer.Exit(2)
+
+    _gate_network_transport(transport, insecure=insecure)
+
+    # Cast validated string to the literal type
+    validated_transport: TransportType = transport  # type: ignore[assignment] — validated above
+
     from moneybin.cli.utils import get_verbose_flag, handle_cli_errors
     from moneybin.mcp.server import check_schema_at_boot, close_db, init_db, mcp
     from moneybin.observability import setup_observability
@@ -745,15 +814,6 @@ def serve(
         "moneybin.mcp.prompts",
     ):
         importlib.import_module(module)
-
-    if transport not in _VALID_TRANSPORTS:
-        logger.error(
-            f"Invalid transport '{transport}'. Must be one of: {', '.join(_VALID_TRANSPORTS)}"
-        )
-        raise typer.Exit(1)
-
-    # Cast validated string to the literal type
-    validated_transport: TransportType = transport  # type: ignore[assignment] — validated above
 
     # Convert SIGTERM to SystemExit so the finally block runs and we close
     # the DuckDB connection cleanly. Without this, parent-driven shutdowns
