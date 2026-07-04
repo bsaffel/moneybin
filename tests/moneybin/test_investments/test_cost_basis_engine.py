@@ -1,10 +1,11 @@
-"""Unit tests for the FIFO (Task 8) and HIFO (Task 9) cost-basis engine.
+"""Unit tests for the cost-basis engine (FIFO, HIFO, specific, average).
 
-Correctness-critical: these tests pin the FIFO and HIFO consumption orders,
-penny conservation, deterministic IDs, ST/LT split (per-lot, independent of
-consumption order), and oversold handling that a 1099-B reconciliation later
-depends on. All monetary literals are ``Decimal`` — never float — because
-float rounding would defeat the penny-conservation guarantees under test.
+Correctness-critical: these tests pin the consumption orders, penny
+conservation, deterministic IDs, ST/LT split (per-lot, independent of
+consumption order), average-cost pooling, and oversold handling that a 1099-B
+reconciliation later depends on. All monetary literals are ``Decimal`` — never
+float — because float rounding would defeat the penny-conservation guarantees
+under test.
 """
 
 import hashlib
@@ -40,6 +41,10 @@ def _no_selections(_disposal_txn_id: str) -> list[tuple[str, Decimal]]:
 
 def _specific(_account_id: str, _security_id: str) -> str:
     return "specific"
+
+
+def _average(_account_id: str, _security_id: str) -> str:
+    return "average"
 
 
 def _event(
@@ -1151,3 +1156,388 @@ def test_specific_with_no_selections_behaves_like_fifo() -> None:
     assert len(gains) == 1
     assert gains[0].lot_id == by_src["b1"].lot_id
     assert gains[0].cost_basis_method == "specific"
+
+
+def test_average_partial_sell_uses_pooled_basis_and_rescales_pool() -> None:
+    # Pool = 20 units / $300 (avg $15). Sell 5 => realized basis 5 * $15 = $75,
+    # NOT FIFO's 5 * $10 = $50. Pool after = 15 units / $225 (avg still $15),
+    # split across the two open lots as their pooled-average share.
+    events = [
+        _event(
+            "b1",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("10"),
+            amount=D("-100.00"),
+        ),
+        _event(
+            "b2",
+            event_type="buy",
+            trade_date=date(2024, 2, 1),
+            quantity=D("10"),
+            amount=D("-200.00"),
+        ),
+        _event(
+            "s1",
+            event_type="sell",
+            trade_date=date(2024, 3, 1),
+            quantity=D("-5"),
+            amount=D("90.00"),
+        ),
+    ]
+    lots, gains = _run(events, method_for=_average)
+
+    assert len(gains) == 1
+    g = gains[0]
+    by_src = {lot.source_transaction_id: lot for lot in lots}
+    # Oldest lot supplies the holding-period attribution; basis is the pool's.
+    assert g.lot_id == by_src["b1"].lot_id
+    assert g.quantity == D("5")
+    assert g.cost_basis == D("75.00")  # pooled avg $15/unit, not FIFO's $50
+    assert g.proceeds == D("90.00")
+    assert g.gain_loss == D("15.00")
+    assert g.cost_basis_method == "average"
+    assert g.basis_incomplete is False
+
+    # Pool rescaled to 15 units / $225; each open lot carries its average share.
+    assert by_src["b1"].remaining_quantity == D("5")
+    assert by_src["b1"].cost_basis_remaining == D("75.00")  # 5 * $15
+    assert by_src["b2"].remaining_quantity == D("10")
+    assert by_src["b2"].cost_basis_remaining == D("150.00")  # 10 * $15
+    remaining_pool = sum(
+        (lot.cost_basis_remaining for lot in lots if lot.remaining_quantity > 0),
+        D("0"),
+    )
+    assert remaining_pool == D("225.00")
+
+
+def test_average_diverges_from_fifo_on_identical_events() -> None:
+    # The distinctness guard: the same ledger yields a different realized basis
+    # under average vs FIFO, and running average must not perturb FIFO's result.
+    events = [
+        _event(
+            "b1",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("10"),
+            amount=D("-100.00"),
+        ),
+        _event(
+            "b2",
+            event_type="buy",
+            trade_date=date(2024, 2, 1),
+            quantity=D("10"),
+            amount=D("-200.00"),
+        ),
+        _event(
+            "s1",
+            event_type="sell",
+            trade_date=date(2024, 3, 1),
+            quantity=D("-5"),
+            amount=D("90.00"),
+        ),
+    ]
+    _fifo_lots, fifo_gains = _run(events, method_for=_fifo)
+    _avg_lots, avg_gains = _run(events, method_for=_average)
+    # FIFO draws the oldest lot's actual $10/unit basis; average blends to $15.
+    assert fifo_gains[0].cost_basis == D("50.00")
+    assert avg_gains[0].cost_basis == D("75.00")
+
+
+def test_average_subsequent_buy_shifts_the_running_average() -> None:
+    # A later acquisition mutates the pool: the next disposal uses the new avg.
+    events = [
+        _event(
+            "b1",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("10"),
+            amount=D("-100.00"),
+        ),
+        _event(
+            "b2",
+            event_type="buy",
+            trade_date=date(2024, 2, 1),
+            quantity=D("10"),
+            amount=D("-200.00"),
+        ),
+        _event(
+            "s1",  # pool 20u/$300, avg $15 => basis 5 * $15 = $75
+            event_type="sell",
+            trade_date=date(2024, 3, 1),
+            quantity=D("-5"),
+            amount=D("90.00"),
+        ),
+        _event(
+            "b3",  # pool 15u/$225 + 5u/$150 => 20u/$375, avg $18.75
+            event_type="buy",
+            trade_date=date(2024, 4, 1),
+            quantity=D("5"),
+            amount=D("-150.00"),
+        ),
+        _event(
+            "s2",  # basis 5 * $18.75 = $93.75 (the shifted average)
+            event_type="sell",
+            trade_date=date(2024, 5, 1),
+            quantity=D("-5"),
+            amount=D("100.00"),
+        ),
+    ]
+    _lots, gains = _run(events, method_for=_average)
+
+    by_txn = {g.disposal_txn_id: g for g in gains}
+    assert by_txn["s1"].cost_basis == D("75.00")
+    assert by_txn["s2"].cost_basis == D("93.75")
+    assert by_txn["s2"].quantity == D("5")
+
+
+def test_average_sell_spanning_st_and_lt_lots_splits_terms_pooled_basis() -> None:
+    # Long-term lot (2023) at $10/unit and short-term lot (2024) at $20/unit;
+    # pool = 20 units / $300, avg $15. Selling 15 across both: each slice's term
+    # comes from its own lot's dates, but the basis is the pooled $15/unit — not
+    # the lot's actual cost.
+    events = [
+        _event(
+            "b1",
+            event_type="buy",
+            trade_date=date(2023, 1, 1),  # long-term at sale
+            quantity=D("10"),
+            amount=D("-100.00"),
+        ),
+        _event(
+            "b2",
+            event_type="buy",
+            trade_date=date(2024, 6, 1),  # short-term at sale
+            quantity=D("10"),
+            amount=D("-200.00"),
+        ),
+        _event(
+            "s1",
+            event_type="sell",
+            trade_date=date(2024, 7, 1),
+            quantity=D("-15"),
+            amount=D("450.00"),
+        ),
+    ]
+    lots, gains = _run(events, method_for=_average)
+
+    assert len(gains) == 2
+    by_term = {g.term: g for g in gains}
+    long_leg = by_term["long"]
+    short_leg = by_term["short"]
+
+    # Long lot fully consumed (10 units); pooled basis 10 * $15 = $150.
+    assert long_leg.quantity == D("10")
+    assert long_leg.cost_basis == D("150.00")
+    # Short lot partially consumed (5 units); pooled basis 5 * $15 = $75.
+    assert short_leg.quantity == D("5")
+    assert short_leg.cost_basis == D("75.00")
+
+    # Blended basis = $15/unit * 15 units = $225 (one 1099-B figure, ST/LT split).
+    assert long_leg.cost_basis + short_leg.cost_basis == D("225.00")
+    assert sum((g.proceeds for g in gains), D("0")) == D("450.00")
+
+    by_src = {lot.source_transaction_id: lot for lot in lots}
+    assert by_src["b1"].remaining_quantity == D("0")
+    assert by_src["b2"].remaining_quantity == D("5")
+    assert by_src["b2"].cost_basis_remaining == D("75.00")  # 5 * $15
+
+
+def test_average_holdings_reconciliation_sum_equals_remaining_pooled_cost() -> None:
+    # Contributions: $100 + $300 + $150 = $550 over 25 units (derived from the
+    # inputs, not the output). Realized basis: sell 5 @ avg $20 => $100; sell 10
+    # @ avg $22.50 => $225. Remaining pooled cost = 550 - 100 - 225 = $225.
+    events = [
+        _event(
+            "b1",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("10"),
+            amount=D("-100.00"),
+        ),
+        _event(
+            "b2",  # pool 20u/$400, avg $20
+            event_type="buy",
+            trade_date=date(2024, 2, 1),
+            quantity=D("10"),
+            amount=D("-300.00"),
+        ),
+        _event(
+            "s1",  # basis 5 * $20 = $100; pool 15u/$300
+            event_type="sell",
+            trade_date=date(2024, 3, 1),
+            quantity=D("-5"),
+            amount=D("120.00"),
+        ),
+        _event(
+            "b3",  # pool 20u/$450, avg $22.50
+            event_type="buy",
+            trade_date=date(2024, 4, 1),
+            quantity=D("5"),
+            amount=D("-150.00"),
+        ),
+        _event(
+            "s2",  # basis 10 * $22.50 = $225; pool 10u/$225
+            event_type="sell",
+            trade_date=date(2024, 5, 1),
+            quantity=D("-10"),
+            amount=D("250.00"),
+        ),
+    ]
+    lots, gains = _run(events, method_for=_average)
+
+    realized_basis = sum((g.cost_basis for g in gains), D("0"))
+    assert realized_basis == D("325.00")  # $100 + $225
+
+    # The reconciliation dim_holdings depends on: SUM(open cost_basis_remaining)
+    # == remaining pooled cost, derived independently as $550 - $325.
+    open_basis = sum(
+        (lot.cost_basis_remaining for lot in lots if lot.remaining_quantity > 0),
+        D("0"),
+    )
+    assert open_basis == D("225.00")
+
+    by_src = {lot.source_transaction_id: lot for lot in lots}
+    assert by_src["b1"].remaining_quantity == D("0")
+    assert by_src["b1"].cost_basis_remaining == D("0.00")
+    # Open lots B and C (5 units each) carry the $22.50/unit average share.
+    assert by_src["b2"].remaining_quantity == D("5")
+    assert by_src["b2"].cost_basis_remaining == D("112.50")
+    assert by_src["b3"].remaining_quantity == D("5")
+    assert by_src["b3"].cost_basis_remaining == D("112.50")
+
+
+def test_average_oversold_consumes_available_at_avg_then_zero_basis_remainder() -> None:
+    # Pool = 10 units / $100 (avg $10). Selling 15 draws all 10 at avg (a full
+    # pool close taking all remaining cost) then emits a zero-basis, incomplete
+    # slice for the 5 unmatched units. The engine never raises.
+    events = [
+        _event(
+            "b1",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("10"),
+            amount=D("-100.00"),
+        ),
+        _event(
+            "s1",
+            event_type="sell",
+            trade_date=date(2024, 2, 1),
+            quantity=D("-15"),  # 5 more than pooled
+            amount=D("225.00"),
+        ),
+    ]
+    lots, gains = _run(events, method_for=_average)
+
+    assert len(gains) == 2
+    matched = next(g for g in gains if not g.basis_incomplete)
+    unmatched = next(g for g in gains if g.basis_incomplete)
+
+    assert matched.quantity == D("10")
+    assert matched.cost_basis == D("100.00")  # all 10 units at avg $10
+    assert unmatched.quantity == D("5")
+    assert unmatched.cost_basis == D("0.00")
+    assert unmatched.term == "short"
+    assert sum((g.proceeds for g in gains), D("0")) == D("225.00")
+
+    assert lots[0].remaining_quantity == D("0")
+    assert lots[0].cost_basis_remaining == D("0.00")
+
+
+def test_average_full_pool_close_takes_all_remaining_conserves_pennies() -> None:
+    # Non-terminating average: 15 units / $150.05 => $10.0033.../unit. Two sells
+    # drain the pool; realized basis across both must sum to the exact $150.05
+    # contributed — no penny stranded in the (now empty) pool.
+    events = [
+        _event(
+            "b1",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("10"),
+            amount=D("-100.00"),
+        ),
+        _event(
+            "b2",
+            event_type="buy",
+            trade_date=date(2024, 2, 1),
+            quantity=D("5"),
+            amount=D("-50.05"),
+        ),
+        _event(
+            "s1",  # basis _money(5 * 150.05/15) = $50.02; pool 10u/$100.03
+            event_type="sell",
+            trade_date=date(2024, 3, 1),
+            quantity=D("-5"),
+            amount=D("60.00"),
+        ),
+        _event(
+            "s2",  # full close: basis = all remaining $100.03
+            event_type="sell",
+            trade_date=date(2024, 4, 1),
+            quantity=D("-10"),
+            amount=D("120.00"),
+        ),
+    ]
+    lots, gains = _run(events, method_for=_average)
+
+    realized_basis = sum((g.cost_basis for g in gains), D("0"))
+    assert realized_basis == D("150.05")  # exactly the total contributed
+
+    # Pool fully drained: every lot closed with zero remaining basis.
+    for lot in lots:
+        assert lot.remaining_quantity == D("0")
+        assert lot.cost_basis_remaining == D("0.00")
+
+    s1 = next(g for g in gains if g.disposal_txn_id == "s1")
+    assert s1.cost_basis == D("50.02")  # _money(5 * 150.05/15)
+
+
+def test_average_reconciliation_residual_lands_on_last_open_lot() -> None:
+    # Locks _reconcile_average_lots's residual-to-last branch: three OPEN lots
+    # of unequal quantity (0.4, 0.7, 1.9 = 3.0 units) over $100.00 pooled cost
+    # give avg = $33.3333.../unit — non-terminating. Naive per-lot rounding
+    # (_money(rq * avg)) sums to only $99.99, stranding a cent; the last open lot
+    # must absorb it so SUM(cost_basis_remaining) == pooled cost EXACTLY. A naive
+    # rewrite (last lot = _money(rq * avg) = $63.33) would drop this cent and this
+    # test alone would catch it. No disposals: all three lots stay open.
+    events = [
+        _event(
+            "b1",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("0.4"),
+            amount=D("-30.00"),
+        ),
+        _event(
+            "b2",
+            event_type="buy",
+            trade_date=date(2024, 2, 1),
+            quantity=D("0.7"),
+            amount=D("-30.00"),
+        ),
+        _event(
+            "b3",
+            event_type="buy",
+            trade_date=date(2024, 3, 1),
+            quantity=D("1.9"),
+            amount=D("-40.00"),
+        ),
+    ]
+    lots, gains = _run(events, method_for=_average)
+
+    assert gains == []  # holdings only, no disposals
+    by_src = {lot.source_transaction_id: lot for lot in lots}
+
+    # Reconciliation invariant: SUM over open lots == remaining pooled cost.
+    open_basis = sum(
+        (lot.cost_basis_remaining for lot in lots if lot.remaining_quantity > 0),
+        D("0"),
+    )
+    assert open_basis == D("100.00")  # exact to the cent
+
+    # Pinned per-lot shares prove the residual landed on the LAST open lot (b3):
+    # naive _money(rq * $33.3333...) gives $13.33 / $23.33 / $63.33 (sum $99.99);
+    # b3 instead carries $63.34, the $99.99 + residual reconciliation.
+    assert by_src["b1"].cost_basis_remaining == D("13.33")  # 0.4 * avg, rounded
+    assert by_src["b2"].cost_basis_remaining == D("23.33")  # 0.7 * avg, rounded
+    assert by_src["b3"].cost_basis_remaining == D("63.34")  # 0.7 rounded + residual

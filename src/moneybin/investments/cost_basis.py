@@ -4,8 +4,11 @@ Walks an investment ledger per ``(account_id, security_id)`` group, opening a
 lot on each acquisition and consuming open lots on each disposal to produce the
 1099-B reconciliation grain (``core.fct_investment_lots`` and
 ``core.fct_realized_gains``). This module owns the FIFO (Task 8), HIFO
-(Task 9), and specific-identification (Task 10) methods; average-cost extends
-the same machinery in a later task.
+(Task 9), specific-identification (Task 10), and average-cost (Task 11)
+methods. Average cost is the one genuinely distinct computation: it keeps a
+running per-group pool (two scalars) and draws each disposal's basis from the
+pooled average rather than from the consumed lot — the other three methods take
+the lot's own basis.
 
 Correctness over speed: all monetary outputs quantize to two places with
 ``ROUND_HALF_UP`` and disposal proceeds are penny-conserved (the per-slice
@@ -115,6 +118,22 @@ class _Slice:
     cost_basis: Decimal
     basis_incomplete: bool
     proceeds: Decimal = _ZERO_MONEY
+
+
+@dataclass
+class _Pool:
+    """Average-cost running pool for one ``(account, security)`` group.
+
+    Two scalars per the CRA/HMRC pooled-average model (NOT runtime lot-merging,
+    the Beancount anti-pattern the spec warns against): ``units`` is the total
+    open quantity (full ``Decimal`` precision) and ``cost`` the total remaining
+    basis (money, 2dp). Every acquisition adds to both; every disposal draws both
+    down at the pooled average. Basis lives here, not on any ``Lot``, because
+    under average cost no lot has a basis of its own.
+    """
+
+    units: Decimal = Decimal("0")
+    cost: Decimal = _ZERO_MONEY
 
 
 def _money(value: Decimal) -> Decimal:
@@ -227,7 +246,9 @@ def _consumption_plan(
       quantity, a partially-selected lot correctly reappears in the fallback
       for whatever it has left; a fully-drawn lot reappears with 0 remaining
       and is skipped by the ``take <= 0`` guard in ``_consume``.
-    Average-cost (Task 11) extends this dispatch with its own branch.
+    - Average-cost reuses the FIFO draw order unchanged: averaging alters only
+      each slice's basis number (drawn from the pool in ``_consume``), never the
+      order lots are traversed for quantity and holding-period attribution.
     """
     open_lots = [lot for lot in lots if lot.remaining_quantity > 0]
     if method == "hifo":
@@ -257,6 +278,7 @@ def _consume(
     lots: list[Lot],
     method: str,
     selections_for: Callable[[str], list[tuple[str, Decimal]]],
+    pool: _Pool | None,
 ) -> list[RealizedGain]:
     """Consume open lots for a disposal (sell or transfer_out).
 
@@ -265,10 +287,22 @@ def _consume(
     lots without producing any gains. Consumption order (and, for
     specific-ID, the per-lot cap) is determined by ``method`` (see
     ``_consumption_plan``).
+
+    ``pool`` is non-``None`` only for the average-cost method. When set, each
+    slice's basis is drawn from the pooled average (captured before the pool is
+    reduced) instead of the consumed lot's own basis, and the pool is drawn down
+    by the disposal's matched quantity and blended basis.
     """
     disposal_quantity = _abs_or_zero(event.quantity)
     disposal_date = event.trade_date
     is_sell = event.type == "sell"
+
+    # Average cost: capture the pooled per-unit basis BEFORE the pool is reduced
+    # (every prior acquisition has already shifted it). Zero when the pool is
+    # empty — such a disposal is fully oversold and realizes at zero basis.
+    avg = Decimal("0")
+    if pool is not None and pool.units > 0:
+        avg = pool.cost / pool.units
 
     plan = _consumption_plan(
         lots, method, event.investment_transaction_id, selections_for
@@ -284,7 +318,15 @@ def _consume(
             # Already-drained lot reappearing in the specific-ID FIFO
             # fallback phase (or a fully-capped selection) — nothing to draw.
             continue
-        if take == lot.remaining_quantity:
+        if pool is not None:
+            # Average cost: basis comes from the pool, not the lot. Draw down
+            # only the lot's quantity here; the pooled basis is allocated across
+            # the disposal's slices after the loop, and each open lot's
+            # cost_basis_remaining is reset to its average share when the group
+            # finishes (_reconcile_average_lots).
+            slice_basis = _ZERO_MONEY
+            lot.remaining_quantity = lot.remaining_quantity - take
+        elif take == lot.remaining_quantity:
             # Fully closes the lot: take all remaining basis (conserves basis
             # exactly rather than re-deriving pro-rata).
             slice_basis = lot.cost_basis_remaining
@@ -306,6 +348,24 @@ def _consume(
             )
         )
         remaining -= take
+
+    # Average cost: draw the pool down and stamp each matched slice with its
+    # pooled basis. A disposal that empties the pool takes all remaining pooled
+    # cost (the full-close-takes-all rule applied to the pool) so no penny is
+    # stranded. Runs for transfer_out too — the shares leave the pool even though
+    # no gain is realized. The oversold remainder (below) keeps its zero basis.
+    if pool is not None:
+        matched_quantity = disposal_quantity - remaining
+        if matched_quantity > 0:
+            if pool.units == matched_quantity:
+                disposal_basis = pool.cost
+                pool.cost = _ZERO_MONEY
+                pool.units = Decimal("0")
+            else:
+                disposal_basis = _money(matched_quantity * avg)
+                pool.cost = _money(pool.cost - disposal_basis)
+                pool.units = pool.units - matched_quantity
+            _allocate_basis(slices, disposal_basis, matched_quantity)
 
     # transfer_out never realizes a gain; drop any unmatched remainder silently.
     if not is_sell:
@@ -407,6 +467,59 @@ def _allocate_proceeds(
     slices[-1].proceeds = proceeds_total - allocated
 
 
+def _allocate_basis(
+    slices: list[_Slice],
+    basis_total: Decimal,
+    total_quantity: Decimal,
+) -> None:
+    """Split a disposal's pooled basis across its slices, conserving pennies.
+
+    The average-cost analogue of ``_allocate_proceeds``: each slice takes its
+    pro-rata share of the pooled ``basis_total`` (rounded to cents) and the last
+    slice absorbs the residual, so the slice bases sum to ``basis_total`` (the
+    amount the pool was drawn down by) with no stranded penny. Overwrites the
+    placeholder basis set during consumption; ``slices`` here are the matched
+    slices only (the oversold remainder keeps its zero basis).
+    """
+    if not slices:
+        return
+    allocated = _ZERO_MONEY
+    for s in slices[:-1]:
+        share = _money(basis_total * s.quantity / total_quantity)
+        s.cost_basis = share
+        allocated += share
+    slices[-1].cost_basis = basis_total - allocated
+
+
+def _reconcile_average_lots(lots: list[Lot], pool: _Pool) -> None:
+    """Reset average-cost lots' remaining basis to their pooled-average share.
+
+    Under average cost a lot has no basis of its own; the meaningful figure is
+    the position's pooled cost. Closed lots hold zero; each open lot takes
+    ``remaining_quantity * avg`` (the last open lot absorbs the rounding
+    residual) so ``SUM(cost_basis_remaining)`` over the open lots equals the
+    remaining pooled cost exactly — the reconciliation ``dim_holdings`` relies
+    on. ``cost_basis_total`` is left untouched: it records what was actually paid
+    at acquisition, which averaging does not rewrite (so an open lot's remaining
+    basis can differ from — even exceed — its own ``cost_basis_total``).
+    """
+    open_lots = [lot for lot in lots if lot.remaining_quantity > 0]
+    for lot in lots:
+        if lot.remaining_quantity <= 0:
+            lot.cost_basis_remaining = _ZERO_MONEY
+    if not open_lots:
+        return
+    # pool.units == sum of the open lots' remaining quantities, so this is
+    # exactly the remaining pooled average and the residual below is <= a cent.
+    avg = pool.cost / pool.units
+    allocated = _ZERO_MONEY
+    for lot in open_lots[:-1]:
+        basis = _money(lot.remaining_quantity * avg)
+        lot.cost_basis_remaining = basis
+        allocated += basis
+    open_lots[-1].cost_basis_remaining = _money(pool.cost - allocated)
+
+
 def compute_lots_and_gains(
     events: Sequence[LedgerEvent],
     *,
@@ -448,6 +561,8 @@ def compute_lots_and_gains(
 
     for (account_id, security_id), group_events in groups.items():
         method = method_for(account_id, security_id)
+        # Average cost keeps a running pool for the group; other methods don't.
+        pool = _Pool() if method == "average" else None
         ordered = sorted(
             group_events,
             key=lambda e: (e.trade_date, e.investment_transaction_id),
@@ -455,14 +570,26 @@ def compute_lots_and_gains(
         lots: list[Lot] = []
         for event in ordered:
             if event.type in _ACQUISITION_TYPES:
-                lots.append(_open_lot(event, account_id, security_id, method))
+                lot = _open_lot(event, account_id, security_id, method)
+                lots.append(lot)
+                if pool is not None:
+                    pool.units = pool.units + lot.original_quantity
+                    pool.cost = pool.cost + lot.cost_basis_total
             elif event.type in _DISPOSAL_TYPES:
                 all_gains.extend(
                     _consume(
-                        event, account_id, security_id, lots, method, selections_for
+                        event,
+                        account_id,
+                        security_id,
+                        lots,
+                        method,
+                        selections_for,
+                        pool,
                     )
                 )
-            # Any other type is intentionally skipped (Tasks 11-12).
+            # Any other type is intentionally skipped (Task 12).
+        if pool is not None:
+            _reconcile_average_lots(lots, pool)
         all_lots.extend(lots)
 
     return all_lots, all_gains
