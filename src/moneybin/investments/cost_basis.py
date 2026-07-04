@@ -10,6 +10,12 @@ running per-group pool (two scalars) and draws each disposal's basis from the
 pooled average rather than from the consumed lot — the other three methods take
 the lot's own basis.
 
+Corporate actions (Task 12) are typed ledger events applied in place at their
+trade-date position, never rewrites of history: ``split`` scales open-lot
+quantities by a multiplier while preserving total basis, ``return_of_capital``
+reduces open-lot basis pro-rata (clamped at zero) without a disposal, and
+``reinvest`` opens a lot exactly like a buy.
+
 Correctness over speed: all monetary outputs quantize to two places with
 ``ROUND_HALF_UP`` and disposal proceeds are penny-conserved (the per-slice
 rounding residual is assigned to the last slice) so the row sums reconcile to a
@@ -28,11 +34,14 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 
-# Event types this task handles. Everything else (reinvest, split,
-# return_of_capital, cash-only types) is skipped without error — later tasks
-# add them. Kept as local literals: there is no canonical taxonomy constant yet
-# and the service boundary (Task 14) validates the vocabulary.
-_ACQUISITION_TYPES = frozenset({"buy", "transfer_in"})
+# Event types the engine models. Acquisitions open lots (``reinvest`` is a buy
+# leg that records ``acquisition_type='reinvest'``); disposals consume them; the
+# corporate actions ``split`` and ``return_of_capital`` adjust open lots in place
+# in the group loop (neither is a disposal, neither realizes a gain). Cash-only
+# types (deposit/dividend/fee/...) and any type the engine does not model are
+# skipped without error. Kept as local literals: there is no canonical taxonomy
+# constant yet and the service boundary (Task 14) validates the vocabulary.
+_ACQUISITION_TYPES = frozenset({"buy", "transfer_in", "reinvest"})
 _DISPOSAL_TYPES = frozenset({"sell", "transfer_out"})
 
 _CENTS = Decimal("0.01")
@@ -172,7 +181,11 @@ def _open_lot(
     security_id: str,
     method: str,
 ) -> Lot:
-    """Open a lot from an acquisition event (buy or transfer_in)."""
+    """Open a lot from an acquisition event (buy, transfer_in, or reinvest).
+
+    ``acquisition_type`` records the event type verbatim, so a ``reinvest`` lot
+    is distinguishable from a plain ``buy`` while behaving identically otherwise.
+    """
     if event.type == "transfer_in":
         # Holding period transfers with the shares: keep the original date.
         acquisition_date = event.original_acquisition_date or event.trade_date
@@ -520,6 +533,98 @@ def _reconcile_average_lots(lots: list[Lot], pool: _Pool) -> None:
     open_lots[-1].cost_basis_remaining = _money(pool.cost - allocated)
 
 
+def _apply_split(
+    lots: list[Lot], multiplier: Decimal | None, pool: _Pool | None
+) -> None:
+    """Apply a stock split to every open lot of the group's security.
+
+    Encoding (Decision D6): a ``split`` event carries the split MULTIPLIER ``M``
+    in its ``quantity`` field — new shares per old share, e.g. ``2`` for 2:1,
+    ``Decimal("1.5")`` for 3:2, ``Decimal("0.5")`` for a 1:2 reverse split;
+    ``price``/``amount``/``fees`` are unused. This is a deliberate, cleaner
+    simplification of THE SPEC's under-specified split note (which frames the
+    ratio as ``new_units_added``); the plan authorized it and Task 18 updates the
+    spec to match — do not "restore" the ratio-as-added-units reading here.
+
+    A split is NOT a disposal and produces no realized gain. Each OPEN lot
+    (``remaining_quantity > 0``) has its ``original_quantity`` and
+    ``remaining_quantity`` scaled by ``M`` at FULL Decimal precision (never
+    quantized) while ``cost_basis_total``/``cost_basis_remaining`` are UNCHANGED —
+    total basis is preserved and per-unit basis divides by ``M``. Under average
+    cost the pool's ``units`` scale by ``M`` (its ``cost`` is unchanged), so the
+    pooled average per unit divides by ``M`` too. Closed lots (already fully
+    consumed pre-split) are left untouched as historical record.
+    """
+    if multiplier is None:
+        return
+    for lot in lots:
+        if lot.remaining_quantity > 0:
+            lot.original_quantity = lot.original_quantity * multiplier
+            lot.remaining_quantity = lot.remaining_quantity * multiplier
+    if pool is not None:
+        pool.units = pool.units * multiplier
+
+
+def _apply_return_of_capital(
+    lots: list[Lot], roc_amount: Decimal, pool: _Pool | None
+) -> None:
+    """Reduce cost basis for a return-of-capital distribution (no disposal).
+
+    A ``return_of_capital`` event carries the cash returned in ``amount``
+    (``abs`` = the distribution); ``roc_amount`` is that magnitude. RoC is NOT a
+    disposal and realizes no gain — it only lowers basis.
+
+    Lot-based methods (fifo/hifo/specific): the distribution is spread across the
+    security's OPEN lots pro-rata by remaining quantity, each lot's
+    ``cost_basis_remaining`` reduced and clamped at zero (basis never goes
+    negative). Every open lot except the last takes ``min(its quantity-share, its
+    own basis)``; the last open lot absorbs the residual (``target`` minus what
+    the others took), itself clamped at its own basis. When no lot clamps this is
+    penny-conserved and the total reduction equals ``min(roc, Σ basis)``.
+
+    v1 clamp-overflow is DROPPED (a known simplification, not a target behavior —
+    revisit in a follow-up): when a lot's quantity-share exceeds its own basis,
+    the overflow spills onto the last open lot; if the last lot cannot absorb it —
+    or the clamping lot IS the last lot — that overflow is silently dropped, and
+    likewise any aggregate RoC beyond ``Σ basis`` is dropped. This can happen even
+    when the aggregate RoC is within total basis (uneven per-unit basis across
+    lots). In every drop case the position retains MORE basis than economically
+    correct, so a later sale UNDER-reports realized gain — which is
+    taxpayer-favorable and IRS-UNfavorable (audit-exposing), NOT conservative.
+    Worked example pinned in ``test_return_of_capital_clamp_overflow_is_dropped_v1``:
+    lots (10u/$200) + (100u/$10), RoC $100 with aggregate ($100) ≤ Σ basis ($210)
+    leaves $190.91 + $0.00 (only $19.09 reduced; ~$80.91 dropped) where $110 is
+    correct. The proper fix redistributes clamp-overflow so the total reduction
+    always equals ``min(roc, Σ basis)``.
+
+    Average cost: reduce the pool's ``cost`` by ``min(roc, pool.cost)`` (clamped
+    at zero); ``_reconcile_average_lots`` spreads the reduced pool across the open
+    lots at group end. Lots are not touched directly here.
+    """
+    if pool is not None:
+        pool.cost = pool.cost - min(roc_amount, pool.cost)
+        return
+    open_lots = [lot for lot in lots if lot.remaining_quantity > 0]
+    if not open_lots:
+        return
+    total_quantity = sum((lot.remaining_quantity for lot in open_lots), Decimal("0"))
+    total_basis = sum((lot.cost_basis_remaining for lot in open_lots), _ZERO_MONEY)
+    # Aggregate clamp: never reduce more than the position holds in basis.
+    target = min(roc_amount, total_basis)
+    allocated = _ZERO_MONEY
+    for lot in open_lots[:-1]:
+        share = min(
+            _money(target * lot.remaining_quantity / total_quantity),
+            lot.cost_basis_remaining,
+        )
+        lot.cost_basis_remaining = _money(lot.cost_basis_remaining - share)
+        allocated += share
+    # Residual to the last open lot conserves pennies; still clamped at its basis.
+    last = open_lots[-1]
+    last_share = min(target - allocated, last.cost_basis_remaining)
+    last.cost_basis_remaining = _money(last.cost_basis_remaining - last_share)
+
+
 def compute_lots_and_gains(
     events: Sequence[LedgerEvent],
     *,
@@ -530,10 +635,12 @@ def compute_lots_and_gains(
 
     Events are processed independently per ``(account_id, security_id)`` group,
     sorted within a group by ``(trade_date, investment_transaction_id)``.
-    Acquisitions (``buy``, ``transfer_in``) open lots; disposals (``sell``,
-    ``transfer_out``) consume them per the elected method. Cash-only events and
-    any event with ``security_id is None`` are ignored, as are types this task
-    does not yet handle (they are skipped, never raised on).
+    Acquisitions (``buy``, ``transfer_in``, ``reinvest``) open lots; disposals
+    (``sell``, ``transfer_out``) consume them per the elected method; the
+    corporate actions ``split`` and ``return_of_capital`` adjust the group's open
+    lots in place without realizing a gain. Cash-only events and any event with
+    ``security_id is None`` are ignored, as is any type the engine does not model
+    (skipped, never raised on).
 
     Args:
         events: The ledger events to process. Order is not assumed; the engine
@@ -587,7 +694,11 @@ def compute_lots_and_gains(
                         pool,
                     )
                 )
-            # Any other type is intentionally skipped (Task 12).
+            elif event.type == "split":
+                _apply_split(lots, event.quantity, pool)
+            elif event.type == "return_of_capital":
+                _apply_return_of_capital(lots, _money(_abs_or_zero(event.amount)), pool)
+            # Any other (unknown / out-of-scope) type is intentionally skipped.
         if pool is not None:
             _reconcile_average_lots(lots, pool)
         all_lots.extend(lots)

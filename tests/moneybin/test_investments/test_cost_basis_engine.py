@@ -339,7 +339,9 @@ def test_cash_only_and_null_security_events_are_ignored() -> None:
 
 
 def test_unhandled_type_is_skipped_without_crashing() -> None:
-    # reinvest / split belong to Tasks 11-12; the engine must not crash on them.
+    # split / return_of_capital / reinvest are modeled as of Task 12; any type
+    # the engine still doesn't model (e.g. a security-bearing 'fee' or 'other')
+    # must be skipped, never raised on, and must not touch open lots.
     events = [
         _event(
             "b1",
@@ -349,21 +351,22 @@ def test_unhandled_type_is_skipped_without_crashing() -> None:
             amount=D("-1000.00"),
         ),
         _event(
-            "rc",
-            event_type="return_of_capital",
+            "fee1",
+            event_type="fee",
             trade_date=date(2024, 2, 1),
-            amount=D("-50.00"),
+            amount=D("-9.99"),
         ),
         _event(
-            "sp",
-            event_type="split",
+            "ot1",
+            event_type="other",
             trade_date=date(2024, 3, 1),
-            quantity=D("10"),
+            quantity=D("1"),
         ),
     ]
     lots, gains = _run(events)
     assert len(lots) == 1  # only the buy opened a lot
     assert lots[0].remaining_quantity == D("10")
+    assert lots[0].cost_basis_remaining == D("1000.00")
     assert gains == []
 
 
@@ -1541,3 +1544,487 @@ def test_average_reconciliation_residual_lands_on_last_open_lot() -> None:
     assert by_src["b1"].cost_basis_remaining == D("13.33")  # 0.4 * avg, rounded
     assert by_src["b2"].cost_basis_remaining == D("23.33")  # 0.7 * avg, rounded
     assert by_src["b3"].cost_basis_remaining == D("63.34")  # 0.7 rounded + residual
+
+
+# ---------------------------------------------------------------------------
+# Corporate actions: split, return_of_capital, reinvest (Task 12).
+# split/return_of_capital adjust open lots in place (never a disposal, never a
+# realized gain); reinvest opens a lot exactly like a buy but records
+# acquisition_type='reinvest'.
+# ---------------------------------------------------------------------------
+
+
+def test_split_two_for_one_doubles_quantity_preserves_total_basis() -> None:
+    # 2:1 split — the split row carries the multiplier M=2 in its quantity.
+    # 10 units @ $1000 basis => 20 units @ $1000 basis ($50/unit): total basis
+    # is preserved exactly, only per-unit basis changes.
+    events = [
+        _event(
+            "b1",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("10"),
+            amount=D("-1000.00"),
+        ),
+        _event(
+            "sp",
+            event_type="split",
+            trade_date=date(2024, 6, 1),
+            quantity=D("2"),
+        ),
+    ]
+    lots, gains = _run(events)
+
+    assert gains == []  # a split realizes nothing
+    assert len(lots) == 1
+    lot = lots[0]
+    assert lot.original_quantity == D("20")
+    assert lot.remaining_quantity == D("20")
+    # Total basis preserved (independently: the buy's |amount|); per-unit halves.
+    assert lot.cost_basis_total == D("1000.00")
+    assert lot.cost_basis_remaining == D("1000.00")
+    assert lot.cost_basis_remaining / lot.remaining_quantity == D("50")
+
+
+def test_split_three_for_two_scales_quantity_preserving_basis() -> None:
+    # 3:2 split — multiplier M=1.5. 10 units => 15 units, basis unchanged.
+    events = [
+        _event(
+            "b1",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("10"),
+            amount=D("-1000.00"),
+        ),
+        _event(
+            "sp",
+            event_type="split",
+            trade_date=date(2024, 6, 1),
+            quantity=D("1.5"),
+        ),
+    ]
+    lots, _gains = _run(events)
+    lot = lots[0]
+    assert lot.original_quantity == D("15")
+    assert lot.remaining_quantity == D("15")
+    assert lot.cost_basis_total == D("1000.00")
+    assert lot.cost_basis_remaining == D("1000.00")
+
+
+def test_reverse_split_one_for_two_halves_quantity_preserving_basis() -> None:
+    # 1:2 reverse split — multiplier M=0.5. 10 units => 5 units, basis unchanged
+    # (per-unit basis doubles to $200).
+    events = [
+        _event(
+            "b1",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("10"),
+            amount=D("-1000.00"),
+        ),
+        _event(
+            "sp",
+            event_type="split",
+            trade_date=date(2024, 6, 1),
+            quantity=D("0.5"),
+        ),
+    ]
+    lots, _gains = _run(events)
+    lot = lots[0]
+    assert lot.original_quantity == D("5")
+    assert lot.remaining_quantity == D("5")
+    assert lot.cost_basis_total == D("1000.00")
+    assert lot.cost_basis_remaining == D("1000.00")
+    assert lot.cost_basis_remaining / lot.remaining_quantity == D("200")
+
+
+def test_split_then_sell_uses_post_split_per_unit_basis() -> None:
+    # A 2:1 split turns 10 units @ $1000 into 20 units @ $50/unit; selling 5
+    # realizes 5 * $50 = $250 basis (post-split), leaving 15 units @ $750.
+    events = [
+        _event(
+            "b1",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("10"),
+            amount=D("-1000.00"),
+        ),
+        _event(
+            "sp",
+            event_type="split",
+            trade_date=date(2024, 6, 1),
+            quantity=D("2"),
+        ),
+        _event(
+            "s1",
+            event_type="sell",
+            trade_date=date(2024, 7, 1),
+            quantity=D("-5"),
+            amount=D("400.00"),
+        ),
+    ]
+    lots, gains = _run(events)
+
+    assert len(gains) == 1
+    g = gains[0]
+    assert g.quantity == D("5")
+    assert g.cost_basis == D("250.00")  # 5 * post-split $50/unit
+    assert g.proceeds == D("400.00")
+    assert g.gain_loss == D("150.00")
+
+    lot = lots[0]
+    assert lot.remaining_quantity == D("15")
+    assert lot.cost_basis_remaining == D("750.00")
+
+
+def test_split_under_average_scales_pool_units_leaves_cost() -> None:
+    # Pool 10 units / $100 (avg $10). A 2:1 split doubles pooled units to 20
+    # while pooled cost stays $100, so the average halves to $5/unit — the next
+    # disposal draws basis at the halved average.
+    events = [
+        _event(
+            "b1",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("10"),
+            amount=D("-100.00"),
+        ),
+        _event(
+            "sp",
+            event_type="split",
+            trade_date=date(2024, 6, 1),
+            quantity=D("2"),
+        ),
+        _event(
+            "s1",
+            event_type="sell",
+            trade_date=date(2024, 7, 1),
+            quantity=D("-5"),
+            amount=D("50.00"),
+        ),
+    ]
+    lots, gains = _run(events, method_for=_average)
+
+    assert len(gains) == 1
+    g = gains[0]
+    assert g.cost_basis == D("25.00")  # 5 * halved avg $5, not pre-split $10
+    assert g.cost_basis_method == "average"
+
+    lot = lots[0]
+    assert lot.remaining_quantity == D("15")  # 20 post-split - 5 sold
+    assert lot.cost_basis_remaining == D("75.00")  # $100 pooled - $25 realized
+
+
+def test_return_of_capital_reduces_open_lots_prorata_by_quantity() -> None:
+    # Two open lots (10 and 30 units); a $40 RoC spreads pro-rata by remaining
+    # quantity: $10 to the 10-unit lot, $30 to the 30-unit lot. Neither clamps.
+    events = [
+        _event(
+            "b1",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("10"),
+            amount=D("-100.00"),
+        ),
+        _event(
+            "b2",
+            event_type="buy",
+            trade_date=date(2024, 2, 1),
+            quantity=D("30"),
+            amount=D("-300.00"),
+        ),
+        _event(
+            "rc",
+            event_type="return_of_capital",
+            trade_date=date(2024, 3, 1),
+            amount=D("-40.00"),
+        ),
+    ]
+    lots, gains = _run(events)
+
+    assert gains == []  # RoC is not a disposal
+    by_src = {lot.source_transaction_id: lot for lot in lots}
+    assert by_src["b1"].cost_basis_remaining == D("90.00")  # 100 - 40*10/40
+    assert by_src["b2"].cost_basis_remaining == D("270.00")  # 300 - 40*30/40
+    # Quantities are untouched by RoC.
+    assert by_src["b1"].remaining_quantity == D("10")
+    assert by_src["b2"].remaining_quantity == D("30")
+    # Total reduction equals the distribution exactly (penny-conserved).
+    total = by_src["b1"].cost_basis_remaining + by_src["b2"].cost_basis_remaining
+    assert total == D("360.00")  # 400 contributed - 40 returned
+
+
+def test_return_of_capital_exceeding_basis_clamps_to_zero_drops_excess() -> None:
+    # Total open basis is $300; a $500 RoC drives every lot to zero basis and
+    # the $200 excess is dropped — v1 does NOT realize it as a gain.
+    events = [
+        _event(
+            "b1",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("10"),
+            amount=D("-100.00"),
+        ),
+        _event(
+            "b2",
+            event_type="buy",
+            trade_date=date(2024, 2, 1),
+            quantity=D("10"),
+            amount=D("-200.00"),
+        ),
+        _event(
+            "rc",
+            event_type="return_of_capital",
+            trade_date=date(2024, 3, 1),
+            amount=D("-500.00"),
+        ),
+    ]
+    lots, gains = _run(events)
+
+    assert gains == []  # excess is dropped, never a realized gain in v1
+    by_src = {lot.source_transaction_id: lot for lot in lots}
+    assert by_src["b1"].cost_basis_remaining == D("0.00")
+    assert by_src["b2"].cost_basis_remaining == D("0.00")
+    # Quantities unchanged: RoC is not a disposal.
+    assert by_src["b1"].remaining_quantity == D("10")
+    assert by_src["b2"].remaining_quantity == D("10")
+
+
+def test_return_of_capital_clamp_overflow_is_dropped_v1() -> None:
+    # PINS a known v1 quirk (NOT a target behavior): with uneven per-unit basis a
+    # single lot's quantity-share can exceed its own basis even when the aggregate
+    # RoC is within total basis, and the clamp-overflow is DROPPED rather than
+    # redistributed. Lot A (10u/$200, $20/unit) + lot B (100u/$10, $0.10/unit, the
+    # last open lot). RoC $100, aggregate ($100) <= total basis ($210).
+    # Pro-rata-by-quantity would hand B ~$90.91, but B clamps at its $10 basis and
+    # residual-to-last only redistributes rounding pennies, so ~$80.91 of
+    # basis-reduction is dropped: the position keeps $190.91 when $110 is
+    # economically correct. On eventual sale this UNDER-reports realized gain
+    # (taxpayer-favorable / IRS-unfavorable) — a conscious, locked v1 contract.
+    events = [
+        _event(
+            "b1",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("10"),
+            amount=D("-200.00"),
+        ),
+        _event(
+            "b2",
+            event_type="buy",
+            trade_date=date(2024, 2, 1),
+            quantity=D("100"),
+            amount=D("-10.00"),
+        ),
+        _event(
+            "rc",
+            event_type="return_of_capital",
+            trade_date=date(2024, 3, 1),
+            amount=D("-100.00"),
+        ),
+    ]
+    lots, gains = _run(events)
+
+    assert gains == []  # RoC is not a disposal
+    by_src = {lot.source_transaction_id: lot for lot in lots}
+    # A (not last) takes only its tiny quantity-share; B (last) clamps at $10.
+    assert by_src["b1"].cost_basis_remaining == D("190.91")  # 200 - _money(100*10/110)
+    assert by_src["b2"].cost_basis_remaining == D("0.00")  # clamped at its $10 basis
+    # Quantities untouched (RoC is not a disposal).
+    assert by_src["b1"].remaining_quantity == D("10")
+    assert by_src["b2"].remaining_quantity == D("100")
+
+    # The dropped clamp-overflow: total reduction ($19.09) is far below
+    # min(RoC $100, Sigma basis $210) = $100, proving overflow is NOT
+    # redistributed in v1 (a full fix would reduce the full $100).
+    open_basis = by_src["b1"].cost_basis_remaining + by_src["b2"].cost_basis_remaining
+    assert open_basis == D("190.91")
+    total_reduction = D("210.00") - open_basis
+    assert total_reduction == D("19.09")
+    assert total_reduction < D("100.00")  # min(RoC, Sigma basis); overflow dropped
+
+
+def test_return_of_capital_under_average_reduces_pooled_cost() -> None:
+    # Pool 10 units / $100 (avg $10). A $50 RoC cuts pooled cost to $50 (avg
+    # $5); the next disposal's basis reflects the reduced average.
+    events = [
+        _event(
+            "b1",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("10"),
+            amount=D("-100.00"),
+        ),
+        _event(
+            "rc",
+            event_type="return_of_capital",
+            trade_date=date(2024, 2, 1),
+            amount=D("-50.00"),
+        ),
+        _event(
+            "s1",
+            event_type="sell",
+            trade_date=date(2024, 3, 1),
+            quantity=D("-5"),
+            amount=D("60.00"),
+        ),
+    ]
+    lots, gains = _run(events, method_for=_average)
+
+    assert len(gains) == 1
+    assert gains[0].cost_basis == D("25.00")  # 5 * reduced avg $5
+    lot = lots[0]
+    assert lot.remaining_quantity == D("5")
+    assert lot.cost_basis_remaining == D("25.00")  # $50 pooled - $25 realized
+
+
+def test_reinvest_opens_lot_with_reinvest_acquisition_type() -> None:
+    # A reinvest is a buy leg whose acquisition_type records the funding source;
+    # it opens a lot dated at the trade date with basis = |amount|.
+    events = [
+        _event(
+            "ri",
+            event_type="reinvest",
+            trade_date=date(2024, 1, 1),
+            quantity=D("5"),
+            amount=D("-75.00"),
+        ),
+    ]
+    lots, gains = _run(events)
+
+    assert gains == []
+    assert len(lots) == 1
+    lot = lots[0]
+    assert lot.acquisition_type == "reinvest"
+    assert lot.acquisition_date == date(2024, 1, 1)
+    assert lot.original_quantity == D("5")
+    assert lot.remaining_quantity == D("5")
+    assert lot.cost_basis_total == D("75.00")
+    assert lot.cost_basis_remaining == D("75.00")
+
+
+def test_reinvest_under_average_adds_to_the_pool() -> None:
+    # Buy 10 @ $100 then reinvest 10 @ $300 => pool 20 units / $400 (avg $20).
+    # A later sell of 5 draws 5 * $20 = $100 — the reinvest must have entered
+    # the pool, not been skipped as an unhandled type.
+    events = [
+        _event(
+            "b1",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("10"),
+            amount=D("-100.00"),
+        ),
+        _event(
+            "ri",
+            event_type="reinvest",
+            trade_date=date(2024, 2, 1),
+            quantity=D("10"),
+            amount=D("-300.00"),
+        ),
+        _event(
+            "s1",
+            event_type="sell",
+            trade_date=date(2024, 3, 1),
+            quantity=D("-5"),
+            amount=D("150.00"),
+        ),
+    ]
+    _lots, gains = _run(events, method_for=_average)
+
+    assert len(gains) == 1
+    assert gains[0].cost_basis == D("100.00")  # 5 * avg $20 (reinvest pooled)
+
+
+def test_reinvest_then_sell_consumes_the_reinvested_lot() -> None:
+    # FIFO across a buy (10 @ $100) and a reinvest (5 @ $75). Selling 12 fully
+    # consumes the buy and dips 2 units into the reinvested lot.
+    events = [
+        _event(
+            "b1",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("10"),
+            amount=D("-100.00"),
+        ),
+        _event(
+            "ri",
+            event_type="reinvest",
+            trade_date=date(2024, 2, 1),
+            quantity=D("5"),
+            amount=D("-75.00"),
+        ),
+        _event(
+            "s1",
+            event_type="sell",
+            trade_date=date(2024, 3, 1),
+            quantity=D("-12"),
+            amount=D("600.00"),
+        ),
+    ]
+    lots, gains = _run(events)
+
+    by_src = {lot.source_transaction_id: lot for lot in lots}
+    ri = by_src["ri"]
+    assert ri.acquisition_type == "reinvest"
+    assert ri.remaining_quantity == D("3")  # 5 - 2 consumed
+    assert ri.cost_basis_remaining == D("45.00")  # $75 - _money(75*2/5)=$30
+
+    assert len(gains) == 2
+    by_lot = {g.lot_id: g for g in gains}
+    ri_leg = by_lot[ri.lot_id]
+    assert ri_leg.quantity == D("2")
+    assert ri_leg.cost_basis == D("30.00")  # _money(75 * 2/5)
+    # Proceeds penny-conserved across both legs.
+    assert sum((g.proceeds for g in gains), D("0")) == D("600.00")
+
+
+def test_oversold_under_hifo_generalizes_zero_basis_remainder() -> None:
+    # Oversold generalizes past FIFO: two lots ($200 then $100 in HIFO order)
+    # are fully consumed and the 5-unit remainder realizes at zero basis with
+    # basis_incomplete=True. The engine never raises.
+    events = [
+        _event(
+            "b1",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("10"),
+            amount=D("-100.00"),
+        ),
+        _event(
+            "b2",
+            event_type="buy",
+            trade_date=date(2024, 2, 1),
+            quantity=D("10"),
+            amount=D("-200.00"),
+        ),
+        _event(
+            "s1",
+            event_type="sell",
+            trade_date=date(2024, 3, 1),
+            quantity=D("-25"),  # 5 more than tracked
+            amount=D("1000.00"),
+        ),
+    ]
+    lots, gains = _run(events, method_for=_hifo)
+
+    assert len(gains) == 3
+    matched = [g for g in gains if not g.basis_incomplete]
+    unmatched = [g for g in gains if g.basis_incomplete]
+    assert len(matched) == 2
+    assert len(unmatched) == 1
+
+    u = unmatched[0]
+    assert u.quantity == D("5")
+    assert u.cost_basis == D("0.00")
+    assert u.term == "short"  # acquisition_date == disposal_date => 0 days
+    assert u.cost_basis_method == "hifo"
+
+    # Matched legs carry their real HIFO-ordered bases ($200 then $100).
+    matched_basis = sum((g.cost_basis for g in matched), D("0"))
+    assert matched_basis == D("300.00")
+
+    # Proceeds conserved across matched + unmatched; both real lots drained.
+    assert sum((g.proceeds for g in gains), D("0")) == D("1000.00")
+    for lot in lots:
+        assert lot.remaining_quantity == D("0")
