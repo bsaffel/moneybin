@@ -317,6 +317,17 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   times per transform) are now suppressed within the SQLMesh boundary — neither
   is actionable signal for users or agents driving the CLI/MCP.
 
+### Security
+- **The unauthenticated HTTP MCP transport is now gated behind `--insecure`.**
+  `moneybin mcp serve` refuses to start any non-stdio transport (`sse`,
+  `streamable-http`) unless `--insecure` is passed, exiting with a usage error
+  that names the risk plainly. MoneyBin has no HTTP authentication yet, so a
+  network transport would expose all financial data to anyone who can reach the
+  port. With `--insecure` the server starts but prints a loud startup warning;
+  stdio — the supported install path — is unaffected. Install docs and CLI help
+  no longer present the unauthenticated HTTP path as a normal setup route.
+  (#287)
+
 ### Added
 - **PDF import (seed path).** Native-text PDFs import via `moneybin import <file.pdf>` and the inbox; their tables land as a queryable JSON seed (`raw.pdf_seeds`) with an auto-generated typed view (`raw.pdf_<alias>`), reversible like any import. Mapping PDFs to transactions/core is a later phase.
 - **Report auto-generation framework — one runner generates every surface.**

@@ -790,7 +790,7 @@ wait-time distribution observability theater):
 
 - No read-side lock — reads must remain unblocked.
 - No write queue / serializer — DuckDB writer semantics unchanged.
-- No Treeline-style read serialization — different problem.
+- No whole-file read serialization (as some local-first apps do) — different problem.
 - No singleton `Database` cache — per-call connections per ADR-010.
 - No writer-priority arbitration / starvation prevention — the 10 s
   ceiling is the safety net at single-user scale.
