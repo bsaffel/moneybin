@@ -66,12 +66,12 @@ from moneybin.services.categorization._shared import (
 from moneybin.services.categorization.applier import MatchApplier
 from moneybin.services.categorization.matcher import (
     CategorizationMatcher,
+    UncategorizedRow,
     match_merchant_with_name,
 )
 from moneybin.tables import (
     BRIDGE_CATEGORY_SOURCE_MAP,
     CATEGORIES,
-    FCT_TRANSACTIONS,
     INT_TRANSACTIONS_MERGED,
     TRANSACTION_CATEGORIES,
 )
@@ -246,7 +246,6 @@ class CategorizationOrchestrator:
 
         # Phase 2 — batch-fetch txn rows (description + amount + account_id)
         txn_ids = [item.transaction_id for item in items]
-        placeholders = ",".join(["?"] * len(txn_ids))
         # Lazy import keeps the module-level dependency one-way
         # (auto_rule_service → categorization).
         from moneybin.services.auto_rule_service import (  # noqa: PLC0415 — deferred to avoid circular import
@@ -257,45 +256,34 @@ class CategorizationOrchestrator:
 
         txn_rows: dict[str, TxnRow] = {}
         # merchant_entity_id lives in prep.int_transactions__merged (Task 5
-        # deliberately stops it at prep); LEFT JOIN on the gold transaction_id
-        # so rung-0 entity resolution can run before name matching. The fallback
-        # drops the prep join (NULL entity id) so unit/pre-transform DBs — where
-        # core.fct_transactions exists without the prep layer — still load rows.
-        with_entity = f"""
-            SELECT t.transaction_id, t.description, t.amount, t.account_id,
-                   t.memo, t.source_type, t.merchant_name, m.merchant_entity_id,
-                   m.merchant_entity_source_type
-            FROM {FCT_TRANSACTIONS.full_name} AS t
-            LEFT JOIN {INT_TRANSACTIONS_MERGED.full_name} AS m
-                ON t.transaction_id = m.transaction_id
-            WHERE t.transaction_id IN ({placeholders})
-        """  # noqa: S608 — table names are compile-time TableRef constants; values are parameterized
-        without_entity = f"""
-            SELECT t.transaction_id, t.description, t.amount, t.account_id,
-                   t.memo, t.source_type, t.merchant_name,
-                   NULL AS merchant_entity_id, NULL AS merchant_entity_source_type
-            FROM {FCT_TRANSACTIONS.full_name} AS t
-            WHERE t.transaction_id IN ({placeholders})
-        """  # noqa: S608 — table names are compile-time TableRef constants; values are parameterized
+        # deliberately stops it at prep); fetch_rows_for_ids LEFT JOINs on the
+        # gold transaction_id (falling back to a NULL entity id when the prep
+        # layer or its entity columns are absent) so rung-0 entity resolution
+        # can run before name matching.
         try:
-            try:
-                rows = self._db.execute(with_entity, txn_ids).fetchall()
-            except (duckdb.CatalogException, duckdb.BinderException):
-                rows = self._db.execute(without_entity, txn_ids).fetchall()
+            rows = self._matcher.fetch_rows_for_ids(txn_ids)
             txn_rows = {
-                row[0]: TxnRow(
-                    description=row[1],
-                    amount=float(row[2]) if row[2] is not None else None,
-                    account_id=str(row[3]) if row[3] is not None else None,
-                    memo=row[4],
-                    source_type=str(row[5]) if row[5] is not None else None,
-                    merchant_name=str(row[6]) if row[6] is not None else None,
-                    merchant_entity_id=str(row[7]) if row[7] is not None else None,
-                    merchant_entity_source_type=str(row[8])
-                    if row[8] is not None
+                row.transaction_id: TxnRow(
+                    description=row.description,
+                    amount=float(row.amount) if row.amount is not None else None,
+                    account_id=str(row.account_id)
+                    if row.account_id is not None
+                    else None,
+                    memo=row.memo,
+                    source_type=str(row.source_type)
+                    if row.source_type is not None
+                    else None,
+                    merchant_name=str(row.merchant_name)
+                    if row.merchant_name is not None
+                    else None,
+                    merchant_entity_id=str(row.merchant_entity_id)
+                    if row.merchant_entity_id is not None
+                    else None,
+                    merchant_entity_source_type=str(row.merchant_entity_source_type)
+                    if row.merchant_entity_source_type is not None
                     else None,
                 )
-                for row in rows
+                for row in (rows or [])
             }
         except Exception:  # noqa: BLE001 — best-effort; degrades to no merchant resolution
             logger.warning("Could not batch-fetch transaction rows", exc_info=True)
@@ -601,7 +589,7 @@ class CategorizationOrchestrator:
         return res.merchant_id, res.created
 
     def apply_rules(
-        self, *, uncategorized: list[tuple[Any, ...]] | None = None
+        self, *, uncategorized: list[UncategorizedRow] | None = None
     ) -> set[str]:
         """Apply active categorization rules to uncategorized transactions.
 
@@ -619,9 +607,9 @@ class CategorizationOrchestrator:
         ``uncategorized`` lets :meth:`categorize_pending` share a single scan
         with :meth:`apply_merchant_categories`. Rows come from
         :meth:`CategorizationMatcher.fetch_uncategorized_rows`; this method uses
-        only the leading ``(transaction_id, description, amount, account_id,
-        memo)`` columns and ignores the trailing entity-resolution columns.
-        When omitted, the rows are fetched.
+        only ``transaction_id``, ``description``, ``amount``, ``account_id``,
+        and ``memo`` and ignores the trailing entity-resolution fields. When
+        omitted, the rows are fetched.
 
         Returns:
             Set of ``transaction_id``s that landed a successful write. Count
@@ -643,13 +631,13 @@ class CategorizationOrchestrator:
             return set()
 
         applied: set[str] = set()
-        for txn_id, description, amount, account_id, memo, *_rest in uncategorized:
+        for row in uncategorized:
             match = CategorizationMatcher.match_first_rule(
                 rules,
-                str(description) if description else "",
-                float(amount) if amount is not None else None,
-                str(account_id) if account_id is not None else None,
-                str(memo) if memo else None,
+                str(row.description) if row.description else "",
+                float(row.amount) if row.amount is not None else None,
+                str(row.account_id) if row.account_id is not None else None,
+                str(row.memo) if row.memo else None,
             )
             if match is None:
                 continue
@@ -658,7 +646,7 @@ class CategorizationOrchestrator:
                 "auto_rule" if created_by == "auto_rule" else "rule"
             )
             outcome = self._applier.write_categorization(
-                transaction_id=txn_id,
+                transaction_id=row.transaction_id,
                 category=category,
                 subcategory=subcategory,
                 categorized_by=categorized_by,
@@ -666,7 +654,7 @@ class CategorizationOrchestrator:
                 confidence=1.0,
             )
             if outcome.written:
-                applied.add(txn_id)
+                applied.add(row.transaction_id)
 
         if applied:
             logger.info(f"Rule engine categorized {len(applied)} transactions")
@@ -675,7 +663,7 @@ class CategorizationOrchestrator:
     def apply_merchant_categories(
         self,
         *,
-        uncategorized: list[tuple[Any, ...]] | None = None,
+        uncategorized: list[UncategorizedRow] | None = None,
         skip_txn_ids: set[str] | None = None,
     ) -> int:
         """Apply merchant-based categories to uncategorized transactions.
@@ -688,13 +676,13 @@ class CategorizationOrchestrator:
 
         ``uncategorized`` lets :meth:`categorize_pending` share a single scan
         across :meth:`apply_rules` and this method. Rows come from
-        :meth:`CategorizationMatcher.fetch_uncategorized_rows`: the leading
-        ``(transaction_id, description, amount, account_id, memo)`` columns plus
-        trailing ``(merchant_entity_id, source_type, merchant_name,
-        merchant_entity_source_type)`` consulted for rung-0 entity resolution.
-        ``amount``, ``account_id``, and the merge-winner ``source_type`` are
-        ignored here — the resolver keys on ``merchant_entity_source_type`` (the
-        member that issued the entity id). When omitted, the rows are fetched.
+        :meth:`CategorizationMatcher.fetch_uncategorized_rows`: uses
+        ``description`` and ``memo`` for name matching plus ``merchant_entity_id``,
+        ``merchant_name``, and ``merchant_entity_source_type`` for rung-0 entity
+        resolution. ``amount``, ``account_id``, and the merge-winner
+        ``source_type`` are ignored here — the resolver keys on
+        ``merchant_entity_source_type`` (the member that issued the entity id).
+        When omitted, the rows are fetched.
 
         ``skip_txn_ids`` filters rows by transaction_id. :meth:`categorize_pending`
         passes the rule pass's applied set; without that filter the merchant
@@ -744,25 +732,20 @@ class CategorizationOrchestrator:
         }
 
         categorized_count = 0
-        for (
-            txn_id,
-            description,
-            _amount,
-            _account_id,
-            memo,
-            merchant_entity_id,
-            _source_type,
-            merchant_name,
-            merchant_entity_source_type,
-        ) in uncategorized:
+        for row in uncategorized:
+            txn_id = row.transaction_id
             # Spec Decision 3 rung 2: match the provider merchant_name too, not just
             # description/memo — otherwise a clean merchant_name with a blank/noisy
             # description mints a duplicate (rung 4) instead of auto-binding (rung 2).
             merchant = match_merchant_with_name(
                 merchants,
-                description=str(description) if description is not None else None,
-                memo=str(memo) if memo is not None else None,
-                merchant_name=str(merchant_name) if merchant_name is not None else None,
+                description=str(row.description)
+                if row.description is not None
+                else None,
+                memo=str(row.memo) if row.memo is not None else None,
+                merchant_name=str(row.merchant_name)
+                if row.merchant_name is not None
+                else None,
             )
             # INVARIANT: the entity mint/bind is a Plaid-asserted identity fact,
             # committed regardless of whether THIS row's categorization write
@@ -780,14 +763,14 @@ class CategorizationOrchestrator:
                 self._applier,
                 rejected=rejected,
                 pending=pending,
-                merchant_entity_id=str(merchant_entity_id)
-                if merchant_entity_id is not None
+                merchant_entity_id=str(row.merchant_entity_id)
+                if row.merchant_entity_id is not None
                 else None,
-                source_type=str(merchant_entity_source_type)
-                if merchant_entity_source_type is not None
+                source_type=str(row.merchant_entity_source_type)
+                if row.merchant_entity_source_type is not None
                 else None,
-                provider_merchant_name=str(merchant_name)
-                if merchant_name is not None
+                provider_merchant_name=str(row.merchant_name)
+                if row.merchant_name is not None
                 else None,
                 name_match=merchant,
                 current_merchant_id=merchant["merchant_id"] if merchant else None,

@@ -528,14 +528,15 @@ class TestFetchUncategorizedRowsFallback:
         rows = CategorizationMatcher(db).fetch_uncategorized_rows()
 
         assert rows is not None, "must return rows, not None"
-        txn_ids = [r[0] for r in rows]
+        txn_ids = [r.transaction_id for r in rows]
         assert "TXNE1" in txn_ids, (
             "entity-bearing row with blank description must be included in "
             "fetch_uncategorized_rows (OR m.merchant_entity_id IS NOT NULL)"
         )
-        # Confirm entity data is projected at position 5.
-        row = next(r for r in rows if r[0] == "TXNE1")
-        assert row[5] == "plaid_ent_123", "merchant_entity_id must be projected"
+        row = next(r for r in rows if r.transaction_id == "TXNE1")
+        assert row.merchant_entity_id == "plaid_ent_123", (
+            "merchant_entity_id must be projected"
+        )
 
     @pytest.mark.unit
     def test_missing_entity_columns_falls_back(self, db: Database) -> None:
@@ -565,11 +566,12 @@ class TestFetchUncategorizedRowsFallback:
         rows = CategorizationMatcher(db).fetch_uncategorized_rows()
 
         assert rows is not None, "must degrade to without_entity, not raise/return None"
-        row = next((r for r in rows if r[0] == "TXNB1"), None)
+        row = next((r for r in rows if r.transaction_id == "TXNB1"), None)
         assert row is not None, "uncategorized TXNB1 must be returned via fallback"
-        # without_entity projects NULL for merchant_entity_id (pos 5) and
-        # merchant_entity_source_type (pos 8).
-        assert row[5] is None and row[8] is None
+        # without_entity projects NULL for merchant_entity_id and merchant_entity_source_type.
+        assert (
+            row.merchant_entity_id is None and row.merchant_entity_source_type is None
+        )
 
 
 # ---------------------------------------------------------------------------
