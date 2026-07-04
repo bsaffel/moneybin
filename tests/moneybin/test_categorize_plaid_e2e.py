@@ -1,13 +1,14 @@
 """End-to-end: raw Plaid PFC data -> staging -> categorize_pending -> core.fct_transactions.
 
 Complements the unit-level ``apply_plaid_categories`` / ``categorize_pending``
-coverage in ``test_categorization_service.py`` (which stubs
-``prep.stg_plaid__transactions`` as a bare 4-column table and seeds one
+coverage in ``test_categorization_service.py`` (which stubs the gold-keyed
+``prep.int_transactions__merged`` with the carried PFC columns and seeds one
 synthetic ``seeds.category_source_map`` row per case) by proving the WHOLE
 chain works against a REAL SQLMesh transform and the REAL curated bridge data
 (``sqlmesh/models/seeds/category_source_map.csv`` + ``categories.csv``):
 
     raw.plaid_transactions -> prep.stg_plaid__transactions (sign-flip view)
+    -> prep.int_transactions__{unioned,matched,merged} (gold id + carried PFC codes)
     -> categorize_pending()'s apply_plaid_categories pass
     -> app.transaction_categories -> core.fct_transactions
 
@@ -176,24 +177,25 @@ def test_plaid_pfc_categorization_end_to_end(db: Database) -> None:
     core.fct_transactions (the read surface CLI/MCP consumers use) so the
     whole chain is proven, not just the write.
 
-    KNOWN FAILURE (found by this test, not yet fixed — see task report):
-    apply_plaid_categories() (src/moneybin/services/categorization/applier.py)
-    reads transaction_id from prep.stg_plaid__transactions — the PRE-MERGE
-    staging view, keyed by the source-native Plaid transaction_id — and writes
-    that native id straight into app.transaction_categories.transaction_id.
-    Every other categorizer path (apply_rules/apply_merchant_categories via
+    Regression proof for the id-space fix (commit 17620165). This test was
+    authored RED: apply_plaid_categories() (in
+    src/moneybin/services/categorization/orchestrator.py) originally read
+    transaction_id from prep.stg_plaid__transactions — the PRE-MERGE staging
+    view, keyed by the source-native Plaid transaction_id — and wrote that
+    native id into app.transaction_categories.transaction_id. But every other
+    categorizer path (apply_rules/apply_merchant_categories via
     CategorizationMatcher.fetch_uncategorized_rows) and core.fct_transactions
     itself key off the GOLD merged transaction_id (a SHA-256 hash minted by
     prep.int_transactions__matched, ALWAYS different from the native id — see
-    _gold_id() above). The result: apply_plaid_categories's write is real
-    (categorize_pending()['plaid'] is nonzero, app.transaction_categories gets
-    a row) but orphaned — core.fct_transactions's
+    _gold_id() above), so the write was real (categorize_pending()['plaid']
+    nonzero) but orphaned: core.fct_transactions's
     ``LEFT JOIN app.transaction_categories ON t.transaction_id = c.transaction_id``
-    never matches it, so category/categorized_by never surface to
-    core.fct_transactions, CLI, or MCP. The positive-case assertions below
-    fail against current code for this reason; the negative-case assertions
-    pass regardless (correctly not-categorizing doesn't depend on which id
-    space is used).
+    never matched it, and the category never surfaced — a silent no-op.
+    The fix carries the PFC codes through unioned→matched→merged and reads the
+    gold-keyed prep.int_transactions__merged, so the positive-case assertions
+    below now pass end-to-end. The negative cases (LOW confidence, unmapped
+    code) stay uncategorized regardless. This test guards against a regression
+    back into the native id space.
     """
     sync_data = _build_sync_data()
     PlaidExtractor(db).load(sync_data, job_id=_JOB_ID)

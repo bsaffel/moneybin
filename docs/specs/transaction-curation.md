@@ -410,7 +410,7 @@ The auto-rule generator continues to learn from user category edits made *to imp
 
 ### Categorization priority hierarchy — unchanged
 
-Existing hierarchy (`user > rule > auto_rule > ml > plaid > ai`) is unchanged. Manual transactions enter the categorization pipeline like any other source — if the user supplied a category at entry time, it's written to `app.transaction_categories` with `categorized_by='user'` (top of the hierarchy). If they didn't, downstream auto-rule / ML / etc. operate normally.
+Existing hierarchy (`user > rule > auto_rule > ml > provider_native > ai`) is unchanged. Manual transactions enter the categorization pipeline like any other source — if the user supplied a category at entry time, it's written to `app.transaction_categories` with `categorized_by='user'` (top of the hierarchy). If they didn't, downstream auto-rule / ML / etc. operate normally.
 
 Verification (the deferred curator badge — see §Out of Scope) would have promoted `categorized_by='auto_rule'` rows to user-priority for protection and training. With verify dropped, this spec adds nothing to the hierarchy.
 
