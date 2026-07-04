@@ -162,6 +162,16 @@ class CategorizationOrchestrator:
         _start = perf_counter()
         try:
             result = self._categorize_items_inner(items)
+            # Refresh the review-queue gauge once per batch, not once per
+            # proposal (moved off MerchantResolver._propose's per-call site,
+            # mirrors the apply_merchant_categories tail call). Runs
+            # unconditionally — even a precedence-skipped row's rung-3
+            # proposal must not leave the gauge stale until the next batch op.
+            from moneybin.services.merchant_resolver import (  # noqa: PLC0415 — deferred to avoid circular import
+                refresh_merchant_link_pending_gauge,
+            )
+
+            refresh_merchant_link_pending_gauge(self._db)
             # Snowball: fan newly-created merchants/exemplars out to remaining
             # uncategorized rows. Skipped on no-op batches so we don't churn a
             # pending sweep when nothing committed.
