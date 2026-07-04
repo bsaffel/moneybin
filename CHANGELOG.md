@@ -22,7 +22,7 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   category on the next categorize run — the source-precedence ladder holds across
   runs, not just within one write. `transactions categorize stats` gains a
   `plaid_unmapped` count (Plaid transactions whose PFC code has no bridge mapping
-  yet). (#___)
+  yet). (#292)
 - **`core.bridge_category_source_map` — provider-code → canonical-category bridge (M1V).**
   A durable, aggregator-agnostic view resolving any provider's transaction-category
   code to exactly one canonical MoneyBin category, keyed `(source_type,
