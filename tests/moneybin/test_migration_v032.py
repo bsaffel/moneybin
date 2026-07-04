@@ -5,11 +5,14 @@ provider category-code -> canonical MoneyBin category mapping table, plus an
 accounting `class` column on the user-category dimension. Fresh installs get
 both from the schema DDL; existing installs get them via this migration.
 
-The `class` column is added via DuckDB's two-step ADD COLUMN (DEFAULT
-backfill) + SET NOT NULL, the same load-bearing pattern V010 uses — so, per
+DuckDB rejects both `ADD COLUMN ... NOT NULL` and `ADD CONSTRAINT CHECK` in a
+single ALTER, so `app.user_categories` is rebuilt wholesale: snapshot to a
+tmp table, DROP, CREATE with the full target shape (`class NOT NULL` + its
+CHECK baked in), then re-INSERT via an explicit column list. Per
 `.claude/rules/database.md`, the test drives `migrate()` through the shared
 `run_migration()` helper to reproduce the runner's enclosing BEGIN/COMMIT
-transaction rather than calling `migrate(db._conn)` bare.
+transaction rather than calling `migrate(db._conn)` bare — the whole rebuild
+must run inside that single transaction.
 """
 
 from __future__ import annotations
@@ -53,12 +56,11 @@ def _recreate_pre_v032_state(db: Database) -> None:
     `ALTER TABLE ... DROP COLUMN` is allowed (unlike V030's case where the
     new column preceded a PK-indexed column).
 
-    `seeds.categories.class` is reversed the same way: V014 (run earlier in
-    the migration chain, on every install) always creates `seeds.categories`
-    without `class`, and by the time the `fresh_db` fixture finishes building,
-    the *current* V032 has already added it — so we drop it and seed
-    representative rows (one per class-rule prefix) to exercise the
-    prefix-derived backfill, not just see it already applied as a no-op.
+    `seeds.categories.class` needs no DROP here: `_ensure_seed_tables_exist`
+    bootstraps the table in frozen V014's original shape (`plaid_detailed`,
+    no `class`) rather than the post-V032 shape, so the table is already in
+    its pre-V032 state — the test only seeds representative rows (one per
+    class-rule prefix) to exercise the prefix-derived backfill in migrate().
     """
     db.execute("DROP TABLE IF EXISTS app.category_source_map")
     db.execute("ALTER TABLE app.user_categories DROP COLUMN class")
@@ -73,7 +75,6 @@ def _recreate_pre_v032_state(db: Database) -> None:
         "('u_c3d4e5f6a1b2', 'Gifts', 'Given', '', false, "
         "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
     )
-    db.execute("ALTER TABLE seeds.categories DROP COLUMN class")
     db.execute(
         "INSERT INTO seeds.categories "
         "(category_id, category, subcategory, description) VALUES "

@@ -71,6 +71,16 @@ def _ensure_seed_tables_exist(db: Database) -> None:
     SQLMesh hasn't run), the empty table lets ``refresh_views`` assemble the
     ``core.dim_categories`` view without hitting a CatalogException on the
     missing source.
+
+    ``seeds.categories``'s column list intentionally matches frozen V014's
+    historical shape (``plaid_detailed``, not ``class``): a never-migrated DB
+    opened with ``no_auto_upgrade=True`` skips migrations but still calls
+    ``refresh_views`` on every open, so this is the only thing standing
+    between V014's later ``SELECT s.plaid_detailed`` replay and a
+    BinderException. No functional loss — ``refresh_views`` derives ``class``
+    from the ``category_id`` prefix when the column is absent, and the CSV /
+    view / consumer layers no longer read ``plaid_detailed`` (hard-cut intact
+    there).
     """
     db.execute("CREATE SCHEMA IF NOT EXISTS seeds")
     db.execute(
@@ -80,7 +90,7 @@ def _ensure_seed_tables_exist(db: Database) -> None:
             category VARCHAR,
             subcategory VARCHAR,
             description VARCHAR,
-            class VARCHAR
+            plaid_detailed VARCHAR
         )
         """  # noqa: S608  # SEED_CATEGORIES is a TableRef constant, not user input
     )

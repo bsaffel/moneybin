@@ -19,13 +19,20 @@ tables are left untouched.
 from __future__ import annotations
 
 from moneybin.database import Database
-from moneybin.seeds import refresh_views
-from tests.moneybin.migration_helpers import column_exists
+from moneybin.seeds import (
+    _ensure_seed_tables_exist,  # pyright: ignore[reportPrivateUsage]
+    refresh_views,
+)
+from moneybin.sql.migrations.V014__add_category_id_columns import migrate
+from tests.moneybin.migration_helpers import column_exists, run_migration
 
 
 def _recreate_pre_v032_shape(db: Database) -> None:
-    """Drop `class` from both tables and seed representative pre-migration rows."""
-    db.execute("ALTER TABLE seeds.categories DROP COLUMN class")
+    """Drop `class` from `app.user_categories` and seed pre-migration rows.
+
+    `seeds.categories` needs no ALTER here — it already bootstraps without a
+    `class` column (see `_ensure_seed_tables_exist`'s V014-compatible shape).
+    """
     db.execute(
         "INSERT INTO seeds.categories "
         "(category_id, category, subcategory, description) VALUES "
@@ -95,3 +102,30 @@ def test_refresh_views_tolerates_pre_v032_shape_without_mutating_tables(
         "OR category_id LIKE 'u_%'"
     ).fetchone()
     assert row_count == (7,)
+
+
+def test_bootstrap_shape_matches_frozen_v014(db: Database) -> None:
+    """A never-migrated DB's bootstrapped seeds.categories must satisfy V014.
+
+    ``_ensure_seed_tables_exist`` runs on every ``refresh_views`` call,
+    including on a database opened with ``no_auto_upgrade=True`` that has
+    never run any versioned migration. If it bootstraps ``seeds.categories``
+    in a shape V014 doesn't expect, V014's frozen ``migrate()`` — whose
+    ``CREATE TABLE IF NOT EXISTS`` becomes a no-op and whose
+    ``CREATE OR REPLACE VIEW core.dim_categories AS SELECT s.plaid_detailed``
+    assumes the historical column — raises a BinderException the moment
+    migrations do run (e.g. a later ``no_auto_upgrade=False`` open, or an
+    operator running ``db migrate`` by hand).
+    """
+    db.execute("DROP VIEW IF EXISTS core.dim_categories")
+    db.execute("DROP TABLE IF EXISTS seeds.categories")
+
+    _ensure_seed_tables_exist(db)
+
+    assert column_exists(db, "seeds", "categories", "plaid_detailed")
+    assert not column_exists(db, "seeds", "categories", "class")
+
+    run_migration(db, migrate)  # must not raise BinderException on s.plaid_detailed
+
+    row = db.execute("SELECT COUNT(*) FROM core.dim_categories").fetchone()
+    assert row is not None

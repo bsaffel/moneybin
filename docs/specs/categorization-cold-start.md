@@ -96,7 +96,7 @@ flowchart LR
     G --> H
 ```
 
-**Mechanism:** Plaid supplies category string (PFCv2 taxonomy) and `merchant_name`. Category mapping is one-time work in `app.categories.plaid_detailed`. The merchant_name becomes a new entry in `app.user_merchants` if not already known.
+**Mechanism:** Plaid supplies category string (PFCv2 taxonomy) and `merchant_name`. Category mapping is one-time work in `app.categories.plaid_detailed`. The merchant_name becomes a new entry in `app.user_merchants` if not already known. `plaid_detailed` has since been replaced by the `core.bridge_category_source_map` reverse-lookup (see `category-source-map.md`); the solver's conceptual shape above is unchanged.
 
 ### Solver 2: Migration imports (source-tool category translation)
 
