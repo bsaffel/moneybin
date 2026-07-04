@@ -137,6 +137,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "credit_limit": DataClass.BALANCE,
         "display_name": DataClass.USER_NOTE,
         "holder_category": DataClass.TXN_TYPE,
+        "default_cost_basis_method": DataClass.TXN_TYPE,
         "include_in_net_worth": DataClass.TXN_TYPE,
         "iso_currency_code": DataClass.CURRENCY,
         "last_four": DataClass.INSTITUTION_ACCOUNT_NUMBER,
@@ -249,6 +250,14 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "updated_by": DataClass.TXN_TYPE,
     },
+    ("app", "lot_selections"): {
+        "created_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "investment_transaction_id": DataClass.RECORD_ID,
+        "lot_id": DataClass.RECORD_ID,
+        # Units drawn from a lot for a disposal: position-size information,
+        # masked like transaction amounts.
+        "quantity": DataClass.TXN_AMOUNT,
+    },
     ("app", "match_decisions"): {
         "account_id": DataClass.RECORD_ID,
         "account_id_b": DataClass.RECORD_ID,
@@ -335,6 +344,25 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "filename": DataClass.RECORD_ID,
         "success": DataClass.TXN_TYPE,
         "version": DataClass.AGGREGATE,
+    },
+    ("app", "securities"): {
+        "coingecko_id": DataClass.TXN_TYPE,
+        "cost_basis_method": DataClass.TXN_TYPE,
+        "created_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "currency_code": DataClass.CURRENCY,
+        # Public-instrument reference data (what an instrument IS), not user
+        # PII — that the user HOLDS it, and how much, lives in the lots and
+        # holdings tables where quantities/amounts carry their own classes.
+        "cusip": DataClass.TXN_TYPE,
+        "exchange": DataClass.TXN_TYPE,
+        "figi": DataClass.TXN_TYPE,
+        "is_cash_equivalent": DataClass.TXN_TYPE,
+        "isin": DataClass.TXN_TYPE,
+        "name": DataClass.TXN_TYPE,
+        "security_id": DataClass.RECORD_ID,
+        "security_type": DataClass.TXN_TYPE,
+        "ticker": DataClass.TXN_TYPE,
+        "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
     },
     ("app", "seed_source_priority"): {
         "priority": DataClass.AGGREGATE,
