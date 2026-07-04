@@ -94,6 +94,7 @@ pyrightconfig.json
 # MCP config (contains local paths and credentials)
 .mcp.json
 .cursor/mcp.json
+.playwright-mcp
 
 # Private docs (strategy, specs, notes — not for open source)
 private/
@@ -101,3 +102,6 @@ private/
 # Git worktrees (isolated workspaces)
 .worktrees/
 .claude/worktrees/
+
+# Visual-companion brainstorm mockups (superpowers plugin)
+.superpowers/
