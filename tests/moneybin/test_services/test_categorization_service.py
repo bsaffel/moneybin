@@ -2117,7 +2117,17 @@ class TestResolverBindingPrecedesCategorization:
     is present in ``_categorize_items_inner``.  That path accepts an explicit
     item list and writes with ``categorized_by='ai'``, which a pre-existing
     ``user`` categorization outranks — producing a controlled
-    ``written=False`` outcome.
+    ``written=False`` outcome. ``categorize_pending``/``apply_merchant_categories``
+    cannot drive this scenario instead: ``fetch_uncategorized_rows``'s "pending"
+    filter (``c.transaction_id IS NULL OR c.categorized_by = 'provider_native'``)
+    excludes an already-``user``-categorized row from the scan entirely, so the
+    resolver never runs for it via that path — ``categorize_items`` is the only
+    entry point that attempts (and gets precedence-blocked on) a write for a row
+    that already carries a higher-priority categorization.
+
+    Covers two rungs of the same invariant: rung 3 (fuzzy name match — pending
+    proposal) below, and rung 4 (no name match — mint + bind a new merchant) in
+    ``test_novel_entity_mints_merchant_even_when_write_precedence_skipped``.
     """
 
     @pytest.mark.unit
@@ -2182,6 +2192,79 @@ class TestResolverBindingPrecedesCategorization:
         assert pending is not None and pending[0] >= 1, (
             "resolver must have written a pending proposal for ent_r7 "
             "even though categorization was precedence-skipped"
+        )
+
+    @pytest.mark.unit
+    def test_novel_entity_mints_merchant_even_when_write_precedence_skipped(
+        self, db: Database
+    ) -> None:
+        """Rung-4 mint fires even when the categorization write is precedence-skipped.
+
+        Characterization test: a stronger case than
+        ``test_binding_written_when_categorization_precedence_skipped`` above.
+        Here the entity id has no name match at all (empty merchant catalog),
+        so the resolver mints a brand-new ``created_by='plaid'`` merchant
+        (rung 4) rather than proposing against an existing candidate (rung 3).
+        The mint is a Plaid-asserted identity fact, committed regardless of
+        whether this row's categorization write lands (spec Decision 7) — this
+        test locks that correct-by-design behavior so a future "fix" can't
+        silently gate the mint behind ``outcome.written``.
+        """
+        _setup_prep_table(db)
+
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+            "VALUES ('TXN_MINT_SKIP', 'ACC1', DATE '2026-01-01', -12.00, "
+            "'XYZNOPATTERNMINTSKIP', 'plaid')"
+        )
+        db.execute(
+            "INSERT INTO prep.int_transactions__merged VALUES "
+            "('TXN_MINT_SKIP', 'ent_mint_skip', 'plaid', 'Brand New Merchant')"
+        )
+
+        # Pre-seed a user categorization (priority 1) so the ai write below
+        # (priority 7) is blocked by the precedence guard.
+        db.execute(
+            "INSERT INTO app.transaction_categories "
+            "(transaction_id, category, categorized_at, categorized_by) "
+            "VALUES ('TXN_MINT_SKIP', 'Travel', CURRENT_TIMESTAMP, 'user')"
+        )
+
+        svc = CategorizationService(db)
+        result = svc.categorize_items([
+            CategorizationItem(transaction_id="TXN_MINT_SKIP", category="Food & Drink")
+        ])
+
+        # The ai write must have been blocked; the user category stays intact.
+        assert result.applied == 0, "user category must block the ai write"
+        cat_row = db.execute(
+            "SELECT category, categorized_by FROM app.transaction_categories "
+            "WHERE transaction_id = 'TXN_MINT_SKIP'"
+        ).fetchone()
+        assert cat_row is not None
+        assert cat_row[0] == "Travel"
+        assert cat_row[1] == "user"
+
+        # The novel entity id must still have been minted + bound (rung 4),
+        # even though the categorization write above was rejected.
+        link_row = db.execute(
+            "SELECT merchant_id FROM app.merchant_links "
+            "WHERE ref_value = 'ent_mint_skip' AND source_type = 'plaid' "
+            "AND status = 'accepted'"
+        ).fetchone()
+        assert link_row is not None, (
+            "resolver must mint+bind a merchant for a novel entity id even "
+            "though categorization was precedence-skipped"
+        )
+        merchant_row = db.execute(
+            "SELECT created_by, category_id FROM app.user_merchants WHERE merchant_id = ?",
+            [link_row[0]],
+        ).fetchone()
+        assert merchant_row is not None
+        assert merchant_row[0] == "plaid"
+        assert merchant_row[1] is None, (
+            "plaid-minted merchant is inert/category-free by design (M1T)"
         )
 
 

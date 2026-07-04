@@ -378,10 +378,13 @@ class CategorizationOrchestrator:
                 # auto-bind/propose against the name match `existing`. A rung-4
                 # mint sets merchant_id, which correctly gates the exemplar
                 # accumulator off for id-bearing rows below.
-                # The binding/mint/propose is an entity-keyed fact deliberately
-                # committed before write_categorization; a precedence skip
-                # suppresses only the categorization, never the binding
-                # (spec Decision 7 — precedence-safe).
+                # INVARIANT: the entity mint/bind is a Plaid-asserted identity
+                # fact, committed regardless of whether THIS row's
+                # categorization write lands below (spec Decision 7). Unlike
+                # the exemplar accumulator (which LEARNS from a write and so
+                # gates on outcome.written), identity is precedence-independent.
+                # Guarded by
+                # test_novel_entity_mints_merchant_even_when_write_precedence_skipped.
                 merchant_id, entity_created = self._resolve_entity_merchant(
                     resolver,
                     bindings,
@@ -761,12 +764,16 @@ class CategorizationOrchestrator:
                 memo=str(memo) if memo is not None else None,
                 merchant_name=str(merchant_name) if merchant_name is not None else None,
             )
-            # Resolve the entity binding for EVERY row, BEFORE the skip guard: the
-            # binding/mint/propose is an entity-keyed fact committed regardless of whether
-            # THIS row's categorization write happens (spec Decision 7 — precedence-safe).
+            # INVARIANT: the entity mint/bind is a Plaid-asserted identity fact,
+            # committed regardless of whether THIS row's categorization write
+            # lands (spec Decision 7) — resolved for EVERY row, BEFORE the skip
+            # guard below. Unlike the exemplar accumulator (which LEARNS from a
+            # write and so gates on outcome.written), identity is
+            # precedence-independent. Guarded by
+            # test_novel_entity_mints_merchant_even_when_write_precedence_skipped.
             # apply_merchant_categories returns a categorized-row count, not a
-            # merchants_created tally; a rung-4 mint here is still observable via the
-            # MERCHANT_RESOLUTION_OUTCOME_TOTAL{outcome="minted"} counter.
+            # merchants_created tally; a rung-4 mint here is still observable via
+            # the MERCHANT_RESOLUTION_OUTCOME_TOTAL{outcome="minted"} counter.
             merchant_id, _entity_created = self._resolve_entity_merchant(
                 resolver,
                 bindings,
@@ -836,6 +843,16 @@ class CategorizationOrchestrator:
             logger.info(
                 f"Merchant matching categorized {categorized_count} transactions"
             )
+        # Refresh the review-queue gauge once per batch, not once per proposal
+        # (moved off MerchantResolver._propose's per-call site). Cheap even
+        # when nothing changed — a single COUNT(*) that degrades to 0 when the
+        # decisions table is absent.
+        if resolver is not None:
+            from moneybin.services.merchant_resolver import (  # noqa: PLC0415 — deferred to avoid circular import
+                refresh_merchant_link_pending_gauge,
+            )
+
+            refresh_merchant_link_pending_gauge(self._db)
         return categorized_count
 
     def apply_plaid_categories(self) -> int:
