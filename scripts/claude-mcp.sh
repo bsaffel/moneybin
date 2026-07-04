@@ -30,14 +30,14 @@ if [[ $rc -ne 0 || -z "$config_path" ]]; then
   cat "$err" >&2
   echo "" >&2
   echo "Hint: moneybin profile create <name>   (if no profile exists)" >&2
-  echo "      moneybin mcp config generate --client claude-code --install --yes --profile <name>" >&2
+  echo "      moneybin mcp install --client claude-code --yes --profile <name>" >&2
   echo "      $0 <name>   (or PROFILE=<name> make claude-mcp)" >&2
   exit 1
 fi
 
 if [[ ! -f "$config_path" ]]; then
   echo "❌ MoneyBin MCP config not found at $config_path." >&2
-  echo "Run: moneybin mcp config generate --client claude-code --install --yes${profile:+ --profile \"$profile\"}" >&2
+  echo "Run: moneybin mcp install --client claude-code --yes${profile:+ --profile \"$profile\"}" >&2
   exit 1
 fi
 

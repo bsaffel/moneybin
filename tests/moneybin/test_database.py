@@ -391,7 +391,7 @@ class TestIngestDataframe:
 
 
 class TestRunSqlmeshMigrate:
-    """Database._run_sqlmesh_migrate() — in-process SQLMesh state migration."""
+    """Database.migrate_sqlmesh_state() — in-process SQLMesh state migration."""
 
     @pytest.fixture()
     def db(
@@ -412,7 +412,7 @@ class TestRunSqlmeshMigrate:
     ) -> None:
         """Returns True immediately when sqlmesh project dir doesn't exist."""
         monkeypatch.setattr("moneybin.database.Path.is_dir", lambda self: False)  # type: ignore[reportUnknownLambdaType]
-        assert db._run_sqlmesh_migrate() is True  # type: ignore[reportPrivateUsage]
+        assert db.migrate_sqlmesh_state() is True
 
     def test_skips_when_sqlmesh_not_installed(
         self, db: Database, monkeypatch: pytest.MonkeyPatch
@@ -438,7 +438,7 @@ class TestRunSqlmeshMigrate:
             return real_import(name, *args, **kwargs)
 
         monkeypatch.setattr(builtins, "__import__", fake_import)
-        assert db._run_sqlmesh_migrate() is True  # type: ignore[reportPrivateUsage]
+        assert db.migrate_sqlmesh_state() is True
 
     def test_success_calls_migrate_and_cleans_cache(
         self, db: Database, mocker: MockerFixture
@@ -457,7 +457,7 @@ class TestRunSqlmeshMigrate:
             cache_key in cache
         )
 
-        result = db._run_sqlmesh_migrate()  # type: ignore[reportPrivateUsage]
+        result = db.migrate_sqlmesh_state()
 
         assert result is True
         mock_ctx.migrate.assert_called_once()
@@ -479,7 +479,7 @@ class TestRunSqlmeshMigrate:
         import logging
 
         with caplog.at_level(logging.WARNING):
-            result = db._run_sqlmesh_migrate()  # type: ignore[reportPrivateUsage]
+            result = db.migrate_sqlmesh_state()
 
         assert result is False
         assert "sqlmesh migrate failed" in caplog.text

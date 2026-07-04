@@ -229,7 +229,7 @@ def synthetic_reset(
                     )
                     logger.info(
                         f"💡 To destroy a non-generated profile, use "
-                        f"'moneybin db destroy --profile={target_profile}'"
+                        f"'moneybin profile delete {target_profile}'"
                     )
                     raise typer.Exit(1) from None
 
