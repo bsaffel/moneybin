@@ -701,7 +701,7 @@ class TestSqlmeshStateAssessment:
     def test_reports_sqlglot_drift_when_schema_current(
         self, mocker: MockerFixture
     ) -> None:
-        """A SQLGlot-only bump (schema + sqlmesh current) drifts but isn't migratable."""
+        """A SQLGlot-only bump (schema + sqlmesh current) drifts and IS migratable."""
         from sqlmesh.core.state_sync.base import SCHEMA_VERSION
 
         installed_sqlglot = importlib.metadata.version("sqlglot")
@@ -718,8 +718,9 @@ class TestSqlmeshStateAssessment:
         message, needs_migration = sqlmesh_state_assessment(MagicMock())
         assert message is not None
         assert "SQLGlot" in message
-        # A pure sqlglot drift leaves ctx.migrate() a no-op, so it can't repair it.
-        assert needs_migration is False
+        # With the schema current, ctx.migrate() re-stamps the version row on a
+        # SQLGlot mismatch (StateMigrator counts it as work), so it's repairable.
+        assert needs_migration is True
 
     def test_reports_repairable_sqlmesh_minor_drift_when_schema_current(
         self, mocker: MockerFixture

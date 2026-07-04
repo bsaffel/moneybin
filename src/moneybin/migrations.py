@@ -708,9 +708,10 @@ def sqlmesh_state_assessment(db: Database) -> tuple[str | None, bool]:
     # Schema is current. Mirror SQLMesh's own get_versions(validate=True), which
     # also fails transforms on any SQLMesh *or* SQLGlot major/minor mismatch
     # (either direction) — a sqlglot-only bump breaks refresh while the schema
-    # number is unchanged. A migrate re-stamps the version row only when it
-    # actually runs (the sqlmesh minor differs); a pure sqlglot drift leaves
-    # migrate a no-op, so only a behind-sqlmesh drift is repairable that way.
+    # number is unchanged. With the schema current, ctx.migrate() re-stamps the
+    # version row (StateMigrator._apply_migrations counts a SQLGlot mismatch as
+    # work, so migrate() skips its early-return and calls update_versions), so
+    # any such drift is repairable via `db migrate apply`.
     sqlmesh_mismatch = sqlmesh_version is not None and major_minor(
         sqlmesh_version
     ) != major_minor(installed_pkg)
@@ -727,17 +728,10 @@ def sqlmesh_state_assessment(db: Database) -> tuple[str | None, bool]:
             parts.append(
                 f"SQLGlot state {sqlglot_version} vs installed {installed_sqlglot}"
             )
-        repairable = sqlmesh_version is not None and major_minor(
-            sqlmesh_version
-        ) < major_minor(installed_pkg)
-        hint = (
-            "Run `moneybin db migrate apply` to migrate the state."
-            if repairable
-            else "Align the mismatched package with the state (upgrade or pin)."
-        )
         return (
-            f"SQLMesh state library version drift ({'; '.join(parts)}). {hint}",
-            repairable,
+            f"SQLMesh state library version drift ({'; '.join(parts)}). "
+            "Run `moneybin db migrate apply` to migrate the state.",
+            True,
         )
     return None, False
 
