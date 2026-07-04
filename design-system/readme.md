@@ -6,7 +6,7 @@
 
 **Signature element: trust as furniture.** Every number can show its work — brass `SQL` chips on every widget, dotted underlines on auditable figures, a persistent vault status bar in the app chrome. Trust is a UI affordance, not a marketing claim.
 
-Sources: authored from scratch in this project (no external Figma/codebase). The full argued spec — with the hi-fi dashboard mockup and the design rationale — is `MoneyBin Brand Kit.dc.html` at the project root. A developer handoff copy lives in `design_handoff_moneybin/` (synced to the founder's repo at `~/Workspace/moneybin/design`).
+Sources: authored from scratch in this project (no external Figma/codebase). The full argued spec — with the hi-fi dashboard mockup and the design rationale — is `MoneyBin Brand Kit.dc.html` at the project root. A developer handoff copy lives in `design_handoff_moneybin/` (synced to the founder's repo at `~/Workspace/moneybin/design-system`).
 
 ## Content fundamentals
 - Numbers first, verbs second: "Synced 4 min ago · 214 new transactions".
@@ -34,7 +34,8 @@ Custom-drawn line icons: 20×20 grid, 1.5px stroke, squared caps, no fills, one 
 
 ## Index
 - `styles.css` → `tokens/` (colors, typography, shape) — global CSS entry
-- `guidelines/` — specimen cards (Colors ×5, Type ×3, Shape ×3, Brand ×2, Charts, Voice ×2, Iconography)
+- `guidelines/` — specimen cards (Colors ×5, Type ×3, Shape ×3, Brand ×2, Charts ×12, Voice ×2, Iconography)
+- `charts.md` — binding chart grammar (prose companion to the 12 `guidelines/charts-*.html` specimens)
 - `components/core/` — Button, Chip · `components/data/` — Amount, WidgetCard · `components/chrome/` — VaultStatusBar · `components/brand/` — Mark, DuckKey
 - `ui_kits/web_app/` — dashboard home (static reference extraction of the brand kit §09)
 - `MoneyBin Brand Kit.dc.html` — the full argued spec (sections 01–10 incl. rationale)

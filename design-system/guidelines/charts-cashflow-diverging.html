@@ -1,0 +1,37 @@
+<!-- @dsCard group="Charts" viewport="700x255" subtitle="Signed quantities diverge from one emphasized $0 line: income up (+), spending down (−), net traced in brass on the shared axis. Legends carry the sign glyph. Grouped side-by-side pairs encode by hue alone — avoid." name="Cash flow — diverging default" -->
+<!DOCTYPE html><html><head><meta charset="utf-8"><link rel="stylesheet" href="../styles.css"><style>body{margin:0;font-family:var(--font-data)}</style></head>
+<body style="background:var(--bg-surface);padding:14px 20px;">
+<div style="display:flex;gap:14px;align-items:center;margin-bottom:8px;font-size:10px;color:var(--text-secondary)">
+<span style="display:flex;align-items:center;gap:6px"><span style="width:10px;height:10px;background:var(--pos-income);border-radius:2px"></span>+ INCOME</span>
+<span style="display:flex;align-items:center;gap:6px"><span style="width:10px;height:10px;background:var(--neg-expense);border-radius:2px"></span>− SPENDING</span>
+<span style="display:flex;align-items:center;gap:6px"><span style="width:14px;height:2px;background:var(--accent-brass)"></span>NET</span>
+<span style="flex:1"></span>
+<span style="color:var(--text-faint)">grouped pairs = hue-only — avoid</span>
+</div>
+<svg viewBox="0 0 660 180" style="display:block;width:100%">
+  <line x1="50" y1="40" x2="650" y2="40" style="stroke:var(--border-hairline)"/>
+  <line x1="50" y1="90" x2="650" y2="90" style="stroke:var(--border-strong)"/>
+  <line x1="50" y1="140" x2="650" y2="140" style="stroke:var(--border-hairline)"/>
+  <text x="44" y="44" text-anchor="end" style="font-size:11px;fill:var(--text-faint)">+$5K</text>
+  <text x="44" y="94" text-anchor="end" style="font-size:11px;fill:var(--text-faint)">$0</text>
+  <text x="44" y="144" text-anchor="end" style="font-size:11px;fill:var(--text-faint)">−$5K</text>
+  <rect x="56" y="44" width="26" height="46" style="fill:var(--pos-income)"/><rect x="56" y="90" width="26" height="34" style="fill:var(--neg-expense)"/>
+  <rect x="130" y="40" width="26" height="50" style="fill:var(--pos-income)"/><rect x="130" y="90" width="26" height="40" style="fill:var(--neg-expense)"/>
+  <rect x="204" y="42" width="26" height="48" style="fill:var(--pos-income)"/><rect x="204" y="90" width="26" height="32" style="fill:var(--neg-expense)"/>
+  <rect x="278" y="36" width="26" height="54" style="fill:var(--pos-income)"/><rect x="278" y="90" width="26" height="38" style="fill:var(--neg-expense)"/>
+  <rect x="352" y="46" width="26" height="44" style="fill:var(--pos-income)"/><rect x="352" y="90" width="26" height="70" style="fill:var(--neg-expense)"/>
+  <rect x="426" y="32" width="26" height="58" style="fill:var(--pos-income)"/><rect x="426" y="90" width="26" height="30" style="fill:var(--neg-expense)"/>
+  <rect x="500" y="48" width="26" height="42" style="fill:var(--pos-income)"/><rect x="500" y="90" width="26" height="36" style="fill:var(--neg-expense)"/>
+  <rect x="574" y="40" width="26" height="50" style="fill:var(--pos-income)"/><rect x="574" y="90" width="26" height="34" style="fill:var(--neg-expense)"/>
+  <path d="M69,78 L143,80 L217,74 L291,74 L365,116 L439,62 L513,84 L587,74" style="fill:none;stroke:var(--accent-brass);stroke-width:1.75"/>
+  <circle cx="69" cy="78" r="2.4" style="fill:var(--accent-brass)"/><circle cx="143" cy="80" r="2.4" style="fill:var(--accent-brass)"/><circle cx="217" cy="74" r="2.4" style="fill:var(--accent-brass)"/><circle cx="291" cy="74" r="2.4" style="fill:var(--accent-brass)"/><circle cx="365" cy="116" r="2.4" style="fill:var(--accent-brass)"/><circle cx="439" cy="62" r="2.4" style="fill:var(--accent-brass)"/><circle cx="513" cy="84" r="2.4" style="fill:var(--accent-brass)"/><circle cx="587" cy="74" r="2.4" style="fill:var(--accent-brass)"/>
+  <text x="69" y="174" text-anchor="middle" style="font-size:11px;fill:var(--text-faint)">Jul</text>
+  <text x="143" y="174" text-anchor="middle" style="font-size:11px;fill:var(--text-faint)">Aug</text>
+  <text x="217" y="174" text-anchor="middle" style="font-size:11px;fill:var(--text-faint)">Sep</text>
+  <text x="291" y="174" text-anchor="middle" style="font-size:11px;fill:var(--text-faint)">Oct</text>
+  <text x="365" y="174" text-anchor="middle" style="font-size:11px;fill:var(--text-faint)">Nov</text>
+  <text x="439" y="174" text-anchor="middle" style="font-size:11px;fill:var(--text-faint)">Dec</text>
+  <text x="513" y="174" text-anchor="middle" style="font-size:11px;fill:var(--text-faint)">Jan</text>
+  <text x="587" y="174" text-anchor="middle" style="font-size:11px;fill:var(--text-faint)">Feb</text>
+</svg>
+</body></html>
