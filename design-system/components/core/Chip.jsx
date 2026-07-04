@@ -18,6 +18,9 @@ export function Chip({ variant = 'category', children, onClick, active = false, 
     <span
       style={{ ...base, ...variants[variant], ...style }}
       onClick={onClick}
+      role={onClick ? 'button' : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      onKeyDown={onClick ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(e); } } : undefined}
       onMouseEnter={(e) => { if (onClick && variant === 'sql') e.currentTarget.style.borderColor = 'var(--accent-brass)'; }}
       onMouseLeave={(e) => { if (onClick && variant === 'sql' && !active) e.currentTarget.style.borderColor = 'var(--border-strong)'; }}
     >{variant === 'sql' && !children ? 'SQL' : children}</span>

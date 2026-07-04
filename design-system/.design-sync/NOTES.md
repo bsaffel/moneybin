@@ -77,7 +77,7 @@ The original Claude Design project had 26 cards; the converter carries only the
 **7 components**. The rest are `@dsCard`-marked HTML specimen cards outside the
 converter's component scope:
 
-- **17 `guidelines/*.html`** (Colors ×5, Type ×3, Shape ×3, Brand ×2, Charts,
+- **28 `guidelines/*.html`** (Colors ×5, Type ×3, Shape ×3, Brand ×2, Charts ×12,
   Iconography, Voice ×2). The converter's `guidelinesGlob` is **`.md`-only**
   (it skips `.html`), so these must be staged + uploaded by hand:
   1. Post-build: `cp guidelines/*.html ds-bundle/guidelines/` (they reference
@@ -104,8 +104,7 @@ converter's component scope:
   to woff2 now that Google Fonts hosts are allowlisted.
 - **Render verification is manual (MCP browser)**, not the automated check — a
   re-sync must re-verify via MCP or install npm playwright + chromium.
-- **Not shipped (enhancement candidates):** the 18 `guidelines/*.html` specimen
-  cards (guidelines pane expects `.md`), and the Newsreader *italic* face.
+- **Not shipped (enhancement candidates):** the Newsreader *italic* face.
 
 ## Known render warns
 

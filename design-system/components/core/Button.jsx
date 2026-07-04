@@ -1,4 +1,4 @@
-export function Button({ variant = 'primary', size = 'md', disabled = false, children, onClick, style }) {
+export function Button({ variant = 'primary', size = 'md', disabled = false, type = 'button', children, onClick, style }) {
   const base = {
     fontFamily: 'var(--font-ui)',
     fontWeight: 500,
@@ -21,6 +21,8 @@ export function Button({ variant = 'primary', size = 'md', disabled = false, chi
   };
   return (
     <button
+      type={type}
+      disabled={disabled}
       onClick={disabled ? undefined : onClick}
       style={{ ...base, ...variants[variant], ...style }}
       onMouseEnter={(e) => {

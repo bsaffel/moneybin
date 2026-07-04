@@ -1,7 +1,7 @@
 # MoneyBin chart grammar — binding rules
 
 The binding grammar for every analytics surface. The visual rules here are
-demonstrated by the twelve `charts-*.html` specimen cards in this folder; this
+demonstrated by the twelve `charts-*.html` specimen cards in `guidelines/`; this
 doc is the prose companion. Where any other doc's chart section differs, this
 one wins. Sample data throughout; the grammar is what ships. Never hardcode hex
 — all values come from `../tokens/`.
@@ -73,7 +73,7 @@ The remaining two cards are cross-cutting, not a single form: `charts-grammar.ht
 
 ## Reference files
 
-- **The twelve `charts-*.html` specimen cards in this folder** — one per settled decision; each `@dsCard` header carries its rule text.
+- **The twelve `charts-*.html` specimen cards in `guidelines/`** — one per settled decision; each `@dsCard` header carries its rule text.
 - **`Analytics Perspective v2.dc.html`** — the full interactive spec (10 chart forms × stances, deep-audit toggle, composed dashboard at both densities and themes). It lives in the Claude Design project, **not this repo**, and will not render standalone. Read it as source, not by opening it. When building the live analytics screen, port these reference implementations from its `<script data-dc-script>` rather than re-deriving:
   - `buildNw()` — line-chart scale/tick/clip computation + dynamic audit text.
   - sparkline amplitude — `amp = min(1, (|30dΔ|/balance) / 0.06)`.

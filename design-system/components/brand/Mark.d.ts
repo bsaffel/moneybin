@@ -5,7 +5,7 @@
 export interface MarkProps {
   /** Rendered square size in px. Default 44. */
   size?: number;
-  /** Plate color: 'light' (paper plate, for dark surroundings — app default) or 'dark' (ink plate, for light surroundings). Default 'dark'. */
+  /** Plate color: 'dark' (ink plate, for light surroundings) or 'light' (paper plate, for dark surroundings). Default 'dark' — pass 'light' when placing the mark on the app's dark surfaces. */
   plate?: 'dark' | 'light';
   style?: React.CSSProperties;
 }
