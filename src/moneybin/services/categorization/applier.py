@@ -58,6 +58,7 @@ from moneybin.tables import (
     BUDGETS,
     CATEGORIES,
     CATEGORIZATION_RULES,
+    CATEGORY_SOURCE_MAP,
     PROPOSED_RULES,
     TRANSACTION_CATEGORIES,
     TRANSACTION_SPLITS,
@@ -584,13 +585,13 @@ class MatchApplier:
         """Hard-delete a user-created category.
 
         Reference check and cascade both use ``category_id`` FK matching across
-        six tables: ``app.transaction_categories``, ``app.budgets``,
+        seven tables: ``app.transaction_categories``, ``app.budgets``,
         ``app.user_merchants``, ``app.transaction_splits``,
-        ``app.categorization_rules``, and ``app.proposed_rules``. With
-        ``force=False`` (default) the call refuses when any of those tables
-        carries a row with this ``category_id``; with ``force=True`` rows in
-        all six tables are deleted before the ``app.user_categories`` row
-        itself is removed.
+        ``app.categorization_rules``, ``app.proposed_rules``, and
+        ``app.category_source_map``. With ``force=False`` (default) the call
+        refuses when any of those tables carries a row with this
+        ``category_id``; with ``force=True`` rows in all seven tables are
+        deleted before the ``app.user_categories`` row itself is removed.
 
         Default (seeded) categories cannot be hard-deleted — operators disable
         them via :meth:`toggle_category` so that ``app.category_overrides``
@@ -598,7 +599,7 @@ class MatchApplier:
 
         Args:
             category_id: ID of the user-created category to delete.
-            force: If True, cascade-delete referencing rows across the six
+            force: If True, cascade-delete referencing rows across the seven
                 tables above; if False, refuse when references exist.
             actor: Audit actor recorded on the ``user_category.delete`` event
                 (e.g. ``"cli"``, ``"mcp"``).
@@ -608,7 +609,7 @@ class MatchApplier:
             UserError(code="CATEGORY_IS_DEFAULT"): seeded default categories
                 cannot be hard-deleted; use ``toggle_category``.
             UserError(code="CATEGORY_HAS_REFERENCES"): force=False and the
-                category is referenced by at least one of the six tracked
+                category is referenced by at least one of the seven tracked
                 tables.
         """
         existing = self._db.execute(
@@ -641,8 +642,9 @@ class MatchApplier:
                 f"  EXISTS(SELECT 1 FROM {USER_MERCHANTS.full_name} WHERE category_id = ?), "
                 f"  EXISTS(SELECT 1 FROM {TRANSACTION_SPLITS.full_name} WHERE category_id = ?), "
                 f"  EXISTS(SELECT 1 FROM {CATEGORIZATION_RULES.full_name} WHERE category_id = ?), "
-                f"  EXISTS(SELECT 1 FROM {PROPOSED_RULES.full_name} WHERE category_id = ?)",
-                [category_id] * 6,
+                f"  EXISTS(SELECT 1 FROM {PROPOSED_RULES.full_name} WHERE category_id = ?), "
+                f"  EXISTS(SELECT 1 FROM {CATEGORY_SOURCE_MAP.full_name} WHERE category_id = ?)",
+                [category_id] * 7,
             ).fetchone()
             labels = (
                 "transactions",
@@ -651,6 +653,7 @@ class MatchApplier:
                 "splits",
                 "rules",
                 "proposed rules",
+                "source mappings",
             )
             present = [
                 label
@@ -667,12 +670,12 @@ class MatchApplier:
 
         with self._transaction():
             if force:
-                # NOTE(Invariant 10): these 6 cascade DELETEs target other
+                # NOTE(Invariant 10): these 7 cascade DELETEs target other
                 # protected app.* tables and are still raw. As of Batch B,
                 # transaction_categories / user_merchants / categorization_rules
                 # / proposed_rules have repos, but budgets and transaction_splits
                 # do not (Batch C / AI-PR12). Threading the whole cascade through
-                # repos in one pass — when all six have a delete-by-category_id
+                # repos in one pass — when all seven have a delete-by-category_id
                 # path — keeps it a single coherent change rather than a
                 # half-threaded mix; the lint rule (AI-PR13) lands after that, so
                 # nothing forces it earlier.
@@ -683,6 +686,7 @@ class MatchApplier:
                     TRANSACTION_SPLITS,
                     CATEGORIZATION_RULES,
                     PROPOSED_RULES,
+                    CATEGORY_SOURCE_MAP,
                 ):
                     self._db.execute(
                         f"DELETE FROM {table_const.full_name} WHERE category_id = ?",  # noqa: S608  # TableRef constant
@@ -690,8 +694,8 @@ class MatchApplier:
                     )
             # TODO(Invariant 10 AI-PR12): once budgets + transaction_splits have
             # repos, capture this AuditEvent and thread its audit_id as
-            # parent_audit_id into all six cascade deletes above (routed through
-            # their repos).
+            # parent_audit_id into all seven cascade deletes above (routed
+            # through their repos).
             self._user_categories.delete(category_id, actor=actor, in_outer_txn=True)
 
     # -- Guarded categorization write --

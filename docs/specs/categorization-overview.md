@@ -352,7 +352,7 @@ Explicitly deferred or owned elsewhere.
 - **Transfer detection** — owned by `matching-overview.md`. Different concern (record identity, not labeling).
 - **Category taxonomy seed data** — Plaid PFCv2 seed is already implemented. This spec references it; it is not redesigned here.
 - **Taxonomy evolution** — category merge/rename with cascading updates to rules, merchants, and transaction_categories. Future direction (see below).
-- **Provider category mapping table** — the current `plaid_detailed` column on `app.categories` is provider-specific. When a second provider (Nordigen, etc.) is integrated, this column should be extracted to a generic `app.category_mappings` table. Future direction (see below).
+- **Provider category mapping table** — the current `plaid_detailed` column on `app.categories` is provider-specific. When a second provider (Nordigen, etc.) is integrated, this column should be extracted to a generic `app.category_mappings` table. Future direction (see below). This table now exists as `core.bridge_category_source_map` / `app.category_source_map` (see `category-source-map.md`), superseding `plaid_detailed`.
 - **LLM-assisted bulk categorization workflow** — the bulk tool itself is implemented; the cold-start workflow that wraps it (first-run prompt, PII redaction, propose/commit lifecycle) is owned by [`categorization-cold-start.md`](categorization-cold-start.md), not redesigned here.
 - **Merchant normalization** — already implemented. This spec documents the contract; it does not redesign the normalization logic.
 
@@ -393,7 +393,7 @@ Not pillars, not designed in detail. Architectural constraints noted so the curr
 
 2. **Community-contributed merchant mappings and community ML baseline** — see Bootstrap Strategies section. Merchant mappings and a community-trained ML model could both be built from anonymized opt-in data. Requires its own spec with privacy design work.
 
-3. **Provider category mapping table** — extract `plaid_detailed` from `app.categories` into a generic `app.category_mappings` table (`provider`, `provider_category`, `moneybin_category`, `moneybin_subcategory`). Triggered when a second provider is integrated. Single-column migration, architecturally simple.
+3. **Provider category mapping table** — extract `plaid_detailed` from `app.categories` into a generic `app.category_mappings` table (`provider`, `provider_category`, `moneybin_category`, `moneybin_subcategory`). Triggered when a second provider is integrated. Single-column migration, architecturally simple. **Implemented** as `core.bridge_category_source_map` / `app.category_source_map` (see `category-source-map.md`).
 
 4. **Amount/account-aware rule proposals** — detect when the same merchant is categorized differently depending on amount range or account and propose filtered rules. Deferred to implementation experience with the basic proposal engine.
 

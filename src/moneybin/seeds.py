@@ -2,9 +2,11 @@
 
 Seeds are managed by SQLMesh (``seeds.*`` schema, populated from CSV). The
 canonical resolved dimensions — categories and merchants — are exposed as
-``core.dim_categories`` and ``core.dim_merchants``. These views are also
-declared as SQLMesh models in ``sqlmesh/models/core/dim_*.sql`` (the
-canonical spec for column shapes). ``refresh_views`` builds equivalent
+``core.dim_categories`` and ``core.dim_merchants``. The resolved provider
+category-source bridge is exposed as ``core.bridge_category_source_map``.
+These views are also declared as SQLMesh models in
+``sqlmesh/models/core/dim_*.sql`` and ``bridge_category_source_map.sql``
+(the canonical spec for column shapes). ``refresh_views`` builds equivalent
 views directly via DuckDB so they are available in fresh test databases
 and on every ``Database`` open without requiring a full SQLMesh ``transform
 apply`` first; ``transform apply`` will subsequently ``CREATE OR REPLACE``
@@ -19,22 +21,30 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from moneybin.sql.category_class import CATEGORY_CLASS_FROM_ID_CASE_SQL
 from moneybin.tables import (
+    BRIDGE_CATEGORY_SOURCE_MAP,
     CATEGORIES,
     CATEGORY_OVERRIDES,
+    CATEGORY_SOURCE_MAP,
     MERCHANTS,
     SEED_CATEGORIES,
+    SEED_CATEGORY_SOURCE_MAP,
     USER_CATEGORIES,
     USER_MERCHANTS,
 )
 
 if TYPE_CHECKING:
     from moneybin.database import Database
+    from moneybin.tables import TableRef
 
 logger = logging.getLogger(__name__)
 
 
-_SEED_MODELS: list[str] = [SEED_CATEGORIES.full_name]
+_SEED_MODELS: list[str] = [
+    SEED_CATEGORIES.full_name,
+    SEED_CATEGORY_SOURCE_MAP.full_name,
+]
 
 
 def materialize_seeds(db: Database) -> None:
@@ -61,6 +71,16 @@ def _ensure_seed_tables_exist(db: Database) -> None:
     SQLMesh hasn't run), the empty table lets ``refresh_views`` assemble the
     ``core.dim_categories`` view without hitting a CatalogException on the
     missing source.
+
+    ``seeds.categories``'s column list intentionally matches frozen V014's
+    historical shape (``plaid_detailed``, not ``class``): a never-migrated DB
+    opened with ``no_auto_upgrade=True`` skips migrations but still calls
+    ``refresh_views`` on every open, so this is the only thing standing
+    between V014's later ``SELECT s.plaid_detailed`` replay and a
+    BinderException. No functional loss — ``refresh_views`` derives ``class``
+    from the ``category_id`` prefix when the column is absent, and the CSV /
+    view / consumer layers no longer read ``plaid_detailed`` (hard-cut intact
+    there).
     """
     db.execute("CREATE SCHEMA IF NOT EXISTS seeds")
     db.execute(
@@ -74,6 +94,36 @@ def _ensure_seed_tables_exist(db: Database) -> None:
         )
         """  # noqa: S608  # SEED_CATEGORIES is a TableRef constant, not user input
     )
+    db.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {SEED_CATEGORY_SOURCE_MAP.full_name} (
+            source_type VARCHAR,
+            source_category_code VARCHAR,
+            code_level VARCHAR,
+            category_id VARCHAR,
+            source_taxonomy_version VARCHAR
+        )
+        """  # noqa: S608  # SEED_CATEGORY_SOURCE_MAP is a TableRef constant, not user input
+    )
+
+
+def _has_column(db: Database, table: TableRef, column: str) -> bool:
+    """True if *column* exists on *table*, per the live catalog.
+
+    Used to tolerate a pre-V032 ``seeds.categories`` / ``app.user_categories``
+    (no ``class`` column yet) without mutating the table — see
+    :func:`refresh_views`. An earlier version of this guard pre-added the
+    column via ``ALTER TABLE``, which broke V015's ``CREATE TABLE tmp AS
+    SELECT *`` rebuild (column-count mismatch on the historical 7-column
+    shape). Querying the catalog and branching in the view SQL instead means
+    ``refresh_views`` never writes to these tables.
+    """
+    row = db.execute(
+        "SELECT 1 FROM duckdb_columns() "
+        "WHERE schema_name = ? AND table_name = ? AND column_name = ?",
+        [table.schema, table.name, column],
+    ).fetchone()
+    return row is not None
 
 
 def refresh_views(db: Database) -> None:
@@ -107,6 +157,23 @@ def refresh_views(db: Database) -> None:
     # and freshly-opened databases see the dims without requiring a full
     # SQLMesh `transform apply`. SQLMesh subsequently CREATE OR REPLACEs these
     # with identical bodies on every transform run.
+    #
+    # `class` is projected conditionally rather than assumed present: a
+    # pre-V032 database (no_auto_upgrade=True, migrations skipped) still has
+    # seeds.categories / app.user_categories in their pre-V032 shape (no
+    # `class` column). Rather than ALTER the table to add it — which broke
+    # V015's `SELECT *` rebuild — fall back to the same category_id-prefix
+    # CASE expression V032 uses to backfill it, computed on the fly.
+    seed_class_expr = (
+        "s.class"
+        if _has_column(db, SEED_CATEGORIES, "class")
+        else f"({CATEGORY_CLASS_FROM_ID_CASE_SQL}) AS class"
+    )
+    user_class_expr = (
+        "class"
+        if _has_column(db, USER_CATEGORIES, "class")
+        else f"({CATEGORY_CLASS_FROM_ID_CASE_SQL}) AS class"
+    )
     db.execute(
         f"""
         CREATE OR REPLACE VIEW {CATEGORIES.full_name} AS
@@ -115,7 +182,7 @@ def refresh_views(db: Database) -> None:
             s.category,
             s.subcategory,
             s.description,
-            s.plaid_detailed,
+            {seed_class_expr},
             true AS is_default,
             COALESCE(o.is_active, true) AS is_active,
             NULL::TIMESTAMP AS created_at
@@ -127,11 +194,42 @@ def refresh_views(db: Database) -> None:
             category,
             subcategory,
             description,
-            NULL AS plaid_detailed,
+            {user_class_expr},
             false AS is_default,
             is_active,
             created_at
         FROM {USER_CATEGORIES.full_name}
+        """  # noqa: S608  # all interpolated names are TableRef constants or the category_class module constant, not user input
+    )
+
+    # Build the two-tier category-source bridge. Mirrors
+    # sqlmesh/models/core/bridge_category_source_map.sql — a user row for
+    # (source_type, source_category_code) always wins over the seed default.
+    db.execute(
+        f"""
+        CREATE OR REPLACE VIEW {BRIDGE_CATEGORY_SOURCE_MAP.full_name} AS
+        SELECT
+            s.source_type,
+            s.source_category_code,
+            s.code_level,
+            s.category_id,
+            s.source_taxonomy_version,
+            true AS is_default
+        FROM {SEED_CATEGORY_SOURCE_MAP.full_name} s
+        WHERE NOT EXISTS (
+            SELECT 1 FROM {CATEGORY_SOURCE_MAP.full_name} a
+            WHERE a.source_type = s.source_type
+            AND a.source_category_code = s.source_category_code
+        )
+        UNION ALL
+        SELECT
+            source_type,
+            source_category_code,
+            code_level,
+            category_id,
+            source_taxonomy_version,
+            false AS is_default
+        FROM {CATEGORY_SOURCE_MAP.full_name}
         """  # noqa: S608  # all interpolated names are TableRef constants, not user input
     )
 

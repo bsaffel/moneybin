@@ -19,7 +19,7 @@ import pytest
 
 from moneybin.database import Database
 from moneybin.sql.migrations.V014__add_category_id_columns import migrate
-from tests.moneybin.db_helpers import create_core_tables, seed_categories_view
+from tests.moneybin.db_helpers import create_core_tables
 from tests.moneybin.migration_helpers import run_migration
 
 pytestmark = pytest.mark.fresh_db
@@ -34,11 +34,34 @@ def v014_db(db: Database) -> Database:
       USR0000001A -> ('Childcare', 'Daycare')
       USR0000002B -> ('Childcare', NULL)
       USR0000003C -> ('Groceries', NULL)
-    The seeded default category 'Food & Drink' (FND) comes from
-    ``seed_categories_view``.
+    The seeded default category 'Food & Drink' (FND) is inserted directly below.
+
+    ``seeds.categories`` is rebuilt to V014's *era* shape — pre-V032, so no
+    ``class`` column and still carrying ``plaid_detailed`` — rather than routed
+    through the current-day ``seed_categories_view`` / ``refresh_views``
+    helpers, whose shape has since drifted (``class`` added by V032,
+    ``plaid_detailed`` removed by the M1V bridge). V014's frozen ``migrate()``
+    rebuilds ``core.dim_categories`` selecting ``s.plaid_detailed``, so the
+    pre-state must present V014's era columns. Mirrors
+    ``test_migration_v032._recreate_pre_v032_state``'s independent-pre-state
+    approach. The ``core.dim_categories`` view (built by the ``fresh_db``
+    open's ``refresh_views``) is dropped first to release its dependency on
+    ``seeds.categories``; V014's ``migrate()`` recreates it. Nothing asserts on
+    the pre-migrate view state.
     """
     create_core_tables(db)
-    seed_categories_view(db)
+    db.execute("DROP VIEW IF EXISTS core.dim_categories")
+    db.execute("DROP TABLE IF EXISTS seeds.categories")
+    db.execute(
+        "CREATE TABLE seeds.categories ("
+        "category_id VARCHAR PRIMARY KEY, category VARCHAR, subcategory VARCHAR, "
+        "description VARCHAR, plaid_detailed VARCHAR)"
+    )
+    db.execute(
+        "INSERT INTO seeds.categories "
+        "(category_id, category, subcategory, description, plaid_detailed) VALUES "
+        "('FND', 'Food & Drink', NULL, 'Food and beverages', 'FOOD_AND_DRINK')"
+    )
     db.execute(
         "INSERT INTO app.user_categories "
         "(category_id, category, subcategory, is_active) "
@@ -46,10 +69,6 @@ def v014_db(db: Database) -> Database:
         "       ('USR0000002B', 'Childcare', NULL, true), "
         "       ('USR0000003C', 'Groceries', NULL, true)"
     )
-    # Refresh the dim_categories view so it sees the user_categories rows.
-    from moneybin.seeds import refresh_views
-
-    refresh_views(db)
     return db
 
 

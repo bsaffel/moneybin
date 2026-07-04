@@ -208,6 +208,15 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "is_active": DataClass.TXN_TYPE,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
     },
+    ("app", "category_source_map"): {
+        "category_id": DataClass.RECORD_ID,
+        "code_level": DataClass.TXN_TYPE,
+        "created_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "source_category_code": DataClass.CATEGORY,
+        "source_taxonomy_version": DataClass.AGGREGATE,
+        "source_type": DataClass.TXN_TYPE,
+        "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
+    },
     ("app", "gsheet_connections"): {
         "account_id": DataClass.RECORD_ID,
         "account_name": DataClass.INSTITUTION,
@@ -416,6 +425,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
     ("app", "user_categories"): {
         "category": DataClass.CATEGORY,
         "category_id": DataClass.RECORD_ID,
+        "class": DataClass.TXN_TYPE,
         "created_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "description": DataClass.CATEGORY,
         "is_active": DataClass.TXN_TYPE,
@@ -441,6 +451,14 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "previous_version": DataClass.AGGREGATE,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "version": DataClass.AGGREGATE,
+    },
+    ("core", "bridge_category_source_map"): {
+        "category_id": DataClass.RECORD_ID,
+        "code_level": DataClass.TXN_TYPE,
+        "is_default": DataClass.TXN_TYPE,
+        "source_category_code": DataClass.CATEGORY,
+        "source_taxonomy_version": DataClass.AGGREGATE,
+        "source_type": DataClass.TXN_TYPE,
     },
     ("core", "bridge_transfers"): {
         "amount": DataClass.TXN_AMOUNT,
@@ -475,11 +493,11 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
     ("core", "dim_categories"): {
         "category": DataClass.CATEGORY,
         "category_id": DataClass.CATEGORY,
+        "class": DataClass.TXN_TYPE,
         "created_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "description": DataClass.CATEGORY,
         "is_active": DataClass.TXN_TYPE,
         "is_default": DataClass.TXN_TYPE,
-        "plaid_detailed": DataClass.CATEGORY,
         "subcategory": DataClass.CATEGORY,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
     },
