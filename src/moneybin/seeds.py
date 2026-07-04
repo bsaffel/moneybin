@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from moneybin.sql.category_class import CATEGORY_CLASS_FROM_ID_CASE_SQL
 from moneybin.tables import (
     BRIDGE_CATEGORY_SOURCE_MAP,
     CATEGORIES,
@@ -35,11 +36,15 @@ from moneybin.tables import (
 
 if TYPE_CHECKING:
     from moneybin.database import Database
+    from moneybin.tables import TableRef
 
 logger = logging.getLogger(__name__)
 
 
-_SEED_MODELS: list[str] = [SEED_CATEGORIES.full_name]
+_SEED_MODELS: list[str] = [
+    SEED_CATEGORIES.full_name,
+    SEED_CATEGORY_SOURCE_MAP.full_name,
+]
 
 
 def materialize_seeds(db: Database) -> None:
@@ -90,6 +95,41 @@ def _ensure_seed_tables_exist(db: Database) -> None:
         )
         """  # noqa: S608  # SEED_CATEGORY_SOURCE_MAP is a TableRef constant, not user input
     )
+    # Pre-V032 databases opened with no_auto_upgrade=True (migrations skipped)
+    # still have this table, just without `class` — CREATE TABLE IF NOT EXISTS
+    # above is then a no-op that leaves the old shape in place. Without this
+    # guard, refresh_views' dim_categories build below hits a BinderException
+    # on the missing column.
+    _ensure_class_column(db, SEED_CATEGORIES, backfill_by_prefix=True)
+
+
+def _ensure_class_column(
+    db: Database, table: TableRef, *, backfill_by_prefix: bool
+) -> None:
+    """Add ``class`` to *table* if it's missing, matching V032's shape exactly.
+
+    Idempotent: a no-op once the column exists — including after V032 itself
+    eventually runs and (for ``app.user_categories``) tightens it to NOT NULL.
+    ``backfill_by_prefix`` selects V032's two backfill rules: the
+    category_id-prefix CASE for seed reference data, or a flat ``'expense'``
+    default for user rows (V032 can't infer a class from a user-assigned id).
+    """
+    exists = db.execute(
+        "SELECT 1 FROM duckdb_columns() "
+        "WHERE schema_name = ? AND table_name = ? AND column_name = 'class'",
+        [table.schema, table.name],
+    ).fetchone()
+    if exists:
+        return
+    if backfill_by_prefix:
+        db.execute(f"ALTER TABLE {table.full_name} ADD COLUMN class VARCHAR")
+        db.execute(
+            f"UPDATE {table.full_name} SET class = {CATEGORY_CLASS_FROM_ID_CASE_SQL}"  # noqa: S608  # table is a TableRef constant; CASE SQL is a module constant
+        )
+    else:
+        db.execute(
+            f"ALTER TABLE {table.full_name} ADD COLUMN class VARCHAR DEFAULT 'expense'"
+        )
 
 
 def refresh_views(db: Database) -> None:
@@ -106,6 +146,11 @@ def refresh_views(db: Database) -> None:
     reads still resolve. The pure user view lands once migrations complete.
     """
     _ensure_seed_tables_exist(db)
+    # Mirrors the seeds.categories guard above: a pre-V032 app.user_categories
+    # (no_auto_upgrade=True, migrations skipped) is created by init_schemas'
+    # CREATE TABLE IF NOT EXISTS before refresh_views ever runs, so it keeps
+    # its old shape without `class` unless we add it here.
+    _ensure_class_column(db, USER_CATEGORIES, backfill_by_prefix=False)
     legacy = db.execute(
         "SELECT table_type FROM information_schema.tables "
         "WHERE table_schema = 'app' AND table_name = 'merchants'"

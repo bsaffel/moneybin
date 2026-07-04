@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import logging
 
+from moneybin.sql.category_class import CATEGORY_CLASS_FROM_ID_CASE_SQL
+
 logger = logging.getLogger(__name__)
 
 
@@ -86,14 +88,7 @@ def migrate(conn: object) -> None:
             "ALTER TABLE seeds.categories ADD COLUMN class VARCHAR"
         )
         conn.execute(  # type: ignore[union-attr]
-            """
-            UPDATE seeds.categories SET class = CASE
-                WHEN category_id LIKE 'INC%' THEN 'income'
-                WHEN category_id LIKE 'TRN%' THEN 'transfer'
-                WHEN category_id LIKE 'LNP%' THEN 'debt'
-                ELSE 'expense'
-            END
-            """
+            f"UPDATE seeds.categories SET class = {CATEGORY_CLASS_FROM_ID_CASE_SQL}"  # noqa: S608  # category_class module constant, not user input
         )
         conn.execute(  # type: ignore[union-attr]
             "COMMENT ON COLUMN seeds.categories.class IS 'Accounting class: income | expense | transfer | debt'"
