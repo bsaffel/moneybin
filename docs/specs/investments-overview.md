@@ -1,10 +1,13 @@
 # Investments — Overview
 
-> Last updated: 2026-07-03 — added Pillar C stale-price fallback design input (`price_date` + staleness surfacing).
+> Last updated: 2026-07-04 — draft → ready reconciliation: HIFO promoted into the
+> foundation child's v1 method set (LIFO stays demand-gated); lots-model
+> SQL-vs-Python question resolved (Python SQLMesh model); foundation child
+> Plaid-validated against the OpenAPI spec.
 > Umbrella doc for the investments initiative (milestone M1J). Child specs listed
 > in [The four pillars](#the-four-pillars) are written separately; the foundation
 > child is [`investments-data-model.md`](investments-data-model.md).
-> Status: draft
+> Status: ready
 > Type: Umbrella
 > Companions: [`asset-tracking.md`](asset-tracking.md) (the asset/investment dividing
 > line), [`reports-net-worth.md`](reports-net-worth.md) (net worth integration target),
@@ -86,7 +89,7 @@ cost-basis-method election, and specific-lot selection overrides. Everything in
 | Pillar | Purpose | Needs price feed? | Child spec |
 |---|---|---|---|
 | **A. Investment data model** | The securities dimension + the investment-transaction ledger (raw → prep → core), plus manual entry | No | [`investments-data-model.md`](investments-data-model.md) *(foundation child — A+B)* |
-| **B. Cost-basis & gain/loss engine** | Derived lots; FIFO + specific-ID + average-cost; realized gain/loss; short-term/long-term split | No | [`investments-data-model.md`](investments-data-model.md) *(ships with A)* |
+| **B. Cost-basis & gain/loss engine** | Derived lots; FIFO + HIFO + specific-ID + average-cost; realized gain/loss; short-term/long-term split | No | [`investments-data-model.md`](investments-data-model.md) *(ships with A)* |
 | **C. Price feeds & valuation** | Yahoo + CoinGecko ingestion → append-only `core.fct_security_prices`; `core.fct_holdings_daily`; unrealized gain/loss | Yes (it *is* the feed) | `investments-price-feeds.md` *(planned)* |
 | **D. Net-worth integration** | Holdings valuation into `reports.net_worth` / `fct_balances` | Yes (consumes C) | `investments-net-worth.md` *(planned)* |
 
@@ -125,7 +128,8 @@ draws from and how their basis is summed:
 | FIFO | Oldest lots first | IRS default; most brokerages for stocks |
 | Specific identification | User-/broker-selected lots, else FIFO | Tax-loss harvesting; controlling ST/LT |
 | Average cost | Pool basis across lots (IRS: funds/ETFs only) | Vanguard/Fidelity mutual-fund default |
-| HIFO / LIFO | Highest / last lots first | Crypto tax minimization (future) |
+| HIFO | Highest-cost lots first | Crypto tax minimization (v1 — sort-key variant of FIFO) |
+| LIFO | Last lots first | Future, demand-gated (no PFM ships it for brokerage) |
 
 The **short-term/long-term split walks lots oldest-first under every method** — only
 the basis *number* changes. The election is recorded at per-account default
@@ -231,7 +235,7 @@ cost-basis methods.
 - **Ledger-derived correctness.** Holdings, lots, and gain/loss are fully rebuildable
   from `core.fct_investment_transactions` + `app.*` on every SQLMesh run; no derived
   state is authoritative.
-- **Method coverage.** FIFO, specific-ID, and average-cost all produce correct ST/LT
+- **Method coverage.** FIFO, HIFO, specific-ID, and average-cost all produce correct ST/LT
   splits over the same lot ledger.
 - **Net worth completeness.** Once Pillar D ships, `reports.net_worth` includes
   market-valued holdings alongside cash and physical assets.
@@ -254,10 +258,12 @@ Cross-cutting decisions deferred to child specs or to resolve during implementat
   cross-source resolution (mirroring `fct_transactions`). The foundation child fixes
   the surrogate-key contract; the union/dedup mechanics are detailed when the first
   importer lands.
-- **Lots model: SQL vs Python.** The lot-consumption engine (FIFO cursor, average-cost
-  running aggregate, specific-ID override lookup) may be a Python SQLMesh model rather
-  than pure SQL, mirroring the matching engine's hybrid posture. Foundation-child
-  decision.
+- **Lots model: SQL vs Python — resolved.** The lot-consumption engine is a
+  **Python SQLMesh model** (`fct_investment_lots.py` / `fct_realized_gains.py`),
+  applying the existing `fct_balances_daily.py` precedent — sequential lot
+  consumption (FIFO/HIFO cursor, average-cost running pool, specific-ID lookup)
+  is unmaintainable in pure SQL. Applies an existing pattern → no ADR
+  (2026-07-04; recorded in the foundation child's Key Decisions).
 - **Realized gain/loss surface grain — resolved.** The foundation child uses a
   separate `core.fct_realized_gains` fact (one row per disposal × consumed lot — the
   1099-B grain), rather than overloading columns onto `core.fct_investment_lots`.
