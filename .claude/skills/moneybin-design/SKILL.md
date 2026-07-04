@@ -16,7 +16,7 @@ before producing anything:
 Non-negotiables: dark theme leads (light is a first-class peer); brass
 (`--accent-brass`) is the only accent, never blue; money is ALWAYS JetBrains Mono
 with explicit +/- signs on income/expense flows (balances unsigned) — use the `Amount` component; hairline borders, no resting
-shadows; every data widget carries a SQL provenance chip; linear chart
+shadows; every data widget carries a SQL provenance chip (rung one of a three-rung provenance ladder — a global deep-audit strip, then pinned tooltips snapping to real points; see `design-system/charts.md`); linear chart
 interpolation only; no emoji, no exclamation points, no superlatives.
 
 For throwaway artifacts (mocks, slides, prototypes): copy assets out and produce

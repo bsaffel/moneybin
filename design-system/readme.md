@@ -25,7 +25,7 @@ Sources: authored from scratch in this project (no external Figma/codebase). The
 - **Animation:** state transitions ≤150ms ease-out; no entrance animations; the pulsing vault dot is the only ambient motion; the vault-unlock (duck-key seats into keyhole) is the one sanctioned brand animation.
 - **Hover:** surfaces step one level up (base→surface→raised); text steps secondary→primary; brass button → brass-strong; SQL chip border → brass. Press: no shrink effects.
 - **Focus:** 2px solid var(--focus), 2px offset.
-- **Charts (BI-grade, all binding):** no axis strokes, zero baseline only emphasized rule; horizontal hairlines max 5, never vertical; mono 11px labels, currency abbreviated on axes, exact in tooltips; LINEAR interpolation only (never splines), gaps never bridged; tooltips are ledger rows snapping to real points; single series brass, multi chart-1..8 max 6; area fills ≤8%; every chart carries its SQL chip; off-scale zero disclosed in the corner.
+- **Charts (BI-grade):** `charts.md` is the binding grammar (it wins over any other chart section here), demonstrated by the 12 `guidelines/charts-*.html` specimens. In brief: no axis strokes, horizontal hairlines max 5, mono 11px labels; LINEAR interpolation only — gaps never bridged (stepped carry-forward is the honest form for balance data); single series brass, multi `chart-1..8` max 6, and a category keeps its hue in every view; area fills ≤8%; off-scale zero disclosed on the chart. Provenance is a **three-rung ladder**: SQL chip on every widget → a global **deep-audit strip** (one toggle adds a mono `AUDIT` line — n=, scale/clip, exclusions — to every widget) → **pinned tooltips** snapping to real data points. Signs print in the glyph on chart labels and legends too (sankey, donut, stacked bars), not only in `Amount`.
 
 ## Iconography
 Custom-drawn line icons: 20×20 grid, 1.5px stroke, squared caps, no fills, one weight, literal metaphors (see `guidelines/icons-grammar.html` — copy these SVGs). The AI/ask surface is the terminal caret `▸_`, never ✨. Unicode used sparingly as glyphs (⌘K, ⇄ transfers, ▲▼ deltas, ● status). No icon font; inline SVG. No emoji ever. Banned metaphors: coins raining, sparkles, magic wands. If a stock icon is unavoidable, restroke to spec (nearest CDN match: Lucide at 1.5px, squared caps where possible — flag any substitution).
@@ -44,5 +44,4 @@ Custom-drawn line icons: 20×20 grid, 1.5px stroke, squared caps, no fills, one 
 - `Amount` — not a visual primitive in a source kit, but the money-formatting hard rules (mono, tabular, redundant sign) need a single enforcement point.
 
 ### Caveats
-- Fonts load from Google Fonts here for preview convenience; production must self-host the woff2s (no-telemetry promise). Font binaries are NOT bundled in this project yet.
 - The dashboard UI kit is a static extraction of the brand-kit mockup (hover states and SQL toggle are not interactive there; see the DC file for the live version).

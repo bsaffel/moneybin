@@ -1,4 +1,4 @@
-@import url("https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400..700;1,6..72,400..600&family=Schibsted+Grotesk:wght@400..700&family=JetBrains+Mono:wght@400..700&display=swap");
+@import url(".design-sync/fonts/fonts.css");
 @import url("tokens/colors.css");
 @import url("tokens/typography.css");
 @import url("tokens/shape.css");

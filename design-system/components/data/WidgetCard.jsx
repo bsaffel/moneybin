@@ -1,6 +1,6 @@
 const { useState } = React;
 
-export function WidgetCard({ title, sql, meta, children, style }) {
+export function WidgetCard({ title, sql, meta, audit, children, style }) {
   const [sqlOpen, setSqlOpen] = useState(false);
   return (
     <div style={{
@@ -28,6 +28,12 @@ export function WidgetCard({ title, sql, meta, children, style }) {
         <pre style={{ margin: '12px 0 0 0', fontFamily: 'var(--font-data)', fontSize: '11.5px', lineHeight: 1.7, color: 'var(--text-secondary)', background: 'var(--bg-inset)', border: '1px solid var(--border-hairline)', borderRadius: 'var(--r-control)', padding: '8px 12px', whiteSpace: 'pre-wrap' }}>{'-- this number, verbatim\n' + sql}</pre>
       ) : null}
       <div style={{ marginTop: '14px' }}>{children}</div>
+      {audit ? (
+        <div style={{ marginTop: '10px', display: 'flex', gap: '8px', alignItems: 'center' }}>
+          <span style={{ fontFamily: 'var(--font-data)', fontSize: '10px', letterSpacing: '0.1em', color: 'var(--accent-brass)', border: '1px solid var(--accent-brass)', borderRadius: 'var(--r-chip)', padding: '1px 5px' }}>AUDIT</span>
+          <span style={{ fontFamily: 'var(--font-data)', fontSize: '10px', color: 'var(--text-faint)' }}>{audit}</span>
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -9,6 +9,7 @@ export const SpendByCategory = () => (
       title="SPEND BY CATEGORY"
       meta="June 2026"
       sql={"SELECT category, sum(amount) FROM txns\nWHERE month = '2026-06' GROUP BY 1 ORDER BY 2;"}
+      audit="n=1,732 debits · June 2026 · transfers excluded"
     >
       <div
         style={{
