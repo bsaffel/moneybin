@@ -8,6 +8,8 @@ export interface ButtonProps {
   /** 'sm' 24px, 'md' 30px. Default 'md'. */
   size?: 'sm' | 'md';
   disabled?: boolean;
+  /** Native button type. Default 'button' — set 'submit' only for a form's submit action. */
+  type?: 'button' | 'submit' | 'reset';
   onClick?: () => void;
   children?: React.ReactNode;
   style?: React.CSSProperties;
