@@ -14,6 +14,7 @@ transaction rather than calling `migrate(db._conn)` bare.
 
 from __future__ import annotations
 
+import duckdb
 import pytest
 
 from moneybin.database import Database
@@ -165,6 +166,47 @@ def test_v032_idempotent_on_fresh_install(db: Database) -> None:
     _, is_nullable = column_info(db, "app", "user_categories", "class")
     assert is_nullable is False
     assert column_exists(db, "seeds", "categories", "class")
+
+
+def test_v032_class_check_constraint_enforced(db: Database) -> None:
+    """The rebuilt app.user_categories rejects a class outside the four values."""
+    _recreate_pre_v032_state(db)
+    run_migration(db, migrate)
+
+    with pytest.raises(duckdb.ConstraintException):
+        db.execute(
+            "INSERT INTO app.user_categories (category_id, category, class) "
+            "VALUES (?, ?, ?)",
+            ["u_bogus0000001", "BogusClass", "bogus"],
+        )
+
+
+def test_v032_code_level_check_constraint_enforced(db: Database) -> None:
+    """app.category_source_map rejects a code_level outside detailed/primary."""
+    _recreate_pre_v032_state(db)
+    run_migration(db, migrate)
+
+    with pytest.raises(duckdb.ConstraintException):
+        db.execute(
+            "INSERT INTO app.category_source_map "
+            "(source_type, source_category_code, code_level, category_id) "
+            "VALUES (?, ?, ?, ?)",
+            ["plaid", "FOOD_AND_DRINK", "bogus_level", "FND-TST"],
+        )
+
+
+def test_v032_idempotent_run_preserves_class_check(db: Database) -> None:
+    """A second migrate() call must not fail, and the CHECK must survive it."""
+    _recreate_pre_v032_state(db)
+    run_migration(db, migrate)
+    run_migration(db, migrate)
+
+    with pytest.raises(duckdb.ConstraintException):
+        db.execute(
+            "INSERT INTO app.user_categories (category_id, category, class) "
+            "VALUES (?, ?, ?)",
+            ["u_bogus0000002", "BogusClass2", "bogus"],
+        )
 
 
 if __name__ == "__main__":

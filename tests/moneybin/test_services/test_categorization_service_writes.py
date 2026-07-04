@@ -984,6 +984,21 @@ class TestDeleteCategory:
         assert "proposed rules" in str(exc_info.value)
 
     @pytest.mark.unit
+    def test_refuses_when_referenced_by_category_source_map(self, db: Database) -> None:
+        svc = CategorizationService(db)
+        cat_id = svc.create_category("MappedCat")
+        db.execute(
+            "INSERT INTO app.category_source_map "
+            "(source_type, source_category_code, code_level, category_id) "
+            "VALUES (?, ?, ?, ?)",
+            ["plaid", "FOOD_AND_DRINK_GROCERIES", "detailed", cat_id],
+        )
+        with pytest.raises(UserError) as exc_info:
+            svc.delete_category(cat_id)
+        assert exc_info.value.code == "CATEGORY_HAS_REFERENCES"
+        assert "source mappings" in str(exc_info.value)
+
+    @pytest.mark.unit
     def test_force_cascades_transaction_references(self, db: Database) -> None:
         svc = CategorizationService(db)
         cat_id = svc.create_category("ForceCat")
@@ -1125,6 +1140,32 @@ class TestDeleteCategory:
             db.execute(
                 "SELECT 1 FROM app.proposed_rules WHERE proposed_rule_id = ?",
                 ["pro-force01234"],
+            ).fetchall()
+            == []
+        )
+        assert (
+            db.execute(
+                "SELECT 1 FROM app.user_categories WHERE category_id = ?", [cat_id]
+            ).fetchall()
+            == []
+        )
+
+    @pytest.mark.unit
+    def test_force_cascades_category_source_map_references(self, db: Database) -> None:
+        svc = CategorizationService(db)
+        cat_id = svc.create_category("MappedForceCat")
+        db.execute(
+            "INSERT INTO app.category_source_map "
+            "(source_type, source_category_code, code_level, category_id) "
+            "VALUES (?, ?, ?, ?)",
+            ["plaid", "FOOD_AND_DRINK_GROCERIES", "detailed", cat_id],
+        )
+        svc.delete_category(cat_id, force=True)
+
+        assert (
+            db.execute(
+                "SELECT 1 FROM app.category_source_map WHERE source_category_code = ?",
+                ["FOOD_AND_DRINK_GROCERIES"],
             ).fetchall()
             == []
         )

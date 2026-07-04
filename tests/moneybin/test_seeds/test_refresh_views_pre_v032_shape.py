@@ -5,8 +5,15 @@ skipped) keeps ``seeds.categories`` and ``app.user_categories`` in their
 pre-V032 shape — no ``class`` column. ``Database.__init__`` still calls
 ``refresh_views`` unconditionally, whose ``core.dim_categories`` body selects
 ``s.class`` (seed arm) and ``class`` (user arm) -> ``BinderException`` without
-a guard. ``refresh_views`` must add the missing column (backfilling it) before
-building the view, exactly as V032 would once it runs.
+a guard.
+
+The tolerance is a VIEW-level projection (the prefix-derived CASE expression
+substituted in for the missing column), never a table ALTER. An earlier
+version of this fix pre-added the column via ``ALTER TABLE`` — that broke
+V015's ``CREATE TABLE tmp AS SELECT *`` rebuild, which assumes the historical
+7-column shape and fails on the resulting column-count mismatch. This test
+asserts both that the view tolerates the missing column AND that the base
+tables are left untouched.
 """
 
 from __future__ import annotations
@@ -37,27 +44,48 @@ def _recreate_pre_v032_shape(db: Database) -> None:
     )
 
 
-def test_refresh_views_tolerates_pre_v032_shape(db: Database) -> None:
+def test_refresh_views_tolerates_pre_v032_shape_without_mutating_tables(
+    db: Database,
+) -> None:
     _recreate_pre_v032_shape(db)
     assert not column_exists(db, "seeds", "categories", "class")
     assert not column_exists(db, "app", "user_categories", "class")
 
     refresh_views(db)  # must not raise BinderException on the missing columns
 
-    assert column_exists(db, "seeds", "categories", "class")
-    assert column_exists(db, "app", "user_categories", "class")
+    # V015-safety guard: refresh_views must never ALTER these tables — the
+    # view tolerates the missing column via a projected CASE expression, not
+    # by pre-adding the column.
+    assert not column_exists(db, "seeds", "categories", "class")
+    assert not column_exists(db, "app", "user_categories", "class")
 
-    classes = dict(
+    seed_classes = dict(
         db.execute(
-            "SELECT category_id, class FROM seeds.categories "
+            "SELECT category_id, class FROM core.dim_categories "
             "WHERE category_id LIKE '%-TST' ORDER BY category_id"
         ).fetchall()
     )
-    assert classes == {
+    assert seed_classes == {
         "INC-TST": "income",
         "TRN-TST": "transfer",
         "LNP-TST": "debt",
         "FND-TST": "expense",
+    }
+
+    # User-created category_ids never carry the INC/TRN/LNP prefixes, so the
+    # same CASE expression resolves them all to 'expense' — matching the old
+    # flat-default backfill behavior for user rows.
+    user_classes = dict(
+        db.execute(
+            "SELECT category_id, class FROM core.dim_categories "
+            "WHERE category_id LIKE 'u\\_%' ESCAPE '\\'"
+            "ORDER BY category_id"
+        ).fetchall()
+    )
+    assert user_classes == {
+        "u_a1b2c3d4e5f6": "expense",
+        "u_b2c3d4e5f6a1": "expense",
+        "u_c3d4e5f6a1b2": "expense",
     }
 
     # core.dim_categories must actually build (the view whose SELECT was

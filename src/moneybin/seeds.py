@@ -95,41 +95,25 @@ def _ensure_seed_tables_exist(db: Database) -> None:
         )
         """  # noqa: S608  # SEED_CATEGORY_SOURCE_MAP is a TableRef constant, not user input
     )
-    # Pre-V032 databases opened with no_auto_upgrade=True (migrations skipped)
-    # still have this table, just without `class` — CREATE TABLE IF NOT EXISTS
-    # above is then a no-op that leaves the old shape in place. Without this
-    # guard, refresh_views' dim_categories build below hits a BinderException
-    # on the missing column.
-    _ensure_class_column(db, SEED_CATEGORIES, backfill_by_prefix=True)
 
 
-def _ensure_class_column(
-    db: Database, table: TableRef, *, backfill_by_prefix: bool
-) -> None:
-    """Add ``class`` to *table* if it's missing, matching V032's shape exactly.
+def _has_column(db: Database, table: TableRef, column: str) -> bool:
+    """True if *column* exists on *table*, per the live catalog.
 
-    Idempotent: a no-op once the column exists — including after V032 itself
-    eventually runs and (for ``app.user_categories``) tightens it to NOT NULL.
-    ``backfill_by_prefix`` selects V032's two backfill rules: the
-    category_id-prefix CASE for seed reference data, or a flat ``'expense'``
-    default for user rows (V032 can't infer a class from a user-assigned id).
+    Used to tolerate a pre-V032 ``seeds.categories`` / ``app.user_categories``
+    (no ``class`` column yet) without mutating the table — see
+    :func:`refresh_views`. An earlier version of this guard pre-added the
+    column via ``ALTER TABLE``, which broke V015's ``CREATE TABLE tmp AS
+    SELECT *`` rebuild (column-count mismatch on the historical 7-column
+    shape). Querying the catalog and branching in the view SQL instead means
+    ``refresh_views`` never writes to these tables.
     """
-    exists = db.execute(
+    row = db.execute(
         "SELECT 1 FROM duckdb_columns() "
-        "WHERE schema_name = ? AND table_name = ? AND column_name = 'class'",
-        [table.schema, table.name],
+        "WHERE schema_name = ? AND table_name = ? AND column_name = ?",
+        [table.schema, table.name, column],
     ).fetchone()
-    if exists:
-        return
-    if backfill_by_prefix:
-        db.execute(f"ALTER TABLE {table.full_name} ADD COLUMN class VARCHAR")
-        db.execute(
-            f"UPDATE {table.full_name} SET class = {CATEGORY_CLASS_FROM_ID_CASE_SQL}"  # noqa: S608  # table is a TableRef constant; CASE SQL is a module constant
-        )
-    else:
-        db.execute(
-            f"ALTER TABLE {table.full_name} ADD COLUMN class VARCHAR DEFAULT 'expense'"
-        )
+    return row is not None
 
 
 def refresh_views(db: Database) -> None:
@@ -146,11 +130,6 @@ def refresh_views(db: Database) -> None:
     reads still resolve. The pure user view lands once migrations complete.
     """
     _ensure_seed_tables_exist(db)
-    # Mirrors the seeds.categories guard above: a pre-V032 app.user_categories
-    # (no_auto_upgrade=True, migrations skipped) is created by init_schemas'
-    # CREATE TABLE IF NOT EXISTS before refresh_views ever runs, so it keeps
-    # its old shape without `class` unless we add it here.
-    _ensure_class_column(db, USER_CATEGORIES, backfill_by_prefix=False)
     legacy = db.execute(
         "SELECT table_type FROM information_schema.tables "
         "WHERE table_schema = 'app' AND table_name = 'merchants'"
@@ -168,6 +147,23 @@ def refresh_views(db: Database) -> None:
     # and freshly-opened databases see the dims without requiring a full
     # SQLMesh `transform apply`. SQLMesh subsequently CREATE OR REPLACEs these
     # with identical bodies on every transform run.
+    #
+    # `class` is projected conditionally rather than assumed present: a
+    # pre-V032 database (no_auto_upgrade=True, migrations skipped) still has
+    # seeds.categories / app.user_categories in their pre-V032 shape (no
+    # `class` column). Rather than ALTER the table to add it — which broke
+    # V015's `SELECT *` rebuild — fall back to the same category_id-prefix
+    # CASE expression V032 uses to backfill it, computed on the fly.
+    seed_class_expr = (
+        "s.class"
+        if _has_column(db, SEED_CATEGORIES, "class")
+        else f"({CATEGORY_CLASS_FROM_ID_CASE_SQL}) AS class"
+    )
+    user_class_expr = (
+        "class"
+        if _has_column(db, USER_CATEGORIES, "class")
+        else f"({CATEGORY_CLASS_FROM_ID_CASE_SQL}) AS class"
+    )
     db.execute(
         f"""
         CREATE OR REPLACE VIEW {CATEGORIES.full_name} AS
@@ -176,7 +172,7 @@ def refresh_views(db: Database) -> None:
             s.category,
             s.subcategory,
             s.description,
-            s.class,
+            {seed_class_expr},
             true AS is_default,
             COALESCE(o.is_active, true) AS is_active,
             NULL::TIMESTAMP AS created_at
@@ -188,12 +184,12 @@ def refresh_views(db: Database) -> None:
             category,
             subcategory,
             description,
-            class,
+            {user_class_expr},
             false AS is_default,
             is_active,
             created_at
         FROM {USER_CATEGORIES.full_name}
-        """  # noqa: S608  # all interpolated names are TableRef constants, not user input
+        """  # noqa: S608  # all interpolated names are TableRef constants or the category_class module constant, not user input
     )
 
     # Build the two-tier category-source bridge. Mirrors

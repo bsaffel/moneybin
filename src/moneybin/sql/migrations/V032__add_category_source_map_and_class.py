@@ -1,13 +1,18 @@
 """V032: add app.category_source_map, app.user_categories.class, and seeds.categories.class.
 
-DuckDB rejects `ADD COLUMN ... NOT NULL` in one statement (`Adding columns
-with constraints not yet supported`), so the `class` column is added with
-just a DEFAULT (backfills every existing row), then tightened to NOT NULL in
-a second statement. The interim COMMIT is required because DuckDB refuses to
-build the SET NOT NULL constraint while the backfill's writes are still
-outstanding in the same transaction — the same two-step dance V010 uses for
-`updated_at`. Recovery from a crash between those two statements goes through
-the idempotent `elif` branch below.
+DuckDB rejects both `ADD COLUMN ... NOT NULL` (`Adding columns with
+constraints not yet supported`) and `ADD CONSTRAINT CHECK` (`No support for
+that ALTER TABLE option yet`) in a single ALTER, and `class` needs both a
+NOT NULL and a CHECK — a plain two-step ALTER (add nullable, backfill,
+tighten to NOT NULL) has no third step that could bolt on the CHECK. So
+`app.user_categories` is rebuilt wholesale: snapshot to a tmp table, DROP,
+CREATE with the full target shape (NOT NULL + CHECK baked in), re-INSERT
+via an explicit column list (never `SELECT *`, so a future column addition
+here can't silently reorder/miscount against the old shape). This mirrors
+V015's DROP-CONSTRAINT-via-rebuild pattern. The whole rebuild runs inside
+the migration runner's single transaction — no interim COMMIT is needed
+because there's no longer a separate ALTER ... SET NOT NULL step that must
+follow a durable backfill.
 
 `seeds.categories` needs the same `class` column so `refresh_views()` (called
 right after migrations, on every ``Database`` open) can build
@@ -39,7 +44,8 @@ def migrate(conn: object) -> None:
         CREATE TABLE IF NOT EXISTS app.category_source_map (
             source_type VARCHAR NOT NULL,
             source_category_code VARCHAR NOT NULL,
-            code_level VARCHAR NOT NULL DEFAULT 'detailed',
+            code_level VARCHAR NOT NULL DEFAULT 'detailed'
+                CHECK (code_level IN ('detailed', 'primary')),
             category_id VARCHAR NOT NULL,
             source_taxonomy_version VARCHAR,
             created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -57,20 +63,42 @@ def migrate(conn: object) -> None:
     col_map: dict[str, bool] = {c[0]: c[1] for c in cols}
 
     if "class" not in col_map:
-        logger.debug("V032: adding class column to app.user_categories")
+        logger.debug("V032: rebuilding app.user_categories to add class + CHECK")
         conn.execute(  # type: ignore[union-attr]
-            "ALTER TABLE app.user_categories ADD COLUMN class VARCHAR DEFAULT 'expense'"
+            "CREATE TABLE app.user_categories__v032_tmp AS "
+            "SELECT * FROM app.user_categories"
         )
-        conn.execute("COMMIT")  # type: ignore[union-attr]
-        conn.execute("BEGIN TRANSACTION")  # type: ignore[union-attr]
+        conn.execute("DROP TABLE app.user_categories")  # type: ignore[union-attr]
         conn.execute(  # type: ignore[union-attr]
-            "ALTER TABLE app.user_categories ALTER COLUMN class SET NOT NULL"
+            """
+            CREATE TABLE app.user_categories (
+                category_id VARCHAR PRIMARY KEY,
+                category VARCHAR NOT NULL,
+                subcategory VARCHAR,
+                description VARCHAR,
+                class VARCHAR NOT NULL DEFAULT 'expense'
+                    CHECK (class IN ('income', 'expense', 'transfer', 'debt')),
+                is_active BOOLEAN DEFAULT true,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
         )
-    elif col_map["class"] is True:
-        logger.debug("V032: tightening app.user_categories.class to NOT NULL")
         conn.execute(  # type: ignore[union-attr]
-            "ALTER TABLE app.user_categories ALTER COLUMN class SET NOT NULL"
+            """
+            INSERT INTO app.user_categories
+                (category_id, category, subcategory, description,
+                 is_active, created_at, updated_at)
+            SELECT category_id, category, subcategory, description,
+                   is_active, created_at, updated_at
+            FROM app.user_categories__v032_tmp
+            """
         )
+        conn.execute("DROP TABLE app.user_categories__v032_tmp")  # type: ignore[union-attr]
+    # class already present -> no-op (idempotent). Column comments are not
+    # preserved through the rebuild; the COMMENT ON COLUMN below re-applies it
+    # unconditionally (comments also self-heal on the next Database open via
+    # _apply_comments, but this keeps it immediate).
     conn.execute(  # type: ignore[union-attr]
         "COMMENT ON COLUMN app.user_categories.class IS 'Accounting class: income | expense | transfer | debt'"
     )

@@ -171,6 +171,34 @@ def test_delete_raises_on_missing_row(db: Database) -> None:
     assert _audit_rows_for(db, "nope") == []
 
 
+def test_delete_undo_restores_class(db: Database) -> None:
+    """Undoing a delete must restore `class`, not just the pre-V032 columns.
+
+    Regression guard: `class` is NOT NULL on `app.user_categories`, but the
+    delete before-image previously omitted it from `_USER_CATEGORIES_COLUMNS`.
+    `BaseRepo.undo_event` refuses to reverse a DELETE whose captured `before`
+    is missing a NOT NULL column, so every `user_category.delete` undo raised
+    `UserError` — this drives the real undo path end-to-end rather than
+    inspecting the captured row directly.
+    """
+    repo = UserCategoriesRepo(db)
+    cid = repo.insert(category="Freelance Income", actor="user").target_id
+    assert cid is not None
+    db.conn.execute(
+        "UPDATE app.user_categories SET class = 'income' WHERE category_id = ?",
+        [cid],
+    )
+
+    delete_event = repo.delete(cid, actor="user")
+    repo.undo_event(delete_event, actor="user")
+
+    row = db.conn.execute(
+        "SELECT category, class FROM app.user_categories WHERE category_id = ?",
+        [cid],
+    ).fetchone()
+    assert row == ("Freelance Income", "income")
+
+
 def test_insert_rolls_back_when_audit_raises(db: Database) -> None:
     audit = MagicMock()
     audit.record_audit_event.side_effect = RuntimeError("simulated audit failure")
