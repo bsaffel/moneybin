@@ -16,6 +16,9 @@ Flow inventory:
   merchant catalog.
 - :meth:`apply_plaid_categories` — sweep still-uncategorized Plaid rows
   against the two-tier category-source bridge, confidence-gated.
+- :meth:`improve_ai_categories` — opt-in upgrade pass: re-run the same
+  bridge lookup against ``categorized_by='ai'`` rows so a confident
+  provider-native match replaces an earlier AI guess.
 - :meth:`categorize_pending` — combined snowball: scan uncategorized once,
   run rules pass, then merchants pass (rule wins on overlap), then plaid
   pass last to fill the long tail.
@@ -878,6 +881,24 @@ class CategorizationOrchestrator:
         """
         rows = self._plaid_bridge_candidates("tc.transaction_id IS NULL")
         return self._write_plaid_rows(rows)
+
+    def improve_ai_categories(self) -> int:
+        """Re-categorize AI-guessed rows to confident Plaid provider_native.
+
+        Opt-in upgrade pass: reverse-looks-up every ``categorized_by='ai'``
+        row against the bridge, same >=MEDIUM confidence gate as
+        :meth:`apply_plaid_categories`. The write-time precedence guard
+        permits ``provider_native``(6) to overwrite ``ai``(7) and blocks
+        every other source (<=6), so only ai rows ever change here.
+
+        Returns:
+            Number of transactions upgraded.
+        """
+        rows = self._plaid_bridge_candidates("tc.categorized_by = 'ai'")
+        count = self._write_plaid_rows(rows)
+        if count:
+            logger.info(f"improve-ai upgraded {count} transactions to provider_native")
+        return count
 
     def _plaid_bridge_candidates(
         self, tc_where: str

@@ -2816,6 +2816,134 @@ class TestApplyPlaidCategories:
 
 
 # ---------------------------------------------------------------------------
+# improve_ai_categories — AI-guessed -> confident provider_native upgrade
+# ---------------------------------------------------------------------------
+
+
+def _seed_ai_category(db: Database, transaction_id: str, *, category: str) -> None:
+    """Seed a pre-existing ai-categorized row (priority 7), real mechanism.
+
+    Direct INSERT mirrors the pre-seeding pattern already used in this module
+    (e.g. ``TestCategorizePendingPlaidPass``) to arrange a prior categorization
+    ahead of the pass under test, rather than driving it through
+    ``categorize_items`` — the ai row here is a fixture input, not the
+    derived state under test.
+    """
+    db.execute(
+        "INSERT INTO app.transaction_categories "
+        "(transaction_id, category, categorized_by) VALUES (?, ?, 'ai')",
+        [transaction_id, category],
+    )
+
+
+def _seed_user_category(db: Database, transaction_id: str, *, category: str) -> None:
+    """Seed a pre-existing user-categorized row (priority 1), real mechanism."""
+    db.execute(
+        "INSERT INTO app.transaction_categories "
+        "(transaction_id, category, categorized_by) VALUES (?, ?, 'user')",
+        [transaction_id, category],
+    )
+
+
+def _category_of(db: Database, transaction_id: str) -> tuple[str, str] | None:
+    """Return ``(category, categorized_by)`` for one transaction, or ``None``."""
+    row = db.execute(
+        "SELECT category, categorized_by FROM app.transaction_categories "
+        "WHERE transaction_id = ?",
+        [transaction_id],
+    ).fetchone()
+    return (row[0], row[1]) if row is not None else None
+
+
+class TestImproveAiCategories:
+    """Tests for the AI -> confident provider_native upgrade pass.
+
+    Reuses ``apply_plaid_categories``'s bridge fixtures — the only
+    difference is the pre-existing row's ``categorized_by`` and the
+    predicate (``tc.categorized_by = 'ai'`` instead of ``tc.transaction_id
+    IS NULL``).
+    """
+
+    @pytest.mark.unit
+    def test_improve_ai_upgrades_ai_row_to_confident_plaid(self, db: Database) -> None:
+        """An ai-guessed row upgrades to the bridge-mapped provider_native category."""
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="FOOD_AND_DRINK_GROCERIES",
+            code_level="detailed",
+            category_id="FND-GRO",
+            category="Groceries",
+            subcategory=None,
+        )
+        _insert_plaid_txn(
+            db,
+            "t1",
+            category_detailed="FOOD_AND_DRINK_GROCERIES",
+            plaid_category="FOOD_AND_DRINK",
+            category_confidence="HIGH",
+        )
+        _seed_ai_category(db, "t1", category="Shopping")  # priority 7
+
+        n = CategorizationService(db).improve_ai_categories()
+
+        assert n == 1
+        assert _category_of(db, "t1") == ("Groceries", "provider_native")
+
+    @pytest.mark.unit
+    def test_improve_ai_does_not_touch_rule_or_user_rows(self, db: Database) -> None:
+        """A higher-priority user row is left untouched by the upgrade pass."""
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="FOOD_AND_DRINK_GROCERIES",
+            code_level="detailed",
+            category_id="FND-GRO",
+            category="Groceries",
+            subcategory=None,
+        )
+        _insert_plaid_txn(
+            db,
+            "t1",
+            category_detailed="FOOD_AND_DRINK_GROCERIES",
+            plaid_category="FOOD_AND_DRINK",
+            category_confidence="HIGH",
+        )
+        _seed_user_category(db, "t1", category="Travel")  # priority 1
+
+        n = CategorizationService(db).improve_ai_categories()
+
+        assert n == 0
+        assert _category_of(db, "t1") == ("Travel", "user")
+
+    @pytest.mark.unit
+    def test_improve_ai_respects_confidence_gate(self, db: Database) -> None:
+        """A LOW-confidence bridge match does not upgrade an ai row."""
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="FOOD_AND_DRINK_GROCERIES",
+            code_level="detailed",
+            category_id="FND-GRO",
+            category="Groceries",
+            subcategory=None,
+        )
+        _insert_plaid_txn(
+            db,
+            "t1",
+            category_detailed="FOOD_AND_DRINK_GROCERIES",
+            plaid_category="FOOD_AND_DRINK",
+            category_confidence="LOW",  # below MEDIUM gate
+        )
+        _seed_ai_category(db, "t1", category="Shopping")
+
+        n = CategorizationService(db).improve_ai_categories()
+
+        assert n == 0
+        assert _category_of(db, "t1") == ("Shopping", "ai")
+
+
+# ---------------------------------------------------------------------------
 # Plaid categorizer observability — counters, by_provider_native, coverage
 # gap (Task 9, Tier-2b — deferred from the category-source-map bridge PR)
 # ---------------------------------------------------------------------------

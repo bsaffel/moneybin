@@ -439,6 +439,10 @@ class CategorizationService:
         """Apply Plaid PFC categories (via the category-source bridge) to still-uncategorized Plaid transactions."""
         return self._orchestrator.apply_plaid_categories()
 
+    def improve_ai_categories(self) -> int:
+        """Upgrade AI-guessed categorizations to confident Plaid provider_native."""
+        return self._orchestrator.improve_ai_categories()
+
     def categorize_pending(self) -> dict[str, int]:
         """Categorize all pending (uncategorized) transactions."""
         return self._orchestrator.categorize_pending()
