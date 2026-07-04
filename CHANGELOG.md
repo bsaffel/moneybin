@@ -18,8 +18,11 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   via the `core.bridge_category_source_map` bridge (source `provider_native`,
   two-tier detailed→primary reverse lookup, confidence-gated at ≥MEDIUM), running
   last after rules and merchants in `categorize_pending` so it clears the long tail
-  before the LLM. `transactions categorize stats` gains a `plaid_unmapped` count
-  (Plaid transactions whose PFC code has no bridge mapping yet). (#___)
+  before the LLM. A rule or merchant you author after the import overrides the Plaid
+  category on the next categorize run — the source-precedence ladder holds across
+  runs, not just within one write. `transactions categorize stats` gains a
+  `plaid_unmapped` count (Plaid transactions whose PFC code has no bridge mapping
+  yet). (#___)
 - **`core.bridge_category_source_map` — provider-code → canonical-category bridge (M1V).**
   A durable, aggregator-agnostic view resolving any provider's transaction-category
   code to exactly one canonical MoneyBin category, keyed `(source_type,

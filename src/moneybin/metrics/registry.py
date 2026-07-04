@@ -291,8 +291,11 @@ CATEGORIZE_PROVIDER_NATIVE_TOTAL = Counter(
 
 CATEGORIZE_SKIPPED_CONFIDENCE_TOTAL = Counter(
     "moneybin_categorize_skipped_confidence_total",
-    "Provider-native categorizations skipped for confidence below the gate.",
-    ["source_type"],
+    "Provider-native categorizations skipped at the confidence gate. "
+    "reason='below_gate' is a genuine low-confidence rejection (gate-tuning "
+    "signal); reason='unknown' is an absent/unmapped confidence level (a "
+    "data-quality signal) — kept distinct so one isn't misread as the other.",
+    ["source_type", "reason"],
 )
 
 # Metric names retain the historical `apply` prefix even after the MCP tool

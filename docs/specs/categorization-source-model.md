@@ -5,9 +5,9 @@
 > Address: M1U (Ingestion Core)
 > Type: Feature
 > Owns: the category **source-model** contract — the `method` vs `source_type`
-> split on `app.transaction_categories`, provenance-aware merchant-default
-> authority, and the provider-code → category reverse lookup. Ships the first
-> provider-native categorizer (Plaid Personal Finance Category) on that contract.
+> split on `app.transaction_categories` and the provider-code → category reverse
+> lookup. Ships the first provider-native categorizer (Plaid Personal Finance
+> Category) on that contract.
 
 > **Implemented 2026-07-04 (as built).** Provider-code → category resolution
 > runs through the **M1V category-source bridge**
@@ -47,8 +47,8 @@ Turn category assignment from a **single winner-take-all golden record** into a
 MX/SimpleFIN later) is one clearly-labelled *source* among many, adjudicated by a
 precedence policy that is honest about where each opinion came from — and ship the
 Plaid PFC categorizer as the first source on that model. Activate Plaid's dormant
-`plaid_detailed` seed to assign a real `category_id`, confidence-gated, at a
-correct and provenance-aware priority.
+`plaid_detailed` seed to assign a real `category_id`, confidence-gated, at its
+correct method priority (`provider_native`, priority 6).
 
 ## Problem statement
 
@@ -65,13 +65,19 @@ single provider:
    both "provider-native categorization" (a *method*) and "the Plaid aggregator"
    (a *source*). A second aggregator has nowhere to go but a new priority integer
    (`'mx': 6.5`), which does not scale and encodes source-trust as precedence.
-3. **Merchant defaults launder their provenance.** `apply_merchant_categories`
-   (`orchestrator.py`) reads a merchant's stored `category_id`
-   (`app.user_merchants`) and writes it as `categorized_by='rule'` (priority 2) —
-   regardless of whether that merchant category was set by the **user** or
-   first-touch-guessed by the **LLM** (`created_by='ai'`). So a single AI guess
-   about one transaction becomes a merchant-wide default that outranks every
-   future provider-native signal.
+3. **Merchant defaults record the method, not their provenance (known,
+   accepted, deferred).** `apply_merchant_categories` (`orchestrator.py`) reads a
+   merchant's stored `category_id` (`app.user_merchants`) and writes it as
+   `categorized_by='rule'` (priority 2) — regardless of whether that merchant
+   category was set by the **user** or first-touch-guessed by the **LLM**
+   (`created_by='ai'`). So a single AI guess about one transaction can become a
+   merchant-wide default at priority 2. This spec deliberately does **not** change
+   that. `categorized_by` records the *method* that applied the category — an
+   invariant the auto-rule override-detection query and `delete_by_rule` both
+   depend on — and an attempt to demote merchant matches to their authoring
+   provenance was built and then reverted (see Decision 3). Making
+   merchant-default provenance precise is a **deferred follow-up** that would have
+   to update every reader of `categorized_by` in lockstep.
 
 These map directly onto the three questions this spec must answer:
 
@@ -101,8 +107,9 @@ No consumer query breaks.
 - **The precedence ladder — [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md).**
   Establishes `categorized_by` source-priority enforcement on write
   (`transaction_categories_repo.py` `upsert_guarded`) and `categorize_pending`
-  auto-apply. This spec refines what `categorized_by` *means* and adds the
-  provenance rule, without changing the guard mechanism.
+  auto-apply. This spec refines what `categorized_by` *means* (the method /
+  `source_type` split) and extends the `categorize_pending` scan to re-check
+  `provider_native` rows, without changing the guard mechanism.
 - **Tier-2a Decision 8.** Merchant identity was shipped deliberately
   category-free: *"A category-less Plaid merchant is not a gap we introduce."*
   This spec is the sanctioned home for merchant category assignment it pointed to.
@@ -156,33 +163,56 @@ aggregator ingests categories, which is not the case today — the tie breaks by
 possible (`source_type`, numeric `confidence`) land now so the later policy is
 purely additive.
 
-## Decision 3 — Provenance-aware merchant defaults (the AI-laundering fix)
+### Rules and merchants override `provider_native` across runs
 
-`apply_merchant_categories` stops stamping a flat `categorized_by='rule'`. It
-stamps the **authority of how the merchant's category was set**
-(`user_merchants.created_by`), mapping to the same-named method:
+The precedence ladder must hold *across* `categorize_pending` runs, not only
+within a single write — otherwise a rule or merchant authored **after** the Plaid
+import could never displace the `provider_native` categorization Plaid already
+wrote. So `categorize_pending`'s scan (`fetch_uncategorized_rows`) treats a row as
+*pending* when it is uncategorized **OR** already stamped
+`categorized_by='provider_native'`. The deterministic engines (rule, auto_rule,
+merchant) therefore re-scan Plaid-categorized rows on every run, and a rule or
+merchant added after the import overrides the `provider_native` categorization on
+the next run. The write-time guard (`excluded_priority <= existing_priority`)
+still does the actual precedence work — it permits rule/merchant (2) over
+`provider_native` (6) and rejects the reverse — so the scan change only lets those
+engines *see* the row; it does not weaken the guard. `ai` rows stay **excluded**
+from the re-scan: an `ai` commit is user-directed, so committed categorizations
+remain final.
 
-| `user_merchants.created_by` | Applied `categorized_by` | vs `provider_native` (6) |
-|---|---|---|
-| `user` | `user` (1) | **wins** — the user declared it |
-| `rule` | `rule` (2) | wins |
-| `migration` | `migration` (4) | wins |
-| `ai` (LLM first-touch) | **`ai` (7)** | **loses** — a fresh provider-native read wins over a stale guess |
-| `plaid` | — | n/a (a Plaid-minted merchant has no default) |
+## Decision 3 — Merchant matches stamp the `rule` method (provenance demotion reverted)
 
-This is the minimal, targeted fix for the "one-and-only value gets overwritten by
-a per-transaction inference" concern: a **user-declared** merchant category stays
-authoritative, but an **AI-derived** merchant default no longer silently outranks
-Plaid's per-transaction signal. `merchant_id` is still written on the row for
-lineage, so "this came via the merchant catalog" remains queryable.
+`apply_merchant_categories` stamps a flat `categorized_by='rule'` (priority 2) on
+every merchant match — the **method** that applied the category, exactly as on
+`origin/main`, not the merchant's authoring provenance. `merchant_id` is still
+written on the row for lineage, so "this came via the merchant catalog" stays
+queryable.
 
-**Tie / clobber safety.** `apply_merchant_categories` runs only on *uncategorized*
-rows (`categorize_pending` fetches `WHERE transaction_categories IS NULL`), so a
-merchant default can never overwrite an existing per-transaction user/rule
-decision in the normal path. The one place a merchant default could meet an
-existing higher-authority row is the opt-in upgrade pass (Decision 5); that pass
-is scoped to upgrade `ai → provider_native` only and does not re-run merchant
-defaults over already-categorized rows.
+An earlier slice of this increment shipped a **provenance-aware** variant
+(`MERCHANT_PROVENANCE_TO_METHOD` + a `Merchant.created_by` field): a merchant match
+was stamped with the *authority of how the merchant's category was set*
+(`user`/`rule`/`migration`/`ai`), so an `ai`-derived default landed at priority 7
+and would "lose to a fresh `provider_native` read." **It was reverted**, because
+the demotion was **inert** and, worse, caused three real defects:
+
+- **Inert.** `apply_plaid_categories` only writes `WHERE tc.transaction_id IS NULL`,
+  so `provider_native` never overrides an already-categorized row. The single
+  intended benefit — an AI merchant default losing to `provider_native` — could
+  never fire.
+- **Defect 1 — corrupted auto-rule health.** Machine-applied merchant matches
+  stamped `ai`/`user` leaked into the auto-rule override-detection query, which
+  counts `categorized_by IN ('user','ai')` as *human* corrections. Working
+  auto-rules were silently auto-deactivated.
+- **Defect 2 — wrong semantics.** It recorded the categorization *method* as a
+  merchant's authoring provenance, breaking the invariant that `categorized_by` =
+  the method — which the override-detection query and `delete_by_rule` both rely on.
+- **Defect 3 — lost precedence protection.** It let a later `ai` commit overwrite a
+  merchant default that had previously been precedence-protected.
+
+So merchant matches went back to `categorized_by='rule'`, restoring the invariant
+that `categorized_by` = the METHOD. Merchant-default provenance precision is
+**deferred** to a possible follow-up that would update **all** readers of
+`categorized_by` in lockstep.
 
 ## Decision 4 — The Plaid PFC categorizer (`apply_plaid_categories`)
 
@@ -223,7 +253,7 @@ A new categorizer in `services/categorization/`, wired into `categorize_pending`
 ```mermaid
 flowchart LR
     U[uncategorized rows] --> R[apply_rules<br/>method=rule 2]
-    R --> M[apply_merchant_categories<br/>method = merchant.created_by<br/>provenance-aware]
+    R --> M[apply_merchant_categories<br/>method=rule 2]
     M --> P[apply_plaid_categories<br/>method=provider_native 6<br/>source_type=plaid<br/>gate: confidence >= MEDIUM]
     P --> A[apply_ai<br/>method=ai 7]
     A --> G[(app.transaction_categories<br/>one resolved row / txn)]
@@ -236,8 +266,9 @@ flowchart LR
 state is identical regardless of order (the precedence guard decides the winner),
 so order is chosen for *cost*: Plaid deterministically clears the long tail so the
 expensive LLM only ever sees genuinely ambiguous rows. (This intentionally differs
-from the pickup prompt's "between rules and merchant" suggestion — the Decision 3
-provenance fix removes the reason for that earlier placement.)
+from an earlier "between rules and merchant" placement suggestion — with merchant
+matches stamped `rule` (priority 2) and the write-time guard deciding the winner,
+run order is a cost choice, not a correctness one.)
 
 **Confidence map + gate.** Plaid emits `VERY_HIGH | HIGH | MEDIUM | LOW | UNKNOWN`.
 Map to `DECIMAL(3,2)`: `VERY_HIGH→0.99, HIGH→0.90, MEDIUM→0.70, LOW→0.40,
@@ -345,10 +376,12 @@ activated when inferences actually get uncertain.
 ## Build scope of this increment (M1U)
 
 **In (shipped):** Decisions 1–4 + 6 + 8 — the `source_type`/method split +
-migration; the `provider_native` rename; provenance-aware merchant defaults;
-`apply_plaid_categories` (**bridge reverse-lookup**, confidence map + ≥MEDIUM gate,
-subcategory, run-order last) wired into `categorize_pending`; metrics + the
-`plaid_unmapped` coverage stat.
+migration; the `provider_native` rename; merchant matches stamped with the `rule`
+method (the provenance-aware variant was built and reverted — see Decision 3);
+rule/merchant override of `provider_native` across runs (the `categorize_pending`
+scan re-checks `provider_native` rows); `apply_plaid_categories`
+(**bridge reverse-lookup**, confidence map + ≥MEDIUM gate, subcategory, run-order
+last) wired into `categorize_pending`; metrics + the `plaid_unmapped` coverage stat.
 **Deferred to the immediate follow-up:** the opt-in upgrade pass (Decision 4) and
 the derived candidates view (Decision 5) — additive, off the critical path — bundled
 with the axis-2 category-seed audit (seed mis-tag fixes + the ~29-code coverage gap).
@@ -360,16 +393,19 @@ queue, and merchant-scoped/richer rules (Decision 7).
 Per [`testing-scenario-comprehensive.md`](testing-scenario-comprehensive.md) — new
 scenarios over synthetic ground truth (`make test-scenarios`), plus unit tests:
 
-- **Precedence:** `provider_native` loses to user/rule/merchant-user-default; beats
-  ai and ai-origin merchant defaults. Explicit case: an `ai`-origin merchant
-  default is overridden by a confident Plaid read.
+- **Precedence:** `provider_native` loses to user/rule/auto_rule/migration and to
+  every merchant match (merchant matches stamp `rule`, priority 2); it beats only
+  `ai`. Across runs: a rule or merchant authored after the Plaid import overrides a
+  `provider_native` row on the next `categorize_pending`, while `ai` rows are not
+  re-scanned.
 - **Confidence gate:** `MEDIUM+` assigns; `LOW`/`UNKNOWN` fall through to AI.
 - **Multi-category merchant:** a general merchant (Amazon-like) with per-transaction
   Plaid categories gets **per-row** categories; its merchant default stays NULL —
   proving the single `category_id` is not forced.
-- **Backfill/upgrade:** normal `categorize_pending` is uncategorized-only and
-  idempotent; the opt-in pass upgrades `ai → provider_native` and touches nothing
-  at priority ≤ 6.
+- **Backfill/upgrade:** normal `categorize_pending` scans uncategorized rows plus
+  `provider_native` rows (so a later rule/merchant can override Plaid) and is
+  idempotent when no higher-precedence rule/merchant applies; the deferred opt-in
+  pass upgrades `ai → provider_native` and touches nothing at priority ≤ 6.
 - **Lineage view:** `fct_transaction_category_candidates.is_winner` agrees with the
   resolved `transaction_categories` row.
 
@@ -379,7 +415,7 @@ scenarios over synthetic ground truth (`make test-scenarios`), plus unit tests:
   `0.99/0.90/0.70` values are a starting point to tune against real Plaid data.
 - **ADR?** This establishes a category-source-model pattern later increments
   inherit (raw-as-assertion-store over a mutable candidate table; source/method
-  split; provenance-aware precedence). It sits near the ADR bar in
+  split; method-based precedence enforced across runs). It sits near the ADR bar in
   `design-principles.md`. Current call: capture rationale in this spec, no separate
   ADR (default "when in doubt, don't"); revisit if a contributor later proposes a
   mutable assertion store without this context.

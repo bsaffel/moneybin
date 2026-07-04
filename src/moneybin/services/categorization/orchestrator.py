@@ -55,12 +55,12 @@ from moneybin.metrics.registry import (
 from moneybin.privacy.payloads.categorize import CategorizeCommitPayload
 from moneybin.services._text import build_match_inputs
 from moneybin.services.categorization._shared import (
-    MERCHANT_PROVENANCE_TO_METHOD,
     PLAID_MIN_CONFIDENCE,
     CategorizationItem,
     CategorizedBy,
     Merchant,
     did_you_mean,
+    plaid_bridge_match_predicate,
     plaid_confidence_to_numeric,
 )
 from moneybin.services.categorization.applier import MatchApplier
@@ -739,11 +739,6 @@ class CategorizationOrchestrator:
         merchant_cat: dict[str, tuple[str | None, str | None]] = {
             m.merchant_id: (m.category, m.subcategory) for m in merchants
         }
-        # Provenance lookup for the stamp below (spec Decision 3): how the
-        # merchant's category default was set, keyed the same as merchant_cat.
-        merchant_created_by: dict[str, str] = {
-            m.merchant_id: m.created_by for m in merchants if m.created_by is not None
-        }
 
         categorized_count = 0
         for (
@@ -794,21 +789,12 @@ class CategorizationOrchestrator:
             # categorized — the entity binding above already committed.
             if skip_txn_ids is not None and txn_id in skip_txn_ids:
                 continue
-            # Spec Decision 3: a merchant default stamps the provenance of how
-            # the merchant's category was set (created_by), not a flat 'rule'
-            # — an AI first-touch default (ai=7) thus loses to a fresh
-            # provider_native (6) read, while a user-declared default (user=1)
-            # still wins. The computed value is only written when the merchant
-            # carries a category (the `category is None` guard below skips the
-            # write otherwise); a Plaid-minted merchant's own default is always
-            # NULL (per merchant_resolver.py), so no 'plaid' key is needed —
-            # its provenance never stamps through the merchant-default path.
-            created_by: str | None = None
-            if merchant_id is not None:
-                created_by = merchant_created_by.get(merchant_id)
-            categorized_by: CategorizedBy = MERCHANT_PROVENANCE_TO_METHOD.get(
-                created_by or "", "rule"
-            )
+            # Merchant matches are a machine-applied engine write, stamped with the
+            # 'rule' method (priority 2) like the rule engine — NOT the merchant's
+            # authoring provenance. Stamping provenance ('ai'/'user') would leak
+            # machine writes into the auto-rule override-detection query (which
+            # counts 'user'/'ai' as human corrections) and misreport the method.
+            categorized_by: CategorizedBy = "rule"
             # Choose the category to write.
             # Rung-1 "skip name matching": the adopted/bound merchant's own
             # category wins over a disagreeing name match — the entity binding
@@ -896,8 +882,7 @@ class CategorizationOrchestrator:
                 SELECT m.transaction_id, dc.category, dc.subcategory, m.category_confidence
                 FROM {INT_TRANSACTIONS_MERGED.full_name} AS m
                 JOIN {BRIDGE_CATEGORY_SOURCE_MAP.full_name} AS b
-                    ON b.source_type = 'plaid'
-                    AND b.source_category_code IN (m.category_detailed, m.plaid_category)
+                    ON {plaid_bridge_match_predicate("m.category_detailed", "m.plaid_category")}
                 JOIN {CATEGORIES.full_name} AS dc ON dc.category_id = b.category_id
                 LEFT JOIN {TRANSACTION_CATEGORIES.full_name} AS tc
                     ON tc.transaction_id = m.transaction_id
@@ -906,7 +891,7 @@ class CategorizationOrchestrator:
                     PARTITION BY m.transaction_id
                     ORDER BY (b.code_level = 'detailed') DESC
                 ) = 1
-                """  # noqa: S608 — table names are compile-time TableRef constants; no interpolated values
+                """  # noqa: S608 — TableRef constants + code-constant bridge predicate; no user input
             ).fetchall()
         except (duckdb.CatalogException, duckdb.BinderException):
             return 0
@@ -914,8 +899,18 @@ class CategorizationOrchestrator:
         count = 0
         for txn_id, category, subcategory, level in rows:
             confidence = plaid_confidence_to_numeric(level)
-            if confidence is None or confidence < PLAID_MIN_CONFIDENCE:
-                CATEGORIZE_SKIPPED_CONFIDENCE_TOTAL.labels(source_type="plaid").inc()
+            if confidence is None:
+                # No usable confidence level (absent / UNKNOWN / unmapped) — a
+                # data-quality signal, counted apart from a genuine low-confidence
+                # rejection so a dashboard can't misread the two as one.
+                CATEGORIZE_SKIPPED_CONFIDENCE_TOTAL.labels(
+                    source_type="plaid", reason="unknown"
+                ).inc()
+                continue
+            if confidence < PLAID_MIN_CONFIDENCE:
+                CATEGORIZE_SKIPPED_CONFIDENCE_TOTAL.labels(
+                    source_type="plaid", reason="below_gate"
+                ).inc()
                 continue
             outcome = self._applier.write_categorization(
                 transaction_id=txn_id,
@@ -934,13 +929,20 @@ class CategorizationOrchestrator:
         return count
 
     def categorize_pending(self, *, include_plaid: bool = True) -> dict[str, int]:
-        """Categorize all pending (uncategorized) transactions.
+        """Categorize all pending transactions.
+
+        "Pending" is uncategorized OR claimed only by ``provider_native`` (Plaid
+        PFC) — see :meth:`CategorizationMatcher.fetch_uncategorized_rows`.
 
         Runs rules, then merchants, then plaid against pending transactions.
         Rules run first in priority order so explicit user-defined rules (which can
         filter by amount, account, and pattern) take precedence over generic merchant
         mappings. Merchant mappings apply only to transactions not matched by any rule.
-        Plaid runs last: :meth:`apply_plaid_categories` re-reads still-uncategorized
+        Because the scan includes ``provider_native`` rows, a rule or merchant
+        authored after the Plaid import overrides the Plaid categorization here —
+        the write-time precedence guard permits rule/merchant (2) over
+        provider_native (6), so the ladder holds across runs. Plaid runs last:
+        :meth:`apply_plaid_categories` re-reads still-uncategorized
         rows itself, so rule and merchant writes are already committed and excluded
         by the time it runs — it only fills the long tail neither pass covered.
 

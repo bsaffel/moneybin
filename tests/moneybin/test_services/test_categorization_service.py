@@ -1178,15 +1178,15 @@ def test_categorize_items_snowball_fans_out_to_siblings(real_db: Database) -> No
     ).fetchall()
     assert len(rows) == 3
     assert all(r[0] == "Food & Dining" for r in rows)
-    # t1 was categorized by the LLM-assist commit ('ai'). The exemplar
-    # merchant the commit creates is itself created_by='ai' (exemplar
-    # accumulator, orchestrator.py create_merchant_core call), so t2/t3's
-    # snowball merchant-fan-out write also stamps 'ai' provenance (spec
-    # Decision 3: the merchant-default stamp mirrors created_by, not a flat
-    # 'rule').
+    # t1 was categorized by the LLM-assist commit ('ai'). t2/t3 were
+    # categorized by the snowball merchant fan-out, which stamps the 'rule'
+    # method — the merchant's authoring provenance is NOT laundered onto the
+    # categorization (categorization-source-model.md Decision 3, reverted). t1's
+    # committed 'ai' row is not re-scanned by the snowball: only provider_native
+    # rows are re-evaluated across runs, not committed 'ai' ones.
     assert rows[0][1] == "ai"
-    assert rows[1][1] == "ai"
-    assert rows[2][1] == "ai"
+    assert rows[1][1] == "rule"
+    assert rows[2][1] == "rule"
 
 
 # ---------------------------------------------------------------------------
@@ -2044,22 +2044,28 @@ class TestApplyMerchantCategoriesEntityResolution:
 
 
 # ---------------------------------------------------------------------------
-# Task 3: provenance-aware merchant defaults (spec Decision 3)
+# Merchant matches stamp the 'rule' method regardless of the merchant's
+# authoring provenance. (Task 3's provenance-aware stamping was reverted — see
+# categorization-source-model.md Decision 3: stamping provenance leaked
+# machine-applied merchant matches into the auto-rule override-detection query,
+# which counts 'user'/'ai' as human corrections, and its stated benefit could
+# never fire because provider_native never overrides an existing row.)
 # ---------------------------------------------------------------------------
 
 
-class TestApplyMerchantCategoriesProvenance:
-    """Merchant defaults stamp categorized_by by created_by provenance.
+class TestApplyMerchantCategoriesStampsRule:
+    """A merchant default stamps the 'rule' method, never the merchant's provenance.
 
-    Before this fix, every merchant-default write stamped a flat 'rule',
-    laundering an AI first-touch default up to rule authority (priority 2)
-    instead of ai authority (priority 7). Now the stamp mirrors
-    ``app.user_merchants.created_by`` via ``MERCHANT_PROVENANCE_TO_METHOD``.
+    So a machine-applied merchant match is never miscounted as a human
+    correction by auto-rule override detection.
     """
 
     @pytest.mark.unit
-    def test_ai_merchant_default_writes_as_ai(self, db: Database) -> None:
-        """An ai-created merchant default stamps categorized_by='ai', not 'rule'."""
+    @pytest.mark.parametrize("merchant_created_by", ["ai", "user"])
+    def test_merchant_default_stamps_rule(
+        self, db: Database, merchant_created_by: str
+    ) -> None:
+        """Whatever created the merchant, its default stamps categorized_by='rule'."""
         _setup_prep_table(db)
 
         mid = create_merchant(
@@ -2068,17 +2074,17 @@ class TestApplyMerchantCategoriesProvenance:
             "Amazon",
             match_type="contains",
             category="Shopping",
-            created_by="ai",
+            created_by=merchant_created_by,
         )
 
         db.execute(
             "INSERT INTO core.fct_transactions "
             "(transaction_id, account_id, transaction_date, amount, description, source_type) "
-            "VALUES ('TXN_PROV_AI', 'ACC1', DATE '2026-01-01', -30.00, 'AMAZON MKTP ORDER', 'plaid')"
+            "VALUES ('TXN_PROV', 'ACC1', DATE '2026-01-01', -30.00, 'AMAZON MKTP ORDER', 'plaid')"
         )
         db.execute(
             "INSERT INTO prep.int_transactions__merged VALUES "
-            "('TXN_PROV_AI', NULL, NULL, NULL)"
+            "('TXN_PROV', NULL, NULL, NULL)"
         )
 
         count = apply_merchant_categories(db)
@@ -2086,45 +2092,10 @@ class TestApplyMerchantCategoriesProvenance:
         assert count == 1
         row = db.execute(
             "SELECT categorized_by, merchant_id FROM app.transaction_categories "
-            "WHERE transaction_id = 'TXN_PROV_AI'"
+            "WHERE transaction_id = 'TXN_PROV'"
         ).fetchone()
         assert row is not None
-        assert row[0] == "ai", "was 'rule' before Task 3's provenance stamping"
-        assert row[1] == mid
-
-    @pytest.mark.unit
-    def test_user_merchant_default_writes_as_user(self, db: Database) -> None:
-        """A user-declared merchant default stamps categorized_by='user'."""
-        _setup_prep_table(db)
-
-        mid = create_merchant(
-            db,
-            "STARBUX",
-            "Starbucks",
-            match_type="contains",
-            category="Coffee",
-            created_by="user",
-        )
-
-        db.execute(
-            "INSERT INTO core.fct_transactions "
-            "(transaction_id, account_id, transaction_date, amount, description, source_type) "
-            "VALUES ('TXN_PROV_USER', 'ACC1', DATE '2026-01-01', -5.00, 'STARBUX #123', 'plaid')"
-        )
-        db.execute(
-            "INSERT INTO prep.int_transactions__merged VALUES "
-            "('TXN_PROV_USER', NULL, NULL, NULL)"
-        )
-
-        count = apply_merchant_categories(db)
-
-        assert count == 1
-        row = db.execute(
-            "SELECT categorized_by, merchant_id FROM app.transaction_categories "
-            "WHERE transaction_id = 'TXN_PROV_USER'"
-        ).fetchone()
-        assert row is not None
-        assert row[0] == "user"
+        assert row[0] == "rule"
         assert row[1] == mid
 
 
@@ -2521,7 +2492,7 @@ def _insert_plaid_txn(
     plaid_category: str | None,
     category_confidence: str,
 ) -> None:
-    """Insert a row into ``prep.int_transactions__merged`` for categorizer tests.
+    """Insert one Plaid transaction into the two prep layers categorizer tests read.
 
     ``apply_plaid_categories`` reads the gold-keyed merged layer, not
     ``prep.stg_plaid__transactions`` (the pre-merge, native-Plaid-id
@@ -2542,6 +2513,12 @@ def _insert_plaid_txn(
     columns as a physical table — mirroring the ``prep.int_transactions__merged``
     precedent already used above for entity-resolution tests (see
     ``_setup_prep_table``).
+
+    The same transaction also exists in the per-source staging layer,
+    ``prep.stg_plaid__transactions``, which the ``plaid_unmapped`` coverage
+    stat scans (lighter than the merged pipeline, and the natural
+    per-Plaid-transaction grain). A matching stub with just the two PFC-code
+    columns is seeded so that stat sees the transaction too.
     """
     db.execute("CREATE SCHEMA IF NOT EXISTS prep")
     db.execute(
@@ -2557,6 +2534,20 @@ def _insert_plaid_txn(
         "(transaction_id, category_detailed, plaid_category, category_confidence) "
         "VALUES (?, ?, ?, ?)",
         [transaction_id, category_detailed, plaid_category, category_confidence],
+    )
+    # Per-source staging stub for the plaid_unmapped coverage stat.
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS prep.stg_plaid__transactions ("
+        "  transaction_id VARCHAR, "
+        "  category_detailed VARCHAR, "
+        "  plaid_category VARCHAR"
+        ")"
+    )
+    db.execute(
+        "INSERT INTO prep.stg_plaid__transactions "
+        "(transaction_id, category_detailed, plaid_category) "
+        "VALUES (?, ?, ?)",
+        [transaction_id, category_detailed, plaid_category],
     )
 
 
@@ -2808,8 +2799,8 @@ class TestPlaidCategorizerObservability:
         assert after == before + 1
 
     @pytest.mark.unit
-    def test_confidence_skip_increments_skipped_counter(self, db: Database) -> None:
-        """A LOW-confidence bridge match increments CATEGORIZE_SKIPPED_CONFIDENCE_TOTAL."""
+    def test_confidence_skip_increments_below_gate_counter(self, db: Database) -> None:
+        """A LOW-confidence match increments the skipped counter with reason='below_gate'."""
         from moneybin.metrics.registry import CATEGORIZE_SKIPPED_CONFIDENCE_TOTAL
 
         refresh_views(db)
@@ -2829,13 +2820,51 @@ class TestPlaidCategorizerObservability:
             category_confidence="LOW",
         )
         before = CATEGORIZE_SKIPPED_CONFIDENCE_TOTAL.labels(
-            source_type="plaid"
+            source_type="plaid", reason="below_gate"
         )._value.get()  # type: ignore[reportPrivateUsage] — prometheus internals
 
         n = apply_plaid_categories(db)
 
         after = CATEGORIZE_SKIPPED_CONFIDENCE_TOTAL.labels(
-            source_type="plaid"
+            source_type="plaid", reason="below_gate"
+        )._value.get()  # type: ignore[reportPrivateUsage]
+        assert n == 0
+        assert after == before + 1
+
+    @pytest.mark.unit
+    def test_unknown_confidence_increments_unknown_counter(self, db: Database) -> None:
+        """An UNKNOWN confidence level increments the skipped counter reason='unknown'.
+
+        A distinct reason from a below-gate rejection: UNKNOWN maps to a NULL
+        numeric confidence (a data-quality signal), so it must not be conflated
+        with a genuine low-confidence skip.
+        """
+        from moneybin.metrics.registry import CATEGORIZE_SKIPPED_CONFIDENCE_TOTAL
+
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="FOOD_AND_DRINK_COFFEE",
+            code_level="detailed",
+            category_id="FND-COF",
+            category="Food & Drink",
+            subcategory="Coffee Shops",
+        )
+        _insert_plaid_txn(
+            db,
+            "t5",
+            category_detailed="FOOD_AND_DRINK_COFFEE",
+            plaid_category="FOOD_AND_DRINK",
+            category_confidence="UNKNOWN",
+        )
+        before = CATEGORIZE_SKIPPED_CONFIDENCE_TOTAL.labels(
+            source_type="plaid", reason="unknown"
+        )._value.get()  # type: ignore[reportPrivateUsage] — prometheus internals
+
+        n = apply_plaid_categories(db)
+
+        after = CATEGORIZE_SKIPPED_CONFIDENCE_TOTAL.labels(
+            source_type="plaid", reason="unknown"
         )._value.get()  # type: ignore[reportPrivateUsage]
         assert n == 0
         assert after == before + 1

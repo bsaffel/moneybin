@@ -1,7 +1,7 @@
 """Tests for source-priority precedence enforcement on transaction_categories writes.
 
 Per categorization-matching-mechanics.md §Source precedence, the priority order is:
-user(1) > rule(2) > auto_rule(3) > migration(4) > ml(5) > plaid(6) > ai(7).
+user(1) > rule(2) > auto_rule(3) > migration(4) > ml(5) > provider_native(6) > ai(7).
 A higher-priority source can never be overwritten by a lower-priority source.
 """
 
@@ -163,6 +163,107 @@ def test_full_precedence_ladder(real_db: Database, fresh_txn: str) -> None:
                 f"{attempted!r} writing over {existing!r}: "
                 f"expected written={should_write}, got {outcome.written}"
             )
+
+
+def test_rule_overrides_provider_native_across_runs(
+    real_db: Database, fresh_txn: str
+) -> None:
+    """Rules authored after provider_native claimed a row override it across runs.
+
+    The ladder (rule 2 > provider_native 6) is enforced across runs, not just
+    within one write. Regression guard for the Tier-2b ship-blocker:
+    ``fetch_uncategorized_rows`` scans provider_native rows as *pending* (not
+    only truly-uncategorized ones), so a rule created after the Plaid import
+    reaches the row and the write-time guard lets rule (2) overwrite
+    provider_native (6). Before the fix the row was frozen at the Plaid category
+    forever — a rule created to fix it silently did nothing.
+    """
+    svc = CategorizationService(real_db)
+    # Precondition: apply_plaid_categories' output on a prior run — a
+    # provider_native categorization (guarded write), tagged with the Plaid
+    # source. The mechanism under test is the *later* rule override.
+    svc.write_categorization(
+        transaction_id=fresh_txn,
+        category="Shopping",
+        subcategory=None,
+        categorized_by="provider_native",
+    )
+    real_db.execute(
+        "UPDATE app.transaction_categories SET source_type = 'plaid' "
+        "WHERE transaction_id = ?",
+        [fresh_txn],
+    )
+    assert _current_source(real_db, fresh_txn) == "provider_native"
+
+    # The user later authors a rule for STARBUCKS → Food & Dining.
+    svc.create_rules(
+        [
+            CategorizationRuleInput(
+                name="starbucks-coffee",
+                merchant_pattern="STARBUCKS",
+                category="Food & Dining",
+                subcategory="Coffee Shops",
+                match_type="contains",
+            )
+        ],
+        actor="test",
+    )
+
+    # The always-on snowball re-evaluates the provider_native row.
+    svc.categorize_pending()
+
+    row = real_db.execute(
+        "SELECT categorized_by, category, source_type "
+        "FROM app.transaction_categories WHERE transaction_id = ?",
+        [fresh_txn],
+    ).fetchone()
+    assert row is not None
+    assert row[0] == "rule", "rule (2) must override provider_native (6) across runs"
+    assert row[1] == "Food & Dining"
+    # The rule write also clears the provider-origin tag (write_categorization
+    # defaults source_type to 'internal').
+    assert row[2] == "internal"
+
+
+def test_user_edit_resets_provider_source_type(
+    real_db: Database, fresh_txn: str
+) -> None:
+    """A user manual edit of a provider-native row resets source_type to internal.
+
+    The row is now user-authored, not provider-origin. Regression guard:
+    ``TransactionCategoriesRepo.set()`` (the user-edit path) must forward
+    ``source_type`` in its ON CONFLICT SET; otherwise the prior ``'plaid'`` tag
+    persists and stats grouping by ``source_type`` keeps counting the user's row
+    as provider-native.
+    """
+    svc = CategorizationService(real_db)
+    svc.write_categorization(
+        transaction_id=fresh_txn,
+        category="Shopping",
+        subcategory=None,
+        categorized_by="provider_native",
+    )
+    real_db.execute(
+        "UPDATE app.transaction_categories SET source_type = 'plaid' "
+        "WHERE transaction_id = ?",
+        [fresh_txn],
+    )
+
+    svc.set_category(
+        fresh_txn,
+        category="Food & Dining",
+        subcategory="Coffee Shops",
+        actor="test",
+    )
+
+    row = real_db.execute(
+        "SELECT categorized_by, source_type "
+        "FROM app.transaction_categories WHERE transaction_id = ?",
+        [fresh_txn],
+    ).fetchone()
+    assert row is not None
+    assert row[0] == "user"
+    assert row[1] == "internal", "user edit must clear the provider source_type"
 
 
 def test_auto_rule_backfill_routes_through_write_categorization(

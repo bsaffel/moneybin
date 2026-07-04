@@ -112,7 +112,7 @@ SELECT
       THEN COALESCE(sp.priority, 2147483646)
       ELSE 2147483647
     END
-  ) AS plaid_category, /* keyed off category_detailed's presence (not its own) so all three PFC columns always resolve from the SAME winning member — Plaid populates them together */
+  ) AS plaid_category, /* keyed off category_detailed's presence (not its own) so all three PFC columns resolve from the same Plaid member in the common single-Plaid-member group; two divergent Plaid members tying on priority (e.g. a pending/posted pair Plaid recategorized) could split them across members — a rare cosmetic inconsistency shared with the category/subcategory ARG_MINs above */
   ARG_MIN(
     m.category_confidence,
     CASE

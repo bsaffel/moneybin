@@ -335,8 +335,8 @@ class CategorizationService:
         (``categorized_by IN ('rule', 'auto_rule')`` with this rule_id) so
         those rows become pending again, then runs ``categorize_pending`` to
         re-evaluate them against the remaining active matchers. Writes from
-        higher-priority sources (user/migration/ml/plaid) that happen to
-        share this rule_id reference are left intact.
+        higher-priority sources (user/migration/ml/provider_native) that happen
+        to share this rule_id reference are left intact.
         """
         deactivated = self._applier.deactivate_rule_core(rule_id, actor=actor)
         if reapply and deactivated:

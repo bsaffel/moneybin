@@ -71,11 +71,10 @@ def test_categorization_priority_hierarchy() -> None:
       (queries WHERE c.transaction_id IS NULL).
     - MCDONALDS_2024_03_05 has no pre-seed; the basic persona's dining merchant
       catalog maps MCDONALDS (contains) → Food & Drink, proving the engine ran
-      but respected the user override. `seed_merchants_from_persona` creates
-      every persona merchant with created_by='ai' (scenario-runner synthetic
-      seeding, not a user-authored rule), so per spec Decision 3 the
-      merchant-default write stamps categorized_by='ai' — the provenance of
-      how the merchant's category was set, not a flat 'rule'.
+      but respected the user override. A merchant-default write stamps the
+      'rule' method (categorized_by='rule') regardless of how the merchant's
+      category was authored — the categorization method, not the merchant's
+      provenance (categorization-source-model.md Decision 3, reverted).
     """
     scenario = load_shipped_scenario("categorization-priority-hierarchy")
     assert scenario is not None
@@ -93,8 +92,8 @@ def test_categorization_priority_hierarchy() -> None:
                 db,
                 _AUTO_RULE_SRC_ID,
                 expected_category="Food & Drink",
-                expected_categorized_by="ai",
-                description="non-overridden MCDONALDS gets categorized_by=ai (engine ran)",
+                expected_categorized_by="rule",
+                description="non-overridden MCDONALDS gets categorized_by=rule (engine ran)",
             ),
         ]
 
