@@ -3,9 +3,9 @@
 Walks an investment ledger per ``(account_id, security_id)`` group, opening a
 lot on each acquisition and consuming open lots on each disposal to produce the
 1099-B reconciliation grain (``core.fct_investment_lots`` and
-``core.fct_realized_gains``). This module owns the FIFO (Task 8) and HIFO
-(Task 9) methods; specific-ID and average-cost extend the same machinery in
-later tasks.
+``core.fct_realized_gains``). This module owns the FIFO (Task 8), HIFO
+(Task 9), and specific-identification (Task 10) methods; average-cost extends
+the same machinery in a later task.
 
 Correctness over speed: all monetary outputs quantize to two places with
 ``ROUND_HALF_UP`` and disposal proceeds are penny-conserved (the per-slice
@@ -200,17 +200,54 @@ def _hifo_sort_key(lot: Lot) -> tuple[Decimal, date, str]:
     return (-unit_cost, lot.acquisition_date, lot.lot_id)
 
 
-def _ordered_open_lots(lots: list[Lot], method: str) -> list[Lot]:
-    """Lots with remaining quantity, ordered per the elected ``method``.
+def _consumption_plan(
+    lots: list[Lot],
+    method: str,
+    disposal_txn_id: str,
+    selections_for: Callable[[str], list[tuple[str, Decimal]]],
+) -> list[tuple[Lot, Decimal]]:
+    """Build the (lot, cap) draw order for a disposal.
 
-    Sorted once per disposal call — a lot's unit cost is stable across every
-    slice drawn from it within a single disposal. Specific-ID (Task 10) and
-    average-cost (Task 11) extend this dispatch with their own branches.
+    Each entry caps how many units may be drawn from that lot at that
+    position; the live ``lot.remaining_quantity`` (mutated by prior entries)
+    still governs the actual ``take`` — the cap only ever narrows it further.
+    Sorted/selected once per disposal call — a lot's unit cost is stable
+    across every slice drawn from it within a single disposal.
+
+    - FIFO: every open lot, oldest-first, capped at its own remaining
+      quantity (no extra limit).
+    - HIFO: every open lot, highest-per-unit-basis-first, same uncapped rule.
+    - Specific-ID: the selections from ``selections_for`` (in selection
+      order, capped at the selected quantity) first, then a FIFO fallback
+      over ALL open lots for any remainder. A selection naming an unknown or
+      already-closed (``remaining_quantity == 0``) lot is silently skipped —
+      the engine stays total and never raises; validating selections is a
+      Task 14 service concern. Because the fallback re-lists every open lot
+      (including ones already drawn from above) and reads live remaining
+      quantity, a partially-selected lot correctly reappears in the fallback
+      for whatever it has left; a fully-drawn lot reappears with 0 remaining
+      and is skipped by the ``take <= 0`` guard in ``_consume``.
+    Average-cost (Task 11) extends this dispatch with its own branch.
     """
     open_lots = [lot for lot in lots if lot.remaining_quantity > 0]
     if method == "hifo":
-        return sorted(open_lots, key=_hifo_sort_key)
-    return sorted(open_lots, key=_fifo_sort_key)
+        ordered = sorted(open_lots, key=_hifo_sort_key)
+        return [(lot, lot.remaining_quantity) for lot in ordered]
+
+    fifo_plan = [
+        (lot, lot.remaining_quantity) for lot in sorted(open_lots, key=_fifo_sort_key)
+    ]
+    if method != "specific":
+        return fifo_plan
+
+    by_lot_id = {lot.lot_id: lot for lot in lots}
+    selected_plan: list[tuple[Lot, Decimal]] = []
+    for lot_id, quantity in selections_for(disposal_txn_id):
+        lot = by_lot_id.get(lot_id)
+        if lot is None or lot.remaining_quantity <= 0:
+            continue
+        selected_plan.append((lot, quantity))
+    return selected_plan + fifo_plan
 
 
 def _consume(
@@ -219,27 +256,34 @@ def _consume(
     security_id: str,
     lots: list[Lot],
     method: str,
+    selections_for: Callable[[str], list[tuple[str, Decimal]]],
 ) -> list[RealizedGain]:
     """Consume open lots for a disposal (sell or transfer_out).
 
     ``sell`` produces one realized-gain row per consumed slice with proceeds
     allocated pro-rata by quantity (penny-conserved). ``transfer_out`` consumes
-    lots without producing any gains. Consumption order over lots with
-    remaining quantity is determined by ``method`` (see
-    ``_ordered_open_lots``).
+    lots without producing any gains. Consumption order (and, for
+    specific-ID, the per-lot cap) is determined by ``method`` (see
+    ``_consumption_plan``).
     """
     disposal_quantity = _abs_or_zero(event.quantity)
     disposal_date = event.trade_date
     is_sell = event.type == "sell"
 
-    open_lots = _ordered_open_lots(lots, method)
+    plan = _consumption_plan(
+        lots, method, event.investment_transaction_id, selections_for
+    )
 
     slices: list[_Slice] = []
     remaining = disposal_quantity
-    for lot in open_lots:
+    for lot, cap in plan:
         if remaining <= 0:
             break
-        take = min(lot.remaining_quantity, remaining)
+        take = min(lot.remaining_quantity, remaining, cap)
+        if take <= 0:
+            # Already-drained lot reappearing in the specific-ID FIFO
+            # fallback phase (or a fully-capped selection) — nothing to draw.
+            continue
         if take == lot.remaining_quantity:
             # Fully closes the lot: take all remaining basis (conserves basis
             # exactly rather than re-deriving pro-rata).
@@ -280,6 +324,13 @@ def _consume(
             )
         )
 
+    # Grain is one row per (disposal, consumed lot): a lot that appears twice
+    # in one disposal (a partial specific-ID selection whose remainder falls to
+    # the FIFO phase and lands back on the same lot) must merge to a single row
+    # before proceeds are allocated, or two rows would share a realized_gain_id
+    # (hash of disposal_txn_id + lot_id) and collide on the fct_realized_gains PK.
+    slices = _merge_slices_by_lot(slices)
+
     _allocate_proceeds(slices, _money(_abs_or_zero(event.amount)), disposal_quantity)
 
     return [
@@ -304,6 +355,36 @@ def _consume(
         )
         for s in slices
     ]
+
+
+def _merge_slices_by_lot(slices: list[_Slice]) -> list[_Slice]:
+    """Collapse slices drawn from the same lot into one per lot.
+
+    Enforces the ``core.fct_realized_gains`` grain (one row per disposal ×
+    consumed lot). Only specific-ID produces same-lot repeats within a
+    disposal; every other path yields one slice per lot, so each group is a
+    singleton and passes through unchanged. First-appearance order is preserved
+    so ``_allocate_proceeds``'s residual-to-last-slice rounding stays
+    deterministic. ``acquisition_date`` and ``basis_incomplete`` are identical
+    across a lot group (same lot, same disposal), so the first slice's values
+    carry. The oversold slice's unique ``_UNMATCHED_LOT_ID`` makes it its own
+    singleton group — one per disposal by construction — so it passes through.
+    """
+    merged: dict[str, _Slice] = {}
+    for s in slices:
+        existing = merged.get(s.lot_id)
+        if existing is None:
+            merged[s.lot_id] = _Slice(
+                lot_id=s.lot_id,
+                acquisition_date=s.acquisition_date,
+                quantity=s.quantity,
+                cost_basis=s.cost_basis,
+                basis_incomplete=s.basis_incomplete,
+            )
+        else:
+            existing.quantity += s.quantity
+            existing.cost_basis = _money(existing.cost_basis + s.cost_basis)
+    return list(merged.values())
 
 
 def _allocate_proceeds(
@@ -347,16 +428,15 @@ def compute_lots_and_gains(
         method_for: ``(account_id, security_id) -> method`` returning the
             elected cost-basis method for a position (e.g. ``"fifo"``).
         selections_for: ``disposal_txn_id -> [(lot_id, quantity), ...]`` for
-            specific-identification. Accepted for interface stability; FIFO
-            does not use it.
+            specific-identification, called once per disposal with the
+            disposing event's ``investment_transaction_id``. FIFO and HIFO
+            never call it.
 
     Returns:
         A ``(lots, gains)`` tuple. ``lots`` includes fully-closed lots
         (``remaining_quantity == 0``); ``gains`` has one row per consumed slice
         of each ``sell`` (``transfer_out`` yields none).
     """
-    _ = selections_for  # Unused under FIFO; part of the Task 9-13 contract.
-
     groups: dict[tuple[str, str], list[LedgerEvent]] = {}
     for event in events:
         if event.security_id is None:
@@ -377,7 +457,11 @@ def compute_lots_and_gains(
             if event.type in _ACQUISITION_TYPES:
                 lots.append(_open_lot(event, account_id, security_id, method))
             elif event.type in _DISPOSAL_TYPES:
-                all_gains.extend(_consume(event, account_id, security_id, lots, method))
+                all_gains.extend(
+                    _consume(
+                        event, account_id, security_id, lots, method, selections_for
+                    )
+                )
             # Any other type is intentionally skipped (Tasks 11-12).
         all_lots.extend(lots)
 

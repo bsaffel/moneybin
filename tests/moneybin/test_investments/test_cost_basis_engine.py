@@ -38,6 +38,10 @@ def _no_selections(_disposal_txn_id: str) -> list[tuple[str, Decimal]]:
     return []
 
 
+def _specific(_account_id: str, _security_id: str) -> str:
+    return "specific"
+
+
 def _event(
     txn_id: str,
     *,
@@ -70,11 +74,12 @@ def _event(
 def _run(
     events: list[LedgerEvent],
     method_for: Callable[[str, str], str] = _fifo,
+    selections_for: Callable[[str], list[tuple[str, Decimal]]] = _no_selections,
 ) -> tuple[list[Lot], list[RealizedGain]]:
     lots, gains = compute_lots_and_gains(
         events,
         method_for=method_for,
-        selections_for=_no_selections,
+        selections_for=selections_for,
     )
     return list(lots), gains
 
@@ -195,6 +200,10 @@ def test_sell_spanning_two_lots_splits_terms_and_prorates_proceeds() -> None:
 
     # Proceeds penny-conserved across the two legs.
     assert sum((g.proceeds for g in gains), D("0")) == D("3000.00")
+
+    # A multi-lot disposal must emit a distinct realized_gain_id per lot.
+    ids = [g.realized_gain_id for g in gains]
+    assert len(ids) == len(set(ids))
 
     by_src = {lot.source_transaction_id: lot for lot in lots}
     assert by_src["b1"].remaining_quantity == D("0")
@@ -752,3 +761,393 @@ def test_fifo_order_unchanged_after_hifo_refactor() -> None:
     assert len(gains) == 1
     assert gains[0].lot_id == b1.lot_id
     assert gains[0].cost_basis_method == "fifo"
+
+
+def test_specific_selection_overrides_fifo_order() -> None:
+    # b1 (oldest), b2 (middle), b3 (newest). Selecting b2 must draw from it
+    # despite FIFO wanting b1 first.
+    events = [
+        _event(
+            "b1",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("10"),
+            amount=D("-100.00"),
+        ),
+        _event(
+            "b2",
+            event_type="buy",
+            trade_date=date(2024, 2, 1),
+            quantity=D("10"),
+            amount=D("-200.00"),
+        ),
+        _event(
+            "b3",
+            event_type="buy",
+            trade_date=date(2024, 3, 1),
+            quantity=D("10"),
+            amount=D("-300.00"),
+        ),
+        _event(
+            "s1",
+            event_type="sell",
+            trade_date=date(2024, 4, 1),
+            quantity=D("-10"),
+            amount=D("250.00"),
+        ),
+    ]
+    # Lot ids are content hashes independent of method/selections — discover
+    # them with a throwaway FIFO pass before wiring the real selection.
+    discovery_lots, _discovery_gains = _run(events, method_for=_fifo)
+    b2_lot_id = next(
+        lot.lot_id for lot in discovery_lots if lot.source_transaction_id == "b2"
+    )
+
+    def _select(disposal_txn_id: str) -> list[tuple[str, Decimal]]:
+        if disposal_txn_id == "s1":
+            return [(b2_lot_id, D("10"))]
+        return []
+
+    lots, gains = _run(events, method_for=_specific, selections_for=_select)
+
+    by_src = {lot.source_transaction_id: lot for lot in lots}
+    assert by_src["b1"].remaining_quantity == D("10")
+    assert by_src["b1"].cost_basis_remaining == D("100.00")
+    assert by_src["b2"].remaining_quantity == D("0")
+    assert by_src["b2"].cost_basis_remaining == D("0.00")
+    assert by_src["b3"].remaining_quantity == D("10")
+    assert by_src["b3"].cost_basis_remaining == D("300.00")
+
+    assert len(gains) == 1
+    g = gains[0]
+    assert g.lot_id == b2_lot_id
+    assert g.quantity == D("10")
+    assert g.cost_basis == D("200.00")
+    assert g.proceeds == D("250.00")
+    assert g.gain_loss == D("50.00")
+    assert g.term == "short"
+    assert g.cost_basis_method == "specific"
+    assert g.basis_incomplete is False
+
+
+def test_specific_partial_selection_falls_back_to_fifo_for_remainder() -> None:
+    # A (oldest), B (middle), C (newest). Select 3 units of B; disposal is 8,
+    # so 5 more must come from A via the FIFO fallback (the oldest lot with
+    # remaining quantity), not from C.
+    events = [
+        _event(
+            "a",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("10"),
+            amount=D("-100.00"),
+        ),
+        _event(
+            "b",
+            event_type="buy",
+            trade_date=date(2024, 2, 1),
+            quantity=D("10"),
+            amount=D("-200.00"),
+        ),
+        _event(
+            "c",
+            event_type="buy",
+            trade_date=date(2024, 3, 1),
+            quantity=D("10"),
+            amount=D("-300.00"),
+        ),
+        _event(
+            "s1",
+            event_type="sell",
+            trade_date=date(2024, 4, 1),
+            quantity=D("-8"),
+            amount=D("200.00"),
+        ),
+    ]
+    discovery_lots, _ = _run(events, method_for=_fifo)
+    b_lot_id = next(
+        lot.lot_id for lot in discovery_lots if lot.source_transaction_id == "b"
+    )
+
+    def _select(disposal_txn_id: str) -> list[tuple[str, Decimal]]:
+        if disposal_txn_id == "s1":
+            return [(b_lot_id, D("3"))]
+        return []
+
+    lots, gains = _run(events, method_for=_specific, selections_for=_select)
+
+    by_src = {lot.source_transaction_id: lot for lot in lots}
+    # A partially drawn by the FIFO fallback; B partially drawn by selection;
+    # C untouched.
+    assert by_src["a"].remaining_quantity == D("5")
+    assert by_src["a"].cost_basis_remaining == D("50.00")
+    assert by_src["b"].remaining_quantity == D("7")
+    assert by_src["b"].cost_basis_remaining == D("140.00")
+    assert by_src["c"].remaining_quantity == D("10")
+    assert by_src["c"].cost_basis_remaining == D("300.00")
+
+    assert len(gains) == 2
+    by_lot = {g.lot_id: g for g in gains}
+    b_leg = by_lot[b_lot_id]
+    a_leg = by_lot[by_src["a"].lot_id]
+
+    assert b_leg.quantity == D("3")
+    assert b_leg.cost_basis == D("60.00")
+    assert b_leg.proceeds == D("75.00")
+    assert b_leg.gain_loss == D("15.00")
+    assert b_leg.term == "short"
+    assert b_leg.basis_incomplete is False
+
+    assert a_leg.quantity == D("5")
+    assert a_leg.cost_basis == D("50.00")
+    assert a_leg.proceeds == D("125.00")
+    assert a_leg.gain_loss == D("75.00")
+    assert a_leg.term == "short"
+    assert a_leg.basis_incomplete is False
+
+    assert sum((g.proceeds for g in gains), D("0")) == D("200.00")
+
+
+def test_specific_partially_selected_lot_remainder_reused_by_fifo_fallback() -> None:
+    # The double-appearance edge: lot A has 10 units; select 3 of them.
+    # Disposal is 10, so the FIFO fallback (over ALL open lots, A included)
+    # draws A's live remaining 7 next since A is the only (and therefore
+    # oldest) open lot. A is fully consumed via two internal slices, but the
+    # (disposal x lot) grain requires those to MERGE into ONE realized-gain
+    # row — two rows would collide on the realized_gain_id PK.
+    events = [
+        _event(
+            "a",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("10"),
+            amount=D("-1000.00"),
+        ),
+        _event(
+            "s1",
+            event_type="sell",
+            trade_date=date(2024, 2, 1),
+            quantity=D("-10"),
+            amount=D("1200.00"),
+        ),
+    ]
+    discovery_lots, _ = _run(events, method_for=_fifo)
+    a_lot_id = discovery_lots[0].lot_id
+
+    def _select(disposal_txn_id: str) -> list[tuple[str, Decimal]]:
+        if disposal_txn_id == "s1":
+            return [(a_lot_id, D("3"))]
+        return []
+
+    lots, gains = _run(events, method_for=_specific, selections_for=_select)
+
+    assert lots[0].remaining_quantity == D("0")
+    assert lots[0].cost_basis_remaining == D("0.00")
+
+    # Exactly one merged row for lot A: the 3 selected + 7 fallback units.
+    assert len(gains) == 1
+    g = gains[0]
+    assert g.lot_id == a_lot_id
+    assert g.quantity == D("10")
+    assert g.cost_basis == D("1000.00")
+    assert g.proceeds == D("1200.00")
+    assert g.gain_loss == D("200.00")
+    assert g.term == "short"
+    assert g.basis_incomplete is False
+
+    # Regression guard: realized_gain_id must be unique within a disposal.
+    ids = [g.realized_gain_id for g in gains]
+    assert len(ids) == len(set(ids))
+
+
+def test_specific_selection_of_unknown_lot_is_ignored_fifo_covers_disposal() -> None:
+    events = [
+        _event(
+            "b1",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("10"),
+            amount=D("-1000.00"),
+        ),
+        _event(
+            "s1",
+            event_type="sell",
+            trade_date=date(2024, 2, 1),
+            quantity=D("-10"),
+            amount=D("1200.00"),
+        ),
+    ]
+
+    def _select(_disposal_txn_id: str) -> list[tuple[str, Decimal]]:
+        return [("lot_does_not_exist_00000000", D("5"))]
+
+    lots, gains = _run(events, method_for=_specific, selections_for=_select)
+
+    assert lots[0].remaining_quantity == D("0")
+    assert len(gains) == 1
+    assert gains[0].lot_id == lots[0].lot_id
+    assert gains[0].quantity == D("10")
+    assert gains[0].cost_basis == D("1000.00")
+    assert gains[0].proceeds == D("1200.00")
+    assert gains[0].gain_loss == D("200.00")
+    assert gains[0].basis_incomplete is False
+
+
+def test_specific_selection_of_closed_lot_is_ignored_fifo_covers_disposal() -> None:
+    # b1 is fully closed by s0 (no selection — specific falls back to plain
+    # FIFO). s1 then selects the now-closed b1: that selection must be
+    # ignored, and the fresh b2 lot must cover the disposal via FIFO.
+    events = [
+        _event(
+            "b1",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("10"),
+            amount=D("-1000.00"),
+        ),
+        _event(
+            "s0",
+            event_type="sell",
+            trade_date=date(2024, 2, 1),
+            quantity=D("-10"),
+            amount=D("1200.00"),
+        ),
+        _event(
+            "b2",
+            event_type="buy",
+            trade_date=date(2024, 3, 1),
+            quantity=D("10"),
+            amount=D("-2000.00"),
+        ),
+        _event(
+            "s1",
+            event_type="sell",
+            trade_date=date(2024, 4, 1),
+            quantity=D("-5"),
+            amount=D("600.00"),
+        ),
+    ]
+    discovery_lots, _ = _run(events, method_for=_fifo)
+    b1_lot_id = next(
+        lot.lot_id for lot in discovery_lots if lot.source_transaction_id == "b1"
+    )
+
+    def _select(disposal_txn_id: str) -> list[tuple[str, Decimal]]:
+        if disposal_txn_id == "s1":
+            return [(b1_lot_id, D("3"))]  # b1 is closed by the time s1 runs
+        return []
+
+    lots, gains = _run(events, method_for=_specific, selections_for=_select)
+
+    by_src = {lot.source_transaction_id: lot for lot in lots}
+    assert by_src["b1"].remaining_quantity == D("0")  # untouched by s1
+    assert by_src["b2"].remaining_quantity == D("5")
+
+    s1_gains = [g for g in gains if g.disposal_txn_id == "s1"]
+    assert len(s1_gains) == 1
+    assert s1_gains[0].lot_id == by_src["b2"].lot_id
+    assert s1_gains[0].quantity == D("5")
+    assert s1_gains[0].cost_basis == D("1000.00")
+    assert s1_gains[0].proceeds == D("600.00")
+    assert s1_gains[0].gain_loss == D("-400.00")
+    assert s1_gains[0].basis_incomplete is False
+
+
+def test_specific_selection_qty_exceeding_remaining_is_capped_remainder_fifo() -> None:
+    # B (oldest, 10 units @ $50/unit) is not selected. A (newer, only 6 units
+    # @ $100/unit) is selected for 15 units — far more than it has. The
+    # selection is capped at A's remaining 6; the other 4 units needed to
+    # cover the 10-unit disposal fall back to FIFO, drawing from B.
+    events = [
+        _event(
+            "b",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("10"),
+            amount=D("-500.00"),
+        ),
+        _event(
+            "a",
+            event_type="buy",
+            trade_date=date(2024, 2, 1),
+            quantity=D("6"),
+            amount=D("-600.00"),
+        ),
+        _event(
+            "s1",
+            event_type="sell",
+            trade_date=date(2024, 3, 1),
+            quantity=D("-10"),
+            amount=D("1000.00"),
+        ),
+    ]
+    discovery_lots, _ = _run(events, method_for=_fifo)
+    a_lot_id = next(
+        lot.lot_id for lot in discovery_lots if lot.source_transaction_id == "a"
+    )
+
+    def _select(disposal_txn_id: str) -> list[tuple[str, Decimal]]:
+        if disposal_txn_id == "s1":
+            return [(a_lot_id, D("15"))]  # far exceeds A's remaining 6
+        return []
+
+    lots, gains = _run(events, method_for=_specific, selections_for=_select)
+
+    by_src = {lot.source_transaction_id: lot for lot in lots}
+    assert by_src["a"].remaining_quantity == D("0")
+    assert by_src["a"].cost_basis_remaining == D("0.00")
+    assert by_src["b"].remaining_quantity == D("6")
+    assert by_src["b"].cost_basis_remaining == D("300.00")
+
+    assert len(gains) == 2
+    by_lot = {g.lot_id: g for g in gains}
+    a_leg = by_lot[a_lot_id]
+    b_leg = by_lot[by_src["b"].lot_id]
+
+    assert a_leg.quantity == D("6")
+    assert a_leg.cost_basis == D("600.00")
+    assert a_leg.proceeds == D("600.00")
+    assert a_leg.gain_loss == D("0.00")
+
+    assert b_leg.quantity == D("4")
+    assert b_leg.cost_basis == D("200.00")
+    assert b_leg.proceeds == D("400.00")
+    assert b_leg.gain_loss == D("200.00")
+
+    assert sum((g.proceeds for g in gains), D("0")) == D("1000.00")
+
+
+def test_specific_with_no_selections_behaves_like_fifo() -> None:
+    # selections_for returning [] for every disposal is the FIFO/HIFO tests'
+    # default; specific-ID must degrade to plain FIFO consumption order.
+    events = [
+        _event(
+            "b1",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("10"),
+            amount=D("-100.00"),
+        ),
+        _event(
+            "b2",
+            event_type="buy",
+            trade_date=date(2024, 2, 1),
+            quantity=D("10"),
+            amount=D("-300.00"),
+        ),
+        _event(
+            "s1",
+            event_type="sell",
+            trade_date=date(2024, 3, 1),
+            quantity=D("-5"),
+            amount=D("150.00"),
+        ),
+    ]
+    lots, gains = _run(events, method_for=_specific)
+
+    by_src = {lot.source_transaction_id: lot for lot in lots}
+    assert by_src["b1"].remaining_quantity == D("5")
+    assert by_src["b2"].remaining_quantity == D("10")
+    assert len(gains) == 1
+    assert gains[0].lot_id == by_src["b1"].lot_id
+    assert gains[0].cost_basis_method == "specific"
