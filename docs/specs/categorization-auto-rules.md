@@ -56,7 +56,7 @@ This spec adds auto-rule generation — pillar E from the [categorization umbrel
 
 ### Priority hierarchy integration
 
-14. Auto-rules sit at priority level 3 in the categorization hierarchy (user > user-rules > auto-rules > ML > plaid > ai). They use `categorized_by = 'auto_rule'`.
+14. Auto-rules sit at priority level 3 in the categorization hierarchy (user > user-rules > auto-rules > ML > provider_native > ai). They use `categorized_by = 'auto_rule'`.
 15. Auto-rules are never evaluated for transactions already categorized by a higher-priority source.
 16. Auto-rules at `priority = 200` are evaluated after user-created rules at default `priority = 100`. Two auto-rules are ordered by their own priority values (first-created wins at equal priority).
 17. Auto-rule writes route through the `write_categorization` helper, which enforces the source-priority ladder defined in [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) §Source precedence. A user manual categorization (`'user'`) or user-authored rule (`'rule'`) categorization is never overwritten by an `'auto_rule'` write — the write is skipped at the SQL level, not after the fact.

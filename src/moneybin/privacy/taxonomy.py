@@ -389,6 +389,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "confidence": DataClass.AGGREGATE,
         "merchant_id": DataClass.RECORD_ID,
         "rule_id": DataClass.RECORD_ID,
+        "source_type": DataClass.TXN_TYPE,
         "subcategory": DataClass.CATEGORY,
         "transaction_id": DataClass.RECORD_ID,
     },

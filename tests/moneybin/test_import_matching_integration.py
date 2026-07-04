@@ -119,6 +119,7 @@ class TestRefreshCategorizationProposalSummary:
             "total": 5,
             "merchant": 3,
             "rule": 2,
+            "plaid": 0,
         }
         from moneybin.services.auto_rule_service import AutoStatsResult
 
@@ -159,6 +160,7 @@ class TestRefreshCategorizationProposalSummary:
             "total": 1,
             "merchant": 1,
             "rule": 0,
+            "plaid": 0,
         }
         from moneybin.services.auto_rule_service import AutoStatsResult
 

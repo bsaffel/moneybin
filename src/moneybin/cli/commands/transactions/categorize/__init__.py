@@ -442,3 +442,8 @@ def stats(
         if key.startswith("by_"):
             source = key[3:]
             logger.info(f"  By {source}:  {value}")
+
+    if "plaid_unmapped" in coverage:
+        logger.info(
+            f"  Plaid unmapped (no bridge mapping): {coverage['plaid_unmapped']}"
+        )

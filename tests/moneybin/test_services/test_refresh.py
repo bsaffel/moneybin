@@ -37,7 +37,9 @@ def patched_services() -> Iterator[dict[str, MagicMock]]:
         return_value=MagicMock(has_matches=False, has_pending=False)
     )
     transform_apply = MagicMock(return_value=_make_apply_result(applied=True))
-    categorize_pending = MagicMock(return_value={"total": 0, "rule": 0, "merchant": 0})
+    categorize_pending = MagicMock(
+        return_value={"total": 0, "rule": 0, "merchant": 0, "plaid": 0}
+    )
     auto_stats = MagicMock(return_value=MagicMock(pending_proposals=0))
 
     # Patches target the consumer module (moneybin.services.refresh) where
@@ -248,7 +250,7 @@ def test_refresh_steps_canonical_order_enforced(
 
     def _categorize_side(*a: Any, **kw: Any) -> dict[str, int]:
         call_log.append("categorize")
-        return {"total": 0, "rule": 0, "merchant": 0}
+        return {"total": 0, "rule": 0, "merchant": 0, "plaid": 0}
 
     patched_services["gsheet_pull"].side_effect = _gsheet_side
     patched_services["matcher_run"].side_effect = _match_side

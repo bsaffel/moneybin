@@ -70,8 +70,11 @@ def test_categorization_priority_hierarchy() -> None:
       FixtureSpec.categories before transform. The categorize step skips it
       (queries WHERE c.transaction_id IS NULL).
     - MCDONALDS_2024_03_05 has no pre-seed; the basic persona's dining merchant
-      catalog maps MCDONALDS (contains) → Food & Drink with categorized_by='rule',
-      proving the engine ran but respected the user override.
+      catalog maps MCDONALDS (contains) → Food & Drink, proving the engine ran
+      but respected the user override. A merchant-default write stamps the
+      'rule' method (categorized_by='rule') regardless of how the merchant's
+      category was authored — the categorization method, not the merchant's
+      provenance (categorization-source-model.md Decision 3, reverted).
     """
     scenario = load_shipped_scenario("categorization-priority-hierarchy")
     assert scenario is not None

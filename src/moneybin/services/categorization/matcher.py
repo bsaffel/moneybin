@@ -320,8 +320,18 @@ class CategorizationMatcher:
         that issued the entity id — is the binding key, NOT the merge-winner
         ``source_type`` projected from ``core.fct_transactions``.
         """
-        where = """
-                WHERE c.transaction_id IS NULL
+        # A row is "pending" when it is uncategorized OR was claimed by the
+        # provider_native (Plaid PFC) engine — the lowest deterministic source
+        # (priority 6). Re-scanning provider_native rows lets a rule or merchant
+        # added AFTER the Plaid import override them: the write-time precedence
+        # guard (`excluded_priority <= existing_priority`) permits rule/merchant
+        # (2) over provider_native (6) and rejects the reverse, so the ladder is
+        # enforced across runs, not just within one. 'ai' rows stay excluded —
+        # an ai commit is user-directed, so leaving it untouched preserves the
+        # pre-existing "committed categorizations are final" behavior.
+        pending = "(c.transaction_id IS NULL OR c.categorized_by = 'provider_native')"
+        where = f"""
+                WHERE {pending}
                     AND (
                         (t.description IS NOT NULL AND t.description != '')
                         OR (t.memo IS NOT NULL AND t.memo != '')
@@ -332,8 +342,8 @@ class CategorizationMatcher:
         # so rung-0 adoption and rung-4 minting run for it. This clause references
         # m.merchant_entity_id (the prep join alias) so it can only appear in the
         # with_entity query — the without_entity fallback carries no prep join.
-        where_with_entity = """
-                WHERE c.transaction_id IS NULL
+        where_with_entity = f"""
+                WHERE {pending}
                     AND (
                         (t.description IS NOT NULL AND t.description != '')
                         OR (t.memo IS NOT NULL AND t.memo != '')

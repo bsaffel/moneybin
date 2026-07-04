@@ -64,7 +64,9 @@ def score_match_shape(match_type: str) -> int:
 # precedence. The SQL CASE expression in write_categorization is generated
 # from this dict via priority_case_sql() so the Python dict stays the
 # canonical reference and SQL cannot drift from it.
-CategorizedBy = Literal["user", "rule", "auto_rule", "migration", "ml", "plaid", "ai"]
+CategorizedBy = Literal[
+    "user", "rule", "auto_rule", "migration", "ml", "provider_native", "ai"
+]
 
 SOURCE_PRIORITY: dict[str, int] = {
     "user": 1,
@@ -72,7 +74,7 @@ SOURCE_PRIORITY: dict[str, int] = {
     "auto_rule": 3,
     "migration": 4,
     "ml": 5,
-    "plaid": 6,
+    "provider_native": 6,
     "ai": 7,
 }
 
@@ -102,6 +104,24 @@ def match_shape_case_sql(column_expr: str) -> str:
         f"WHEN '{mt}' THEN {score}" for mt, score in _MATCH_SHAPE_SCORES.items()
     )
     return f"CASE {column_expr} {branches} ELSE 0 END"
+
+
+def plaid_bridge_match_predicate(detailed_expr: str, primary_expr: str) -> str:
+    """Render the predicate matching a Plaid transaction's PFC codes to the bridge.
+
+    Keyed on ``core.bridge_category_source_map`` (alias ``b``). Shared by the
+    apply path (``apply_plaid_categories``'s JOIN) and the
+    coverage-gap stat (``plaid_unmapped``'s NOT EXISTS) so the two stay in
+    lockstep — if the bridge keying evolves (a new code level, a normalized
+    code column), one edit updates both instead of silently diverging what gets
+    categorized from what the stat reports as unmapped. ``detailed_expr`` /
+    ``primary_expr`` are SQL column expressions for the detailed and primary PFC
+    codes (code constants, never user input).
+    """
+    return (
+        f"b.source_type = 'plaid' "
+        f"AND b.source_category_code IN ({detailed_expr}, {primary_expr})"
+    )
 
 
 def validate_match_type(match_type: str) -> MatchType:
@@ -332,6 +352,33 @@ class Merchant(NamedTuple):
             subcategory=str(row[5]) if row[5] is not None else None,
             exemplars=list(row[6] or []),
         )
+
+
+# Plaid personal_finance_category.confidence_level → numeric. UNKNOWN maps to
+# None so it fails the gate; LOW is retained numerically but sits below the gate.
+_PLAID_CONFIDENCE: dict[str, float] = {
+    "VERY_HIGH": 0.99,
+    "HIGH": 0.90,
+    "MEDIUM": 0.70,
+    "LOW": 0.40,
+}
+PLAID_MIN_CONFIDENCE: float = 0.70  # assign at MEDIUM and above
+
+
+def plaid_confidence_to_numeric(level: str | None) -> float | None:
+    """Convert Plaid's confidence_level enum to a numeric confidence score.
+
+    Args:
+        level: A Plaid confidence_level string (VERY_HIGH, HIGH, MEDIUM, LOW,
+            UNKNOWN, or None) or None.
+
+    Returns:
+        A float confidence score, or None if level is None, unmapped, or UNKNOWN.
+        UNKNOWN and unrecognized values map to None so they fail the gate.
+    """
+    if not level:
+        return None
+    return _PLAID_CONFIDENCE.get(level.upper())
 
 
 def resolve_category_id(

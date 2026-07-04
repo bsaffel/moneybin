@@ -35,6 +35,7 @@ _TRANSACTION_CATEGORIES_COLUMNS = (
     "merchant_id",
     "confidence",
     "rule_id",
+    "source_type",
 )
 
 
@@ -71,7 +72,11 @@ class TransactionCategoriesRepo(BaseRepo):
         The user-manual-edit path. Captures the full prior row (or ``None``) as
         ``before`` and the full resulting row as ``after``; ``merchant_id`` /
         ``rule_id`` / ``confidence`` are not in the SET list, so a conflict
-        retains their prior values.
+        retains their prior values. ``source_type`` IS reset to ``'internal'``:
+        a manual edit is an internal categorization, so overwriting a prior
+        provider-native row (e.g. ``source_type='plaid'``) must clear the
+        provider-origin tag or stats grouping by ``source_type`` would keep
+        counting the now-user-authored row as provider-native.
         """
         with self._transaction(in_outer_txn=in_outer_txn):
             before = self._fetch_row(transaction_id)
@@ -79,14 +84,15 @@ class TransactionCategoriesRepo(BaseRepo):
                 f"""
                 INSERT INTO {TRANSACTION_CATEGORIES.full_name}
                     (transaction_id, category, subcategory, category_id,
-                     categorized_at, categorized_by)
-                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+                     categorized_at, categorized_by, source_type)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, ?, 'internal')
                 ON CONFLICT (transaction_id) DO UPDATE SET
                     category = EXCLUDED.category,
                     subcategory = EXCLUDED.subcategory,
                     category_id = EXCLUDED.category_id,
                     categorized_at = EXCLUDED.categorized_at,
-                    categorized_by = EXCLUDED.categorized_by
+                    categorized_by = EXCLUDED.categorized_by,
+                    source_type = EXCLUDED.source_type
                 """,  # noqa: S608  # TableRef + parameterized values
                 [transaction_id, category, subcategory, category_id, categorized_by],
             )
@@ -111,6 +117,7 @@ class TransactionCategoriesRepo(BaseRepo):
         merchant_id: str | None,
         rule_id: str | None,
         confidence: float | None,
+        source_type: str = "internal",
         actor: str,
         parent_audit_id: str | None = None,
         in_outer_txn: bool = False,
@@ -142,8 +149,8 @@ class TransactionCategoriesRepo(BaseRepo):
                 INSERT INTO {TRANSACTION_CATEGORIES.full_name}
                     (transaction_id, category, subcategory, category_id,
                      categorized_at, categorized_by, merchant_id, rule_id,
-                     confidence)
-                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?)
+                     confidence, source_type)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?)
                 ON CONFLICT (transaction_id) DO UPDATE SET
                     category = EXCLUDED.category,
                     subcategory = EXCLUDED.subcategory,
@@ -152,7 +159,8 @@ class TransactionCategoriesRepo(BaseRepo):
                     categorized_by = EXCLUDED.categorized_by,
                     merchant_id = EXCLUDED.merchant_id,
                     rule_id = EXCLUDED.rule_id,
-                    confidence = EXCLUDED.confidence
+                    confidence = EXCLUDED.confidence,
+                    source_type = EXCLUDED.source_type
                 WHERE {excluded_priority} <= {existing_priority}
                 RETURNING transaction_id
                 """,  # noqa: S608  # TableRef + CASE from SOURCE_PRIORITY + parameterized values
@@ -165,6 +173,7 @@ class TransactionCategoriesRepo(BaseRepo):
                     merchant_id,
                     rule_id,
                     confidence,
+                    source_type,
                 ],
             ).fetchone()
             # DuckDB returns no rows from RETURNING when the ON CONFLICT … WHERE
@@ -223,7 +232,7 @@ class TransactionCategoriesRepo(BaseRepo):
 
         One ``category.clear`` audit per deleted row, each capturing that row's
         full prior state (Req 4). Higher-priority sources (user/migration/ml/
-        plaid) referencing this ``rule_id`` are left intact.
+        provider_native) referencing this ``rule_id`` are left intact.
         """
         cols = ", ".join(quote_ident(c) for c in _TRANSACTION_CATEGORIES_COLUMNS)
         with self._transaction(in_outer_txn=in_outer_txn):
