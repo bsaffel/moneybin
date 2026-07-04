@@ -1,0 +1,23 @@
+/* MoneyBin shape & density tokens. Hairline borders carry structure — no shadows on resting surfaces. */
+:root {
+  /* radii */
+  --r-chip: 2px;
+  --r-control: 4px;
+  --r-card: 6px;
+  --r-modal: 10px;
+
+  /* spacing — 4px base grid */
+  --sp-inside-control: 8px;
+  --sp-related: 12px;
+  --sp-widget-pad: 16px;
+  --sp-between-widgets: 24px;
+  --sp-page-gutter: 28px;
+
+  /* density registers */
+  --row-compact: 32px;  /* app default */
+  --row-cozy: 40px;     /* consumer setting */
+  --row-touch: 44px;    /* mobile minimum */
+
+  /* the one shadow — floating layers (popovers, menus, tooltips) ONLY */
+  --shadow-floating: 0 8px 24px rgba(0, 0, 0, 0.4);
+}

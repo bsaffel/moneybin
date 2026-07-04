@@ -1,0 +1,7 @@
+# design-sync machinery (regenerated per clone; never committed)
+.ds-sync/
+ds-bundle/
+
+# Re-include component sources that the repo-root `data/` ignore would otherwise
+# swallow (design-system/components/data/ holds the Amount + WidgetCard sources).
+!components/data/

@@ -1,0 +1,26 @@
+/* Self-hosted MoneyBin brand fonts (OFL 1.1) — variable TTFs from google/fonts.
+   No CDN at runtime (no-telemetry promise). Weight ranges cover the DS's usage. */
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 100 800;
+  font-display: swap;
+  src: url('./JetBrainsMono.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: 'Schibsted Grotesk';
+  font-style: normal;
+  font-weight: 400 900;
+  font-display: swap;
+  src: url('./SchibstedGrotesk.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: 'Newsreader';
+  font-style: normal;
+  font-weight: 200 800;
+  font-display: swap;
+  src: url('./Newsreader.ttf') format('truetype');
+}

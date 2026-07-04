@@ -1,0 +1,28 @@
+<!-- @dsCard group="Charts" viewport="700x250" subtitle="Shares read best on one straight axis — the stacked bar is the default. Donut tolerated: thin ring, six slices max, mono labels, signed total in the center. Amounts always signed (−); Other says what it absorbed." name="Proportion — one straight axis" -->
+<!DOCTYPE html><html><head><meta charset="utf-8"><link rel="stylesheet" href="../styles.css"><style>body{margin:0;font-family:var(--font-data)}</style></head>
+<body style="background:var(--bg-surface);padding:14px 20px;">
+<div style="font-size:9.5px;letter-spacing:0.1em;color:var(--text-faint);margin-bottom:8px">A · STACKED BAR — DEFAULT</div>
+<div style="display:flex;height:24px;border-radius:3px;overflow:hidden;gap:2px">
+  <div style="width:36.6%;background:var(--chart-1)"></div>
+  <div style="width:18%;background:var(--chart-2)"></div>
+  <div style="width:9.8%;background:var(--chart-3)"></div>
+  <div style="width:7.9%;background:var(--chart-5)"></div>
+  <div style="width:6.3%;background:var(--chart-4)"></div>
+  <div style="width:21.4%;background:var(--chart-8)"></div>
+</div>
+<div style="display:flex;gap:12px;flex-wrap:wrap;margin:8px 0 14px;font-size:10px;color:var(--text-secondary)">
+  <span style="display:flex;align-items:center;gap:5px"><span style="width:10px;height:10px;background:var(--chart-1);border-radius:2px"></span>Housing 36.6%</span>
+  <span style="display:flex;align-items:center;gap:5px"><span style="width:10px;height:10px;background:var(--chart-2);border-radius:2px"></span>Groceries 18.0%</span>
+  <span style="display:flex;align-items:center;gap:5px"><span style="width:10px;height:10px;background:var(--chart-3);border-radius:2px"></span>Transport 9.8%</span>
+  <span style="display:flex;align-items:center;gap:5px"><span style="width:10px;height:10px;background:var(--chart-5);border-radius:2px"></span>Dining 7.9%</span>
+  <span style="display:flex;align-items:center;gap:5px"><span style="width:10px;height:10px;background:var(--chart-4);border-radius:2px"></span>Insurance 6.3%</span>
+  <span style="display:flex;align-items:center;gap:5px"><span style="width:10px;height:10px;background:var(--chart-8);border-radius:2px"></span>Other 21.4%</span>
+</div>
+<div style="font-size:9.5px;letter-spacing:0.1em;color:var(--text-faint);margin-bottom:8px">B · DONUT — IF YOU MUST</div>
+<div style="display:flex;gap:20px;align-items:center">
+  <div style="position:relative;width:96px;height:96px;border-radius:50%;flex:none;background:conic-gradient(var(--chart-1) 0 36.6%, var(--chart-2) 0 54.6%, var(--chart-3) 0 64.4%, var(--chart-5) 0 72.3%, var(--chart-4) 0 78.6%, var(--chart-8) 0 100%)">
+    <div style="position:absolute;inset:14px;border-radius:50%;background:var(--bg-surface);display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--neg-expense)">−$6,560.00</div>
+  </div>
+  <div style="font-family:var(--font-ui);font-size:12px;color:var(--text-faint);max-width:380px;line-height:1.5">Other outgrew Dining this month — the bar shows it; the donut shrugs. Length reads more accurately than angle: prefer A.</div>
+</div>
+</body></html>
