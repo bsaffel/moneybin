@@ -13,6 +13,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 M2 closing out and M3 underway. M2A curator state shipped (transaction notes, tags, splits, manual entry, audit log). M2B architecture reference shipped (`architecture-shared-primitives.md`; writer-coordination contract via short-lived per-call connections). M2C brand surface advancing: `moneybin system doctor` integrity command, `reports.*` recipe library (eight curated views), and the `transform_*` MCP toolset closing the agent ingest loop. M3A Plaid Transactions sync shipped (Phase 1). Doc surface tightened for the personas reachable today; MCP surface hardened with protocol-standard annotations, `accounts_resolve`, list-parameter cap, structured error envelopes, and shell completion. Categorization correctness pass: memo-aware matcher, exemplar accumulation, source-precedence enforcement, auto-fan-out after apply; seed merchant catalogs retired in favor of user-driven and LLM-assist-driven merchant creation.
 
 ### Added
+- **`transactions categorize improve-ai` — upgrade AI-guessed categories to confident Plaid categories (M1U follow-up).**
+  New CLI command and matching MCP tool (`transactions_categorize_improve_ai`)
+  reverse-look-up every transaction currently `categorized_by='ai'` against the
+  `core.bridge_category_source_map` bridge and upgrade it to `provider_native`
+  when the match is at MEDIUM confidence or higher. Never touches user, rule,
+  or merchant categorizations. (#TBD)
 - **Automatic Plaid category assignment from Personal Finance Category (M1U).**
   Transactions synced from Plaid are now auto-categorized from Plaid's PFC codes
   via the `core.bridge_category_source_map` bridge (source `provider_native`,
