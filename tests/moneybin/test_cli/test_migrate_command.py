@@ -12,6 +12,29 @@ from moneybin.migrations import Migration
 runner = CliRunner()
 
 
+@pytest.fixture(autouse=True)
+def sqlmesh_state() -> object:
+    """Default every CLI migrate test to 'no SQLMesh drift, no migration needed'.
+
+    Both helpers read a real database; against these tests' mock ``db`` they
+    would otherwise misfire. Tests exercising the drift/repair path override
+    ``.drift`` (status/dry-run message) and/or ``.assessment`` (the apply gate,
+    a ``(drift_message, needs_migration)`` tuple).
+    """
+    from types import SimpleNamespace
+
+    with (
+        patch(
+            "moneybin.cli.commands.migrate.sqlmesh_state_drift", return_value=None
+        ) as drift,
+        patch(
+            "moneybin.cli.commands.migrate.sqlmesh_state_assessment",
+            return_value=(None, False),
+        ) as assessment,
+    ):
+        yield SimpleNamespace(drift=drift, assessment=assessment)
+
+
 def _migration(
     version: int = 1,
     name: str = "test",
@@ -145,6 +168,115 @@ class TestMigrateApply:
         assert result.exit_code == 0
         assert any("Checksum mismatch" in r.message for r in caplog.records)
 
+    @patch("moneybin.cli.commands.migrate.get_database")
+    @patch("moneybin.cli.commands.migrate.MigrationRunner")
+    def test_apply_repairs_sqlmesh_state_when_behind(
+        self,
+        mock_runner_cls: MagicMock,
+        mock_get_db: MagicMock,
+        sqlmesh_state: object,
+    ) -> None:
+        """When SQLMesh state is behind, apply calls repair and exits 0."""
+        from moneybin.migrations import MigrationResult
+
+        mock_runner = mock_runner_cls.return_value
+        mock_runner.apply_all.return_value = MigrationResult(applied_count=0)
+        mock_runner.check_drift.return_value = []
+        sqlmesh_state.assessment.return_value = (  # type: ignore[attr-defined]
+            "SQLMesh state (v100) behind — run migrate.",
+            True,
+        )
+        mock_db = mock_get_db.return_value.__enter__.return_value
+        mock_db.repair_sqlmesh_state.return_value = True
+
+        result = runner.invoke(app, ["apply"])
+
+        assert result.exit_code == 0
+        mock_db.repair_sqlmesh_state.assert_called_once_with()
+
+    @patch("moneybin.cli.commands.migrate.get_database")
+    @patch("moneybin.cli.commands.migrate.MigrationRunner")
+    def test_apply_exits_1_when_sqlmesh_repair_fails(
+        self,
+        mock_runner_cls: MagicMock,
+        mock_get_db: MagicMock,
+        sqlmesh_state: object,
+    ) -> None:
+        """A repair that doesn't advance the durable state surfaces as exit 1."""
+        from moneybin.migrations import MigrationResult
+
+        mock_runner = mock_runner_cls.return_value
+        mock_runner.apply_all.return_value = MigrationResult(applied_count=0)
+        mock_runner.check_drift.return_value = []
+        sqlmesh_state.assessment.return_value = (  # type: ignore[attr-defined]
+            "SQLMesh state (v100) behind — run migrate.",
+            True,
+        )
+        mock_db = mock_get_db.return_value.__enter__.return_value
+        mock_db.repair_sqlmesh_state.return_value = False
+
+        result = runner.invoke(app, ["apply"])
+
+        assert result.exit_code == 1
+
+    @patch("moneybin.cli.commands.migrate.get_database")
+    @patch("moneybin.cli.commands.migrate.MigrationRunner")
+    def test_apply_warns_but_succeeds_when_state_ahead(
+        self,
+        mock_runner_cls: MagicMock,
+        mock_get_db: MagicMock,
+        sqlmesh_state: object,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """State AHEAD of the package can't be migrated — warn, don't repair/fail."""
+        import logging
+
+        from moneybin.migrations import MigrationResult
+
+        mock_runner = mock_runner_cls.return_value
+        mock_runner.apply_all.return_value = MigrationResult(applied_count=0)
+        mock_runner.check_drift.return_value = []
+        sqlmesh_state.assessment.return_value = (  # type: ignore[attr-defined]
+            "SQLMesh state schema (v105) is ahead of the installed sqlmesh "
+            "package (v101). Upgrade the sqlmesh package to match.",
+            False,
+        )
+        mock_db = mock_get_db.return_value.__enter__.return_value
+
+        with caplog.at_level(logging.WARNING, logger="moneybin.cli.commands.migrate"):
+            result = runner.invoke(app, ["apply"])
+
+        assert result.exit_code == 0
+        mock_db.repair_sqlmesh_state.assert_not_called()
+        assert any("ahead" in r.message for r in caplog.records)
+
+    @patch("moneybin.cli.commands.migrate.get_database")
+    @patch("moneybin.cli.commands.migrate.MigrationRunner")
+    def test_apply_dry_run_reports_sqlmesh_drift(
+        self,
+        mock_runner_cls: MagicMock,
+        mock_get_db: MagicMock,
+        sqlmesh_state: object,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Dry run reports SQLMesh drift without executing any migration."""
+        import logging
+
+        mock_runner = mock_runner_cls.return_value
+        mock_runner.pending.return_value = []
+        sqlmesh_state.drift.return_value = (  # type: ignore[attr-defined]
+            "SQLMesh state (v100) behind — run migrate."
+        )
+        mock_db = mock_get_db.return_value.__enter__.return_value
+
+        with caplog.at_level(logging.WARNING, logger="moneybin.cli.commands.migrate"):
+            result = runner.invoke(app, ["apply", "--dry-run"])
+
+        assert result.exit_code == 0
+        mock_runner.apply_all.assert_not_called()
+        mock_db.migrate_sqlmesh_state.assert_not_called()
+        assert any("behind" in r.message for r in caplog.records)
+
 
 class TestMigrateStatus:
     """moneybin db migrate status command."""
@@ -225,3 +357,33 @@ class TestMigrateStatus:
 
         result = runner.invoke(app, ["status"])
         assert result.exit_code == 1
+
+    @patch("moneybin.cli.commands.migrate.get_database")
+    @patch("moneybin.cli.commands.migrate.MigrationRunner")
+    @patch("moneybin.cli.commands.migrate.get_current_versions")
+    def test_status_surfaces_sqlmesh_state_drift(
+        self,
+        mock_get_versions: MagicMock,
+        mock_runner_cls: MagicMock,
+        mock_get_db: MagicMock,
+        sqlmesh_state: object,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Status warns when SQLMesh internal state has drifted behind the package."""
+        import logging
+
+        mock_runner = mock_runner_cls.return_value
+        mock_runner.pending.return_value = []
+        mock_runner.applied_details.return_value = []
+        mock_runner.check_drift.return_value = []
+        mock_get_versions.return_value = {}
+        sqlmesh_state.drift.return_value = (  # type: ignore[attr-defined]
+            "SQLMesh state schema (v100) is behind the installed sqlmesh "
+            "package (v101). Run `moneybin db migrate apply` to migrate the state."
+        )
+
+        with caplog.at_level(logging.WARNING, logger="moneybin.cli.commands.migrate"):
+            result = runner.invoke(app, ["status"])
+
+        assert result.exit_code == 0
+        assert any("migrate apply" in r.message for r in caplog.records)

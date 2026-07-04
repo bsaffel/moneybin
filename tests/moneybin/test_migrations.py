@@ -1,10 +1,12 @@
 """Tests for the database migration system."""
 
 import hashlib
+import importlib.metadata
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from pytest_mock import MockerFixture
 
 from moneybin.database import Database
 from moneybin.migrations import (
@@ -14,6 +16,7 @@ from moneybin.migrations import (
     discover_migrations,
     get_current_versions,
     record_version,
+    sqlmesh_state_assessment,
 )
 
 pytestmark = pytest.mark.fresh_db
@@ -660,3 +663,83 @@ class TestAutoUpgrade:
             assert row[0] == 0  # version not recorded when auto-upgrade is skipped
         finally:
             database.close()
+
+
+class TestSqlmeshStateAssessment:
+    """sqlmesh_state_assessment() — drift detection mirrors SQLMesh validation.
+
+    Pure unit tests: the state read is mocked, so no real database or SQLMesh
+    Context is needed. Persistence/repair against a real DB is covered by
+    tests/moneybin/test_sqlmesh_state_migration.py.
+    """
+
+    @staticmethod
+    def _bumped_minor(version: str) -> str:
+        """A version string one minor above ``version`` — a guaranteed mismatch."""
+        from sqlmesh.utils import major_minor
+
+        major, minor = major_minor(version)
+        return f"{major}.{minor + 1}.0"
+
+    def test_degrades_to_no_drift_when_sqlmesh_metadata_missing(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Sqlmesh importable but no installed-distribution metadata → no drift, no raise."""
+        from sqlmesh.core.state_sync.base import SCHEMA_VERSION
+
+        mocker.patch(
+            "moneybin.migrations._read_sqlmesh_state_versions",
+            return_value=(SCHEMA_VERSION - 1, "0.1.0", "1.0.0"),
+        )
+        mocker.patch(
+            "importlib.metadata.version",
+            side_effect=importlib.metadata.PackageNotFoundError("sqlmesh"),
+        )
+
+        assert sqlmesh_state_assessment(MagicMock()) == (None, False)
+
+    def test_reports_sqlglot_drift_when_schema_current(
+        self, mocker: MockerFixture
+    ) -> None:
+        """A SQLGlot-only bump (schema + sqlmesh current) drifts and IS migratable."""
+        from sqlmesh.core.state_sync.base import SCHEMA_VERSION
+
+        installed_sqlglot = importlib.metadata.version("sqlglot")
+        installed_sqlmesh = importlib.metadata.version("sqlmesh")
+        mocker.patch(
+            "moneybin.migrations._read_sqlmesh_state_versions",
+            return_value=(
+                SCHEMA_VERSION,
+                installed_sqlmesh,
+                self._bumped_minor(installed_sqlglot),
+            ),
+        )
+
+        message, needs_migration = sqlmesh_state_assessment(MagicMock())
+        assert message is not None
+        assert "SQLGlot" in message
+        # With the schema current, ctx.migrate() re-stamps the version row on a
+        # SQLGlot mismatch (StateMigrator counts it as work), so it's repairable.
+        assert needs_migration is True
+
+    def test_reports_repairable_sqlmesh_minor_drift_when_schema_current(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Schema current but stored SQLMesh minor behind → drift a migrate re-stamps."""
+        from sqlmesh.core.state_sync.base import SCHEMA_VERSION
+        from sqlmesh.utils import major_minor
+
+        installed_sqlglot = importlib.metadata.version("sqlglot")
+        installed_sqlmesh = importlib.metadata.version("sqlmesh")
+        major, minor = major_minor(installed_sqlmesh)
+        behind_sqlmesh = f"{major}.{minor - 1}.0" if minor > 0 else f"{major - 1}.0.0"
+
+        mocker.patch(
+            "moneybin.migrations._read_sqlmesh_state_versions",
+            return_value=(SCHEMA_VERSION, behind_sqlmesh, installed_sqlglot),
+        )
+
+        message, needs_migration = sqlmesh_state_assessment(MagicMock())
+        assert message is not None
+        assert "SQLMesh state" in message
+        assert needs_migration is True
