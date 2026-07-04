@@ -1,14 +1,17 @@
 import { useId } from 'react';
 
-export function Mark({ size = 44, plate = 'dark', style }) {
+export function Mark({ size = 44, plate, style }) {
   // Coin & slot: solid coin poised over a slot cut clean through the plate.
-  // plate 'dark' = ink plate w/ brass coin (for light surroundings);
-  // plate 'light' = paper plate w/ dark-brass coin (for dark surroundings).
+  // Omit `plate` → theme-aware: plate/coin auto-contrast with the ambient
+  //   surface via the --mark-* tokens (paper plate on dark, ink on light).
+  // plate 'dark' = ink plate w/ brass coin (forces the light-surroundings plate);
+  // plate 'light' = paper plate w/ dark-brass coin (forces the dark-surroundings plate).
   // Unique mask id per instance so two Marks on one page don't collide.
   const maskId = 'mb-slot-' + useId().replace(/:/g, '');
-  const colors = plate === 'dark'
-    ? { plate: '#1C1A16', coin: '#C79B3B' }
-    : { plate: '#E9E4DB', coin: '#8A6A1C' };
+  const colors =
+    plate === 'dark' ? { plate: '#1C1A16', coin: '#C79B3B' } :
+    plate === 'light' ? { plate: '#E9E4DB', coin: '#8A6A1C' } :
+    { plate: 'var(--mark-plate)', coin: 'var(--mark-coin)' };
   return (
     <svg width={size} height={size} viewBox="0 0 48 48" style={style}>
       <defs>

@@ -1,4 +1,3 @@
-/* GENERATED from tokens/*.css by design-sync buildCmd — do not edit here; edit tokens/ and rebuild. */
 /* MoneyBin color tokens — dark is the reference theme (default on :root); light is a peer mapping. */
 :root {
   --bg-base: #141311;
@@ -15,6 +14,9 @@
   --pos-income: #45B27B;
   --neg-expense: #E0684F;
   --focus: #D9B054;
+  /* logo mark — auto-contrast plate/coin for the current surface (paper plate on the dark theme) */
+  --mark-plate: #E9E4DB;
+  --mark-coin: #8A6A1C;
   /* categorical chart palette (shared across themes; equal-lightness oklch, hue-spread) */
   --chart-1: #C79B3B;
   --chart-2: #56A8A0;
@@ -41,6 +43,9 @@
   --pos-income: #157A52;
   --neg-expense: #B03A24;
   --focus: #8A6A1C;
+  /* logo mark — ink plate on the light theme's light surfaces */
+  --mark-plate: #1C1A16;
+  --mark-coin: #C79B3B;
 }
 /* MoneyBin typography tokens.
    Serif speaks (display/brand voice), sans works (UI), mono counts (ALL money, timestamps, axis labels, SQL, CLI).

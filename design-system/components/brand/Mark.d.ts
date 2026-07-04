@@ -5,7 +5,13 @@
 export interface MarkProps {
   /** Rendered square size in px. Default 44. */
   size?: number;
-  /** Plate color: 'dark' (ink plate, for light surroundings) or 'light' (paper plate, for dark surroundings). Default 'dark' — pass 'light' when placing the mark on the app's dark surfaces. */
+  /**
+   * Plate color. Omit for theme-aware auto-contrast — plate and coin follow
+   * the `--mark-*` tokens (paper plate on dark surfaces, ink plate on light),
+   * so the mark is always legible without the caller choosing. Pass 'dark'
+   * (ink plate, for light surroundings) or 'light' (paper plate, for dark
+   * surroundings) to force a specific plate regardless of theme.
+   */
   plate?: 'dark' | 'light';
   style?: React.CSSProperties;
 }
