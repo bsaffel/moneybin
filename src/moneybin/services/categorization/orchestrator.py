@@ -876,8 +876,26 @@ class CategorizationOrchestrator:
         Returns:
             Number of transactions categorized.
         """
+        rows = self._plaid_bridge_candidates("tc.transaction_id IS NULL")
+        return self._write_plaid_rows(rows)
+
+    def _plaid_bridge_candidates(
+        self, tc_where: str
+    ) -> list[tuple[str, str, str | None, str | None]]:
+        """Bridge reverse-lookup rows: (transaction_id, category, subcategory, confidence_level).
+
+        Reverse-looks-up Plaid transactions in prep.int_transactions__merged
+        against core.bridge_category_source_map, filtered by `tc_where` — a
+        static, code-constant predicate on the LEFT-JOINed
+        transaction_categories alias `tc`. Never caller/user input; do not
+        parameterize (it's a SQL fragment, not a value).
+
+        Degrades to an empty list when prep.int_transactions__merged isn't
+        materialized yet, or predates the PFC carry-through — see
+        :meth:`apply_plaid_categories` for the full rationale.
+        """
         try:
-            rows = self._db.execute(
+            return self._db.execute(
                 f"""
                 SELECT m.transaction_id, dc.category, dc.subcategory, m.category_confidence
                 FROM {INT_TRANSACTIONS_MERGED.full_name} AS m
@@ -886,7 +904,7 @@ class CategorizationOrchestrator:
                 JOIN {CATEGORIES.full_name} AS dc ON dc.category_id = b.category_id
                 LEFT JOIN {TRANSACTION_CATEGORIES.full_name} AS tc
                     ON tc.transaction_id = m.transaction_id
-                WHERE tc.transaction_id IS NULL
+                WHERE {tc_where}
                 QUALIFY ROW_NUMBER() OVER (
                     PARTITION BY m.transaction_id
                     ORDER BY (b.code_level = 'detailed') DESC
@@ -894,8 +912,16 @@ class CategorizationOrchestrator:
                 """  # noqa: S608 — TableRef constants + code-constant bridge predicate; no user input
             ).fetchall()
         except (duckdb.CatalogException, duckdb.BinderException):
-            return 0
+            return []
 
+    def _write_plaid_rows(
+        self, rows: list[tuple[str, str, str | None, str | None]]
+    ) -> int:
+        """Apply the >=MEDIUM confidence gate + guarded provider_native write.
+
+        Returns the number of rows actually written (post-gate, post-priority
+        guard).
+        """
         count = 0
         for txn_id, category, subcategory, level in rows:
             confidence = plaid_confidence_to_numeric(level)
