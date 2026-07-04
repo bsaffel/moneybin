@@ -15,7 +15,7 @@ Flow inventory:
 - :meth:`apply_merchant_categories` — sweep uncategorized rows against the
   merchant catalog.
 - :meth:`apply_plaid_categories` — sweep still-uncategorized Plaid rows
-  against Plaid's Personal Finance Category (detailed), confidence-gated.
+  against the two-tier category-source bridge, confidence-gated.
 - :meth:`categorize_pending` — combined snowball: scan uncategorized once,
   run rules pass, then merchants pass (rule wins on overlap).
 
@@ -66,6 +66,7 @@ from moneybin.services.categorization.matcher import (
     match_merchant_with_name,
 )
 from moneybin.tables import (
+    BRIDGE_CATEGORY_SOURCE_MAP,
     CATEGORIES,
     FCT_TRANSACTIONS,
     INT_TRANSACTIONS_MERGED,
@@ -850,13 +851,18 @@ class CategorizationOrchestrator:
         return categorized_count
 
     def apply_plaid_categories(self) -> int:
-        """Assign categories from Plaid's Personal Finance Category (detailed).
+        """Assign categories from Plaid's Personal Finance Category via the bridge.
 
-        Joins each still-uncategorized Plaid transaction's PFC detailed string to
-        the seeded core.dim_categories.plaid_detailed mapping, gated at >= MEDIUM
-        confidence. Writes categorized_by='provider_native', source_type='plaid' at
-        priority 6 — below every deliberate signal, above ai. Runs last of the
-        deterministic categorizers so it only touches the long tail.
+        Reverse-looks-up each still-uncategorized Plaid transaction's PFC codes
+        against core.bridge_category_source_map — the two-tier, deterministic
+        provider-code mapping (docs/specs/category-source-map.md). A transaction
+        carries both a detailed code (category_detailed) and a primary code
+        (plaid_category); either may resolve in the bridge, so the QUALIFY
+        picks exactly one row per transaction, detailed preferred, primary
+        fallback. Gated at >= MEDIUM confidence. Writes
+        categorized_by='provider_native', source_type='plaid' at priority 6 —
+        below every deliberate signal, above ai. Runs last of the deterministic
+        categorizers so it only touches the long tail.
 
         Returns:
             Number of transactions categorized.
@@ -865,11 +871,17 @@ class CategorizationOrchestrator:
             f"""
             SELECT s.transaction_id, dc.category, dc.subcategory, s.category_confidence
             FROM {STG_PLAID_TRANSACTIONS.full_name} AS s
-            JOIN {CATEGORIES.full_name} AS dc ON dc.plaid_detailed = s.category_detailed
+            JOIN {BRIDGE_CATEGORY_SOURCE_MAP.full_name} AS b
+                ON b.source_type = 'plaid'
+                AND b.source_category_code IN (s.category_detailed, s.plaid_category)
+            JOIN {CATEGORIES.full_name} AS dc ON dc.category_id = b.category_id
             LEFT JOIN {TRANSACTION_CATEGORIES.full_name} AS tc
                 ON tc.transaction_id = s.transaction_id
             WHERE tc.transaction_id IS NULL
-              AND s.category_detailed IS NOT NULL
+            QUALIFY ROW_NUMBER() OVER (
+                PARTITION BY s.transaction_id
+                ORDER BY (b.code_level = 'detailed') DESC
+            ) = 1
             """  # noqa: S608 — table names are compile-time TableRef constants; no interpolated values
         ).fetchall()
 

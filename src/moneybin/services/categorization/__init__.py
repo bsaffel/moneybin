@@ -435,7 +435,7 @@ class CategorizationService:
         )
 
     def apply_plaid_categories(self) -> int:
-        """Apply Plaid PFC-detailed categories to still-uncategorized Plaid transactions."""
+        """Apply Plaid PFC categories (via the category-source bridge) to still-uncategorized Plaid transactions."""
         return self._orchestrator.apply_plaid_categories()
 
     def categorize_pending(self) -> dict[str, int]:

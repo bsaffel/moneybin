@@ -13,6 +13,7 @@ import pytest
 import yaml
 
 from moneybin.database import Database
+from moneybin.seeds import refresh_views
 from moneybin.services._text import normalize_description
 from moneybin.services.categorization import (
     CategorizationItem,
@@ -2516,7 +2517,8 @@ def _insert_plaid_txn(
     db: Database,
     transaction_id: str,
     *,
-    category_detailed: str,
+    category_detailed: str | None,
+    plaid_category: str | None,
     category_confidence: str,
 ) -> None:
     """Insert a row into ``prep.stg_plaid__transactions`` for categorizer tests.
@@ -2525,52 +2527,94 @@ def _insert_plaid_txn(
     ``raw.plaid_transactions`` in production — building it in a unit-test DB
     would require a full SQLMesh plan (see ``test_stg_plaid.py``'s
     ``@pytest.mark.integration``/``slow`` tier, which does exactly that for
-    the view's own sign-flip logic). ``apply_plaid_categories`` only reads
-    three columns, so this creates just those columns as a physical table —
-    mirroring the ``prep.int_transactions__merged`` precedent already used
-    above for entity-resolution tests (see ``_setup_prep_table``).
+    the view's own sign-flip logic). ``apply_plaid_categories`` reads four
+    columns (the detailed AND primary PFC codes, for the two-tier bridge
+    lookup, plus confidence), so this creates just those columns as a
+    physical table — mirroring the ``prep.int_transactions__merged``
+    precedent already used above for entity-resolution tests (see
+    ``_setup_prep_table``).
     """
     db.execute("CREATE SCHEMA IF NOT EXISTS prep")
     db.execute(
         "CREATE TABLE IF NOT EXISTS prep.stg_plaid__transactions ("
         "  transaction_id VARCHAR PRIMARY KEY, "
         "  category_detailed VARCHAR, "
+        "  plaid_category VARCHAR, "
         "  category_confidence VARCHAR"
         ")"
     )
     db.execute(
         "INSERT INTO prep.stg_plaid__transactions "
-        "(transaction_id, category_detailed, category_confidence) VALUES (?, ?, ?)",
-        [transaction_id, category_detailed, category_confidence],
+        "(transaction_id, category_detailed, plaid_category, category_confidence) "
+        "VALUES (?, ?, ?, ?)",
+        [transaction_id, category_detailed, plaid_category, category_confidence],
     )
 
 
-def _seed_coffee_category(db: Database) -> None:
-    """Seed core.dim_categories with the real FOOD_AND_DRINK_COFFEE -> FND-COF row.
+def _seed_bridge_mapping(
+    db: Database,
+    *,
+    source_category_code: str,
+    code_level: str,
+    category_id: str,
+    category: str,
+    subcategory: str | None,
+) -> None:
+    """Seed one core.bridge_category_source_map row, real mechanism.
 
-    Uses the exact row shipped in ``sqlmesh/models/seeds/categories.csv`` so
-    the ``resolve_category_id`` round-trip exercised by
-    ``apply_plaid_categories`` is realistic, not a test-only shape.
+    Inserts into ``seeds.category_source_map`` (the bridge's seed tier —
+    mirrors ``test_bridge_category_source_map.py``'s ``_insert_seed_row``)
+    plus a matching ``seeds.categories`` row so
+    ``core.dim_categories``/``core.bridge_category_source_map`` — both real
+    views, not stubs — resolve ``category_id`` to a ``(category,
+    subcategory)`` pair the same way production does. Callers must call
+    ``refresh_views(db)`` first so the seed tables exist.
+
+    Named-column insert (not positional) on purpose: the bootstrap
+    ``seeds.categories`` table (``moneybin.seeds._ensure_seed_tables_exist``)
+    still carries its historical 5th column (kept for V014 migration replay,
+    unrelated to this bridge), so this leaves it at its column default
+    (``NULL``) rather than assuming a name or position for a column this
+    test doesn't exercise.
     """
-    seed_categories_view(db)
     db.execute(
-        "INSERT INTO seeds.categories VALUES "
-        "('FND-COF', 'Food & Drink', 'Coffee Shops', "
-        "'Coffee and tea shops', 'FOOD_AND_DRINK_COFFEE')"
+        "INSERT INTO seeds.category_source_map "
+        "(source_type, source_category_code, code_level, category_id, "
+        "source_taxonomy_version) VALUES ('plaid', ?, ?, ?, 'plaid_pfc_v2')",
+        [source_category_code, code_level, category_id],
+    )
+    db.execute(
+        "INSERT INTO seeds.categories (category_id, category, subcategory, description) "
+        "VALUES (?, ?, ?, 'test category')",
+        [category_id, category, subcategory],
     )
 
 
 class TestApplyPlaidCategories:
-    """Tests for the Plaid PFC-detailed categorizer."""
+    """Tests for the two-tier Plaid PFC bridge categorizer.
+
+    Exercises the real ``core.bridge_category_source_map`` reverse lookup
+    (detailed-preferred, primary-fallback) rather than the retired
+    ``dim_categories.plaid_detailed`` column.
+    """
 
     @pytest.mark.unit
-    def test_assigns_gated_category(self, db: Database) -> None:
-        """A MEDIUM+ confidence Plaid txn adopts the seeded FND-COF category."""
-        _seed_coffee_category(db)
+    def test_detailed_match_assigns_category(self, db: Database) -> None:
+        """A HIGH-confidence txn whose detailed code is bridge-mapped adopts it."""
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="FOOD_AND_DRINK_COFFEE",
+            code_level="detailed",
+            category_id="FND-COF",
+            category="Food & Drink",
+            subcategory="Coffee Shops",
+        )
         _insert_plaid_txn(
             db,
             "t1",
             category_detailed="FOOD_AND_DRINK_COFFEE",
+            plaid_category="FOOD_AND_DRINK",
             category_confidence="HIGH",
         )
 
@@ -2584,13 +2628,94 @@ class TestApplyPlaidCategories:
         assert row == ("FND-COF", "provider_native", "plaid", Decimal("0.90"))
 
     @pytest.mark.unit
-    def test_skips_low_confidence(self, db: Database) -> None:
-        """A LOW confidence Plaid txn is not categorized — no row written."""
-        _seed_coffee_category(db)
+    def test_detailed_wins_over_primary_no_fanout(self, db: Database) -> None:
+        """Two-tier: when both codes are bridge-mapped, detailed wins, exactly once.
+
+        Regression test for the bug this rebuild fixes: without the QUALIFY
+        dedup, a transaction whose detailed AND primary codes both resolve in
+        the bridge would fan out into two writes for the same transaction
+        (non-deterministic final category, inflated count).
+        """
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="FOOD_AND_DRINK_FAST_FOOD",
+            code_level="detailed",
+            category_id="FND-FST",
+            category="Food & Drink",
+            subcategory="Fast Food",
+        )
+        _seed_bridge_mapping(
+            db,
+            source_category_code="FOOD_AND_DRINK",
+            code_level="primary",
+            category_id="FND",
+            category="Food & Drink",
+            subcategory=None,
+        )
         _insert_plaid_txn(
             db,
             "t2",
+            category_detailed="FOOD_AND_DRINK_FAST_FOOD",
+            plaid_category="FOOD_AND_DRINK",
+            category_confidence="HIGH",
+        )
+
+        n = apply_plaid_categories(db)
+
+        assert n == 1, "detailed+primary both matching must write once, not fan out"
+        row = db.execute(
+            "SELECT category_id FROM app.transaction_categories WHERE transaction_id='t2'"
+        ).fetchone()
+        assert row == ("FND-FST",)
+
+    @pytest.mark.unit
+    def test_primary_fallback_when_detailed_unmapped(self, db: Database) -> None:
+        """When the detailed code has no bridge row, the primary code's mapping wins."""
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="TRANSPORTATION",
+            code_level="primary",
+            category_id="TRP",
+            category="Transportation",
+            subcategory=None,
+        )
+        _insert_plaid_txn(
+            db,
+            "t3",
+            # Intentionally NOT mapped in the bridge — only the primary
+            # TRANSPORTATION code is seeded above.
+            category_detailed="TRANSPORTATION_BIKES_AND_SCOOTERS",
+            plaid_category="TRANSPORTATION",
+            category_confidence="HIGH",
+        )
+
+        n = apply_plaid_categories(db)
+
+        assert n == 1
+        row = db.execute(
+            "SELECT category_id FROM app.transaction_categories WHERE transaction_id='t3'"
+        ).fetchone()
+        assert row == ("TRP",)
+
+    @pytest.mark.unit
+    def test_skips_low_confidence(self, db: Database) -> None:
+        """A LOW confidence Plaid txn is not categorized, even with a bridge match."""
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="FOOD_AND_DRINK_COFFEE",
+            code_level="detailed",
+            category_id="FND-COF",
+            category="Food & Drink",
+            subcategory="Coffee Shops",
+        )
+        _insert_plaid_txn(
+            db,
+            "t4",
             category_detailed="FOOD_AND_DRINK_COFFEE",
+            plaid_category="FOOD_AND_DRINK",
             category_confidence="LOW",
         )
 
@@ -2599,7 +2724,7 @@ class TestApplyPlaidCategories:
         assert n == 0
         assert (
             db.execute(
-                "SELECT 1 FROM app.transaction_categories WHERE transaction_id='t2'"
+                "SELECT 1 FROM app.transaction_categories WHERE transaction_id='t4'"
             ).fetchone()
             is None
         )
