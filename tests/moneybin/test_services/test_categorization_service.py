@@ -2731,6 +2731,185 @@ class TestApplyPlaidCategories:
 
 
 # ---------------------------------------------------------------------------
+# Plaid categorizer observability — counters, by_provider_native, coverage
+# gap (Task 9, Tier-2b — deferred from the category-source-map bridge PR)
+# ---------------------------------------------------------------------------
+
+
+class TestPlaidCategorizerObservability:
+    """Prometheus counters + stats surfaces for the Plaid PFC categorizer."""
+
+    @pytest.mark.unit
+    def test_by_provider_native_appears_after_plaid_write(self, db: Database) -> None:
+        """A provider_native write surfaces via stats()['by_provider_native']."""
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="FOOD_AND_DRINK_COFFEE",
+            code_level="detailed",
+            category_id="FND-COF",
+            category="Food & Drink",
+            subcategory="Coffee Shops",
+        )
+        _insert_plaid_txn(
+            db,
+            "t1",
+            category_detailed="FOOD_AND_DRINK_COFFEE",
+            plaid_category="FOOD_AND_DRINK",
+            category_confidence="HIGH",
+        )
+
+        n = apply_plaid_categories(db)
+
+        assert n == 1
+        stats = get_categorization_stats(db)
+        assert stats["by_provider_native"] == 1
+
+    @pytest.mark.unit
+    def test_write_increments_provider_native_counter(self, db: Database) -> None:
+        """A successful plaid write increments CATEGORIZE_PROVIDER_NATIVE_TOTAL."""
+        from moneybin.metrics.registry import CATEGORIZE_PROVIDER_NATIVE_TOTAL
+
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="FOOD_AND_DRINK_COFFEE",
+            code_level="detailed",
+            category_id="FND-COF",
+            category="Food & Drink",
+            subcategory="Coffee Shops",
+        )
+        _insert_plaid_txn(
+            db,
+            "t1",
+            category_detailed="FOOD_AND_DRINK_COFFEE",
+            plaid_category="FOOD_AND_DRINK",
+            category_confidence="HIGH",
+        )
+        before = CATEGORIZE_PROVIDER_NATIVE_TOTAL.labels(
+            source_type="plaid"
+        )._value.get()  # type: ignore[reportPrivateUsage] — prometheus internals
+
+        n = apply_plaid_categories(db)
+
+        after = CATEGORIZE_PROVIDER_NATIVE_TOTAL.labels(
+            source_type="plaid"
+        )._value.get()  # type: ignore[reportPrivateUsage]
+        assert n == 1
+        assert after == before + 1
+
+    @pytest.mark.unit
+    def test_confidence_skip_increments_skipped_counter(self, db: Database) -> None:
+        """A LOW-confidence bridge match increments CATEGORIZE_SKIPPED_CONFIDENCE_TOTAL."""
+        from moneybin.metrics.registry import CATEGORIZE_SKIPPED_CONFIDENCE_TOTAL
+
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="FOOD_AND_DRINK_COFFEE",
+            code_level="detailed",
+            category_id="FND-COF",
+            category="Food & Drink",
+            subcategory="Coffee Shops",
+        )
+        _insert_plaid_txn(
+            db,
+            "t4",
+            category_detailed="FOOD_AND_DRINK_COFFEE",
+            plaid_category="FOOD_AND_DRINK",
+            category_confidence="LOW",
+        )
+        before = CATEGORIZE_SKIPPED_CONFIDENCE_TOTAL.labels(
+            source_type="plaid"
+        )._value.get()  # type: ignore[reportPrivateUsage] — prometheus internals
+
+        n = apply_plaid_categories(db)
+
+        after = CATEGORIZE_SKIPPED_CONFIDENCE_TOTAL.labels(
+            source_type="plaid"
+        )._value.get()  # type: ignore[reportPrivateUsage]
+        assert n == 0
+        assert after == before + 1
+
+    @pytest.mark.unit
+    def test_plaid_unmapped_counts_uncovered_pfc_codes(self, db: Database) -> None:
+        """A Plaid txn whose PFC codes have no bridge row counts as unmapped."""
+        refresh_views(db)
+        _insert_plaid_txn(
+            db,
+            "t_unmapped",
+            category_detailed="SOME_UNMAPPED_DETAILED_CODE",
+            plaid_category="SOME_UNMAPPED_PRIMARY_CODE",
+            category_confidence="HIGH",
+        )
+
+        stats = get_categorization_stats(db)
+
+        assert stats["plaid_unmapped"] == 1
+
+    @pytest.mark.unit
+    def test_plaid_unmapped_excludes_covered_transactions(self, db: Database) -> None:
+        """A bridge-mapped Plaid txn must not inflate the unmapped count."""
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="FOOD_AND_DRINK_COFFEE",
+            code_level="detailed",
+            category_id="FND-COF",
+            category="Food & Drink",
+            subcategory="Coffee Shops",
+        )
+        _insert_plaid_txn(
+            db,
+            "t_covered",
+            category_detailed="FOOD_AND_DRINK_COFFEE",
+            plaid_category="FOOD_AND_DRINK",
+            category_confidence="HIGH",
+        )
+        _insert_plaid_txn(
+            db,
+            "t_unmapped",
+            category_detailed="SOME_UNMAPPED_DETAILED_CODE",
+            plaid_category="SOME_UNMAPPED_PRIMARY_CODE",
+            category_confidence="HIGH",
+        )
+
+        stats = get_categorization_stats(db)
+
+        assert stats["plaid_unmapped"] == 1
+
+    @pytest.mark.unit
+    def test_plaid_unmapped_omitted_when_staging_view_absent(
+        self, db: Database
+    ) -> None:
+        """No Plaid staging view materialized — the key is omitted, not zeroed.
+
+        Mirrors the ``by_source`` block's CatalogException degradation so a
+        non-Plaid database (no data ever loaded from Plaid) doesn't break
+        ``categorization_stats()``.
+        """
+        stats = get_categorization_stats(db)
+
+        assert "plaid_unmapped" not in stats
+
+    @pytest.mark.unit
+    def test_typed_stats_exposes_plaid_unmapped(self, db: Database) -> None:
+        """CategorizationService.stats() carries plaid_unmapped through to the typed result."""
+        refresh_views(db)
+        _insert_plaid_txn(
+            db,
+            "t_unmapped",
+            category_detailed="SOME_UNMAPPED_DETAILED_CODE",
+            plaid_category="SOME_UNMAPPED_PRIMARY_CODE",
+            category_confidence="HIGH",
+        )
+
+        stats = CategorizationService(db).stats()
+
+        assert stats.plaid_unmapped == 1
+
+
+# ---------------------------------------------------------------------------
 # categorize_pending — plaid pass wired in last (Task 6)
 # ---------------------------------------------------------------------------
 

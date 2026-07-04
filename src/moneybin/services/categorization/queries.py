@@ -30,11 +30,13 @@ from moneybin.privacy.payloads.categorize import (
     RuleRow,
 )
 from moneybin.tables import (
+    BRIDGE_CATEGORY_SOURCE_MAP,
     CATEGORIES,
     CATEGORIZATION_RULES,
     FCT_TRANSACTIONS,
     MERCHANTS,
     REPORTS_UNCATEGORIZED_QUEUE,
+    STG_PLAID_TRANSACTIONS,
     TRANSACTION_CATEGORIES,
 )
 
@@ -50,6 +52,7 @@ class CategorizationStats:
     uncategorized: int
     percent_categorized: float
     by_source: dict[str, int]
+    plaid_unmapped: int | None = None
 
     def to_payload(self) -> CategorizeStatsPayload:
         """Return a typed payload for the MCP/CLI envelope boundary."""
@@ -59,6 +62,7 @@ class CategorizationStats:
             uncategorized=self.uncategorized,
             percent_categorized=self.percent_categorized,
             by_source=self.by_source,
+            plaid_unmapped=self.plaid_unmapped,
         )
 
 
@@ -335,6 +339,31 @@ class CategorizationQueries:
         except duckdb.CatalogException:
             pass
 
+        # Plaid coverage gap (Tier-2b observability, deferred from the
+        # category-source-map bridge PR): count Plaid transactions carrying
+        # a PFC code with no bridge mapping — the ~29-code long tail the
+        # two-tier bridge doesn't cover. Omits the key (mirrors the by_source
+        # block above) rather than reporting 0 when the Plaid staging view
+        # isn't materialized yet, so a non-Plaid database can't be
+        # misread as "fully mapped."
+        try:
+            unmapped_result = self._db.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM {STG_PLAID_TRANSACTIONS.full_name} AS s
+                WHERE (s.category_detailed IS NOT NULL OR s.plaid_category IS NOT NULL)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM {BRIDGE_CATEGORY_SOURCE_MAP.full_name} AS b
+                      WHERE b.source_type = 'plaid'
+                        AND b.source_category_code IN (s.category_detailed, s.plaid_category)
+                  )
+                """  # noqa: S608 — table names are compile-time TableRef constants; no interpolated values
+            ).fetchone()
+            if unmapped_result is not None:
+                stats["plaid_unmapped"] = unmapped_result[0]
+        except duckdb.CatalogException:
+            pass
+
         return stats
 
     def stats(self) -> CategorizationStats:
@@ -348,10 +377,12 @@ class CategorizationQueries:
             for k, v in raw.items()
             if k.startswith("by_") and isinstance(v, int)
         }
+        plaid_unmapped = raw.get("plaid_unmapped")
         return CategorizationStats(
             total=int(raw["total"]),
             categorized=int(raw["categorized"]),
             uncategorized=int(raw["uncategorized"]),
             percent_categorized=float(raw["pct_categorized"]),
             by_source=by_source,
+            plaid_unmapped=int(plaid_unmapped) if plaid_unmapped is not None else None,
         )

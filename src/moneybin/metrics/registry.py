@@ -283,6 +283,18 @@ CATEGORIZE_WRITE_SKIPPED_PRECEDENCE_TOTAL = Counter(
     ["src_existing", "src_attempted"],
 )
 
+CATEGORIZE_PROVIDER_NATIVE_TOTAL = Counter(
+    "moneybin_categorize_provider_native_total",
+    "Categorizations assigned from a provider's native categorization.",
+    ["source_type"],
+)
+
+CATEGORIZE_SKIPPED_CONFIDENCE_TOTAL = Counter(
+    "moneybin_categorize_skipped_confidence_total",
+    "Provider-native categorizations skipped for confidence below the gate.",
+    ["source_type"],
+)
+
 # Metric names retain the historical `apply` prefix even after the MCP tool
 # was renamed to `transactions_categorize_commit` (2026-05-17). Prometheus
 # metric renames break downstream dashboards and alerts; treat the name as

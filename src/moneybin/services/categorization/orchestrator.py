@@ -48,6 +48,8 @@ from moneybin.metrics.registry import (
     CATEGORIZE_ERRORS_TOTAL,
     CATEGORIZE_ITEMS_TOTAL,
     CATEGORIZE_MATCH_OUTCOME_TOTAL,
+    CATEGORIZE_PROVIDER_NATIVE_TOTAL,
+    CATEGORIZE_SKIPPED_CONFIDENCE_TOTAL,
     MERCHANT_RESOLUTION_OUTCOME_TOTAL,
 )
 from moneybin.privacy.payloads.categorize import CategorizeCommitPayload
@@ -900,6 +902,7 @@ class CategorizationOrchestrator:
         for txn_id, category, subcategory, level in rows:
             confidence = plaid_confidence_to_numeric(level)
             if confidence is None or confidence < PLAID_MIN_CONFIDENCE:
+                CATEGORIZE_SKIPPED_CONFIDENCE_TOTAL.labels(source_type="plaid").inc()
                 continue
             outcome = self._applier.write_categorization(
                 transaction_id=txn_id,
@@ -911,6 +914,7 @@ class CategorizationOrchestrator:
             )
             if outcome.written:
                 count += 1
+                CATEGORIZE_PROVIDER_NATIVE_TOTAL.labels(source_type="plaid").inc()
 
         if count:
             logger.info(f"Plaid PFC categorization assigned {count} transactions")

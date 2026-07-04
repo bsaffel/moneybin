@@ -80,6 +80,9 @@ class CategorizeStatsPayload:
     uncategorized: Annotated[int, DataClass.AGGREGATE]
     percent_categorized: Annotated[float, DataClass.AGGREGATE]
     by_source: Annotated[dict[str, int], DataClass.AGGREGATE]
+    # None when the Plaid staging view isn't materialized yet (no Plaid data
+    # ever loaded) — mirrors the omit-not-zero convention in by_source.
+    plaid_unmapped: Annotated[int | None, DataClass.AGGREGATE] = None
 
 
 @dataclass(frozen=True, slots=True)
