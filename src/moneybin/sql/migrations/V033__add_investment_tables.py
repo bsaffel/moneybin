@@ -5,10 +5,13 @@ Creates ``app.securities``, ``raw.manual_investment_transactions``, and
 (per ``docs/specs/investments-data-model.md``). The same DDL ships in
 ``src/moneybin/sql/schema/*.sql`` which ``init_schemas`` runs on every
 Database open: fresh installs get everything at open time; pre-existing
-databases get it via this migration. ``CREATE TABLE IF NOT EXISTS`` and
-``ADD COLUMN IF NOT EXISTS`` keep both paths idempotent.
+databases get it via this migration. ``CREATE TABLE IF NOT EXISTS`` and a
+column-existence check before the settings rebuild keep both paths
+idempotent.
 
-Pure additive DDL — no backfill, no reshape.
+Pure additive DDL — no backfill; the app.account_settings rebuild preserves
+all rows and only appends the nullable column (DuckDB cannot ADD COLUMN
+with a CHECK constraint, so the table is recreated with the CHECK baked in).
 """
 
 from __future__ import annotations
