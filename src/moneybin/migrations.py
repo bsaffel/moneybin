@@ -686,10 +686,11 @@ def sqlmesh_state_assessment(db: Database) -> tuple[str | None, bool]:
         from sqlmesh.utils import major_minor
 
         installed_pkg = importlib.metadata.version("sqlmesh")
+        installed_sqlglot = importlib.metadata.version("sqlglot")
     except (ImportError, importlib.metadata.PackageNotFoundError):
         return None, False
 
-    schema_version, sqlmesh_version, _sqlglot_version = state
+    schema_version, sqlmesh_version, sqlglot_version = state
     if schema_version < SCHEMA_VERSION:
         return (
             f"SQLMesh state schema (v{schema_version}) is behind the installed "
@@ -703,12 +704,40 @@ def sqlmesh_state_assessment(db: Database) -> tuple[str | None, bool]:
             f"sqlmesh package (v{SCHEMA_VERSION}). Upgrade the sqlmesh package to match.",
             False,
         )
-    if sqlmesh_version and major_minor(sqlmesh_version) < major_minor(installed_pkg):
+
+    # Schema is current. Mirror SQLMesh's own get_versions(validate=True), which
+    # also fails transforms on any SQLMesh *or* SQLGlot major/minor mismatch
+    # (either direction) — a sqlglot-only bump breaks refresh while the schema
+    # number is unchanged. A migrate re-stamps the version row only when it
+    # actually runs (the sqlmesh minor differs); a pure sqlglot drift leaves
+    # migrate a no-op, so only a behind-sqlmesh drift is repairable that way.
+    sqlmesh_mismatch = sqlmesh_version is not None and major_minor(
+        sqlmesh_version
+    ) != major_minor(installed_pkg)
+    sqlglot_mismatch = sqlglot_version is not None and major_minor(
+        sqlglot_version
+    ) != major_minor(installed_sqlglot)
+    if sqlmesh_mismatch or sqlglot_mismatch:
+        parts: list[str] = []
+        if sqlmesh_mismatch:
+            parts.append(
+                f"SQLMesh state {sqlmesh_version} vs installed {installed_pkg}"
+            )
+        if sqlglot_mismatch:
+            parts.append(
+                f"SQLGlot state {sqlglot_version} vs installed {installed_sqlglot}"
+            )
+        repairable = sqlmesh_version is not None and major_minor(
+            sqlmesh_version
+        ) < major_minor(installed_pkg)
+        hint = (
+            "Run `moneybin db migrate apply` to migrate the state."
+            if repairable
+            else "Align the mismatched package with the state (upgrade or pin)."
+        )
         return (
-            f"SQLMesh state package version ({sqlmesh_version}) is behind the "
-            f"installed sqlmesh package ({installed_pkg}). "
-            "Run `moneybin db migrate apply` to migrate the state.",
-            True,
+            f"SQLMesh state library version drift ({'; '.join(parts)}). {hint}",
+            repairable,
         )
     return None, False
 
