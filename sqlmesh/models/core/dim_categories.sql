@@ -12,7 +12,7 @@ SELECT
   s.category, /* Top-level spending category name */
   s.subcategory, /* Subcategory; NULL for top-level-only entries */
   s.description, /* Human-readable category description */
-  s.plaid_detailed, /* Plaid PFC detailed mapping; NULL for user-defined categories */
+  s.class, /* Accounting class: income | expense | transfer | debt */
   TRUE AS is_default, /* TRUE for seeded defaults, FALSE for user-created */
   COALESCE(o.is_active, TRUE) AS is_active, /* FALSE if user has soft-deleted this default */
   NULL::TIMESTAMP AS created_at, /* NULL for seeded categories; populated for user_categories below */
@@ -26,7 +26,7 @@ SELECT
   category,
   subcategory,
   description,
-  NULL AS plaid_detailed,
+  class,
   FALSE AS is_default,
   is_active,
   created_at,

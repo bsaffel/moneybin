@@ -1,122 +1,213 @@
-"""V032: add source_type to app.transaction_categories.
+"""Tests for V032: add app.category_source_map and app.user_categories.class.
 
-Splits the origin aggregator out of categorized_by (which becomes
-method-only). Populated-fixture pattern per ``.claude/rules/database.md``:
-V032 touches existing data (``ADD COLUMN`` + backfill ``UPDATE`` + ``SET NOT
-NULL``), so the test seeds existing rows and verifies (a) the column lands
-NOT NULL with every existing row backfilled to 'internal', (b) the migration
-is idempotent and the NOT NULL tightening survives replay.
+V032 lays the schema foundation for the category-source bridge (M1V): a
+provider category-code -> canonical MoneyBin category mapping table, plus an
+accounting `class` column on the user-category dimension. Fresh installs get
+both from the schema DDL; existing installs get them via this migration.
+
+DuckDB rejects both `ADD COLUMN ... NOT NULL` and `ADD CONSTRAINT CHECK` in a
+single ALTER, so `app.user_categories` is rebuilt wholesale: snapshot to a
+tmp table, DROP, CREATE with the full target shape (`class NOT NULL` + its
+CHECK baked in), then re-INSERT via an explicit column list. Per
+`.claude/rules/database.md`, the test drives `migrate()` through the shared
+`run_migration()` helper to reproduce the runner's enclosing BEGIN/COMMIT
+transaction rather than calling `migrate(db._conn)` bare — the whole rebuild
+must run inside that single transaction.
 """
 
 from __future__ import annotations
 
+import duckdb
 import pytest
 
 from moneybin.database import Database
-from moneybin.sql.migrations.V032__add_transaction_categories_source_type import (
-    migrate,
-)
+from moneybin.sql.migrations.V032__add_category_source_map_and_class import migrate
 from tests.moneybin.migration_helpers import column_exists, column_info, run_migration
 
 pytestmark = pytest.mark.fresh_db
 
-_PRE_V032_DDL = """
-    CREATE TABLE app.transaction_categories (
-        transaction_id VARCHAR PRIMARY KEY,
-        category VARCHAR NOT NULL,
-        subcategory VARCHAR,
-        category_id VARCHAR,
-        categorized_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        categorized_by VARCHAR DEFAULT 'ai',
-        merchant_id VARCHAR,
-        confidence DECIMAL(3, 2),
-        rule_id VARCHAR
-    )
-"""
+_BRIDGE_COLUMNS = {
+    "source_type",
+    "source_category_code",
+    "code_level",
+    "category_id",
+    "source_taxonomy_version",
+    "created_at",
+    "updated_at",
+}
 
 
-@pytest.fixture()
-def v032_db(db: Database) -> Database:
-    """Database with three existing transaction_categories rows under the pre-V032 shape.
+def _table_exists(db: Database, schema: str, table: str) -> bool:
+    row = db.execute(
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_schema = ? AND table_name = ?",
+        [schema, table],
+    ).fetchone()
+    return row is not None
 
-    Realistic shapes per the >=3-row rule: mixed ``categorized_by`` methods
-    (rule, ai, user) so the backfill is proven across more than one row shape.
+
+def _recreate_pre_v032_state(db: Database) -> None:
+    """Reverse the V032 end-state: drop the bridge table and the `class` columns.
+
+    On a fresh DB, `init_schemas` already creates `app.category_source_map`
+    and `app.user_categories.class` (this task's own schema edits), so to
+    exercise the migration meaningfully we roll the DB back to its pre-V032
+    shape first. `class` sits after the `category_id` PK column, so a plain
+    `ALTER TABLE ... DROP COLUMN` is allowed (unlike V030's case where the
+    new column preceded a PK-indexed column).
+
+    `seeds.categories.class` needs no DROP here: `_ensure_seed_tables_exist`
+    bootstraps the table in frozen V014's original shape (`plaid_detailed`,
+    no `class`) rather than the post-V032 shape, so the table is already in
+    its pre-V032 state — the test only seeds representative rows (one per
+    class-rule prefix) to exercise the prefix-derived backfill in migrate().
     """
-    db.execute("DROP TABLE app.transaction_categories")
-    db.execute(_PRE_V032_DDL)
+    db.execute("DROP TABLE IF EXISTS app.category_source_map")
+    db.execute("ALTER TABLE app.user_categories DROP COLUMN class")
     db.execute(
-        "INSERT INTO app.transaction_categories "
-        "(transaction_id, category, subcategory, categorized_by, confidence, rule_id) "
-        "VALUES "
-        "('txn_pre_001', 'Food & Drink', 'Coffee', 'rule', NULL, 'rul-abc123'), "
-        "('txn_pre_002', 'Shopping', NULL, 'ai', 0.82, NULL), "
-        "('txn_pre_003', 'Groceries', NULL, 'user', NULL, NULL)"
+        "INSERT INTO app.user_categories "
+        "(category_id, category, subcategory, description, is_active, "
+        "created_at, updated_at) VALUES "
+        "('u_a1b2c3d4e5f6', 'Side Gig', 'Consulting', '', true, "
+        "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP), "
+        "('u_b2c3d4e5f6a1', 'Hobby', 'Models', '', true, "
+        "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP), "
+        "('u_c3d4e5f6a1b2', 'Gifts', 'Given', '', false, "
+        "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
     )
-    return db
+    db.execute(
+        "INSERT INTO seeds.categories "
+        "(category_id, category, subcategory, description) VALUES "
+        "('INC-TST', 'Income', 'Test', ''), "
+        "('TRN-TST', 'Transfer', 'Test', ''), "
+        "('LNP-TST', 'Loan Payments', 'Test', ''), "
+        "('FND-TST', 'Food & Drink', 'Test', '')"
+    )
 
 
-@pytest.mark.unit
-class TestV032:
-    """V032 adds source_type and backfills existing rows to 'internal'."""
-
-    def test_column_absent_before_migration(self, v032_db: Database) -> None:
-        """Sanity check: source_type doesn't exist pre-migration."""
-        assert not column_exists(
-            v032_db, "app", "transaction_categories", "source_type"
-        )
-
-    def test_adds_source_type_column(self, v032_db: Database) -> None:
-        run_migration(v032_db, migrate)
-        assert column_exists(v032_db, "app", "transaction_categories", "source_type")
-        _data_type, is_nullable = column_info(
-            v032_db, "app", "transaction_categories", "source_type"
-        )
-        assert is_nullable is False
-
-    def test_backfills_existing_rows_to_internal(self, v032_db: Database) -> None:
-        run_migration(v032_db, migrate)
-        rows = v032_db.execute(
-            "SELECT transaction_id, source_type FROM app.transaction_categories "
-            "ORDER BY transaction_id"
+def _seed_category_classes(db: Database) -> dict[str, str]:
+    return dict(
+        db.execute(
+            "SELECT category_id, class FROM seeds.categories "
+            "WHERE category_id LIKE '%-TST' ORDER BY category_id"
         ).fetchall()
-        assert rows == [
-            ("txn_pre_001", "internal"),
-            ("txn_pre_002", "internal"),
-            ("txn_pre_003", "internal"),
-        ]
+    )
 
-    def test_new_rows_default_to_internal(self, v032_db: Database) -> None:
-        """Fresh inserts after the migration pick up the column's DEFAULT."""
-        run_migration(v032_db, migrate)
-        v032_db.execute(
-            "INSERT INTO app.transaction_categories "
-            "(transaction_id, category, categorized_by) "
-            "VALUES ('txn_post_001', 'Utilities', 'user')"
-        )
-        row = v032_db.execute(
-            "SELECT source_type FROM app.transaction_categories "
-            "WHERE transaction_id = 'txn_post_001'"
-        ).fetchone()
-        assert row == ("internal",)
 
-    def test_idempotent(self, v032_db: Database) -> None:
-        run_migration(v032_db, migrate)
-        # Second call must not error and must not disturb existing rows.
-        run_migration(v032_db, migrate)
-        rows = v032_db.execute(
-            "SELECT transaction_id, source_type FROM app.transaction_categories "
-            "ORDER BY transaction_id"
+def test_v032_creates_bridge_and_class(db: Database) -> None:
+    _recreate_pre_v032_state(db)
+    assert not _table_exists(db, "app", "category_source_map")
+    assert not column_exists(db, "app", "user_categories", "class")
+    assert not column_exists(db, "seeds", "categories", "class")
+
+    run_migration(db, migrate)
+
+    # class backfilled to 'expense' on existing rows, NOT NULL.
+    classes = [
+        row[0]
+        for row in db.execute(
+            "SELECT class FROM app.user_categories ORDER BY category_id"
         ).fetchall()
-        assert rows == [
-            ("txn_pre_001", "internal"),
-            ("txn_pre_002", "internal"),
-            ("txn_pre_003", "internal"),
-        ]
-        # NOT NULL tightening must survive replay, not just the first run.
-        _data_type, is_nullable = column_info(
-            v032_db, "app", "transaction_categories", "source_type"
+    ]
+    assert classes == ["expense", "expense", "expense"]
+    _, is_nullable = column_info(db, "app", "user_categories", "class")
+    assert is_nullable is False
+
+    # bridge table exists with the expected columns.
+    cols = {
+        row[1]
+        for row in db.execute("PRAGMA table_info('app.category_source_map')").fetchall()
+    }
+    assert _BRIDGE_COLUMNS <= cols
+
+    # seeds.categories.class backfilled by category_id prefix (BLOCK B rule).
+    assert _seed_category_classes(db) == {
+        "INC-TST": "income",
+        "TRN-TST": "transfer",
+        "LNP-TST": "debt",
+        "FND-TST": "expense",
+    }
+
+
+def test_v032_is_idempotent(db: Database) -> None:
+    _recreate_pre_v032_state(db)
+
+    run_migration(db, migrate)
+    run_migration(db, migrate)
+
+    classes = [
+        row[0]
+        for row in db.execute(
+            "SELECT class FROM app.user_categories ORDER BY category_id"
+        ).fetchall()
+    ]
+    assert classes == ["expense", "expense", "expense"]
+    _, is_nullable = column_info(db, "app", "user_categories", "class")
+    assert is_nullable is False
+    cols = {
+        row[1]
+        for row in db.execute("PRAGMA table_info('app.category_source_map')").fetchall()
+    }
+    assert _BRIDGE_COLUMNS <= cols
+    assert _seed_category_classes(db) == {
+        "INC-TST": "income",
+        "TRN-TST": "transfer",
+        "LNP-TST": "debt",
+        "FND-TST": "expense",
+    }
+
+
+def test_v032_idempotent_on_fresh_install(db: Database) -> None:
+    """On a fresh DB where init_schemas already produced the end-state, migrate() is a no-op."""
+    # No _recreate_pre_v032_state call — db comes from init_schemas with the
+    # final shape (bridge table + NOT NULL class already present).
+    run_migration(db, migrate)
+
+    assert _table_exists(db, "app", "category_source_map")
+    _, is_nullable = column_info(db, "app", "user_categories", "class")
+    assert is_nullable is False
+    assert column_exists(db, "seeds", "categories", "class")
+
+
+def test_v032_class_check_constraint_enforced(db: Database) -> None:
+    """The rebuilt app.user_categories rejects a class outside the four values."""
+    _recreate_pre_v032_state(db)
+    run_migration(db, migrate)
+
+    with pytest.raises(duckdb.ConstraintException):
+        db.execute(
+            "INSERT INTO app.user_categories (category_id, category, class) "
+            "VALUES (?, ?, ?)",
+            ["u_bogus0000001", "BogusClass", "bogus"],
         )
-        assert is_nullable is False
+
+
+def test_v032_code_level_check_constraint_enforced(db: Database) -> None:
+    """app.category_source_map rejects a code_level outside detailed/primary."""
+    _recreate_pre_v032_state(db)
+    run_migration(db, migrate)
+
+    with pytest.raises(duckdb.ConstraintException):
+        db.execute(
+            "INSERT INTO app.category_source_map "
+            "(source_type, source_category_code, code_level, category_id) "
+            "VALUES (?, ?, ?, ?)",
+            ["plaid", "FOOD_AND_DRINK", "bogus_level", "FND-TST"],
+        )
+
+
+def test_v032_idempotent_run_preserves_class_check(db: Database) -> None:
+    """A second migrate() call must not fail, and the CHECK must survive it."""
+    _recreate_pre_v032_state(db)
+    run_migration(db, migrate)
+    run_migration(db, migrate)
+
+    with pytest.raises(duckdb.ConstraintException):
+        db.execute(
+            "INSERT INTO app.user_categories (category_id, category, class) "
+            "VALUES (?, ?, ?)",
+            ["u_bogus0000002", "BogusClass2", "bogus"],
+        )
 
 
 if __name__ == "__main__":

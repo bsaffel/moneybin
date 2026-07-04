@@ -202,7 +202,7 @@ This invocation always prints the canonical snippet plus a numbered Connector-se
 - **Config file:** none — the snippet is informational. Copy fields into the Connector UI by hand.
 - **Restart required:** Yes — restart ChatGPT Desktop after adding the connector.
 - **Server lifecycle:** One server process per app instance.
-- **MCP support gating:** ChatGPT Desktop's MCP support depends on app version and account plan. If your build only accepts HTTP connectors, run `moneybin mcp serve --transport streamable-http` and register the resulting URL as a custom connector. (HTTP transport is supported by FastMCP today but is not the default install path — see [Transport](#transport) below.)
+- **MCP support gating:** ChatGPT Desktop's MCP support depends on app version and account plan. Use the local/stdio connector above — it is the supported path. MoneyBin's HTTP transport is **unauthenticated** (no HTTP auth exists yet) and refuses to start without an explicit `--insecure` opt-in. If your build accepts no stdio connector, `moneybin mcp serve --transport streamable-http --insecure` is a last-resort escape hatch — localhost-only, on a machine you trust, never exposed to a network. See [Transport](#transport) below.
 
 ## Concurrency: which clients share a server
 
@@ -292,7 +292,7 @@ Where the client doesn't render a distinct destructive-tool confirmation, treat 
 
 Today MoneyBin's MCP server speaks **stdio only** for the install paths above — the client launches MoneyBin as a child process and communicates over stdin/stdout. One server process per client session; the server's lifetime is bound to the client's.
 
-`moneybin mcp serve --transport streamable-http` is supported by the underlying FastMCP runtime today and is the path ChatGPT Desktop's HTTP-connector fallback uses, but the install snippets above all assume stdio. A fully-supported HTTP transport (with proper auth, tunneling, and a remote-client story) is planned alongside the web UI but does not ship today.
+The network transports (`sse`, `streamable-http`) exist in the underlying FastMCP runtime, but MoneyBin ships **no HTTP authentication** — an HTTP listener would let anyone who can reach the port read and write your financial data. So `moneybin mcp serve` refuses to start any non-stdio transport unless you pass `--insecure`, and even then only as a localhost-only escape hatch (e.g. ChatGPT Desktop builds that accept no stdio connector), printing a loud startup warning. A fully-supported HTTP transport — with real authentication, tunneling, and a remote-client story — is planned alongside the web UI but does not ship today. Never expose the `--insecure` listener to an untrusted network.
 
 ### Headless and daemon use
 
@@ -301,7 +301,7 @@ Because the transport is stdio, "MoneyBin as a long-running daemon with remote c
 - **Headless MCP clients on the same host.** Codex CLI, Gemini CLI, and Claude Code (via `make claude-mcp`) run without a GUI. Drop them in a tmux session on a NAS / homelab box and they'll spawn MoneyBin per invocation against the local DuckDB profile.
 - **Desktop client on a workstation, data on the same workstation.** Standard install path; no networking involved.
 
-What does not work today: running `moneybin mcp serve` as a systemd unit or Docker container with a Claude Desktop on a separate laptop connecting in. That requires the planned streamable-HTTP transport plus an auth model.
+What does not work today: running `moneybin mcp serve` as a systemd unit or Docker container with a Claude Desktop on a separate laptop connecting in. The `--insecure` HTTP transport is unauthenticated and localhost-only — safe remote access requires the planned authenticated HTTP transport, which does not ship today.
 
 ## Troubleshooting
 

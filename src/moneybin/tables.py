@@ -65,6 +65,10 @@ AUDIT_LOG = TableRef("app", "audit_log", audience="interface")
 CATEGORIES = TableRef("core", "dim_categories", audience="interface")
 USER_CATEGORIES = TableRef("app", "user_categories")
 CATEGORY_OVERRIDES = TableRef("app", "category_overrides")
+CATEGORY_SOURCE_MAP = TableRef("app", "category_source_map")
+BRIDGE_CATEGORY_SOURCE_MAP = TableRef(
+    "core", "bridge_category_source_map", audience="interface"
+)
 MERCHANTS = TableRef("core", "dim_merchants", audience="interface")
 USER_MERCHANTS = TableRef("app", "user_merchants")
 CATEGORIZATION_RULES = TableRef("app", "categorization_rules", audience="interface")
@@ -92,6 +96,7 @@ MERCHANT_LINK_DECISIONS = TableRef("app", "merchant_link_decisions")
 
 # -- Seed tables (materialized by SQLMesh from CSV) --
 SEED_CATEGORIES = TableRef("seeds", "categories")
+SEED_CATEGORY_SOURCE_MAP = TableRef("seeds", "category_source_map")
 
 # -- Prep / staging views (built by SQLMesh transforms) --
 INT_TRANSACTIONS_UNIONED = TableRef("prep", "int_transactions__unioned")

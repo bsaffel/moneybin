@@ -86,6 +86,19 @@ The rejected alternative — storing `home_amount`/`home_currency` at row grain 
 forces conversion to exist before any row lands, freezes the home currency, and
 makes rate corrections a data-rewrite. Not chosen.
 
+**Shipped prior art (both rejected alternatives, both regretted in practice).**
+Two competing products have shipped the very designs this decision rejects, and
+their mechanics confirm the cost:
+
+- One persists converted amounts at row grain — its own release notes describe
+  amounts "stored at the historical date rate per transaction," with reports
+  summing the stored figures. A corrected historical rate then means rewriting
+  stored data, exactly the data-rewrite this spec avoids by converting on read.
+- Another maintains derived valuation snapshots in mutable tables that require
+  session-gated rebuilds and reaping of orphaned rows on every recompute — the
+  standing maintenance burden that deriving in SQLMesh (Invariant 8,
+  derive-don't-snapshot) removes entirely.
+
 ## Phasing
 
 | Phase | Scope | Depends on | Notes |
@@ -194,6 +207,21 @@ Numbered, testable. Tagged by phase.
 17. **Conversion-pair identity.** A currency conversion event (e.g. a EUR debit paired
     with a USD credit) is modeled as a first-class pair, not inferred from two
     unrelated rows.
+
+    **Reserved import shape — single-row FX transfer.** Some source formats express
+    an FX transfer as one row carrying *both* legs (the sent amount/currency plus a
+    received amount and target currency), rather than two rows. Reserve a
+    received-leg column pair — `to_amount` + `to_currency` — on the raw import tables
+    (`raw.*`, e.g. `raw.tabular_transactions`) where a source row lands, so an
+    importer that meets this shape has somewhere to put the second leg instead of
+    dropping it or fabricating a paired row; the row's own `amount`/`currency_code`
+    is then the sent leg, and the conversion-pair model consumes either shape.
+    `to_amount`/`to_currency` follow the directional `from_currency`/`to_currency`
+    prefix convention already used on `raw.exchange_rates` — reserving them now
+    (schema reservation, not yet built) keeps a later importer from coining an
+    ad-hoc, differently-ordered name and compounding the currency-column naming
+    drift §Key Decisions already flags. (A shipped competitor carries this shape as
+    `amount_received` / `currency_to`.)
 18. **Currency-lot accounting.** Realized FX gain/loss on disposing a foreign-currency
     holding is computed via the **investments cost-basis engine** (FIFO / average per
     the elected method in `investments-data-model.md`), treating currency holdings as

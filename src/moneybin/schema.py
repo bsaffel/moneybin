@@ -64,6 +64,7 @@ _NON_PROVIDER_SCHEMA_FILES: list[str] = [
     "raw_import_log.sql",
     "raw_manual_transactions.sql",
     "app_categories.sql",
+    "app_category_source_map.sql",
     "app_user_merchants.sql",
     "app_categorization_rules.sql",
     "app_transaction_categories.sql",

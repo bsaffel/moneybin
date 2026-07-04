@@ -1,12 +1,19 @@
 """Tests for MCP CLI enhancements."""
 
+import logging
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
-from moneybin.cli.commands.mcp import app
+from moneybin.cli.commands.mcp import (
+    _gate_network_transport,  # pyright: ignore[reportPrivateUsage]
+    app,
+)
 
 runner = CliRunner()
 
@@ -533,3 +540,114 @@ class TestMCPInstallGeminiCLI:
         assert "mcpServers" in payload
         # Concurrency guardrail must fire on per-invocation client installs.
         assert "auto-loads" in result.output
+
+
+class TestGateNetworkTransport:
+    """The `_gate_network_transport` helper enforces the unauthenticated-HTTP gate.
+
+    stdio is local-only and always allowed. Every network transport (sse,
+    streamable-http) binds an UNAUTHENTICATED port and must be opted into with
+    --insecure; without it the helper refuses with a usage error (exit 2), with
+    it the helper emits a loud warning and returns.
+    """
+
+    def test_stdio_is_a_noop_regardless_of_insecure(self) -> None:
+        """Stdio never triggers the gate — no raise, no warning."""
+        _gate_network_transport("stdio", insecure=False)
+        _gate_network_transport("stdio", insecure=True)
+
+    def test_streamable_http_without_insecure_raises_usage_error(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A network transport without --insecure refuses with exit 2 + risk message."""
+        with pytest.raises(typer.Exit) as exc_info:
+            _gate_network_transport("streamable-http", insecure=False)
+        assert exc_info.value.exit_code == 2
+        assert "authentication" in caplog.text.lower()
+        assert "--insecure" in caplog.text
+
+    def test_sse_without_insecure_also_refuses(self) -> None:
+        """The gate covers every non-stdio transport, not just streamable-http."""
+        with pytest.raises(typer.Exit) as exc_info:
+            _gate_network_transport("sse", insecure=False)
+        assert exc_info.value.exit_code == 2
+
+    def test_streamable_http_with_insecure_warns_and_returns(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """With --insecure the gate warns loudly on stderr and allows startup."""
+        with caplog.at_level(logging.WARNING):
+            _gate_network_transport("streamable-http", insecure=True)
+        assert "authentication" in caplog.text.lower()
+        assert "⚠️" in caplog.text
+
+
+@contextmanager
+def _mock_server_start() -> Generator[MagicMock, None, None]:
+    """Patch out the real MCP server boot so `serve` can reach `mcp.run` inertly.
+
+    Forces the unconfigured branch (fewest external calls) and replaces the
+    FastMCP server, DB lifecycle, observability setup, and profile-resolver
+    wiring with mocks. Yields the mock server so callers can assert on
+    `mock.run(...)`.
+    """
+    mock_mcp = MagicMock()
+    with (
+        patch("moneybin.cli.commands.mcp.importlib"),
+        patch("moneybin.cli.commands.mcp._is_unconfigured", return_value=True),
+        patch("moneybin.mcp.server.init_db"),
+        patch("moneybin.mcp.server.close_db"),
+        patch("moneybin.mcp.server.mcp", mock_mcp),
+        patch("moneybin.observability.setup_observability"),
+        patch("moneybin.config.register_profile_resolver"),
+        patch("moneybin.mcp.first_run.FirstRunSetupMiddleware"),
+    ):
+        yield mock_mcp
+
+
+class TestMCPServe:
+    """The `serve` command wires the unauthenticated-HTTP gate to a CLI flag."""
+
+    def test_network_transport_without_insecure_refuses(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """`serve --transport streamable-http` (no --insecure) exits 2 with the risk stated.
+
+        No server mock is needed: the gate raises before `serve` imports the
+        server stack, so the command never reaches startup.
+        """
+        result = runner.invoke(app, ["serve", "--transport", "streamable-http"])
+        assert result.exit_code == 2
+        assert "authentication" in caplog.text.lower()
+        assert "--insecure" in caplog.text
+
+    def test_invalid_transport_is_a_usage_error(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """An unknown transport value exits 2 (usage error), matching the flag conventions."""
+        result = runner.invoke(app, ["serve", "--transport", "bogus"])
+        assert result.exit_code == 2
+        assert "Invalid transport" in caplog.text
+
+    def test_insecure_flag_starts_network_transport_with_warning(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """`--insecure` allows the network transport to start after a loud warning."""
+        with _mock_server_start() as mock_mcp:
+            with caplog.at_level(logging.WARNING):
+                result = runner.invoke(
+                    app, ["serve", "--transport", "streamable-http", "--insecure"]
+                )
+        assert result.exit_code == 0
+        mock_mcp.run.assert_called_once_with(transport="streamable-http")
+        assert "authentication" in caplog.text.lower()
+
+    def test_stdio_default_starts_without_warning(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The default stdio path is unaffected — it starts and emits no auth warning."""
+        with _mock_server_start() as mock_mcp:
+            result = runner.invoke(app, ["serve"])
+        assert result.exit_code == 0
+        mock_mcp.run.assert_called_once_with(transport="stdio")
+        assert "authentication" not in caplog.text.lower()

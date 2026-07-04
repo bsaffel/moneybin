@@ -1,6 +1,6 @@
 # Categorization — Overview
 
-> Last updated: 2026-05-17
+> Last updated: 2026-07-03 — future semantic-tier design inputs (embed exemplars over anchors; margin-over-runner-up abstention)
 > Status: Ready — umbrella doc for the categorization initiative. Child specs listed in [Pillars](#pillars) are written separately.
 > Companions: [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) (algorithm contract: `match_text` construction, exemplar accumulation, source-precedence enforcement on write, snowball auto-apply), [`smart-import-overview.md`](smart-import-overview.md) (peer initiative, references this spec for pillars D & E), [`matching-overview.md`](matching-overview.md) (peer initiative, owns transfer detection), [`archived/transaction-categorization.md`](archived/transaction-categorization.md) (existing implementation this builds on), [`moneybin-mcp.md`](moneybin-mcp.md) (tool signatures), `CLAUDE.md` "Architecture: Data Layers"
 
@@ -114,6 +114,13 @@ A local machine learning model trained on the user's own categorization history.
 The ML categorizer works by analyzing the words in transaction descriptions to find patterns. During training, it learns associations like "descriptions containing STARBUCKS, PEETS, or BLUE BOTTLE tend to be Coffee Shops" and "descriptions containing SHELL, CHEVRON, or BP tend to be Gas Stations." When a new uncategorized transaction arrives, it compares its description against these learned patterns and predicts the most likely category with a confidence score.
 
 The v1 implementation uses TF-IDF (term frequency–inverse document frequency) to convert descriptions into numeric features and SVM (support vector machine) as the classifier. This combination is lightweight (no GPU, sub-second training on personal-scale data), well-proven for short-text classification, and is the same approach used by Beancount's Smart Importer. The model interface is designed to be swappable — alternative approaches (word embeddings, pre-trained language models) can replace the internals without changing the categorization pipeline or user experience.
+
+### If a semantic tier is added later (design inputs, not v1)
+
+The swappable interface above leaves room for a semantic-similarity tier — embed the transaction, compare against reference vectors — between the deterministic rules and the LLM fallback. Two forks are already decided if that tier is ever built, captured here so they are not re-derived:
+
+- **Embed accumulated exemplars, not static category anchors.** Anchoring category vectors on fixed metadata never learns. Embedding the user's accumulated exemplars (the same `oneOf` exemplars [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) accumulates from every correction) gets *both* correction-learning and generalization to unseen merchant variants. A shipped competitor's semantic tier anchors on static category metadata and cannot learn from corrections — the fork we would not take.
+- **Abstain on a thin margin, not just a low score.** Accept a semantic match only when similarity ≥ `T_sim` **and** its margin over the runner-up category ≥ `T_margin`; otherwise abstain and fall through to the next tier. A bare similarity threshold over-commits on ambiguous ties where two categories are both plausible. A competing implementation uses ≈ 0.78 / 0.06 for these two thresholds — a reference point to recalibrate on our own data, not adopt as-is.
 
 ### Training
 
@@ -345,7 +352,7 @@ Explicitly deferred or owned elsewhere.
 - **Transfer detection** — owned by `matching-overview.md`. Different concern (record identity, not labeling).
 - **Category taxonomy seed data** — Plaid PFCv2 seed is already implemented. This spec references it; it is not redesigned here.
 - **Taxonomy evolution** — category merge/rename with cascading updates to rules, merchants, and transaction_categories. Future direction (see below).
-- **Provider category mapping table** — the current `plaid_detailed` column on `app.categories` is provider-specific. When a second provider (Nordigen, etc.) is integrated, this column should be extracted to a generic `app.category_mappings` table. Future direction (see below).
+- **Provider category mapping table** — the current `plaid_detailed` column on `app.categories` is provider-specific. When a second provider (Nordigen, etc.) is integrated, this column should be extracted to a generic `app.category_mappings` table. Future direction (see below). This table now exists as `core.bridge_category_source_map` / `app.category_source_map` (see `category-source-map.md`), superseding `plaid_detailed`.
 - **LLM-assisted bulk categorization workflow** — the bulk tool itself is implemented; the cold-start workflow that wraps it (first-run prompt, PII redaction, propose/commit lifecycle) is owned by [`categorization-cold-start.md`](categorization-cold-start.md), not redesigned here.
 - **Merchant normalization** — already implemented. This spec documents the contract; it does not redesign the normalization logic.
 
@@ -386,7 +393,7 @@ Not pillars, not designed in detail. Architectural constraints noted so the curr
 
 2. **Community-contributed merchant mappings and community ML baseline** — see Bootstrap Strategies section. Merchant mappings and a community-trained ML model could both be built from anonymized opt-in data. Requires its own spec with privacy design work.
 
-3. **Provider category mapping table** — extract `plaid_detailed` from `app.categories` into a generic `app.category_mappings` table (`provider`, `provider_category`, `moneybin_category`, `moneybin_subcategory`). Triggered when a second provider is integrated. Single-column migration, architecturally simple.
+3. **Provider category mapping table** — extract `plaid_detailed` from `app.categories` into a generic `app.category_mappings` table (`provider`, `provider_category`, `moneybin_category`, `moneybin_subcategory`). Triggered when a second provider is integrated. Single-column migration, architecturally simple. **Implemented** as `core.bridge_category_source_map` / `app.category_source_map` (see `category-source-map.md`).
 
 4. **Amount/account-aware rule proposals** — detect when the same merchant is categorized differently depending on amount range or account and propose filtered rules. Deferred to implementation experience with the basic proposal engine.
 

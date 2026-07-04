@@ -413,7 +413,8 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |       +-- status                 -- Show migration state
 |
 +-- mcp
-|   +-- serve [--transport stdio|sse|streamable-http]
+|   +-- serve [--transport stdio|sse|streamable-http] [--insecure]
+|   |     (non-stdio transports are UNAUTHENTICATED; refuse without --insecure)
 |   |     (catches DB lock error -> recommends db ps / db kill)
 |   +-- list-tools                 -- Show available MCP tools
 |   +-- list-prompts               -- Show available MCP prompts

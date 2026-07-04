@@ -170,12 +170,27 @@ Resolved category dimension. Unifies `seeds.categories` (16 primary, ~100 subcat
 | `category` | VARCHAR | Top-level name. |
 | `subcategory` | VARCHAR | NULL for top-level-only entries. |
 | `description` | VARCHAR | Human-readable description. |
-| `plaid_detailed` | VARCHAR | Plaid PFC detailed mapping; NULL for user-defined. |
+| `class` | VARCHAR | Accounting class: `income` \| `expense` \| `transfer` \| `debt`. Derived from the `category_id` prefix. |
 | `is_default` | BOOLEAN | TRUE for seeded, FALSE for user-created. |
 | `is_active` | BOOLEAN | FALSE if user has soft-deleted a default via `app.category_overrides`. |
 | `created_at`, `updated_at` | TIMESTAMP | NULL for seed rows (query `meta.model_freshness` for seed freshness); set for user-created (UTC). |
 
 Logical grain key: `category_id`.
+
+### `core.bridge_category_source_map`
+
+Resolved provider-code → canonical-category bridge. Grain: one row per `(source_type, source_category_code)`. `VIEW` that unions the `seeds.category_source_map` defaults with `app.category_source_map` user overrides — a user row for a given code always wins over the seed default. This is the reverse-lookup key for turning an aggregator's category code (e.g. Plaid PFC) into a MoneyBin `category_id`, with no schema change per new aggregator.
+
+| Column | Type | Description |
+|---|---|---|
+| `source_type` | VARCHAR | Aggregator / import pathway the code comes from (e.g. `plaid`). |
+| `source_category_code` | VARCHAR | The provider's category code (e.g. `FOOD_AND_DRINK_COFFEE`). |
+| `code_level` | VARCHAR | `detailed` \| `primary`. Detailed wins over primary on reverse lookup. |
+| `category_id` | VARCHAR | FK → `core.dim_categories.category_id`. Exactly one per code (canonical-by-PK). |
+| `source_taxonomy_version` | VARCHAR | Provider taxonomy version the mapping was derived against (drift marker; not part of the key). |
+| `is_default` | BOOLEAN | TRUE for seed rows, FALSE for user overrides from `app.category_source_map`. |
+
+Two-tier reverse lookup — match a transaction's detailed and primary codes and let detailed win: `WHERE source_category_code IN (detailed, primary) ORDER BY code_level = 'detailed' DESC LIMIT 1`.
 
 ### `core.bridge_transfers`
 
@@ -412,7 +427,7 @@ WHERE NOT a.archived
   AND t.is_pending = FALSE;
 ```
 
-`t.category` is already resolved on the fact (fallback chain documented above). The `dim_categories` join only adds `description` / `plaid_detailed` if you need them.
+`t.category` is already resolved on the fact (fallback chain documented above). The `dim_categories` join only adds `description` / `class` if you need them.
 
 ### Transfer pair lookup
 
@@ -532,6 +547,7 @@ Tables here capture state that cannot be re-derived from raw sources: categoriza
 | `app.user_merchants` | One row per `merchant_id` | Mutable merchant entries. Surfaced via `core.dim_merchants`. |
 | `app.user_categories` | One row per `category_id` | User-created categories. Combined with seeds via `core.dim_categories`. |
 | `app.category_overrides` | One row per `category_id` | User soft-deletions on seed categories. |
+| `app.category_source_map` | One row per `(source_type, source_category_code)` | User overrides for provider-code → `category_id` mappings. Combined with `seeds.category_source_map` via `core.bridge_category_source_map`. |
 | `app.budgets` | One row per `budget_id` | Monthly spending targets by category over a `start_month`–`end_month` window. |
 | `app.imports` | One row per labeled `import_id` | User-applied labels on import batches. FK → `raw.import_log.import_id`. |
 | `app.audit_log` | One row per mutation | Unified audit log; emitted synchronously in the same transaction as the mutation. |
@@ -565,9 +581,10 @@ MCP-visible app tables are tagged `audience="interface"` in [`src/moneybin/table
 
 | Table | Grain | Backing |
 |---|---|---|
-| `seeds.categories` | One row per `category_id` | CSV-backed (`sqlmesh/models/seeds/categories.csv`). 16 primary categories with ~100 subcategories, based on Plaid Personal Finance Category v2. Columns: `category_id`, `category`, `subcategory`, `description`, `plaid_detailed`. SQLMesh detects CSV changes automatically. |
+| `seeds.categories` | One row per `category_id` | CSV-backed (`sqlmesh/models/seeds/categories.csv`). 16 primary categories with ~100 subcategories, based on Plaid Personal Finance Category v2. Columns: `category_id`, `category`, `subcategory`, `description`, `class`. SQLMesh detects CSV changes automatically. |
+| `seeds.category_source_map` | One row per `(source_type, source_category_code)` | CSV-backed (`sqlmesh/models/seeds/category_source_map.csv`). Default provider-code → `category_id` mappings (Plaid PFC). Surfaced via `core.bridge_category_source_map`. |
 
-Surfaced via `core.dim_categories` alongside `app.user_categories`.
+`seeds.categories` is surfaced via `core.dim_categories` alongside `app.user_categories`; `seeds.category_source_map` via `core.bridge_category_source_map` alongside `app.category_source_map`.
 
 ## Identifier conventions
 

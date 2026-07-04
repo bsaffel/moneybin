@@ -1,6 +1,6 @@
 # Investments — Overview
 
-> Last updated: 2026-05-29 — 1099-B tie-out reaffirmed as the hard M1J close gate.
+> Last updated: 2026-07-03 — added Pillar C stale-price fallback design input (`price_date` + staleness surfacing).
 > Umbrella doc for the investments initiative (milestone M1J). Child specs listed
 > in [The four pillars](#the-four-pillars) are written separately; the foundation
 > child is [`investments-data-model.md`](investments-data-model.md).
@@ -160,6 +160,22 @@ securities × 252 trading days × 10 years ≈ 126k rows). Today's live value ca
 from a real-time call or short cache; everything past is stored. Raw vs.
 split/dividend-adjusted prices is a Pillar C concern (cost basis uses raw ledger
 data; charts often use adjusted).
+
+### Stale prices surface, never masquerade as current (Pillar C)
+
+When a current price is unavailable — market closed, feed gap, or a security the
+feed does not cover — valuation falls back to the most recent stored close, but
+the fallback is always visible. Any priced response carries the `price_date` it
+actually used plus a staleness measure; past a configurable threshold the
+response envelope adds an explicit staleness warning. Reuse the staleness
+vocabulary [`asset-tracking.md`](asset-tracking.md) already establishes
+(`days_since_observed` + `staleness_threshold_days`) rather than coining a
+parallel `staleness_days`, so prices and physical assets share one shape for the
+staleness concept. A stale close is never silently presented as the current
+price. This is the price-side application of
+"magic stays visible": the fallback itself is fine, silently misrepresenting its
+age is not. A shipped competitor already does exactly this (snapshot fallback
+plus gap-day staleness marking), confirming the shape.
 
 ### Currency: column now, conversion later
 
