@@ -120,6 +120,7 @@ class AccountSettingsPayload:
     holder_category: Annotated[str | None, DataClass.TXN_TYPE]
     iso_currency_code: Annotated[str | None, DataClass.CURRENCY]
     credit_limit: Annotated[Decimal | None, DataClass.BALANCE]
+    default_cost_basis_method: Annotated[str | None, DataClass.TXN_TYPE]
     include_in_net_worth: Annotated[bool, DataClass.TXN_TYPE]
     archived: Annotated[bool, DataClass.TXN_TYPE]
     warnings: Annotated[list[str], DataClass.DESCRIPTION] = field(default_factory=list)

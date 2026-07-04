@@ -12,6 +12,7 @@ from decimal import Decimal
 from typing import Any
 from unittest.mock import MagicMock
 
+import duckdb
 import pytest
 from prometheus_client import REGISTRY
 
@@ -54,6 +55,7 @@ def _set(repo: AccountSettingsRepo, **overrides: Any) -> Any:
         "credit_limit": None,
         "archived": False,
         "include_in_net_worth": True,
+        "default_cost_basis_method": None,
         "actor": "cli",
     }
     kwargs.update(overrides)
@@ -111,6 +113,26 @@ def test_set_records_parent_audit_id(db: Database) -> None:
     repo = AccountSettingsRepo(db)
     event = _set(repo, parent_audit_id="p1")
     assert _audit_rows_for(db, event.target_id or "")[0][7] == "p1"
+
+
+def test_set_persists_default_cost_basis_method(db: Database) -> None:
+    repo = AccountSettingsRepo(db)
+    _set(repo, default_cost_basis_method="average")
+
+    row = db.conn.execute(
+        "SELECT default_cost_basis_method FROM app.account_settings "
+        "WHERE account_id = ?",
+        ["acct_a"],
+    ).fetchone()
+    assert row == ("average",)
+
+
+def test_set_invalid_default_cost_basis_method_raises_constraint_exception(
+    db: Database,
+) -> None:
+    repo = AccountSettingsRepo(db)
+    with pytest.raises(duckdb.ConstraintException):
+        _set(repo, default_cost_basis_method="lifo")
 
 
 def test_delete_captures_before_and_returns_event(db: Database) -> None:

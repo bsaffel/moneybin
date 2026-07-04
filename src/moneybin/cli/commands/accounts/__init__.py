@@ -188,6 +188,12 @@ def accounts_set(
         "--display-name",
         help="Custom display name override (use --clear-display-name to clear)",
     ),
+    default_cost_basis_method: str | None = typer.Option(
+        None,
+        "--default-cost-basis-method",
+        help="Per-account cost-basis default: fifo, hifo, specific, or average "
+        "(NULL falls back to the global FIFO default)",
+    ),
     include_in_net_worth: bool | None = typer.Option(
         None,
         "--include/--exclude",
@@ -205,6 +211,9 @@ def accounts_set(
     clear_currency: bool = typer.Option(False, "--clear-currency"),
     clear_credit_limit: bool = typer.Option(False, "--clear-credit-limit"),
     clear_display_name: bool = typer.Option(False, "--clear-display-name"),
+    clear_default_cost_basis_method: bool = typer.Option(
+        False, "--clear-default-cost-basis-method"
+    ),
     yes: bool = typer.Option(
         False,
         "--yes",
@@ -215,7 +224,9 @@ def accounts_set(
     """Update account settings (structural + behavioral fields).
 
     Structural: --official-name, --last-four, --subtype, --holder-category,
-    --currency, --credit-limit (each clearable via --clear-FIELD).
+    --currency, --credit-limit, --default-cost-basis-method (each clearable
+    via --clear-FIELD). --default-cost-basis-method must be one of fifo,
+    hifo, specific, average — an invalid value is rejected before any write.
     Behavioral: --display-name, --include/--exclude, --archive/--unarchive.
     Archive cascades --exclude in the same write; unarchive does NOT restore
     include. At least one field flag required.
@@ -234,6 +245,11 @@ def accounts_set(
     _add("holder_category", holder_category, clear_holder_category)
     _add("iso_currency_code", currency, clear_currency)
     _add("display_name", display_name, clear_display_name)
+    _add(
+        "default_cost_basis_method",
+        default_cost_basis_method,
+        clear_default_cost_basis_method,
+    )
     if include_in_net_worth is not None:
         diff["include_in_net_worth"] = include_in_net_worth
     if is_archived is not None:
