@@ -17,7 +17,8 @@ Flow inventory:
 - :meth:`apply_plaid_categories` — sweep still-uncategorized Plaid rows
   against the two-tier category-source bridge, confidence-gated.
 - :meth:`categorize_pending` — combined snowball: scan uncategorized once,
-  run rules pass, then merchants pass (rule wins on overlap).
+  run rules pass, then merchants pass (rule wins on overlap), then plaid
+  pass last to fill the long tail.
 
 The dense entry point is :meth:`_categorize_items_inner`. It pulls from
 several layers: taxonomy validation, batch transaction read, cached
@@ -864,26 +865,36 @@ class CategorizationOrchestrator:
         below every deliberate signal, above ai. Runs last of the deterministic
         categorizers so it only touches the long tail.
 
+        Degrades to a no-op when the Plaid staging view isn't materialized
+        yet (no Plaid data ever loaded, or ``transform apply`` hasn't run) —
+        mirrors the ``duckdb.CatalogException`` guard on
+        :meth:`CategorizationMatcher.fetch_merchants` /
+        :meth:`CategorizationMatcher.fetch_active_rules`. Required now that
+        :meth:`categorize_pending` calls this unconditionally on every run.
+
         Returns:
             Number of transactions categorized.
         """
-        rows = self._db.execute(
-            f"""
-            SELECT s.transaction_id, dc.category, dc.subcategory, s.category_confidence
-            FROM {STG_PLAID_TRANSACTIONS.full_name} AS s
-            JOIN {BRIDGE_CATEGORY_SOURCE_MAP.full_name} AS b
-                ON b.source_type = 'plaid'
-                AND b.source_category_code IN (s.category_detailed, s.plaid_category)
-            JOIN {CATEGORIES.full_name} AS dc ON dc.category_id = b.category_id
-            LEFT JOIN {TRANSACTION_CATEGORIES.full_name} AS tc
-                ON tc.transaction_id = s.transaction_id
-            WHERE tc.transaction_id IS NULL
-            QUALIFY ROW_NUMBER() OVER (
-                PARTITION BY s.transaction_id
-                ORDER BY (b.code_level = 'detailed') DESC
-            ) = 1
-            """  # noqa: S608 — table names are compile-time TableRef constants; no interpolated values
-        ).fetchall()
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT s.transaction_id, dc.category, dc.subcategory, s.category_confidence
+                FROM {STG_PLAID_TRANSACTIONS.full_name} AS s
+                JOIN {BRIDGE_CATEGORY_SOURCE_MAP.full_name} AS b
+                    ON b.source_type = 'plaid'
+                    AND b.source_category_code IN (s.category_detailed, s.plaid_category)
+                JOIN {CATEGORIES.full_name} AS dc ON dc.category_id = b.category_id
+                LEFT JOIN {TRANSACTION_CATEGORIES.full_name} AS tc
+                    ON tc.transaction_id = s.transaction_id
+                WHERE tc.transaction_id IS NULL
+                QUALIFY ROW_NUMBER() OVER (
+                    PARTITION BY s.transaction_id
+                    ORDER BY (b.code_level = 'detailed') DESC
+                ) = 1
+                """  # noqa: S608 — table names are compile-time TableRef constants; no interpolated values
+            ).fetchall()
+        except duckdb.CatalogException:
+            return 0
 
         count = 0
         for txn_id, category, subcategory, level in rows:
@@ -905,13 +916,16 @@ class CategorizationOrchestrator:
             logger.info(f"Plaid PFC categorization assigned {count} transactions")
         return count
 
-    def categorize_pending(self) -> dict[str, int]:
+    def categorize_pending(self, *, include_plaid: bool = True) -> dict[str, int]:
         """Categorize all pending (uncategorized) transactions.
 
-        Runs current rules and merchants against pending transactions.
+        Runs rules, then merchants, then plaid against pending transactions.
         Rules run first in priority order so explicit user-defined rules (which can
         filter by amount, account, and pattern) take precedence over generic merchant
         mappings. Merchant mappings apply only to transactions not matched by any rule.
+        Plaid runs last: :meth:`apply_plaid_categories` re-reads still-uncategorized
+        rows itself, so rule and merchant writes are already committed and excluded
+        by the time it runs — it only fills the long tail neither pass covered.
 
         Idempotent: a second run on the same state writes nothing.
 
@@ -919,30 +933,58 @@ class CategorizationOrchestrator:
         :meth:`apply_rules` and :meth:`apply_merchant_categories`. The set of
         rule-written ``transaction_id``s is passed as ``skip_txn_ids`` to the
         merchant pass so it doesn't overwrite the rule writes at the same
-        priority.
+        priority. An empty scan short-circuits ONLY the rules/merchant passes
+        (there is nothing for either to match against) — it does NOT skip
+        :meth:`apply_plaid_categories`. That pass matches on the Plaid PFC
+        category code, not on description/memo text or a resolved merchant,
+        so a transaction excluded from :meth:`CategorizationMatcher.
+        fetch_uncategorized_rows` (blank description, blank memo, no
+        merchant_entity_id) can still be categorizable by plaid. Running
+        plaid unconditionally is cheap even when there is truly nothing
+        pending: its own ``WHERE tc.transaction_id IS NULL`` query simply
+        returns no rows. :meth:`apply_plaid_categories` needs no skip set
+        either — its own query excludes any transaction already categorized,
+        and the write-time precedence guard (`provider_native` priority 6)
+        rejects overwriting any higher-authority row even on overlap.
+
+        Args:
+            include_plaid: Run the plaid pass too. Defaults to True for every
+                automatic-invocation caller (the post-commit snowball, the
+                reapply flows, ``refresh_run``). ``CategorizationService.
+                categorize_run``'s explicit ``methods=["rules", "merchants"]``
+                shared-scan fast path passes ``False`` — that surface's
+                ``methods`` parameter is the caller's explicit engine
+                selection (Literal["rules", "merchants"] — plaid isn't a
+                selectable value), so silently adding a third engine's writes
+                would both violate the caller's request and go unreported in
+                its per-method breakdown.
 
         Returns:
-            Dict with counts: {'merchant': N, 'rule': N, 'total': N}.
+            Dict with counts: {'merchant': N, 'rule': N, 'plaid': N, 'total': N}.
         """
         rows = self._matcher.fetch_uncategorized_rows()
-        if not rows:
-            return {"merchant": 0, "rule": 0, "total": 0}
+        if rows:
+            rule_applied = self.apply_rules(uncategorized=rows)
+            merchant_count = self.apply_merchant_categories(
+                uncategorized=rows, skip_txn_ids=rule_applied
+            )
+            rule_count = len(rule_applied)
+        else:
+            merchant_count = 0
+            rule_count = 0
 
-        rule_applied = self.apply_rules(uncategorized=rows)
-        merchant_count = self.apply_merchant_categories(
-            uncategorized=rows, skip_txn_ids=rule_applied
-        )
-        rule_count = len(rule_applied)
-        total = merchant_count + rule_count
+        plaid_count = self.apply_plaid_categories() if include_plaid else 0
+        total = merchant_count + rule_count + plaid_count
 
         if total:
             logger.info(
                 f"Categorized {total} pending transactions "
-                f"({merchant_count} merchant, {rule_count} rule)"
+                f"({merchant_count} merchant, {rule_count} rule, {plaid_count} plaid)"
             )
 
         return {
             "merchant": merchant_count,
             "rule": rule_count,
+            "plaid": plaid_count,
             "total": total,
         }

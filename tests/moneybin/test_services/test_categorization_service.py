@@ -2728,3 +2728,203 @@ class TestApplyPlaidCategories:
             ).fetchone()
             is None
         )
+
+
+# ---------------------------------------------------------------------------
+# categorize_pending — plaid pass wired in last (Task 6)
+# ---------------------------------------------------------------------------
+
+
+class TestCategorizePendingPlaidPass:
+    """Proves the plaid pass is wired into the categorize_pending cascade.
+
+    Uses the bridge fixtures from ``TestApplyPlaidCategories`` (real
+    ``core.bridge_category_source_map`` reverse lookup) plus real
+    ``core.fct_transactions`` rows so ``fetch_uncategorized_rows`` — the
+    scan shared by the rules and merchant passes — sees the transactions
+    before the plaid pass runs last.
+    """
+
+    @pytest.mark.unit
+    def test_plaid_fills_bare_row_but_not_higher_priority_row(
+        self, db: Database
+    ) -> None:
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="FOOD_AND_DRINK_COFFEE",
+            code_level="detailed",
+            category_id="FND-COF",
+            category="Food & Drink",
+            subcategory="Coffee Shops",
+        )
+        _insert_plaid_txn(
+            db,
+            "t1",
+            category_detailed="FOOD_AND_DRINK_COFFEE",
+            plaid_category="FOOD_AND_DRINK",
+            category_confidence="HIGH",
+        )
+        _insert_plaid_txn(
+            db,
+            "t2",
+            category_detailed="FOOD_AND_DRINK_COFFEE",
+            plaid_category="FOOD_AND_DRINK",
+            category_confidence="HIGH",
+        )
+        # fetch_uncategorized_rows (shared by apply_rules/apply_merchant_categories)
+        # reads core.fct_transactions — both txns must exist there with
+        # non-empty description or the early-return in categorize_pending
+        # fires before the plaid pass ever runs.
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, "
+            "description, source_type) VALUES "
+            "('t1', 'ACC1', '2025-06-01', -4.50, 'COFFEE SHOP', 'plaid'), "
+            "('t2', 'ACC1', '2025-06-02', -4.75, 'COFFEE SHOP TWO', 'plaid')"
+        )
+        # t1 is already categorized by a higher-priority source (user, prio
+        # 1) than plaid (provider_native, prio 6) — mirrors
+        # TestGetCategorizationStats.test_with_categorized's seeding pattern.
+        db.execute("""
+            INSERT INTO app.transaction_categories
+            (transaction_id, category, categorized_by)
+            VALUES ('t1', 'Coffee', 'user')
+        """)
+
+        result = categorize_pending(db)
+
+        # No rules or merchants are configured, so rule/merchant passes are
+        # no-ops — only the plaid pass contributes, and only for t2 (t1 is
+        # already categorized so the plaid query's uncategorized filter
+        # excludes it).
+        assert result["plaid"] == 1
+        assert result["total"] == 1
+
+        t1_row = db.execute(
+            "SELECT categorized_by FROM app.transaction_categories "
+            "WHERE transaction_id = 't1'"
+        ).fetchone()
+        assert t1_row == ("user",), "higher-priority row must not be overwritten"
+
+        t2_row = db.execute(
+            "SELECT categorized_by FROM app.transaction_categories "
+            "WHERE transaction_id = 't2'"
+        ).fetchone()
+        assert t2_row == ("provider_native",), "bare row must be filled by plaid"
+
+    @pytest.mark.unit
+    def test_categorize_run_rules_and_merchants_excludes_plaid(
+        self, db: Database
+    ) -> None:
+        """categorize_run's explicit methods=[...] selection must not silently add plaid.
+
+        Regression test for the shared-scan fast path in
+        ``CategorizationService.categorize_run`` (``effective == ["rules",
+        "merchants"]``): before the plaid pass existed, that fast path
+        delegated straight to ``categorize_pending()`` because the two were
+        equivalent. Now that ``categorize_pending()`` also runs plaid by
+        default, the fast path must opt out (``include_plaid=False``) or it
+        would apply a third, unrequested engine whose writes go unreported
+        in ``applied_by_method`` — and, depending on the requested method
+        order, only sometimes (the per-method loop for other orders never
+        touches plaid at all).
+        """
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="FOOD_AND_DRINK_COFFEE",
+            code_level="detailed",
+            category_id="FND-COF",
+            category="Food & Drink",
+            subcategory="Coffee Shops",
+        )
+        _insert_plaid_txn(
+            db,
+            "t3",
+            category_detailed="FOOD_AND_DRINK_COFFEE",
+            plaid_category="FOOD_AND_DRINK",
+            category_confidence="HIGH",
+        )
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, "
+            "description, source_type) VALUES "
+            "('t3', 'ACC1', '2025-06-03', -5.25, 'COFFEE SHOP THREE', 'plaid')"
+        )
+
+        result = CategorizationService(db).categorize_run()
+
+        assert result["applied_by_method"] == {"rules": 0, "merchants": 0}
+        assert result["total_applied"] == 0
+        assert (
+            db.execute(
+                "SELECT 1 FROM app.transaction_categories WHERE transaction_id='t3'"
+            ).fetchone()
+            is None
+        ), "categorize_run(methods=['rules','merchants']) must not trigger plaid"
+
+    @pytest.mark.unit
+    def test_plaid_pass_runs_when_fetch_uncategorized_rows_is_empty(
+        self, db: Database
+    ) -> None:
+        """A blank-description Plaid row must not starve the plaid pass.
+
+        ``fetch_uncategorized_rows`` (shared by the rules/merchant passes)
+        excludes rows with a blank description AND blank memo (and, absent
+        the prep.int_transactions__merged table in this unit DB, has no
+        entity-id fallback either) — so it returns ``[]`` for a txn like
+        this. ``apply_plaid_categories`` matches on the PFC category code,
+        not the description, so it can still categorize the row via its own
+        independent query. Before the fix, the ``if not rows: return`` guard
+        in ``categorize_pending`` short-circuited before the plaid pass ever
+        ran, silently starving any all-blank-description tail.
+        """
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="FOOD_AND_DRINK_COFFEE",
+            code_level="detailed",
+            category_id="FND-COF",
+            category="Food & Drink",
+            subcategory="Coffee Shops",
+        )
+        _insert_plaid_txn(
+            db,
+            "t5",
+            category_detailed="FOOD_AND_DRINK_COFFEE",
+            plaid_category="FOOD_AND_DRINK",
+            category_confidence="HIGH",
+        )
+        # Blank description, no memo — fetch_uncategorized_rows excludes this
+        # row entirely, so it must be the ONLY uncategorized row in the DB
+        # for the starvation bug to reproduce (a non-blank sibling row would
+        # make apply_rules/apply_merchant_categories return non-empty rows,
+        # masking the bug this test targets).
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, "
+            "description, source_type) VALUES "
+            "('t5', 'ACC1', '2025-06-05', -6.00, '', 'plaid')"
+        )
+
+        # Confirm the premise: the shared scan really does exclude this row.
+        from moneybin.services.categorization.matcher import (
+            CategorizationMatcher,
+        )
+
+        assert CategorizationMatcher(db).fetch_uncategorized_rows() == []
+
+        result = categorize_pending(db)
+
+        assert result["plaid"] == 1, (
+            "plaid pass must run and categorize the row even though "
+            "fetch_uncategorized_rows returned no rows to share with "
+            "the rules/merchant passes"
+        )
+        assert result["total"] == 1
+        row = db.execute(
+            "SELECT category, categorized_by FROM app.transaction_categories "
+            "WHERE transaction_id = 't5'"
+        ).fetchone()
+        assert row == ("Food & Drink", "provider_native")

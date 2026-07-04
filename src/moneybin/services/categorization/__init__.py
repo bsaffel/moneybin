@@ -465,12 +465,16 @@ class CategorizationService:
         # below, which runs engines in the requested order — necessary to
         # honor the order contract documented on the MCP tool.
         # categorize_pending() shares one uncategorized-rows fetch across both
-        # engines and enforces rule-priority-wins on conflicts.
+        # engines and enforces rule-priority-wins on conflicts. include_plaid=False
+        # keeps this fast path scoped to exactly the two requested engines —
+        # categorize_pending's default also runs a third (plaid) pass, which
+        # `methods: list[Literal["rules", "merchants"]]` has no way to request
+        # and this breakdown has no key to report it under.
         if effective == ["rules", "merchants"]:
-            breakdown = self._orchestrator.categorize_pending()
-            # categorize_pending returns {"rule": N, "merchant": N, "total": N}
-            # — keys are singular; the public API exposes plural for symmetry
-            # with the methods=[...] parameter.
+            breakdown = self._orchestrator.categorize_pending(include_plaid=False)
+            # categorize_pending returns {"rule": N, "merchant": N, "plaid": N,
+            # "total": N} — keys are singular; the public API exposes plural
+            # for symmetry with the methods=[...] parameter.
             result["applied_by_method"] = {
                 "rules": breakdown.get("rule", 0),
                 "merchants": breakdown.get("merchant", 0),

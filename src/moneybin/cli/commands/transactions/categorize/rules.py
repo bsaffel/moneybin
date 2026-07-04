@@ -100,7 +100,8 @@ def rules_apply() -> None:
             if stats["total"] > 0:
                 logger.info(
                     f"✅ Categorized {stats['total']} transactions "
-                    f"({stats['merchant']} merchant, {stats['rule']} rule)"
+                    f"({stats['merchant']} merchant, {stats['rule']} rule, "
+                    f"{stats['plaid']} plaid)"
                 )
             else:
                 logger.info(
