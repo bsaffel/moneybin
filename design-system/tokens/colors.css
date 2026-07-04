@@ -1,0 +1,43 @@
+/* MoneyBin color tokens — dark is the reference theme (default on :root); light is a peer mapping. */
+:root {
+  --bg-base: #141311;
+  --bg-surface: #1B1916;
+  --bg-raised: #22201C;
+  --bg-inset: #100F0D;
+  --border-hairline: #2A2723;
+  --border-strong: #3A362F;
+  --text-primary: #E9E4DB;
+  --text-secondary: #A39C90;
+  --text-faint: #6E685E;
+  --accent-brass: #C79B3B;
+  --accent-brass-strong: #D9B054;
+  --pos-income: #45B27B;
+  --neg-expense: #E0684F;
+  --focus: #D9B054;
+  /* categorical chart palette (shared across themes; equal-lightness oklch, hue-spread) */
+  --chart-1: #C79B3B;
+  --chart-2: #56A8A0;
+  --chart-3: #6E96C8;
+  --chart-4: #9B87C9;
+  --chart-5: #C07EA4;
+  --chart-6: #C97E5B;
+  --chart-7: #7FA95E;
+  --chart-8: #8C97A6;
+}
+
+[data-theme="light"] {
+  --bg-base: #F6F4EF;
+  --bg-surface: #FDFCF9;
+  --bg-raised: #FFFFFF;
+  --bg-inset: #EFECE4;
+  --border-hairline: #E3DFD5;
+  --border-strong: #C9C3B6;
+  --text-primary: #1C1A16;
+  --text-secondary: #5C564C;
+  --text-faint: #8B8477;
+  --accent-brass: #8A6A1C;
+  --accent-brass-strong: #C79B3B;
+  --pos-income: #157A52;
+  --neg-expense: #B03A24;
+  --focus: #8A6A1C;
+}
