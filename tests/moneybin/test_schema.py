@@ -6,6 +6,18 @@ from unittest.mock import MagicMock
 from moneybin.database import Database
 
 
+def _reset_seeds_categories_for_v014_replay(db: Database) -> None:
+    """Drop seeds.categories + its dependent dim view for a clean V014 replay.
+
+    V014 recreates the table fresh on replay with its own era shape
+    (plaid_detailed, no class). The first open's refresh_views built it in the
+    current shape (no plaid_detailed); leaving it there makes V014's frozen
+    ``SELECT s.plaid_detailed`` view rebuild fail on reopen.
+    """
+    db.execute("DROP VIEW IF EXISTS core.dim_categories")
+    db.execute("DROP TABLE IF EXISTS seeds.categories")
+
+
 def test_init_does_not_fail_when_existing_table_missing_new_columns(
     tmp_path: Path, mock_secret_store: MagicMock
 ) -> None:
@@ -28,13 +40,7 @@ def test_init_does_not_fail_when_existing_table_missing_new_columns(
     try:
         db.execute("ALTER TABLE raw.ofx_institutions DROP COLUMN import_id")
         db.execute("ALTER TABLE raw.ofx_institutions DROP COLUMN source_type")
-        # Drop seeds.categories (and the dependent dim view) so V014 recreates
-        # it fresh on replay with its own era shape (plaid_detailed, no class).
-        # The first open's refresh_views built it in the current shape (no
-        # plaid_detailed); leaving it there makes V014's frozen
-        # `SELECT s.plaid_detailed` view rebuild fail on reopen.
-        db.execute("DROP VIEW IF EXISTS core.dim_categories")
-        db.execute("DROP TABLE IF EXISTS seeds.categories")
+        _reset_seeds_categories_for_v014_replay(db)
         db.execute("DELETE FROM app.schema_migrations WHERE version >= 3")
     finally:
         db.close()
@@ -79,13 +85,7 @@ def test_init_does_not_fail_when_proposed_rules_missing_rule_id(
         db.execute("DROP INDEX IF EXISTS app.idx_proposed_rules_rule_id")
         db.execute("DROP INDEX IF EXISTS app.idx_proposed_rules_pattern_status")
         db.execute("ALTER TABLE app.proposed_rules DROP COLUMN rule_id")
-        # Drop seeds.categories (and the dependent dim view) so V014 recreates
-        # it fresh on replay with its own era shape (plaid_detailed, no class).
-        # The first open's refresh_views built it in the current shape (no
-        # plaid_detailed); leaving it there makes V014's frozen
-        # `SELECT s.plaid_detailed` view rebuild fail on reopen.
-        db.execute("DROP VIEW IF EXISTS core.dim_categories")
-        db.execute("DROP TABLE IF EXISTS seeds.categories")
+        _reset_seeds_categories_for_v014_replay(db)
         db.execute("DELETE FROM app.schema_migrations WHERE version >= 16")
     finally:
         db.close()
