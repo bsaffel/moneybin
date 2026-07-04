@@ -22,6 +22,15 @@ node .ds-sync/package-validate.mjs ./ds-bundle --no-render-check
 - `.ds-sync/node_modules` holds both the converter deps (esbuild, ts-morph,
   @types/react) **and** react/react-dom@18 (pinned to 18 for the UMD builds
   `vendorReact` copies into `_vendor/`; react 19 dropped UMD).
+- **`--out` must be empty or a prior bundle, and never the session's cwd.** The
+  converter's `OUT_UNSAFE` guard refuses to `rmSync` a non-empty `--out` that
+  lacks the `.ds-bundle`/`_ds_bundle.js` marker. If `ds-bundle/` happens to be
+  the session's working directory, the agent seeds `.claude/.cc-writes` inside
+  it → the guard trips. When that happens, build to a clean fallback
+  (`--out ./ds-bundle-out`, gitignored via `ds-bundle*/`) rather than `rm`-ing
+  the polluted dir — its `.claude/` triggers a protective delete prompt. This is
+  an anomaly (the cwd normally isn't the build dir), so the fallback is a safety
+  net, not the default.
 
 ## CSS / tokens (the non-obvious part)
 
@@ -69,6 +78,9 @@ bind fails `listen EPERM`, so the server must run **unsandboxed**
   write-denied in-sandbox).
 - Network fetch (`fetch-fonts.mjs`) and the http server need
   `dangerouslyDisableSandbox` (DNS + socket bind blocked in-sandbox).
+- `package-build.mjs` calls `rmSync(--out)` to wipe the output dir → the build
+  needs `dangerouslyDisableSandbox` (in-sandbox `rm` is EPERM). See the `--out`
+  note under *How it builds* for the guard interaction.
 - `ps`/`pkill` are sandbox-blocked (can't manage processes from Bash).
 
 ## Guidelines & other original content (NOT synced by the converter)
