@@ -943,6 +943,7 @@ class ImportService:
             credit_limit=settings.credit_limit,
             archived=settings.archived,
             include_in_net_worth=settings.include_in_net_worth,
+            default_cost_basis_method=settings.default_cost_basis_method,
             actor="import",
         )
 

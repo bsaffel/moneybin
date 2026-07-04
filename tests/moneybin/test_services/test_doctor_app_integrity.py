@@ -569,6 +569,7 @@ def _upsert_settings(repo: AccountSettingsRepo, account_id: str) -> None:
         credit_limit=None,
         archived=False,
         include_in_net_worth=True,
+        default_cost_basis_method=None,
         actor="cli",
     )
 
