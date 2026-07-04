@@ -1,4 +1,4 @@
-const { useState } = React;
+import { useState } from 'react';
 
 export function WidgetCard({ title, sql, meta, audit, children, style }) {
   const [sqlOpen, setSqlOpen] = useState(false);

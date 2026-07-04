@@ -73,9 +73,10 @@ bind fails `listen EPERM`, so the server must run **unsandboxed**
 
 ## Guidelines & other original content (NOT synced by the converter)
 
-The original Claude Design project had 26 cards; the converter carries only the
-**7 components**. The rest are `@dsCard`-marked HTML specimen cards outside the
-converter's component scope:
+The Claude Design project has 36 cards; the converter carries only the
+**7 components**. The remaining **29** are `@dsCard`-marked HTML specimen cards
+outside the converter's component scope (28 guidelines + the dashboard UI-kit
+below):
 
 - **28 `guidelines/*.html`** (Colors ×5, Type ×3, Shape ×3, Brand ×2, Charts ×12,
   Iconography, Voice ×2). The converter's `guidelinesGlob` is **`.md`-only**
