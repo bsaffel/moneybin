@@ -69,8 +69,10 @@ def transactions_categorize_stats(
     """Get categorization coverage statistics.
 
     Returns total transactions, categorized count, uncategorized count,
-    percentage categorized, and breakdown by categorization source
-    (user, ai, rule, plaid).
+    percentage categorized, breakdown by categorization source
+    (user, ai, rule, provider_native), and plaid_unmapped — the count of
+    Plaid transactions whose PFC code has no category-source-bridge mapping
+    yet (omitted when no Plaid data is present).
 
     Args:
         include_auto: When True, also return auto-rule health metrics

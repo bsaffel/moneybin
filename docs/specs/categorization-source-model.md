@@ -1,13 +1,29 @@
 # Categorization Source Model & Plaid PFC Categorizer
 
-> Last updated: 2026-06-30
-> Status: in-progress
+> Last updated: 2026-07-04
+> Status: implemented
 > Address: M1U (Ingestion Core)
 > Type: Feature
 > Owns: the category **source-model** contract — the `method` vs `source_type`
 > split on `app.transaction_categories`, provenance-aware merchant-default
-> authority, and the derived per-source candidate view. Ships the first
+> authority, and the provider-code → category reverse lookup. Ships the first
 > provider-native categorizer (Plaid Personal Finance Category) on that contract.
+
+> **Implemented 2026-07-04 (as built).** Provider-code → category resolution
+> runs through the **M1V category-source bridge**
+> (`core.bridge_category_source_map` — one canonical category per
+> `(source_type, source_category_code)`, two-tier detailed→primary reverse
+> lookup), which **superseded** the original `dim_categories.plaid_detailed`
+> join described in Decision 4 (that column was hard-cut when the bridge
+> landed — the `plaid_detailed` tag was many-to-one and produced
+> non-deterministic reverse lookups). **Shipped:** Decisions 1–4 (the
+> bridge-based `apply_plaid_categories`, wired last into `categorize_pending`)
+> + 8 (metrics + the `plaid_unmapped` coverage stat). **Deferred to the
+> immediate follow-up** (bundled with the axis-2 category-seed audit): the
+> opt-in AI→`provider_native` **upgrade pass** (Decision 4) and the per-source
+> **candidates view** (Decision 5) — both additive, neither on the critical
+> path (new imports categorize automatically). Original design text is
+> preserved below for rationale; mechanism deltas are flagged inline.
 > Mirrors: the identity-MDM pattern from
 > [`merchant-entity-resolution.md`](merchant-entity-resolution.md) (M1T) and
 > [`account-identity-resolution.md`](account-identity-resolution.md) (M1S) —
@@ -177,6 +193,29 @@ A new categorizer in `services/categorization/`, wired into `categorize_pending`
 **Joins:** `core.dim_categories` on `plaid_detailed = category_detailed` → yields
 `category_id`, `category`, `subcategory` (the seed
 `sqlmesh/models/seeds/categories.csv` already carries subcategory).
+
+> **As built:** the `plaid_detailed` join was replaced by a reverse lookup
+> against `core.bridge_category_source_map` (M1V) keyed on **both** the
+> detailed and primary PFC codes (`source_category_code IN (category_detailed,
+> plaid_category)`), with `QUALIFY ROW_NUMBER() … ORDER BY (code_level =
+> 'detailed') DESC = 1` so each transaction resolves to exactly one category
+> (detailed preferred, primary fallback) — deterministic where the old
+> many-to-one tag was not. `dim_categories` is joined only to resolve the
+> bridge's `category_id` → display `category`/`subcategory` for the write.
+>
+> **Ship-blocking correction (2026-07-04):** the read source above,
+> `prep.stg_plaid__transactions`, was wrong — that view is keyed by the
+> **native Plaid transaction_id**, while `app.transaction_categories` (and
+> every join onto it, including `core.fct_transactions`'s own categorization
+> join) is keyed by the **gold** `transaction_id` that
+> `int_transactions__matched` mints. Writing native-id categorizations left
+> them permanently orphaned — a silent no-op for the whole feature. Fixed by
+> carrying `category_detailed`/`plaid_category`/`category_confidence` through
+> `int_transactions__unioned` → `int_transactions__matched` →
+> `int_transactions__merged` (ARG_MIN survivorship, mirroring the
+> `merchant_entity_id` precedent) and reading `prep.int_transactions__merged`
+> instead. See `tests/moneybin/test_categorize_plaid_e2e.py` for the
+> full-pipeline regression proof.
 **Writes** `app.transaction_categories` via the guarded repo:
 `method=provider_native`, `source_type=plaid`, mapped numeric `confidence`,
 `category_id` + `subcategory`, and `merchant_id` when the row resolved to one.
@@ -214,12 +253,24 @@ starting point; the **gate at ≥ MEDIUM** is the decision.
 onto historical rows — guard-respecting, so it never touches anything at priority
 ≤ 6. Explicit action = magic stays visible; no silent churn on every run.
 
+> **Deferred (as built):** the opt-in upgrade pass is **not** in M1U's first
+> slice — it lands in the immediate follow-up, together with its CLI/MCP
+> surfacing (a surface-design decision) and the axis-2 category-seed audit.
+
 **Old primary-as-text passthrough.** The existing `plaid_category → category`
 fallback text in `prep.int_transactions__unioned` is **kept** as a display
 fallback for skipped-`LOW` rows; flagged as low-priority cleanup once
 provider-native coverage is proven. Minor.
 
 ## Decision 5 — Per-source lineage as a derived `core` view, not mutable state
+
+> **Deferred (as built):** the `fct_transaction_category_candidates` view is
+> **not** built in M1U's first slice. With only Plaid as a provider-native
+> source today it would be thin, and the M1V bridge (the code→category
+> mapping) plus the `source_type` column on `app.transaction_categories`
+> already provide the lineage foundation. It lands in the immediate follow-up,
+> and becomes genuinely useful when a second aggregator arrives. Design
+> rationale preserved below.
 
 "What did each source say?" is answered by a read-only view, **not** a new mutable
 table — because `raw` already is the per-source assertion store (each aggregator's
@@ -293,10 +344,14 @@ activated when inferences actually get uncertain.
 
 ## Build scope of this increment (M1U)
 
-**In:** Decisions 1–6 + 8 — the `source_type`/method split + migration; the
-`provider_native` rename; provenance-aware merchant defaults; `apply_plaid_categories`
-(join, confidence map + ≥MEDIUM gate, subcategory, run-order); the opt-in upgrade
-pass; the derived candidates view; metrics.
+**In (shipped):** Decisions 1–4 + 6 + 8 — the `source_type`/method split +
+migration; the `provider_native` rename; provenance-aware merchant defaults;
+`apply_plaid_categories` (**bridge reverse-lookup**, confidence map + ≥MEDIUM gate,
+subcategory, run-order last) wired into `categorize_pending`; metrics + the
+`plaid_unmapped` coverage stat.
+**Deferred to the immediate follow-up:** the opt-in upgrade pass (Decision 4) and
+the derived candidates view (Decision 5) — additive, off the critical path — bundled
+with the axis-2 category-seed audit (seed mis-tag fixes + the ~29-code coverage gap).
 **Out (designed, registered, additive):** the assertion store, the conflict-review
 queue, and merchant-scoped/richer rules (Decision 7).
 
