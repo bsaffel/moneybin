@@ -34,9 +34,9 @@ from moneybin.tables import (
     CATEGORIES,
     CATEGORIZATION_RULES,
     FCT_TRANSACTIONS,
+    INT_TRANSACTIONS_MERGED,
     MERCHANTS,
     REPORTS_UNCATEGORIZED_QUEUE,
-    STG_PLAID_TRANSACTIONS,
     TRANSACTION_CATEGORIES,
 )
 
@@ -342,26 +342,32 @@ class CategorizationQueries:
         # Plaid coverage gap (Tier-2b observability, deferred from the
         # category-source-map bridge PR): count Plaid transactions carrying
         # a PFC code with no bridge mapping — the ~29-code long tail the
-        # two-tier bridge doesn't cover. Omits the key (mirrors the by_source
-        # block above) rather than reporting 0 when the Plaid staging view
-        # isn't materialized yet, so a non-Plaid database can't be
-        # misread as "fully mapped."
+        # two-tier bridge doesn't cover. Reads prep.int_transactions__merged
+        # (gold grain) rather than prep.stg_plaid__transactions (pre-merge,
+        # one row per source) so a Plaid transaction merged with another
+        # source's row is counted once, not twice. Omits the key (mirrors
+        # the by_source block above) rather than reporting 0 when the merged
+        # layer isn't materialized yet, so a non-Plaid database can't be
+        # misread as "fully mapped." Also catches BinderException — a DB
+        # whose int_transactions__merged predates the PFC carry-through
+        # (schema drift on an un-retransformed DB) has the view but not the
+        # category_detailed/plaid_category columns yet.
         try:
             unmapped_result = self._db.execute(
                 f"""
                 SELECT COUNT(*)
-                FROM {STG_PLAID_TRANSACTIONS.full_name} AS s
-                WHERE (s.category_detailed IS NOT NULL OR s.plaid_category IS NOT NULL)
+                FROM {INT_TRANSACTIONS_MERGED.full_name} AS m
+                WHERE (m.category_detailed IS NOT NULL OR m.plaid_category IS NOT NULL)
                   AND NOT EXISTS (
                       SELECT 1 FROM {BRIDGE_CATEGORY_SOURCE_MAP.full_name} AS b
                       WHERE b.source_type = 'plaid'
-                        AND b.source_category_code IN (s.category_detailed, s.plaid_category)
+                        AND b.source_category_code IN (m.category_detailed, m.plaid_category)
                   )
                 """  # noqa: S608 — table names are compile-time TableRef constants; no interpolated values
             ).fetchone()
             if unmapped_result is not None:
                 stats["plaid_unmapped"] = unmapped_result[0]
-        except duckdb.CatalogException:
+        except (duckdb.CatalogException, duckdb.BinderException):
             pass
 
         return stats

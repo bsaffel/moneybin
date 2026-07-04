@@ -2521,22 +2521,31 @@ def _insert_plaid_txn(
     plaid_category: str | None,
     category_confidence: str,
 ) -> None:
-    """Insert a row into ``prep.stg_plaid__transactions`` for categorizer tests.
+    """Insert a row into ``prep.int_transactions__merged`` for categorizer tests.
 
-    ``prep.stg_plaid__transactions`` is a SQLMesh VIEW over
-    ``raw.plaid_transactions`` in production — building it in a unit-test DB
-    would require a full SQLMesh plan (see ``test_stg_plaid.py``'s
-    ``@pytest.mark.integration``/``slow`` tier, which does exactly that for
-    the view's own sign-flip logic). ``apply_plaid_categories`` reads four
-    columns (the detailed AND primary PFC codes, for the two-tier bridge
-    lookup, plus confidence), so this creates just those columns as a
-    physical table — mirroring the ``prep.int_transactions__merged``
+    ``apply_plaid_categories`` reads the gold-keyed merged layer, not
+    ``prep.stg_plaid__transactions`` (the pre-merge, native-Plaid-id
+    layer) — ``app.transaction_categories`` and every join onto it
+    (including ``core.fct_transactions``'s own categorization join) are
+    keyed by the gold ``transaction_id`` that ``int_transactions__matched``
+    mints, so a native-id write would silently orphan itself (the ship
+    bug this fixture change closes; see
+    ``tests/moneybin/test_categorize_plaid_e2e.py`` for the full-pipeline
+    proof). ``transaction_id`` here IS that gold id — callers pass the
+    same value used for the matching ``core.fct_transactions`` row.
+
+    ``prep.int_transactions__merged`` is a SQLMesh VIEW in production —
+    building it in a unit-test DB would require a full SQLMesh plan (see
+    the e2e test above, which does exactly that). ``apply_plaid_categories``
+    reads four columns (the detailed AND primary PFC codes, for the
+    two-tier bridge lookup, plus confidence), so this creates just those
+    columns as a physical table — mirroring the ``prep.int_transactions__merged``
     precedent already used above for entity-resolution tests (see
     ``_setup_prep_table``).
     """
     db.execute("CREATE SCHEMA IF NOT EXISTS prep")
     db.execute(
-        "CREATE TABLE IF NOT EXISTS prep.stg_plaid__transactions ("
+        "CREATE TABLE IF NOT EXISTS prep.int_transactions__merged ("
         "  transaction_id VARCHAR PRIMARY KEY, "
         "  category_detailed VARCHAR, "
         "  plaid_category VARCHAR, "
@@ -2544,7 +2553,7 @@ def _insert_plaid_txn(
         ")"
     )
     db.execute(
-        "INSERT INTO prep.stg_plaid__transactions "
+        "INSERT INTO prep.int_transactions__merged "
         "(transaction_id, category_detailed, plaid_category, category_confidence) "
         "VALUES (?, ?, ?, ?)",
         [transaction_id, category_detailed, plaid_category, category_confidence],

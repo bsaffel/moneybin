@@ -73,7 +73,6 @@ from moneybin.tables import (
     CATEGORIES,
     FCT_TRANSACTIONS,
     INT_TRANSACTIONS_MERGED,
-    STG_PLAID_TRANSACTIONS,
     TRANSACTION_CATEGORIES,
 )
 
@@ -867,12 +866,26 @@ class CategorizationOrchestrator:
         below every deliberate signal, above ai. Runs last of the deterministic
         categorizers so it only touches the long tail.
 
-        Degrades to a no-op when the Plaid staging view isn't materialized
-        yet (no Plaid data ever loaded, or ``transform apply`` hasn't run) —
-        mirrors the ``duckdb.CatalogException`` guard on
+        Reads from prep.int_transactions__merged (the gold-keyed layer), NOT
+        prep.stg_plaid__transactions (the pre-merge, native-Plaid-id layer).
+        app.transaction_categories — and every join onto it, including
+        core.fct_transactions's own categorization join — is keyed by the
+        gold transaction_id that int_transactions__matched mints; reading the
+        native id here would write categorizations that never join back to
+        the fact table (see tests/moneybin/test_categorize_plaid_e2e.py).
+
+        Degrades to a no-op when prep.int_transactions__merged isn't
+        materialized yet (no Plaid data ever loaded, or ``transform apply``
+        hasn't run) — mirrors the ``duckdb.CatalogException`` guard on
         :meth:`CategorizationMatcher.fetch_merchants` /
         :meth:`CategorizationMatcher.fetch_active_rules`. Required now that
         :meth:`categorize_pending` calls this unconditionally on every run.
+        Also catches ``duckdb.BinderException`` — a DB whose
+        ``int_transactions__merged`` predates this PFC carry-through (schema
+        drift on an un-retransformed DB, or a test's narrower physical stub)
+        has the view/table but not the three PFC columns; mirrors the same
+        two-exception fallback in
+        :meth:`CategorizationMatcher.fetch_uncategorized_rows`.
 
         Returns:
             Number of transactions categorized.
@@ -880,22 +893,22 @@ class CategorizationOrchestrator:
         try:
             rows = self._db.execute(
                 f"""
-                SELECT s.transaction_id, dc.category, dc.subcategory, s.category_confidence
-                FROM {STG_PLAID_TRANSACTIONS.full_name} AS s
+                SELECT m.transaction_id, dc.category, dc.subcategory, m.category_confidence
+                FROM {INT_TRANSACTIONS_MERGED.full_name} AS m
                 JOIN {BRIDGE_CATEGORY_SOURCE_MAP.full_name} AS b
                     ON b.source_type = 'plaid'
-                    AND b.source_category_code IN (s.category_detailed, s.plaid_category)
+                    AND b.source_category_code IN (m.category_detailed, m.plaid_category)
                 JOIN {CATEGORIES.full_name} AS dc ON dc.category_id = b.category_id
                 LEFT JOIN {TRANSACTION_CATEGORIES.full_name} AS tc
-                    ON tc.transaction_id = s.transaction_id
+                    ON tc.transaction_id = m.transaction_id
                 WHERE tc.transaction_id IS NULL
                 QUALIFY ROW_NUMBER() OVER (
-                    PARTITION BY s.transaction_id
+                    PARTITION BY m.transaction_id
                     ORDER BY (b.code_level = 'detailed') DESC
                 ) = 1
                 """  # noqa: S608 — table names are compile-time TableRef constants; no interpolated values
             ).fetchall()
-        except duckdb.CatalogException:
+        except (duckdb.CatalogException, duckdb.BinderException):
             return 0
 
         count = 0
