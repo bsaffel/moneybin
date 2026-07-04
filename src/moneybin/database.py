@@ -71,6 +71,19 @@ _database_accessed: bool = False
 _database_written: bool = False
 
 
+def _pin_cursor_to_moneybin(cur: Any) -> None:
+    """Pin a freshly-opened SQLMesh cursor to the persistent ``moneybin`` catalog.
+
+    Each new DuckDB cursor defaults to the ``memory`` catalog regardless of the
+    parent connection's ``USE``. Without this, SQLMesh writes its state tables
+    (``_environments`` / ``_snapshots`` / ``_versions``) into ``memory.sqlmesh.*``
+    and they evaporate at process exit. Every ``DuckDBEngineAdapter`` MoneyBin
+    builds against the encrypted DB MUST pass this as ``cursor_init`` — it is the
+    single shared definition so the two SQLMesh entry points cannot drift.
+    """
+    cur.execute(f"USE {_DATABASE_ALIAS}")
+
+
 def build_attach_sql(
     db_path: Path,
     encryption_key: str,
@@ -504,7 +517,7 @@ class Database:
                     sqlmesh_version = importlib.metadata.version("sqlmesh")
                     stored_sqlmesh = stored_versions.get("sqlmesh")
                     if stored_sqlmesh != sqlmesh_version:
-                        if self._run_sqlmesh_migrate():
+                        if self.migrate_sqlmesh_state():
                             record_version(self, "sqlmesh", sqlmesh_version)
                             if stored_sqlmesh is not None:
                                 logger.info("  ✅ SQLMesh state updated")
@@ -542,7 +555,7 @@ class Database:
         except OSError:
             pass
 
-    def _run_sqlmesh_migrate(self) -> bool:
+    def migrate_sqlmesh_state(self) -> bool:
         """Run sqlmesh migrate to update SQLMesh internal state.
 
         Called when the installed SQLMesh version differs from the recorded
@@ -550,9 +563,9 @@ class Database:
         current profile's encrypted connection — no subprocess needed.
 
         Returns:
-            True if migration succeeded or was skipped (no sqlmesh dir
-                or sqlmesh not installed),
-            False if migration failed.
+            True if migration succeeded (durable state verified current) or
+                was skipped (no sqlmesh dir or sqlmesh not installed),
+            False if migration failed or the durable state did not advance.
         """
         sqlmesh_root = _SQLMESH_ROOT
         if not sqlmesh_root.is_dir():
@@ -586,12 +599,17 @@ class Database:
             conn = self._conn
             if conn is None:
                 raise RuntimeError(
-                    "_run_sqlmesh_migrate called before connection is established"
+                    "migrate_sqlmesh_state called before connection is established"
                 )
+            # cursor_init pins state writes to the persistent moneybin.sqlmesh.*
+            # catalog. Without it, ctx.migrate() below writes _versions/_snapshots
+            # to the throwaway memory.sqlmesh.* catalog, which evaporates at
+            # process exit — the migration silently no-ops while reporting success.
             adapter = DuckDBEngineAdapter(
                 lambda: conn,
                 default_catalog=_DATABASE_ALIAS,
                 register_comments=True,
+                cursor_init=_pin_cursor_to_moneybin,
             )
             BaseDuckDBConnectionConfig._data_file_to_adapter[adapter_key] = adapter  # type: ignore[reportPrivateUsage]  # no public API for encrypted DB injection
 
@@ -609,17 +627,48 @@ class Database:
                 gateway="moneybin",
             )
             ctx.migrate()
-            logger.debug("sqlmesh migrate completed successfully")
+            # Verify the DURABLE state actually advanced. get_versions(validate=True)
+            # raises if the state SQLMesh will read on the next plan is still
+            # behind the installed package — so a migrate that silently
+            # under-persisted is reported as failure (caller does NOT record it as
+            # done and retries on the next open), not cached as a false success.
+            ctx.state_sync.get_versions(validate=True)
+            logger.debug("sqlmesh migrate completed and durable state verified")
             return True
         except Exception:  # noqa: BLE001 — sqlmesh migration failures are non-fatal
             logger.debug(
-                "sqlmesh migrate failed",
+                "sqlmesh migrate failed or durable state did not advance",
                 exc_info=True,
             )
             logger.warning("⚠️  sqlmesh migrate failed — see logs for details")
             return False
         finally:
             BaseDuckDBConnectionConfig._data_file_to_adapter.pop(adapter_key, None)  # type: ignore[reportPrivateUsage]  # cleanup matches injection above
+
+    def repair_sqlmesh_state(self) -> bool:
+        """Advance SQLMesh's durable state to the installed package and confirm it.
+
+        The explicit recovery path behind ``moneybin db migrate apply``. Runs the
+        in-process migrate, then re-reads the durable state to confirm it actually
+        advanced: ``migrate_sqlmesh_state()`` returns True even on its no-op skip
+        paths (no sqlmesh project dir), so a bare True is not proof of repair.
+        Records the version proxy — so the next auto-open skips the check — only
+        when the durable state is verifiably current afterward.
+
+        Returns:
+            True if the durable state is current afterward; False if it could not
+                be advanced (skip path, or state ahead of the installed package).
+        """
+        from moneybin.migrations import record_version, sqlmesh_state_assessment
+
+        self.migrate_sqlmesh_state()
+        drift, _needs_migration = sqlmesh_state_assessment(self)
+        if drift is not None:
+            # Still drifting after the migrate (skip path, or state ahead of the
+            # package) — not repaired, so don't record a false success.
+            return False
+        record_version(self, "sqlmesh", importlib.metadata.version("sqlmesh"))
+        return True
 
     @property
     def conn(self) -> duckdb.DuckDBPyConnection:
@@ -1181,13 +1230,9 @@ def sqlmesh_context(
 
     cache_key = str(db_path)
     try:
-        # Each new DuckDB cursor defaults to the `memory` catalog regardless of
-        # the parent connection's USE — without this, SQLMesh writes its state
-        # tables (_environments, _snapshots, _versions) into memory.sqlmesh.*
-        # and they evaporate at process exit.
-        def _pin_cursor_to_moneybin(cur: Any) -> None:
-            cur.execute(f"USE {_DATABASE_ALIAS}")
-
+        # _pin_cursor_to_moneybin (module-level) routes SQLMesh's state writes to
+        # the persistent moneybin.sqlmesh.* catalog instead of the throwaway
+        # memory.sqlmesh.* — see its docstring.
         adapter = DuckDBEngineAdapter(
             lambda: conn,
             default_catalog=_DATABASE_ALIAS,

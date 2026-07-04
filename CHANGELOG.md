@@ -235,6 +235,14 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   key is ignored).
 
 ### Fixed
+- **SQLMesh state migrations now survive a dependency version bump.** After a
+  SQLMesh upgrade, the in-process state migration wrote its bookkeeping to a
+  throwaway in-memory catalog that vanished at process exit, so every subsequent
+  `refresh`/`transform` failed with an opaque "local version ahead of remote"
+  error with no CLI way to recover. The migration now targets the persistent
+  database and verifies the state actually advanced before recording success;
+  `moneybin db migrate status` reports SQLMesh state-vs-package drift, and
+  `moneybin db migrate apply` repairs it.
 - **The Plaid `sync link` flow no longer times out mid-approval.** The browser
   link-completion poll now allows 5 minutes (its own `_LINK_POLL_DEADLINE`,
   decoupled from the 120s `/sync/trigger` timeout), so completing a real bank's

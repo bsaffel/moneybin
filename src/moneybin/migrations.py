@@ -11,6 +11,7 @@ naming: V<NNN>__<snake_case>.{sql,py} (3+ digit version, double underscore).
 from __future__ import annotations
 
 import hashlib
+import importlib.metadata
 import importlib.util
 import logging
 import re
@@ -633,3 +634,94 @@ def record_version(db: Database, component: str, version: str) -> None:
             [version, component],
         )
         logger.debug(f"Updated {component} version {existing[0]} -> {version}")
+
+
+def _read_sqlmesh_state_versions(
+    db: Database,
+) -> tuple[int, str | None, str | None] | None:
+    """Read SQLMesh's durable state versions, or None if state is uninitialized.
+
+    Reads the persistent ``moneybin.sqlmesh._versions`` table with a plain
+    SELECT (read-only safe) rather than constructing a SQLMesh ``Context`` —
+    status must stay cheap and must not fork a worker pool. Returns
+    ``(schema_version, sqlmesh_version, sqlglot_version)``; ``None`` when no
+    SQLMesh plan has ever populated the state.
+    """
+    # Scope the existence probe to the current (moneybin) catalog: an in-process
+    # memory.sqlmesh._versions can otherwise satisfy the probe while the SELECT
+    # below reads the persistent table — the exact catalog split this guards.
+    exists = db.execute(
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_catalog = current_database() "
+        "AND table_schema = 'sqlmesh' AND table_name = '_versions'"
+    ).fetchone()
+    if not exists:
+        return None
+    row = db.execute(
+        "SELECT schema_version, sqlmesh_version, sqlglot_version FROM sqlmesh._versions"
+    ).fetchone()
+    if row is None or row[0] is None:
+        return None
+    return int(row[0]), row[1], row[2]
+
+
+def sqlmesh_state_assessment(db: Database) -> tuple[str | None, bool]:
+    """Assess SQLMesh's durable state against the installed package.
+
+    Returns ``(drift_message, needs_migration)``. ``needs_migration`` is True
+    only when the state is *behind* the package (a migrate can advance it) —
+    never when it is *ahead* (that needs a package upgrade, not a migration), so
+    ``db migrate apply`` must gate on ``needs_migration``, not on the message.
+
+    The state read happens first so a database with no SQLMesh state (the common
+    case) short-circuits before importing sqlmesh — keeping ``db migrate status``
+    cheap and cold-start-clean. sqlmesh being unimportable (or lacking installed
+    distribution metadata) degrades to "no drift" rather than raising into the CLI.
+    """
+    state = _read_sqlmesh_state_versions(db)
+    if state is None:
+        return None, False
+    try:
+        from sqlmesh.core.state_sync.base import SCHEMA_VERSION
+        from sqlmesh.utils import major_minor
+
+        installed_pkg = importlib.metadata.version("sqlmesh")
+    except (ImportError, importlib.metadata.PackageNotFoundError):
+        return None, False
+
+    schema_version, sqlmesh_version, _sqlglot_version = state
+    if schema_version < SCHEMA_VERSION:
+        return (
+            f"SQLMesh state schema (v{schema_version}) is behind the installed "
+            f"sqlmesh package (v{SCHEMA_VERSION}). "
+            "Run `moneybin db migrate apply` to migrate the state.",
+            True,
+        )
+    if schema_version > SCHEMA_VERSION:
+        return (
+            f"SQLMesh state schema (v{schema_version}) is ahead of the installed "
+            f"sqlmesh package (v{SCHEMA_VERSION}). Upgrade the sqlmesh package to match.",
+            False,
+        )
+    if sqlmesh_version and major_minor(sqlmesh_version) < major_minor(installed_pkg):
+        return (
+            f"SQLMesh state package version ({sqlmesh_version}) is behind the "
+            f"installed sqlmesh package ({installed_pkg}). "
+            "Run `moneybin db migrate apply` to migrate the state.",
+            True,
+        )
+    return None, False
+
+
+def sqlmesh_state_drift(db: Database) -> str | None:
+    """Return a drift message when SQLMesh's durable state is out of sync.
+
+    The SQLMesh analogue of ``check_drift()`` for MoneyBin migrations: a
+    dependency bump can advance the installed sqlmesh package past the schema
+    version recorded in the database's SQLMesh state, at which point every
+    refresh/transform fails validation until the state is migrated.
+    ``moneybin db migrate status`` surfaces this; ``moneybin db migrate apply``
+    repairs it (``Database.repair_sqlmesh_state()``). Returns ``None`` when the
+    state is current or has not been initialized.
+    """
+    return sqlmesh_state_assessment(db)[0]
