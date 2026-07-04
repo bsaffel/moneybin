@@ -15,6 +15,10 @@ export function WidgetCard({ title, sql, meta, children, style }) {
         {sql ? (
           <span
             onClick={() => setSqlOpen(!sqlOpen)}
+            role="button"
+            tabIndex={0}
+            aria-expanded={sqlOpen}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSqlOpen(!sqlOpen); } }}
             style={{ fontFamily: 'var(--font-data)', fontSize: '10px', color: 'var(--accent-brass)', border: '1px solid ' + (sqlOpen ? 'var(--accent-brass)' : 'var(--border-strong)'), borderRadius: '3px', padding: '2px 7px', cursor: 'pointer', userSelect: 'none' }}
           >SQL</span>
         ) : null}

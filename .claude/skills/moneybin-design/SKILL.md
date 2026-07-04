@@ -15,7 +15,7 @@ before producing anything:
 
 Non-negotiables: dark theme leads (light is a first-class peer); brass
 (`--accent-brass`) is the only accent, never blue; money is ALWAYS JetBrains Mono
-with explicit +/- signs — use the `Amount` component; hairline borders, no resting
+with explicit +/- signs on income/expense flows (balances unsigned) — use the `Amount` component; hairline borders, no resting
 shadows; every data widget carries a SQL provenance chip; linear chart
 interpolation only; no emoji, no exclamation points, no superlatives.
 

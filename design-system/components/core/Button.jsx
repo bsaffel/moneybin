@@ -15,7 +15,7 @@ export function Button({ variant = 'primary', size = 'md', disabled = false, typ
     userSelect: 'none',
   };
   const variants = {
-    primary: { background: 'var(--accent-brass)', color: '#141311' },
+    primary: { background: 'var(--accent-brass)', color: 'var(--on-accent-brass)' },
     secondary: { background: 'transparent', color: 'var(--text-primary)', border: '1px solid var(--border-strong)' },
     ghost: { background: 'transparent', color: 'var(--text-secondary)' },
   };

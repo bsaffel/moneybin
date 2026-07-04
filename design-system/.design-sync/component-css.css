@@ -11,6 +11,7 @@
   --text-faint: #6E685E;
   --accent-brass: #C79B3B;
   --accent-brass-strong: #D9B054;
+  --on-accent-brass: #141311;  /* readable fg on a brass fill (dark ink on the bright brass) */
   --pos-income: #45B27B;
   --neg-expense: #E0684F;
   --focus: #D9B054;
@@ -39,7 +40,8 @@
   --text-secondary: #5C564C;
   --text-faint: #8B8477;
   --accent-brass: #8A6A1C;
-  --accent-brass-strong: #C79B3B;
+  --accent-brass-strong: #6E541A;  /* light-theme hover deepens (not brightens) so on-accent text stays legible */
+  --on-accent-brass: #FFFFFF;  /* readable fg on the dark-brass fill */
   --pos-income: #157A52;
   --neg-expense: #B03A24;
   --focus: #8A6A1C;
