@@ -728,7 +728,7 @@ class TestCategoriesView:
         seed_categories_view(db)
         db.execute("""
             INSERT INTO seeds.categories VALUES
-            ('FND-COF', 'Food & Drink', 'Coffee Shops', 'Coffee', 'FOOD_AND_DRINK_COFFEE')
+            ('FND-COF', 'Food & Drink', 'Coffee Shops', 'Coffee', 'expense')
         """)
 
     @pytest.mark.unit
@@ -760,6 +760,19 @@ class TestCategoriesView:
         ids = {c["category_id"] for c in categories}
         assert "FND" not in ids
         assert "FND-COF" in ids
+
+    @pytest.mark.unit
+    def test_view_exposes_accounting_class(self, db: Database) -> None:
+        """get_active_categories() projects the `class` column end-to-end.
+
+        The `class` accounting bucket is a shipped dict key on the payload;
+        this asserts it survives the view → service → dict path with its seed
+        value, not just that the column exists in the schema.
+        """
+        self._setup_seeds_and_view(db)
+        by_id = {c["category_id"]: c for c in get_active_categories(db)}
+        assert all("class" in c for c in by_id.values())
+        assert by_id["FND-COF"]["class"] == "expense"
 
 
 # ---------------------------------------------------------------------------

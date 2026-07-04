@@ -159,7 +159,8 @@ compares `duckdb_columns()` against `CLASSIFICATION` in both directions.
 | (app, versions) | previous_version | AGGREGATE | same reasoning as `version`. |
 | (core, dim_accounts) | institution_fid | INSTITUTION | OFX financial-institution identifier; identifies the institution, not the account. |
 | (core, dim_accounts) | source_file | RECORD_ID | path of the source file; internal provenance, not an external identifier. |
-| (core, dim_categories) | description, plaid_detailed | CATEGORY | category metadata (definition text, Plaid PFC mapping); travels with the category, not with user transactions. |
+| (core, dim_categories) | description | CATEGORY | category metadata (definition text); travels with the category, not with user transactions. |
+| (core, dim_categories) | class | TXN_TYPE | accounting class (`income`/`expense`/`transfer`/`debt`); low-cardinality categorical bucket, same rationale as other TXN_TYPE state flags. Same on `app.user_categories`. |
 | (core, fct_transactions) | check_number | DESCRIPTION | a check number identifies a payment instrument, not an account; parked at MEDIUM until PR 2 introduces `PAYMENT_INSTRUMENT` (CRITICAL). Knowingly underclassified — check numbers are not account numbers. |
 | (core, fct_transactions) | location_* (address, city, region, postal_code, country, latitude, longitude) | MERCHANT_NAME | merchant geographic detail; classified under MERCHANT_NAME because they describe the merchant the user transacted with, and inherit the same MEDIUM sensitivity. |
 | (core, fct_transactions) | memo | DESCRIPTION | additional source-provided notes on the transaction; rule 6 (free-text on transaction tables). |
