@@ -1,10 +1,10 @@
-"""Unit tests for the FIFO cost-basis engine (Task 8).
+"""Unit tests for the FIFO (Task 8) and HIFO (Task 9) cost-basis engine.
 
-Correctness-critical: these tests pin the FIFO consumption order, penny
-conservation, deterministic IDs, ST/LT split, and oversold handling that a
-1099-B reconciliation later depends on. All monetary literals are
-``Decimal`` — never float — because float rounding would defeat the
-penny-conservation guarantees under test.
+Correctness-critical: these tests pin the FIFO and HIFO consumption orders,
+penny conservation, deterministic IDs, ST/LT split (per-lot, independent of
+consumption order), and oversold handling that a 1099-B reconciliation later
+depends on. All monetary literals are ``Decimal`` — never float — because
+float rounding would defeat the penny-conservation guarantees under test.
 """
 
 import hashlib
@@ -28,6 +28,10 @@ D = Decimal
 
 def _fifo(_account_id: str, _security_id: str) -> str:
     return "fifo"
+
+
+def _hifo(_account_id: str, _security_id: str) -> str:
+    return "hifo"
 
 
 def _no_selections(_disposal_txn_id: str) -> list[tuple[str, Decimal]]:
@@ -508,3 +512,243 @@ def test_independent_grouping_per_account_security() -> None:
     assert gains[0].cost_basis == D("1000.00")
     by_acct = {lot.account_id: lot for lot in lots}
     assert by_acct["acctB"].remaining_quantity == D("10")
+
+
+def test_hifo_consumes_highest_per_unit_basis_lot_first() -> None:
+    # b1: $10/unit, b2: $20/unit. HIFO must consume b2 first despite b1 being
+    # older (this is the case that would silently regress to FIFO order).
+    events = [
+        _event(
+            "b1",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("10"),
+            amount=D("-100.00"),
+        ),
+        _event(
+            "b2",
+            event_type="buy",
+            trade_date=date(2024, 2, 1),
+            quantity=D("10"),
+            amount=D("-200.00"),
+        ),
+        _event(
+            "s1",
+            event_type="sell",
+            trade_date=date(2024, 3, 1),
+            quantity=D("-5"),
+            amount=D("150.00"),
+        ),
+    ]
+    lots, gains = _run(events, method_for=_hifo)
+
+    by_src = {lot.source_transaction_id: lot for lot in lots}
+    b1 = by_src["b1"]
+    b2 = by_src["b2"]
+    # b2 ($20/unit) is the one drawn down; b1 ($10/unit) is untouched.
+    assert b2.remaining_quantity == D("5")
+    assert b2.cost_basis_remaining == D("100.00")
+    assert b1.remaining_quantity == D("10")
+    assert b1.cost_basis_remaining == D("100.00")
+
+    assert len(gains) == 1
+    g = gains[0]
+    assert g.lot_id == b2.lot_id
+    assert g.quantity == D("5")
+    assert g.cost_basis == D("100.00")
+    # Single slice: full proceeds land here; gain = 150.00 - 100.00.
+    assert g.proceeds == D("150.00")
+    assert g.gain_loss == D("50.00")
+    assert g.cost_basis_method == "hifo"
+
+
+def test_hifo_equal_unit_cost_ties_break_oldest_first() -> None:
+    # Both lots are $10/unit; HIFO's tie-break must fall back to
+    # acquisition_date ascending (favors long-term treatment per spec).
+    events = [
+        _event(
+            "b1",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("10"),
+            amount=D("-100.00"),
+        ),
+        _event(
+            "b2",
+            event_type="buy",
+            trade_date=date(2024, 2, 1),
+            quantity=D("10"),
+            amount=D("-100.00"),
+        ),
+        _event(
+            "s1",
+            event_type="sell",
+            trade_date=date(2024, 3, 1),
+            quantity=D("-5"),
+            amount=D("75.00"),
+        ),
+    ]
+    lots, gains = _run(events, method_for=_hifo)
+
+    by_src = {lot.source_transaction_id: lot for lot in lots}
+    b1 = by_src["b1"]
+    b2 = by_src["b2"]
+    # Older lot (b1) consumed first on a tie; b2 is untouched.
+    assert b1.remaining_quantity == D("5")
+    assert b1.cost_basis_remaining == D("50.00")
+    assert b2.remaining_quantity == D("10")
+    assert b2.cost_basis_remaining == D("100.00")
+
+    assert len(gains) == 1
+    assert gains[0].lot_id == b1.lot_id
+
+
+def test_hifo_multi_lot_order_and_partial_consumption_leaves_remainder() -> None:
+    # Unit costs: b1=$10, b2=$30, b3=$20. HIFO order is b2, b3, b1.
+    # Selling 15 fully drains b2 (10 units) and partially drains b3 (5 of 10),
+    # leaving b1 completely untouched and b3 with a correct remainder.
+    events = [
+        _event(
+            "b1",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("10"),
+            amount=D("-100.00"),
+        ),
+        _event(
+            "b2",
+            event_type="buy",
+            trade_date=date(2024, 2, 1),
+            quantity=D("10"),
+            amount=D("-300.00"),
+        ),
+        _event(
+            "b3",
+            event_type="buy",
+            trade_date=date(2024, 3, 1),
+            quantity=D("10"),
+            amount=D("-200.00"),
+        ),
+        _event(
+            "s1",
+            event_type="sell",
+            trade_date=date(2024, 4, 1),
+            quantity=D("-15"),
+            amount=D("600.00"),
+        ),
+    ]
+    lots, gains = _run(events, method_for=_hifo)
+
+    by_src = {lot.source_transaction_id: lot for lot in lots}
+    assert by_src["b1"].remaining_quantity == D("10")
+    assert by_src["b1"].cost_basis_remaining == D("100.00")
+    assert by_src["b2"].remaining_quantity == D("0")
+    assert by_src["b2"].cost_basis_remaining == D("0.00")
+    assert by_src["b3"].remaining_quantity == D("5")
+    assert by_src["b3"].cost_basis_remaining == D("100.00")
+
+    assert len(gains) == 2
+    by_lot = {g.lot_id: g for g in gains}
+    assert by_lot[by_src["b2"].lot_id].quantity == D("10")
+    assert by_lot[by_src["b2"].lot_id].cost_basis == D("300.00")
+    assert by_lot[by_src["b3"].lot_id].quantity == D("5")
+    assert by_lot[by_src["b3"].lot_id].cost_basis == D("100.00")
+
+
+def test_hifo_term_reflects_each_consumed_lot_not_consumption_order() -> None:
+    # b1 is long-term (opened 2022) but low unit cost; b2 is short-term
+    # (opened a month before the sale) but high unit cost. HIFO consumes the
+    # short-term b2 first, then dips into the long-term b1 — the opposite of
+    # FIFO order. Each slice's term must still come from its own lot's dates.
+    events = [
+        _event(
+            "b1",
+            event_type="buy",
+            trade_date=date(2022, 1, 1),
+            quantity=D("10"),
+            amount=D("-100.00"),  # $10/unit, long-term at sale
+        ),
+        _event(
+            "b2",
+            event_type="buy",
+            trade_date=date(2024, 6, 1),
+            quantity=D("10"),
+            amount=D("-300.00"),  # $30/unit, short-term at sale
+        ),
+        _event(
+            "s1",
+            event_type="sell",
+            trade_date=date(2024, 7, 1),
+            quantity=D("-15"),
+            amount=D("600.00"),
+        ),
+    ]
+    lots, gains = _run(events, method_for=_hifo)
+
+    by_src = {lot.source_transaction_id: lot for lot in lots}
+    b1 = by_src["b1"]
+    b2 = by_src["b2"]
+
+    assert len(gains) == 2
+    by_lot = {g.lot_id: g for g in gains}
+
+    # b2 (short-term, high cost) fully consumed first, term reflects ITS dates.
+    # Proceeds pro-rata by qty: 600.00 * 10/15 = 400.00; gain = 400 - 300.
+    assert by_lot[b2.lot_id].quantity == D("10")
+    assert by_lot[b2.lot_id].cost_basis == D("300.00")
+    assert by_lot[b2.lot_id].proceeds == D("400.00")
+    assert by_lot[b2.lot_id].gain_loss == D("100.00")
+    assert by_lot[b2.lot_id].term == "short"
+
+    # Remaining 5 drawn from b1 (long-term, low cost); term reflects ITS dates.
+    # Last slice absorbs the residual: 600.00 - 400.00 = 200.00; gain = 200 - 50.
+    assert by_lot[b1.lot_id].quantity == D("5")
+    assert by_lot[b1.lot_id].cost_basis == D("50.00")
+    assert by_lot[b1.lot_id].proceeds == D("200.00")
+    assert by_lot[b1.lot_id].gain_loss == D("150.00")
+    assert by_lot[b1.lot_id].term == "long"
+
+    # Proceeds penny-conserved across both legs.
+    assert sum((g.proceeds for g in gains), D("0")) == D("600.00")
+
+
+def test_fifo_order_unchanged_after_hifo_refactor() -> None:
+    # Regression guard for the ordering refactor: FIFO must still consume
+    # strictly oldest-first even though b1 has the *lower* per-unit basis
+    # (which HIFO would have ordered last, not first).
+    events = [
+        _event(
+            "b1",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("10"),
+            amount=D("-100.00"),  # $10/unit
+        ),
+        _event(
+            "b2",
+            event_type="buy",
+            trade_date=date(2024, 2, 1),
+            quantity=D("10"),
+            amount=D("-300.00"),  # $30/unit
+        ),
+        _event(
+            "s1",
+            event_type="sell",
+            trade_date=date(2024, 3, 1),
+            quantity=D("-5"),
+            amount=D("150.00"),
+        ),
+    ]
+    lots, gains = _run(events, method_for=_fifo)
+
+    by_src = {lot.source_transaction_id: lot for lot in lots}
+    b1 = by_src["b1"]
+    b2 = by_src["b2"]
+    assert b1.remaining_quantity == D("5")
+    assert b1.cost_basis_remaining == D("50.00")
+    assert b2.remaining_quantity == D("10")
+    assert b2.cost_basis_remaining == D("300.00")
+
+    assert len(gains) == 1
+    assert gains[0].lot_id == b1.lot_id
+    assert gains[0].cost_basis_method == "fifo"

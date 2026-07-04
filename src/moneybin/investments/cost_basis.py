@@ -3,8 +3,9 @@
 Walks an investment ledger per ``(account_id, security_id)`` group, opening a
 lot on each acquisition and consuming open lots on each disposal to produce the
 1099-B reconciliation grain (``core.fct_investment_lots`` and
-``core.fct_realized_gains``). This module owns *only* the FIFO method (Task 8);
-HIFO, specific-ID, and average-cost extend the same machinery in later tasks.
+``core.fct_realized_gains``). This module owns the FIFO (Task 8) and HIFO
+(Task 9) methods; specific-ID and average-cost extend the same machinery in
+later tasks.
 
 Correctness over speed: all monetary outputs quantize to two places with
 ``ROUND_HALF_UP`` and disposal proceeds are penny-conserved (the per-slice
@@ -184,6 +185,34 @@ def _open_lot(
     )
 
 
+def _fifo_sort_key(lot: Lot) -> tuple[date, str]:
+    """FIFO order: ascending acquisition date, then lot id."""
+    return (lot.acquisition_date, lot.lot_id)
+
+
+def _hifo_sort_key(lot: Lot) -> tuple[Decimal, date, str]:
+    """HIFO order: descending per-unit basis, ties break oldest-first.
+
+    ``unit_cost`` is full-precision ``Decimal`` division used only to rank
+    lots for this disposal — never quantized, never stored on the lot.
+    """
+    unit_cost = lot.cost_basis_remaining / lot.remaining_quantity
+    return (-unit_cost, lot.acquisition_date, lot.lot_id)
+
+
+def _ordered_open_lots(lots: list[Lot], method: str) -> list[Lot]:
+    """Lots with remaining quantity, ordered per the elected ``method``.
+
+    Sorted once per disposal call — a lot's unit cost is stable across every
+    slice drawn from it within a single disposal. Specific-ID (Task 10) and
+    average-cost (Task 11) extend this dispatch with their own branches.
+    """
+    open_lots = [lot for lot in lots if lot.remaining_quantity > 0]
+    if method == "hifo":
+        return sorted(open_lots, key=_hifo_sort_key)
+    return sorted(open_lots, key=_fifo_sort_key)
+
+
 def _consume(
     event: LedgerEvent,
     account_id: str,
@@ -195,17 +224,15 @@ def _consume(
 
     ``sell`` produces one realized-gain row per consumed slice with proceeds
     allocated pro-rata by quantity (penny-conserved). ``transfer_out`` consumes
-    lots without producing any gains. FIFO order is ascending
-    ``(acquisition_date, lot_id)`` over lots with remaining quantity.
+    lots without producing any gains. Consumption order over lots with
+    remaining quantity is determined by ``method`` (see
+    ``_ordered_open_lots``).
     """
     disposal_quantity = _abs_or_zero(event.quantity)
     disposal_date = event.trade_date
     is_sell = event.type == "sell"
 
-    open_lots = sorted(
-        (lot for lot in lots if lot.remaining_quantity > 0),
-        key=lambda lot: (lot.acquisition_date, lot.lot_id),
-    )
+    open_lots = _ordered_open_lots(lots, method)
 
     slices: list[_Slice] = []
     remaining = disposal_quantity
