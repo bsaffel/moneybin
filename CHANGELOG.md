@@ -13,6 +13,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 M2 closing out and M3 underway. M2A curator state shipped (transaction notes, tags, splits, manual entry, audit log). M2B architecture reference shipped (`architecture-shared-primitives.md`; writer-coordination contract via short-lived per-call connections). M2C brand surface advancing: `moneybin system doctor` integrity command, `reports.*` recipe library (eight curated views), and the `transform_*` MCP toolset closing the agent ingest loop. M3A Plaid Transactions sync shipped (Phase 1). Doc surface tightened for the personas reachable today; MCP surface hardened with protocol-standard annotations, `accounts_resolve`, list-parameter cap, structured error envelopes, and shell completion. Categorization correctness pass: memo-aware matcher, exemplar accumulation, source-precedence enforcement, auto-fan-out after apply; seed merchant catalogs retired in favor of user-driven and LLM-assist-driven merchant creation.
 
 ### Added
+- **Category taxonomy audit — 112-category curated set (M1W).**
+  Audited all 108 seed categories against four principles (earn-the-split
+  granularity, class-by-accounting-nature, no redundant/orphan categories,
+  provider-neutral): retired 5 duplicate/orphan categories (resolving the
+  two-mortgage-category ambiguity in favour of `LNP-MTG`) and added 9 — 6 finer
+  categories from the 29 unmapped Plaid detailed codes, plus a 3-category
+  **Family & Kids** group (`FAM`/`FAM-ACT`/`FAM-SUP`) folded in after a
+  cross-aggregator comprehensiveness crosswalk against MX, Mint, Monarch, and
+  Maybe validated coverage; `class` reconciled end-to-end (no reclasses needed).
+  Net 108 − 5 + 9 → 112 categories. Seed validation now
+  enforces a valid-class invariant, an enumerated coverage report, and an orphan
+  allowlist. Purely additive on the M1V bridge — no consumer query changes.
 - **`transactions categorize improve-ai` — upgrade AI-guessed categories to confident Plaid categories (M1U follow-up).**
   New CLI command and matching MCP tool (`transactions_categorize_improve_ai`)
   reverse-look-up every transaction currently `categorized_by='ai'` against the

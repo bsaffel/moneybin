@@ -1,7 +1,7 @@
 # Category Taxonomy Audit — comprehensive-but-manageable category content (axis 2)
 
 > Last updated: 2026-07-04
-> Status: draft
+> Status: implemented
 > Address: M1W (Ingestion Core)
 > Type: Feature
 > Owns: the category **taxonomy content** — which MoneyBin categories exist,
@@ -214,15 +214,32 @@ idempotent). Retirements with zero referencing rows need no migration.
 - **Categorizer regression** — the M1U provider-native tests still pass: newly
   added categories resolve through the bridge; retired ones no longer appear.
 
-## Open questions
+## Resolution (implemented 2026-07-04)
 
-- **Mortgage resolution direction** — keep `LNP-MTG` only (retire `HSG-MTG`) vs
-  keep both with a documented user-choice distinction. Decided in the plan, in
-  the context of the full `class` reconciliation.
-- **Retirement policy** — for any category with committed
-  `app.transaction_categories` rows, confirm the remap target (its primary's
-  category) and author the migration; categories with zero references retire
-  cleanly.
-- **PFC revision** — confirm `plaid_pfc_v2` is still the current published
-  revision at implementation, or refresh the fixture + bump
-  `source_taxonomy_version`.
+The audit of all 108 seed categories resolved to a **112-category** set
+(108 − 5 retired + 9 added: 6 from the 29-code triage + 3 for the Family & Kids
+group):
+
+- **Retired 5** duplicate/orphan categories (all confirmed unreferenced in
+  code, so no migration): `HSG-MTG` (mortgage duplicate — **kept `LNP-MTG`**,
+  the Plaid-fed canonical; a mortgage payment's servicing intent is `debt`, the
+  interest portion an undocumented-per-txn expense), `OTH-UNC` (duplicated the
+  no-row "uncategorized" state), `TRN-PAY` / `TRN-WIR` (mis-classed / mechanism,
+  not purpose), `SVC-FIN` (redundant with `SVC-ACT`).
+- **Added 6** finer categories for genuinely-distinct unmapped Plaid detailed
+  codes: `INC-RET`, `INC-UNE`, `ENT-GMB`, `PRC-LDY`, `SVC-CHC`→`FAM-CHC`,
+  `HLC-VET`. The other 23 unmapped codes roll up to their primary (recorded in
+  the coverage-report allowlist).
+- **Class reconciliation:** zero reclasses — the M1V seed had already assigned
+  every `class` correctly; the audit documents the rationale (above).
+- **Comprehensiveness crosswalk:** validated the set against MX (119 categories),
+  Mint, Monarch, and Maybe. Every competitor category has a coherent home and we
+  are more granular on income/utilities/insurance. The one structural gap the
+  field converges on — a **Family & Kids** group — was folded in: `FAM` group
+  with `FAM-CHC` (Childcare, relocated from the `SVC-CHC` triage add above),
+  `FAM-ACT` (Kids Activities), `FAM-SUP` (Child Support) — 3 net-new categories
+  beyond the 6 above. Investment-activity and tax-type granularity remain
+  deferred to M1J and M2M respectively (covered at primary level today).
+- **Validation hardening shipped:** valid-class invariant, enumerated coverage
+  report (unmapped-codes == roll-up allowlist), and orphan allowlist.
+- **PFC revision:** `plaid_pfc_v2` confirmed current; fixture unchanged.
