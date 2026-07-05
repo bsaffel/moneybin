@@ -24,7 +24,7 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   Maybe validated coverage; `class` reconciled end-to-end (no reclasses needed).
   Net 108 − 5 + 9 → 112 categories. Seed validation now
   enforces a valid-class invariant, an enumerated coverage report, and an orphan
-  allowlist. Purely additive on the M1V bridge — no consumer query changes.
+  allowlist. Purely additive on the M1V bridge — no consumer query changes. (#298)
 - **`transactions categorize improve-ai` — upgrade AI-guessed categories to confident Plaid categories (M1U follow-up).**
   New CLI command and matching MCP tool (`transactions_categorize_improve_ai`)
   reverse-look-up every transaction currently `categorized_by='ai'` against the
