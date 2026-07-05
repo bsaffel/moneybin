@@ -68,6 +68,10 @@ PRC-GYM,Personal Care,Gym & Fitness,Gym memberships and fitness,expense
 PRC-SPA,Personal Care,Spa & Wellness,Spa treatments and wellness,expense
 PRC-LDY,Personal Care,Laundry & Dry Cleaning,Laundry and dry-cleaning services,expense
 PRC-OTH,Personal Care,Other Personal Care,Miscellaneous personal care,expense
+FAM,Family & Kids,,Family and childcare costs,expense
+FAM-CHC,Family & Kids,Childcare,Childcare and daycare,expense
+FAM-ACT,Family & Kids,Kids Activities,Children's activities lessons and sports,expense
+FAM-SUP,Family & Kids,Child Support,Child support and alimony payments,expense
 SVC,Services,,General services,expense
 SVC-EDU,Services,Education,Tuition and education expenses,expense
 SVC-LGL,Services,Legal,Legal services,expense
@@ -75,7 +79,6 @@ SVC-ACT,Services,Accounting & Tax,Accounting and tax preparation,expense
 SVC-INS,Services,Insurance,General insurance services,expense
 SVC-SUB,Services,Subscriptions,Recurring subscriptions,expense
 SVC-STR,Services,Storage,Storage unit rentals,expense
-SVC-CHC,Services,Childcare,Childcare and daycare,expense
 SVC-OTH,Services,Other Services,Miscellaneous services,expense
 GOV,Government & Nonprofit,,Government and charitable,expense
 GOV-TAX,Government & Nonprofit,Taxes,Tax payments,expense

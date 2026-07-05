@@ -10,5 +10,8 @@ TRP-INS,auto insurance; merchant rule (Geico/Progressive)
 HSG-GAS,gas utility; Plaid combines gas+electric into one code so rule-only
 TRN-INT,internal own-account transfer; rule-fillable (transfer taxonomy deferred to M1J)
 TRN-ATM,ATM cash movement; rule-fillable
+FAM,Family & Kids top-level group; primary has no Plaid feed (children fed individually)
+FAM-ACT,kids activities; rule-fillable (no Plaid code)
+FAM-SUP,child support/alimony; rule-fillable family-law obligation (no Plaid code)
 OTH,top-level Other fallback bucket
 OTH-MSC,user-facing miscellaneous bucket
