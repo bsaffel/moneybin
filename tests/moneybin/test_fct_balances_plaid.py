@@ -32,7 +32,7 @@ def _insert_plaid_account(
     db: Database,
     *,
     native_key: str,
-    account_type: str,
+    account_type: str | None,
     subtype: str = "checking",
     official_name: str = "Acct",
     mask: str = "0000",
@@ -149,3 +149,37 @@ def test_plaid_null_current_balance_filtered(db: Database) -> None:
     ).fetchone()
     assert count is not None
     assert count[0] == 0, "null current_balance must be filtered, not anchored at 0"
+
+
+@pytest.mark.slow
+def test_plaid_null_account_type_dropped(db: Database) -> None:
+    """A balance whose account has no resolvable type is dropped, not booked as an asset.
+
+    Without a type we can't tell asset from liability, so signing it as a positive
+    asset (the CASE ELSE branch) would reintroduce the P1 liability-inversion bug
+    for the NULL path. account_type is nullable end-to-end (SyncAccount.account_type
+    is `str | None`), so this is reachable, not hypothetical.
+    """
+    _insert_plaid_account(
+        db,
+        native_key="p_untyped",
+        account_type=None,
+        official_name="Unknown",
+        mask="7777",
+    )
+    _insert_plaid_balance(
+        db, native_key="p_untyped", current="500.00", available="500.00"
+    )
+    _accept_link(db, native_key="p_untyped", canonical_id="canonuntyped001")
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    count = db.execute(
+        "SELECT COUNT(*) FROM core.fct_balances WHERE account_id = ?",
+        ["canonuntyped001"],
+    ).fetchone()
+    assert count is not None
+    assert count[0] == 0, (
+        "unresolved account_type must drop the row, not sign it as an asset"
+    )

@@ -42,7 +42,10 @@ WITH ofx_balances AS (
      positive = asset, negative = liability), so negate them via the account type.
      Rows with no current_balance are dropped, not anchored at 0 by
      fct_balances_daily — available_balance has different semantics per account
-     type (spendable vs. credit headroom) and is not a safe fallback. */
+     type (spendable vs. credit headroom) and is not a safe fallback. A row whose
+     account_type is unresolvable (NULL from Plaid, or an unmatched join) is also
+     dropped: without the type we can't sign it, and defaulting to the positive
+     ELSE branch would silently book a liability as an asset. */
   SELECT
     b.account_id,
     b.balance_date,
@@ -58,7 +61,7 @@ WITH ofx_balances AS (
   LEFT JOIN prep.stg_plaid__accounts AS a
     ON a.source_account_key = b.source_account_key AND a.source_origin = b.source_origin
   WHERE
-    NOT b.current_balance IS NULL
+    NOT b.current_balance IS NULL AND NOT a.account_type IS NULL
 )
 SELECT
   account_id, /* Source-system account identifier */

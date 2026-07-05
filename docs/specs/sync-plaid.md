@@ -288,7 +288,7 @@ Add CTEs + `UNION ALL` to the relevant core models:
 | `core.fct_transactions` | Add `plaid_transactions` CTE selecting from `prep.stg_plaid__transactions` with `source_type = 'plaid'`, `UNION ALL` into `all_transactions` |
 | `core.fct_balances` | Add `plaid_balances` CTE selecting from `prep.stg_plaid__balances` with `current_balance` → `balance`, `source_type = 'plaid'`, `source_origin` (Plaid item id) → `source_ref`, `loaded_at` → `updated_at`, `UNION ALL` into the balance union. `available_balance` has no column in `fct_balances` (dropped for every source, as OFX's is) |
 
-No changes to core's dedup logic — cross-source dedup between Plaid and OFX/CSV is handled by the transaction matching pipeline (`matching-overview.md`). For balances, same-date observations from different sources (e.g. OFX + Plaid, both institution snapshots at equal precedence) are reduced to one deterministic winner in `core.fct_balances_daily` — highest precedence, then freshest `updated_at`.
+No changes to core's dedup logic — cross-source dedup between Plaid and OFX/CSV is handled by the transaction matching pipeline (`matching-overview.md`). For balances, same-date observations from different sources (e.g. OFX + Plaid, both institution snapshots at equal precedence) are reduced to one deterministic winner in `core.fct_balances_daily` — highest precedence, then freshest `updated_at`, then `source_type` ascending.
 
 ---
 
