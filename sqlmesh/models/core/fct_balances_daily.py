@@ -43,6 +43,32 @@ def _to_decimal(value: object, default: Decimal = Decimal("0")) -> Decimal:
     return Decimal(str(value))
 
 
+def _select_winning_observations(group: pd.DataFrame) -> pd.DataFrame:
+    """Reduce multiple observations for one account to one winner per date.
+
+    Winner per balance_date: highest source precedence, then freshest updated_at,
+    then source_type ascending as a final key. The updated_at + source_type keys
+    make the ofx/plaid precedence tie deterministic — both are institution
+    snapshots at the same tier, so without a tiebreak the winner would depend on
+    pandas' (unstable) sort order.
+    """
+    group = group.copy()  # type: ignore[reportUnknownMemberType]
+    group["_priority"] = (  # type: ignore[reportUnknownMemberType]
+        group["source_type"]  # type: ignore[reportUnknownMemberType]
+        .map(_SOURCE_PRECEDENCE)  # type: ignore[reportUnknownMemberType, reportUnknownArgumentType] — dict is valid for Series.map
+        .fillna(0)  # type: ignore[reportUnknownMemberType]
+    )
+    return (
+        group
+        .sort_values(  # type: ignore[reportUnknownMemberType]
+            ["balance_date", "_priority", "updated_at", "source_type"],
+            ascending=[True, False, False, True],
+        )
+        .drop_duplicates(subset=["balance_date"], keep="first")
+        .reset_index(drop=True)
+    )
+
+
 @model(
     "core.fct_balances_daily",
     kind="FULL",
@@ -90,7 +116,7 @@ def execute(
 
     obs: pd.DataFrame = context.fetchdf(
         f"""
-        SELECT account_id, balance_date, balance, source_type
+        SELECT account_id, balance_date, balance, source_type, updated_at
         FROM {fct_balances_table}
         ORDER BY account_id, balance_date
         """  # noqa: S608  # table name from context.resolve_table(), not user input
@@ -112,20 +138,7 @@ def execute(
 
     rows: list[dict[str, t.Any]] = []
     for account_id, group in obs.groupby("account_id"):  # type: ignore[reportUnknownMemberType] — pandas stubs are incomplete
-        group = group.copy()  # type: ignore[reportUnknownMemberType]
-        group["_priority"] = (  # type: ignore[reportUnknownMemberType]
-            group["source_type"]  # type: ignore[reportUnknownMemberType]
-            .map(_SOURCE_PRECEDENCE)  # type: ignore[reportUnknownMemberType, reportUnknownArgumentType] — dict is valid for Series.map
-            .fillna(0)  # type: ignore[reportUnknownMemberType]
-        )
-        winners: pd.DataFrame = (
-            group
-            .sort_values(  # type: ignore[reportUnknownMemberType]
-                ["balance_date", "_priority"], ascending=[True, False]
-            )
-            .drop_duplicates(subset=["balance_date"], keep="first")
-            .reset_index(drop=True)
-        )
+        winners: pd.DataFrame = _select_winning_observations(group)
 
         first_date = winners["balance_date"].min()  # type: ignore[reportUnknownMemberType]
         last_date = winners["balance_date"].max()  # type: ignore[reportUnknownMemberType]

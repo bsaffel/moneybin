@@ -13,6 +13,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 M2 closing out and M3 underway. M2A curator state shipped (transaction notes, tags, splits, manual entry, audit log). M2B architecture reference shipped (`architecture-shared-primitives.md`; writer-coordination contract via short-lived per-call connections). M2C brand surface advancing: `moneybin system doctor` integrity command, `reports.*` recipe library (eight curated views), and the `transform_*` MCP toolset closing the agent ingest loop. M3A Plaid Transactions sync shipped (Phase 1). Doc surface tightened for the personas reachable today; MCP surface hardened with protocol-standard annotations, `accounts_resolve`, list-parameter cap, structured error envelopes, and shell completion. Categorization correctness pass: memo-aware matcher, exemplar accumulation, source-precedence enforcement, auto-fan-out after apply; seed merchant catalogs retired in favor of user-driven and LLM-assist-driven merchant creation.
 
 ### Added
+- **Plaid balance snapshots flow into net worth and balance drift.**
+  Plaid sync balances now reach `core.fct_balances` → `core.fct_balances_daily`,
+  so `reports networth` / `networth-history` and balance-drift detection include
+  Plaid-connected accounts (previously only OFX statement balances, tabular
+  running balances, and manual assertions contributed). Credit/loan balances are
+  recorded as liabilities (negative), and `core.dim_accounts` now sources Plaid
+  `official_name`/`account_subtype` under any user override. (#299)
 - **Category taxonomy audit — 112-category curated set (M1W).**
   Audited all 108 seed categories against four principles (earn-the-split
   granularity, class-by-accounting-nature, no redundant/orphan categories,

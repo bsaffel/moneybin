@@ -59,7 +59,7 @@ All on the `app.*` layer; zero changes to the upstream pipeline. (No dedicated g
 ## Accounts and balances
 
 - **Account management** — `moneybin accounts list / get / resolve / set` with Plaid-parity metadata (subtype, holder category, currency, credit limit, last four). One unified `set` covers display name, include-in-net-worth, and archive state. Reversible account merging via bridge model. -> [CLI reference](guides/cli-reference.md)
-- **Net-worth and balance tracking** — Per-account balance show / history / assert / reconcile and cross-account `moneybin reports networth / networth-history` with period-over-period change. Daily carry-forward of authoritative observations from OFX, tabular running balances, and user assertions. -> [CLI reference](guides/cli-reference.md)
+- **Net-worth and balance tracking** — Per-account balance show / history / assert / reconcile and cross-account `moneybin reports networth / networth-history` with period-over-period change. Daily carry-forward of authoritative observations from OFX, Plaid sync balances, tabular running balances, and user assertions. -> [CLI reference](guides/cli-reference.md)
 
 ## Reports
 
