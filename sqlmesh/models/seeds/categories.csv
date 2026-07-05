@@ -6,12 +6,12 @@ INC-INT,Income,Interest,Interest earned on accounts,income
 INC-DIV,Income,Dividends,Dividend income from investments,income
 INC-REF,Income,Refunds,Refunds and reimbursements,income
 INC-REN,Income,Rental Income,Income from rental properties,income
+INC-RET,Income,Retirement & Pension,Pension and retirement account income,income
+INC-UNE,Income,Unemployment,Unemployment benefits,income
 INC-OTH,Income,Other Income,Miscellaneous income,income
 TRN,Transfer,,Money movement between accounts,transfer
 TRN-INT,Transfer,Internal Transfer,Between own accounts,transfer
-TRN-PAY,Transfer,Payment,Bill payments and transfers to others,transfer
 TRN-ATM,Transfer,ATM,ATM withdrawals and deposits,transfer
-TRN-WIR,Transfer,Wire Transfer,Wire transfers,transfer
 LNP,Loan Payments,,Loan and debt payments,debt
 LNP-MTG,Loan Payments,Mortgage,Mortgage payments,debt
 LNP-CAR,Loan Payments,Car Payment,Auto loan payments,debt
@@ -28,6 +28,7 @@ ENT-MOV,Entertainment,Movies & TV,Movie theaters and streaming,expense
 ENT-MUS,Entertainment,Music,Concerts and music streaming,expense
 ENT-GAM,Entertainment,Games,Video games and gaming,expense
 ENT-EVT,Entertainment,Events & Attractions,Concerts events museums amusement parks,expense
+ENT-GMB,Entertainment,Gambling,Casinos lottery and gambling,expense
 ENT-OTH,Entertainment,Other Entertainment,Miscellaneous entertainment,expense
 FND,Food & Drink,,Food and beverage expenses,expense
 FND-GRC,Food & Drink,Groceries,Grocery stores and supermarkets,expense
@@ -59,17 +60,22 @@ HLC-DNT,Healthcare,Dental,Dental care,expense
 HLC-VIS,Healthcare,Vision,Eye care and eyewear,expense
 HLC-PHR,Healthcare,Pharmacy,Prescriptions and medications,expense
 HLC-INS,Healthcare,Health Insurance,Health insurance premiums,expense
+HLC-VET,Healthcare,Veterinary,Veterinary and pet-health services,expense
 HLC-OTH,Healthcare,Other Healthcare,Miscellaneous healthcare,expense
 PRC,Personal Care,,Personal care and wellness,expense
 PRC-HAR,Personal Care,Hair & Beauty,Haircuts salons and beauty,expense
 PRC-GYM,Personal Care,Gym & Fitness,Gym memberships and fitness,expense
 PRC-SPA,Personal Care,Spa & Wellness,Spa treatments and wellness,expense
+PRC-LDY,Personal Care,Laundry & Dry Cleaning,Laundry and dry-cleaning services,expense
 PRC-OTH,Personal Care,Other Personal Care,Miscellaneous personal care,expense
+FAM,Family & Kids,,Family and childcare costs,expense
+FAM-CHC,Family & Kids,Childcare,Childcare and daycare,expense
+FAM-ACT,Family & Kids,Kids Activities,Children's activities lessons and sports,expense
+FAM-SUP,Family & Kids,Child Support,Child support and alimony payments,expense
 SVC,Services,,General services,expense
 SVC-EDU,Services,Education,Tuition and education expenses,expense
 SVC-LGL,Services,Legal,Legal services,expense
 SVC-ACT,Services,Accounting & Tax,Accounting and tax preparation,expense
-SVC-FIN,Services,Financial Planning,Financial advisory services,expense
 SVC-INS,Services,Insurance,General insurance services,expense
 SVC-SUB,Services,Subscriptions,Recurring subscriptions,expense
 SVC-STR,Services,Storage,Storage unit rentals,expense
@@ -95,7 +101,6 @@ TRV-CAR,Travel,Car Rental,Rental cars,expense
 TRV-OTH,Travel,Other Travel,Miscellaneous travel,expense
 HSG,Housing & Utilities,,Housing and utility costs,expense
 HSG-RNT,Housing & Utilities,Rent,Rent payments,expense
-HSG-MTG,Housing & Utilities,Mortgage,Mortgage payments (housing cost),expense
 HSG-ELC,Housing & Utilities,Electric,Electricity bills,expense
 HSG-GAS,Housing & Utilities,Gas (Utility),Natural gas bills,expense
 HSG-WTR,Housing & Utilities,Water & Sewer,Water and sewer bills,expense
@@ -105,5 +110,4 @@ HSG-TRS,Housing & Utilities,Trash & Recycling,Waste management,expense
 HSG-SEC,Housing & Utilities,Home Security,Security systems and monitoring,expense
 HSG-OTH,Housing & Utilities,Other Utilities,Miscellaneous utilities,expense
 OTH,Other,,Uncategorized transactions,expense
-OTH-UNC,Other,Uncategorized,Not yet categorized,expense
 OTH-MSC,Other,Miscellaneous,Does not fit other categories,expense
