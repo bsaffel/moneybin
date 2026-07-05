@@ -59,8 +59,9 @@ introduction:
   ``transactions_categorize_auto_rules``,
   ``transactions_categorize_export_uncategorized``,
   ``transactions_categorize_rules_apply``, plus the singular-show family
-  (``accounts_show``, ``accounts_balance_show``,
-  ``accounts_investments_show``).
+  (``accounts_show``, ``accounts_balance_show``). The whole new
+  ``investments_*`` CLI surface (Task 15) is also category C pending the
+  MCP tools phase (`investments-data-model.md` §MCP Interface).
 - **D. CLI gaps.** MCP tools that need a CLI sibling but lack one:
   ``accounts_summary``, ``import_inbox_sync``,
   ``transactions_categorize_assist``,

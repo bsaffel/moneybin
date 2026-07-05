@@ -250,6 +250,117 @@ class TestUpsertSecurity:
 
 
 # ---------------------------------------------------------------------------
+# set_security — partial-update merge (read-modify-write)
+# ---------------------------------------------------------------------------
+
+
+class TestSetSecurity:
+    """Tests for InvestmentService.set_security() — partial-update merge.
+
+    The Task-16 MCP seam: ``SecuritiesRepo.upsert`` always writes the full
+    row, so ``set_security`` must fetch → merge non-None overrides → delegate,
+    without nulling untouched columns (esp. ``cost_basis_method``, which the
+    ``core.dim_securities`` read-projection omits).
+    """
+
+    def _seed(self, db: Database, **overrides: Any) -> str:
+        """Create one fully-populated security; return its id."""
+        defaults: dict[str, Any] = {
+            "security_id": "sec_vt",
+            "name": "Vanguard Total Stock Market",
+            "security_type": "mutual_fund",
+            "ticker": "VTSAX",
+            "exchange": "NASDAQ",
+            "cusip": "922908728",
+            "cost_basis_method": "fifo",
+            "actor": "cli",
+        }
+        defaults.update(overrides)
+        return db_service(db).upsert_security(**defaults)
+
+    def test_set_method_only_preserves_all_other_fields(self, db: Database) -> None:
+        sid = self._seed(db)
+        db_service(db).set_security(sid, cost_basis_method="average", actor="cli")
+        row = db.conn.execute(
+            """
+            SELECT name, ticker, exchange, cusip, cost_basis_method
+              FROM app.securities WHERE security_id = ?
+            """,  # noqa: S608  # test read, static SQL
+            [sid],
+        ).fetchone()
+        assert row == (
+            "Vanguard Total Stock Market",
+            "VTSAX",
+            "NASDAQ",
+            "922908728",
+            "average",
+        )
+
+    def test_set_name_only_preserves_cost_basis_method(self, db: Database) -> None:
+        # The core.dim_securities projection omits cost_basis_method; a merge
+        # sourced from the view (not app.securities) would null it here.
+        sid = self._seed(db, cost_basis_method="hifo")
+        db_service(db).set_security(sid, name="Renamed Fund", actor="cli")
+        row = db.conn.execute(
+            "SELECT name, cost_basis_method FROM app.securities WHERE security_id = ?",
+            [sid],
+        ).fetchone()
+        assert row == ("Renamed Fund", "hifo")
+
+    def test_set_ticker_preserves_name_and_type(self, db: Database) -> None:
+        sid = self._seed(db)
+        db_service(db).set_security(sid, ticker="VTI", actor="cli")
+        row = db.conn.execute(
+            "SELECT name, security_type, ticker FROM app.securities "
+            "WHERE security_id = ?",
+            [sid],
+        ).fetchone()
+        assert row == ("Vanguard Total Stock Market", "mutual_fund", "VTI")
+
+    def test_set_unknown_security_raises_not_found(self, db: Database) -> None:
+        with pytest.raises(UserError, match="not found"):
+            db_service(db).set_security("does-not-exist", name="X", actor="cli")
+
+    def test_set_average_on_non_fund_type_still_validated(self, db: Database) -> None:
+        # security_type carries through unchanged; the average/fund guard in
+        # upsert_security still fires on the merged row.
+        sid = self._seed(db, security_type="equity", cost_basis_method="fifo")
+        with pytest.raises(UserError, match="average"):
+            db_service(db).set_security(sid, cost_basis_method="average", actor="cli")
+
+
+# ---------------------------------------------------------------------------
+# list_securities — catalog read projection
+# ---------------------------------------------------------------------------
+
+
+class TestListSecurities:
+    """Tests for InvestmentService.list_securities() — the catalog read."""
+
+    def test_returns_all_catalog_rows_ordered_by_name(self, db: Database) -> None:
+        create_core_dim_stub_views(db)  # dim_securities passthrough of app.securities
+        _add_security(db, name="Zebra Corp", ticker="ZBRA", security_type="equity")
+        _add_security(db, name="Apple Inc.", ticker="AAPL", security_type="equity")
+        result = db_service(db).list_securities()
+        assert [r.name for r in result.rows] == ["Apple Inc.", "Zebra Corp"]
+        assert result.warnings == []
+
+    def test_type_filter_narrows_results(self, db: Database) -> None:
+        create_core_dim_stub_views(db)
+        _add_security(db, name="Apple Inc.", ticker="AAPL", security_type="equity")
+        _add_security(
+            db, name="Vanguard Total", ticker="VTSAX", security_type="mutual_fund"
+        )
+        result = db_service(db).list_securities(security_type="mutual_fund")
+        assert [r.ticker for r in result.rows] == ["VTSAX"]
+
+    def test_empty_catalog_returns_no_rows(self, db: Database) -> None:
+        create_core_dim_stub_views(db)
+        result = db_service(db).list_securities()
+        assert result.rows == []
+
+
+# ---------------------------------------------------------------------------
 # record_event — sign validation (Req 6)
 # ---------------------------------------------------------------------------
 

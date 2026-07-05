@@ -62,6 +62,7 @@ from moneybin.repositories.securities_repo import SecuritiesRepo
 from moneybin.services.audit_service import AuditService
 from moneybin.tables import (
     DIM_HOLDINGS,
+    DIM_SECURITIES,
     FCT_INVESTMENT_LOTS,
     FCT_INVESTMENT_TRANSACTIONS,
     FCT_REALIZED_GAINS,
@@ -301,6 +302,53 @@ class GainsResult:
     warnings: list[str]
 
 
+@dataclass(frozen=True, slots=True)
+class SecurityRow:
+    """One catalog entry from ``core.dim_securities`` (projects ``app.securities``)."""
+
+    security_id: str
+    name: str
+    security_type: str
+    ticker: str | None
+    exchange: str | None
+    cusip: str | None
+    isin: str | None
+    figi: str | None
+    coingecko_id: str | None
+    is_cash_equivalent: bool | None
+    currency_code: str
+
+
+@dataclass(frozen=True, slots=True)
+class SecuritiesResult:
+    """Result of :meth:`InvestmentService.list_securities`."""
+
+    rows: list[SecurityRow]
+    warnings: list[str]
+
+
+@dataclass(frozen=True, slots=True)
+class _ExistingSecurity:
+    """Full ``app.securities`` row — the merge base for ``set_security``.
+
+    Distinct from :class:`SecurityRow` (the ``core.dim_securities``
+    read-projection shape, which omits ``cost_basis_method``) — private to
+    this module, not a surface-crossing return type.
+    """
+
+    name: str
+    security_type: str
+    ticker: str | None
+    exchange: str | None
+    cusip: str | None
+    isin: str | None
+    figi: str | None
+    coingecko_id: str | None
+    is_cash_equivalent: bool | None
+    cost_basis_method: str | None
+    currency_code: str
+
+
 class InvestmentService:
     """Investment read/write path — resolution, event recording, lot selection, and reads."""
 
@@ -521,6 +569,104 @@ class InvestmentService:
             f"type={security_type} actor={actor}"
         )
         return event.target_id
+
+    def set_security(
+        self,
+        security_id: str,
+        *,
+        name: str | None = None,
+        ticker: str | None = None,
+        exchange: str | None = None,
+        cusip: str | None = None,
+        isin: str | None = None,
+        figi: str | None = None,
+        coingecko_id: str | None = None,
+        is_cash_equivalent: bool | None = None,
+        cost_basis_method: str | None = None,
+        currency_code: str | None = None,
+        actor: str,
+    ) -> str:
+        """Partially update one existing catalog entry; return its ``security_id``.
+
+        ``SecuritiesRepo.upsert`` always writes the full row (by design —
+        partial-field editing is a service-layer concern per its docstring),
+        so this method fetches the current row, merges the caller's non-``None``
+        overrides onto it, and delegates the merged full row to
+        :meth:`upsert_security` (which re-validates the ``average`` /
+        mutual_fund-etf constraint on every call). ``security_type`` is not
+        settable here — the CLI/MCP ``set`` surfaces carry no flag for it (no
+        spec requirement to change it post-creation) — and is always carried
+        through unchanged from the existing row. Raises :class:`UserError`
+        (``MUTATION_NOT_FOUND``) when ``security_id`` doesn't exist.
+        """
+        existing = self._fetch_security(security_id)
+        if existing is None:
+            raise UserError(
+                f"Security {security_id!r} not found.",
+                code=error_codes.MUTATION_NOT_FOUND,
+                hint="💡 Run 'moneybin investments securities list' to see known securities.",
+            )
+        return self.upsert_security(
+            security_id=security_id,
+            name=name if name is not None else existing.name,
+            security_type=existing.security_type,
+            ticker=ticker if ticker is not None else existing.ticker,
+            exchange=exchange if exchange is not None else existing.exchange,
+            cusip=cusip if cusip is not None else existing.cusip,
+            isin=isin if isin is not None else existing.isin,
+            figi=figi if figi is not None else existing.figi,
+            coingecko_id=(
+                coingecko_id if coingecko_id is not None else existing.coingecko_id
+            ),
+            is_cash_equivalent=(
+                is_cash_equivalent
+                if is_cash_equivalent is not None
+                else existing.is_cash_equivalent
+            ),
+            cost_basis_method=(
+                cost_basis_method
+                if cost_basis_method is not None
+                else existing.cost_basis_method
+            ),
+            currency_code=(
+                currency_code if currency_code is not None else existing.currency_code
+            ),
+            actor=actor,
+        )
+
+    def _fetch_security(self, security_id: str) -> _ExistingSecurity | None:
+        """Return the full ``app.securities`` row (incl. ``cost_basis_method``) or ``None``.
+
+        Reads ``app.securities`` directly rather than ``core.dim_securities``
+        (the read-projection view) because the view deliberately omits
+        ``cost_basis_method`` (Req 12 is an app-layer-only field); a merge
+        read sourced from the view would silently null it out on every
+        :meth:`set_security` call that doesn't also pass ``--method``.
+        """
+        row = self._db.execute(
+            f"""
+            SELECT name, security_type, ticker, exchange, cusip, isin, figi,
+                   coingecko_id, is_cash_equivalent, cost_basis_method, currency_code
+              FROM {SECURITIES.full_name}
+             WHERE security_id = ?
+            """,  # noqa: S608  # TableRef constant
+            [security_id],
+        ).fetchone()
+        if row is None:
+            return None
+        return _ExistingSecurity(
+            name=str(row[0]),
+            security_type=str(row[1]),
+            ticker=row[2],
+            exchange=row[3],
+            cusip=row[4],
+            isin=row[5],
+            figi=row[6],
+            coingecko_id=row[7],
+            is_cash_equivalent=row[8],
+            cost_basis_method=row[9],
+            currency_code=str(row[10]),
+        )
 
     # ------------------------------------------------------------------
     # Event recording (Req 5/6, reinvest pairing, split, transfer_in)
@@ -1289,3 +1435,44 @@ class InvestmentService:
                 "conservative."
             )
         return GainsResult(rows=gain_rows, warnings=warnings)
+
+    def list_securities(self, *, security_type: str | None = None) -> SecuritiesResult:
+        """List the securities catalog from ``core.dim_securities``.
+
+        Optional ``security_type`` filter; no mandatory warning.
+        """
+        where_sql = ""
+        params: list[object] = []
+        if security_type is not None:
+            where_sql = "WHERE security_type = ?"
+            params.append(security_type)
+
+        rows = self._db.execute(
+            f"""
+            SELECT security_id, name, security_type, ticker, exchange, cusip,
+                   isin, figi, coingecko_id, is_cash_equivalent, currency_code
+              FROM {DIM_SECURITIES.full_name}
+              {where_sql}
+             ORDER BY name, security_id
+            """,  # noqa: S608  # TableRef + parameterized values; where_sql built from literal fragment above
+            params,
+        ).fetchall()
+        return SecuritiesResult(
+            rows=[
+                SecurityRow(
+                    security_id=str(r[0]),
+                    name=str(r[1]),
+                    security_type=str(r[2]),
+                    ticker=r[3],
+                    exchange=r[4],
+                    cusip=r[5],
+                    isin=r[6],
+                    figi=r[7],
+                    coingecko_id=r[8],
+                    is_cash_equivalent=r[9],
+                    currency_code=str(r[10]),
+                )
+                for r in rows
+            ],
+            warnings=[],
+        )

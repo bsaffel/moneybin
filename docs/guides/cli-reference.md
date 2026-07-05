@@ -346,7 +346,6 @@ Account entities (dim records) plus per-account workflows.
 | `accounts balance assert <account-id> <amount>` | Record a point-in-time balance assertion (reconciles via delta row). | `--as-of <date>` |
 | `accounts balance assertion-delete <assertion-id>` | Delete one balance assertion. | `-y, --yes` |
 | `accounts balance reconcile <account-id>` | Recompute reconciliation deltas for an account. | — |
-| `accounts investments show <account-id>` 🚧 | Holdings + cost basis for an investment account (stub). | — |
 
 `accounts set` cascades atomically: `--archive` also sets `--exclude` for net-worth in the same write; `--unarchive` does NOT auto-restore `--include`.
 
@@ -355,6 +354,26 @@ Account entities (dim records) plus per-account workflows.
 ### `assets`
 
 Physical assets (real estate, vehicles, valuables). Group is reserved; commands ship with the asset-tracking spec.
+
+### `investments`
+
+Investment ledger, positions, tax lots, realized gains, and the manually-maintained securities catalog. Promotes the former `accounts investments` placeholder to a top-level group. All commands support `--output json`.
+
+| Command | Purpose | Key flags |
+|---|---|---|
+| `investments add` | Record one ledger event. `--type reinvest` writes the acquisition + paired income row atomically. | `--account`, `--type`, `--date`, `--security`, `--quantity`, `--price`, `--amount`, `--fees`, `--subtype`, `--acquired`, `--basis`, `--event-group`, `--currency`, `--description` |
+| `investments list` | List ledger events from `core.fct_investment_transactions`. | `--account`, `--security`, `--type`, `--from`, `--to` |
+| `investments holdings` | Current positions: quantity, cost basis, average cost. (Market value awaits price feeds — Pillar C.) | `--account` |
+| `investments gains` | Realized gain/loss (the 1099-B surface) from `core.fct_realized_gains`. | `--account`, `--security`, `--from`, `--to`, `--term {short,long}` |
+| `investments lots list` | Tax lots with remaining quantity and basis. Open lots only by default. | `--account`, `--security`, `--open/--all` |
+| `investments lots select <disposal-txn-id>` | Set the full specific-identification lot selection for a disposal (declarative replace). `--clear` reverts to FIFO. | `--lot LOT_ID:QTY` (repeatable), `--clear`, `-y, --yes` |
+| `investments securities list` | List the securities catalog. | `--type` |
+| `investments securities add` | Add one security to the catalog. | `--name`, `--type`, `--ticker`, `--exchange`, `--cusip`, `--isin`, `--figi`, `--coingecko-id`, `--cash-equivalent`, `--method`, `--currency` |
+| `investments securities set <security-id>` | Partial update of one security. At least one field flag required. | `--name`, `--ticker`, `--exchange`, `--cusip`, `--isin`, `--figi`, `--coingecko-id`, `--method`, `--currency` |
+
+The per-account cost-basis default is a field on `accounts set --default-cost-basis-method`; the per-security override is `investments securities set --method`.
+
+**Related guides:** [`investments-data-model.md`](../specs/investments-data-model.md).
 
 ## Reports
 

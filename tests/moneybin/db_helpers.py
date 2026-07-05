@@ -214,22 +214,19 @@ SELECT CAST(NULL AS VARCHAR) AS source_type,
 WHERE FALSE;
 """
 
-# core.dim_securities — SQLMesh-managed view in production (projects
-# app.securities). Column shape mirrors dim_securities.sql's final SELECT.
+# core.dim_securities — SQLMesh-managed view in production. Unlike the
+# dim_categories/dim_merchants stubs (which are empty `WHERE FALSE` shape-only
+# views because production builds them with joins/seeds), dim_securities.sql is
+# a *pure passthrough* of app.securities — so the faithful stub is that same
+# passthrough. This lets reads (`InvestmentService.list_securities`, the CLI's
+# `securities list`) reflect real `securities add`/`set` writes without a
+# per-test inline view override. app.securities always exists here: every
+# caller of create_core_dim_stub_views opens a real Database (init_schemas).
 CORE_DIM_SECURITIES_STUB_DDL = """\
 CREATE OR REPLACE VIEW core.dim_securities AS
-SELECT CAST(NULL AS VARCHAR) AS security_id,
-       CAST(NULL AS VARCHAR) AS name,
-       CAST(NULL AS VARCHAR) AS security_type,
-       CAST(NULL AS VARCHAR) AS ticker,
-       CAST(NULL AS VARCHAR) AS exchange,
-       CAST(NULL AS VARCHAR) AS cusip,
-       CAST(NULL AS VARCHAR) AS isin,
-       CAST(NULL AS VARCHAR) AS figi,
-       CAST(NULL AS VARCHAR) AS coingecko_id,
-       CAST(NULL AS BOOLEAN) AS is_cash_equivalent,
-       CAST(NULL AS VARCHAR) AS currency_code
-WHERE FALSE;
+SELECT security_id, name, security_type, ticker, exchange, cusip, isin, figi,
+       coingecko_id, is_cash_equivalent, currency_code
+FROM app.securities;
 """
 
 # core.fct_investment_transactions — SQLMesh FULL-kind table in production.

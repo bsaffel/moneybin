@@ -1,10 +1,11 @@
 """Accounts top-level command group.
 
 Owns account entity operations (list, get, set, resolve) and per-account
-workflows (balance, investments) per moneybin-cli.md v2 +
-account-management.md. `set` is the single partial-update entry point —
-display_name, include_in_net_worth, and is_archived fold in via flags
-(see `accounts set --help`).
+workflows (balance, links) per moneybin-cli.md v2 + account-management.md.
+`set` is the single partial-update entry point — display_name,
+include_in_net_worth, and is_archived fold in via flags (see
+`accounts set --help`). Investment holdings live under the top-level
+`investments` group (see `cli/commands/investments.py`), not here.
 """
 
 from __future__ import annotations
@@ -44,7 +45,7 @@ from moneybin.services.balance_service import (
     BalanceService,  # noqa: F401 — re-exported for patch targets in tests  # type: ignore[reportUnusedImport]
 )
 
-from . import balance, investments, links
+from . import balance, links
 
 logger = logging.getLogger(__name__)
 
@@ -352,5 +353,4 @@ def accounts_resolve(
 
 
 app.add_typer(balance.app, name="balance")
-app.add_typer(investments.app, name="investments")
 app.add_typer(links.app, name="links")
