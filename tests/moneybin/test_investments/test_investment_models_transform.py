@@ -23,7 +23,12 @@ no method is elected):
     - lot remaining = 12345678.9012345678 - 6172839.4506172839 = 6172839.4506172839
     - lot cost_basis_remaining = 1000.00 - 500.00 = 500.00
 - Holding = the one open lot: quantity 6172839.4506172839, cost_basis 500.00,
-  average_cost = 500.00 / 6172839.4506172839 ≈ 0.0000810000
+  average_cost = 500.00 / 6172839.4506172839 = 0.0000810000 exactly at
+  DECIMAL(28,10) (the true quotient 0.00008100000072900... rounds to scale 10).
+  The model casts the WHOLE division to DECIMAL(28,10); without that cast
+  DuckDB's decimal `/` promotes to DOUBLE and this comes back as a float
+  8.100000072900001e-05 (a database.md "no FLOAT for financial quantities"
+  violation) — the exact-Decimal + isinstance assertions below lock that shut.
 """
 
 from __future__ import annotations
@@ -194,8 +199,14 @@ def test_transform_builds_investment_lots_gains_and_holdings(db: Database) -> No
     ]
     assert quantity == Decimal("6172839.4506172839")
     assert holding_basis == Decimal("500.00")
-    # average_cost = 500.00 / 6172839.4506172839 ≈ 0.0000810000 (exact scale is
-    # DuckDB's decimal-division rule); range-asserted, robust to the last digit.
-    assert Decimal("0.00008099") < average_cost < Decimal("0.00008101")
+    # average_cost is DECIMAL(28,10), never DOUBLE: a DOUBLE column comes back as
+    # a Python float, so isinstance(Decimal) guards the type promotion the model's
+    # whole-division cast prevents. The value is hand-derived: 500.00 /
+    # 6172839.4506172839 = 0.00008100000072900... → 0.0000810000 rounded to scale
+    # 10 (NOT observe-and-paste — independently computed, per testing.md).
+    assert isinstance(average_cost, Decimal), (
+        f"average_cost must be DECIMAL (Python Decimal), got {type(average_cost).__name__}"
+    )
+    assert average_cost == Decimal("0.0000810000")
     assert currency_code == "USD"
     assert holding_updated_at == _SELL_CREATED_AT
