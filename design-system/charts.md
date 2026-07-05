@@ -40,7 +40,7 @@ Dining=chart-5   Utilities=chart-6  Travel=chart-7     Other=chart-8
 Default for anything temporal. Three stances: **A interpolated** (default, brass 1.75px line, 7% area), **B stepped** as-observed (dots = statements, no interpolation), **C prior-year ghost** (dashed `--text-faint` 1.25px, shared scale, disclosed).
 
 ### 02 Cash flow (signed quantity) — `charts-cashflow-diverging.html` — diverging is the default
-Income bars up, spending bars down from one emphasized $0 line; net traced in brass with dots on the shared axis. **Canonical net trace** (Overview and Analytics must match — they had drifted): net line `stroke:var(--accent-brass)`, `stroke-width:2.5`, no pointer events (bars own hover); net dots one per month, `r:2.9`, `fill:var(--accent-brass)`, each with a 1px `var(--bg-surface)` halo (`stroke:var(--bg-surface); stroke-width:1`) so markers read where they cross the bars. Legend glyphs carry the sign ("+ INCOME", "− SPENDING"). **Grouped side-by-side pairs encode by hue alone — avoid** (kept in the catalog only as a labeled anti-pattern). Stacked composition: six groups max, Other absorbs the tail.
+Income bars up, spending bars down from one emphasized $0 line; net traced in brass with dots on the shared axis. **Canonical net trace** (Overview and Analytics must match — they had drifted): net line `stroke:var(--accent-brass)`, `stroke-width:2.5`, no pointer events (bars own hover); net dots one per month, `r:2.9`, `fill:var(--accent-brass)`, each with a 1px `var(--bg-surface)` halo (`stroke:var(--bg-surface); stroke-width:1`) so markers read where they cross the bars. Legend glyphs carry the sign ("+ INCOME", "− SPENDING"). **Grouped side-by-side pairs are fine when the sign rides an explicit glyph** — the "+ INCOME" / "− SPENDING" legend and signed labels, never color alone; diverging stays the default because it also puts the sign in the geometry (income up, spending down). Stacked composition: six groups max, Other absorbs the tail.
 
 ### 03 Rollup bars (horizontal) — `charts-rollup-bars.html`
 One measure stays brass. A **prior-period tick** per bar marks comparison without a second series: `var(--text-primary)`, ~2px × 14px, 1px radius — a neutral light annotation, **never a `--chart-*` hue** (a palette color would imply a second data series), matching the histogram-median marker convention. It must be **keyed**: a brass swatch for the current period + the light tick labelled with the prior period (e.g. "June" / "May (prior month)"). Scale max + exclusions go in the audit strip. Amounts right-aligned mono with explicit −.
@@ -73,14 +73,16 @@ The remaining two cards are cross-cutting, not a single form: `charts-grammar.ht
 
 A saved report declares the chart forms that fit its **data shape**, in recommended order; the first is the recommended form. The report builder offers **exactly** those forms, marks the first as recommended, and **never disables** the alternates — the recommendation encodes the honest read; the alternates stay available because provenance, not paternalism, is the system's stance. Selecting a report resets the chart type to its recommendation.
 
-| Report data shape | Chart types (first = recommended) |
+| Report data shape | Chart types (first = recommended; § = per-form rule) |
 |---|---|
-| time series | Line, Step |
-| signed months (income / spend / net) | Diverging, Grouped, Net line |
-| category × month | Stacked, Share, Donut |
-| ranked categories (+ prior) | Ranked, Column, Share, Donut |
-| single-series categories | Column, Ranked |
-| daily | Heatmap |
+| time series | Line (§01), Step (§01) |
+| signed months (income / spend / net) | Diverging (§02), Grouped (§02), Net line (§02) |
+| category × month | Stacked (§10), Share (§10), Donut (§10) |
+| ranked categories (+ prior) | Ranked (§03), Column (§03), Share (§10), Donut (§10) |
+| single-series categories | Column (§03), Ranked (§03) |
+| daily | Heatmap (§05) |
+
+Every name maps to a per-form rule above — no new forms: **Step** = §01's stepped/as-observed stance · **Net line** = §02's signed net trace drawn on its own axis · **Grouped** = §02's grouped pair · **Share** = §10's full-width single-bar proportion (vs. Stacked's per-month columns) · **Column** = §03's rollup bar rotated vertical (same grammar) · **Ranked** = §03 as specimen'd (horizontal).
 
 ## Interaction rules (not visible in the static specimens)
 
