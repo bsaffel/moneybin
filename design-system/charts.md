@@ -13,9 +13,20 @@ one wins. Sample data throughout; the grammar is what ships. Never hardcode hex
 - **Interpolation**: linear only, never splines. Gaps never bridged — stepped carry-forward is the honest form for balance data.
 - **Area fills**: ≤ 8% opacity.
 - **Signs**: printed in the glyph, never color alone. Income `+`, spend `−` (U+2212), transfers/savings unsigned in neutral. This applies to chart labels too (sankey, donut legends, stacked bars) — not just Amount components.
-- **Color**: a lone series is always brass (`--accent-brass`). Comparisons draw `--chart-1..8` in order, six max, then group to Other. A category keeps its hue in every view (Housing = chart-1 everywhere). Income/expense pair is `--pos-income`/`--neg-expense`. Never blue as accent.
+- **Color**: a lone series is always brass (`--accent-brass`). Comparisons draw `--chart-1..8` in order, six max, then group to Other. A category keeps its hue in every view (Housing = chart-1 everywhere; see **Category color** below). A single-measure bar chart *of categories* may opt into category hue; every other lone series (e.g. spend-by-weekday) stays brass. Income/expense pair is `--pos-income`/`--neg-expense`. Never blue as accent.
 - **Disclosure over decoration**: a clipped axis says so on the chart ("axis clipped · zero not shown", mono 11px, top-right). Independent scales say so. "Other" says what it absorbed.
 - **Focus**: every interactive control gets `outline: 2px solid var(--focus)` on `:focus-visible`. Chart SVGs carry `role="img"` + `aria-label`.
+
+### Category color
+
+Categories draw from a fixed map so a category reads as the same hue in every view (stacked, share, donut, ranked, column):
+
+```
+Housing=chart-1  Groceries=chart-2  Transport=chart-3  Insurance=chart-4
+Dining=chart-5   Utilities=chart-6  Travel=chart-7     Other=chart-8
+```
+
+**Single-measure category bars** (ranked or column of one measure) default to **brass** — one measure, one color. They *may* opt into coloring each bar by its category hue from the map above: the category label sits beside each bar, so hue is a reinforcing channel, not the sole encoding, and it keeps a category's color consistent across ranked / column / stacked / share / donut. Brass stays the default; category-hue is the opt-in, and it must use this same fixed map. Non-category single series (spend-by-weekday — days carry no palette identity) stay brass.
 
 ## The provenance ladder (three rungs)
 
@@ -29,10 +40,10 @@ one wins. Sample data throughout; the grammar is what ships. Never hardcode hex
 Default for anything temporal. Three stances: **A interpolated** (default, brass 1.75px line, 7% area), **B stepped** as-observed (dots = statements, no interpolation), **C prior-year ghost** (dashed `--text-faint` 1.25px, shared scale, disclosed).
 
 ### 02 Cash flow (signed quantity) — `charts-cashflow-diverging.html` — diverging is the default
-Income bars up, spending bars down from one emphasized $0 line; net traced in brass with dots on the shared axis. Legend glyphs carry the sign ("+ INCOME", "− SPENDING"). **Grouped side-by-side pairs encode by hue alone — avoid** (kept in the catalog only as a labeled anti-pattern). Stacked composition: six groups max, Other absorbs the tail.
+Income bars up, spending bars down from one emphasized $0 line; net traced in brass with dots on the shared axis. **Canonical net trace** (Overview and Analytics must match — they had drifted): net line `stroke:var(--accent-brass)`, `stroke-width:2.5`, no pointer events (bars own hover); net dots one per month, `r:2.9`, `fill:var(--accent-brass)`, each with a 1px `var(--bg-surface)` halo (`stroke:var(--bg-surface); stroke-width:1`) so markers read where they cross the bars. Legend glyphs carry the sign ("+ INCOME", "− SPENDING"). **Grouped side-by-side pairs are fine when the sign rides an explicit glyph** — the "+ INCOME" / "− SPENDING" legend and signed labels, never color alone; diverging stays the default because it also puts the sign in the geometry (income up, spending down). Stacked composition: six groups max, Other absorbs the tail.
 
 ### 03 Rollup bars (horizontal) — `charts-rollup-bars.html`
-One measure stays brass. Audit adds a prior-month tick per bar plus scale max + exclusions in the strip. Amounts right-aligned mono with explicit −.
+One measure stays brass. A **prior-period tick** per bar marks comparison without a second series: `var(--text-primary)`, ~2px × 14px, 1px radius — a neutral light annotation, **never a `--chart-*` hue** (a palette color would imply a second data series), matching the histogram-median marker convention. It must be **keyed**: a brass swatch for the current period + the light tick labelled with the prior period (e.g. "June" / "May (prior month)"). Scale max + exclusions go in the audit strip. Amounts right-aligned mono with explicit −.
 
 ### 04 Sparklines — `charts-sparklines.html`
 Shape without axes; **never a number source** — the Amount beside it is. **Amplitude ∝ |30d Δ| ÷ balance, full at 6%**: near-flat accounts render flat instead of dramatizing noise. Scales independent, disclosed in audit.
@@ -57,6 +68,21 @@ Stacked bar (one straight axis) is the default; 2px gaps between segments. Donut
 
 The remaining two cards are cross-cutting, not a single form: `charts-grammar.html`
 (the grammar exemplar) and `charts-provenance.html` (the provenance ladder above).
+
+## Chart-type per report (authoring)
+
+A saved report declares the chart forms that fit its **data shape**, in recommended order; the first is the recommended form. The report builder offers **exactly** those forms, marks the first as recommended, and **never disables** the alternates — the recommendation encodes the honest read; the alternates stay available because provenance, not paternalism, is the system's stance. Selecting a report resets the chart type to its recommendation.
+
+| Report data shape | Chart types (first = recommended; § = per-form rule) |
+|---|---|
+| time series | Line (§01), Step (§01) |
+| signed months (income / spend / net) | Diverging (§02), Grouped (§02), Net line (§02) |
+| category × month | Stacked (§10), Share (§10), Donut (§10) |
+| ranked categories (+ prior) | Ranked (§03), Column (§03), Share (§10), Donut (§10) |
+| single-series categories | Column (§03), Ranked (§03) |
+| daily | Heatmap (§05) |
+
+Every name maps to a per-form rule above — no new forms: **Step** = §01's stepped/as-observed stance · **Net line** = §02's signed net trace drawn on its own axis · **Grouped** = §02's grouped pair · **Share** = §10's full-width single-bar proportion (vs. Stacked's per-month columns) · **Column** = §03's rollup bar rotated vertical (same grammar) · **Ranked** = §03 as specimen'd (horizontal).
 
 ## Interaction rules (not visible in the static specimens)
 
