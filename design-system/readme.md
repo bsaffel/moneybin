@@ -30,13 +30,13 @@ Sources: authored from scratch in this project (no external Figma/codebase). The
 ## Iconography
 Custom-drawn line icons: 20×20 grid, 1.5px stroke, squared caps, no fills, one weight, literal metaphors (see `guidelines/icons-grammar.html` — copy these SVGs). The AI/ask surface is the terminal caret `▸_`, never ✨. Unicode used sparingly as glyphs (⌘K, ⇄ transfers, ▲▼ deltas, ● status). No icon font; inline SVG. No emoji ever. Banned metaphors: coins raining, sparkles, magic wands. If a stock icon is unavoidable, restroke to spec (nearest CDN match: Lucide at 1.5px, squared caps where possible — flag any substitution).
 
-**Logo:** the "coin & slot" mark — solid coin poised over a slot cut clean through a rounded-square plate (`components/brand/Mark.jsx`). Wordmark: "MoneyBin" Newsreader semibold. **Duck-key** (`components/brand/DuckKey.jsx`): reusable glyph — the negative of the "bill-hole" keyhole; mono in app chrome, full-color eyed in docs/marketing; never rotated, bill always right. **Mascot ("Bill")** is docs/CLI only, never app chrome; NEVER a duck swimming/splashing in coins, no coin piles, no top hat/cane/spats (Disney IP adjacency).
+**Logo:** the "coin & slot" mark — solid coin poised over a slot cut clean through a rounded-square plate (`components/brand/Mark.jsx`). Wordmark: "MoneyBin" Newsreader semibold — the `components/brand/Wordmark.jsx` lock-up composes the Mark, with the optical baseline nudge and brass on "Bin" baked in. **Duck-key** (`components/brand/DuckKey.jsx`): reusable glyph — the negative of the "bill-hole" keyhole; mono in app chrome, full-color eyed in docs/marketing; never rotated, bill always right. **Mascot ("Bill")** is docs/CLI only, never app chrome; NEVER a duck swimming/splashing in coins, no coin piles, no top hat/cane/spats (Disney IP adjacency).
 
 ## Index
 - `styles.css` → `tokens/` (colors, typography, shape) — global CSS entry
-- `guidelines/` — specimen cards (Colors ×5, Type ×3, Shape ×3, Brand ×2, Charts ×12, Voice ×2, Iconography)
+- `guidelines/` — specimen cards (Colors ×5, Type ×3, Shape ×3, Brand ×3, Charts ×12, Voice ×2, Iconography)
 - `charts.md` — binding chart grammar (prose companion to the 12 `guidelines/charts-*.html` specimens)
-- `components/core/` — Button, Chip · `components/data/` — Amount, WidgetCard · `components/chrome/` — VaultStatusBar · `components/brand/` — Mark, DuckKey
+- `components/core/` — Button, Chip · `components/data/` — Amount, WidgetCard · `components/chrome/` — VaultStatusBar · `components/brand/` — Mark, DuckKey, Wordmark
 - `ui_kits/web_app/` — dashboard home (static reference extraction of the brand kit §09)
 - `MoneyBin Brand Kit.dc.html` — the full argued spec (sections 01–10 incl. rationale)
 
@@ -45,3 +45,13 @@ Custom-drawn line icons: 20×20 grid, 1.5px stroke, squared caps, no fills, one 
 
 ### Caveats
 - The dashboard UI kit is a static extraction of the brand-kit mockup (hover states and SQL toggle are not interactive there; see the DC file for the live version).
+
+## Updating the design system
+
+`design-system/` is the source of truth. Changes flow one way, always through the repo:
+
+1. **Prototype / spec visually** in the claude.ai/design **Design Kit** project — the scratchpad for screens, studies, and spec docs; it renders against the current components.
+2. **Promote into the repo** with `/design-import` — classify each asset (component vs specimen card vs screen-to-park), reconstruct it repo-native (tokens, card contract), and land it via a PR.
+3. **Publish** the repo → the claude.ai **Design System** project with `/design-sync` (outbound), so the live design surface mirrors the repo.
+
+The Design System project is a **generated mirror** — never hand-edit it as the authoritative copy; edits there drift from the repo and are overwritten on the next sync. Explore in claude.ai freely; it only becomes real once it lands in the repo via a PR.
