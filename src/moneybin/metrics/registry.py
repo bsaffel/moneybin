@@ -283,6 +283,26 @@ CATEGORIZE_WRITE_SKIPPED_PRECEDENCE_TOTAL = Counter(
     ["src_existing", "src_attempted"],
 )
 
+CATEGORIZE_PROVIDER_NATIVE_TOTAL = Counter(
+    "moneybin_categorize_provider_native_total",
+    "Categorizations assigned from a provider's native categorization. "
+    "trigger='sweep' is the automatic apply_plaid_categories pass over "
+    "still-uncategorized rows; trigger='backfill' is the explicit "
+    "improve_ai_categories upgrade pass over categorized_by='ai' rows.",
+    ["source_type", "trigger"],
+)
+
+CATEGORIZE_SKIPPED_CONFIDENCE_TOTAL = Counter(
+    "moneybin_categorize_skipped_confidence_total",
+    "Provider-native categorizations skipped at the confidence gate. "
+    "reason='below_gate' is a genuine low-confidence rejection (gate-tuning "
+    "signal); reason='unknown' is an absent/unmapped confidence level (a "
+    "data-quality signal) — kept distinct so one isn't misread as the other. "
+    "trigger distinguishes the sweep pass (apply_plaid_categories) from the "
+    "backfill pass (improve_ai_categories) — see CATEGORIZE_PROVIDER_NATIVE_TOTAL.",
+    ["source_type", "reason", "trigger"],
+)
+
 # Metric names retain the historical `apply` prefix even after the MCP tool
 # was renamed to `transactions_categorize_commit` (2026-05-17). Prometheus
 # metric renames break downstream dashboards and alerts; treat the name as

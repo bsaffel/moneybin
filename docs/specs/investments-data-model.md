@@ -835,7 +835,7 @@ Standard envelope from [`mcp-architecture.md`](mcp-architecture.md), e.g. for
 - `sqlmesh/models/core/fct_investment_lots.py` — derived lots (Python model; cost-basis engine)
 - `sqlmesh/models/core/fct_realized_gains.py` — derived realized gains
 - `sqlmesh/models/core/dim_holdings.sql` — derived positions VIEW
-- `src/moneybin/sql/migrations/V033__add_investment_tables.py` — create the three new tables and apply the `app.account_settings` ALTER for existing databases (next free version at time of writing; renumber if another migration lands first)
+- `src/moneybin/sql/migrations/V034__add_investment_tables.py` — create the three new tables and apply the `app.account_settings` ALTER for existing databases (next free version at time of writing; renumber if another migration lands first)
 - `src/moneybin/repositories/securities_repo.py` — `SecuritiesRepo` for `app.securities` mutation (Invariant 10: paired audit rows via `BaseRepo`)
 - `src/moneybin/repositories/lot_selections_repo.py` — `LotSelectionsRepo` for `app.lot_selections` mutation
 - `src/moneybin/services/investment_service.py` — security resolution, manual entry, method election, lot selection (composes the repos)

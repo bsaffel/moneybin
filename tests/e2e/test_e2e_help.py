@@ -77,6 +77,7 @@ _HELP_COMMANDS: list[list[str]] = [
     ["transactions", "categorize", "assist"],
     ["transactions", "categorize", "commit"],
     ["transactions", "categorize", "run"],
+    ["transactions", "categorize", "improve-ai"],
     ["transactions", "categorize", "export-uncategorized"],
     ["transactions", "categorize", "commit-from-file"],
     ["privacy"],

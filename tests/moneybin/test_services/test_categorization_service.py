@@ -5,6 +5,7 @@ matching, prompt construction, and response parsing.
 """
 
 from collections import Counter
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,7 @@ import pytest
 import yaml
 
 from moneybin.database import Database
+from moneybin.seeds import refresh_views
 from moneybin.services._text import normalize_description
 from moneybin.services.categorization import (
     CategorizationItem,
@@ -48,6 +50,11 @@ def apply_rules(db: Database) -> int:
 def apply_merchant_categories(db: Database) -> int:
     """Test shim — delegates to CategorizationService.apply_merchant_categories."""
     return CategorizationService(db).apply_merchant_categories()
+
+
+def apply_plaid_categories(db: Database) -> int:
+    """Test shim — delegates to CategorizationService.apply_plaid_categories."""
+    return CategorizationService(db).apply_plaid_categories()
 
 
 def categorize_pending(db: Database) -> dict[str, int]:
@@ -521,14 +528,15 @@ class TestFetchUncategorizedRowsFallback:
         rows = CategorizationMatcher(db).fetch_uncategorized_rows()
 
         assert rows is not None, "must return rows, not None"
-        txn_ids = [r[0] for r in rows]
+        txn_ids = [r.transaction_id for r in rows]
         assert "TXNE1" in txn_ids, (
             "entity-bearing row with blank description must be included in "
             "fetch_uncategorized_rows (OR m.merchant_entity_id IS NOT NULL)"
         )
-        # Confirm entity data is projected at position 5.
-        row = next(r for r in rows if r[0] == "TXNE1")
-        assert row[5] == "plaid_ent_123", "merchant_entity_id must be projected"
+        row = next(r for r in rows if r.transaction_id == "TXNE1")
+        assert row.merchant_entity_id == "plaid_ent_123", (
+            "merchant_entity_id must be projected"
+        )
 
     @pytest.mark.unit
     def test_missing_entity_columns_falls_back(self, db: Database) -> None:
@@ -558,11 +566,12 @@ class TestFetchUncategorizedRowsFallback:
         rows = CategorizationMatcher(db).fetch_uncategorized_rows()
 
         assert rows is not None, "must degrade to without_entity, not raise/return None"
-        row = next((r for r in rows if r[0] == "TXNB1"), None)
+        row = next((r for r in rows if r.transaction_id == "TXNB1"), None)
         assert row is not None, "uncategorized TXNB1 must be returned via fallback"
-        # without_entity projects NULL for merchant_entity_id (pos 5) and
-        # merchant_entity_source_type (pos 8).
-        assert row[5] is None and row[8] is None
+        # without_entity projects NULL for merchant_entity_id and merchant_entity_source_type.
+        assert (
+            row.merchant_entity_id is None and row.merchant_entity_source_type is None
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1171,8 +1180,12 @@ def test_categorize_items_snowball_fans_out_to_siblings(real_db: Database) -> No
     ).fetchall()
     assert len(rows) == 3
     assert all(r[0] == "Food & Dining" for r in rows)
-    # t1 was categorized by the LLM-assist commit ('ai'); t2/t3 by the
-    # snowball merchant fan-out, which writes 'rule' provenance.
+    # t1 was categorized by the LLM-assist commit ('ai'). t2/t3 were
+    # categorized by the snowball merchant fan-out, which stamps the 'rule'
+    # method — the merchant's authoring provenance is NOT laundered onto the
+    # categorization (categorization-source-model.md Decision 3, reverted). t1's
+    # committed 'ai' row is not re-scanned by the snowball: only provider_native
+    # rows are re-evaluated across runs, not committed 'ai' ones.
     assert rows[0][1] == "ai"
     assert rows[1][1] == "rule"
     assert rows[2][1] == "rule"
@@ -2033,6 +2046,62 @@ class TestApplyMerchantCategoriesEntityResolution:
 
 
 # ---------------------------------------------------------------------------
+# Merchant matches stamp the 'rule' method regardless of the merchant's
+# authoring provenance. (Task 3's provenance-aware stamping was reverted — see
+# categorization-source-model.md Decision 3: stamping provenance leaked
+# machine-applied merchant matches into the auto-rule override-detection query,
+# which counts 'user'/'ai' as human corrections, and its stated benefit could
+# never fire because provider_native never overrides an existing row.)
+# ---------------------------------------------------------------------------
+
+
+class TestApplyMerchantCategoriesStampsRule:
+    """A merchant default stamps the 'rule' method, never the merchant's provenance.
+
+    So a machine-applied merchant match is never miscounted as a human
+    correction by auto-rule override detection.
+    """
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("merchant_created_by", ["ai", "user"])
+    def test_merchant_default_stamps_rule(
+        self, db: Database, merchant_created_by: str
+    ) -> None:
+        """Whatever created the merchant, its default stamps categorized_by='rule'."""
+        _setup_prep_table(db)
+
+        mid = create_merchant(
+            db,
+            "AMAZON",
+            "Amazon",
+            match_type="contains",
+            category="Shopping",
+            created_by=merchant_created_by,
+        )
+
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+            "VALUES ('TXN_PROV', 'ACC1', DATE '2026-01-01', -30.00, 'AMAZON MKTP ORDER', 'plaid')"
+        )
+        db.execute(
+            "INSERT INTO prep.int_transactions__merged VALUES "
+            "('TXN_PROV', NULL, NULL, NULL)"
+        )
+
+        count = apply_merchant_categories(db)
+
+        assert count == 1
+        row = db.execute(
+            "SELECT categorized_by, merchant_id FROM app.transaction_categories "
+            "WHERE transaction_id = 'TXN_PROV'"
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "rule"
+        assert row[1] == mid
+
+
+# ---------------------------------------------------------------------------
 # #7 regression: resolver binding written even when categorization is
 # precedence-skipped
 # ---------------------------------------------------------------------------
@@ -2050,7 +2119,17 @@ class TestResolverBindingPrecedesCategorization:
     is present in ``_categorize_items_inner``.  That path accepts an explicit
     item list and writes with ``categorized_by='ai'``, which a pre-existing
     ``user`` categorization outranks — producing a controlled
-    ``written=False`` outcome.
+    ``written=False`` outcome. ``categorize_pending``/``apply_merchant_categories``
+    cannot drive this scenario instead: ``fetch_uncategorized_rows``'s "pending"
+    filter (``c.transaction_id IS NULL OR c.categorized_by = 'provider_native'``)
+    excludes an already-``user``-categorized row from the scan entirely, so the
+    resolver never runs for it via that path — ``categorize_items`` is the only
+    entry point that attempts (and gets precedence-blocked on) a write for a row
+    that already carries a higher-priority categorization.
+
+    Covers two rungs of the same invariant: rung 3 (fuzzy name match — pending
+    proposal) below, and rung 4 (no name match — mint + bind a new merchant) in
+    ``test_novel_entity_mints_merchant_even_when_write_precedence_skipped``.
     """
 
     @pytest.mark.unit
@@ -2115,6 +2194,79 @@ class TestResolverBindingPrecedesCategorization:
         assert pending is not None and pending[0] >= 1, (
             "resolver must have written a pending proposal for ent_r7 "
             "even though categorization was precedence-skipped"
+        )
+
+    @pytest.mark.unit
+    def test_novel_entity_mints_merchant_even_when_write_precedence_skipped(
+        self, db: Database
+    ) -> None:
+        """Rung-4 mint fires even when the categorization write is precedence-skipped.
+
+        Characterization test: a stronger case than
+        ``test_binding_written_when_categorization_precedence_skipped`` above.
+        Here the entity id has no name match at all (empty merchant catalog),
+        so the resolver mints a brand-new ``created_by='plaid'`` merchant
+        (rung 4) rather than proposing against an existing candidate (rung 3).
+        The mint is a Plaid-asserted identity fact, committed regardless of
+        whether this row's categorization write lands (spec Decision 7) — this
+        test locks that correct-by-design behavior so a future "fix" can't
+        silently gate the mint behind ``outcome.written``.
+        """
+        _setup_prep_table(db)
+
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+            "VALUES ('TXN_MINT_SKIP', 'ACC1', DATE '2026-01-01', -12.00, "
+            "'XYZNOPATTERNMINTSKIP', 'plaid')"
+        )
+        db.execute(
+            "INSERT INTO prep.int_transactions__merged VALUES "
+            "('TXN_MINT_SKIP', 'ent_mint_skip', 'plaid', 'Brand New Merchant')"
+        )
+
+        # Pre-seed a user categorization (priority 1) so the ai write below
+        # (priority 7) is blocked by the precedence guard.
+        db.execute(
+            "INSERT INTO app.transaction_categories "
+            "(transaction_id, category, categorized_at, categorized_by) "
+            "VALUES ('TXN_MINT_SKIP', 'Travel', CURRENT_TIMESTAMP, 'user')"
+        )
+
+        svc = CategorizationService(db)
+        result = svc.categorize_items([
+            CategorizationItem(transaction_id="TXN_MINT_SKIP", category="Food & Drink")
+        ])
+
+        # The ai write must have been blocked; the user category stays intact.
+        assert result.applied == 0, "user category must block the ai write"
+        cat_row = db.execute(
+            "SELECT category, categorized_by FROM app.transaction_categories "
+            "WHERE transaction_id = 'TXN_MINT_SKIP'"
+        ).fetchone()
+        assert cat_row is not None
+        assert cat_row[0] == "Travel"
+        assert cat_row[1] == "user"
+
+        # The novel entity id must still have been minted + bound (rung 4),
+        # even though the categorization write above was rejected.
+        link_row = db.execute(
+            "SELECT merchant_id FROM app.merchant_links "
+            "WHERE ref_value = 'ent_mint_skip' AND source_type = 'plaid' "
+            "AND status = 'accepted'"
+        ).fetchone()
+        assert link_row is not None, (
+            "resolver must mint+bind a merchant for a novel entity id even "
+            "though categorization was precedence-skipped"
+        )
+        merchant_row = db.execute(
+            "SELECT created_by, category_id FROM app.user_merchants WHERE merchant_id = ?",
+            [link_row[0]],
+        ).fetchone()
+        assert merchant_row is not None
+        assert merchant_row[0] == "plaid"
+        assert merchant_row[1] is None, (
+            "plaid-minted merchant is inert/category-free by design (M1T)"
         )
 
 
@@ -2410,3 +2562,849 @@ class TestMerchantNameMatchRung2:
         assert count == 1, (
             f"unknown merchant_name must mint a new merchant (rung 4); got {count}"
         )
+
+
+# ---------------------------------------------------------------------------
+# apply_plaid_categories — Plaid PFC-detailed categorizer (Task 5)
+# ---------------------------------------------------------------------------
+
+
+def _insert_plaid_txn(
+    db: Database,
+    transaction_id: str,
+    *,
+    category_detailed: str | None,
+    plaid_category: str | None,
+    category_confidence: str,
+) -> None:
+    """Insert one Plaid transaction into the two prep layers categorizer tests read.
+
+    ``apply_plaid_categories`` reads the gold-keyed merged layer, not
+    ``prep.stg_plaid__transactions`` (the pre-merge, native-Plaid-id
+    layer) — ``app.transaction_categories`` and every join onto it
+    (including ``core.fct_transactions``'s own categorization join) are
+    keyed by the gold ``transaction_id`` that ``int_transactions__matched``
+    mints, so a native-id write would silently orphan itself (the ship
+    bug this fixture change closes; see
+    ``tests/moneybin/test_categorize_plaid_e2e.py`` for the full-pipeline
+    proof). ``transaction_id`` here IS that gold id — callers pass the
+    same value used for the matching ``core.fct_transactions`` row.
+
+    ``prep.int_transactions__merged`` is a SQLMesh VIEW in production —
+    building it in a unit-test DB would require a full SQLMesh plan (see
+    the e2e test above, which does exactly that). ``apply_plaid_categories``
+    reads four columns (the detailed AND primary PFC codes, for the
+    two-tier bridge lookup, plus confidence), so this creates just those
+    columns as a physical table — mirroring the ``prep.int_transactions__merged``
+    precedent already used above for entity-resolution tests (see
+    ``_setup_prep_table``).
+
+    The same transaction also exists in the per-source staging layer,
+    ``prep.stg_plaid__transactions``, which the ``plaid_unmapped`` coverage
+    stat scans (lighter than the merged pipeline, and the natural
+    per-Plaid-transaction grain). A matching stub with just the two PFC-code
+    columns is seeded so that stat sees the transaction too.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS prep.int_transactions__merged ("
+        "  transaction_id VARCHAR PRIMARY KEY, "
+        "  category_detailed VARCHAR, "
+        "  plaid_category VARCHAR, "
+        "  category_confidence VARCHAR"
+        ")"
+    )
+    db.execute(
+        "INSERT INTO prep.int_transactions__merged "
+        "(transaction_id, category_detailed, plaid_category, category_confidence) "
+        "VALUES (?, ?, ?, ?)",
+        [transaction_id, category_detailed, plaid_category, category_confidence],
+    )
+    # Per-source staging stub for the plaid_unmapped coverage stat.
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS prep.stg_plaid__transactions ("
+        "  transaction_id VARCHAR, "
+        "  category_detailed VARCHAR, "
+        "  plaid_category VARCHAR"
+        ")"
+    )
+    db.execute(
+        "INSERT INTO prep.stg_plaid__transactions "
+        "(transaction_id, category_detailed, plaid_category) "
+        "VALUES (?, ?, ?)",
+        [transaction_id, category_detailed, plaid_category],
+    )
+
+
+def _seed_bridge_mapping(
+    db: Database,
+    *,
+    source_category_code: str,
+    code_level: str,
+    category_id: str,
+    category: str,
+    subcategory: str | None,
+) -> None:
+    """Seed one core.bridge_category_source_map row, real mechanism.
+
+    Inserts into ``seeds.category_source_map`` (the bridge's seed tier —
+    mirrors ``test_bridge_category_source_map.py``'s ``_insert_seed_row``)
+    plus a matching ``seeds.categories`` row so
+    ``core.dim_categories``/``core.bridge_category_source_map`` — both real
+    views, not stubs — resolve ``category_id`` to a ``(category,
+    subcategory)`` pair the same way production does. Callers must call
+    ``refresh_views(db)`` first so the seed tables exist.
+
+    Named-column insert (not positional) on purpose: the bootstrap
+    ``seeds.categories`` table (``moneybin.seeds._ensure_seed_tables_exist``)
+    still carries its historical 5th column (kept for V014 migration replay,
+    unrelated to this bridge), so this leaves it at its column default
+    (``NULL``) rather than assuming a name or position for a column this
+    test doesn't exercise.
+    """
+    db.execute(
+        "INSERT INTO seeds.category_source_map "
+        "(source_type, source_category_code, code_level, category_id, "
+        "source_taxonomy_version) VALUES ('plaid', ?, ?, ?, 'plaid_pfc_v2')",
+        [source_category_code, code_level, category_id],
+    )
+    db.execute(
+        "INSERT INTO seeds.categories (category_id, category, subcategory, description) "
+        "VALUES (?, ?, ?, 'test category')",
+        [category_id, category, subcategory],
+    )
+
+
+class TestApplyPlaidCategories:
+    """Tests for the two-tier Plaid PFC bridge categorizer.
+
+    Exercises the real ``core.bridge_category_source_map`` reverse lookup
+    (detailed-preferred, primary-fallback) rather than the retired
+    ``dim_categories.plaid_detailed`` column.
+    """
+
+    @pytest.mark.unit
+    def test_detailed_match_assigns_category(self, db: Database) -> None:
+        """A HIGH-confidence txn whose detailed code is bridge-mapped adopts it."""
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="FOOD_AND_DRINK_COFFEE",
+            code_level="detailed",
+            category_id="FND-COF",
+            category="Food & Drink",
+            subcategory="Coffee Shops",
+        )
+        _insert_plaid_txn(
+            db,
+            "t1",
+            category_detailed="FOOD_AND_DRINK_COFFEE",
+            plaid_category="FOOD_AND_DRINK",
+            category_confidence="HIGH",
+        )
+
+        n = apply_plaid_categories(db)
+
+        assert n == 1
+        row = db.execute(
+            "SELECT category_id, categorized_by, source_type, confidence "
+            "FROM app.transaction_categories WHERE transaction_id='t1'"
+        ).fetchone()
+        assert row == ("FND-COF", "provider_native", "plaid", Decimal("0.90"))
+
+    @pytest.mark.unit
+    def test_detailed_wins_over_primary_no_fanout(self, db: Database) -> None:
+        """Two-tier: when both codes are bridge-mapped, detailed wins, exactly once.
+
+        Regression test for the bug this rebuild fixes: without the QUALIFY
+        dedup, a transaction whose detailed AND primary codes both resolve in
+        the bridge would fan out into two writes for the same transaction
+        (non-deterministic final category, inflated count).
+        """
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="FOOD_AND_DRINK_FAST_FOOD",
+            code_level="detailed",
+            category_id="FND-FST",
+            category="Food & Drink",
+            subcategory="Fast Food",
+        )
+        _seed_bridge_mapping(
+            db,
+            source_category_code="FOOD_AND_DRINK",
+            code_level="primary",
+            category_id="FND",
+            category="Food & Drink",
+            subcategory=None,
+        )
+        _insert_plaid_txn(
+            db,
+            "t2",
+            category_detailed="FOOD_AND_DRINK_FAST_FOOD",
+            plaid_category="FOOD_AND_DRINK",
+            category_confidence="HIGH",
+        )
+
+        n = apply_plaid_categories(db)
+
+        assert n == 1, "detailed+primary both matching must write once, not fan out"
+        row = db.execute(
+            "SELECT category_id FROM app.transaction_categories WHERE transaction_id='t2'"
+        ).fetchone()
+        assert row == ("FND-FST",)
+
+    @pytest.mark.unit
+    def test_primary_fallback_when_detailed_unmapped(self, db: Database) -> None:
+        """When the detailed code has no bridge row, the primary code's mapping wins."""
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="TRANSPORTATION",
+            code_level="primary",
+            category_id="TRP",
+            category="Transportation",
+            subcategory=None,
+        )
+        _insert_plaid_txn(
+            db,
+            "t3",
+            # Intentionally NOT mapped in the bridge — only the primary
+            # TRANSPORTATION code is seeded above.
+            category_detailed="TRANSPORTATION_BIKES_AND_SCOOTERS",
+            plaid_category="TRANSPORTATION",
+            category_confidence="HIGH",
+        )
+
+        n = apply_plaid_categories(db)
+
+        assert n == 1
+        row = db.execute(
+            "SELECT category_id FROM app.transaction_categories WHERE transaction_id='t3'"
+        ).fetchone()
+        assert row == ("TRP",)
+
+    @pytest.mark.unit
+    def test_skips_low_confidence(self, db: Database) -> None:
+        """A LOW confidence Plaid txn is not categorized, even with a bridge match."""
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="FOOD_AND_DRINK_COFFEE",
+            code_level="detailed",
+            category_id="FND-COF",
+            category="Food & Drink",
+            subcategory="Coffee Shops",
+        )
+        _insert_plaid_txn(
+            db,
+            "t4",
+            category_detailed="FOOD_AND_DRINK_COFFEE",
+            plaid_category="FOOD_AND_DRINK",
+            category_confidence="LOW",
+        )
+
+        n = apply_plaid_categories(db)
+
+        assert n == 0
+        assert (
+            db.execute(
+                "SELECT 1 FROM app.transaction_categories WHERE transaction_id='t4'"
+            ).fetchone()
+            is None
+        )
+
+
+# ---------------------------------------------------------------------------
+# improve_ai_categories — AI-guessed -> confident provider_native upgrade
+# ---------------------------------------------------------------------------
+
+
+def _seed_ai_category(
+    db: Database,
+    transaction_id: str,
+    *,
+    category: str,
+    merchant_id: str | None = None,
+) -> None:
+    """Seed a pre-existing ai-categorized row (priority 7), real mechanism.
+
+    Direct INSERT mirrors the pre-seeding pattern already used in this module
+    (e.g. ``TestCategorizePendingPlaidPass``) to arrange a prior categorization
+    ahead of the pass under test, rather than driving it through
+    ``categorize_items`` — the ai row here is a fixture input, not the
+    derived state under test. ``merchant_id`` optionally seeds a merchant
+    resolved during the row's original AI categorization, so upgrade-pass
+    tests can assert it survives (or is lost by) the rewrite.
+    """
+    db.execute(
+        "INSERT INTO app.transaction_categories "
+        "(transaction_id, category, categorized_by, merchant_id) VALUES (?, ?, 'ai', ?)",
+        [transaction_id, category, merchant_id],
+    )
+
+
+def _seed_user_category(db: Database, transaction_id: str, *, category: str) -> None:
+    """Seed a pre-existing user-categorized row (priority 1), real mechanism."""
+    db.execute(
+        "INSERT INTO app.transaction_categories "
+        "(transaction_id, category, categorized_by) VALUES (?, ?, 'user')",
+        [transaction_id, category],
+    )
+
+
+def _category_of(db: Database, transaction_id: str) -> tuple[str, str] | None:
+    """Return ``(category, categorized_by)`` for one transaction, or ``None``."""
+    row = db.execute(
+        "SELECT category, categorized_by FROM app.transaction_categories "
+        "WHERE transaction_id = ?",
+        [transaction_id],
+    ).fetchone()
+    return (row[0], row[1]) if row is not None else None
+
+
+class TestImproveAiCategories:
+    """Tests for the AI -> confident provider_native upgrade pass.
+
+    Reuses ``apply_plaid_categories``'s bridge fixtures — the only
+    difference is the pre-existing row's ``categorized_by`` and the
+    predicate (``tc.categorized_by = 'ai'`` instead of ``tc.transaction_id
+    IS NULL``).
+    """
+
+    @pytest.mark.unit
+    def test_improve_ai_upgrades_ai_row_to_confident_plaid(self, db: Database) -> None:
+        """An ai-guessed row upgrades to the bridge-mapped provider_native category."""
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="FOOD_AND_DRINK_GROCERIES",
+            code_level="detailed",
+            category_id="FND-GRO",
+            category="Groceries",
+            subcategory=None,
+        )
+        _insert_plaid_txn(
+            db,
+            "t1",
+            category_detailed="FOOD_AND_DRINK_GROCERIES",
+            plaid_category="FOOD_AND_DRINK",
+            category_confidence="HIGH",
+        )
+        _seed_ai_category(db, "t1", category="Shopping")  # priority 7
+
+        n = CategorizationService(db).improve_ai_categories()
+
+        assert n == 1
+        assert _category_of(db, "t1") == ("Groceries", "provider_native")
+
+    @pytest.mark.unit
+    def test_improve_ai_does_not_touch_rule_or_user_rows(self, db: Database) -> None:
+        """A higher-priority user row is left untouched by the upgrade pass."""
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="FOOD_AND_DRINK_GROCERIES",
+            code_level="detailed",
+            category_id="FND-GRO",
+            category="Groceries",
+            subcategory=None,
+        )
+        _insert_plaid_txn(
+            db,
+            "t1",
+            category_detailed="FOOD_AND_DRINK_GROCERIES",
+            plaid_category="FOOD_AND_DRINK",
+            category_confidence="HIGH",
+        )
+        _seed_user_category(db, "t1", category="Travel")  # priority 1
+
+        n = CategorizationService(db).improve_ai_categories()
+
+        assert n == 0
+        assert _category_of(db, "t1") == ("Travel", "user")
+
+    @pytest.mark.unit
+    def test_improve_ai_respects_confidence_gate(self, db: Database) -> None:
+        """A LOW-confidence bridge match does not upgrade an ai row."""
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="FOOD_AND_DRINK_GROCERIES",
+            code_level="detailed",
+            category_id="FND-GRO",
+            category="Groceries",
+            subcategory=None,
+        )
+        _insert_plaid_txn(
+            db,
+            "t1",
+            category_detailed="FOOD_AND_DRINK_GROCERIES",
+            plaid_category="FOOD_AND_DRINK",
+            category_confidence="LOW",  # below MEDIUM gate
+        )
+        _seed_ai_category(db, "t1", category="Shopping")
+
+        n = CategorizationService(db).improve_ai_categories()
+
+        assert n == 0
+        assert _category_of(db, "t1") == ("Shopping", "ai")
+
+    @pytest.mark.unit
+    def test_improve_ai_preserves_existing_merchant_id(self, db: Database) -> None:
+        """Upgrading an ai row to provider_native must not null out its merchant_id.
+
+        Regression test: ``_write_plaid_rows`` previously called
+        ``write_categorization(...)`` without ``merchant_id=``, defaulting it to
+        ``None``. ``upsert_guarded`` sets ``merchant_id = EXCLUDED.merchant_id``
+        on every permitted UPDATE, so the missing kwarg silently nulled out a
+        merchant_id resolved during the row's original AI categorization. The
+        fill path (``apply_plaid_categories``) is unaffected — new rows have no
+        prior merchant_id to lose.
+        """
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="FOOD_AND_DRINK_GROCERIES",
+            code_level="detailed",
+            category_id="FND-GRO",
+            category="Groceries",
+            subcategory=None,
+        )
+        _insert_plaid_txn(
+            db,
+            "t1",
+            category_detailed="FOOD_AND_DRINK_GROCERIES",
+            plaid_category="FOOD_AND_DRINK",
+            category_confidence="HIGH",
+        )
+        _seed_ai_category(
+            db, "t1", category="Shopping", merchant_id="mrc_existing01"
+        )  # priority 7, carries a resolved merchant_id
+
+        n = CategorizationService(db).improve_ai_categories()
+
+        assert n == 1
+        row = db.execute(
+            "SELECT category, categorized_by, merchant_id "
+            "FROM app.transaction_categories WHERE transaction_id = ?",
+            ["t1"],
+        ).fetchone()
+        assert row == ("Groceries", "provider_native", "mrc_existing01")
+
+
+# ---------------------------------------------------------------------------
+# Plaid categorizer observability — counters, by_provider_native, coverage
+# gap (Task 9, Tier-2b — deferred from the category-source-map bridge PR)
+# ---------------------------------------------------------------------------
+
+
+class TestPlaidCategorizerObservability:
+    """Prometheus counters + stats surfaces for the Plaid PFC categorizer."""
+
+    @pytest.mark.unit
+    def test_by_provider_native_appears_after_plaid_write(self, db: Database) -> None:
+        """A provider_native write surfaces via stats()['by_provider_native']."""
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="FOOD_AND_DRINK_COFFEE",
+            code_level="detailed",
+            category_id="FND-COF",
+            category="Food & Drink",
+            subcategory="Coffee Shops",
+        )
+        _insert_plaid_txn(
+            db,
+            "t1",
+            category_detailed="FOOD_AND_DRINK_COFFEE",
+            plaid_category="FOOD_AND_DRINK",
+            category_confidence="HIGH",
+        )
+
+        n = apply_plaid_categories(db)
+
+        assert n == 1
+        stats = get_categorization_stats(db)
+        assert stats["by_provider_native"] == 1
+
+    @pytest.mark.unit
+    def test_write_increments_provider_native_counter(self, db: Database) -> None:
+        """A successful plaid write increments CATEGORIZE_PROVIDER_NATIVE_TOTAL."""
+        from moneybin.metrics.registry import CATEGORIZE_PROVIDER_NATIVE_TOTAL
+
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="FOOD_AND_DRINK_COFFEE",
+            code_level="detailed",
+            category_id="FND-COF",
+            category="Food & Drink",
+            subcategory="Coffee Shops",
+        )
+        _insert_plaid_txn(
+            db,
+            "t1",
+            category_detailed="FOOD_AND_DRINK_COFFEE",
+            plaid_category="FOOD_AND_DRINK",
+            category_confidence="HIGH",
+        )
+        before = CATEGORIZE_PROVIDER_NATIVE_TOTAL.labels(
+            source_type="plaid", trigger="sweep"
+        )._value.get()  # type: ignore[reportPrivateUsage] — prometheus internals
+
+        n = apply_plaid_categories(db)
+
+        after = CATEGORIZE_PROVIDER_NATIVE_TOTAL.labels(
+            source_type="plaid", trigger="sweep"
+        )._value.get()  # type: ignore[reportPrivateUsage]
+        assert n == 1
+        assert after == before + 1
+
+    @pytest.mark.unit
+    def test_confidence_skip_increments_below_gate_counter(self, db: Database) -> None:
+        """A LOW-confidence match increments the skipped counter with reason='below_gate'."""
+        from moneybin.metrics.registry import CATEGORIZE_SKIPPED_CONFIDENCE_TOTAL
+
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="FOOD_AND_DRINK_COFFEE",
+            code_level="detailed",
+            category_id="FND-COF",
+            category="Food & Drink",
+            subcategory="Coffee Shops",
+        )
+        _insert_plaid_txn(
+            db,
+            "t4",
+            category_detailed="FOOD_AND_DRINK_COFFEE",
+            plaid_category="FOOD_AND_DRINK",
+            category_confidence="LOW",
+        )
+        before = CATEGORIZE_SKIPPED_CONFIDENCE_TOTAL.labels(
+            source_type="plaid", reason="below_gate", trigger="sweep"
+        )._value.get()  # type: ignore[reportPrivateUsage] — prometheus internals
+
+        n = apply_plaid_categories(db)
+
+        after = CATEGORIZE_SKIPPED_CONFIDENCE_TOTAL.labels(
+            source_type="plaid", reason="below_gate", trigger="sweep"
+        )._value.get()  # type: ignore[reportPrivateUsage]
+        assert n == 0
+        assert after == before + 1
+
+    @pytest.mark.unit
+    def test_unknown_confidence_increments_unknown_counter(self, db: Database) -> None:
+        """An UNKNOWN confidence level increments the skipped counter reason='unknown'.
+
+        A distinct reason from a below-gate rejection: UNKNOWN maps to a NULL
+        numeric confidence (a data-quality signal), so it must not be conflated
+        with a genuine low-confidence skip.
+        """
+        from moneybin.metrics.registry import CATEGORIZE_SKIPPED_CONFIDENCE_TOTAL
+
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="FOOD_AND_DRINK_COFFEE",
+            code_level="detailed",
+            category_id="FND-COF",
+            category="Food & Drink",
+            subcategory="Coffee Shops",
+        )
+        _insert_plaid_txn(
+            db,
+            "t5",
+            category_detailed="FOOD_AND_DRINK_COFFEE",
+            plaid_category="FOOD_AND_DRINK",
+            category_confidence="UNKNOWN",
+        )
+        before = CATEGORIZE_SKIPPED_CONFIDENCE_TOTAL.labels(
+            source_type="plaid", reason="unknown", trigger="sweep"
+        )._value.get()  # type: ignore[reportPrivateUsage] — prometheus internals
+
+        n = apply_plaid_categories(db)
+
+        after = CATEGORIZE_SKIPPED_CONFIDENCE_TOTAL.labels(
+            source_type="plaid", reason="unknown", trigger="sweep"
+        )._value.get()  # type: ignore[reportPrivateUsage]
+        assert n == 0
+        assert after == before + 1
+
+    @pytest.mark.unit
+    def test_plaid_unmapped_counts_uncovered_pfc_codes(self, db: Database) -> None:
+        """A Plaid txn whose PFC codes have no bridge row counts as unmapped."""
+        refresh_views(db)
+        _insert_plaid_txn(
+            db,
+            "t_unmapped",
+            category_detailed="SOME_UNMAPPED_DETAILED_CODE",
+            plaid_category="SOME_UNMAPPED_PRIMARY_CODE",
+            category_confidence="HIGH",
+        )
+
+        stats = get_categorization_stats(db)
+
+        assert stats["plaid_unmapped"] == 1
+
+    @pytest.mark.unit
+    def test_plaid_unmapped_excludes_covered_transactions(self, db: Database) -> None:
+        """A bridge-mapped Plaid txn must not inflate the unmapped count."""
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="FOOD_AND_DRINK_COFFEE",
+            code_level="detailed",
+            category_id="FND-COF",
+            category="Food & Drink",
+            subcategory="Coffee Shops",
+        )
+        _insert_plaid_txn(
+            db,
+            "t_covered",
+            category_detailed="FOOD_AND_DRINK_COFFEE",
+            plaid_category="FOOD_AND_DRINK",
+            category_confidence="HIGH",
+        )
+        _insert_plaid_txn(
+            db,
+            "t_unmapped",
+            category_detailed="SOME_UNMAPPED_DETAILED_CODE",
+            plaid_category="SOME_UNMAPPED_PRIMARY_CODE",
+            category_confidence="HIGH",
+        )
+
+        stats = get_categorization_stats(db)
+
+        assert stats["plaid_unmapped"] == 1
+
+    @pytest.mark.unit
+    def test_plaid_unmapped_omitted_when_staging_view_absent(
+        self, db: Database
+    ) -> None:
+        """No Plaid staging view materialized — the key is omitted, not zeroed.
+
+        Mirrors the ``by_source`` block's CatalogException degradation so a
+        non-Plaid database (no data ever loaded from Plaid) doesn't break
+        ``categorization_stats()``.
+        """
+        stats = get_categorization_stats(db)
+
+        assert "plaid_unmapped" not in stats
+
+    @pytest.mark.unit
+    def test_typed_stats_exposes_plaid_unmapped(self, db: Database) -> None:
+        """CategorizationService.stats() carries plaid_unmapped through to the typed result."""
+        refresh_views(db)
+        _insert_plaid_txn(
+            db,
+            "t_unmapped",
+            category_detailed="SOME_UNMAPPED_DETAILED_CODE",
+            plaid_category="SOME_UNMAPPED_PRIMARY_CODE",
+            category_confidence="HIGH",
+        )
+
+        stats = CategorizationService(db).stats()
+
+        assert stats.plaid_unmapped == 1
+
+
+# ---------------------------------------------------------------------------
+# categorize_pending — plaid pass wired in last (Task 6)
+# ---------------------------------------------------------------------------
+
+
+class TestCategorizePendingPlaidPass:
+    """Proves the plaid pass is wired into the categorize_pending cascade.
+
+    Uses the bridge fixtures from ``TestApplyPlaidCategories`` (real
+    ``core.bridge_category_source_map`` reverse lookup) plus real
+    ``core.fct_transactions`` rows so ``fetch_uncategorized_rows`` — the
+    scan shared by the rules and merchant passes — sees the transactions
+    before the plaid pass runs last.
+    """
+
+    @pytest.mark.unit
+    def test_plaid_fills_bare_row_but_not_higher_priority_row(
+        self, db: Database
+    ) -> None:
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="FOOD_AND_DRINK_COFFEE",
+            code_level="detailed",
+            category_id="FND-COF",
+            category="Food & Drink",
+            subcategory="Coffee Shops",
+        )
+        _insert_plaid_txn(
+            db,
+            "t1",
+            category_detailed="FOOD_AND_DRINK_COFFEE",
+            plaid_category="FOOD_AND_DRINK",
+            category_confidence="HIGH",
+        )
+        _insert_plaid_txn(
+            db,
+            "t2",
+            category_detailed="FOOD_AND_DRINK_COFFEE",
+            plaid_category="FOOD_AND_DRINK",
+            category_confidence="HIGH",
+        )
+        # fetch_uncategorized_rows (shared by apply_rules/apply_merchant_categories)
+        # reads core.fct_transactions — both txns must exist there with
+        # non-empty description or the early-return in categorize_pending
+        # fires before the plaid pass ever runs.
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, "
+            "description, source_type) VALUES "
+            "('t1', 'ACC1', '2025-06-01', -4.50, 'COFFEE SHOP', 'plaid'), "
+            "('t2', 'ACC1', '2025-06-02', -4.75, 'COFFEE SHOP TWO', 'plaid')"
+        )
+        # t1 is already categorized by a higher-priority source (user, prio
+        # 1) than plaid (provider_native, prio 6) — mirrors
+        # TestGetCategorizationStats.test_with_categorized's seeding pattern.
+        db.execute("""
+            INSERT INTO app.transaction_categories
+            (transaction_id, category, categorized_by)
+            VALUES ('t1', 'Coffee', 'user')
+        """)
+
+        result = categorize_pending(db)
+
+        # No rules or merchants are configured, so rule/merchant passes are
+        # no-ops — only the plaid pass contributes, and only for t2 (t1 is
+        # already categorized so the plaid query's uncategorized filter
+        # excludes it).
+        assert result["plaid"] == 1
+        assert result["total"] == 1
+
+        t1_row = db.execute(
+            "SELECT categorized_by FROM app.transaction_categories "
+            "WHERE transaction_id = 't1'"
+        ).fetchone()
+        assert t1_row == ("user",), "higher-priority row must not be overwritten"
+
+        t2_row = db.execute(
+            "SELECT categorized_by FROM app.transaction_categories "
+            "WHERE transaction_id = 't2'"
+        ).fetchone()
+        assert t2_row == ("provider_native",), "bare row must be filled by plaid"
+
+    @pytest.mark.unit
+    def test_categorize_run_rules_and_merchants_excludes_plaid(
+        self, db: Database
+    ) -> None:
+        """categorize_run's explicit methods=[...] selection must not silently add plaid.
+
+        Regression test for the shared-scan fast path in
+        ``CategorizationService.categorize_run`` (``effective == ["rules",
+        "merchants"]``): before the plaid pass existed, that fast path
+        delegated straight to ``categorize_pending()`` because the two were
+        equivalent. Now that ``categorize_pending()`` also runs plaid by
+        default, the fast path must opt out (``include_plaid=False``) or it
+        would apply a third, unrequested engine whose writes go unreported
+        in ``applied_by_method`` — and, depending on the requested method
+        order, only sometimes (the per-method loop for other orders never
+        touches plaid at all).
+        """
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="FOOD_AND_DRINK_COFFEE",
+            code_level="detailed",
+            category_id="FND-COF",
+            category="Food & Drink",
+            subcategory="Coffee Shops",
+        )
+        _insert_plaid_txn(
+            db,
+            "t3",
+            category_detailed="FOOD_AND_DRINK_COFFEE",
+            plaid_category="FOOD_AND_DRINK",
+            category_confidence="HIGH",
+        )
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, "
+            "description, source_type) VALUES "
+            "('t3', 'ACC1', '2025-06-03', -5.25, 'COFFEE SHOP THREE', 'plaid')"
+        )
+
+        result = CategorizationService(db).categorize_run()
+
+        assert result["applied_by_method"] == {"rules": 0, "merchants": 0}
+        assert result["total_applied"] == 0
+        assert (
+            db.execute(
+                "SELECT 1 FROM app.transaction_categories WHERE transaction_id='t3'"
+            ).fetchone()
+            is None
+        ), "categorize_run(methods=['rules','merchants']) must not trigger plaid"
+
+    @pytest.mark.unit
+    def test_plaid_pass_runs_when_fetch_uncategorized_rows_is_empty(
+        self, db: Database
+    ) -> None:
+        """A blank-description Plaid row must not starve the plaid pass.
+
+        ``fetch_uncategorized_rows`` (shared by the rules/merchant passes)
+        excludes rows with a blank description AND blank memo (and, absent
+        the prep.int_transactions__merged table in this unit DB, has no
+        entity-id fallback either) — so it returns ``[]`` for a txn like
+        this. ``apply_plaid_categories`` matches on the PFC category code,
+        not the description, so it can still categorize the row via its own
+        independent query. Before the fix, the ``if not rows: return`` guard
+        in ``categorize_pending`` short-circuited before the plaid pass ever
+        ran, silently starving any all-blank-description tail.
+        """
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="FOOD_AND_DRINK_COFFEE",
+            code_level="detailed",
+            category_id="FND-COF",
+            category="Food & Drink",
+            subcategory="Coffee Shops",
+        )
+        _insert_plaid_txn(
+            db,
+            "t5",
+            category_detailed="FOOD_AND_DRINK_COFFEE",
+            plaid_category="FOOD_AND_DRINK",
+            category_confidence="HIGH",
+        )
+        # Blank description, no memo — fetch_uncategorized_rows excludes this
+        # row entirely, so it must be the ONLY uncategorized row in the DB
+        # for the starvation bug to reproduce (a non-blank sibling row would
+        # make apply_rules/apply_merchant_categories return non-empty rows,
+        # masking the bug this test targets).
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, "
+            "description, source_type) VALUES "
+            "('t5', 'ACC1', '2025-06-05', -6.00, '', 'plaid')"
+        )
+
+        # Confirm the premise: the shared scan really does exclude this row.
+        from moneybin.services.categorization.matcher import (
+            CategorizationMatcher,
+        )
+
+        assert CategorizationMatcher(db).fetch_uncategorized_rows() == []
+
+        result = categorize_pending(db)
+
+        assert result["plaid"] == 1, (
+            "plaid pass must run and categorize the row even though "
+            "fetch_uncategorized_rows returned no rows to share with "
+            "the rules/merchant passes"
+        )
+        assert result["total"] == 1
+        row = db.execute(
+            "SELECT category, categorized_by FROM app.transaction_categories "
+            "WHERE transaction_id = 't5'"
+        ).fetchone()
+        assert row == ("Food & Drink", "provider_native")

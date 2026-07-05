@@ -1,0 +1,37 @@
+<!-- @dsCard group="Charts" viewport="700x235" subtitle="Interpolated monthly is the default; stepped carry-forward is the honest form for balance data; prior-year ghost is dashed on a shared scale. Axis clipping disclosed on-chart, mono 11px." name="Line & area — three stances" -->
+<!DOCTYPE html><html><head><meta charset="utf-8"><link rel="stylesheet" href="../styles.css"><style>body{margin:0;font-family:var(--font-data)}</style></head>
+<body style="background:var(--bg-surface);padding:16px 20px;display:flex;gap:16px;">
+<div style="flex:1">
+  <div style="font-size:10px;letter-spacing:0.1em;color:var(--text-faint);margin-bottom:6px">A · INTERPOLATED — DEFAULT</div>
+  <svg role="img" aria-label="Interpolated monthly line with a light area fill, axis clipping disclosed" viewBox="0 0 200 130" style="display:block;width:100%">
+    <line x1="0" y1="30" x2="200" y2="30" style="stroke:var(--border-hairline)"/>
+    <line x1="0" y1="75" x2="200" y2="75" style="stroke:var(--border-hairline)"/>
+    <line x1="0" y1="118" x2="200" y2="118" style="stroke:var(--border-strong)"/>
+    <path d="M4,98 L36,86 L68,90 L100,68 L132,74 L164,48 L196,36 L196,118 L4,118 Z" style="fill:var(--accent-brass);fill-opacity:0.07"/>
+    <path d="M4,98 L36,86 L68,90 L100,68 L132,74 L164,48 L196,36" style="fill:none;stroke:var(--accent-brass);stroke-width:1.75"/>
+    <text x="196" y="14" text-anchor="end" style="font-size:11px;fill:var(--text-faint)">axis clipped</text>
+  </svg>
+</div>
+<div style="flex:1">
+  <div style="font-size:10px;letter-spacing:0.1em;color:var(--text-faint);margin-bottom:6px">B · STEPPED — AS OBSERVED</div>
+  <svg role="img" aria-label="Stepped carry-forward line with statement dots — balance as observed" viewBox="0 0 200 130" style="display:block;width:100%">
+    <line x1="0" y1="30" x2="200" y2="30" style="stroke:var(--border-hairline)"/>
+    <line x1="0" y1="75" x2="200" y2="75" style="stroke:var(--border-hairline)"/>
+    <line x1="0" y1="118" x2="200" y2="118" style="stroke:var(--border-strong)"/>
+    <path d="M4,100 H36 V88 H68 V92 H100 V70 H132 V74 H164 V52 H196" style="fill:none;stroke:var(--accent-brass);stroke-width:1.75"/>
+    <circle cx="4" cy="100" r="2.4" style="fill:var(--accent-brass)"/><circle cx="36" cy="88" r="2.4" style="fill:var(--accent-brass)"/><circle cx="68" cy="92" r="2.4" style="fill:var(--accent-brass)"/><circle cx="100" cy="70" r="2.4" style="fill:var(--accent-brass)"/><circle cx="132" cy="74" r="2.4" style="fill:var(--accent-brass)"/><circle cx="164" cy="52" r="2.4" style="fill:var(--accent-brass)"/>
+    <text x="196" y="14" text-anchor="end" style="font-size:11px;fill:var(--text-faint)">dots are statements</text>
+  </svg>
+</div>
+<div style="flex:1">
+  <div style="font-size:10px;letter-spacing:0.1em;color:var(--text-faint);margin-bottom:6px">C · PRIOR-YEAR GHOST</div>
+  <svg role="img" aria-label="Current brass line over a dashed prior-year ghost on a shared scale" viewBox="0 0 200 130" style="display:block;width:100%">
+    <line x1="0" y1="30" x2="200" y2="30" style="stroke:var(--border-hairline)"/>
+    <line x1="0" y1="75" x2="200" y2="75" style="stroke:var(--border-hairline)"/>
+    <line x1="0" y1="118" x2="200" y2="118" style="stroke:var(--border-strong)"/>
+    <path d="M4,92 L36,96 L68,84 L100,88 L132,72 L164,78 L196,62" style="fill:none;stroke:var(--text-faint);stroke-width:1.25;stroke-dasharray:3 4"/>
+    <path d="M4,80 L36,70 L68,74 L100,58 L132,62 L164,44 L196,32" style="fill:none;stroke:var(--accent-brass);stroke-width:1.75"/>
+    <text x="196" y="14" text-anchor="end" style="font-size:11px;fill:var(--text-faint)">shared scale</text>
+  </svg>
+</div>
+</body></html>

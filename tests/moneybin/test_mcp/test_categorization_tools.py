@@ -63,6 +63,7 @@ class TestCategorizeToolRegistration:
         assert "categories_delete" in names
         assert "transactions_categorize_assist" in names
         assert "transactions_categorize_run" in names
+        assert "transactions_categorize_improve_ai" in names
 
     @pytest.mark.unit
     async def test_categorize_stats_returns_envelope(self, mcp_db: object) -> None:
@@ -225,6 +226,79 @@ class TestTransactionsCategorizeRun:
         result = (await transactions_categorize_run(methods=["rules"])).to_dict()
         assert "rules" in result["data"]["applied_by_method"]
         assert "merchants" not in result["data"]["applied_by_method"]
+
+
+class TestTransactionsCategorizeImproveAi:
+    """transactions_categorize_improve_ai tool wiring and response envelope."""
+
+    @pytest.mark.unit
+    async def test_upgrades_confident_ai_row_to_provider_native(
+        self, mcp_db: Path
+    ) -> None:
+        """An ai-guessed row whose Plaid category bridges confidently is upgraded.
+
+        Mirrors the CLI integration test's seeding
+        (``tests/integration/test_categorize_improve_ai_cli.py``): a confident
+        (HIGH) Plaid bridge mapping plus a pre-existing ``ai``-guessed
+        categorization that the upgrade pass should overwrite.
+        """
+        from moneybin.mcp.tools.transactions_categorize import (
+            transactions_categorize_improve_ai,
+        )
+
+        with get_database(read_only=False) as db:
+            db.execute(
+                "INSERT INTO seeds.category_source_map "
+                "(source_type, source_category_code, code_level, category_id, "
+                "source_taxonomy_version) VALUES "
+                "('plaid', 'FOOD_AND_DRINK_GROCERIES', 'detailed', 'FND-GRO', 'plaid_pfc_v2')"
+            )
+            db.execute(
+                "INSERT INTO seeds.categories "
+                "(category_id, category, subcategory, description) "
+                "VALUES ('FND-GRO', 'Groceries', NULL, 'test category')"
+            )
+            db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS prep.int_transactions__merged ("
+                "  transaction_id VARCHAR PRIMARY KEY, "
+                "  category_detailed VARCHAR, "
+                "  plaid_category VARCHAR, "
+                "  category_confidence VARCHAR"
+                ")"
+            )
+            db.execute(
+                "INSERT INTO prep.int_transactions__merged "
+                "(transaction_id, category_detailed, plaid_category, category_confidence) "
+                "VALUES ('t1', 'FOOD_AND_DRINK_GROCERIES', 'FOOD_AND_DRINK', 'HIGH')"
+            )
+            db.execute(
+                "INSERT INTO app.transaction_categories "
+                "(transaction_id, category, categorized_by) "
+                "VALUES ('t1', 'Shopping', 'ai')"
+            )
+
+        result = (await transactions_categorize_improve_ai()).to_dict()
+        # ImproveAiPayload has only an AGGREGATE field → Tier.LOW derived sensitivity
+        assert result["summary"]["sensitivity"] == "low"
+        assert result["data"]["upgraded_count"] == 1
+
+        with get_database(read_only=True) as db:
+            row = db.execute(
+                "SELECT category, categorized_by FROM app.transaction_categories "
+                "WHERE transaction_id = 't1'"
+            ).fetchone()
+        assert row == ("Groceries", "provider_native")
+
+    @pytest.mark.unit
+    async def test_no_upgradeable_rows_returns_zero(self, mcp_db: Path) -> None:
+        """With no ai-guessed rows to upgrade, the count is zero."""
+        from moneybin.mcp.tools.transactions_categorize import (
+            transactions_categorize_improve_ai,
+        )
+
+        result = (await transactions_categorize_improve_ai()).to_dict()
+        assert result["data"]["upgraded_count"] == 0
 
 
 class TestTransactionsCategorizeCommit:

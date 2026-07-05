@@ -12,17 +12,34 @@ import pytest
 
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.services.audit_service import AuditService
 from moneybin.services.categorization import (
     CategorizationRuleInput,
     CategorizationService,
     validate_rule_items,
 )
+from moneybin.services.categorization.applier import MatchApplier
 from tests.moneybin.db_helpers import create_core_tables, seed_categories_view
 
 
 @pytest.fixture(autouse=True)
 def _core_tables(db: Database) -> None:  # pyright: ignore[reportUnusedFunction]
     create_core_tables(db)
+
+
+@pytest.fixture()
+def applier(db: Database) -> MatchApplier:
+    """MatchApplier bound to the test database."""
+    return MatchApplier(db, audit=AuditService(db))
+
+
+def _insert_txn(db: Database, transaction_id: str) -> None:
+    """Insert a minimal core.fct_transactions row for write-path tests."""
+    db.execute(
+        "INSERT INTO core.fct_transactions (transaction_id, amount, transaction_date) "
+        "VALUES (?, -10, '2026-05-01')",
+        [transaction_id],
+    )
 
 
 # --- CategorizationRuleInput model contract --------------------------------
@@ -1269,3 +1286,45 @@ class TestDeleteCategory:
             ).fetchall()
             == []
         )
+
+
+class TestWriteCategorizationSourceType:
+    """MatchApplier.write_categorization persists source_type alongside categorized_by."""
+
+    @pytest.mark.unit
+    def test_write_persists_source_type(
+        self, applier: MatchApplier, db: Database
+    ) -> None:
+        _insert_txn(db, "t1")  # existing helper in this file
+        applier.write_categorization(
+            transaction_id="t1",
+            category="Coffee",
+            subcategory=None,
+            categorized_by="provider_native",
+            source_type="plaid",
+            confidence=0.90,
+        )
+        row = db.execute(
+            "SELECT categorized_by, source_type FROM app.transaction_categories "
+            "WHERE transaction_id='t1'"
+        ).fetchone()
+        assert row == ("provider_native", "plaid")
+
+    @pytest.mark.unit
+    def test_existing_writers_default_source_type_internal(
+        self, applier: MatchApplier, db: Database
+    ) -> None:
+        _insert_txn(db, "t2")
+        applier.write_categorization(
+            transaction_id="t2",
+            category="Coffee",
+            subcategory=None,
+            categorized_by="rule",
+            rule_id="r1",
+            confidence=1.0,
+        )
+        row = db.execute(
+            "SELECT source_type FROM app.transaction_categories WHERE transaction_id='t2'"
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "internal"

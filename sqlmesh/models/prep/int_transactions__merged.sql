@@ -98,6 +98,30 @@ SELECT
     END
   ) AS subcategory,
   ARG_MIN(
+    m.category_detailed,
+    CASE
+      WHEN NOT m.category_detailed IS NULL
+      THEN COALESCE(sp.priority, 2147483646)
+      ELSE 2147483647
+    END
+  ) AS category_detailed, /* Plaid PFC detailed code; NULL for non-Plaid sources; sentinel 2147483646 matches merchant_entity_id for consistency — the Plaid member wins the tie */
+  ARG_MIN(
+    m.plaid_category,
+    CASE
+      WHEN NOT m.category_detailed IS NULL
+      THEN COALESCE(sp.priority, 2147483646)
+      ELSE 2147483647
+    END
+  ) AS plaid_category, /* keyed off category_detailed's presence (not its own) so all three PFC columns resolve from the same Plaid member in the common single-Plaid-member group; two divergent Plaid members tying on priority (e.g. a pending/posted pair Plaid recategorized) could split them across members — a rare cosmetic inconsistency shared with the category/subcategory ARG_MINs above */
+  ARG_MIN(
+    m.category_confidence,
+    CASE
+      WHEN NOT m.category_detailed IS NULL
+      THEN COALESCE(sp.priority, 2147483646)
+      ELSE 2147483647
+    END
+  ) AS category_confidence, /* same ordering as category_detailed/plaid_category — see comment above */
+  ARG_MIN(
     m.payment_channel,
     CASE
       WHEN NOT m.payment_channel IS NULL

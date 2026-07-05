@@ -92,7 +92,7 @@ flowchart LR
     C --> E{"merchant_name<br/>in app.merchants?"}
     E -->|yes| F[Reuse merchant_id]
     E -->|no| G["Create merchant in app.user_merchants<br/>created_by='plaid'<br/>canonical_name='Starbucks'"]
-    F --> H["Write categorized_by='plaid'<br/>confidence=1.0"]
+    F --> H["Write categorized_by='provider_native'<br/>confidence=1.0"]
     G --> H
 ```
 
@@ -233,7 +233,7 @@ A thin SELECT over `app.user_merchants`. Defined in `sqlmesh/models/core/dim_mer
 
 | Enum | Existing values | New values |
 |---|---|---|
-| `app.transaction_categories.categorized_by` | `'user'`, `'rule'`, `'auto_rule'`, `'ml'`, `'plaid'`, `'ai'` | `'migration'` |
+| `app.transaction_categories.categorized_by` | `'user'`, `'rule'`, `'auto_rule'`, `'ml'`, `'provider_native'`, `'ai'` | `'migration'` |
 | `app.user_merchants.created_by` | `'user'`, `'ai'` (today on `app.merchants`) | `'plaid'`, `'migration'` |
 
 ### Revised priority ladder (for `categorization-overview.md`)
@@ -245,7 +245,7 @@ A thin SELECT over `app.user_merchants`. Defined in `sqlmesh/models/core/dim_mer
 | 3 | Auto-generated rules | `'auto_rule'` | 1.0 | 0.9 |
 | 4 | Migration imports | `'migration'` | 1.0 | 0.85 |
 | 5 | ML predictions | `'ml'` | variable | 0.0 (circular) |
-| 6 | Plaid categories | `'plaid'` | 1.0 | 0.7 |
+| 6 | Plaid categories | `'provider_native'` | 1.0 | 0.7 |
 | 7 | LLM batch | `'ai'` | 1.0 | 0.8 |
 
 ## LLM-assist workflow
@@ -601,7 +601,7 @@ Future spec recommended (see Adjacent initiatives in overview).
 
 Tracked as a Tier D followup.
 
-- Slots into the priority ladder cleanly — new `categorized_by='enrichment'` between `'plaid'` and `'ai'`.
+- Slots into the priority ladder cleanly — new `categorized_by='enrichment'` between `'provider_native'` and `'ai'`.
 - Per "sync server is opaque" principle, server-side enrichment is invisible to client beyond receiving better-quality data.
 
 ### Local LLM-driven categorization (Ollama / llamafile / LM Studio)
@@ -626,7 +626,7 @@ Redaction internationalization tracked as recurring quality concern in followups
 
 These would require revisiting cold-start design if they happen:
 
-- Provider category mapping table extraction (multi-provider) — affects `categorized_by='plaid'` writes
+- Provider category mapping table extraction (multi-provider) — affects `categorized_by='provider_native'` writes
 - Merchant entity resolution (multi-pattern-per-merchant entity model) — non-trivial table changes
 - Confidence/threshold tuning UX for ML predictions — Pillar D concern; no cold-start impact
 

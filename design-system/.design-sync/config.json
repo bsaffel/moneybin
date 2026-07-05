@@ -1,0 +1,20 @@
+{
+  "projectId": "f00b345b-beb4-45ac-8869-772a881fd05f",
+  "shape": "package",
+  "pkg": "moneybin-design-system",
+  "globalName": "MoneyBinDS",
+  "cssEntry": ".design-sync/component-css.css",
+  "extraFonts": ".design-sync/fonts/fonts.css",
+  "readmeHeader": ".design-sync/conventions.md",
+  "buildCmd": "sh -c 'cat tokens/colors.css tokens/typography.css tokens/shape.css > .design-sync/component-css.css'",
+  "docsMap": {
+    "Button": "components/core/Button.prompt.md",
+    "Chip": "components/core/Chip.prompt.md",
+    "Amount": "components/data/Amount.prompt.md",
+    "WidgetCard": "components/data/WidgetCard.prompt.md",
+    "VaultStatusBar": "components/chrome/VaultStatusBar.prompt.md",
+    "Mark": "components/brand/Mark.prompt.md",
+    "Wordmark": "components/brand/Wordmark.prompt.md",
+    "DuckKey": "components/brand/DuckKey.prompt.md"
+  }
+}

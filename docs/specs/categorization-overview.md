@@ -52,7 +52,7 @@ The pipeline runs automatically after every import. Source-attached categorizati
 ```mermaid
 flowchart TD
     A[Import completes] --> A2{Source-attached<br/>categories?}
-    A2 -->|Plaid txn| AP[Plaid pass-through<br/>categorized_by='plaid']
+    A2 -->|Plaid txn| AP[Plaid pass-through<br/>categorized_by='provider_native']
     A2 -->|Migration import| AM[Migration mapping<br/>categorized_by='migration']
     A2 -->|None| B
     AP --> B[1. User-defined rules\npriority order, first match wins\npattern + optional amount/account filters]
@@ -133,7 +133,7 @@ The swappable interface above leaves room for a semantic-similarity tier — emb
 | `auto_rule` | 0.9 | User-accepted, slightly less direct |
 | `migration` | 0.85 | User-attested in prior tool (Mint, YNAB, etc.) |
 | `ml` | 0.0 | Excluded — circular (model training on its own output) |
-| `plaid` | 0.7 | Provider-supplied, generally accurate but unvalidated |
+| `provider_native` | 0.7 | Provider-supplied, generally accurate but unvalidated |
 | `ai` | 0.8 | LLM-decided, user accepted the batch |
 
 - **Minimum training samples:** configurable, default 50 categorized transactions.
@@ -335,7 +335,7 @@ This is a future initiative with real privacy design work. The contribution pipe
 
 ## In scope
 
-- Categorization priority hierarchy (user > rules > auto-rules > ML > plaid > ai)
+- Categorization priority hierarchy (user > rules > auto-rules > ML > provider_native > ai)
 - Auto-rule generation lifecycle: trigger, proposal, review, activation, correction handling
 - ML categorization: training pipeline, prediction, confidence-gated automation, model storage
 - Deterministic categorization pipeline documentation (rules + merchants, already implemented)

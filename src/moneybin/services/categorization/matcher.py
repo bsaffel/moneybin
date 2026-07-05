@@ -15,6 +15,8 @@ required because ``exact`` and anchored-``regex`` shapes can't span the
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any
 
 import duckdb
@@ -230,6 +232,28 @@ def match_merchant_with_name(
     return desc_hit
 
 
+@dataclass(slots=True, frozen=True)
+class UncategorizedRow:
+    """A row from :meth:`CategorizationMatcher.fetch_uncategorized_rows` / `fetch_rows_for_ids`.
+
+    Single named projection over ``core.fct_transactions`` LEFT JOINed to
+    ``prep.int_transactions__merged`` for the ``merchant_entity_id`` carry.
+    Replaces positional tuple-unpacking at every consumer so column order is
+    no longer load-bearing outside this module. Field order mirrors the
+    SELECT column order in both matcher query methods — keep them in sync.
+    """
+
+    transaction_id: str
+    description: str | None
+    amount: float | None
+    account_id: str | None
+    memo: str | None
+    merchant_entity_id: str | None
+    source_type: str | None
+    merchant_name: str | None
+    merchant_entity_source_type: str | None
+
+
 class CategorizationMatcher:
     """Read-only matching: merchants, rules, and uncategorized transaction scans.
 
@@ -294,7 +318,7 @@ class CategorizationMatcher:
             memo_present=bool(memo and memo.strip()),
         )
 
-    def fetch_uncategorized_rows(self) -> list[tuple[Any, ...]] | None:
+    def fetch_uncategorized_rows(self) -> list[UncategorizedRow] | None:
         """Return rows for uncategorized transactions with a non-empty description, memo, or entity id.
 
         Single scan shared between the facade's :meth:`apply_rules` and
@@ -308,10 +332,8 @@ class CategorizationMatcher:
         only in the ``with_entity`` query (which has the prep join alias ``m``);
         the ``without_entity`` fallback retains the text-only filter.
 
-        Columns: ``(transaction_id, description, amount, account_id, memo,
-        merchant_entity_id, source_type, merchant_name,
-        merchant_entity_source_type)`` — the superset of what either consumer
-        needs. ``apply_rules`` uses only the first five;
+        Returns :class:`UncategorizedRow` — the superset of columns either
+        consumer needs. ``apply_rules`` uses only the leading five fields;
         ``apply_merchant_categories`` additionally consults the trailing four
         for rung-0 entity resolution (M1T). ``merchant_entity_id`` and
         ``merchant_entity_source_type`` come from ``prep.int_transactions__merged``
@@ -320,8 +342,18 @@ class CategorizationMatcher:
         that issued the entity id — is the binding key, NOT the merge-winner
         ``source_type`` projected from ``core.fct_transactions``.
         """
-        where = """
-                WHERE c.transaction_id IS NULL
+        # A row is "pending" when it is uncategorized OR was claimed by the
+        # provider_native (Plaid PFC) engine — the lowest deterministic source
+        # (priority 6). Re-scanning provider_native rows lets a rule or merchant
+        # added AFTER the Plaid import override them: the write-time precedence
+        # guard (`excluded_priority <= existing_priority`) permits rule/merchant
+        # (2) over provider_native (6) and rejects the reverse, so the ladder is
+        # enforced across runs, not just within one. 'ai' rows stay excluded —
+        # an ai commit is user-directed, so leaving it untouched preserves the
+        # pre-existing "committed categorizations are final" behavior.
+        pending = "(c.transaction_id IS NULL OR c.categorized_by = 'provider_native')"
+        where = f"""
+                WHERE {pending}
                     AND (
                         (t.description IS NOT NULL AND t.description != '')
                         OR (t.memo IS NOT NULL AND t.memo != '')
@@ -332,8 +364,8 @@ class CategorizationMatcher:
         # so rung-0 adoption and rung-4 minting run for it. This clause references
         # m.merchant_entity_id (the prep join alias) so it can only appear in the
         # with_entity query — the without_entity fallback carries no prep join.
-        where_with_entity = """
-                WHERE c.transaction_id IS NULL
+        where_with_entity = f"""
+                WHERE {pending}
                     AND (
                         (t.description IS NOT NULL AND t.description != '')
                         OR (t.memo IS NOT NULL AND t.memo != '')
@@ -368,13 +400,55 @@ class CategorizationMatcher:
         """  # noqa: S608 — table names are compile-time TableRef constants
         for query in (with_entity, without_entity):
             try:
-                return self._db.execute(query).fetchall()
+                rows = self._db.execute(query).fetchall()
             except (duckdb.CatalogException, duckdb.BinderException):
                 # CatalogException: prep layer (or fct itself) absent.
                 # BinderException: prep view exists but lacks the entity columns
                 # (post-upgrade, pre-re-transform) — both fall back to the
                 # entity-less query.
                 continue
+            return [UncategorizedRow(*row) for row in rows]
+        return None
+
+    def fetch_rows_for_ids(
+        self, transaction_ids: Sequence[str]
+    ) -> list[UncategorizedRow] | None:
+        """Return the same :class:`UncategorizedRow` projection for an explicit id list.
+
+        Id-filtered counterpart to :meth:`fetch_uncategorized_rows`, used by
+        the facade's batch ``categorize_items`` path (``_categorize_items_inner``)
+        to pre-load rows for a caller-supplied set of transactions rather than a
+        "pending" scan — the caller already chose these transactions, so no
+        ``pending``/text-content predicate applies here. Same ``with_entity`` /
+        ``without_entity`` fallback on ``CatalogException``/``BinderException``
+        as :meth:`fetch_uncategorized_rows`. Returns ``None`` when both queries
+        fail (source tables absent); returns ``[]`` for an empty ``transaction_ids``.
+        """
+        if not transaction_ids:
+            return []
+        placeholders = ",".join(["?"] * len(transaction_ids))
+        with_entity = f"""
+                SELECT t.transaction_id, t.description, t.amount, t.account_id,
+                       t.memo, m.merchant_entity_id, t.source_type, t.merchant_name,
+                       m.merchant_entity_source_type
+                FROM {FCT_TRANSACTIONS.full_name} t
+                LEFT JOIN {INT_TRANSACTIONS_MERGED.full_name} m
+                    ON t.transaction_id = m.transaction_id
+                WHERE t.transaction_id IN ({placeholders})
+        """  # noqa: S608 — table names are compile-time TableRef constants; values parameterized
+        without_entity = f"""
+                SELECT t.transaction_id, t.description, t.amount, t.account_id,
+                       t.memo, NULL AS merchant_entity_id, t.source_type,
+                       t.merchant_name, NULL AS merchant_entity_source_type
+                FROM {FCT_TRANSACTIONS.full_name} t
+                WHERE t.transaction_id IN ({placeholders})
+        """  # noqa: S608 — table names are compile-time TableRef constants; values parameterized
+        for query in (with_entity, without_entity):
+            try:
+                rows = self._db.execute(query, list(transaction_ids)).fetchall()
+            except (duckdb.CatalogException, duckdb.BinderException):
+                continue
+            return [UncategorizedRow(*row) for row in rows]
         return None
 
     def fetch_active_rules(self) -> list[tuple[Any, ...]]:

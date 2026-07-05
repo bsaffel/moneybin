@@ -126,7 +126,7 @@ PLAID_CANONICAL_HOLDER_CATEGORIES: frozenset[str] = frozenset({
 })
 
 # Closed vocabulary (unlike the open Plaid-parity sets above) — mirrors the
-# app.account_settings.default_cost_basis_method CHECK constraint (V033).
+# app.account_settings.default_cost_basis_method CHECK constraint (V034).
 # Hard-validated in settings_update(); the DB CHECK is the backstop.
 COST_BASIS_METHODS: frozenset[str] = frozenset({
     "fifo",

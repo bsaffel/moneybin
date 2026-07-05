@@ -37,6 +37,7 @@ What MoneyBin can do today. Each capability links to its guide; the [roadmap](ro
 ## Categorization
 
 - **Rule-based engine** — Exact / contains / regex / `oneOf` exemplars. Your manual categorizations are immune to subsequent auto-categorization (source precedence enforced on write: user beats rule, rule beats LLM-assist, and so on). -> [Categorization guide](guides/categorization.md)
+- **Provider categorization (Plaid)** — Transactions synced from Plaid are auto-categorized from Plaid's Personal Finance Category, mapped to your canonical categories through the category-source bridge and confidence-gated (assigns only when Plaid is confident). It runs after your rules and merchants — so it never overrides a deliberate choice, it just clears the long tail before the LLM is ever asked. -> [Categorization guide](guides/categorization.md)
 - **Smart matcher** — Matches against description plus memo text, and uses structural signals (check number, transfer flag, payment channel, amount sign), so PayPal / Venmo / Zelle / generic-ACH wrappers categorize on the merchant identity that lives in memo. -> [Categorization guide](guides/categorization.md)
 - **Auto-rule learning** — User edits propose rules; review and promote them through a queue. -> [Categorization guide](guides/categorization.md)
 - **LLM-assist (opt-in)** — Propose → review → commit workflow. The redactor strips amounts, dates, and account identifiers before any prompt leaves the machine; structural fields are exposed as signals. Auto-created merchants accumulate `oneOf` exemplars instead of inventing over-general patterns. CLI: `moneybin transactions categorize assist`. -> [Categorization guide](guides/categorization.md)
@@ -58,7 +59,7 @@ All on the `app.*` layer; zero changes to the upstream pipeline. (No dedicated g
 ## Accounts and balances
 
 - **Account management** — `moneybin accounts list / get / resolve / set` with Plaid-parity metadata (subtype, holder category, currency, credit limit, last four). One unified `set` covers display name, include-in-net-worth, and archive state. Reversible account merging via bridge model. -> [CLI reference](guides/cli-reference.md)
-- **Net-worth and balance tracking** — Per-account balance show / history / assert / reconcile and cross-account `moneybin reports networth / networth-history` with period-over-period change. Daily carry-forward of authoritative observations from OFX, tabular running balances, and user assertions. -> [CLI reference](guides/cli-reference.md)
+- **Net-worth and balance tracking** — Per-account balance show / history / assert / reconcile and cross-account `moneybin reports networth / networth-history` with period-over-period change. Daily carry-forward of authoritative observations from OFX, Plaid sync balances, tabular running balances, and user assertions. -> [CLI reference](guides/cli-reference.md)
 
 ## Investments
 

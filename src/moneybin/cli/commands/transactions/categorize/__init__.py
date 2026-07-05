@@ -320,6 +320,42 @@ def categorize_run(
     )
 
 
+@app.command("improve-ai")
+def categorize_improve_ai(output: OutputFormat = output_option) -> None:
+    """Re-categorize AI-guessed transactions to confident Plaid provider categories.
+
+    Reverse-looks-up every transaction currently categorized by
+    ``categorized_by='ai'`` against the Plaid category bridge; upgrades it to
+    ``provider_native`` only when the bridge match is at MEDIUM confidence or
+    higher. Only touches ``ai``-guessed rows — manual (``user``) and rule
+    (``rule``/``auto_rule``) categorizations are never overwritten. Prints the
+    count of transactions upgraded.
+
+      moneybin transactions categorize improve-ai
+      moneybin transactions categorize improve-ai --output json
+    """
+    from moneybin.cli.output import render_or_json
+    from moneybin.privacy.payloads.categorize import ImproveAiPayload
+    from moneybin.protocol.envelope import build_envelope
+    from moneybin.services.categorization import CategorizationService
+
+    with handle_cli_errors():
+        with get_database(read_only=False) as db:
+            count = CategorizationService(db).improve_ai_categories()
+
+    payload = ImproveAiPayload(upgraded_count=count)
+    envelope = build_envelope(data=payload, sensitivity="low")
+
+    def _render_table(_: object) -> None:
+        logger.info(
+            f"✅ Upgraded {payload.upgraded_count} transaction(s) to provider_native"
+        )
+
+    render_or_json(
+        envelope, output, render_fn=_render_table, cli_actor="categorize_improve_ai"
+    )
+
+
 @app.command("assist")
 def categorize_assist(
     limit: int = typer.Option(
@@ -442,3 +478,8 @@ def stats(
         if key.startswith("by_"):
             source = key[3:]
             logger.info(f"  By {source}:  {value}")
+
+    if "plaid_unmapped" in coverage:
+        logger.info(
+            f"  Plaid unmapped (no bridge mapping): {coverage['plaid_unmapped']}"
+        )

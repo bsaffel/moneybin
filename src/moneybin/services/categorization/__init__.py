@@ -118,6 +118,7 @@ from moneybin.services.categorization.assist import (
 )
 from moneybin.services.categorization.matcher import (
     CategorizationMatcher,
+    UncategorizedRow,
 )
 from moneybin.services.categorization.orchestrator import (
     CategorizationOrchestrator,
@@ -335,8 +336,8 @@ class CategorizationService:
         (``categorized_by IN ('rule', 'auto_rule')`` with this rule_id) so
         those rows become pending again, then runs ``categorize_pending`` to
         re-evaluate them against the remaining active matchers. Writes from
-        higher-priority sources (user/migration/ml/plaid) that happen to
-        share this rule_id reference are left intact.
+        higher-priority sources (user/migration/ml/provider_native) that happen
+        to share this rule_id reference are left intact.
         """
         deactivated = self._applier.deactivate_rule_core(rule_id, actor=actor)
         if reapply and deactivated:
@@ -418,7 +419,7 @@ class CategorizationService:
         return self._orchestrator.categorize_items(items)
 
     def apply_rules(
-        self, *, uncategorized: list[tuple[Any, ...]] | None = None
+        self, *, uncategorized: list[UncategorizedRow] | None = None
     ) -> set[str]:
         """Apply active categorization rules to uncategorized transactions."""
         return self._orchestrator.apply_rules(uncategorized=uncategorized)
@@ -426,13 +427,21 @@ class CategorizationService:
     def apply_merchant_categories(
         self,
         *,
-        uncategorized: list[tuple[Any, ...]] | None = None,
+        uncategorized: list[UncategorizedRow] | None = None,
         skip_txn_ids: set[str] | None = None,
     ) -> int:
         """Apply merchant-based categories to uncategorized transactions."""
         return self._orchestrator.apply_merchant_categories(
             uncategorized=uncategorized, skip_txn_ids=skip_txn_ids
         )
+
+    def apply_plaid_categories(self) -> int:
+        """Apply Plaid PFC categories (via the category-source bridge) to still-uncategorized Plaid transactions."""
+        return self._orchestrator.apply_plaid_categories()
+
+    def improve_ai_categories(self) -> int:
+        """Upgrade AI-guessed categorizations to confident Plaid provider_native."""
+        return self._orchestrator.improve_ai_categories()
 
     def categorize_pending(self) -> dict[str, int]:
         """Categorize all pending (uncategorized) transactions."""
@@ -461,12 +470,16 @@ class CategorizationService:
         # below, which runs engines in the requested order — necessary to
         # honor the order contract documented on the MCP tool.
         # categorize_pending() shares one uncategorized-rows fetch across both
-        # engines and enforces rule-priority-wins on conflicts.
+        # engines and enforces rule-priority-wins on conflicts. include_plaid=False
+        # keeps this fast path scoped to exactly the two requested engines —
+        # categorize_pending's default also runs a third (plaid) pass, which
+        # `methods: list[Literal["rules", "merchants"]]` has no way to request
+        # and this breakdown has no key to report it under.
         if effective == ["rules", "merchants"]:
-            breakdown = self._orchestrator.categorize_pending()
-            # categorize_pending returns {"rule": N, "merchant": N, "total": N}
-            # — keys are singular; the public API exposes plural for symmetry
-            # with the methods=[...] parameter.
+            breakdown = self._orchestrator.categorize_pending(include_plaid=False)
+            # categorize_pending returns {"rule": N, "merchant": N, "plaid": N,
+            # "total": N} — keys are singular; the public API exposes plural
+            # for symmetry with the methods=[...] parameter.
             result["applied_by_method"] = {
                 "rules": breakdown.get("rule", 0),
                 "merchants": breakdown.get("merchant", 0),

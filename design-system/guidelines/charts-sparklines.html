@@ -1,0 +1,26 @@
+<!-- @dsCard group="Charts" viewport="700x225" subtitle="No axes, never a number source — the Amount beside it is. Amplitude ∝ |30d Δ| ÷ balance, full at 6%: near-flat accounts render flat instead of dramatizing noise. Scales independent, shape only." name="Sparklines — honest amplitude" -->
+<!DOCTYPE html><html><head><meta charset="utf-8"><link rel="stylesheet" href="../styles.css"><style>body{margin:0;font-family:var(--font-ui)}</style></head>
+<body style="background:var(--bg-surface);padding:14px 20px;">
+<div style="display:grid;grid-template-columns:110px 1fr 130px 110px;gap:10px;height:24px;align-items:center;font-family:var(--font-data);font-size:9.5px;letter-spacing:0.1em;color:var(--text-faint)">
+  <span>ACCOUNT</span><span>90D</span><span style="text-align:right">BALANCE</span><span style="text-align:right">30D Δ</span>
+</div>
+<div style="display:grid;grid-template-columns:110px 1fr 130px 110px;gap:10px;height:36px;align-items:center;border-top:1px solid var(--border-hairline)">
+  <span style="font-size:13px">Brokerage</span>
+  <svg viewBox="0 0 120 28" preserveAspectRatio="none" style="display:block;width:100%;max-width:120px;height:28px" role="img" aria-label="Brokerage 90-day balance sparkline trending upward — shape only, no scale"><path d="M2,19 L12,17 L22,18 L32,15 L42,16 L52,13 L62,14 L72,11 L82,12 L92,9 L102,10 L112,8" style="fill:none;stroke:var(--accent-brass);stroke-width:1.25"/></svg>
+  <span style="font-family:var(--font-data);font-size:12.5px;text-align:right">$214,872.55</span>
+  <span style="font-family:var(--font-data);font-size:11px;color:var(--pos-income);text-align:right">+$6,212.90 ▲</span>
+</div>
+<div style="display:grid;grid-template-columns:110px 1fr 130px 110px;gap:10px;height:36px;align-items:center;border-top:1px solid var(--border-hairline)">
+  <span style="font-size:13px">Savings</span>
+  <svg viewBox="0 0 120 28" preserveAspectRatio="none" style="display:block;width:100%;max-width:120px;height:28px" role="img" aria-label="Savings 90-day balance sparkline drawn nearly flat — shape only, no scale"><path d="M2,15 L12,14.8 L22,15.1 L32,14.6 L42,14.9 L52,14.5 L62,14.7 L72,14.3 L82,14.5 L92,14.2 L102,14.4 L112,14.1" style="fill:none;stroke:var(--accent-brass);stroke-width:1.25"/></svg>
+  <span style="font-family:var(--font-data);font-size:12.5px;text-align:right">$58,220.00</span>
+  <span style="font-family:var(--font-data);font-size:11px;color:var(--pos-income);text-align:right">+$500.00 ▲</span>
+</div>
+<div style="display:grid;grid-template-columns:110px 1fr 130px 110px;gap:10px;height:36px;align-items:center;border-top:1px solid var(--border-hairline)">
+  <span style="font-size:13px">Credit card</span>
+  <svg viewBox="0 0 120 28" preserveAspectRatio="none" style="display:block;width:100%;max-width:120px;height:28px" role="img" aria-label="Credit-card 90-day balance sparkline trending downward — shape only, no scale"><path d="M2,6 L12,10 L22,8 L32,14 L42,12 L52,18 L62,16 L72,21 L82,19 L92,24 L102,22 L112,25" style="fill:none;stroke:var(--accent-brass);stroke-width:1.25"/></svg>
+  <span style="font-family:var(--font-data);font-size:12.5px;color:var(--text-secondary);text-align:right">−$2,318.42</span>
+  <span style="font-family:var(--font-data);font-size:11px;color:var(--neg-expense);text-align:right">−$1,024.60 ▼</span>
+</div>
+<div style="display:flex;gap:8px;align-items:center;margin-top:10px"><span style="font-family:var(--font-data);font-size:10px;letter-spacing:0.1em;color:var(--accent-brass);border:1px solid var(--accent-brass);border-radius:2px;padding:1px 5px">AUDIT</span><span style="font-family:var(--font-data);font-size:10px;color:var(--text-faint)">amplitude ∝ |30d Δ| ÷ balance, full at 6% · Savings moved 0.9% — drawn nearly flat</span></div>
+</body></html>

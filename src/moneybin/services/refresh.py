@@ -335,7 +335,8 @@ def _run_categorize_step(db: Database) -> str | None:
     if stats["total"] > 0:
         logger.info(
             f"Auto-categorized {stats['total']} transactions "
-            f"({stats['merchant']} merchant, {stats['rule']} rule)"
+            f"({stats['merchant']} merchant, {stats['rule']} rule, "
+            f"{stats['plaid']} plaid)"
         )
     # Informational only — never surfaces as categorization_error.
     try:

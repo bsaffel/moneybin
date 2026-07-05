@@ -1,4 +1,4 @@
-"""V033: create the investment tables + account cost-basis default column.
+"""V034: create the investment tables + account cost-basis default column.
 
 Creates ``app.securities``, ``raw.manual_investment_transactions``, and
 ``app.lot_selections``, and adds ``app.account_settings.default_cost_basis_method``
@@ -181,11 +181,11 @@ def _apply_column_comments(
 
 def migrate(conn: object) -> None:
     """Create the investment tables + settings column. Idempotent."""
-    logger.debug("V033: CREATE TABLE IF NOT EXISTS app.securities")
+    logger.debug("V034: CREATE TABLE IF NOT EXISTS app.securities")
     conn.execute(_CREATE_SECURITIES_SQL)  # type: ignore[union-attr]
     _apply_column_comments(conn, "app.securities", _SECURITIES_COLUMN_COMMENTS)
 
-    logger.debug("V033: CREATE TABLE IF NOT EXISTS raw.manual_investment_transactions")
+    logger.debug("V034: CREATE TABLE IF NOT EXISTS raw.manual_investment_transactions")
     conn.execute(_CREATE_MANUAL_INVESTMENT_TRANSACTIONS_SQL)  # type: ignore[union-attr]
     _apply_column_comments(
         conn,
@@ -193,7 +193,7 @@ def migrate(conn: object) -> None:
         _MANUAL_INVESTMENT_COLUMN_COMMENTS,
     )
 
-    logger.debug("V033: CREATE TABLE IF NOT EXISTS app.lot_selections")
+    logger.debug("V034: CREATE TABLE IF NOT EXISTS app.lot_selections")
     conn.execute(_CREATE_LOT_SELECTIONS_SQL)  # type: ignore[union-attr]
     _apply_column_comments(conn, "app.lot_selections", _LOT_SELECTIONS_COLUMN_COMMENTS)
 
@@ -210,10 +210,10 @@ def migrate(conn: object) -> None:
 
     if "default_cost_basis_method" not in existing:
         logger.debug(
-            "V033: rebuilding app.account_settings to add default_cost_basis_method"
+            "V034: rebuilding app.account_settings to add default_cost_basis_method"
         )
         conn.execute(  # type: ignore[union-attr]
-            "CREATE TABLE app.account_settings__v033_tmp AS "
+            "CREATE TABLE app.account_settings__v034_tmp AS "
             "SELECT * FROM app.account_settings"
         )
         conn.execute("DROP TABLE app.account_settings")  # type: ignore[union-attr]
@@ -247,10 +247,10 @@ def migrate(conn: object) -> None:
                 account_id, display_name, official_name, last_four,
                 account_subtype, holder_category, iso_currency_code,
                 credit_limit, archived, include_in_net_worth, updated_at
-            FROM app.account_settings__v033_tmp
+            FROM app.account_settings__v034_tmp
             """
         )
-        conn.execute("DROP TABLE app.account_settings__v033_tmp")  # type: ignore[union-attr]
+        conn.execute("DROP TABLE app.account_settings__v034_tmp")  # type: ignore[union-attr]
 
     conn.execute(  # type: ignore[union-attr]
         "COMMENT ON COLUMN app.account_settings.default_cost_basis_method "
@@ -258,4 +258,4 @@ def migrate(conn: object) -> None:
         "NULL falls back to global FIFO'"
     )
 
-    logger.debug("V033: investment tables + cost-basis default ready")
+    logger.debug("V034: investment tables + cost-basis default ready")

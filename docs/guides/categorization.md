@@ -14,8 +14,10 @@ Every transaction either has a category in `app.transaction_categories` or doesn
 `categorized_by` is the lock. MoneyBin defines a fixed source-precedence ladder; a write only lands if the incoming source is at least as authoritative as the source already on the row:
 
 ```
-user > rule > auto_rule > migration > ml > plaid > ai
+user > rule > auto_rule > migration > ml > provider_native > ai
 ```
+
+`provider_native` is an aggregator's own categorization — today, Plaid's Personal Finance Category, mapped to your categories through the category-source bridge and applied only when Plaid is confident. It sits just above `ai`: it clears the long tail automatically but yields to every deliberate signal (a rule, a merchant default you set, your own edit).
 
 Enforcement happens in the SQL write path, not after the fact. A write at any source can never displace a higher-source row. The single Python ladder generates the SQL `CASE` expression that backs the `ON CONFLICT DO UPDATE WHERE` clause, so Python and SQL cannot drift.
 

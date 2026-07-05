@@ -365,6 +365,16 @@ class TestCategorizeMutating:
         )
         result.assert_success()
 
+    def test_categorize_improve_ai(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """Categorize improve-ai exits cleanly (no ai-guessed rows to upgrade)."""
+        env = make_workflow_env_fast(
+            tmp_path, "catimproveai", _mutating_profile_template
+        )
+        result = run_cli("transactions", "categorize", "improve-ai", env=env)
+        result.assert_success()
+
     def test_categorize_auto_review_and_confirm(
         self, _mutating_profile_template: Path, tmp_path: Path
     ) -> None:

@@ -167,12 +167,12 @@ CREATE TABLE IF NOT EXISTS raw.plaid_balances (
     source_file VARCHAR NOT NULL,      -- Logical identifier: sync_{job_id}
     source_type VARCHAR NOT NULL       -- Always 'plaid' for this table
         DEFAULT 'plaid',
-    source_origin VARCHAR,             -- Plaid item_id; scopes dedup to the institution connection
+    source_origin VARCHAR NOT NULL,    -- Plaid item_id; scopes dedup to the institution connection
     extracted_at TIMESTAMP             -- When the server fetched this data from Plaid (from metadata.synced_at)
         DEFAULT CURRENT_TIMESTAMP,
     loaded_at TIMESTAMP                -- When this record was inserted into the local database
         DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (account_id, balance_date, source_file)
+    PRIMARY KEY (account_id, balance_date, source_origin)
 );
 ```
 
@@ -255,17 +255,28 @@ MODEL (
 );
 
 SELECT
-  account_id,
-  balance_date,
-  current_balance,
-  available_balance,
-  source_file,
-  source_type,
-  source_origin,
-  extracted_at,
-  loaded_at
-FROM raw.plaid_balances
+  COALESCE(links.account_id, b.account_id) AS account_id,  -- canonical id via app.account_links; source-native only if unresolved
+  b.account_id AS source_account_key,
+  b.balance_date,
+  b.current_balance,
+  b.available_balance,
+  b.source_file,
+  b.source_type,
+  b.source_origin,
+  b.extracted_at,
+  b.loaded_at
+FROM raw.plaid_balances AS b
+LEFT JOIN app.account_links AS links
+  ON links.status = 'accepted'
+  AND links.ref_kind = 'source_native'
+  AND links.source_type = b.source_type
+  AND links.source_origin = b.source_origin
+  AND links.ref_value = b.account_id
 ```
+
+Like every other source's balance/account staging view, this resolves the
+canonical `account_id` from `app.account_links` so balances key on the same id
+as `core.dim_accounts` (else Plaid balances orphan on the join).
 
 ### Core model integration
 
@@ -273,10 +284,11 @@ Add CTEs + `UNION ALL` to the relevant core models:
 
 | Core model | Change |
 |---|---|
-| `core.dim_accounts` | Add `plaid_accounts` CTE selecting from `prep.stg_plaid__accounts` with `source_type = 'plaid'`, `UNION ALL` into `all_accounts` |
+| `core.dim_accounts` | Add `plaid_accounts` CTE selecting from `prep.stg_plaid__accounts` with `source_type = 'plaid'`, `UNION ALL` into `all_accounts`; carries Plaid `official_name`/`account_subtype` through the merge as the base layer under the `app.account_settings` override |
 | `core.fct_transactions` | Add `plaid_transactions` CTE selecting from `prep.stg_plaid__transactions` with `source_type = 'plaid'`, `UNION ALL` into `all_transactions` |
+| `core.fct_balances` | Add `plaid_balances` CTE selecting from `prep.stg_plaid__balances` with `current_balance` → `balance`, `source_type = 'plaid'`, `source_origin` (Plaid item id) → `source_ref`, `loaded_at` → `updated_at`, `UNION ALL` into the balance union. `available_balance` has no column in `fct_balances` (dropped for every source, as OFX's is) |
 
-No changes to core's dedup logic — cross-source dedup between Plaid and OFX/CSV is handled by the transaction matching pipeline (`matching-overview.md`).
+No changes to core's dedup logic — cross-source dedup between Plaid and OFX/CSV is handled by the transaction matching pipeline (`matching-overview.md`). For balances, same-date observations from different sources (e.g. OFX + Plaid, both institution snapshots at equal precedence) are reduced to one deterministic winner in `core.fct_balances_daily` — highest precedence, then freshest `updated_at`, then `source_type` ascending.
 
 ---
 

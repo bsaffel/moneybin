@@ -30,6 +30,41 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   `investments_record` / `investments_securities_set` /
   `investments_lots_select` write MCP tools, plus the top-level `investments`
   CLI group (replacing the earlier `accounts investments` placeholder).
+- **Plaid balance snapshots flow into net worth and balance drift.**
+  Plaid sync balances now reach `core.fct_balances` → `core.fct_balances_daily`,
+  so `reports networth` / `networth-history` and balance-drift detection include
+  Plaid-connected accounts (previously only OFX statement balances, tabular
+  running balances, and manual assertions contributed). Credit/loan balances are
+  recorded as liabilities (negative), and `core.dim_accounts` now sources Plaid
+  `official_name`/`account_subtype` under any user override. (#299)
+- **Category taxonomy audit — 112-category curated set (M1W).**
+  Audited all 108 seed categories against four principles (earn-the-split
+  granularity, class-by-accounting-nature, no redundant/orphan categories,
+  provider-neutral): retired 5 duplicate/orphan categories (resolving the
+  two-mortgage-category ambiguity in favour of `LNP-MTG`) and added 9 — 6 finer
+  categories from the 29 unmapped Plaid detailed codes, plus a 3-category
+  **Family & Kids** group (`FAM`/`FAM-ACT`/`FAM-SUP`) folded in after a
+  cross-aggregator comprehensiveness crosswalk against MX, Mint, Monarch, and
+  Maybe validated coverage; `class` reconciled end-to-end (no reclasses needed).
+  Net 108 − 5 + 9 → 112 categories. Seed validation now
+  enforces a valid-class invariant, an enumerated coverage report, and an orphan
+  allowlist. Purely additive on the M1V bridge — no consumer query changes. (#298)
+- **`transactions categorize improve-ai` — upgrade AI-guessed categories to confident Plaid categories (M1U follow-up).**
+  New CLI command and matching MCP tool (`transactions_categorize_improve_ai`)
+  reverse-look-up every transaction currently `categorized_by='ai'` against the
+  `core.bridge_category_source_map` bridge and upgrade it to `provider_native`
+  when the match is at MEDIUM confidence or higher. Never touches user, rule,
+  or merchant categorizations. (#294)
+- **Automatic Plaid category assignment from Personal Finance Category (M1U).**
+  Transactions synced from Plaid are now auto-categorized from Plaid's PFC codes
+  via the `core.bridge_category_source_map` bridge (source `provider_native`,
+  two-tier detailed→primary reverse lookup, confidence-gated at ≥MEDIUM), running
+  last after rules and merchants in `categorize_pending` so it clears the long tail
+  before the LLM. A rule or merchant you author after the import overrides the Plaid
+  category on the next categorize run — the source-precedence ladder holds across
+  runs, not just within one write. `transactions categorize stats` gains a
+  `plaid_unmapped` count (Plaid transactions whose PFC code has no bridge mapping
+  yet). (#292)
 - **`core.bridge_category_source_map` — provider-code → canonical-category bridge (M1V).**
   A durable, aggregator-agnostic view resolving any provider's transaction-category
   code to exactly one canonical MoneyBin category, keyed `(source_type,

@@ -1078,6 +1078,16 @@ Run the categorization engine cascade over uncategorized transactions.
 - **Service:** `CategorizationService.categorize_run(methods=...) -> dict`
 - **CLI:** `moneybin transactions categorize run [--methods rules,merchants] [--output json]`
 
+### `transactions_categorize_improve_ai`
+
+Re-categorize AI-guessed transactions to confident provider-native categories.
+
+- **Sensitivity:** `low` — returns only an aggregate count.
+- **Unique parameters:** None.
+- **Behavior:** Reverse-looks-up every transaction currently `categorized_by='ai'` against the Plaid category bridge (`core.bridge_category_source_map`); upgrades it to `provider_native` only when the bridge match is at MEDIUM confidence or higher. Only rewrites rows currently `categorized_by='ai'` — user, rule, and merchant categorizations are never overwritten. Writes `app.transaction_categories`; revert by re-categorizing the transaction (a user edit wins at priority 1). Returns `{upgraded_count: int}`.
+- **Service:** `CategorizationService.improve_ai_categories() -> int`
+- **CLI:** `moneybin transactions categorize improve-ai [--output json]`
+
 ### `transactions_categorize_rules`
 
 List active categorization rules.
@@ -1180,7 +1190,7 @@ Categorization coverage statistics; optionally includes auto-rule health metrics
 
 - **Sensitivity:** `low` — counts and percentages only.
 - **Unique parameters:** `include_auto: bool = False` — when true, appends auto-rule health to the response.
-- **Behavior:** Base response: `{total_transactions, categorized, uncategorized, percent_categorized, by_source}` where `by_source` breaks down by categorization source (user, rule, ai, plaid). With `include_auto=True`, returns `{overall: <base>, auto: {active_auto_rules, pending_proposals, transactions_categorized}}`. The `auto` block absorbs what was previously the standalone `transactions_categorize_auto_stats` tool.
+- **Behavior:** Base response: `{total_transactions, categorized, uncategorized, percent_categorized, by_source, plaid_unmapped}` where `by_source` breaks down by categorization source (user, rule, ai, provider_native) and `plaid_unmapped` counts Plaid transactions whose PFC code has no `core.bridge_category_source_map` mapping yet (omitted when no Plaid data is present). With `include_auto=True`, returns `{overall: <base>, auto: {active_auto_rules, pending_proposals, transactions_categorized}}`. The `auto` block absorbs what was previously the standalone `transactions_categorize_auto_stats` tool.
 - **Service:** `CategorizationService.stats() -> CategorizationStats`; with `include_auto=True` also calls `AutoRuleService.stats() -> AutoStatsResult`.
 - **CLI:** `moneybin transactions categorize stats`
 

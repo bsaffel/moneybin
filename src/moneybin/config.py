@@ -445,7 +445,7 @@ class ImportSettings(BaseModel):
 
 
 class DoctorSettings(BaseModel):
-    """`moneybin doctor` integrity-check configuration.
+    """`moneybin system doctor` integrity-check configuration.
 
     Tunes the per-table `app.*` audit-coverage invariants added by the
     repository layer (see `docs/specs/app-integrity-invariant.md` Req 9).
@@ -467,7 +467,7 @@ class DoctorSettings(BaseModel):
         ge=1,
         description=(
             "Maximum rows sampled per table for the audit-coverage check. "
-            "`moneybin doctor --full` bypasses the cap and scans every row."
+            "`moneybin system doctor --full` bypasses the cap and scans every row."
         ),
     )
 
