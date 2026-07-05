@@ -16,6 +16,9 @@ runs against populated data.
 
 from __future__ import annotations
 
+from datetime import datetime
+from decimal import Decimal
+
 import duckdb
 import pytest
 
@@ -43,12 +46,28 @@ def _recreate_pre_v034_state(db: Database) -> None:
     db.execute(
         "ALTER TABLE app.account_settings DROP COLUMN IF EXISTS default_cost_basis_method"
     )
-    # Realistic populated rows (>=3) so the ALTER runs against data.
+    # Realistic populated rows (>=3) with NON-TRIVIAL values in every nullable
+    # column the V034 rebuild preserves — so a future edit that drops a column
+    # from the INSERT...SELECT is caught (a minimal 2-column stub would leave
+    # the rest at NULL/default and hide the data loss). See database.md
+    # "Migration test data realism".
     db.execute(
-        "INSERT INTO app.account_settings (account_id, display_name) VALUES "
-        "('acct_checking1', 'Everyday Checking'), "
-        "('acct_broker001', 'Fidelity Brokerage'), "
-        "('acct_savings01', 'Emergency Fund')"
+        """
+        INSERT INTO app.account_settings (
+            account_id, display_name, official_name, last_four,
+            account_subtype, holder_category, iso_currency_code,
+            credit_limit, archived, include_in_net_worth, updated_at
+        ) VALUES
+        ('acct_checking1', 'Everyday Checking', 'Everyday Checking 1234', '1234',
+         'checking', 'personal', 'USD', NULL, FALSE, TRUE,
+         TIMESTAMP '2024-01-02 03:04:05'),
+        ('acct_broker001', 'Fidelity Brokerage', 'Fidelity Individual', '9876',
+         'brokerage', 'personal', 'USD', NULL, FALSE, TRUE,
+         TIMESTAMP '2024-03-04 05:06:07'),
+        ('acct_credit001', 'Chase Sapphire', 'Chase Sapphire Reserve', '4321',
+         'credit card', 'business', 'USD', 15000.00, TRUE, FALSE,
+         TIMESTAMP '2024-05-06 07:08:09')
+        """
     )
 
 
@@ -71,6 +90,37 @@ class TestV034Migration:
             "WHERE default_cost_basis_method IS NULL"
         ).fetchone()
         assert rows is not None and rows[0] >= 3
+
+    def test_preserves_all_settings_columns(self, db: Database) -> None:
+        # V034 rebuilds app.account_settings (DROP + CREATE + INSERT...SELECT).
+        # A future edit that drops a column from that INSERT...SELECT would
+        # silently reset it on every existing DB. Assert every preserved column
+        # survives with its seeded value so such a regression fails here.
+        _recreate_pre_v034_state(db)
+        run_migration(db, migrate)
+
+        row = db.execute(
+            """
+            SELECT display_name, official_name, last_four, account_subtype,
+                   holder_category, iso_currency_code, credit_limit, archived,
+                   include_in_net_worth, updated_at, default_cost_basis_method
+              FROM app.account_settings
+             WHERE account_id = 'acct_credit001'
+            """
+        ).fetchone()
+        assert row == (
+            "Chase Sapphire",
+            "Chase Sapphire Reserve",
+            "4321",
+            "credit card",
+            "business",
+            "USD",
+            Decimal("15000.00"),
+            True,
+            False,
+            datetime(2024, 5, 6, 7, 8, 9),
+            None,  # newly-added column defaults NULL
+        )
 
     def test_check_constraint_enforced_after_migration(self, db: Database) -> None:
         _recreate_pre_v034_state(db)

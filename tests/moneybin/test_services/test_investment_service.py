@@ -184,6 +184,24 @@ class TestResolveSecurity:
             db_service(db).resolve_security("nothing-matches-this")
         assert _resolution_metric("unresolved") - before == 1.0
 
+    def test_dotted_ticker_resolves_by_full_ticker(self, db: Database) -> None:
+        # A ticker that legitimately contains a dot (BRK.B, BF.B, RDS.A) must
+        # resolve by its own stored ticker, not be mis-split into base='BRK' +
+        # exchange='B' (which never matches).
+        target = _add_security(db, name="Berkshire Hathaway B", ticker="BRK.B")
+        before = _resolution_metric("ticker")
+        assert db_service(db).resolve_security("BRK.B") == target
+        assert _resolution_metric("ticker") - before == 1.0
+
+    def test_full_ticker_match_precedes_exchange_suffix_split(
+        self, db: Database
+    ) -> None:
+        # When both a full dotted ticker AND a base+exchange interpretation could
+        # match, the exact full-ticker match wins.
+        full = _add_security(db, name="Dotted", ticker="ABC.D")
+        _add_security(db, name="Base On Exchange", ticker="ABC", exchange="D")
+        assert db_service(db).resolve_security("ABC.D") == full
+
 
 # ---------------------------------------------------------------------------
 # upsert_security (Req 12)
@@ -942,6 +960,35 @@ class TestSelectLots:
                 [("lot_a", Decimal("6")), ("lot_b", Decimal("6"))],  # 12 > |−10|
                 actor="cli",
             )
+
+    def test_lot_from_other_position_rejected(self, db: Database) -> None:
+        # A lot that exists globally but belongs to a different (account,
+        # security) than the disposal must be rejected — not silently accepted
+        # and then dropped to a FIFO fallback by the engine (silent wrong 1099-B).
+        _seed_disposal_and_lots(db)  # sell_1 on (acct_brokerage, sec_1)
+        db.conn.execute(
+            """
+            INSERT INTO core.fct_investment_lots
+                (lot_id, account_id, security_id, remaining_quantity)
+            VALUES ('lot_other', 'acct_brokerage', 'sec_2', 10)
+            """  # noqa: S608  # test fixture insert, static SQL
+        )
+        with pytest.raises(UserError, match="position|lot"):
+            db_service(db).select_lots(
+                "sell_1", [("lot_other", Decimal("5"))], actor="cli"
+            )
+
+    def test_unknown_disposal_hints_at_refresh(self, db: Database) -> None:
+        # A just-recorded sell lives in raw until `refresh run` materializes core;
+        # the not-found error must point the user at refresh, not read as a dead
+        # end for an id the record tool just returned as valid.
+        _seed_disposal_and_lots(db)
+        with pytest.raises(UserError) as exc:
+            db_service(db).select_lots(
+                "does_not_exist", [("lot_a", Decimal("1"))], actor="cli"
+            )
+        combined = f"{exc.value} {exc.value.hint or ''}".lower()
+        assert "refresh" in combined
 
 
 # ---------------------------------------------------------------------------

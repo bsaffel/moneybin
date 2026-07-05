@@ -44,11 +44,7 @@ from moneybin.privacy.payloads.investments import (
     InvestmentSecuritySetPayload,
 )
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
-from moneybin.services.account_service import AccountService
-from moneybin.services.investment_service import (
-    InvestmentService,
-    SecurityResolutionError,
-)
+from moneybin.services.investment_service import InvestmentService
 
 
 def _parse_date(value: str | None) -> _date | None:
@@ -302,78 +298,43 @@ def investments_record(
             data=InvestmentRecordPayload(investment_transaction_ids=[]),
         )
 
-    error_details: list[dict[str, str]] = []
+    # Parse each dict into the typed event shape record_events consumes. A
+    # missing required field or unparseable date/decimal raises here, before any
+    # write. Validation, ref resolution, the SOFT security-skip, and the atomic
+    # single-transaction write all live in record_events (one pass over the
+    # batch, so each ref resolves exactly once).
     with get_database(read_only=False) as db:
-        svc = InvestmentService(db)
-        account_svc = AccountService(db)
-
-        # Pre-pass: validate + resolve EVERY event before writing any. Hard
-        # failures (stateless taxonomy/sign checks, or an unresolved/ambiguous
-        # account ref) raise here — before a single row is written — so a
-        # mid-batch hard failure leaves nothing written and a retry can't
-        # double-insert earlier events. Only an unresolved/ambiguous security
-        # ref is soft: collect it and skip that event.
-        prepared: list[dict[str, Any]] = []
+        typed: list[dict[str, Any]] = []
         for index, item in enumerate(events):
             account, type_, date_str = _require_event_fields(item, index)
-            subtype = _opt_str(item.get("subtype"))
-            security_ref = _opt_str(item.get("security"))
-            trade_date = _date.fromisoformat(date_str)
-            quantity = _parse_decimal(item.get("quantity"))
-            price = _parse_decimal(item.get("price"))
-            amount = _parse_decimal(item.get("amount"))
-            fees = _parse_decimal(item.get("fees"))
-            basis = _parse_decimal(item.get("basis"))
-            acquired = _parse_date(item.get("acquired"))
-
-            # Stateless taxonomy/subtype/sign/presence checks — HARD.
-            svc._validate_event(  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]  # reuse the service's own validation for the pre-pass; a public seam is a tracked follow-up
-                type_=type_,
-                subtype=subtype,
-                quantity=quantity,
-                amount=amount,
-                security_ref=security_ref,
-            )
-            # Account resolution — HARD (AccountNotFoundError/AmbiguousAccountError).
-            account_svc.resolve_strict(account)
-            # Security resolution — SOFT: skip+warn on failure.
-            if security_ref is not None:
-                try:
-                    svc.resolve_security(security_ref)
-                except SecurityResolutionError as exc:
-                    error_details.append({"index": str(index), "reason": str(exc)})
-                    continue
-
-            prepared.append({
+            typed.append({
                 "account_ref": account,
-                "security_ref": security_ref,
+                "security_ref": _opt_str(item.get("security")),
                 "type_": type_,
-                "subtype": subtype,
-                "trade_date": trade_date,
-                "quantity": quantity,
-                "price": price,
-                "amount": amount,
-                "fees": fees,
-                "acquired": acquired,
-                "basis": basis,
+                "subtype": _opt_str(item.get("subtype")),
+                "trade_date": _date.fromisoformat(date_str),
+                "quantity": _parse_decimal(item.get("quantity")),
+                "price": _parse_decimal(item.get("price")),
+                "amount": _parse_decimal(item.get("amount")),
+                "fees": _parse_decimal(item.get("fees")),
+                "acquired": _parse_date(item.get("acquired")),
+                "basis": _parse_decimal(item.get("basis")),
                 "event_group_id": _opt_str(item.get("event_group_id")),
                 "currency_code": str(item.get("currency") or "USD"),
                 "description": _opt_str(item.get("description")),
             })
-
-        # Write-pass: only events that passed the pre-pass. record_event
-        # re-validates/re-resolves (deterministic — the pre-pass guarantees
-        # success here); collapsing that redundancy into a single write-phase
-        # transaction is the tracked follow-up.
-        written: list[str] = []
-        for p in prepared:
-            written.extend(svc.record_event(**p, actor="mcp", created_by="mcp"))
+        result = InvestmentService(db).record_events(
+            typed, actor="mcp", created_by="mcp"
+        )
 
     return build_envelope(
         data=InvestmentRecordPayload(
-            investment_transaction_ids=written, error_details=error_details
+            investment_transaction_ids=result.investment_transaction_ids,
+            error_details=result.error_details,
         ),
         actions=[
+            "Use refresh_run to materialize them into "
+            "core.fct_investment_transactions (and derive holdings, lots, gains)",
             "Use investments to view recorded events",
             "Use investments_holdings to see updated positions",
         ],

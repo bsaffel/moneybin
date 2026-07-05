@@ -631,6 +631,75 @@ class TestInvestmentsRecord:
         assert parsed["status"] == "ok"
         assert parsed["data"]["investment_transaction_ids"] == []
 
+    @pytest.mark.unit
+    async def test_infra_failure_mid_write_rolls_back_whole_batch(
+        self, mcp_db: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Atomicity: an infra error AFTER the validation pre-pass, part-way
+        # through the write, must roll the WHOLE batch back — otherwise the
+        # tool's "nothing written / safe to retry" contract is violated and a
+        # retry double-inserts the events that committed before the failure.
+        _seed_investment_core()
+        _add_security(security_id="sec_1", ticker="AAPL")
+        import moneybin.services.investment_service as svc_mod
+
+        # Patch the per-row gold-key fn to raise mid-batch — the injection point
+        # for a simulated infra failure inside the write transaction.
+        real = svc_mod._predict_investment_gold_key  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        calls = {"n": 0}
+
+        def _boom(source_transaction_id: str, account_id: str) -> str:
+            calls["n"] += 1
+            if calls["n"] == 2:  # fail on the second row's insert
+                raise RuntimeError("simulated infra failure mid-batch")
+            return real(source_transaction_id, account_id)
+
+        monkeypatch.setattr(svc_mod, "_predict_investment_gold_key", _boom)
+
+        def _buy(day: str, amount: str) -> dict[str, object]:
+            return {
+                "account": _ACCOUNT,
+                "security": "AAPL",
+                "type": "buy",
+                "date": day,
+                "quantity": "10",
+                "price": "150.00",
+                "amount": amount,
+            }
+
+        try:
+            result = await investments_record(
+                events=[_buy("2024-01-15", "-1500.00"), _buy("2024-01-16", "-1600.00")]
+            )
+            assert result.to_dict()["status"] == "error"
+        except RuntimeError:
+            pass
+        # The first event must NOT have committed on its own.
+        assert _count_raw_investment_rows() == 0
+
+    @pytest.mark.unit
+    async def test_record_actions_hint_at_refresh_run(self, mcp_db: Path) -> None:
+        # record_event writes only raw.*; the returned read-tool hints go stale
+        # until refresh_run materializes core.* — the actions[] must say so,
+        # matching the sibling transactions_create tool.
+        _seed_investment_core()
+        _add_security(security_id="sec_1", ticker="AAPL")
+        result = await investments_record(
+            events=[
+                {
+                    "account": _ACCOUNT,
+                    "security": "AAPL",
+                    "type": "buy",
+                    "date": "2024-01-15",
+                    "quantity": "10",
+                    "price": "150.00",
+                    "amount": "-1500.00",
+                }
+            ]
+        )
+        actions = result.to_dict()["actions"]
+        assert any("refresh_run" in a for a in actions)
+
 
 class TestInvestmentsSecuritiesSet:
     """Tests for the investments_securities_set MCP tool (Shape 1b upsert)."""

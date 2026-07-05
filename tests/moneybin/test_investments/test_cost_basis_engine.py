@@ -262,6 +262,98 @@ def test_366_days_is_long() -> None:
     assert gains[0].term == "long"
 
 
+def test_leap_year_one_year_hold_is_short() -> None:
+    # Bug guard: a lot held exactly one calendar year whose span crosses a leap
+    # day (Feb 29 2020) is 366 days, but the IRS "more than one year" rule makes
+    # the exact one-year anniversary SHORT-term. A day-count `> 365` heuristic
+    # wrongly classified it long, applying the wrong capital-gains rate.
+    events = [
+        _event(
+            "b1",
+            event_type="buy",
+            trade_date=date(2020, 1, 1),
+            quantity=D("10"),
+            amount=D("-1000.00"),
+        ),
+        _event(
+            "s1",
+            event_type="sell",
+            trade_date=date(2021, 1, 1),  # exact one-year anniversary
+            quantity=D("-10"),
+            amount=D("1200.00"),
+        ),
+    ]
+    _lots, gains = _run(events)
+    assert (date(2021, 1, 1) - date(2020, 1, 1)).days == 366  # leap-day span
+    assert len(gains) == 1
+    assert gains[0].term == "short"
+
+
+def test_leap_day_acquisition_long_term_boundary_is_march_1() -> None:
+    # Feb 29 has no calendar anniversary; convention (anniversary treated as the
+    # non-leap Feb 28): long-term on/after Mar 1 of the following year. Also
+    # proves the calendar helper does not raise on a Feb 29 acquisition.
+    def _term_when_sold(day: date) -> str:
+        _lots, gains = _run([
+            _event(
+                "b1",
+                event_type="buy",
+                trade_date=date(2020, 2, 29),
+                quantity=D("10"),
+                amount=D("-1000.00"),
+            ),
+            _event(
+                "s1",
+                event_type="sell",
+                trade_date=day,
+                quantity=D("-10"),
+                amount=D("1200.00"),
+            ),
+        ])
+        return gains[0].term
+
+    assert _term_when_sold(date(2021, 2, 28)) == "short"
+    assert _term_when_sold(date(2021, 3, 1)) == "long"
+
+
+def test_same_day_split_applies_before_same_day_buy() -> None:
+    # Bug guard: a same-day corporate action and acquisition must apply in a
+    # deterministic, economically-ordered sequence — NOT arbitrary content-hash
+    # order. Convention: a split takes effect at the ex-date (start of day),
+    # before same-day trades, so a pre-existing lot doubles but a same-day buy
+    # (already at post-split prices) does NOT. The ids are chosen so the buggy
+    # content-hash sort would place the buy ("a_buy") before the split
+    # ("z_split") and wrongly double the buy's new lot.
+    events = [
+        _event(
+            "b_pre",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("10"),
+            amount=D("-1000.00"),
+        ),
+        _event(
+            "a_buy",
+            event_type="buy",
+            trade_date=date(2024, 3, 1),
+            quantity=D("10"),
+            amount=D("-2000.00"),
+        ),
+        _event(
+            "z_split",
+            event_type="split",
+            trade_date=date(2024, 3, 1),
+            quantity=D("2"),  # 2:1 multiplier
+        ),
+    ]
+    lots, _gains = _run(events)
+    by_src = {lot.source_transaction_id: lot for lot in lots}
+    # Pre-existing lot is doubled by the split.
+    assert by_src["b_pre"].remaining_quantity == D("20")
+    # Same-day buy processed AFTER the split is not doubled.
+    assert by_src["a_buy"].remaining_quantity == D("10")
+
+
 def test_transfer_in_carries_original_date_and_basis_transfer_out_no_gains() -> None:
     events = [
         _event(

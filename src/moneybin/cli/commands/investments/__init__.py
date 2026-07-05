@@ -183,7 +183,11 @@ def investments_list(
             )
     if output == OutputFormat.JSON:
         render_or_json(
-            build_envelope(data=dataclasses.asdict(result), sensitivity="medium"),
+            # HIGH, not medium: quantity/amount rows are Tier.HIGH in
+            # privacy/payloads/investments.py, which the MCP tool derives — the
+            # CLI must report the same tier so the redaction contract is
+            # identical across surfaces (cli.md).
+            build_envelope(data=dataclasses.asdict(result), sensitivity="high"),
             output,
             cli_actor="investments_list",
         )
@@ -219,7 +223,9 @@ def investments_holdings(
             result = InvestmentService(db).holdings(account_ref=account)
     if output == OutputFormat.JSON:
         render_or_json(
-            build_envelope(data=dataclasses.asdict(result), sensitivity="medium"),
+            # HIGH: cost-basis rows are Tier.HIGH — match the MCP-derived tier
+            # (privacy/payloads/investments.py) so redaction is identical.
+            build_envelope(data=dataclasses.asdict(result), sensitivity="high"),
             output,
             cli_actor="investments_holdings",
         )
@@ -267,7 +273,9 @@ def investments_gains(
             )
     if output == OutputFormat.JSON:
         render_or_json(
-            build_envelope(data=dataclasses.asdict(result), sensitivity="medium"),
+            # HIGH: proceeds/basis/gain rows are Tier.HIGH — match the
+            # MCP-derived tier (privacy/payloads/investments.py).
+            build_envelope(data=dataclasses.asdict(result), sensitivity="high"),
             output,
             cli_actor="investments_gains",
         )

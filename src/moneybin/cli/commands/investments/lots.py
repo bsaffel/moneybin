@@ -48,7 +48,10 @@ def investments_lots_list(
             )
     if output == OutputFormat.JSON:
         render_or_json(
-            build_envelope(data=dataclasses.asdict(result), sensitivity="medium"),
+            # HIGH: quantity/cost-basis rows are Tier.HIGH — match the
+            # MCP-derived tier (privacy/payloads/investments.py) so redaction is
+            # identical across surfaces (cli.md).
+            build_envelope(data=dataclasses.asdict(result), sensitivity="high"),
             output,
             cli_actor="investments_lots_list",
         )

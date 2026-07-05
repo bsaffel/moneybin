@@ -49,6 +49,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
+from typing import Any
 
 from moneybin import error_codes
 from moneybin.database import Database
@@ -159,6 +160,14 @@ _AUDIT_TARGET = (
     MANUAL_INVESTMENT_TRANSACTIONS.name,
 )
 
+# record_event writes only raw.*; the disposal row and its tax lots materialize
+# into core.* (which select_lots validates against) only on the next refresh.
+# Surface that so a not-found error on a just-recorded id isn't a dead end.
+_REFRESH_MATERIALIZE_HINT = (
+    "💡 Newly recorded events materialize into the ledger only after a refresh — "
+    "run 'moneybin refresh' (MCP: refresh_run), then retry."
+)
+
 
 class SecurityResolutionError(UserError):
     """A security reference is ambiguous or unresolvable.
@@ -225,6 +234,19 @@ class EventsResult:
 
     rows: list[EventRow]
     warnings: list[str]
+
+
+@dataclass(frozen=True, slots=True)
+class RecordEventsResult:
+    """Result of :meth:`InvestmentService.record_events` — the batch write.
+
+    ``investment_transaction_ids`` are the ids written (one per row; two for a
+    reinvest). ``error_details`` carries one ``{"index", "reason"}`` entry per
+    event soft-skipped for an unresolved/ambiguous security.
+    """
+
+    investment_transaction_ids: list[str]
+    error_details: list[dict[str, str]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -432,17 +454,38 @@ class InvestmentService:
         return str(rows[0][0]) if rows else None
 
     def _resolve_by_ticker(self, ref: str) -> str | None:
-        """Resolve by ticker, stripping an exchange suffix (``UMAX.AX`` → UMAX).
+        """Resolve by ticker, honoring dotted tickers and exchange suffixes.
 
-        When the reference carries a ``.SUFFIX`` the suffix disambiguates by
-        ``exchange``. Raises on collision naming ``ticker``.
+        Tries the FULL reference as a stored ticker first, so a ticker that
+        legitimately contains a dot (``BRK.B``, ``BF.B``, ``RDS.A``) resolves by
+        its own ticker. Only when the full ticker matches nothing does a
+        ``.SUFFIX`` fall back to the exchange-disambiguation reading
+        (``UMAX.AX`` → ticker ``UMAX`` on exchange ``AX``). Raises on collision
+        naming ``ticker``.
         """
+        # Rung 2a — exact full ticker (dots included).
+        full = self._query_ticker(ref, None, ref)
+        if full is not None:
+            return full
+
+        # Rung 2b — exchange-suffix fallback: only if the ref carries a suffix
+        # and the full-ticker match found nothing.
         base, _, suffix = ref.partition(".")
-        params: list[object] = [base]
+        if not suffix:
+            return None
+        return self._query_ticker(base, suffix, ref)
+
+    def _query_ticker(self, ticker: str, exchange: str | None, ref: str) -> str | None:
+        """Return the sole ``security_id`` for a ticker (+optional exchange).
+
+        Raises :class:`SecurityResolutionError` naming ``ticker`` on collision;
+        returns ``None`` on no match.
+        """
+        params: list[object] = [ticker]
         exchange_filter = ""
-        if suffix:
+        if exchange is not None:
             exchange_filter = "AND UPPER(exchange) = UPPER(?)"
-            params.append(suffix)
+            params.append(exchange)
         rows = self._db.execute(
             f"SELECT security_id FROM {SECURITIES.full_name} "  # noqa: S608  # TableRef + static filter
             f"WHERE UPPER(ticker) = UPPER(?) {exchange_filter}",
@@ -745,6 +788,88 @@ class InvestmentService:
             account_id=account_id, type_=type_, rows=rows, actor=actor
         )
 
+    def record_events(
+        self, events: list[dict[str, Any]], *, actor: str, created_by: str
+    ) -> RecordEventsResult:
+        """Record a batch of events atomically; return written ids + soft errors.
+
+        The batch analogue of :meth:`record_event` for the MCP ``investments_record``
+        tool. Each dict carries the same fields ``record_event`` takes as kwargs
+        (``account_ref``, ``security_ref``, ``type_``, ``trade_date``, …).
+
+        Two passes with a hard atomicity boundary between them:
+
+        - **Pass 1 (validate + resolve, no writes).** Every event is validated
+          (taxonomy/sign/subtype/presence) and its account resolved — either is
+          a HARD failure that raises and aborts the whole batch with nothing
+          written. An unresolved/ambiguous *security* is SOFT: that event is
+          skipped, recorded in ``error_details`` by its index, and the batch
+          continues. Each event's ``account``/``security`` is resolved exactly
+          once here (not again at write time).
+        - **Pass 2 (write, one transaction).** Every surviving event's rows are
+          inserted under ONE ``raw.import_log`` batch in ONE DuckDB transaction
+          with ONE audit event. A failure part-way rolls the whole batch back,
+          so the tool's "nothing written / safe to retry" contract holds even
+          against an infra error mid-write.
+        """
+        if created_by not in _VALID_CREATED_BY:
+            raise UserError(
+                f"created_by must be one of {sorted(_VALID_CREATED_BY)}, "
+                f"got {created_by!r}.",
+                code=error_codes.MUTATION_INVALID_INPUT,
+            )
+        from moneybin.services.account_service import AccountService
+
+        account_svc = AccountService(self._db)
+        groups: list[tuple[str, list[dict[str, object]]]] = []
+        error_details: list[dict[str, str]] = []
+        for index, ev in enumerate(events):
+            type_ = ev["type_"]
+            security_ref = ev["security_ref"]
+            # HARD: taxonomy/sign/subtype/presence + account resolution.
+            self._validate_event(
+                type_=type_,
+                subtype=ev["subtype"],
+                quantity=ev["quantity"],
+                amount=ev["amount"],
+                security_ref=security_ref,
+            )
+            account_id = account_svc.resolve_strict(ev["account_ref"])
+            # SOFT: an unresolved/ambiguous security skips just this event.
+            try:
+                security_id = (
+                    self.resolve_security(security_ref)
+                    if security_ref is not None
+                    else None
+                )
+            except SecurityResolutionError as exc:
+                error_details.append({"index": str(index), "reason": str(exc)})
+                continue
+            rows = self._build_rows(
+                account_id=account_id,
+                security_id=security_id,
+                security_ref=security_ref,
+                type_=type_,
+                subtype=ev["subtype"],
+                trade_date=ev["trade_date"],
+                quantity=ev["quantity"],
+                price=ev["price"],
+                amount=ev["amount"],
+                fees=ev["fees"],
+                acquired=ev["acquired"],
+                basis=ev["basis"],
+                event_group_id=ev["event_group_id"],
+                currency_code=ev["currency_code"],
+                description=ev["description"],
+                created_by=created_by,
+            )
+            groups.append((account_id, rows))
+
+        written = self._write_batch(groups, actor=actor)
+        return RecordEventsResult(
+            investment_transaction_ids=written, error_details=error_details
+        )
+
     def _validate_event(
         self,
         *,
@@ -963,6 +1088,52 @@ class InvestmentService:
             )
         ]
 
+    def _insert_event_row(
+        self, *, import_id: str, account_id: str, row: dict[str, object]
+    ) -> str:
+        """Insert one raw investment row; return its predicted gold-key id.
+
+        No transaction management — the caller owns the enclosing transaction so
+        multi-row / multi-event writes stay atomic.
+        """
+        source_transaction_id = "manual_" + uuid.uuid4().hex[:12]
+        investment_transaction_id = _predict_investment_gold_key(
+            source_transaction_id, account_id
+        )
+        self._db.conn.execute(
+            f"""
+            INSERT INTO {MANUAL_INVESTMENT_TRANSACTIONS.full_name} (
+                source_transaction_id, import_id, account_id, security_id,
+                security_ref, type, subtype, event_group_id, trade_date,
+                settlement_date, original_acquisition_date, quantity,
+                price, amount, fees, currency_code, description,
+                created_by, investment_transaction_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,  # noqa: S608  # TableRef + parameterized values
+            [
+                source_transaction_id,
+                import_id,
+                row["account_id"],
+                row["security_id"],
+                row["security_ref"],
+                row["type"],
+                row["subtype"],
+                row["event_group_id"],
+                row["trade_date"],
+                row["settlement_date"],
+                row["original_acquisition_date"],
+                row["quantity"],
+                row["price"],
+                row["amount"],
+                row["fees"],
+                row["currency_code"],
+                row["description"],
+                row["created_by"],
+                investment_transaction_id,
+            ],
+        )
+        return investment_transaction_id
+
     def _write_rows(
         self,
         *,
@@ -971,12 +1142,13 @@ class InvestmentService:
         rows: list[dict[str, object]],
         actor: str,
     ) -> list[str]:
-        """Insert the prepared rows + one audit event under a single import batch.
+        """Insert one event's rows + one audit event under a single import batch.
 
         Mirrors ``TransactionService.create_manual_batch``: allocate one
         ``raw.import_log`` row, insert every row in one transaction, emit one
         ``investment.record`` audit event, and mark the batch failed on rollback
-        so a crashed write leaves no orphaned ``importing`` batch.
+        so a crashed write leaves no orphaned ``importing`` batch. The
+        multi-event analogue is :meth:`_write_batch`.
         """
         from moneybin.services.import_service import ImportService
 
@@ -990,44 +1162,11 @@ class InvestmentService:
         self._db.begin()
         try:
             for row in rows:
-                source_transaction_id = "manual_" + uuid.uuid4().hex[:12]
-                investment_transaction_id = _predict_investment_gold_key(
-                    source_transaction_id, account_id
+                written.append(
+                    self._insert_event_row(
+                        import_id=import_id, account_id=account_id, row=row
+                    )
                 )
-                self._db.conn.execute(
-                    f"""
-                    INSERT INTO {MANUAL_INVESTMENT_TRANSACTIONS.full_name} (
-                        source_transaction_id, import_id, account_id, security_id,
-                        security_ref, type, subtype, event_group_id, trade_date,
-                        settlement_date, original_acquisition_date, quantity,
-                        price, amount, fees, currency_code, description,
-                        created_by, investment_transaction_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,  # noqa: S608  # TableRef + parameterized values
-                    [
-                        source_transaction_id,
-                        import_id,
-                        row["account_id"],
-                        row["security_id"],
-                        row["security_ref"],
-                        row["type"],
-                        row["subtype"],
-                        row["event_group_id"],
-                        row["trade_date"],
-                        row["settlement_date"],
-                        row["original_acquisition_date"],
-                        row["quantity"],
-                        row["price"],
-                        row["amount"],
-                        row["fees"],
-                        row["currency_code"],
-                        row["description"],
-                        row["created_by"],
-                        investment_transaction_id,
-                    ],
-                )
-                written.append(investment_transaction_id)
-
             self._audit.record_audit_event(
                 action="investment.record",
                 target=(*_AUDIT_TARGET, import_id),
@@ -1058,6 +1197,72 @@ class InvestmentService:
         )
         return written
 
+    def _write_batch(
+        self,
+        groups: list[tuple[str, list[dict[str, object]]]],
+        *,
+        actor: str,
+    ) -> list[str]:
+        """Insert many events' rows atomically under one import batch.
+
+        The multi-event analogue of :meth:`_write_rows`: every group's rows
+        (``(account_id, rows)``) are inserted under ONE ``raw.import_log`` batch
+        in ONE transaction with ONE ``investment.record`` audit event. A failure
+        part-way rolls the whole batch back and marks the import failed, so a
+        retry can't double-insert events that would otherwise have committed
+        before the failure.
+        """
+        if not groups:
+            return []
+        from moneybin.services.import_service import ImportService
+
+        import_id = ImportService(self._db).allocate_import_log(
+            source_type=_SOURCE_TYPE,
+            format_name=_IMPORT_FORMAT_NAME,
+            actor=actor,
+        )
+
+        written: list[str] = []
+        self._db.begin()
+        try:
+            for account_id, rows in groups:
+                for row in rows:
+                    written.append(
+                        self._insert_event_row(
+                            import_id=import_id, account_id=account_id, row=row
+                        )
+                    )
+            self._audit.record_audit_event(
+                action="investment.record",
+                target=(*_AUDIT_TARGET, import_id),
+                before=None,
+                after={"row_count": len(written), "event_count": len(groups)},
+                actor=actor,
+            )
+            self._db.commit()
+        except Exception:
+            self._db.rollback()
+            from moneybin.loaders import import_log
+
+            import_log.finalize_import(
+                self._db,
+                import_id,
+                status="failed",
+                rows_total=0,
+                rows_imported=0,
+            )
+            raise
+
+        for _account_id, rows in groups:
+            for row in rows:
+                INVESTMENT_EVENTS_RECORDED_TOTAL.labels(type=str(row["type"])).inc()
+
+        logger.info(
+            f"investment.record import_id={import_id} event_count={len(groups)} "
+            f"row_count={len(written)} actor={actor}"
+        )
+        return written
+
     # ------------------------------------------------------------------
     # Lot selection (Req 13)
     # ------------------------------------------------------------------
@@ -1078,7 +1283,8 @@ class InvestmentService:
         declarative set; ``selections=[]`` clears all overrides → FIFO).
         """
         row = self._db.execute(
-            f"SELECT type, quantity FROM {FCT_INVESTMENT_TRANSACTIONS.full_name} "  # noqa: S608  # TableRef constant
+            f"SELECT account_id, security_id, type, quantity "  # noqa: S608  # TableRef constant
+            f"FROM {FCT_INVESTMENT_TRANSACTIONS.full_name} "
             "WHERE investment_transaction_id = ?",
             [disposal_txn_id],
         ).fetchone()
@@ -1086,8 +1292,11 @@ class InvestmentService:
             raise UserError(
                 f"Disposal {disposal_txn_id!r} not found in the investment ledger.",
                 code=error_codes.MUTATION_NOT_FOUND,
+                hint=_REFRESH_MATERIALIZE_HINT,
             )
-        disposal_type, disposal_quantity = row
+        disposal_account_id, disposal_security_id, disposal_type, disposal_quantity = (
+            row
+        )
         if disposal_type != "sell":
             raise UserError(
                 f"{disposal_txn_id!r} is a {disposal_type!r}, not a disposal; "
@@ -1096,7 +1305,9 @@ class InvestmentService:
             )
 
         if selections:
-            self._validate_selection_lots(selections)
+            self._validate_selection_lots(
+                selections, disposal_account_id, disposal_security_id
+            )
             total = sum((qty for _, qty in selections), Decimal("0"))
             available = abs(Decimal(str(disposal_quantity)))
             if total > available:
@@ -1116,8 +1327,22 @@ class InvestmentService:
             f"count={len(selections)} actor={actor}"
         )
 
-    def _validate_selection_lots(self, selections: list[tuple[str, Decimal]]) -> None:
-        """Raise if any selected lot is unknown or carries a non-positive quantity."""
+    def _validate_selection_lots(
+        self,
+        selections: list[tuple[str, Decimal]],
+        account_id: str,
+        security_id: str | None,
+    ) -> None:
+        """Raise unless every selected lot belongs to the disposal's position.
+
+        A lot is valid only if it exists in ``core.fct_investment_lots`` AND
+        belongs to the disposal's ``(account_id, security_id)``. Binding the
+        check to the position (not global existence) is load-bearing: a lot from
+        another security would otherwise pass validation and then be silently
+        dropped to a FIFO fallback by the engine (``_consumption_plan`` looks it
+        up in the disposal group's ``by_lot_id`` and skips it), producing a wrong
+        1099-B with no error.
+        """
         for lot_id, qty in selections:
             if qty <= 0:
                 raise UserError(
@@ -1130,15 +1355,18 @@ class InvestmentService:
             str(r[0])
             for r in self._db.execute(
                 f"SELECT lot_id FROM {FCT_INVESTMENT_LOTS.full_name} "  # noqa: S608  # TableRef constant
-                f"WHERE lot_id IN ({placeholders})",
-                lot_ids,
+                f"WHERE lot_id IN ({placeholders}) "
+                "AND account_id = ? AND security_id = ?",
+                [*lot_ids, account_id, security_id],
             ).fetchall()
         }
         missing = [lot_id for lot_id in lot_ids if lot_id not in found]
         if missing:
             raise UserError(
-                f"Unknown lot(s): {', '.join(repr(m) for m in missing)}.",
+                "Lot(s) not part of this disposal's position "
+                f"(account/security): {', '.join(repr(m) for m in missing)}.",
                 code=error_codes.MUTATION_NOT_FOUND,
+                hint=_REFRESH_MATERIALIZE_HINT,
             )
 
     # ------------------------------------------------------------------

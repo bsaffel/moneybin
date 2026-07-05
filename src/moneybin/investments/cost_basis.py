@@ -52,8 +52,23 @@ _ZERO_MONEY = Decimal("0.00")
 # realized_gain_id.
 _UNMATCHED_LOT_ID = ""
 
-# Holding-period boundary: strictly more than 365 days held is long-term.
-_LONG_TERM_DAYS = 365
+# Same-day event ordering. Events sharing a trade_date are applied in a
+# deterministic, economically-ordered sequence — never arbitrary content-hash
+# order. Corporate actions take effect at the ex-date (start of day) so they
+# precede same-day trades; acquisitions precede disposals so a same-day buy is
+# an available lot for a same-day sell. Ties within a bucket fall back to the
+# stable content-hash id. Cash-only / unmodeled types are skipped in the loop,
+# so their bucket (the default) is immaterial.
+_SAME_DAY_TYPE_ORDER: dict[str, int] = {
+    "split": 0,
+    "return_of_capital": 0,
+    "buy": 1,
+    "transfer_in": 1,
+    "reinvest": 1,
+    "sell": 2,
+    "transfer_out": 2,
+}
+_DEFAULT_SAME_DAY_ORDER = 1
 
 
 @dataclass(frozen=True)
@@ -170,9 +185,30 @@ def _realized_gain_id(disposal_txn_id: str, lot_id: str) -> str:
     return "rg_" + hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
+def _one_year_anniversary(acquisition_date: date) -> date:
+    """The calendar date one year after acquisition (the long-term boundary).
+
+    A Feb 29 acquisition has no calendar anniversary; by convention its
+    anniversary is the non-leap Feb 28, making the position long-term on/after
+    the following Mar 1 (consistent with the non-leap rule that long-term begins
+    the day after the anniversary).
+    """
+    try:
+        return acquisition_date.replace(year=acquisition_date.year + 1)
+    except ValueError:
+        return date(acquisition_date.year + 1, 2, 28)
+
+
 def _term(acquisition_date: date, disposal_date: date) -> str:
-    held_days = (disposal_date - acquisition_date).days
-    return "long" if held_days > _LONG_TERM_DAYS else "short"
+    """Long- vs short-term per the IRS "more than one year" rule.
+
+    Calendar-based, NOT a 365-day count: a lot held exactly one year whose span
+    crosses a leap day is 366 days but still short-term. Long-term requires the
+    disposal to fall strictly after the one-year anniversary.
+    """
+    return (
+        "long" if disposal_date > _one_year_anniversary(acquisition_date) else "short"
+    )
 
 
 def _open_lot(
@@ -634,7 +670,9 @@ def compute_lots_and_gains(
     """Derive tax lots and realized gains from a ledger.
 
     Events are processed independently per ``(account_id, security_id)`` group,
-    sorted within a group by ``(trade_date, investment_transaction_id)``.
+    sorted within a group by ``(trade_date, same-day-type-order,
+    investment_transaction_id)`` — corporate actions apply before same-day
+    trades and acquisitions before disposals (see ``_SAME_DAY_TYPE_ORDER``).
     Acquisitions (``buy``, ``transfer_in``, ``reinvest``) open lots; disposals
     (``sell``, ``transfer_out``) consume them per the elected method; the
     corporate actions ``split`` and ``return_of_capital`` adjust the group's open
@@ -672,7 +710,11 @@ def compute_lots_and_gains(
         pool = _Pool() if method == "average" else None
         ordered = sorted(
             group_events,
-            key=lambda e: (e.trade_date, e.investment_transaction_id),
+            key=lambda e: (
+                e.trade_date,
+                _SAME_DAY_TYPE_ORDER.get(e.type, _DEFAULT_SAME_DAY_ORDER),
+                e.investment_transaction_id,
+            ),
         )
         lots: list[Lot] = []
         for event in ordered:

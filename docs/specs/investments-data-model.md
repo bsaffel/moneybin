@@ -52,8 +52,10 @@ Related specs:
    a `security_id` via CUSIP/ISIN → ticker+exchange → name fuzzy, mirroring the
    institution-resolution chain in `smart-import-financial.md`. Three rules adopted
    from Portfolio Performance's battle-tested `SecurityCache` (127 broker importers):
-   ticker comparison strips the exchange suffix (`UMAX.AX` → `UMAX`, disambiguated
-   by the `exchange` attribute); a name match is rejected when the candidate carries
+   ticker resolution tries the full reference as a stored ticker first — so a
+   dotted ticker like `BRK.B` resolves by its own ticker — and only then falls back
+   to stripping an exchange suffix (`UMAX.AX` → `UMAX`, disambiguated by the
+   `exchange` attribute); a name match is rejected when the candidate carries
    a *contradicting* strong identifier (CUSIP/ISIN/ticker); identifier collisions
    raise naming the exact attribute — never auto-merge (identifiers.md Guard 2).
    Note for importer children: Plaid delivers CUSIP/ISIN only to
@@ -486,6 +488,14 @@ corporate-action redesign converges on (linked N-ary entry, ratio-derived basis)
 - **Merger / share-class conversion**: `transfer_out` of the old security +
   `transfer_in` of the new, basis carried via `--basis`, holding period via
   `--acquired` (per-lot when granularity is known, aggregate otherwise).
+
+**Same-day ordering.** Events sharing a `trade_date` are applied in a
+deterministic, economically-ordered sequence — never arbitrary ingestion or
+content-hash order: corporate actions (`split`, `return_of_capital`) take effect
+at the ex-date, before same-day trades, and acquisitions precede same-day
+disposals (so a same-day buy is an available lot for a same-day sell). The
+derived lots and 1099-B therefore never depend on the order events were recorded.
+
 - **Spin-off**: `return_of_capital` on the parent (the basis carve-out, pro-rata)
   + `transfer_in` of the spun security carrying that basis and the parent's
   acquisition date.
@@ -718,10 +728,15 @@ conventions (response envelope, sensitivity tiers). Functional parity with the C
 Per `surface-design.md` — one tool per operation shape, no polymorphic `*_set` catch-all.
 
 **`investments_record`** — Shape 3 (discrete batch event). Record one or more investment
-events; resolves securities, reports unresolved refs in `warnings`. Accepts
+events; resolves securities, reports unresolved refs in `error_details`. Accepts
 `subtype` and `event_group_id` per event; a `reinvest` event expands to the
 acquisition + income row pair exactly like the CLI convenience (same outcomes,
-per functional parity).
+per functional parity). The batch is **atomic**: all events are validated and
+resolved before any write, then written in a single transaction under one
+`import_log` batch — a hard-validation or infra failure leaves nothing written
+so a retry cannot double-insert. The one soft exception is an unresolved or
+ambiguous *security* ref: that event is skipped and reported in `error_details`,
+and the rest of the batch still commits.
 
 **`investments_securities_set`** — Shape 1b (entity upsert). Create-or-update one
 catalog entry, including its `cost_basis_method` per-security override.

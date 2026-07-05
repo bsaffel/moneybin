@@ -352,6 +352,27 @@ class TestInvestmentsList:
         assert result.exit_code == 0, result.output
         assert "buy" in result.output
 
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ["investments", "list"],
+            ["investments", "holdings"],
+            ["investments", "gains"],
+            ["investments", "lots", "list"],
+        ],
+    )
+    def test_read_surfaces_report_high_sensitivity(
+        self, runner: CliRunner, db: Database, args: list[str]
+    ) -> None:
+        # CLI must match the MCP-derived tier: cost-basis/proceeds/quantity rows
+        # are Tier.HIGH (payloads/investments.py), so the CLI JSON envelope must
+        # report "high" — not "medium" — to keep the redaction contract
+        # identical across surfaces (cli.md).
+        result = runner.invoke(app, [*args, "--output", "json"])
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["summary"]["sensitivity"] == "high"
+
 
 # ---------------------------------------------------------------------------
 # investments holdings, investments gains
