@@ -27,6 +27,7 @@ from moneybin.privacy.payloads.categorize import (
     CategorizeStatsPayload,
     CategorizeStatsWithAutoPayload,
     CatPendingPayload,
+    ImproveAiPayload,
     PendingTxnRow,
     RulesCreatePayload,
     RulesDeletePayload,
@@ -360,6 +361,30 @@ def transactions_categorize_run(
     )
 
 
+@mcp_tool(domain="categorize", read_only=False)
+def transactions_categorize_improve_ai() -> ResponseEnvelope[ImproveAiPayload]:
+    """Re-categorize AI-guessed transactions to confident provider-native categories.
+
+    Reverse-looks-up every transaction currently ``categorized_by='ai'``
+    against the Plaid category bridge; upgrades it to ``provider_native``
+    only when the bridge match is at MEDIUM confidence or higher. Only
+    rewrites rows currently ``categorized_by='ai'`` — user, rule, and
+    merchant categorizations are never overwritten. Writes
+    app.transaction_categories; revert by re-categorizing the transaction
+    (a user edit wins at priority 1). Returns the count of transactions
+    upgraded.
+    """
+    with get_database(read_only=False) as db:
+        count = CategorizationService(db).improve_ai_categories()
+    return build_envelope(
+        data=ImproveAiPayload(upgraded_count=count),
+        sensitivity="low",
+        actions=[
+            "Use transactions_categorize_stats to check resulting coverage",
+        ],
+    )
+
+
 def register_transactions_categorize_tools(mcp: FastMCP) -> None:
     """Register all transactions categorize namespace tools with the FastMCP server."""
     register(
@@ -438,4 +463,14 @@ def register_transactions_categorize_tools(mcp: FastMCP) -> None:
         "Run the categorization engine cascade (rules and/or merchants) over uncategorized transactions. "
         "Amounts use the accounting convention: negative = expense, positive = income; transfers exempt. "
         "Writes app.transaction_categories via the named engine(s); revert by calling transactions_categorize_commit with a different category, or by soft-deleting the source rule via transactions_categorize_rules_delete(reapply=True).",
+    )
+    register(
+        mcp,
+        transactions_categorize_improve_ai,
+        "transactions_categorize_improve_ai",
+        "Re-categorize AI-guessed transactions to confident provider-native "
+        "(Plaid PFC) categories. Only rewrites rows currently "
+        "categorized_by='ai'; never overrides user, rule, or merchant "
+        "categorizations. Writes app.transaction_categories; revert by "
+        "re-categorizing the transaction (a user edit wins at priority 1).",
     )

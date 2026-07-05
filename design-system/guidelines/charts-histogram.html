@@ -1,0 +1,41 @@
+<!-- @dsCard group="Charts" viewport="700x230" subtitle="The shape of spending, not its sum. Uneven bucket widths are labeled, never hidden; median marked on the axis; n printed in the meta; counts printed above bars in deep audit. Single measure stays brass at 85%." name="Distribution — histogram" -->
+<!DOCTYPE html><html><head><meta charset="utf-8"><link rel="stylesheet" href="../styles.css"><style>body{margin:0;font-family:var(--font-data)}</style></head>
+<body style="background:var(--bg-surface);padding:14px 20px;">
+<div style="display:flex;gap:10px;align-items:baseline;margin-bottom:6px">
+  <span style="font-size:11px;letter-spacing:0.12em;color:var(--text-secondary)">TRANSACTION SIZES</span>
+  <span style="flex:1"></span>
+  <span style="font-size:11px;color:var(--text-faint)">June 2026 · n=1,732</span>
+</div>
+<svg role="img" aria-label="Histogram of the spending distribution across labeled uneven buckets, median marked on the axis" viewBox="0 0 660 165" style="display:block;width:100%">
+  <line x1="20" y1="130" x2="650" y2="130" style="stroke:var(--border-strong)"/>
+  <rect x="20" y="90" width="52" height="40" fill-opacity="0.85" style="fill:var(--accent-brass)"/>
+  <rect x="90" y="41" width="52" height="89" fill-opacity="0.85" style="fill:var(--accent-brass)"/>
+  <rect x="160" y="17" width="52" height="113" fill-opacity="0.85" style="fill:var(--accent-brass)"/>
+  <rect x="230" y="30" width="52" height="100" fill-opacity="0.85" style="fill:var(--accent-brass)"/>
+  <rect x="300" y="49" width="52" height="81" fill-opacity="0.85" style="fill:var(--accent-brass)"/>
+  <rect x="370" y="97" width="52" height="33" fill-opacity="0.85" style="fill:var(--accent-brass)"/>
+  <rect x="440" y="112" width="52" height="18" fill-opacity="0.85" style="fill:var(--accent-brass)"/>
+  <rect x="510" y="121" width="52" height="9" fill-opacity="0.85" style="fill:var(--accent-brass)"/>
+  <rect x="580" y="127" width="52" height="3" fill-opacity="0.85" style="fill:var(--accent-brass)"/>
+  <text x="46" y="85" text-anchor="middle" style="font-size:10px;fill:var(--accent-brass)">142</text>
+  <text x="116" y="36" text-anchor="middle" style="font-size:10px;fill:var(--accent-brass)">318</text>
+  <text x="186" y="12" text-anchor="middle" style="font-size:10px;fill:var(--accent-brass)">402</text>
+  <text x="256" y="25" text-anchor="middle" style="font-size:10px;fill:var(--accent-brass)">356</text>
+  <text x="326" y="44" text-anchor="middle" style="font-size:10px;fill:var(--accent-brass)">289</text>
+  <text x="396" y="92" text-anchor="middle" style="font-size:10px;fill:var(--accent-brass)">118</text>
+  <text x="466" y="107" text-anchor="middle" style="font-size:10px;fill:var(--accent-brass)">64</text>
+  <text x="536" y="116" text-anchor="middle" style="font-size:10px;fill:var(--accent-brass)">31</text>
+  <text x="606" y="122" text-anchor="middle" style="font-size:10px;fill:var(--accent-brass)">12</text>
+  <text x="46" y="146" text-anchor="middle" style="font-size:11px;fill:var(--text-faint)">&lt;$10</text>
+  <text x="116" y="146" text-anchor="middle" style="font-size:11px;fill:var(--text-faint)">10–25</text>
+  <text x="186" y="146" text-anchor="middle" style="font-size:11px;fill:var(--text-faint)">25–50</text>
+  <text x="256" y="146" text-anchor="middle" style="font-size:11px;fill:var(--text-faint)">50–100</text>
+  <text x="326" y="146" text-anchor="middle" style="font-size:11px;fill:var(--text-faint)">100–250</text>
+  <text x="396" y="146" text-anchor="middle" style="font-size:11px;fill:var(--text-faint)">250–500</text>
+  <text x="466" y="146" text-anchor="middle" style="font-size:11px;fill:var(--text-faint)">0.5–1K</text>
+  <text x="536" y="146" text-anchor="middle" style="font-size:11px;fill:var(--text-faint)">1–2.5K</text>
+  <text x="606" y="146" text-anchor="middle" style="font-size:11px;fill:var(--text-faint)">&gt;2.5K</text>
+  <line x1="185" y1="130" x2="185" y2="138" style="stroke:var(--text-primary)"/>
+  <text x="185" y="161" text-anchor="middle" style="font-size:11px;fill:var(--text-secondary)">median $47.20</text>
+</svg>
+</body></html>

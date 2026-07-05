@@ -118,6 +118,7 @@ from moneybin.services.categorization.assist import (
 )
 from moneybin.services.categorization.matcher import (
     CategorizationMatcher,
+    UncategorizedRow,
 )
 from moneybin.services.categorization.orchestrator import (
     CategorizationOrchestrator,
@@ -418,7 +419,7 @@ class CategorizationService:
         return self._orchestrator.categorize_items(items)
 
     def apply_rules(
-        self, *, uncategorized: list[tuple[Any, ...]] | None = None
+        self, *, uncategorized: list[UncategorizedRow] | None = None
     ) -> set[str]:
         """Apply active categorization rules to uncategorized transactions."""
         return self._orchestrator.apply_rules(uncategorized=uncategorized)
@@ -426,7 +427,7 @@ class CategorizationService:
     def apply_merchant_categories(
         self,
         *,
-        uncategorized: list[tuple[Any, ...]] | None = None,
+        uncategorized: list[UncategorizedRow] | None = None,
         skip_txn_ids: set[str] | None = None,
     ) -> int:
         """Apply merchant-based categories to uncategorized transactions."""
@@ -437,6 +438,10 @@ class CategorizationService:
     def apply_plaid_categories(self) -> int:
         """Apply Plaid PFC categories (via the category-source bridge) to still-uncategorized Plaid transactions."""
         return self._orchestrator.apply_plaid_categories()
+
+    def improve_ai_categories(self) -> int:
+        """Upgrade AI-guessed categorizations to confident Plaid provider_native."""
+        return self._orchestrator.improve_ai_categories()
 
     def categorize_pending(self) -> dict[str, int]:
         """Categorize all pending (uncategorized) transactions."""

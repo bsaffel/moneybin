@@ -143,11 +143,6 @@ class RecordingContext:
         row = self.txn_rows.get(transaction_id)
         return row.merchant_entity_source_type if row else None
 
-    def source_type_for(self, transaction_id: str) -> str | None:
-        """Return the canonical source_type for the given transaction_id, or None."""
-        row = self.txn_rows.get(transaction_id)
-        return row.source_type if row else None
-
     def merchant_name_for(self, transaction_id: str) -> str | None:
         """Return the provider merchant_name for the given transaction_id, or None."""
         row = self.txn_rows.get(transaction_id)

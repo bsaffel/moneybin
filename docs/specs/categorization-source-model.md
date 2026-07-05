@@ -18,12 +18,23 @@
 > landed — the `plaid_detailed` tag was many-to-one and produced
 > non-deterministic reverse lookups). **Shipped:** Decisions 1–4 (the
 > bridge-based `apply_plaid_categories`, wired last into `categorize_pending`)
-> + 8 (metrics + the `plaid_unmapped` coverage stat). **Deferred to the
-> immediate follow-up** (bundled with the axis-2 category-seed audit): the
-> opt-in AI→`provider_native` **upgrade pass** (Decision 4) and the per-source
-> **candidates view** (Decision 5) — both additive, neither on the critical
-> path (new imports categorize automatically). Original design text is
-> preserved below for rationale; mechanism deltas are flagged inline.
+> + 8 (metrics + the `plaid_unmapped` coverage stat). **Shipped 2026-07-04,
+> PR1 of the follow-up:** the opt-in AI→`provider_native` **upgrade pass**
+> (Decision 4), as `CategorizationOrchestrator.improve_ai_categories()` / CLI
+> `moneybin transactions categorize improve-ai` / MCP
+> `transactions_categorize_improve_ai` — see the updated Decision 4 note
+> below. That PR also shipped two internal refinements to
+> `services/categorization/`: `CategorizationMatcher` became the sole owner
+> of the `merchant_entity_id`-carrying uncategorized-row read, returning a
+> named `UncategorizedRow` dataclass instead of positional tuples; and the
+> merchant-mint precedence-independence invariant (a novel entity's merchant
+> link mints even when the accompanying categorization write is
+> precedence-blocked) was locked behind a characterization test. **Still
+> deferred** (bundled with the axis-2 category-seed audit, a separate,
+> unscheduled PR): the per-source **candidates view** (Decision 5) —
+> additive, not on the critical path (new imports categorize automatically).
+> Original design text is preserved below for rationale; mechanism deltas
+> are flagged inline.
 > Mirrors: the identity-MDM pattern from
 > [`merchant-entity-resolution.md`](merchant-entity-resolution.md) (M1T) and
 > [`account-identity-resolution.md`](account-identity-resolution.md) (M1S) —
@@ -284,9 +295,18 @@ starting point; the **gate at ≥ MEDIUM** is the decision.
 onto historical rows — guard-respecting, so it never touches anything at priority
 ≤ 6. Explicit action = magic stays visible; no silent churn on every run.
 
-> **Deferred (as built):** the opt-in upgrade pass is **not** in M1U's first
-> slice — it lands in the immediate follow-up, together with its CLI/MCP
-> surfacing (a surface-design decision) and the axis-2 category-seed audit.
+> **Shipped (as built) 2026-07-04, PR1 of the follow-up.** Not in M1U's
+> first slice — it landed as a **separate discrete operation**, not a flag
+> on `apply_plaid_categories`: `CategorizationOrchestrator
+> .improve_ai_categories()` reuses the Decision 4 bridge-lookup and
+> gated-write helpers with the predicate `categorized_by = 'ai'`, exposed as
+> CLI `moneybin transactions categorize improve-ai` and MCP
+> `transactions_categorize_improve_ai` (see `moneybin-cli.md` /
+> `moneybin-mcp.md`). Same confidence gate, same precedence guard (only ever
+> touches priority-7 `ai` rows, guard-respecting), same "explicit action, no
+> silent churn" posture as originally designed. The per-source candidates
+> view (Decision 5, below) remains deferred, bundled with the axis-2
+> category-seed audit.
 
 **Old primary-as-text passthrough.** The existing `plaid_category → category`
 fallback text in `prep.int_transactions__unioned` is **kept** as a display
@@ -382,9 +402,17 @@ rule/merchant override of `provider_native` across runs (the `categorize_pending
 scan re-checks `provider_native` rows); `apply_plaid_categories`
 (**bridge reverse-lookup**, confidence map + ≥MEDIUM gate, subcategory, run-order
 last) wired into `categorize_pending`; metrics + the `plaid_unmapped` coverage stat.
-**Deferred to the immediate follow-up:** the opt-in upgrade pass (Decision 4) and
-the derived candidates view (Decision 5) — additive, off the critical path — bundled
-with the axis-2 category-seed audit (seed mis-tag fixes + the ~29-code coverage gap).
+**Shipped in the immediate follow-up (PR1, 2026-07-04):** the opt-in
+AI→`provider_native` upgrade pass (Decision 4), as
+`improve_ai_categories()` plus its CLI (`categorize improve-ai`) and MCP
+(`transactions_categorize_improve_ai`) surfacing; alongside two internal
+refinements to `services/categorization/` — `CategorizationMatcher` as sole
+owner of the uncategorized-row read (named `UncategorizedRow` dataclass
+replacing positional tuples), and the merchant-mint precedence-independence
+invariant locked behind a characterization test.
+**Still deferred**, bundled with the axis-2 category-seed audit (seed
+mis-tag fixes + the ~29-code coverage gap, a separate, unscheduled PR):
+the derived candidates view (Decision 5) — additive, off the critical path.
 **Out (designed, registered, additive):** the assertion store, the conflict-review
 queue, and merchant-scoped/richer rules (Decision 7).
 
@@ -404,8 +432,10 @@ scenarios over synthetic ground truth (`make test-scenarios`), plus unit tests:
   proving the single `category_id` is not forced.
 - **Backfill/upgrade:** normal `categorize_pending` scans uncategorized rows plus
   `provider_native` rows (so a later rule/merchant can override Plaid) and is
-  idempotent when no higher-precedence rule/merchant applies; the deferred opt-in
-  pass upgrades `ai → provider_native` and touches nothing at priority ≤ 6.
+  idempotent when no higher-precedence rule/merchant applies; the `improve-ai`
+  opt-in upgrade pass upgrades `ai → provider_native` and touches nothing at
+  priority ≤ 6 (see `TestImproveAiCategories` in
+  `test_categorization_service.py`).
 - **Lineage view:** `fct_transaction_category_candidates.is_winner` agrees with the
   resolved `transaction_categories` row.
 

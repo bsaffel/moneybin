@@ -16,6 +16,9 @@ Flow inventory:
   merchant catalog.
 - :meth:`apply_plaid_categories` — sweep still-uncategorized Plaid rows
   against the two-tier category-source bridge, confidence-gated.
+- :meth:`improve_ai_categories` — opt-in upgrade pass: re-run the same
+  bridge lookup against ``categorized_by='ai'`` rows so a confident
+  provider-native match replaces an earlier AI guess.
 - :meth:`categorize_pending` — combined snowball: scan uncategorized once,
   run rules pass, then merchants pass (rule wins on overlap), then plaid
   pass last to fill the long tail.
@@ -36,7 +39,7 @@ import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from time import perf_counter
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import duckdb
 
@@ -66,12 +69,12 @@ from moneybin.services.categorization._shared import (
 from moneybin.services.categorization.applier import MatchApplier
 from moneybin.services.categorization.matcher import (
     CategorizationMatcher,
+    UncategorizedRow,
     match_merchant_with_name,
 )
 from moneybin.tables import (
     BRIDGE_CATEGORY_SOURCE_MAP,
     CATEGORIES,
-    FCT_TRANSACTIONS,
     INT_TRANSACTIONS_MERGED,
     TRANSACTION_CATEGORIES,
 )
@@ -159,6 +162,16 @@ class CategorizationOrchestrator:
         _start = perf_counter()
         try:
             result = self._categorize_items_inner(items)
+            # Refresh the review-queue gauge once per batch, not once per
+            # proposal (moved off MerchantResolver._propose's per-call site,
+            # mirrors the apply_merchant_categories tail call). Runs
+            # unconditionally — even a precedence-skipped row's rung-3
+            # proposal must not leave the gauge stale until the next batch op.
+            from moneybin.services.merchant_resolver import (  # noqa: PLC0415 — deferred to avoid circular import
+                refresh_merchant_link_pending_gauge,
+            )
+
+            refresh_merchant_link_pending_gauge(self._db)
             # Snowball: fan newly-created merchants/exemplars out to remaining
             # uncategorized rows. Skipped on no-op batches so we don't churn a
             # pending sweep when nothing committed.
@@ -246,7 +259,6 @@ class CategorizationOrchestrator:
 
         # Phase 2 — batch-fetch txn rows (description + amount + account_id)
         txn_ids = [item.transaction_id for item in items]
-        placeholders = ",".join(["?"] * len(txn_ids))
         # Lazy import keeps the module-level dependency one-way
         # (auto_rule_service → categorization).
         from moneybin.services.auto_rule_service import (  # noqa: PLC0415 — deferred to avoid circular import
@@ -257,45 +269,34 @@ class CategorizationOrchestrator:
 
         txn_rows: dict[str, TxnRow] = {}
         # merchant_entity_id lives in prep.int_transactions__merged (Task 5
-        # deliberately stops it at prep); LEFT JOIN on the gold transaction_id
-        # so rung-0 entity resolution can run before name matching. The fallback
-        # drops the prep join (NULL entity id) so unit/pre-transform DBs — where
-        # core.fct_transactions exists without the prep layer — still load rows.
-        with_entity = f"""
-            SELECT t.transaction_id, t.description, t.amount, t.account_id,
-                   t.memo, t.source_type, t.merchant_name, m.merchant_entity_id,
-                   m.merchant_entity_source_type
-            FROM {FCT_TRANSACTIONS.full_name} AS t
-            LEFT JOIN {INT_TRANSACTIONS_MERGED.full_name} AS m
-                ON t.transaction_id = m.transaction_id
-            WHERE t.transaction_id IN ({placeholders})
-        """  # noqa: S608 — table names are compile-time TableRef constants; values are parameterized
-        without_entity = f"""
-            SELECT t.transaction_id, t.description, t.amount, t.account_id,
-                   t.memo, t.source_type, t.merchant_name,
-                   NULL AS merchant_entity_id, NULL AS merchant_entity_source_type
-            FROM {FCT_TRANSACTIONS.full_name} AS t
-            WHERE t.transaction_id IN ({placeholders})
-        """  # noqa: S608 — table names are compile-time TableRef constants; values are parameterized
+        # deliberately stops it at prep); fetch_rows_for_ids LEFT JOINs on the
+        # gold transaction_id (falling back to a NULL entity id when the prep
+        # layer or its entity columns are absent) so rung-0 entity resolution
+        # can run before name matching.
         try:
-            try:
-                rows = self._db.execute(with_entity, txn_ids).fetchall()
-            except (duckdb.CatalogException, duckdb.BinderException):
-                rows = self._db.execute(without_entity, txn_ids).fetchall()
+            rows = self._matcher.fetch_rows_for_ids(txn_ids)
             txn_rows = {
-                row[0]: TxnRow(
-                    description=row[1],
-                    amount=float(row[2]) if row[2] is not None else None,
-                    account_id=str(row[3]) if row[3] is not None else None,
-                    memo=row[4],
-                    source_type=str(row[5]) if row[5] is not None else None,
-                    merchant_name=str(row[6]) if row[6] is not None else None,
-                    merchant_entity_id=str(row[7]) if row[7] is not None else None,
-                    merchant_entity_source_type=str(row[8])
-                    if row[8] is not None
+                row.transaction_id: TxnRow(
+                    description=row.description,
+                    amount=float(row.amount) if row.amount is not None else None,
+                    account_id=str(row.account_id)
+                    if row.account_id is not None
+                    else None,
+                    memo=row.memo,
+                    source_type=str(row.source_type)
+                    if row.source_type is not None
+                    else None,
+                    merchant_name=str(row.merchant_name)
+                    if row.merchant_name is not None
+                    else None,
+                    merchant_entity_id=str(row.merchant_entity_id)
+                    if row.merchant_entity_id is not None
+                    else None,
+                    merchant_entity_source_type=str(row.merchant_entity_source_type)
+                    if row.merchant_entity_source_type is not None
                     else None,
                 )
-                for row in rows
+                for row in (rows or [])
             }
         except Exception:  # noqa: BLE001 — best-effort; degrades to no merchant resolution
             logger.warning("Could not batch-fetch transaction rows", exc_info=True)
@@ -378,10 +379,13 @@ class CategorizationOrchestrator:
                 # auto-bind/propose against the name match `existing`. A rung-4
                 # mint sets merchant_id, which correctly gates the exemplar
                 # accumulator off for id-bearing rows below.
-                # The binding/mint/propose is an entity-keyed fact deliberately
-                # committed before write_categorization; a precedence skip
-                # suppresses only the categorization, never the binding
-                # (spec Decision 7 — precedence-safe).
+                # INVARIANT: the entity mint/bind is a Plaid-asserted identity
+                # fact, committed regardless of whether THIS row's
+                # categorization write lands below (spec Decision 7). Unlike
+                # the exemplar accumulator (which LEARNS from a write and so
+                # gates on outcome.written), identity is precedence-independent.
+                # Guarded by
+                # test_novel_entity_mints_merchant_even_when_write_precedence_skipped.
                 merchant_id, entity_created = self._resolve_entity_merchant(
                     resolver,
                     bindings,
@@ -598,7 +602,7 @@ class CategorizationOrchestrator:
         return res.merchant_id, res.created
 
     def apply_rules(
-        self, *, uncategorized: list[tuple[Any, ...]] | None = None
+        self, *, uncategorized: list[UncategorizedRow] | None = None
     ) -> set[str]:
         """Apply active categorization rules to uncategorized transactions.
 
@@ -616,9 +620,9 @@ class CategorizationOrchestrator:
         ``uncategorized`` lets :meth:`categorize_pending` share a single scan
         with :meth:`apply_merchant_categories`. Rows come from
         :meth:`CategorizationMatcher.fetch_uncategorized_rows`; this method uses
-        only the leading ``(transaction_id, description, amount, account_id,
-        memo)`` columns and ignores the trailing entity-resolution columns.
-        When omitted, the rows are fetched.
+        only ``transaction_id``, ``description``, ``amount``, ``account_id``,
+        and ``memo`` and ignores the trailing entity-resolution fields. When
+        omitted, the rows are fetched.
 
         Returns:
             Set of ``transaction_id``s that landed a successful write. Count
@@ -640,13 +644,13 @@ class CategorizationOrchestrator:
             return set()
 
         applied: set[str] = set()
-        for txn_id, description, amount, account_id, memo, *_rest in uncategorized:
+        for row in uncategorized:
             match = CategorizationMatcher.match_first_rule(
                 rules,
-                str(description) if description else "",
-                float(amount) if amount is not None else None,
-                str(account_id) if account_id is not None else None,
-                str(memo) if memo else None,
+                str(row.description) if row.description else "",
+                float(row.amount) if row.amount is not None else None,
+                str(row.account_id) if row.account_id is not None else None,
+                str(row.memo) if row.memo else None,
             )
             if match is None:
                 continue
@@ -655,7 +659,7 @@ class CategorizationOrchestrator:
                 "auto_rule" if created_by == "auto_rule" else "rule"
             )
             outcome = self._applier.write_categorization(
-                transaction_id=txn_id,
+                transaction_id=row.transaction_id,
                 category=category,
                 subcategory=subcategory,
                 categorized_by=categorized_by,
@@ -663,7 +667,7 @@ class CategorizationOrchestrator:
                 confidence=1.0,
             )
             if outcome.written:
-                applied.add(txn_id)
+                applied.add(row.transaction_id)
 
         if applied:
             logger.info(f"Rule engine categorized {len(applied)} transactions")
@@ -672,7 +676,7 @@ class CategorizationOrchestrator:
     def apply_merchant_categories(
         self,
         *,
-        uncategorized: list[tuple[Any, ...]] | None = None,
+        uncategorized: list[UncategorizedRow] | None = None,
         skip_txn_ids: set[str] | None = None,
     ) -> int:
         """Apply merchant-based categories to uncategorized transactions.
@@ -685,13 +689,13 @@ class CategorizationOrchestrator:
 
         ``uncategorized`` lets :meth:`categorize_pending` share a single scan
         across :meth:`apply_rules` and this method. Rows come from
-        :meth:`CategorizationMatcher.fetch_uncategorized_rows`: the leading
-        ``(transaction_id, description, amount, account_id, memo)`` columns plus
-        trailing ``(merchant_entity_id, source_type, merchant_name,
-        merchant_entity_source_type)`` consulted for rung-0 entity resolution.
-        ``amount``, ``account_id``, and the merge-winner ``source_type`` are
-        ignored here — the resolver keys on ``merchant_entity_source_type`` (the
-        member that issued the entity id). When omitted, the rows are fetched.
+        :meth:`CategorizationMatcher.fetch_uncategorized_rows`: uses
+        ``description`` and ``memo`` for name matching plus ``merchant_entity_id``,
+        ``merchant_name``, and ``merchant_entity_source_type`` for rung-0 entity
+        resolution. ``amount``, ``account_id``, and the merge-winner
+        ``source_type`` are ignored here — the resolver keys on
+        ``merchant_entity_source_type`` (the member that issued the entity id).
+        When omitted, the rows are fetched.
 
         ``skip_txn_ids`` filters rows by transaction_id. :meth:`categorize_pending`
         passes the rule pass's applied set; without that filter the merchant
@@ -741,46 +745,45 @@ class CategorizationOrchestrator:
         }
 
         categorized_count = 0
-        for (
-            txn_id,
-            description,
-            _amount,
-            _account_id,
-            memo,
-            merchant_entity_id,
-            _source_type,
-            merchant_name,
-            merchant_entity_source_type,
-        ) in uncategorized:
+        for row in uncategorized:
+            txn_id = row.transaction_id
             # Spec Decision 3 rung 2: match the provider merchant_name too, not just
             # description/memo — otherwise a clean merchant_name with a blank/noisy
             # description mints a duplicate (rung 4) instead of auto-binding (rung 2).
             merchant = match_merchant_with_name(
                 merchants,
-                description=str(description) if description is not None else None,
-                memo=str(memo) if memo is not None else None,
-                merchant_name=str(merchant_name) if merchant_name is not None else None,
+                description=str(row.description)
+                if row.description is not None
+                else None,
+                memo=str(row.memo) if row.memo is not None else None,
+                merchant_name=str(row.merchant_name)
+                if row.merchant_name is not None
+                else None,
             )
-            # Resolve the entity binding for EVERY row, BEFORE the skip guard: the
-            # binding/mint/propose is an entity-keyed fact committed regardless of whether
-            # THIS row's categorization write happens (spec Decision 7 — precedence-safe).
+            # INVARIANT: the entity mint/bind is a Plaid-asserted identity fact,
+            # committed regardless of whether THIS row's categorization write
+            # lands (spec Decision 7) — resolved for EVERY row, BEFORE the skip
+            # guard below. Unlike the exemplar accumulator (which LEARNS from a
+            # write and so gates on outcome.written), identity is
+            # precedence-independent. Guarded by
+            # test_novel_entity_mints_merchant_even_when_write_precedence_skipped.
             # apply_merchant_categories returns a categorized-row count, not a
-            # merchants_created tally; a rung-4 mint here is still observable via the
-            # MERCHANT_RESOLUTION_OUTCOME_TOTAL{outcome="minted"} counter.
+            # merchants_created tally; a rung-4 mint here is still observable via
+            # the MERCHANT_RESOLUTION_OUTCOME_TOTAL{outcome="minted"} counter.
             merchant_id, _entity_created = self._resolve_entity_merchant(
                 resolver,
                 bindings,
                 self._applier,
                 rejected=rejected,
                 pending=pending,
-                merchant_entity_id=str(merchant_entity_id)
-                if merchant_entity_id is not None
+                merchant_entity_id=str(row.merchant_entity_id)
+                if row.merchant_entity_id is not None
                 else None,
-                source_type=str(merchant_entity_source_type)
-                if merchant_entity_source_type is not None
+                source_type=str(row.merchant_entity_source_type)
+                if row.merchant_entity_source_type is not None
                 else None,
-                provider_merchant_name=str(merchant_name)
-                if merchant_name is not None
+                provider_merchant_name=str(row.merchant_name)
+                if row.merchant_name is not None
                 else None,
                 name_match=merchant,
                 current_merchant_id=merchant["merchant_id"] if merchant else None,
@@ -836,6 +839,16 @@ class CategorizationOrchestrator:
             logger.info(
                 f"Merchant matching categorized {categorized_count} transactions"
             )
+        # Refresh the review-queue gauge once per batch, not once per proposal
+        # (moved off MerchantResolver._propose's per-call site). Cheap even
+        # when nothing changed — a single COUNT(*) that degrades to 0 when the
+        # decisions table is absent.
+        if resolver is not None:
+            from moneybin.services.merchant_resolver import (  # noqa: PLC0415 — deferred to avoid circular import
+                refresh_merchant_link_pending_gauge,
+            )
+
+            refresh_merchant_link_pending_gauge(self._db)
         return categorized_count
 
     def apply_plaid_categories(self) -> int:
@@ -876,17 +889,67 @@ class CategorizationOrchestrator:
         Returns:
             Number of transactions categorized.
         """
+        rows = self._plaid_bridge_candidates("uncategorized")
+        return self._write_plaid_rows(rows, trigger="sweep")
+
+    def improve_ai_categories(self) -> int:
+        """Re-categorize AI-guessed rows to confident Plaid provider_native.
+
+        Opt-in upgrade pass: reverse-looks-up every ``categorized_by='ai'``
+        row against the bridge, same >=MEDIUM confidence gate as
+        :meth:`apply_plaid_categories`. The write-time precedence guard
+        permits ``provider_native``(6) to overwrite ``ai``(7) and blocks
+        every other source (<=6), so only ai rows ever change here.
+
+        Returns:
+            Number of transactions upgraded.
+        """
+        rows = self._plaid_bridge_candidates("ai")
+        count = self._write_plaid_rows(rows, trigger="backfill")
+        if count:
+            logger.info(f"improve-ai upgraded {count} transactions to provider_native")
+        return count
+
+    def _plaid_bridge_candidates(
+        self, selector: Literal["uncategorized", "ai"]
+    ) -> list[tuple[str, str, str | None, str | None, str | None]]:
+        """Bridge reverse-lookup rows: (transaction_id, category, subcategory, confidence_level, merchant_id).
+
+        Reverse-looks-up Plaid transactions in prep.int_transactions__merged
+        against core.bridge_category_source_map, filtered by the predicate
+        ``selector`` maps to — a static, code-constant predicate on the
+        LEFT-JOINed transaction_categories alias `tc`. ``selector`` is never
+        caller/user input; it is one of two fixed literals chosen by the
+        two callers below.
+
+        Carries ``tc.merchant_id`` alongside the category fields so
+        :meth:`_write_plaid_rows` can preserve a merchant_id resolved during
+        an existing row's prior categorization (``improve_ai_categories``'s
+        upgrade path) instead of nulling it out on the guarded UPDATE. For
+        the fill path (``selector="uncategorized"``), `tc` has no matching
+        row, so ``tc.merchant_id`` is NULL — behavior unchanged.
+
+        Degrades to an empty list when prep.int_transactions__merged isn't
+        materialized yet, or predates the PFC carry-through — see
+        :meth:`apply_plaid_categories` for the full rationale.
+        """
+        tc_where = (
+            "tc.transaction_id IS NULL"
+            if selector == "uncategorized"
+            else "tc.categorized_by = 'ai'"
+        )
         try:
-            rows = self._db.execute(
+            return self._db.execute(
                 f"""
-                SELECT m.transaction_id, dc.category, dc.subcategory, m.category_confidence
+                SELECT m.transaction_id, dc.category, dc.subcategory,
+                    m.category_confidence, tc.merchant_id
                 FROM {INT_TRANSACTIONS_MERGED.full_name} AS m
                 JOIN {BRIDGE_CATEGORY_SOURCE_MAP.full_name} AS b
                     ON {plaid_bridge_match_predicate("m.category_detailed", "m.plaid_category")}
                 JOIN {CATEGORIES.full_name} AS dc ON dc.category_id = b.category_id
                 LEFT JOIN {TRANSACTION_CATEGORIES.full_name} AS tc
                     ON tc.transaction_id = m.transaction_id
-                WHERE tc.transaction_id IS NULL
+                WHERE {tc_where}
                 QUALIFY ROW_NUMBER() OVER (
                     PARTITION BY m.transaction_id
                     ORDER BY (b.code_level = 'detailed') DESC
@@ -894,22 +957,38 @@ class CategorizationOrchestrator:
                 """  # noqa: S608 — TableRef constants + code-constant bridge predicate; no user input
             ).fetchall()
         except (duckdb.CatalogException, duckdb.BinderException):
-            return 0
+            return []
 
+    def _write_plaid_rows(
+        self,
+        rows: list[tuple[str, str, str | None, str | None, str | None]],
+        *,
+        trigger: Literal["sweep", "backfill"],
+    ) -> int:
+        """Apply the >=MEDIUM confidence gate + guarded provider_native write.
+
+        ``trigger`` distinguishes the automatic sweep (``apply_plaid_categories``)
+        from the explicit backfill (``improve_ai_categories``) on the shared
+        counters below, so a dashboard can attribute volume to the pass that
+        produced it.
+
+        Returns the number of rows actually written (post-gate, post-priority
+        guard).
+        """
         count = 0
-        for txn_id, category, subcategory, level in rows:
+        for txn_id, category, subcategory, level, merchant_id in rows:
             confidence = plaid_confidence_to_numeric(level)
             if confidence is None:
                 # No usable confidence level (absent / UNKNOWN / unmapped) — a
                 # data-quality signal, counted apart from a genuine low-confidence
                 # rejection so a dashboard can't misread the two as one.
                 CATEGORIZE_SKIPPED_CONFIDENCE_TOTAL.labels(
-                    source_type="plaid", reason="unknown"
+                    source_type="plaid", reason="unknown", trigger=trigger
                 ).inc()
                 continue
             if confidence < PLAID_MIN_CONFIDENCE:
                 CATEGORIZE_SKIPPED_CONFIDENCE_TOTAL.labels(
-                    source_type="plaid", reason="below_gate"
+                    source_type="plaid", reason="below_gate", trigger=trigger
                 ).inc()
                 continue
             outcome = self._applier.write_categorization(
@@ -917,12 +996,15 @@ class CategorizationOrchestrator:
                 category=category,
                 subcategory=subcategory,
                 categorized_by="provider_native",
+                merchant_id=merchant_id,
                 source_type="plaid",
                 confidence=confidence,
             )
             if outcome.written:
                 count += 1
-                CATEGORIZE_PROVIDER_NATIVE_TOTAL.labels(source_type="plaid").inc()
+                CATEGORIZE_PROVIDER_NATIVE_TOTAL.labels(
+                    source_type="plaid", trigger=trigger
+                ).inc()
 
         if count:
             logger.info(f"Plaid PFC categorization assigned {count} transactions")

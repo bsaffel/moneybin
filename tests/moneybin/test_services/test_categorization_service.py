@@ -528,14 +528,15 @@ class TestFetchUncategorizedRowsFallback:
         rows = CategorizationMatcher(db).fetch_uncategorized_rows()
 
         assert rows is not None, "must return rows, not None"
-        txn_ids = [r[0] for r in rows]
+        txn_ids = [r.transaction_id for r in rows]
         assert "TXNE1" in txn_ids, (
             "entity-bearing row with blank description must be included in "
             "fetch_uncategorized_rows (OR m.merchant_entity_id IS NOT NULL)"
         )
-        # Confirm entity data is projected at position 5.
-        row = next(r for r in rows if r[0] == "TXNE1")
-        assert row[5] == "plaid_ent_123", "merchant_entity_id must be projected"
+        row = next(r for r in rows if r.transaction_id == "TXNE1")
+        assert row.merchant_entity_id == "plaid_ent_123", (
+            "merchant_entity_id must be projected"
+        )
 
     @pytest.mark.unit
     def test_missing_entity_columns_falls_back(self, db: Database) -> None:
@@ -565,11 +566,12 @@ class TestFetchUncategorizedRowsFallback:
         rows = CategorizationMatcher(db).fetch_uncategorized_rows()
 
         assert rows is not None, "must degrade to without_entity, not raise/return None"
-        row = next((r for r in rows if r[0] == "TXNB1"), None)
+        row = next((r for r in rows if r.transaction_id == "TXNB1"), None)
         assert row is not None, "uncategorized TXNB1 must be returned via fallback"
-        # without_entity projects NULL for merchant_entity_id (pos 5) and
-        # merchant_entity_source_type (pos 8).
-        assert row[5] is None and row[8] is None
+        # without_entity projects NULL for merchant_entity_id and merchant_entity_source_type.
+        assert (
+            row.merchant_entity_id is None and row.merchant_entity_source_type is None
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -2117,7 +2119,17 @@ class TestResolverBindingPrecedesCategorization:
     is present in ``_categorize_items_inner``.  That path accepts an explicit
     item list and writes with ``categorized_by='ai'``, which a pre-existing
     ``user`` categorization outranks — producing a controlled
-    ``written=False`` outcome.
+    ``written=False`` outcome. ``categorize_pending``/``apply_merchant_categories``
+    cannot drive this scenario instead: ``fetch_uncategorized_rows``'s "pending"
+    filter (``c.transaction_id IS NULL OR c.categorized_by = 'provider_native'``)
+    excludes an already-``user``-categorized row from the scan entirely, so the
+    resolver never runs for it via that path — ``categorize_items`` is the only
+    entry point that attempts (and gets precedence-blocked on) a write for a row
+    that already carries a higher-priority categorization.
+
+    Covers two rungs of the same invariant: rung 3 (fuzzy name match — pending
+    proposal) below, and rung 4 (no name match — mint + bind a new merchant) in
+    ``test_novel_entity_mints_merchant_even_when_write_precedence_skipped``.
     """
 
     @pytest.mark.unit
@@ -2182,6 +2194,79 @@ class TestResolverBindingPrecedesCategorization:
         assert pending is not None and pending[0] >= 1, (
             "resolver must have written a pending proposal for ent_r7 "
             "even though categorization was precedence-skipped"
+        )
+
+    @pytest.mark.unit
+    def test_novel_entity_mints_merchant_even_when_write_precedence_skipped(
+        self, db: Database
+    ) -> None:
+        """Rung-4 mint fires even when the categorization write is precedence-skipped.
+
+        Characterization test: a stronger case than
+        ``test_binding_written_when_categorization_precedence_skipped`` above.
+        Here the entity id has no name match at all (empty merchant catalog),
+        so the resolver mints a brand-new ``created_by='plaid'`` merchant
+        (rung 4) rather than proposing against an existing candidate (rung 3).
+        The mint is a Plaid-asserted identity fact, committed regardless of
+        whether this row's categorization write lands (spec Decision 7) — this
+        test locks that correct-by-design behavior so a future "fix" can't
+        silently gate the mint behind ``outcome.written``.
+        """
+        _setup_prep_table(db)
+
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+            "VALUES ('TXN_MINT_SKIP', 'ACC1', DATE '2026-01-01', -12.00, "
+            "'XYZNOPATTERNMINTSKIP', 'plaid')"
+        )
+        db.execute(
+            "INSERT INTO prep.int_transactions__merged VALUES "
+            "('TXN_MINT_SKIP', 'ent_mint_skip', 'plaid', 'Brand New Merchant')"
+        )
+
+        # Pre-seed a user categorization (priority 1) so the ai write below
+        # (priority 7) is blocked by the precedence guard.
+        db.execute(
+            "INSERT INTO app.transaction_categories "
+            "(transaction_id, category, categorized_at, categorized_by) "
+            "VALUES ('TXN_MINT_SKIP', 'Travel', CURRENT_TIMESTAMP, 'user')"
+        )
+
+        svc = CategorizationService(db)
+        result = svc.categorize_items([
+            CategorizationItem(transaction_id="TXN_MINT_SKIP", category="Food & Drink")
+        ])
+
+        # The ai write must have been blocked; the user category stays intact.
+        assert result.applied == 0, "user category must block the ai write"
+        cat_row = db.execute(
+            "SELECT category, categorized_by FROM app.transaction_categories "
+            "WHERE transaction_id = 'TXN_MINT_SKIP'"
+        ).fetchone()
+        assert cat_row is not None
+        assert cat_row[0] == "Travel"
+        assert cat_row[1] == "user"
+
+        # The novel entity id must still have been minted + bound (rung 4),
+        # even though the categorization write above was rejected.
+        link_row = db.execute(
+            "SELECT merchant_id FROM app.merchant_links "
+            "WHERE ref_value = 'ent_mint_skip' AND source_type = 'plaid' "
+            "AND status = 'accepted'"
+        ).fetchone()
+        assert link_row is not None, (
+            "resolver must mint+bind a merchant for a novel entity id even "
+            "though categorization was precedence-skipped"
+        )
+        merchant_row = db.execute(
+            "SELECT created_by, category_id FROM app.user_merchants WHERE merchant_id = ?",
+            [link_row[0]],
+        ).fetchone()
+        assert merchant_row is not None
+        assert merchant_row[0] == "plaid"
+        assert merchant_row[1] is None, (
+            "plaid-minted merchant is inert/category-free by design (M1T)"
         )
 
 
@@ -2731,6 +2816,184 @@ class TestApplyPlaidCategories:
 
 
 # ---------------------------------------------------------------------------
+# improve_ai_categories — AI-guessed -> confident provider_native upgrade
+# ---------------------------------------------------------------------------
+
+
+def _seed_ai_category(
+    db: Database,
+    transaction_id: str,
+    *,
+    category: str,
+    merchant_id: str | None = None,
+) -> None:
+    """Seed a pre-existing ai-categorized row (priority 7), real mechanism.
+
+    Direct INSERT mirrors the pre-seeding pattern already used in this module
+    (e.g. ``TestCategorizePendingPlaidPass``) to arrange a prior categorization
+    ahead of the pass under test, rather than driving it through
+    ``categorize_items`` — the ai row here is a fixture input, not the
+    derived state under test. ``merchant_id`` optionally seeds a merchant
+    resolved during the row's original AI categorization, so upgrade-pass
+    tests can assert it survives (or is lost by) the rewrite.
+    """
+    db.execute(
+        "INSERT INTO app.transaction_categories "
+        "(transaction_id, category, categorized_by, merchant_id) VALUES (?, ?, 'ai', ?)",
+        [transaction_id, category, merchant_id],
+    )
+
+
+def _seed_user_category(db: Database, transaction_id: str, *, category: str) -> None:
+    """Seed a pre-existing user-categorized row (priority 1), real mechanism."""
+    db.execute(
+        "INSERT INTO app.transaction_categories "
+        "(transaction_id, category, categorized_by) VALUES (?, ?, 'user')",
+        [transaction_id, category],
+    )
+
+
+def _category_of(db: Database, transaction_id: str) -> tuple[str, str] | None:
+    """Return ``(category, categorized_by)`` for one transaction, or ``None``."""
+    row = db.execute(
+        "SELECT category, categorized_by FROM app.transaction_categories "
+        "WHERE transaction_id = ?",
+        [transaction_id],
+    ).fetchone()
+    return (row[0], row[1]) if row is not None else None
+
+
+class TestImproveAiCategories:
+    """Tests for the AI -> confident provider_native upgrade pass.
+
+    Reuses ``apply_plaid_categories``'s bridge fixtures — the only
+    difference is the pre-existing row's ``categorized_by`` and the
+    predicate (``tc.categorized_by = 'ai'`` instead of ``tc.transaction_id
+    IS NULL``).
+    """
+
+    @pytest.mark.unit
+    def test_improve_ai_upgrades_ai_row_to_confident_plaid(self, db: Database) -> None:
+        """An ai-guessed row upgrades to the bridge-mapped provider_native category."""
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="FOOD_AND_DRINK_GROCERIES",
+            code_level="detailed",
+            category_id="FND-GRO",
+            category="Groceries",
+            subcategory=None,
+        )
+        _insert_plaid_txn(
+            db,
+            "t1",
+            category_detailed="FOOD_AND_DRINK_GROCERIES",
+            plaid_category="FOOD_AND_DRINK",
+            category_confidence="HIGH",
+        )
+        _seed_ai_category(db, "t1", category="Shopping")  # priority 7
+
+        n = CategorizationService(db).improve_ai_categories()
+
+        assert n == 1
+        assert _category_of(db, "t1") == ("Groceries", "provider_native")
+
+    @pytest.mark.unit
+    def test_improve_ai_does_not_touch_rule_or_user_rows(self, db: Database) -> None:
+        """A higher-priority user row is left untouched by the upgrade pass."""
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="FOOD_AND_DRINK_GROCERIES",
+            code_level="detailed",
+            category_id="FND-GRO",
+            category="Groceries",
+            subcategory=None,
+        )
+        _insert_plaid_txn(
+            db,
+            "t1",
+            category_detailed="FOOD_AND_DRINK_GROCERIES",
+            plaid_category="FOOD_AND_DRINK",
+            category_confidence="HIGH",
+        )
+        _seed_user_category(db, "t1", category="Travel")  # priority 1
+
+        n = CategorizationService(db).improve_ai_categories()
+
+        assert n == 0
+        assert _category_of(db, "t1") == ("Travel", "user")
+
+    @pytest.mark.unit
+    def test_improve_ai_respects_confidence_gate(self, db: Database) -> None:
+        """A LOW-confidence bridge match does not upgrade an ai row."""
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="FOOD_AND_DRINK_GROCERIES",
+            code_level="detailed",
+            category_id="FND-GRO",
+            category="Groceries",
+            subcategory=None,
+        )
+        _insert_plaid_txn(
+            db,
+            "t1",
+            category_detailed="FOOD_AND_DRINK_GROCERIES",
+            plaid_category="FOOD_AND_DRINK",
+            category_confidence="LOW",  # below MEDIUM gate
+        )
+        _seed_ai_category(db, "t1", category="Shopping")
+
+        n = CategorizationService(db).improve_ai_categories()
+
+        assert n == 0
+        assert _category_of(db, "t1") == ("Shopping", "ai")
+
+    @pytest.mark.unit
+    def test_improve_ai_preserves_existing_merchant_id(self, db: Database) -> None:
+        """Upgrading an ai row to provider_native must not null out its merchant_id.
+
+        Regression test: ``_write_plaid_rows`` previously called
+        ``write_categorization(...)`` without ``merchant_id=``, defaulting it to
+        ``None``. ``upsert_guarded`` sets ``merchant_id = EXCLUDED.merchant_id``
+        on every permitted UPDATE, so the missing kwarg silently nulled out a
+        merchant_id resolved during the row's original AI categorization. The
+        fill path (``apply_plaid_categories``) is unaffected — new rows have no
+        prior merchant_id to lose.
+        """
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="FOOD_AND_DRINK_GROCERIES",
+            code_level="detailed",
+            category_id="FND-GRO",
+            category="Groceries",
+            subcategory=None,
+        )
+        _insert_plaid_txn(
+            db,
+            "t1",
+            category_detailed="FOOD_AND_DRINK_GROCERIES",
+            plaid_category="FOOD_AND_DRINK",
+            category_confidence="HIGH",
+        )
+        _seed_ai_category(
+            db, "t1", category="Shopping", merchant_id="mrc_existing01"
+        )  # priority 7, carries a resolved merchant_id
+
+        n = CategorizationService(db).improve_ai_categories()
+
+        assert n == 1
+        row = db.execute(
+            "SELECT category, categorized_by, merchant_id "
+            "FROM app.transaction_categories WHERE transaction_id = ?",
+            ["t1"],
+        ).fetchone()
+        assert row == ("Groceries", "provider_native", "mrc_existing01")
+
+
+# ---------------------------------------------------------------------------
 # Plaid categorizer observability — counters, by_provider_native, coverage
 # gap (Task 9, Tier-2b — deferred from the category-source-map bridge PR)
 # ---------------------------------------------------------------------------
@@ -2787,13 +3050,13 @@ class TestPlaidCategorizerObservability:
             category_confidence="HIGH",
         )
         before = CATEGORIZE_PROVIDER_NATIVE_TOTAL.labels(
-            source_type="plaid"
+            source_type="plaid", trigger="sweep"
         )._value.get()  # type: ignore[reportPrivateUsage] — prometheus internals
 
         n = apply_plaid_categories(db)
 
         after = CATEGORIZE_PROVIDER_NATIVE_TOTAL.labels(
-            source_type="plaid"
+            source_type="plaid", trigger="sweep"
         )._value.get()  # type: ignore[reportPrivateUsage]
         assert n == 1
         assert after == before + 1
@@ -2820,13 +3083,13 @@ class TestPlaidCategorizerObservability:
             category_confidence="LOW",
         )
         before = CATEGORIZE_SKIPPED_CONFIDENCE_TOTAL.labels(
-            source_type="plaid", reason="below_gate"
+            source_type="plaid", reason="below_gate", trigger="sweep"
         )._value.get()  # type: ignore[reportPrivateUsage] — prometheus internals
 
         n = apply_plaid_categories(db)
 
         after = CATEGORIZE_SKIPPED_CONFIDENCE_TOTAL.labels(
-            source_type="plaid", reason="below_gate"
+            source_type="plaid", reason="below_gate", trigger="sweep"
         )._value.get()  # type: ignore[reportPrivateUsage]
         assert n == 0
         assert after == before + 1
@@ -2858,13 +3121,13 @@ class TestPlaidCategorizerObservability:
             category_confidence="UNKNOWN",
         )
         before = CATEGORIZE_SKIPPED_CONFIDENCE_TOTAL.labels(
-            source_type="plaid", reason="unknown"
+            source_type="plaid", reason="unknown", trigger="sweep"
         )._value.get()  # type: ignore[reportPrivateUsage] — prometheus internals
 
         n = apply_plaid_categories(db)
 
         after = CATEGORIZE_SKIPPED_CONFIDENCE_TOTAL.labels(
-            source_type="plaid", reason="unknown"
+            source_type="plaid", reason="unknown", trigger="sweep"
         )._value.get()  # type: ignore[reportPrivateUsage]
         assert n == 0
         assert after == before + 1

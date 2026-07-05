@@ -73,6 +73,12 @@ Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, sim
 
 - **Sync server is opaque.** The client communicates only with moneybin-sync's API surface. External service providers are implementation details hidden behind the server.
 
+## Design System
+
+MoneyBin's visual language lives in `design-system/` — the source of truth (it also backs the `/moneybin-design` skill and the synced claude.ai/design project). Before any UI, artifact, or frontend work, read `design-system/readme.md`, `design-system/tokens/`, and `design-system/guidelines/`. Non-negotiables: dark theme leads; brass (`--accent-brass`) is the only accent, never blue; money is always JetBrains Mono via the `Amount` component, with explicit +/− signs on income/expense flows (balances stay unsigned); hairline borders, no resting shadows; every data widget carries a SQL provenance chip; linear chart interpolation only; no emoji, no exclamation points.
+
+Update flow: prototype and spec visually in the claude.ai **Design Kit** project, promote into `design-system/` via `/design-import` (with PR review), then publish the repo → the claude.ai **Design System** project via `/design-sync`. The repo is canonical; the Design System project is a generated mirror — never hand-edit it as the source. See `design-system/readme.md` → "Updating the design system".
+
 ## Critical Rules
 
 - **Package manager**: `uv` only. Never `pip install`, `uv pip install`, or `python -m`.
