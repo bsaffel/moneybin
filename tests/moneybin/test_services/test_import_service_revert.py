@@ -7,9 +7,14 @@ tabular source_types. ``not_found`` ships with a ``reason`` field.
 
 from __future__ import annotations
 
+from datetime import date
+from decimal import Decimal
+
 from moneybin.database import Database
 from moneybin.loaders import import_log
 from moneybin.services.import_service import ImportService
+from moneybin.services.investment_service import InvestmentService
+from tests.moneybin.db_helpers import create_core_tables
 
 
 def test_revert_unknown_import_id_returns_not_found(db: Database) -> None:
@@ -87,6 +92,79 @@ def test_revert_tabular_deletes_matching_rows_and_marks_reverted(
     assert result["rows_deleted"] == 2
     remaining = db.execute(
         "SELECT COUNT(*) FROM raw.tabular_transactions WHERE import_id = ?",
+        [import_id],
+    ).fetchone()
+    assert remaining is not None
+    assert remaining[0] == 0
+    status_row = db.execute(
+        "SELECT status FROM raw.import_log WHERE import_id = ?", [import_id]
+    ).fetchone()
+    assert status_row is not None
+    assert status_row[0] == "reverted"
+
+
+def test_revert_manual_investment_deletes_rows_not_orphaned(db: Database) -> None:
+    """Reverting a manual investment batch deletes its raw investment rows.
+
+    ``InvestmentService.record_event`` writes via import_log with
+    source_type='manual', so revert must clear raw.manual_investment_transactions
+    (added to REVERT_TABLES['manual']) — not leave the rows orphaned into
+    core.fct_investment_transactions with the batch marked reverted.
+    """
+    create_core_tables(db)
+    db.execute(
+        """
+        INSERT INTO core.dim_accounts
+            (account_id, account_type, institution_name, source_type)
+        VALUES ('acct_brokerage', 'investment', 'Fidelity', 'manual')
+        """
+    )
+    svc = InvestmentService(db)
+    svc.upsert_security(
+        security_id="sec_aapl",
+        name="Apple Inc.",
+        security_type="equity",
+        ticker="AAPL",
+        actor="cli",
+    )
+    svc.record_event(
+        account_ref="acct_brokerage",
+        security_ref="AAPL",
+        type_="buy",
+        subtype=None,
+        trade_date=date(2024, 1, 15),
+        quantity=Decimal("10"),
+        price=Decimal("150.00"),
+        amount=Decimal("-1500.00"),
+        fees=None,
+        acquired=None,
+        basis=None,
+        event_group_id=None,
+        currency_code="USD",
+        description=None,
+        actor="cli",
+        created_by="cli",
+    )
+
+    import_id_row = db.execute(
+        "SELECT DISTINCT import_id FROM raw.manual_investment_transactions"
+    ).fetchone()
+    assert import_id_row is not None
+    import_id = import_id_row[0]
+
+    pre = db.execute(
+        "SELECT COUNT(*) FROM raw.manual_investment_transactions WHERE import_id = ?",
+        [import_id],
+    ).fetchone()
+    assert pre is not None
+    assert pre[0] == 1
+
+    result = ImportService(db).revert(import_id)
+
+    assert result["status"] == "reverted"
+    assert result["rows_deleted"] == 1
+    remaining = db.execute(
+        "SELECT COUNT(*) FROM raw.manual_investment_transactions WHERE import_id = ?",
         [import_id],
     ).fetchone()
     assert remaining is not None
