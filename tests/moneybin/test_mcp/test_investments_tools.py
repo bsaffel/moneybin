@@ -1,0 +1,799 @@
+# tests/moneybin/test_mcp/test_investments_tools.py
+"""Tests for investments.* MCP tools (Task 16).
+
+Read tools query core.* investment tables/views, which are SQLMesh-managed
+in production; ``create_core_dim_stub_views`` materializes them with the
+real column shapes for unit tests — the same helper
+``tests/moneybin/test_services/test_investment_service.py`` uses (the
+service these tools wrap). Seeding goes directly into those core tables
+(per the Task-16 brief) rather than through the SQLMesh transform, since the
+transform's correctness is covered by ``test_investment_models_transform.py``
+and the engine unit tests — this module is testing the MCP tool boundary
+(envelope shape, derived sensitivity, warnings, error classification), not
+the transform.
+"""
+
+from __future__ import annotations
+
+from datetime import date
+from decimal import Decimal
+from pathlib import Path
+
+import pytest
+from fastmcp import FastMCP
+
+from moneybin.database import get_database
+from moneybin.mcp.tools.investments import (
+    investments,
+    investments_gains,
+    investments_holdings,
+    investments_lots,
+    investments_lots_select,
+    investments_record,
+    investments_securities,
+    investments_securities_set,
+    register_investments_tools,
+)
+from moneybin.repositories.securities_repo import SecuritiesRepo
+from tests.moneybin.db_helpers import create_core_dim_stub_views
+
+pytestmark = pytest.mark.usefixtures("mcp_db")
+
+_ACCOUNT = "ACC001"
+
+
+def _seed_investment_core() -> None:
+    """Materialize the SQLMesh-managed investment core.* stubs for this test's DB."""
+    with get_database(read_only=False) as db:
+        create_core_dim_stub_views(db)
+
+
+def _add_security(**kwargs: object) -> str:
+    """Insert one security via the real repo; return its (possibly minted) id."""
+    defaults: dict[str, object] = {
+        "security_id": None,
+        "name": "Apple Inc.",
+        "security_type": "equity",
+        "ticker": "AAPL",
+        "actor": "test",
+    }
+    defaults.update(kwargs)
+    with get_database(read_only=False) as db:
+        event = SecuritiesRepo(db).upsert(**defaults)  # type: ignore[arg-type]
+    assert event.target_id is not None
+    return event.target_id
+
+
+def _insert_event(
+    *,
+    investment_transaction_id: str,
+    account_id: str = _ACCOUNT,
+    security_id: str | None,
+    trade_date: date = date(2024, 1, 15),
+    type_: str = "buy",
+    quantity: Decimal | None = Decimal("10"),
+    amount: Decimal | None = Decimal("-1500.00"),
+) -> None:
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            INSERT INTO core.fct_investment_transactions
+                (investment_transaction_id, account_id, security_id, trade_date,
+                 type, quantity, amount, currency_code)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'USD')
+            """,  # noqa: S608  # test fixture insert, static SQL
+            [
+                investment_transaction_id,
+                account_id,
+                security_id,
+                trade_date,
+                type_,
+                quantity,
+                amount,
+            ],
+        )
+
+
+def _insert_lot(
+    *,
+    lot_id: str,
+    account_id: str = _ACCOUNT,
+    security_id: str,
+    acquisition_date: date = date(2024, 1, 15),
+    remaining_quantity: Decimal = Decimal("10"),
+    cost_basis_remaining: Decimal = Decimal("1500.00"),
+    is_open: bool = True,
+) -> None:
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            INSERT INTO core.fct_investment_lots
+                (lot_id, account_id, security_id, acquisition_date, acquisition_type,
+                 original_quantity, remaining_quantity, cost_basis_total,
+                 cost_basis_remaining, cost_basis_method, currency_code, is_open)
+            VALUES (?, ?, ?, ?, 'buy', ?, ?, ?, ?, 'fifo', 'USD', ?)
+            """,  # noqa: S608  # test fixture insert, static SQL
+            [
+                lot_id,
+                account_id,
+                security_id,
+                acquisition_date,
+                remaining_quantity,
+                remaining_quantity,
+                cost_basis_remaining,
+                cost_basis_remaining,
+                is_open,
+            ],
+        )
+
+
+def _insert_gain(
+    *,
+    realized_gain_id: str,
+    account_id: str = _ACCOUNT,
+    security_id: str,
+    disposal_txn_id: str = "sell_1",
+    lot_id: str = "lot_a",
+    disposal_date: date = date(2024, 6, 12),
+    proceeds: Decimal = Decimal("950.00"),
+    cost_basis: Decimal = Decimal("750.00"),
+    gain_loss: Decimal = Decimal("200.00"),
+    term: str = "long",
+    basis_incomplete: bool = False,
+) -> None:
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            INSERT INTO core.fct_realized_gains
+                (realized_gain_id, account_id, security_id, disposal_txn_id, lot_id,
+                 quantity, acquisition_date, disposal_date, proceeds, cost_basis,
+                 gain_loss, term, cost_basis_method, basis_incomplete, currency_code)
+            VALUES (?, ?, ?, ?, ?, 5, '2024-01-01'::DATE, ?, ?, ?, ?, ?, 'fifo', ?, 'USD')
+            """,  # noqa: S608  # test fixture insert, static SQL
+            [
+                realized_gain_id,
+                account_id,
+                security_id,
+                disposal_txn_id,
+                lot_id,
+                disposal_date,
+                proceeds,
+                cost_basis,
+                gain_loss,
+                term,
+                basis_incomplete,
+            ],
+        )
+
+
+def _replace_holdings_view(
+    rows: list[tuple[str, str, str, str, str | None, str]],
+) -> None:
+    """Override the empty core.dim_holdings stub with literal test rows.
+
+    Mirrors ``test_investment_service.py``'s helper of the same name — values
+    are literal test data, not user input (security.md's test-fixture
+    exception).
+    """
+    parts: list[str] = []
+    for acct, sec, qty, basis, avg, ccy in rows:
+        avg_sql = "NULL" if avg is None else f"{avg}::DECIMAL(28,10)"
+        parts.append(
+            f"SELECT '{acct}' AS account_id, '{sec}' AS security_id, "
+            f"{qty}::DECIMAL(28,10) AS quantity, "
+            f"{basis}::DECIMAL(18,2) AS cost_basis, "
+            f"{avg_sql} AS average_cost, '{ccy}' AS currency_code"
+        )
+    select_sql = " UNION ALL ".join(parts)
+    with get_database(read_only=False) as db:
+        db.execute(  # noqa: S608  # test fixture view, literal test data only
+            f"CREATE OR REPLACE VIEW core.dim_holdings AS {select_sql}"
+        )
+
+
+def _count_raw_investment_rows() -> int:
+    """Count rows in raw.manual_investment_transactions (the record write target)."""
+    with get_database(read_only=True) as db:
+        row = db.execute(
+            "SELECT COUNT(*) FROM raw.manual_investment_transactions"
+        ).fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+# ---------------------------------------------------------------------------
+# Registration
+# ---------------------------------------------------------------------------
+
+
+class TestRegistration:
+    """Verify all investments tools are registered with the FastMCP server."""
+
+    @pytest.mark.unit
+    async def test_all_investments_tools_registered(self) -> None:
+        srv = FastMCP("test")
+        register_investments_tools(srv)
+        names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        assert names == {
+            "investments",
+            "investments_holdings",
+            "investments_lots",
+            "investments_gains",
+            "investments_securities",
+            "investments_record",
+            "investments_securities_set",
+            "investments_lots_select",
+        }
+
+
+# ---------------------------------------------------------------------------
+# Read tools
+# ---------------------------------------------------------------------------
+
+
+class TestInvestmentsLedger:
+    """Tests for the investments (ledger) MCP tool."""
+
+    @pytest.mark.unit
+    async def test_returns_rows_with_high_sensitivity(self, mcp_db: Path) -> None:
+        """quantity/price/amount are TXN_AMOUNT (Tier.HIGH) -> derived 'high'."""
+        _seed_investment_core()
+        sec = _add_security()
+        _insert_event(investment_transaction_id="evt_1", security_id=sec)
+        result = await investments()
+        parsed = result.to_dict()
+        assert parsed["summary"]["sensitivity"] == "high"
+        rows = parsed["data"]["rows"]
+        assert len(rows) == 1
+        assert rows[0]["investment_transaction_id"] == "evt_1"
+        assert rows[0]["account_id"] == _ACCOUNT
+        assert parsed["data"]["warnings"] == []
+
+    @pytest.mark.unit
+    async def test_filters_by_type(self, mcp_db: Path) -> None:
+        _seed_investment_core()
+        sec = _add_security()
+        _insert_event(investment_transaction_id="evt_buy", security_id=sec, type_="buy")
+        _insert_event(
+            investment_transaction_id="evt_sell",
+            security_id=sec,
+            type_="sell",
+            quantity=Decimal("-5"),
+            amount=Decimal("750.00"),
+        )
+        result = await investments(type_filter="sell")
+        rows = result.to_dict()["data"]["rows"]
+        assert [r["investment_transaction_id"] for r in rows] == ["evt_sell"]
+
+    @pytest.mark.unit
+    async def test_unknown_account_ref_returns_standard_error_envelope(
+        self, mcp_db: Path
+    ) -> None:
+        _seed_investment_core()
+        result = await investments(account="does-not-exist")
+        parsed = result.to_dict()
+        assert parsed["status"] == "error"
+
+
+class TestInvestmentsHoldings:
+    """Tests for the investments_holdings MCP tool."""
+
+    @pytest.mark.unit
+    async def test_always_carries_pillar_c_warning_and_high_sensitivity(
+        self, mcp_db: Path
+    ) -> None:
+        _seed_investment_core()
+        result = await investments_holdings()
+        parsed = result.to_dict()
+        assert parsed["summary"]["sensitivity"] == "high"
+        assert any("price feed" in w for w in parsed["data"]["warnings"])
+
+    @pytest.mark.unit
+    async def test_returns_seeded_rows(self, mcp_db: Path) -> None:
+        _seed_investment_core()
+        sec = _add_security()
+        _replace_holdings_view([
+            (_ACCOUNT, sec, "15", "2475.00", "165.00", "USD"),
+        ])
+        result = await investments_holdings()
+        rows = result.to_dict()["data"]["rows"]
+        assert len(rows) == 1
+        assert rows[0]["quantity"] == 15.0
+        assert rows[0]["cost_basis"] == 2475.0
+
+
+class TestInvestmentsLots:
+    """Tests for the investments_lots MCP tool."""
+
+    @pytest.mark.unit
+    async def test_open_only_default_and_high_sensitivity(self, mcp_db: Path) -> None:
+        _seed_investment_core()
+        sec = _add_security()
+        _insert_lot(lot_id="lot_open", security_id=sec, is_open=True)
+        _insert_lot(
+            lot_id="lot_closed",
+            security_id=sec,
+            is_open=False,
+            remaining_quantity=Decimal("0"),
+            cost_basis_remaining=Decimal("0"),
+        )
+        result = await investments_lots()
+        parsed = result.to_dict()
+        assert parsed["summary"]["sensitivity"] == "high"
+        assert [r["lot_id"] for r in parsed["data"]["rows"]] == ["lot_open"]
+
+    @pytest.mark.unit
+    async def test_open_only_false_returns_all(self, mcp_db: Path) -> None:
+        _seed_investment_core()
+        sec = _add_security()
+        _insert_lot(lot_id="lot_open", security_id=sec, is_open=True)
+        _insert_lot(
+            lot_id="lot_closed",
+            security_id=sec,
+            is_open=False,
+            remaining_quantity=Decimal("0"),
+            cost_basis_remaining=Decimal("0"),
+        )
+        result = await investments_lots(open_only=False)
+        rows = result.to_dict()["data"]["rows"]
+        assert {r["lot_id"] for r in rows} == {"lot_open", "lot_closed"}
+
+
+class TestInvestmentsGains:
+    """Tests for the investments_gains MCP tool."""
+
+    @pytest.mark.unit
+    async def test_no_warning_when_all_rows_complete(self, mcp_db: Path) -> None:
+        _seed_investment_core()
+        sec = _add_security()
+        _insert_gain(realized_gain_id="gain_1", security_id=sec, basis_incomplete=False)
+        result = await investments_gains()
+        parsed = result.to_dict()
+        assert parsed["summary"]["sensitivity"] == "high"
+        assert parsed["data"]["warnings"] == []
+
+    @pytest.mark.unit
+    async def test_basis_incomplete_warning_present(self, mcp_db: Path) -> None:
+        _seed_investment_core()
+        sec = _add_security()
+        _insert_gain(
+            realized_gain_id="gain_complete", security_id=sec, basis_incomplete=False
+        )
+        _insert_gain(
+            realized_gain_id="gain_incomplete", security_id=sec, basis_incomplete=True
+        )
+        result = await investments_gains()
+        warnings = result.to_dict()["data"]["warnings"]
+        assert len(warnings) == 1
+        assert "1" in warnings[0]
+        assert "incomplete" in warnings[0]
+
+    @pytest.mark.unit
+    async def test_invalid_term_returns_standard_error_envelope(
+        self, mcp_db: Path
+    ) -> None:
+        _seed_investment_core()
+        result = await investments_gains(term="medium")
+        assert result.to_dict()["status"] == "error"
+
+
+class TestInvestmentsSecurities:
+    """Tests for the investments_securities MCP tool."""
+
+    @pytest.mark.unit
+    async def test_low_sensitivity_reference_data_only(self, mcp_db: Path) -> None:
+        """No BALANCE/TXN_AMOUNT fields on the catalog -> derived 'low'."""
+        _seed_investment_core()
+        _add_security(name="Apple Inc.", ticker="AAPL", security_type="equity")
+        result = await investments_securities()
+        parsed = result.to_dict()
+        assert parsed["summary"]["sensitivity"] == "low"
+        assert len(parsed["data"]["rows"]) == 1
+
+    @pytest.mark.unit
+    async def test_type_filter_narrows_results(self, mcp_db: Path) -> None:
+        _seed_investment_core()
+        _add_security(
+            security_id="sec_eq",
+            name="Apple Inc.",
+            ticker="AAPL",
+            security_type="equity",
+        )
+        _add_security(
+            security_id="sec_fund",
+            name="Vanguard Total",
+            ticker="VTSAX",
+            security_type="mutual_fund",
+        )
+        result = await investments_securities(security_type="mutual_fund")
+        rows = result.to_dict()["data"]["rows"]
+        assert [r["ticker"] for r in rows] == ["VTSAX"]
+
+
+# ---------------------------------------------------------------------------
+# Write tools
+# ---------------------------------------------------------------------------
+
+
+class TestInvestmentsRecord:
+    """Tests for the investments_record MCP tool (batch event recording)."""
+
+    @pytest.mark.unit
+    async def test_records_single_buy_event(self, mcp_db: Path) -> None:
+        _seed_investment_core()
+        _add_security(security_id="sec_1", ticker="AAPL")
+        result = await investments_record(
+            events=[
+                {
+                    "account": _ACCOUNT,
+                    "security": "AAPL",
+                    "type": "buy",
+                    "date": "2024-01-15",
+                    "quantity": "10",
+                    "price": "150.00",
+                    "amount": "-1504.95",
+                    "fees": "4.95",
+                }
+            ]
+        )
+        parsed = result.to_dict()
+        assert parsed["status"] == "ok"
+        # InvestmentRecordPayload carries only RECORD_ID + AGGREGATE fields -> LOW.
+        assert parsed["summary"]["sensitivity"] == "low"
+        ids = parsed["data"]["investment_transaction_ids"]
+        assert len(ids) == 1
+        assert parsed["data"]["error_details"] == []
+
+    @pytest.mark.unit
+    async def test_reinvest_expands_to_two_rows(self, mcp_db: Path) -> None:
+        _seed_investment_core()
+        _add_security(security_id="sec_1", name="Vanguard", ticker="VTSAX")
+        result = await investments_record(
+            events=[
+                {
+                    "account": _ACCOUNT,
+                    "security": "VTSAX",
+                    "type": "reinvest",
+                    "date": "2024-03-20",
+                    "quantity": "1.5",
+                    "price": "100.00",
+                    "amount": "-150.00",
+                }
+            ]
+        )
+        parsed = result.to_dict()
+        assert len(parsed["data"]["investment_transaction_ids"]) == 2
+
+    @pytest.mark.unit
+    async def test_unresolved_security_is_soft_others_still_written(
+        self, mcp_db: Path
+    ) -> None:
+        """Event 2's unknown security is a SOFT skip; events 1 & 3 are still written."""
+        _seed_investment_core()
+        _add_security(security_id="sec_1", ticker="AAPL")
+        result = await investments_record(
+            events=[
+                {
+                    "account": _ACCOUNT,
+                    "security": "AAPL",
+                    "type": "buy",
+                    "date": "2024-01-15",
+                    "quantity": "10",
+                    "price": "150.00",
+                    "amount": "-1500.00",
+                },
+                {
+                    "account": _ACCOUNT,
+                    "security": "NOPE-DOES-NOT-EXIST",
+                    "type": "buy",
+                    "date": "2024-01-16",
+                    "quantity": "1",
+                    "price": "1.00",
+                    "amount": "-1.00",
+                },
+                {
+                    "account": _ACCOUNT,
+                    "security": "AAPL",
+                    "type": "buy",
+                    "date": "2024-01-17",
+                    "quantity": "2",
+                    "price": "150.00",
+                    "amount": "-300.00",
+                },
+            ]
+        )
+        parsed = result.to_dict()
+        assert parsed["status"] == "ok"
+        # Events 1 & 3 written (both single-row buys); event 2 skipped.
+        assert len(parsed["data"]["investment_transaction_ids"]) == 2
+        assert _count_raw_investment_rows() == 2
+        assert len(parsed["data"]["error_details"]) == 1
+        assert parsed["data"]["error_details"][0]["index"] == "1"
+
+    @pytest.mark.unit
+    async def test_hard_error_mid_batch_writes_nothing(self, mcp_db: Path) -> None:
+        """A sign violation on event 2 aborts the whole call with NOTHING written."""
+        _seed_investment_core()
+        _add_security(security_id="sec_1", ticker="AAPL")
+        result = await investments_record(
+            events=[
+                {
+                    "account": _ACCOUNT,
+                    "security": "AAPL",
+                    "type": "buy",
+                    "date": "2024-01-15",
+                    "quantity": "10",
+                    "price": "150.00",
+                    "amount": "-1500.00",
+                },
+                {
+                    "account": _ACCOUNT,
+                    "security": "AAPL",
+                    "type": "buy",
+                    "date": "2024-01-16",
+                    "quantity": "5",
+                    "price": "150.00",
+                    "amount": "750.00",  # wrong sign for a buy — HARD failure
+                },
+                {
+                    "account": _ACCOUNT,
+                    "security": "AAPL",
+                    "type": "buy",
+                    "date": "2024-01-17",
+                    "quantity": "2",
+                    "price": "150.00",
+                    "amount": "-300.00",
+                },
+            ]
+        )
+        parsed = result.to_dict()
+        assert parsed["status"] == "error"
+        assert parsed["error"]["code"] == "mutation_invalid_input"
+        # Pre-pass caught event 2 before any write: event 1 must NOT have committed.
+        assert _count_raw_investment_rows() == 0
+
+    @pytest.mark.unit
+    async def test_unknown_account_mid_batch_writes_nothing(self, mcp_db: Path) -> None:
+        """An unresolved ACCOUNT on event 2 is HARD: whole call aborts, nothing written."""
+        _seed_investment_core()
+        _add_security(security_id="sec_1", ticker="AAPL")
+        result = await investments_record(
+            events=[
+                {
+                    "account": _ACCOUNT,
+                    "security": "AAPL",
+                    "type": "buy",
+                    "date": "2024-01-15",
+                    "quantity": "10",
+                    "price": "150.00",
+                    "amount": "-1500.00",
+                },
+                {
+                    "account": "no-such-account",  # HARD: AccountNotFoundError
+                    "security": "AAPL",
+                    "type": "buy",
+                    "date": "2024-01-16",
+                    "quantity": "5",
+                    "price": "150.00",
+                    "amount": "-750.00",
+                },
+                {
+                    "account": _ACCOUNT,
+                    "security": "AAPL",
+                    "type": "buy",
+                    "date": "2024-01-17",
+                    "quantity": "2",
+                    "price": "150.00",
+                    "amount": "-300.00",
+                },
+            ]
+        )
+        parsed = result.to_dict()
+        assert parsed["status"] == "error"
+        assert _count_raw_investment_rows() == 0
+
+    @pytest.mark.unit
+    async def test_sign_violation_returns_standard_error_envelope(
+        self, mcp_db: Path
+    ) -> None:
+        _seed_investment_core()
+        _add_security(security_id="sec_1", ticker="AAPL")
+        result = await investments_record(
+            events=[
+                {
+                    "account": _ACCOUNT,
+                    "security": "AAPL",
+                    "type": "buy",
+                    "date": "2024-01-15",
+                    "quantity": "10",
+                    "price": "150.00",
+                    "amount": "1504.95",  # wrong sign for a buy
+                }
+            ]
+        )
+        parsed = result.to_dict()
+        assert parsed["status"] == "error"
+        assert parsed["error"]["code"] == "mutation_invalid_input"
+
+    @pytest.mark.unit
+    async def test_missing_required_field_returns_standard_error_envelope(
+        self, mcp_db: Path
+    ) -> None:
+        _seed_investment_core()
+        result = await investments_record(events=[{"account": _ACCOUNT}])
+        parsed = result.to_dict()
+        assert parsed["status"] == "error"
+
+    @pytest.mark.unit
+    async def test_empty_events_returns_empty_payload(self, mcp_db: Path) -> None:
+        result = await investments_record(events=[])
+        parsed = result.to_dict()
+        assert parsed["status"] == "ok"
+        assert parsed["data"]["investment_transaction_ids"] == []
+
+
+class TestInvestmentsSecuritiesSet:
+    """Tests for the investments_securities_set MCP tool (Shape 1b upsert)."""
+
+    @pytest.mark.unit
+    async def test_create_new_security(self, mcp_db: Path) -> None:
+        result = await investments_securities_set(
+            name="Apple Inc.", security_type="equity", ticker="AAPL"
+        )
+        parsed = result.to_dict()
+        assert parsed["status"] == "ok"
+        assert parsed["summary"]["sensitivity"] == "low"
+        sid = parsed["data"]["security_id"]
+        with get_database(read_only=True) as db:
+            row = db.execute(
+                "SELECT name, ticker FROM app.securities WHERE security_id = ?",
+                [sid],
+            ).fetchone()
+        assert row == ("Apple Inc.", "AAPL")
+
+    @pytest.mark.unit
+    async def test_create_missing_required_fields_returns_standard_error_envelope(
+        self, mcp_db: Path
+    ) -> None:
+        result = await investments_securities_set(name="Apple Inc.")
+        assert result.to_dict()["status"] == "error"
+
+    @pytest.mark.unit
+    async def test_update_existing_security_preserves_unset_fields(
+        self, mcp_db: Path
+    ) -> None:
+        sid = _add_security(
+            security_id="sec_vt",
+            name="Vanguard Total Stock Market",
+            security_type="mutual_fund",
+            ticker="VTSAX",
+            cost_basis_method="fifo",
+        )
+        result = await investments_securities_set(
+            security_id=sid, cost_basis_method="average"
+        )
+        parsed = result.to_dict()
+        assert parsed["data"]["security_id"] == sid
+        with get_database(read_only=True) as db:
+            row = db.execute(
+                "SELECT name, ticker, cost_basis_method FROM app.securities "
+                "WHERE security_id = ?",
+                [sid],
+            ).fetchone()
+        assert row == ("Vanguard Total Stock Market", "VTSAX", "average")
+
+    @pytest.mark.unit
+    async def test_average_on_equity_returns_standard_error_envelope(
+        self, mcp_db: Path
+    ) -> None:
+        sid = _add_security(security_id="sec_eq", security_type="equity")
+        result = await investments_securities_set(
+            security_id=sid, cost_basis_method="average"
+        )
+        parsed = result.to_dict()
+        assert parsed["status"] == "error"
+        assert parsed["error"]["code"] == "mutation_invalid_input"
+
+    @pytest.mark.unit
+    async def test_update_unknown_security_returns_standard_error_envelope(
+        self, mcp_db: Path
+    ) -> None:
+        result = await investments_securities_set(
+            security_id="does-not-exist", name="X"
+        )
+        parsed = result.to_dict()
+        assert parsed["status"] == "error"
+        assert parsed["error"]["code"] == "mutation_not_found"
+
+
+class TestInvestmentsLotsSelect:
+    """Tests for the investments_lots_select MCP tool (Shape 1a state-set)."""
+
+    def _seed_disposal_and_lots(self) -> None:
+        _seed_investment_core()
+        sec = _add_security(security_id="sec_1", ticker="AAPL")
+        with get_database(read_only=False) as db:
+            db.execute(
+                """
+                INSERT INTO core.fct_investment_transactions
+                    (investment_transaction_id, account_id, security_id, type, quantity)
+                VALUES ('sell_1', ?, ?, 'sell', -10)
+                """,  # noqa: S608  # test fixture insert, static SQL
+                [_ACCOUNT, sec],
+            )
+            db.executemany(
+                """
+                INSERT INTO core.fct_investment_lots
+                    (lot_id, account_id, security_id, remaining_quantity)
+                VALUES (?, ?, ?, ?)
+                """,  # noqa: S608  # test fixture insert, static SQL
+                [
+                    ["lot_a", _ACCOUNT, sec, Decimal("6")],
+                    ["lot_b", _ACCOUNT, sec, Decimal("6")],
+                ],
+            )
+
+    @pytest.mark.unit
+    async def test_sets_selection(self, mcp_db: Path) -> None:
+        self._seed_disposal_and_lots()
+        result = await investments_lots_select(
+            disposal_txn_id="sell_1",
+            selections=[
+                {"lot_id": "lot_a", "quantity": "6"},
+                {"lot_id": "lot_b", "quantity": "4"},
+            ],
+        )
+        parsed = result.to_dict()
+        assert parsed["summary"]["sensitivity"] == "high"
+        assert len(parsed["data"]["selections"]) == 2
+        with get_database(read_only=True) as db:
+            rows = db.execute(
+                "SELECT lot_id, quantity FROM app.lot_selections "
+                "WHERE investment_transaction_id = 'sell_1' ORDER BY lot_id"
+            ).fetchall()
+        assert rows == [
+            ("lot_a", Decimal("6.0000000000")),
+            ("lot_b", Decimal("4.0000000000")),
+        ]
+
+    @pytest.mark.unit
+    async def test_empty_selections_clears(self, mcp_db: Path) -> None:
+        self._seed_disposal_and_lots()
+        await investments_lots_select(
+            disposal_txn_id="sell_1",
+            selections=[{"lot_id": "lot_a", "quantity": "5"}],
+        )
+        result = await investments_lots_select(disposal_txn_id="sell_1", selections=[])
+        parsed = result.to_dict()
+        assert parsed["data"]["selections"] == []
+        with get_database(read_only=True) as db:
+            rows = db.execute(
+                "SELECT 1 FROM app.lot_selections "
+                "WHERE investment_transaction_id = 'sell_1'"
+            ).fetchall()
+        assert rows == []
+
+    @pytest.mark.unit
+    async def test_unknown_lot_returns_standard_error_envelope(
+        self, mcp_db: Path
+    ) -> None:
+        self._seed_disposal_and_lots()
+        result = await investments_lots_select(
+            disposal_txn_id="sell_1",
+            selections=[{"lot_id": "lot_ghost", "quantity": "1"}],
+        )
+        parsed = result.to_dict()
+        assert parsed["status"] == "error"
+        assert parsed["error"]["code"] == "mutation_not_found"
+
+    @pytest.mark.unit
+    async def test_malformed_selection_returns_standard_error_envelope(
+        self, mcp_db: Path
+    ) -> None:
+        self._seed_disposal_and_lots()
+        result = await investments_lots_select(
+            disposal_txn_id="sell_1", selections=[{"lot_id": "lot_a"}]
+        )
+        parsed = result.to_dict()
+        assert parsed["status"] == "error"
+        assert parsed["error"]["code"] == "mutation_invalid_input"

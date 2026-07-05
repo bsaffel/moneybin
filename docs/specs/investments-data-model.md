@@ -1,7 +1,7 @@
 # Feature: Investment Data Model & Cost-Basis Engine
 
 ## Status
-ready
+in-progress
 
 ## Goal
 
