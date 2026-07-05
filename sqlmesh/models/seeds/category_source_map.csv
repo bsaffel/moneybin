@@ -4,6 +4,8 @@ plaid,INCOME_WAGES,detailed,INC-SAL,plaid_pfc_v2
 plaid,INCOME_INTEREST_EARNED,detailed,INC-INT,plaid_pfc_v2
 plaid,INCOME_DIVIDENDS,detailed,INC-DIV,plaid_pfc_v2
 plaid,INCOME_TAX_REFUND,detailed,INC-REF,plaid_pfc_v2
+plaid,INCOME_RETIREMENT_PENSION,detailed,INC-RET,plaid_pfc_v2
+plaid,INCOME_UNEMPLOYMENT,detailed,INC-UNE,plaid_pfc_v2
 plaid,INCOME_OTHER_INCOME,detailed,INC-OTH,plaid_pfc_v2
 plaid,TRANSFER_IN,primary,TRN,plaid_pfc_v2
 plaid,TRANSFER_OUT,primary,TRN,plaid_pfc_v2
@@ -23,6 +25,7 @@ plaid,ENTERTAINMENT_TV_AND_MOVIES,detailed,ENT-MOV,plaid_pfc_v2
 plaid,ENTERTAINMENT_MUSIC_AND_AUDIO,detailed,ENT-MUS,plaid_pfc_v2
 plaid,ENTERTAINMENT_VIDEO_GAMES,detailed,ENT-GAM,plaid_pfc_v2
 plaid,ENTERTAINMENT_SPORTING_EVENTS_AMUSEMENT_PARKS_AND_MUSEUMS,detailed,ENT-EVT,plaid_pfc_v2
+plaid,ENTERTAINMENT_CASINOS_AND_GAMBLING,detailed,ENT-GMB,plaid_pfc_v2
 plaid,ENTERTAINMENT_OTHER_ENTERTAINMENT,detailed,ENT-OTH,plaid_pfc_v2
 plaid,FOOD_AND_DRINK,primary,FND,plaid_pfc_v2
 plaid,FOOD_AND_DRINK_GROCERIES,detailed,FND-GRC,plaid_pfc_v2
@@ -51,10 +54,12 @@ plaid,MEDICAL_PRIMARY_CARE,detailed,HLC-DOC,plaid_pfc_v2
 plaid,MEDICAL_DENTAL_CARE,detailed,HLC-DNT,plaid_pfc_v2
 plaid,MEDICAL_EYE_CARE,detailed,HLC-VIS,plaid_pfc_v2
 plaid,MEDICAL_PHARMACIES_AND_SUPPLEMENTS,detailed,HLC-PHR,plaid_pfc_v2
+plaid,MEDICAL_VETERINARY_SERVICES,detailed,HLC-VET,plaid_pfc_v2
 plaid,MEDICAL_OTHER_MEDICAL,detailed,HLC-OTH,plaid_pfc_v2
 plaid,PERSONAL_CARE,primary,PRC,plaid_pfc_v2
 plaid,PERSONAL_CARE_HAIR_AND_BEAUTY,detailed,PRC-HAR,plaid_pfc_v2
 plaid,PERSONAL_CARE_GYMS_AND_FITNESS_CENTERS,detailed,PRC-GYM,plaid_pfc_v2
+plaid,PERSONAL_CARE_LAUNDRY_AND_DRY_CLEANING,detailed,PRC-LDY,plaid_pfc_v2
 plaid,PERSONAL_CARE_OTHER_PERSONAL_CARE,detailed,PRC-OTH,plaid_pfc_v2
 plaid,GENERAL_SERVICES,primary,SVC,plaid_pfc_v2
 plaid,GENERAL_SERVICES_EDUCATION,detailed,SVC-EDU,plaid_pfc_v2
@@ -62,6 +67,7 @@ plaid,GENERAL_SERVICES_CONSULTING_AND_LEGAL,detailed,SVC-LGL,plaid_pfc_v2
 plaid,GENERAL_SERVICES_ACCOUNTING_AND_FINANCIAL_PLANNING,detailed,SVC-ACT,plaid_pfc_v2
 plaid,GENERAL_SERVICES_INSURANCE,detailed,SVC-INS,plaid_pfc_v2
 plaid,GENERAL_SERVICES_STORAGE,detailed,SVC-STR,plaid_pfc_v2
+plaid,GENERAL_SERVICES_CHILDCARE,detailed,SVC-CHC,plaid_pfc_v2
 plaid,GENERAL_SERVICES_OTHER_GENERAL_SERVICES,detailed,SVC-OTH,plaid_pfc_v2
 plaid,GOVERNMENT_AND_NON_PROFIT,primary,GOV,plaid_pfc_v2
 plaid,GOVERNMENT_AND_NON_PROFIT_TAX_PAYMENT,detailed,GOV-TAX,plaid_pfc_v2
