@@ -529,6 +529,18 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "subcategory": DataClass.CATEGORY,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
     },
+    ("core", "dim_holdings"): {
+        "account_id": DataClass.RECORD_ID,
+        "security_id": DataClass.RECORD_ID,
+        # Position size (units held) — masked like app.lot_selections.quantity.
+        "quantity": DataClass.TXN_AMOUNT,
+        # Aggregate open cost basis: a held "stock" figure, not a single flow —
+        # classified like an account balance rather than a transaction amount.
+        "cost_basis": DataClass.BALANCE,
+        "average_cost": DataClass.BALANCE,
+        "currency_code": DataClass.CURRENCY,
+        "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
+    },
     ("core", "dim_merchants"): {
         "canonical_name": DataClass.MERCHANT_NAME,
         "category": DataClass.CATEGORY,
@@ -540,6 +552,22 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "raw_pattern": DataClass.MERCHANT_NAME,
         "subcategory": DataClass.CATEGORY,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
+    },
+    ("core", "dim_securities"): {
+        # Mirrors app.securities: public-instrument reference data (what an
+        # instrument IS), not user PII. Holdings/lots carry the "user holds it"
+        # signal with their own quantity/basis classes.
+        "security_id": DataClass.RECORD_ID,
+        "name": DataClass.TXN_TYPE,
+        "security_type": DataClass.TXN_TYPE,
+        "ticker": DataClass.TXN_TYPE,
+        "exchange": DataClass.TXN_TYPE,
+        "cusip": DataClass.TXN_TYPE,
+        "isin": DataClass.TXN_TYPE,
+        "figi": DataClass.TXN_TYPE,
+        "coingecko_id": DataClass.TXN_TYPE,
+        "is_cash_equivalent": DataClass.TXN_TYPE,
+        "currency_code": DataClass.CURRENCY,
     },
     ("core", "fct_balances"): {
         "account_id": DataClass.RECORD_ID,
@@ -556,6 +584,67 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "is_observed": DataClass.TXN_TYPE,
         "observation_source": DataClass.TXN_TYPE,
         "reconciliation_delta": DataClass.BALANCE,
+    },
+    ("core", "fct_investment_lots"): {
+        "lot_id": DataClass.RECORD_ID,
+        "account_id": DataClass.RECORD_ID,
+        "security_id": DataClass.RECORD_ID,
+        "acquisition_date": DataClass.TXN_DATE,
+        "acquisition_type": DataClass.TXN_TYPE,
+        # Units — position-size information, masked like
+        # app.lot_selections.quantity.
+        "original_quantity": DataClass.TXN_AMOUNT,
+        "remaining_quantity": DataClass.TXN_AMOUNT,
+        # A held "stock" figure (open basis at a point in time), classified
+        # like an account balance rather than a single transaction amount.
+        "cost_basis_total": DataClass.BALANCE,
+        "cost_basis_remaining": DataClass.BALANCE,
+        "cost_basis_method": DataClass.TXN_TYPE,
+        "currency_code": DataClass.CURRENCY,
+        "is_open": DataClass.TXN_TYPE,
+        "source_transaction_id": DataClass.RECORD_ID,
+        "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
+    },
+    ("core", "fct_investment_transactions"): {
+        "investment_transaction_id": DataClass.RECORD_ID,
+        "account_id": DataClass.RECORD_ID,
+        "security_id": DataClass.RECORD_ID,
+        "trade_date": DataClass.TXN_DATE,
+        "settlement_date": DataClass.TXN_DATE,
+        "original_acquisition_date": DataClass.TXN_DATE,
+        "type": DataClass.TXN_TYPE,
+        "subtype": DataClass.TXN_TYPE,
+        # Links legs of one decomposed economic event — an id, not a category.
+        "event_group_id": DataClass.RECORD_ID,
+        "quantity": DataClass.TXN_AMOUNT,
+        "price": DataClass.TXN_AMOUNT,
+        "amount": DataClass.TXN_AMOUNT,
+        "fees": DataClass.TXN_AMOUNT,
+        "currency_code": DataClass.CURRENCY,
+        "source_type": DataClass.TXN_TYPE,
+        "source_origin": DataClass.TXN_TYPE,
+        "description": DataClass.DESCRIPTION,
+        "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
+    },
+    ("core", "fct_realized_gains"): {
+        "realized_gain_id": DataClass.RECORD_ID,
+        "account_id": DataClass.RECORD_ID,
+        "security_id": DataClass.RECORD_ID,
+        "disposal_txn_id": DataClass.RECORD_ID,
+        "lot_id": DataClass.RECORD_ID,
+        "quantity": DataClass.TXN_AMOUNT,
+        "acquisition_date": DataClass.TXN_DATE,
+        "disposal_date": DataClass.TXN_DATE,
+        # 1099-B reconciliation figures — held/realized values, classified
+        # like an account balance rather than a single transaction amount.
+        "proceeds": DataClass.BALANCE,
+        "cost_basis": DataClass.BALANCE,
+        "gain_loss": DataClass.BALANCE,
+        "term": DataClass.TXN_TYPE,
+        "cost_basis_method": DataClass.TXN_TYPE,
+        "basis_incomplete": DataClass.TXN_TYPE,
+        "currency_code": DataClass.CURRENCY,
+        "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
     },
     ("core", "fct_transaction_lines"): {
         "account_id": DataClass.RECORD_ID,

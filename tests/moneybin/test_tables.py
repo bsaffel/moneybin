@@ -75,6 +75,11 @@ EXPECTED_INTERFACE = {
     REPORTS_MERCHANT_ACTIVITY.full_name,
     REPORTS_LARGE_TRANSACTIONS.full_name,
     REPORTS_BALANCE_DRIFT.full_name,
+    DIM_SECURITIES.full_name,
+    FCT_INVESTMENT_TRANSACTIONS.full_name,
+    FCT_INVESTMENT_LOTS.full_name,
+    FCT_REALIZED_GAINS.full_name,
+    DIM_HOLDINGS.full_name,
 }
 
 
@@ -119,9 +124,14 @@ def test_investment_table_refs() -> None:
     assert FCT_INVESTMENT_LOTS.full_name == "core.fct_investment_lots"
     assert FCT_REALIZED_GAINS.full_name == "core.fct_realized_gains"
     assert DIM_HOLDINGS.full_name == "core.dim_holdings"
-    # All investment refs stay internal until the SQLMesh models + schema-catalog
-    # examples land (INTERFACE_TABLES is a live catalog contract); the five core
-    # models flip to audience="interface" in that change.
-    assert DIM_HOLDINGS.audience == "internal"
+    # The five core investment models are audience="interface" (SQLMesh models +
+    # schema-catalog examples have landed, satisfying the INTERFACE_TABLES live
+    # catalog contract). app.* and raw.* investment tables stay internal —
+    # they're application-managed / ingest-only, not curated query surfaces.
+    assert DIM_HOLDINGS.audience == "interface"
+    assert DIM_SECURITIES.audience == "interface"
+    assert FCT_INVESTMENT_TRANSACTIONS.audience == "interface"
+    assert FCT_INVESTMENT_LOTS.audience == "interface"
+    assert FCT_REALIZED_GAINS.audience == "interface"
     assert SECURITIES.audience == "internal"
     assert MANUAL_INVESTMENT_TRANSACTIONS.audience == "internal"
