@@ -833,5 +833,431 @@ class TestSelectLots:
             )
 
 
+# ---------------------------------------------------------------------------
+# Read path (Task 14b): list_events, holdings, lots, gains
+# ---------------------------------------------------------------------------
+
+
+def _seed_read_fixtures(db: Database) -> None:
+    """Two accounts + two securities + the core.* stub tables the reads query."""
+    _add_account(db, "acct_brokerage")
+    _add_account(db, "acct_roth")
+    _add_security(db, security_id="sec_1", name="Apple Inc.", ticker="AAPL")
+    _add_security(db, security_id="sec_2", name="Vanguard Total", ticker="VTSAX")
+    create_core_dim_stub_views(db)
+
+
+def _insert_event(
+    db: Database,
+    *,
+    investment_transaction_id: str,
+    account_id: str = "acct_brokerage",
+    security_id: str | None = "sec_1",
+    trade_date: date = date(2024, 1, 15),
+    type_: str = "buy",
+    quantity: Decimal | None = Decimal("10"),
+    amount: Decimal | None = Decimal("-1500.00"),
+) -> None:
+    db.conn.execute(
+        """
+        INSERT INTO core.fct_investment_transactions
+            (investment_transaction_id, account_id, security_id, trade_date,
+             type, quantity, amount, currency_code)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'USD')
+        """,  # noqa: S608  # test fixture insert, static SQL
+        [
+            investment_transaction_id,
+            account_id,
+            security_id,
+            trade_date,
+            type_,
+            quantity,
+            amount,
+        ],
+    )
+
+
+def _insert_lot(
+    db: Database,
+    *,
+    lot_id: str,
+    account_id: str = "acct_brokerage",
+    security_id: str = "sec_1",
+    acquisition_date: date = date(2024, 1, 15),
+    remaining_quantity: Decimal = Decimal("10"),
+    cost_basis_remaining: Decimal = Decimal("1500.00"),
+    is_open: bool = True,
+) -> None:
+    db.conn.execute(
+        """
+        INSERT INTO core.fct_investment_lots
+            (lot_id, account_id, security_id, acquisition_date, acquisition_type,
+             original_quantity, remaining_quantity, cost_basis_total,
+             cost_basis_remaining, cost_basis_method, currency_code, is_open)
+        VALUES (?, ?, ?, ?, 'buy', ?, ?, ?, ?, 'fifo', 'USD', ?)
+        """,  # noqa: S608  # test fixture insert, static SQL
+        [
+            lot_id,
+            account_id,
+            security_id,
+            acquisition_date,
+            remaining_quantity,
+            remaining_quantity,
+            cost_basis_remaining,
+            cost_basis_remaining,
+            is_open,
+        ],
+    )
+
+
+def _insert_gain(
+    db: Database,
+    *,
+    realized_gain_id: str,
+    account_id: str = "acct_brokerage",
+    security_id: str = "sec_1",
+    disposal_txn_id: str = "sell_1",
+    lot_id: str = "lot_a",
+    disposal_date: date = date(2024, 6, 12),
+    proceeds: Decimal = Decimal("950.00"),
+    cost_basis: Decimal = Decimal("750.00"),
+    gain_loss: Decimal = Decimal("200.00"),
+    term: str = "long",
+    basis_incomplete: bool = False,
+) -> None:
+    db.conn.execute(
+        """
+        INSERT INTO core.fct_realized_gains
+            (realized_gain_id, account_id, security_id, disposal_txn_id, lot_id,
+             quantity, acquisition_date, disposal_date, proceeds, cost_basis,
+             gain_loss, term, cost_basis_method, basis_incomplete, currency_code)
+        VALUES (?, ?, ?, ?, ?, 5, '2024-01-01'::DATE, ?, ?, ?, ?, ?, 'fifo', ?, 'USD')
+        """,  # noqa: S608  # test fixture insert, static SQL
+        [
+            realized_gain_id,
+            account_id,
+            security_id,
+            disposal_txn_id,
+            lot_id,
+            disposal_date,
+            proceeds,
+            cost_basis,
+            gain_loss,
+            term,
+            basis_incomplete,
+        ],
+    )
+
+
+def _replace_holdings_view(
+    db: Database,
+    rows: list[tuple[str, str, str, str, str | None, str]],
+) -> None:
+    """Override the empty core.dim_holdings stub with literal test rows.
+
+    core.dim_holdings is a SQLMesh-managed VIEW; create_core_dim_stub_views
+    stubs it as an empty ``WHERE FALSE`` view (matching the dim_categories/
+    dim_merchants stub convention), so holdings() tests replace it with
+    literal data — mirroring test_definitions.py's _install_balance_drift
+    precedent for overriding a stub view with VALUES. Values are literal
+    (not user input), per security.md's test-fixture exception.
+    """
+    if not rows:
+        select_sql = (
+            "SELECT CAST(NULL AS VARCHAR) AS account_id, "
+            "CAST(NULL AS VARCHAR) AS security_id, "
+            "CAST(NULL AS DECIMAL(28,10)) AS quantity, "
+            "CAST(NULL AS DECIMAL(18,2)) AS cost_basis, "
+            "CAST(NULL AS DECIMAL(28,10)) AS average_cost, "
+            "CAST(NULL AS VARCHAR) AS currency_code WHERE FALSE"
+        )
+    else:
+        parts: list[str] = []
+        for acct, sec, qty, basis, avg, ccy in rows:
+            avg_sql = "NULL" if avg is None else f"{avg}::DECIMAL(28,10)"
+            parts.append(
+                f"SELECT '{acct}' AS account_id, '{sec}' AS security_id, "
+                f"{qty}::DECIMAL(28,10) AS quantity, "
+                f"{basis}::DECIMAL(18,2) AS cost_basis, "
+                f"{avg_sql} AS average_cost, '{ccy}' AS currency_code"
+            )
+        select_sql = " UNION ALL ".join(parts)
+    db.execute(  # noqa: S608  # test fixture view, literal test data only
+        f"CREATE OR REPLACE VIEW core.dim_holdings AS {select_sql}"
+    )
+
+
+class TestListEvents:
+    """Tests for InvestmentService.list_events()."""
+
+    def test_returns_seeded_rows_with_decimal_preserved(self, db: Database) -> None:
+        _seed_read_fixtures(db)
+        _insert_event(db, investment_transaction_id="evt_1", quantity=Decimal("10.5"))
+        result = db_service(db).list_events()
+        assert len(result.rows) == 1
+        row = result.rows[0]
+        assert row.investment_transaction_id == "evt_1"
+        assert row.quantity == Decimal("10.5")
+        assert isinstance(row.amount, Decimal)
+        assert result.warnings == []
+
+    def test_account_ref_resolves_and_filters(self, db: Database) -> None:
+        _seed_read_fixtures(db)
+        _insert_event(db, investment_transaction_id="evt_brokerage")
+        _insert_event(db, investment_transaction_id="evt_roth", account_id="acct_roth")
+        result = db_service(db).list_events(account_ref="acct_brokerage")
+        assert [r.investment_transaction_id for r in result.rows] == ["evt_brokerage"]
+
+    def test_security_ref_resolves_and_filters(self, db: Database) -> None:
+        _seed_read_fixtures(db)
+        _insert_event(db, investment_transaction_id="evt_aapl", security_id="sec_1")
+        _insert_event(db, investment_transaction_id="evt_vtsax", security_id="sec_2")
+        result = db_service(db).list_events(security_ref="VTSAX")
+        assert [r.investment_transaction_id for r in result.rows] == ["evt_vtsax"]
+
+    def test_type_filter(self, db: Database) -> None:
+        _seed_read_fixtures(db)
+        _insert_event(db, investment_transaction_id="evt_buy", type_="buy")
+        _insert_event(
+            db,
+            investment_transaction_id="evt_sell",
+            type_="sell",
+            quantity=Decimal("-5"),
+            amount=Decimal("750.00"),
+        )
+        result = db_service(db).list_events(type_filter="sell")
+        assert [r.investment_transaction_id for r in result.rows] == ["evt_sell"]
+
+    def test_date_range_filter(self, db: Database) -> None:
+        _seed_read_fixtures(db)
+        _insert_event(
+            db, investment_transaction_id="evt_jan", trade_date=date(2024, 1, 15)
+        )
+        _insert_event(
+            db, investment_transaction_id="evt_jun", trade_date=date(2024, 6, 15)
+        )
+        result = db_service(db).list_events(
+            date_from=date(2024, 3, 1), date_to=date(2024, 12, 31)
+        )
+        assert [r.investment_transaction_id for r in result.rows] == ["evt_jun"]
+
+    def test_invalid_type_filter_raises(self, db: Database) -> None:
+        _seed_read_fixtures(db)
+        with pytest.raises(ValueError, match="type_filter"):
+            db_service(db).list_events(type_filter="frobnicate")
+
+    def test_unknown_account_ref_raises(self, db: Database) -> None:
+        _seed_read_fixtures(db)
+        with pytest.raises(UserError):
+            db_service(db).list_events(account_ref="does-not-exist")
+
+    def test_unknown_security_ref_raises(self, db: Database) -> None:
+        _seed_read_fixtures(db)
+        with pytest.raises(SecurityResolutionError):
+            db_service(db).list_events(security_ref="nothing-matches-this")
+
+
+class TestHoldings:
+    """Tests for InvestmentService.holdings()."""
+
+    def test_always_carries_pillar_c_warning(self, db: Database) -> None:
+        _seed_read_fixtures(db)
+        result = db_service(db).holdings()
+        assert result.rows == []
+        assert any("price feed" in w for w in result.warnings)
+
+    def test_returns_seeded_rows_with_decimal_preserved(self, db: Database) -> None:
+        _seed_read_fixtures(db)
+        _replace_holdings_view(
+            db,
+            [
+                (
+                    "acct_brokerage",
+                    "sec_1",
+                    "15",
+                    "2475.00",
+                    "165.00",
+                    "USD",
+                )
+            ],
+        )
+        result = db_service(db).holdings()
+        assert len(result.rows) == 1
+        row = result.rows[0]
+        assert row.quantity == Decimal("15.0000000000")
+        assert row.cost_basis == Decimal("2475.00")
+        assert row.average_cost == Decimal("165.0000000000")
+        assert isinstance(row.quantity, Decimal)
+        assert any("price feed" in w for w in result.warnings)
+
+    def test_account_ref_resolves_and_filters(self, db: Database) -> None:
+        _seed_read_fixtures(db)
+        _replace_holdings_view(
+            db,
+            [
+                ("acct_brokerage", "sec_1", "10", "1000.00", "100.00", "USD"),
+                ("acct_roth", "sec_2", "20", "2000.00", "100.00", "USD"),
+            ],
+        )
+        result = db_service(db).holdings(account_ref="acct_roth")
+        assert [(r.account_id, r.security_id) for r in result.rows] == [
+            ("acct_roth", "sec_2")
+        ]
+
+    def test_security_ref_resolves_and_filters(self, db: Database) -> None:
+        _seed_read_fixtures(db)
+        _replace_holdings_view(
+            db,
+            [
+                ("acct_brokerage", "sec_1", "10", "1000.00", "100.00", "USD"),
+                ("acct_brokerage", "sec_2", "20", "2000.00", "100.00", "USD"),
+            ],
+        )
+        result = db_service(db).holdings(security_ref="VTSAX")
+        assert [(r.account_id, r.security_id) for r in result.rows] == [
+            ("acct_brokerage", "sec_2")
+        ]
+
+    def test_unknown_account_ref_raises(self, db: Database) -> None:
+        _seed_read_fixtures(db)
+        with pytest.raises(UserError):
+            db_service(db).holdings(account_ref="does-not-exist")
+
+
+class TestLots:
+    """Tests for InvestmentService.lots()."""
+
+    def test_default_open_only(self, db: Database) -> None:
+        _seed_read_fixtures(db)
+        _insert_lot(db, lot_id="lot_open", is_open=True)
+        _insert_lot(
+            db,
+            lot_id="lot_closed",
+            is_open=False,
+            remaining_quantity=Decimal("0"),
+            cost_basis_remaining=Decimal("0"),
+        )
+        result = db_service(db).lots()
+        assert [r.lot_id for r in result.rows] == ["lot_open"]
+        assert result.warnings == []
+
+    def test_open_only_false_returns_all(self, db: Database) -> None:
+        _seed_read_fixtures(db)
+        _insert_lot(db, lot_id="lot_open", is_open=True)
+        _insert_lot(
+            db,
+            lot_id="lot_closed",
+            is_open=False,
+            remaining_quantity=Decimal("0"),
+            cost_basis_remaining=Decimal("0"),
+        )
+        result = db_service(db).lots(open_only=False)
+        assert {r.lot_id for r in result.rows} == {"lot_open", "lot_closed"}
+
+    def test_decimal_preserved(self, db: Database) -> None:
+        _seed_read_fixtures(db)
+        _insert_lot(
+            db,
+            lot_id="lot_1",
+            remaining_quantity=Decimal("6.5"),
+            cost_basis_remaining=Decimal("500.25"),
+        )
+        row = db_service(db).lots().rows[0]
+        assert row.remaining_quantity == Decimal("6.5")
+        assert row.cost_basis_remaining == Decimal("500.25")
+        assert isinstance(row.cost_basis_remaining, Decimal)
+
+    def test_account_ref_resolves_and_filters(self, db: Database) -> None:
+        _seed_read_fixtures(db)
+        _insert_lot(db, lot_id="lot_brokerage", account_id="acct_brokerage")
+        _insert_lot(db, lot_id="lot_roth", account_id="acct_roth")
+        result = db_service(db).lots(account_ref="acct_roth")
+        assert [r.lot_id for r in result.rows] == ["lot_roth"]
+
+    def test_security_ref_resolves_and_filters(self, db: Database) -> None:
+        _seed_read_fixtures(db)
+        _insert_lot(db, lot_id="lot_aapl", security_id="sec_1")
+        _insert_lot(db, lot_id="lot_vtsax", security_id="sec_2")
+        result = db_service(db).lots(security_ref="VTSAX")
+        assert [r.lot_id for r in result.rows] == ["lot_vtsax"]
+
+    def test_unknown_security_ref_raises(self, db: Database) -> None:
+        _seed_read_fixtures(db)
+        with pytest.raises(SecurityResolutionError):
+            db_service(db).lots(security_ref="nothing-matches-this")
+
+
+class TestGains:
+    """Tests for InvestmentService.gains()."""
+
+    def test_returns_seeded_rows_with_decimal_preserved(self, db: Database) -> None:
+        _seed_read_fixtures(db)
+        _insert_gain(db, realized_gain_id="gain_1", gain_loss=Decimal("200.00"))
+        result = db_service(db).gains()
+        assert len(result.rows) == 1
+        row = result.rows[0]
+        assert row.gain_loss == Decimal("200.00")
+        assert isinstance(row.proceeds, Decimal)
+        assert result.warnings == []
+
+    def test_basis_incomplete_warning_present_when_any_row_incomplete(
+        self, db: Database
+    ) -> None:
+        _seed_read_fixtures(db)
+        _insert_gain(db, realized_gain_id="gain_complete", basis_incomplete=False)
+        _insert_gain(db, realized_gain_id="gain_incomplete", basis_incomplete=True)
+        result = db_service(db).gains()
+        assert len(result.warnings) == 1
+        assert "1" in result.warnings[0]
+        assert "incomplete" in result.warnings[0]
+
+    def test_no_warning_when_all_rows_complete(self, db: Database) -> None:
+        _seed_read_fixtures(db)
+        _insert_gain(db, realized_gain_id="gain_1", basis_incomplete=False)
+        _insert_gain(db, realized_gain_id="gain_2", basis_incomplete=False)
+        result = db_service(db).gains()
+        assert result.warnings == []
+
+    def test_term_filter(self, db: Database) -> None:
+        _seed_read_fixtures(db)
+        _insert_gain(db, realized_gain_id="gain_short", term="short")
+        _insert_gain(db, realized_gain_id="gain_long", term="long")
+        result = db_service(db).gains(term="short")
+        assert [r.realized_gain_id for r in result.rows] == ["gain_short"]
+
+    def test_invalid_term_raises(self, db: Database) -> None:
+        _seed_read_fixtures(db)
+        with pytest.raises(ValueError, match="term"):
+            db_service(db).gains(term="medium")
+
+    def test_date_range_filter(self, db: Database) -> None:
+        _seed_read_fixtures(db)
+        _insert_gain(db, realized_gain_id="gain_jan", disposal_date=date(2024, 1, 15))
+        _insert_gain(db, realized_gain_id="gain_jun", disposal_date=date(2024, 6, 15))
+        result = db_service(db).gains(
+            date_from=date(2024, 3, 1), date_to=date(2024, 12, 31)
+        )
+        assert [r.realized_gain_id for r in result.rows] == ["gain_jun"]
+
+    def test_account_ref_resolves_and_filters(self, db: Database) -> None:
+        _seed_read_fixtures(db)
+        _insert_gain(db, realized_gain_id="gain_brokerage", account_id="acct_brokerage")
+        _insert_gain(db, realized_gain_id="gain_roth", account_id="acct_roth")
+        result = db_service(db).gains(account_ref="acct_roth")
+        assert [r.realized_gain_id for r in result.rows] == ["gain_roth"]
+
+    def test_security_ref_resolves_and_filters(self, db: Database) -> None:
+        _seed_read_fixtures(db)
+        _insert_gain(db, realized_gain_id="gain_aapl", security_id="sec_1")
+        _insert_gain(db, realized_gain_id="gain_vtsax", security_id="sec_2")
+        result = db_service(db).gains(security_ref="VTSAX")
+        assert [r.realized_gain_id for r in result.rows] == ["gain_vtsax"]
+
+    def test_unknown_account_ref_raises(self, db: Database) -> None:
+        _seed_read_fixtures(db)
+        with pytest.raises(UserError):
+            db_service(db).gains(account_ref="does-not-exist")
+
+
 def db_service(db: Database) -> InvestmentService:
     return InvestmentService(db)

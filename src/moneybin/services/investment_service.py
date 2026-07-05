@@ -1,10 +1,13 @@
 # src/moneybin/services/investment_service.py
-"""Investment write path: security resolution, event recording, lot selection.
+"""Investment read/write path: resolution, event recording, lot selection, and reads.
 
 Business logic behind the ``investments`` CLI group and the ``investments_*``
 MCP tools. Composes ``SecuritiesRepo`` and ``LotSelectionsRepo`` (Invariant 10)
 and writes manual events to ``raw.manual_investment_transactions`` mirroring the
-``TransactionService.create_manual_batch`` raw-write path.
+``TransactionService.create_manual_batch`` raw-write path. The read methods
+(``list_events``, ``holdings``, ``lots``, ``gains``) are parameterized SELECTs
+over the derived ``core.*`` investment models, mirroring
+``AccountService.list_accounts``'s SELECT-fetchall-dataclass pattern.
 
 Correctness contracts implemented here (see
 ``docs/specs/investments-data-model.md``):
@@ -43,6 +46,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import uuid
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
@@ -57,8 +61,10 @@ from moneybin.repositories.lot_selections_repo import LotSelectionsRepo
 from moneybin.repositories.securities_repo import SecuritiesRepo
 from moneybin.services.audit_service import AuditService
 from moneybin.tables import (
+    DIM_HOLDINGS,
     FCT_INVESTMENT_LOTS,
     FCT_INVESTMENT_TRANSACTIONS,
+    FCT_REALIZED_GAINS,
     MANUAL_INVESTMENT_TRANSACTIONS,
     SECURITIES,
 )
@@ -184,8 +190,119 @@ def _predict_investment_gold_key(source_transaction_id: str, account_id: str) ->
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
+# ── Read-path result shapes ───────────────────────────────────────────────
+# One row dataclass + one result wrapper per read method, mirroring
+# AccountSummary/AccountListPayload (privacy/payloads/accounts.py). No
+# Annotated[T, DataClass.X] privacy metadata here — that's applied when the
+# MCP/CLI surface wraps these in a payload at the boundary (not yet wired).
+
+
+@dataclass(frozen=True, slots=True)
+class EventRow:
+    """One row of the canonical investment-transaction ledger (Req 5/6 shape)."""
+
+    investment_transaction_id: str
+    account_id: str
+    security_id: str | None
+    trade_date: date
+    settlement_date: date | None
+    original_acquisition_date: date | None
+    type: str
+    subtype: str | None
+    event_group_id: str | None
+    quantity: Decimal | None
+    price: Decimal | None
+    amount: Decimal | None
+    fees: Decimal | None
+    currency_code: str
+    description: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class EventsResult:
+    """Result of :meth:`InvestmentService.list_events`."""
+
+    rows: list[EventRow]
+    warnings: list[str]
+
+
+@dataclass(frozen=True, slots=True)
+class HoldingRow:
+    """One current position — cost basis only (Pillar C adds market value)."""
+
+    account_id: str
+    security_id: str
+    quantity: Decimal
+    cost_basis: Decimal
+    average_cost: Decimal | None
+    currency_code: str
+
+
+@dataclass(frozen=True, slots=True)
+class HoldingsResult:
+    """Result of :meth:`InvestmentService.holdings`."""
+
+    rows: list[HoldingRow]
+    warnings: list[str]
+
+
+@dataclass(frozen=True, slots=True)
+class LotRow:
+    """One tax lot (open or closed) produced by the cost-basis engine."""
+
+    lot_id: str
+    account_id: str
+    security_id: str
+    acquisition_date: date
+    acquisition_type: str
+    original_quantity: Decimal
+    remaining_quantity: Decimal
+    cost_basis_total: Decimal
+    cost_basis_remaining: Decimal
+    cost_basis_method: str
+    currency_code: str
+    is_open: bool
+
+
+@dataclass(frozen=True, slots=True)
+class LotsResult:
+    """Result of :meth:`InvestmentService.lots`."""
+
+    rows: list[LotRow]
+    warnings: list[str]
+
+
+@dataclass(frozen=True, slots=True)
+class RealizedGainRow:
+    """One (disposal, consumed lot) realized gain/loss slice — the 1099-B grain."""
+
+    realized_gain_id: str
+    account_id: str
+    security_id: str
+    disposal_txn_id: str
+    lot_id: str
+    quantity: Decimal
+    acquisition_date: date
+    disposal_date: date
+    proceeds: Decimal
+    cost_basis: Decimal
+    gain_loss: Decimal
+    term: str
+    cost_basis_method: str
+    basis_incomplete: bool
+    currency_code: str
+
+
+@dataclass(frozen=True, slots=True)
+class GainsResult:
+    """Result of :meth:`InvestmentService.gains`."""
+
+    rows: list[RealizedGainRow]
+    warnings: list[str]
+
+
 class InvestmentService:
-    """Investment write path — resolution, event recording, lot selection."""
+    """Investment read/write path — resolution, event recording, lot selection, and reads."""
 
     def __init__(self, db: Database, *, audit: AuditService | None = None) -> None:
         """Initialize with an open Database; lazily build ``AuditService``.
@@ -877,3 +994,298 @@ class InvestmentService:
                 f"Unknown lot(s): {', '.join(repr(m) for m in missing)}.",
                 code=error_codes.MUTATION_NOT_FOUND,
             )
+
+    # ------------------------------------------------------------------
+    # Read path — list_events, holdings, lots, gains
+    # ------------------------------------------------------------------
+
+    _HOLDINGS_WARNING = (
+        "Market value and unrealized gain/loss are unavailable until price "
+        "feeds ship (holdings show cost basis only)."
+    )
+    _VALID_TERMS: frozenset[str] = frozenset({"short", "long"})
+
+    def _resolve_filters(
+        self, account_ref: str | None, security_ref: str | None
+    ) -> tuple[str | None, str | None]:
+        """Resolve free-text account/security refs to ids at the boundary.
+
+        Guard 2 (identifiers.md): the caller's WHERE binds to the returned ids,
+        never the free text. Both resolvers raise UserError-family errors
+        (``AccountNotFoundError``/``AmbiguousAccountError``/
+        ``SecurityResolutionError``) on no-match or ambiguity, which propagate.
+        """
+        from moneybin.services.account_service import AccountService
+
+        account_id = (
+            AccountService(self._db).resolve_strict(account_ref)
+            if account_ref is not None
+            else None
+        )
+        security_id = (
+            self.resolve_security(security_ref) if security_ref is not None else None
+        )
+        return account_id, security_id
+
+    def list_events(
+        self,
+        *,
+        account_ref: str | None = None,
+        security_ref: str | None = None,
+        type_filter: str | None = None,
+        date_from: date | None = None,
+        date_to: date | None = None,
+    ) -> EventsResult:
+        """List ledger events from ``core.fct_investment_transactions``.
+
+        All filters are optional and AND-combined; ``account_ref``/
+        ``security_ref`` accept free text and resolve to ids before binding
+        (Guard 2). Carries no mandatory warning.
+        """
+        if type_filter is not None and type_filter not in TAXONOMY:
+            raise ValueError(
+                f"type_filter must be one of {sorted(TAXONOMY)}, got {type_filter!r}"
+            )
+        account_id, security_id = self._resolve_filters(account_ref, security_ref)
+
+        where: list[str] = []
+        params: list[object] = []
+        if account_id is not None:
+            where.append("account_id = ?")
+            params.append(account_id)
+        if security_id is not None:
+            where.append("security_id = ?")
+            params.append(security_id)
+        if type_filter is not None:
+            where.append("type = ?")
+            params.append(type_filter)
+        if date_from is not None:
+            where.append("trade_date >= ?")
+            params.append(date_from)
+        if date_to is not None:
+            where.append("trade_date <= ?")
+            params.append(date_to)
+        where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+
+        rows = self._db.execute(
+            f"""
+            SELECT investment_transaction_id, account_id, security_id, trade_date,
+                   settlement_date, original_acquisition_date, type, subtype,
+                   event_group_id, quantity, price, amount, fees, currency_code,
+                   description
+              FROM {FCT_INVESTMENT_TRANSACTIONS.full_name}
+              {where_sql}
+             ORDER BY trade_date, investment_transaction_id
+            """,  # noqa: S608  # TableRef + parameterized values; where_sql built from literal fragments above
+            params,
+        ).fetchall()
+        return EventsResult(
+            rows=[
+                EventRow(
+                    investment_transaction_id=str(r[0]),
+                    account_id=str(r[1]),
+                    security_id=r[2],
+                    trade_date=r[3],
+                    settlement_date=r[4],
+                    original_acquisition_date=r[5],
+                    type=str(r[6]),
+                    subtype=r[7],
+                    event_group_id=r[8],
+                    quantity=r[9],
+                    price=r[10],
+                    amount=r[11],
+                    fees=r[12],
+                    currency_code=str(r[13]),
+                    description=r[14],
+                )
+                for r in rows
+            ],
+            warnings=[],
+        )
+
+    def holdings(
+        self,
+        *,
+        account_ref: str | None = None,
+        security_ref: str | None = None,
+    ) -> HoldingsResult:
+        """Current positions (cost basis only) from ``core.dim_holdings``.
+
+        Always carries the Pillar-C market-value caveat: no price feed exists
+        yet, so quantity/cost-basis/average-cost is the full picture.
+        """
+        account_id, security_id = self._resolve_filters(account_ref, security_ref)
+
+        where: list[str] = []
+        params: list[object] = []
+        if account_id is not None:
+            where.append("account_id = ?")
+            params.append(account_id)
+        if security_id is not None:
+            where.append("security_id = ?")
+            params.append(security_id)
+        where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+
+        rows = self._db.execute(
+            f"""
+            SELECT account_id, security_id, quantity, cost_basis, average_cost,
+                   currency_code
+              FROM {DIM_HOLDINGS.full_name}
+              {where_sql}
+             ORDER BY account_id, security_id
+            """,  # noqa: S608  # TableRef + parameterized values; where_sql built from literal fragments above
+            params,
+        ).fetchall()
+        return HoldingsResult(
+            rows=[
+                HoldingRow(
+                    account_id=str(r[0]),
+                    security_id=str(r[1]),
+                    quantity=r[2],
+                    cost_basis=r[3],
+                    average_cost=r[4],
+                    currency_code=str(r[5]),
+                )
+                for r in rows
+            ],
+            warnings=[self._HOLDINGS_WARNING],
+        )
+
+    def lots(
+        self,
+        *,
+        account_ref: str | None = None,
+        security_ref: str | None = None,
+        open_only: bool = True,
+    ) -> LotsResult:
+        """Tax lots from ``core.fct_investment_lots``; open lots only by default.
+
+        Pass ``open_only=False`` for the full open+closed history.
+        """
+        account_id, security_id = self._resolve_filters(account_ref, security_ref)
+
+        where: list[str] = []
+        params: list[object] = []
+        if account_id is not None:
+            where.append("account_id = ?")
+            params.append(account_id)
+        if security_id is not None:
+            where.append("security_id = ?")
+            params.append(security_id)
+        if open_only:
+            where.append("is_open = TRUE")
+        where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+
+        rows = self._db.execute(
+            f"""
+            SELECT lot_id, account_id, security_id, acquisition_date,
+                   acquisition_type, original_quantity, remaining_quantity,
+                   cost_basis_total, cost_basis_remaining, cost_basis_method,
+                   currency_code, is_open
+              FROM {FCT_INVESTMENT_LOTS.full_name}
+              {where_sql}
+             ORDER BY acquisition_date, lot_id
+            """,  # noqa: S608  # TableRef + parameterized values; where_sql built from literal fragments above
+            params,
+        ).fetchall()
+        return LotsResult(
+            rows=[
+                LotRow(
+                    lot_id=str(r[0]),
+                    account_id=str(r[1]),
+                    security_id=str(r[2]),
+                    acquisition_date=r[3],
+                    acquisition_type=str(r[4]),
+                    original_quantity=r[5],
+                    remaining_quantity=r[6],
+                    cost_basis_total=r[7],
+                    cost_basis_remaining=r[8],
+                    cost_basis_method=str(r[9]),
+                    currency_code=str(r[10]),
+                    is_open=bool(r[11]),
+                )
+                for r in rows
+            ],
+            warnings=[],
+        )
+
+    def gains(
+        self,
+        *,
+        account_ref: str | None = None,
+        security_ref: str | None = None,
+        date_from: date | None = None,
+        date_to: date | None = None,
+        term: str | None = None,
+    ) -> GainsResult:
+        """Realized gain/loss (the 1099-B surface) from ``core.fct_realized_gains``.
+
+        Carries a warning naming the count of ``basis_incomplete`` rows
+        (oversold / missing acquisition) when any are present in the result.
+        """
+        if term is not None and term not in self._VALID_TERMS:
+            raise ValueError(
+                f"term must be one of {sorted(self._VALID_TERMS)}, got {term!r}"
+            )
+        account_id, security_id = self._resolve_filters(account_ref, security_ref)
+
+        where: list[str] = []
+        params: list[object] = []
+        if account_id is not None:
+            where.append("account_id = ?")
+            params.append(account_id)
+        if security_id is not None:
+            where.append("security_id = ?")
+            params.append(security_id)
+        if date_from is not None:
+            where.append("disposal_date >= ?")
+            params.append(date_from)
+        if date_to is not None:
+            where.append("disposal_date <= ?")
+            params.append(date_to)
+        if term is not None:
+            where.append("term = ?")
+            params.append(term)
+        where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+
+        rows = self._db.execute(
+            f"""
+            SELECT realized_gain_id, account_id, security_id, disposal_txn_id,
+                   lot_id, quantity, acquisition_date, disposal_date, proceeds,
+                   cost_basis, gain_loss, term, cost_basis_method,
+                   basis_incomplete, currency_code
+              FROM {FCT_REALIZED_GAINS.full_name}
+              {where_sql}
+             ORDER BY disposal_date, realized_gain_id
+            """,  # noqa: S608  # TableRef + parameterized values; where_sql built from literal fragments above
+            params,
+        ).fetchall()
+        gain_rows = [
+            RealizedGainRow(
+                realized_gain_id=str(r[0]),
+                account_id=str(r[1]),
+                security_id=str(r[2]),
+                disposal_txn_id=str(r[3]),
+                lot_id=str(r[4]),
+                quantity=r[5],
+                acquisition_date=r[6],
+                disposal_date=r[7],
+                proceeds=r[8],
+                cost_basis=r[9],
+                gain_loss=r[10],
+                term=str(r[11]),
+                cost_basis_method=str(r[12]),
+                basis_incomplete=bool(r[13]),
+                currency_code=str(r[14]),
+            )
+            for r in rows
+        ]
+        warnings: list[str] = []
+        incomplete_count = sum(1 for row in gain_rows if row.basis_incomplete)
+        if incomplete_count:
+            warnings.append(
+                f"{incomplete_count} realized-gain row(s) have incomplete cost "
+                "basis (oversold / missing acquisition) — figures are "
+                "conservative."
+            )
+        return GainsResult(rows=gain_rows, warnings=warnings)
