@@ -1,0 +1,24 @@
+source_category_code,rolls_up_to,reason
+TRANSFER_IN_CASH_ADVANCES_AND_LOANS,TRN,transfer granularity deferred to M1J
+TRANSFER_IN_DEPOSIT,TRN,transfer granularity deferred to M1J
+TRANSFER_IN_INVESTMENT_AND_RETIREMENT_FUNDS,TRN,transfer granularity deferred to M1J
+TRANSFER_IN_SAVINGS,TRN,transfer granularity deferred to M1J
+TRANSFER_IN_ACCOUNT_TRANSFER,TRN,transfer granularity deferred to M1J
+TRANSFER_IN_OTHER_TRANSFER_IN,TRN,transfer granularity deferred to M1J
+TRANSFER_OUT_INVESTMENT_AND_RETIREMENT_FUNDS,TRN,transfer granularity deferred to M1J
+TRANSFER_OUT_SAVINGS,TRN,transfer granularity deferred to M1J
+TRANSFER_OUT_WITHDRAWAL,TRN,transfer granularity deferred to M1J
+TRANSFER_OUT_ACCOUNT_TRANSFER,TRN,transfer granularity deferred to M1J
+TRANSFER_OUT_OTHER_TRANSFER_OUT,TRN,transfer granularity deferred to M1J
+LOAN_PAYMENTS_OTHER_PAYMENT,LNP,generic loan payment; no distinct budget value
+BANK_FEES_FOREIGN_TRANSACTION_FEES,BNK,fee subtype rolls up to primary
+BANK_FEES_INSUFFICIENT_FUNDS,BNK,fee subtype rolls up to primary
+FOOD_AND_DRINK_VENDING_MACHINES,FND,niche micro-spend
+GENERAL_MERCHANDISE_CONVENIENCE_STORES,SHP,merchant-type grab-bag
+GENERAL_MERCHANDISE_DISCOUNT_STORES,SHP,merchant-type grab-bag
+GENERAL_MERCHANDISE_OFFICE_SUPPLIES,SHP,marginal; candidate future tax-package add
+GENERAL_MERCHANDISE_SUPERSTORES,SHP,merchant-type grab-bag (Walmart/Costco overlap groceries)
+GENERAL_MERCHANDISE_TOBACCO_AND_VAPE,SHP,marginal; candidate future vice-tracking add
+MEDICAL_NURSING_CARE,HLC,niche long-term care; roll up until a consumer needs it
+GENERAL_SERVICES_POSTAGE_AND_SHIPPING,SVC,occasional/minor
+TRANSPORTATION_BIKES_AND_SCOOTERS,TRP,niche micro-mobility; overlaps rideshare

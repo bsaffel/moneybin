@@ -26,5 +26,6 @@ def test_class_assignment() -> None:
         assert r["class"] == expect(r["category_id"]), (
             f"{r['category_id']}: {r['class']}"
         )
-    assert sum(r["class"] == "income" for r in rows) == 8
+    # Group sizes (M1W): INC group = 8 seed + INC-RET + INC-UNE; LNP group = 6.
+    assert sum(r["class"] == "income" for r in rows) == 10
     assert sum(r["class"] == "debt" for r in rows) == 6
