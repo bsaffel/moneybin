@@ -128,3 +128,73 @@ def test_fct_transactions_includes_plaid_with_correct_sign(
     ).fetchone()
     assert row is not None
     assert row[0] == Decimal("1500.00")
+
+
+@pytest.mark.slow
+def test_fct_balances_includes_plaid_with_canonical_account_id(
+    db_with_data: Database,
+) -> None:
+    """Plaid balances reach core.fct_balances keyed on the canonical account_id.
+
+    The fixture resolves app.account_links via AccountResolver, so the staging
+    view must project the canonical id (not the native Plaid token) or the rows
+    orphan against core.dim_accounts. balance maps from current_balance (the OFX
+    ledger_balance analog); source_ref is the Plaid item identity.
+    """
+    with sqlmesh_context(db_with_data) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    rows = db_with_data.execute(
+        """
+        SELECT account_id, balance, source_type, source_ref
+        FROM core.fct_balances
+        WHERE source_type = 'plaid'
+        ORDER BY balance
+        """
+    ).fetchall()
+    assert len(rows) == 2, f"expected 2 plaid balance rows, got {len(rows)}"
+    # Fixture current_balance values: acc_chase_check 1234.56, acc_chase_save 5000.00
+    assert [r[1] for r in rows] == [Decimal("1234.56"), Decimal("5000.00")]
+    assert all(r[2] == "plaid" for r in rows)
+    # source_ref is the Plaid item identity (source_origin), not a file path
+    assert all(r[3] == "item_chase_abc" for r in rows)
+
+    # Canonical-id join integrity: native tokens must not leak, and every plaid
+    # balance account_id must exist in core.dim_accounts (no orphans).
+    account_ids = {r[0] for r in rows}
+    assert "acc_chase_check" not in account_ids
+    assert "acc_chase_save" not in account_ids
+    dim_ids = {
+        r[0]
+        for r in db_with_data.execute(
+            "SELECT account_id FROM core.dim_accounts"
+        ).fetchall()
+    }
+    assert account_ids <= dim_ids, (
+        "plaid balances must key on a canonical id present in core.dim_accounts"
+    )
+
+
+@pytest.mark.slow
+def test_dim_accounts_carries_plaid_official_name_and_subtype(
+    db_with_data: Database,
+) -> None:
+    """Plaid official_name/account_subtype populate dim_accounts as the base layer.
+
+    No app.account_settings override exists in the fixture, so the dim must fall
+    back to the Plaid-sourced values (from prep.stg_plaid__accounts) instead of
+    NULL — closing the gap where the dim dropped both fields.
+    """
+    with sqlmesh_context(db_with_data) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    rows = db_with_data.execute(
+        """
+        SELECT official_name, account_subtype
+        FROM core.dim_accounts
+        WHERE source_type = 'plaid'
+        ORDER BY official_name
+        """
+    ).fetchall()
+    # Fixture: Total Checking/checking, Total Savings/savings.
+    assert rows == [("Total Checking", "checking"), ("Total Savings", "savings")]

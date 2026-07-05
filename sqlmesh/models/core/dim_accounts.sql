@@ -21,6 +21,8 @@ WITH ofx_accounts AS (
     source_file,
     extracted_at,
     loaded_at,
+    NULL::TEXT AS official_name,
+    NULL::TEXT AS account_subtype,
     CASE
       WHEN LENGTH(REGEXP_REPLACE(source_account_key, '[^0-9]', '', 'g')) >= 4
       THEN RIGHT(REGEXP_REPLACE(source_account_key, '[^0-9]', '', 'g'), 4)
@@ -38,6 +40,8 @@ WITH ofx_accounts AS (
     source_file,
     extracted_at,
     loaded_at,
+    NULL::TEXT AS official_name,
+    NULL::TEXT AS account_subtype,
     CASE
       WHEN LENGTH(
         REGEXP_REPLACE(COALESCE(account_number, account_number_masked), '[^0-9]', '', 'g')
@@ -60,6 +64,8 @@ WITH ofx_accounts AS (
     source_file,
     extracted_at,
     loaded_at,
+    official_name,
+    account_subtype,
     CASE
       WHEN LENGTH(REGEXP_REPLACE(mask, '[^0-9]', '', 'g')) >= 4
       THEN RIGHT(REGEXP_REPLACE(mask, '[^0-9]', '', 'g'), 4)
@@ -100,8 +106,10 @@ WITH ofx_accounts AS (
          by source strength then recency — ARG_MIN over (source_rank ASC,
          extracted_at DESC); negating epoch_us flips the timestamp to descending
          within the composite ordering key.
-       - Descriptive fields (institution_name, account_type): first non-null by
-         recency — ARG_MAX over extracted_at.
+       - Descriptive fields (institution_name, account_type, official_name,
+         account_subtype): first non-null by recency — ARG_MAX over extracted_at.
+         official_name/account_subtype come only from Plaid staging today; the
+         merge keeps them source-agnostic for future providers.
        - Display provenance (source_type, source_file): the winning (strength then
          recency) row's value; the full contributing set is recoverable from
          app.account_links.
@@ -117,6 +125,10 @@ WITH ofx_accounts AS (
       NOT institution_name IS NULL) AS institution_name,
     ARG_MAX(account_type, extracted_at) FILTER(WHERE
       NOT account_type IS NULL) AS account_type,
+    ARG_MAX(official_name, extracted_at) FILTER(WHERE
+      NOT official_name IS NULL) AS official_name,
+    ARG_MAX(account_subtype, extracted_at) FILTER(WHERE
+      NOT account_subtype IS NULL) AS account_subtype,
     ARG_MIN(source_type, (source_rank, -EPOCH_US(extracted_at))) AS source_type,
     ARG_MIN(source_file, (source_rank, -EPOCH_US(extracted_at))) AS source_file,
     MAX(extracted_at) AS extracted_at,
@@ -146,9 +158,9 @@ SELECT
     w.account_type,
     'Account ' || w.account_id
   ) AS display_name, /* Resolved display label: user override → derived (institution+type[+last4]) → institution or type alone → 'Account <id>' terminal so it is never NULL */
-  s.official_name, /* Institution's formal name (mirrors Plaid official_name); user-set or future Plaid sync */
+  COALESCE(s.official_name, w.official_name) AS official_name, /* Institution's formal account name: user override (app.account_settings) else Plaid official_name */
   COALESCE(s.last_four, w.last_four_derived) AS last_four, /* Last 4 of account number: user-set app.account_settings.last_four, else derived per source (OFX source_account_key digits, Plaid mask, tabular account_number/masked). Never the full number. */
-  s.account_subtype, /* Plaid-style subtype (checking, savings, credit card, mortgage, ...) */
+  COALESCE(s.account_subtype, w.account_subtype) AS account_subtype, /* Plaid-style subtype (checking, savings, credit card, mortgage, ...): user override else Plaid subtype */
   s.holder_category, /* 'personal' / 'business' / 'joint' */
   COALESCE(s.iso_currency_code, 'USD') AS iso_currency_code, /* ISO-4217 currency code; defaults to USD until multi-currency.md ships */
   s.credit_limit, /* User-asserted credit limit on credit cards / lines */
