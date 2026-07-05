@@ -1,0 +1,14 @@
+category_id,reason
+INC-FRE,1099/contract income; rule on payer (Upwork/Stripe payout)
+INC-REN,rental income; rule on tenant/property manager
+FND-DEL,food delivery; merchant rule (DoorDash/Uber Eats/Grubhub)
+HMI-LND,landscaping; merchant rule
+HLC-INS,health insurance premiums; merchant rule (Aetna/BCBS)
+PRC-SPA,spa & wellness; rule-fillable
+SVC-SUB,subscriptions; rule-fillable (cross-cutting billing pattern)
+TRP-INS,auto insurance; merchant rule (Geico/Progressive)
+HSG-GAS,gas utility; Plaid combines gas+electric into one code so rule-only
+TRN-INT,internal own-account transfer; rule-fillable (transfer taxonomy deferred to M1J)
+TRN-ATM,ATM cash movement; rule-fillable
+OTH,top-level Other fallback bucket
+OTH-MSC,user-facing miscellaneous bucket
