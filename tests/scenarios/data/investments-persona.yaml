@@ -1,0 +1,26 @@
+scenario: investments-persona
+description: >
+  A mixed-method investment portfolio in one account: FIFO stock (a sell
+  spanning short + long term across two lots), an average-cost mutual fund
+  (pooled basis), and one HIFO crypto (highest per-unit-basis lot consumed
+  first). Raw manual investment rows are seeded directly and the real transform
+  derives core.fct_investment_lots, core.fct_realized_gains, and
+  core.dim_holdings. Expected lots / per-term gains / holdings are hand-derived
+  from the input rows (anchored to the verified cost-basis engine unit tests)
+  BEFORE running the pipeline — no observe-and-paste.
+
+setup:
+  persona: basic
+  seed: 42
+  years: 1
+
+# Pipeline steps are driven by the pytest entry
+# (test_investments_persona_correctness.py) rather than the YAML runner: the
+# investment ledger is seeded directly into raw.manual_investment_transactions
+# (load_fixtures only handles csv/ofx cash transactions), then the transform is
+# run in-process. Mirrors networth-correctness.
+pipeline: []
+
+gates:
+  required_assertions: all
+  required_expectations: all
