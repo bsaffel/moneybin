@@ -626,6 +626,107 @@ These four tools implement the merchant-link review surface: the agent-facing pe
 
 ---
 
+## 5c. `investments_*` — Investment ledger, cost basis, and securities catalog (M1J.1)
+
+**Service class:** `InvestmentService`
+
+Foundation child of the investments initiative ([`investments-data-model.md`](investments-data-model.md), Pillars A+B — implemented). The ledger (`investments`) is the one authored/ingested surface; lots, holdings, and realized gain/loss are derived from it in SQLMesh (Invariant 8) — never snapshotted into `app.*`. Free-text account/security references resolve at the service boundary (Guard 2, `identifiers.md`); an ambiguous or unresolved account reference is always a hard failure, while an unresolved security reference is soft in `investments_record` (see below). Sensitivity is DERIVED per tool from its payload's classified fields, not hardcoded (`src/moneybin/privacy/payloads/investments.py`): `investments` / `investments_holdings` / `investments_lots` / `investments_gains` carry `BALANCE`/`TXN_AMOUNT` fields and resolve to `high`; `investments_securities` carries only `TXN_TYPE`/`CURRENCY`/`RECORD_ID` fields and resolves to `low`.
+
+### `investments`
+
+List investment ledger events (buys, sells, dividends, corporate actions, ...).
+
+- **Sensitivity:** `high` (see note above).
+- **Unique parameters:** `account` (optional, free-text/id), `security` (optional, free-text/id), `type_filter` (optional), `from_date`/`to_date` (optional ISO date).
+- **Behavior:** Returns rows from `core.fct_investment_transactions`. Amounts (`quantity`/`price`/`amount`/`fees`) use the per-type sign convention documented on `investments_record`; positive quantity = acquisition, negative = disposal. Amounts are in the currency named by `summary.display_currency`.
+- **Service:** `InvestmentService.list_events()`
+- **CLI:** `moneybin investments list`
+- **read_only:** true
+
+### `investments_holdings`
+
+Current positions: quantity, cost basis, average cost per (account, security).
+
+- **Sensitivity:** `high`.
+- **Unique parameters:** `account` (optional).
+- **Behavior:** Sum of open lots from `core.dim_holdings`. Market value and unrealized gain/loss require price feeds (Pillar C, not yet shipped) — response always carries a warning that only cost basis is available.
+- **Service:** `InvestmentService.holdings()`
+- **CLI:** `moneybin investments holdings`
+- **read_only:** true
+
+### `investments_lots`
+
+Tax lots with remaining quantity and basis.
+
+- **Sensitivity:** `high`.
+- **Unique parameters:** `account` (optional), `security` (optional), `open_only` (bool, default `true`).
+- **Behavior:** Returns rows from `core.fct_investment_lots`. Open lots only by default; `open_only=false` returns the full open+closed history.
+- **Service:** `InvestmentService.lots()`
+- **CLI:** `moneybin investments lots list`
+- **read_only:** true
+
+### `investments_gains`
+
+Realized gain/loss (the 1099-B surface) from `core.fct_realized_gains`.
+
+- **Sensitivity:** `high`.
+- **Unique parameters:** `account` (optional), `security` (optional), `from_date`/`to_date` (optional), `term` (optional: `short`|`long`).
+- **Behavior:** One row per (disposal, consumed lot). A row with `basis_incomplete=true` means the disposal exceeded tracked lots (oversold) or the acquisition lot is missing — its gain/loss is computed from zero cost basis and is conservative, not authoritative; `data.warnings` names the count when any row is incomplete.
+- **Service:** `InvestmentService.gains()`
+- **CLI:** `moneybin investments gains`
+- **read_only:** true
+
+### `investments_securities`
+
+List the manually-maintained securities catalog.
+
+- **Sensitivity:** `low` — reference data only, no amounts, no per-user holdings.
+- **Unique parameters:** `security_type` (optional).
+- **Behavior:** Returns rows from `core.dim_securities`.
+- **Service:** `InvestmentService.list_securities()`
+- **CLI:** `moneybin investments securities list`
+- **read_only:** true
+
+### `investments_record`
+
+Record one or more investment ledger events (Shape 3 batch).
+
+- **Sensitivity:** `high`.
+- **Parameters:** `events: list[dict]` — each item: `account` (required), `type` (required — one of the 14-value closed taxonomy: `buy`, `sell`, `reinvest`, `dividend`, `interest`, `capital_gain_distribution`, `transfer_in`, `transfer_out`, `deposit`, `withdrawal`, `split`, `fee`, `return_of_capital`, `other`), `date` (required, ISO), `security` (required for buy/sell/reinvest/transfer_in/transfer_out/split/return_of_capital; forbidden for deposit/withdrawal), `quantity`/`price`/`amount`/`fees`/`basis` (decimal strings, never floats), `subtype`, `acquired` (ISO date, `transfer_in` only), `event_group_id`, `currency` (default `USD`), `description`.
+- **Behavior:** Sign convention: `quantity` positive for acquisitions (buy/reinvest/transfer_in), negative for disposals (sell/transfer_out), absent for cash-only events; `amount` negative for cash out (buy/reinvest/withdrawal/fee), positive for cash in (sell/deposit/dividend/interest/capital_gain_distribution/return_of_capital). A `reinvest` event atomically writes the acquisition leg AND a paired income row sharing one `event_group_id` — both ids are returned. All events are validated and resolved BEFORE any row is written: a bad/ambiguous ACCOUNT reference (or a taxonomy/sign violation) is a HARD failure that aborts the entire call with nothing written; a bad/ambiguous SECURITY reference is a SOFT per-item failure reported in `data.error_details` while the rest of the batch is written.
+- **Mutation surface:** writes `raw.manual_investment_transactions` (one row per event, two for `reinvest`). No revert tool; every write is recorded in `app.audit_log` under `action="investment.record"`.
+- **Service:** `InvestmentService.record_event()`
+- **CLI:** `moneybin investments add`
+- **read_only:** false
+
+### `investments_securities_set`
+
+Create-or-update one securities-catalog entry (Shape 1b entity upsert).
+
+- **Sensitivity:** `low`.
+- **Parameters:** `security_id` (`None` creates; existing id partially updates), `name`, `security_type` (required on create: `equity`, `etf`, `mutual_fund`, `bond`, `crypto`, `cash`, `other`; immutable post-creation), `ticker`, `exchange`, `cusip`, `isin`, `figi`, `coingecko_id`, `is_cash_equivalent`, `cost_basis_method` (`fifo`/`hifo`/`specific`/`average`; `average` valid only for `mutual_fund`/`etf`, raises `mutation_invalid_input` otherwise), `currency_code` (default `USD` on create).
+- **Behavior:** Unset (`None`) fields keep their current value on update. Updating a `security_id` that doesn't exist raises `mutation_not_found`.
+- **Mutation surface:** writes `app.securities`. No delete tool for catalog entries in v1; revert by calling again with the prior values.
+- **Service:** `InvestmentService.upsert_security()` / `InvestmentService.set_security()`
+- **CLI:** `moneybin investments securities add` / `moneybin investments securities set <security_id>`
+- **read_only:** false
+
+### `investments_lots_select`
+
+Set (or clear) the full specific-identification lot selection for a disposal (Shape 1a collection state-set).
+
+- **Sensitivity:** `high`.
+- **Parameters:** `disposal_txn_id` (must be a `sell`; other event types raise `mutation_invalid_input`), `selections: list[{"lot_id": str, "quantity": str}]`.
+- **Behavior:** The listed `(lot_id, quantity)` pairs REPLACE any prior selection for this disposal in full — an omitted lot is dropped, not left in place. `selections=[]` clears all overrides and reverts the disposal to FIFO. Selected quantities must sum to no more than the disposal's magnitude.
+- **Mutation surface:** writes `app.lot_selections`. No revert tool; call again with the prior selections (or `[]`) to undo.
+- **Service:** `InvestmentService.select_lots()`
+- **CLI:** `moneybin investments lots select <disposal_txn_id>`
+- **read_only:** false
+
+> **Per-account cost-basis default** is a field on `accounts_set` (`default_cost_basis_method`), not a separate tool — see [`account-management.md`](account-management.md).
+
+---
+
 ## 6. `transactions.*` — Transaction-level operations (matches and categorize workflows nested)
 
 **Service class:** `TransactionService` (search, correct, annotate), `MatchService` (matches sub-domain)

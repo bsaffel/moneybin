@@ -338,7 +338,7 @@ Account entities (dim records) plus per-account workflows.
 |---|---|---|
 | `accounts list` | List accounts. Hides archived by default. | `--include-archived`, `--type <subtype>` |
 | `accounts get <account-id>` | Show one account's full dim record + settings. | — |
-| `accounts set <account-id>` | Update structural and behavioral fields. At least one field flag required. | `--official-name`, `--last-four`, `--subtype`, `--holder-category`, `--currency`, `--credit-limit`, `--display-name`, `--include/--exclude`, `--archive/--unarchive`, `--clear-FIELD`, `-y, --yes` |
+| `accounts set <account-id>` | Update structural and behavioral fields. At least one field flag required. | `--official-name`, `--last-four`, `--subtype`, `--holder-category`, `--currency`, `--credit-limit`, `--default-cost-basis-method`, `--display-name`, `--include/--exclude`, `--archive/--unarchive`, `--clear-FIELD`, `-y, --yes` |
 | `accounts resolve <query>` | Fuzzy-match a free-text reference (e.g., `"my Chase account"`) to ranked account-ID candidates. Use this before commands that need an account-id. | `-n, --limit` |
 | `accounts balance show <account-id>` | Current balance for one account. | `--as-of <date>` |
 | `accounts balance list` | Latest balance across all accounts. | — |

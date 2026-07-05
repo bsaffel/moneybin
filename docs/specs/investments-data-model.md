@@ -1,7 +1,7 @@
 # Feature: Investment Data Model & Cost-Basis Engine
 
 ## Status
-in-progress
+implemented
 
 ## Goal
 
@@ -695,19 +695,19 @@ conventions (response envelope, sensitivity tiers). Functional parity with the C
 
 **`investments`** — List ledger events.
 - Params: `account` (optional), `security` (optional), `type` (optional), `from`/`to` (optional DATE)
-- Sensitivity: `medium` (positions/amounts)
+- Sensitivity: `high` (derived from field classification — quantity/price/amount/fees are `TXN_AMOUNT`)
 
 **`investments_holdings`** — Current positions with cost basis.
 - Params: `account` (optional)
-- Sensitivity: `medium`
+- Sensitivity: `high` (cost basis / average cost are `BALANCE`-classified)
 
 **`investments_lots`** — Open/closed lots.
 - Params: `account` (optional), `security` (optional), `open_only` (BOOLEAN, default true)
-- Sensitivity: `medium`
+- Sensitivity: `high` (cost basis fields are `BALANCE`-classified)
 
 **`investments_gains`** — Realized gain/loss (1099-B surface).
 - Params: `account` (optional), `security` (optional), `from`/`to` (optional DATE), `term` (optional)
-- Sensitivity: `medium`
+- Sensitivity: `high` (proceeds/cost basis/gain-loss are `BALANCE`-classified)
 
 **`investments_securities`** — The catalog.
 - Params: `security_type` (optional)
@@ -742,7 +742,7 @@ Standard envelope from [`mcp-architecture.md`](mcp-architecture.md), e.g. for
 {
   "summary": {
     "total_count": 3,
-    "sensitivity": "medium",
+    "sensitivity": "high",
     "display_currency": "USD",
     "warnings": ["Market value/unrealized gain unavailable until price feeds ship"]
   },

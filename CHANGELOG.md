@@ -13,6 +13,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 M2 closing out and M3 underway. M2A curator state shipped (transaction notes, tags, splits, manual entry, audit log). M2B architecture reference shipped (`architecture-shared-primitives.md`; writer-coordination contract via short-lived per-call connections). M2C brand surface advancing: `moneybin system doctor` integrity command, `reports.*` recipe library (eight curated views), and the `transform_*` MCP toolset closing the agent ingest loop. M3A Plaid Transactions sync shipped (Phase 1). Doc surface tightened for the personas reachable today; MCP surface hardened with protocol-standard annotations, `accounts_resolve`, list-parameter cap, structured error envelopes, and shell completion. Categorization correctness pass: memo-aware matcher, exemplar accumulation, source-precedence enforcement, auto-fan-out after apply; seed merchant catalogs retired in favor of user-driven and LLM-assist-driven merchant creation.
 
 ### Added
+- **Investment data model & cost-basis engine (M1J.1).** A manually-maintained
+  securities catalog (`investments securities add/set/list`) and an
+  investment-transaction ledger (`investments add` — buy, sell, reinvest,
+  dividend, interest, capital-gain distribution, transfer in/out, deposit,
+  withdrawal, split, fee, return of capital) derive tax lots, realized
+  gain/loss (short- and long-term, 1099-B-reconciliation-ready), and current
+  holdings (`investments holdings` — cost basis only; market value awaits a
+  future price-feed pillar). Four cost-basis methods — FIFO, HIFO, specific
+  identification, and average cost — apply per-security
+  (`investments securities set --method`) or per-account
+  (`accounts set --default-cost-basis-method`), falling back to global FIFO;
+  `investments lots select` overrides which lots a sale draws from. New
+  `investments` / `investments_holdings` / `investments_lots` /
+  `investments_gains` / `investments_securities` read and
+  `investments_record` / `investments_securities_set` /
+  `investments_lots_select` write MCP tools, plus the top-level `investments`
+  CLI group (replacing the earlier `accounts investments` placeholder).
 - **`core.bridge_category_source_map` — provider-code → canonical-category bridge (M1V).**
   A durable, aggregator-agnostic view resolving any provider's transaction-category
   code to exactly one canonical MoneyBin category, keyed `(source_type,

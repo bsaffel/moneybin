@@ -4,10 +4,16 @@
 > foundation child's v1 method set (LIFO stays demand-gated); lots-model
 > SQL-vs-Python question resolved (Python SQLMesh model); foundation child
 > Plaid-validated against the OpenAPI spec.
+> Foundation child shipped 2026-07-04: [`investments-data-model.md`](investments-data-model.md)
+> (Pillars A+B — securities catalog, investment-transaction ledger, derived
+> lots/gains/holdings, four-method cost-basis engine) is now `implemented`.
+> Pillars C (price feeds) and D (net-worth integration) remain planned; the
+> M1J milestone itself stays open until cost basis ties to a real broker
+> 1099-B for a full tax year.
 > Umbrella doc for the investments initiative (milestone M1J). Child specs listed
 > in [The four pillars](#the-four-pillars) are written separately; the foundation
 > child is [`investments-data-model.md`](investments-data-model.md).
-> Status: ready
+> Status: in-progress
 > Type: Umbrella
 > Companions: [`asset-tracking.md`](asset-tracking.md) (the asset/investment dividing
 > line), [`reports-net-worth.md`](reports-net-worth.md) (net worth integration target),
