@@ -6,6 +6,7 @@ tool source code directly.
 
 Tier derivation summary:
   - ``CategorizeRunPayload``       → Tier.LOW  (AGGREGATE only — counts)
+  - ``ImproveAiPayload``           → Tier.LOW  (AGGREGATE only — counts)
   - ``CategorizeStatsPayload``     → Tier.LOW  (AGGREGATE only — counts)
   - ``CategorizeCommitPayload``    → Tier.LOW  (AGGREGATE only — counts)
   - ``RuleRow``                    → Tier.HIGH (TXN_AMOUNT via min/max_amount;
@@ -237,6 +238,18 @@ class CategorizeRunPayload:
 
     applied_by_method: Annotated[dict[str, int], DataClass.AGGREGATE]
     total_applied: Annotated[int, DataClass.AGGREGATE]
+
+
+# ---------------------------------------------------------------------------
+# transactions_categorize_improve_ai
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class ImproveAiPayload:
+    """Payload for transactions_categorize_improve_ai — AI-to-provider upgrade count."""
+
+    upgraded_count: Annotated[int, DataClass.AGGREGATE]
 
 
 # ---------------------------------------------------------------------------

@@ -977,6 +977,16 @@ Run the categorization engine cascade over uncategorized transactions.
 - **Service:** `CategorizationService.categorize_run(methods=...) -> dict`
 - **CLI:** `moneybin transactions categorize run [--methods rules,merchants] [--output json]`
 
+### `transactions_categorize_improve_ai`
+
+Re-categorize AI-guessed transactions to confident provider-native categories.
+
+- **Sensitivity:** `low` — returns only an aggregate count.
+- **Unique parameters:** None.
+- **Behavior:** Reverse-looks-up every transaction currently `categorized_by='ai'` against the Plaid category bridge (`core.bridge_category_source_map`); upgrades it to `provider_native` only when the bridge match is at MEDIUM confidence or higher. Only rewrites rows currently `categorized_by='ai'` — user, rule, and merchant categorizations are never overwritten. Writes `app.transaction_categories`; revert by re-categorizing the transaction (a user edit wins at priority 1). Returns `{upgraded_count: int}`.
+- **Service:** `CategorizationService.improve_ai_categories() -> int`
+- **CLI:** `moneybin transactions categorize improve-ai [--output json]`
+
 ### `transactions_categorize_rules`
 
 List active categorization rules.

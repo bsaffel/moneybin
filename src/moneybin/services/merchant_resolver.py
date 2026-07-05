@@ -297,7 +297,10 @@ class MerchantResolver:
             match_reason=match_reason,
         )
         MERCHANT_LINK_CONFIDENCE.observe(confidence_score)
-        refresh_merchant_link_pending_gauge(self._db)
+        # Gauge refresh moved to the caller's batch tail (harvest()'s own tail
+        # call below, and apply_merchant_categories()'s tail in orchestrator.py)
+        # — recomputing once per batch instead of once per proposal keeps the
+        # gauge value identical while dropping the recompute frequency.
         return True
 
     def harvest(self) -> HarvestResult:
