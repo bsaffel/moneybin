@@ -9,7 +9,7 @@ description: Use when bringing design work created in claude.ai/design — a com
 
 Inbound counterpart to `/design-sync`. Two facts drive everything:
 
-- **The claude.ai/design project is the source of truth; the downloaded zip is a lossy handoff** — usually docs + a value cross-check, often with NO authorable component/card source. Pull the real assets from the project with the `DesignSync` tool (`get_file`), not the zip.
+- **The claude.ai/design project is the source of truth; the downloaded zip is a lossy handoff** — usually docs + a value cross-check, often with NO authorable component/card source. Pull the real assets from the project with the `DesignSync` tool (`get_file`), not the zip. When both a `<Name>.dc.html` and a `<Name> (standalone).html` exist for the same asset, fetch the **`.dc.html`** — it embeds the authorable `<x-dc>` markup + logic inline; the `(standalone).html` is a self-extracting runtime loader (base64 fonts + dc-runtime that *fetches* its content at render), so its 256 KB hold no offline page source.
 - **This is a judgment call, not a copy.** Most of the value is classifying each asset, routing it, and NOT importing what doesn't belong. Two decision points are the human's (see Checkpoints).
 
 Build / stage / verify / upload / sandbox mechanics are already documented — read `design-system/.design-sync/NOTES.md`. This skill is the inbound *judgment* layer on top of it; it does not repeat those mechanics.
