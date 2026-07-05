@@ -285,8 +285,11 @@ CATEGORIZE_WRITE_SKIPPED_PRECEDENCE_TOTAL = Counter(
 
 CATEGORIZE_PROVIDER_NATIVE_TOTAL = Counter(
     "moneybin_categorize_provider_native_total",
-    "Categorizations assigned from a provider's native categorization.",
-    ["source_type"],
+    "Categorizations assigned from a provider's native categorization. "
+    "trigger='sweep' is the automatic apply_plaid_categories pass over "
+    "still-uncategorized rows; trigger='backfill' is the explicit "
+    "improve_ai_categories upgrade pass over categorized_by='ai' rows.",
+    ["source_type", "trigger"],
 )
 
 CATEGORIZE_SKIPPED_CONFIDENCE_TOTAL = Counter(
@@ -294,8 +297,10 @@ CATEGORIZE_SKIPPED_CONFIDENCE_TOTAL = Counter(
     "Provider-native categorizations skipped at the confidence gate. "
     "reason='below_gate' is a genuine low-confidence rejection (gate-tuning "
     "signal); reason='unknown' is an absent/unmapped confidence level (a "
-    "data-quality signal) — kept distinct so one isn't misread as the other.",
-    ["source_type", "reason"],
+    "data-quality signal) — kept distinct so one isn't misread as the other. "
+    "trigger distinguishes the sweep pass (apply_plaid_categories) from the "
+    "backfill pass (improve_ai_categories) — see CATEGORIZE_PROVIDER_NATIVE_TOTAL.",
+    ["source_type", "reason", "trigger"],
 )
 
 # Metric names retain the historical `apply` prefix even after the MCP tool

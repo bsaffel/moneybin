@@ -2820,19 +2820,27 @@ class TestApplyPlaidCategories:
 # ---------------------------------------------------------------------------
 
 
-def _seed_ai_category(db: Database, transaction_id: str, *, category: str) -> None:
+def _seed_ai_category(
+    db: Database,
+    transaction_id: str,
+    *,
+    category: str,
+    merchant_id: str | None = None,
+) -> None:
     """Seed a pre-existing ai-categorized row (priority 7), real mechanism.
 
     Direct INSERT mirrors the pre-seeding pattern already used in this module
     (e.g. ``TestCategorizePendingPlaidPass``) to arrange a prior categorization
     ahead of the pass under test, rather than driving it through
     ``categorize_items`` — the ai row here is a fixture input, not the
-    derived state under test.
+    derived state under test. ``merchant_id`` optionally seeds a merchant
+    resolved during the row's original AI categorization, so upgrade-pass
+    tests can assert it survives (or is lost by) the rewrite.
     """
     db.execute(
         "INSERT INTO app.transaction_categories "
-        "(transaction_id, category, categorized_by) VALUES (?, ?, 'ai')",
-        [transaction_id, category],
+        "(transaction_id, category, categorized_by, merchant_id) VALUES (?, ?, 'ai', ?)",
+        [transaction_id, category, merchant_id],
     )
 
 
@@ -2942,6 +2950,48 @@ class TestImproveAiCategories:
         assert n == 0
         assert _category_of(db, "t1") == ("Shopping", "ai")
 
+    @pytest.mark.unit
+    def test_improve_ai_preserves_existing_merchant_id(self, db: Database) -> None:
+        """Upgrading an ai row to provider_native must not null out its merchant_id.
+
+        Regression test: ``_write_plaid_rows`` previously called
+        ``write_categorization(...)`` without ``merchant_id=``, defaulting it to
+        ``None``. ``upsert_guarded`` sets ``merchant_id = EXCLUDED.merchant_id``
+        on every permitted UPDATE, so the missing kwarg silently nulled out a
+        merchant_id resolved during the row's original AI categorization. The
+        fill path (``apply_plaid_categories``) is unaffected — new rows have no
+        prior merchant_id to lose.
+        """
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="FOOD_AND_DRINK_GROCERIES",
+            code_level="detailed",
+            category_id="FND-GRO",
+            category="Groceries",
+            subcategory=None,
+        )
+        _insert_plaid_txn(
+            db,
+            "t1",
+            category_detailed="FOOD_AND_DRINK_GROCERIES",
+            plaid_category="FOOD_AND_DRINK",
+            category_confidence="HIGH",
+        )
+        _seed_ai_category(
+            db, "t1", category="Shopping", merchant_id="mrc_existing01"
+        )  # priority 7, carries a resolved merchant_id
+
+        n = CategorizationService(db).improve_ai_categories()
+
+        assert n == 1
+        row = db.execute(
+            "SELECT category, categorized_by, merchant_id "
+            "FROM app.transaction_categories WHERE transaction_id = ?",
+            ["t1"],
+        ).fetchone()
+        assert row == ("Groceries", "provider_native", "mrc_existing01")
+
 
 # ---------------------------------------------------------------------------
 # Plaid categorizer observability — counters, by_provider_native, coverage
@@ -3000,13 +3050,13 @@ class TestPlaidCategorizerObservability:
             category_confidence="HIGH",
         )
         before = CATEGORIZE_PROVIDER_NATIVE_TOTAL.labels(
-            source_type="plaid"
+            source_type="plaid", trigger="sweep"
         )._value.get()  # type: ignore[reportPrivateUsage] — prometheus internals
 
         n = apply_plaid_categories(db)
 
         after = CATEGORIZE_PROVIDER_NATIVE_TOTAL.labels(
-            source_type="plaid"
+            source_type="plaid", trigger="sweep"
         )._value.get()  # type: ignore[reportPrivateUsage]
         assert n == 1
         assert after == before + 1
@@ -3033,13 +3083,13 @@ class TestPlaidCategorizerObservability:
             category_confidence="LOW",
         )
         before = CATEGORIZE_SKIPPED_CONFIDENCE_TOTAL.labels(
-            source_type="plaid", reason="below_gate"
+            source_type="plaid", reason="below_gate", trigger="sweep"
         )._value.get()  # type: ignore[reportPrivateUsage] — prometheus internals
 
         n = apply_plaid_categories(db)
 
         after = CATEGORIZE_SKIPPED_CONFIDENCE_TOTAL.labels(
-            source_type="plaid", reason="below_gate"
+            source_type="plaid", reason="below_gate", trigger="sweep"
         )._value.get()  # type: ignore[reportPrivateUsage]
         assert n == 0
         assert after == before + 1
@@ -3071,13 +3121,13 @@ class TestPlaidCategorizerObservability:
             category_confidence="UNKNOWN",
         )
         before = CATEGORIZE_SKIPPED_CONFIDENCE_TOTAL.labels(
-            source_type="plaid", reason="unknown"
+            source_type="plaid", reason="unknown", trigger="sweep"
         )._value.get()  # type: ignore[reportPrivateUsage] — prometheus internals
 
         n = apply_plaid_categories(db)
 
         after = CATEGORIZE_SKIPPED_CONFIDENCE_TOTAL.labels(
-            source_type="plaid", reason="unknown"
+            source_type="plaid", reason="unknown", trigger="sweep"
         )._value.get()  # type: ignore[reportPrivateUsage]
         assert n == 0
         assert after == before + 1

@@ -39,7 +39,7 @@ import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from time import perf_counter
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import duckdb
 
@@ -889,8 +889,8 @@ class CategorizationOrchestrator:
         Returns:
             Number of transactions categorized.
         """
-        rows = self._plaid_bridge_candidates("tc.transaction_id IS NULL")
-        return self._write_plaid_rows(rows)
+        rows = self._plaid_bridge_candidates("uncategorized")
+        return self._write_plaid_rows(rows, trigger="sweep")
 
     def improve_ai_categories(self) -> int:
         """Re-categorize AI-guessed rows to confident Plaid provider_native.
@@ -904,31 +904,45 @@ class CategorizationOrchestrator:
         Returns:
             Number of transactions upgraded.
         """
-        rows = self._plaid_bridge_candidates("tc.categorized_by = 'ai'")
-        count = self._write_plaid_rows(rows)
+        rows = self._plaid_bridge_candidates("ai")
+        count = self._write_plaid_rows(rows, trigger="backfill")
         if count:
             logger.info(f"improve-ai upgraded {count} transactions to provider_native")
         return count
 
     def _plaid_bridge_candidates(
-        self, tc_where: str
-    ) -> list[tuple[str, str, str | None, str | None]]:
-        """Bridge reverse-lookup rows: (transaction_id, category, subcategory, confidence_level).
+        self, selector: Literal["uncategorized", "ai"]
+    ) -> list[tuple[str, str, str | None, str | None, str | None]]:
+        """Bridge reverse-lookup rows: (transaction_id, category, subcategory, confidence_level, merchant_id).
 
         Reverse-looks-up Plaid transactions in prep.int_transactions__merged
-        against core.bridge_category_source_map, filtered by `tc_where` — a
-        static, code-constant predicate on the LEFT-JOINed
-        transaction_categories alias `tc`. Never caller/user input; do not
-        parameterize (it's a SQL fragment, not a value).
+        against core.bridge_category_source_map, filtered by the predicate
+        ``selector`` maps to — a static, code-constant predicate on the
+        LEFT-JOINed transaction_categories alias `tc`. ``selector`` is never
+        caller/user input; it is one of two fixed literals chosen by the
+        two callers below.
+
+        Carries ``tc.merchant_id`` alongside the category fields so
+        :meth:`_write_plaid_rows` can preserve a merchant_id resolved during
+        an existing row's prior categorization (``improve_ai_categories``'s
+        upgrade path) instead of nulling it out on the guarded UPDATE. For
+        the fill path (``selector="uncategorized"``), `tc` has no matching
+        row, so ``tc.merchant_id`` is NULL — behavior unchanged.
 
         Degrades to an empty list when prep.int_transactions__merged isn't
         materialized yet, or predates the PFC carry-through — see
         :meth:`apply_plaid_categories` for the full rationale.
         """
+        tc_where = (
+            "tc.transaction_id IS NULL"
+            if selector == "uncategorized"
+            else "tc.categorized_by = 'ai'"
+        )
         try:
             return self._db.execute(
                 f"""
-                SELECT m.transaction_id, dc.category, dc.subcategory, m.category_confidence
+                SELECT m.transaction_id, dc.category, dc.subcategory,
+                    m.category_confidence, tc.merchant_id
                 FROM {INT_TRANSACTIONS_MERGED.full_name} AS m
                 JOIN {BRIDGE_CATEGORY_SOURCE_MAP.full_name} AS b
                     ON {plaid_bridge_match_predicate("m.category_detailed", "m.plaid_category")}
@@ -946,27 +960,35 @@ class CategorizationOrchestrator:
             return []
 
     def _write_plaid_rows(
-        self, rows: list[tuple[str, str, str | None, str | None]]
+        self,
+        rows: list[tuple[str, str, str | None, str | None, str | None]],
+        *,
+        trigger: Literal["sweep", "backfill"],
     ) -> int:
         """Apply the >=MEDIUM confidence gate + guarded provider_native write.
+
+        ``trigger`` distinguishes the automatic sweep (``apply_plaid_categories``)
+        from the explicit backfill (``improve_ai_categories``) on the shared
+        counters below, so a dashboard can attribute volume to the pass that
+        produced it.
 
         Returns the number of rows actually written (post-gate, post-priority
         guard).
         """
         count = 0
-        for txn_id, category, subcategory, level in rows:
+        for txn_id, category, subcategory, level, merchant_id in rows:
             confidence = plaid_confidence_to_numeric(level)
             if confidence is None:
                 # No usable confidence level (absent / UNKNOWN / unmapped) — a
                 # data-quality signal, counted apart from a genuine low-confidence
                 # rejection so a dashboard can't misread the two as one.
                 CATEGORIZE_SKIPPED_CONFIDENCE_TOTAL.labels(
-                    source_type="plaid", reason="unknown"
+                    source_type="plaid", reason="unknown", trigger=trigger
                 ).inc()
                 continue
             if confidence < PLAID_MIN_CONFIDENCE:
                 CATEGORIZE_SKIPPED_CONFIDENCE_TOTAL.labels(
-                    source_type="plaid", reason="below_gate"
+                    source_type="plaid", reason="below_gate", trigger=trigger
                 ).inc()
                 continue
             outcome = self._applier.write_categorization(
@@ -974,12 +996,15 @@ class CategorizationOrchestrator:
                 category=category,
                 subcategory=subcategory,
                 categorized_by="provider_native",
+                merchant_id=merchant_id,
                 source_type="plaid",
                 confidence=confidence,
             )
             if outcome.written:
                 count += 1
-                CATEGORIZE_PROVIDER_NATIVE_TOTAL.labels(source_type="plaid").inc()
+                CATEGORIZE_PROVIDER_NATIVE_TOTAL.labels(
+                    source_type="plaid", trigger=trigger
+                ).inc()
 
         if count:
             logger.info(f"Plaid PFC categorization assigned {count} transactions")

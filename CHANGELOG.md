@@ -18,7 +18,7 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   reverse-look-up every transaction currently `categorized_by='ai'` against the
   `core.bridge_category_source_map` bridge and upgrade it to `provider_native`
   when the match is at MEDIUM confidence or higher. Never touches user, rule,
-  or merchant categorizations. (#TBD)
+  or merchant categorizations. (#294)
 - **Automatic Plaid category assignment from Personal Finance Category (M1U).**
   Transactions synced from Plaid are now auto-categorized from Plaid's PFC codes
   via the `core.bridge_category_source_map` bridge (source `provider_native`,
