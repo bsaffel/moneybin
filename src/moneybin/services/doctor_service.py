@@ -555,27 +555,25 @@ class DoctorService:
         try:
             rows = self._db.execute(
                 f"""
-                SELECT 'note:' || note_id AS aid
+                -- Materialize valid transaction_ids ONCE (core.fct_transactions is
+                -- an expensive view); the prior correlated NOT EXISTS re-evaluated
+                -- it per note/tag row — O(N × view). A row is an orphan when its
+                -- transaction_id is in neither the fact view nor raw manuals, so
+                -- valid_txn = fct ∪ manual and orphan = anti-join miss.
+                WITH valid_txn AS MATERIALIZED (
+                    SELECT transaction_id FROM {FCT_TRANSACTIONS.full_name}
+                    UNION
+                    SELECT transaction_id FROM {MANUAL_TRANSACTIONS.full_name}
+                )
+                SELECT 'note:' || n.note_id AS aid
                 FROM {TRANSACTION_NOTES.full_name} n
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM {FCT_TRANSACTIONS.full_name} t
-                    WHERE t.transaction_id = n.transaction_id
-                )
-                AND NOT EXISTS (
-                    SELECT 1 FROM {MANUAL_TRANSACTIONS.full_name} m
-                    WHERE m.transaction_id = n.transaction_id
-                )
+                LEFT JOIN valid_txn v ON v.transaction_id = n.transaction_id
+                WHERE v.transaction_id IS NULL
                 UNION
-                SELECT 'tag:' || transaction_id
+                SELECT 'tag:' || g.transaction_id
                 FROM {TRANSACTION_TAGS.full_name} g
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM {FCT_TRANSACTIONS.full_name} t
-                    WHERE t.transaction_id = g.transaction_id
-                )
-                AND NOT EXISTS (
-                    SELECT 1 FROM {MANUAL_TRANSACTIONS.full_name} m
-                    WHERE m.transaction_id = g.transaction_id
-                )
+                LEFT JOIN valid_txn v ON v.transaction_id = g.transaction_id
+                WHERE v.transaction_id IS NULL
                 ORDER BY aid
                 """  # noqa: S608  # TableRef constants, no user input
             ).fetchall()
@@ -662,12 +660,18 @@ class DoctorService:
         try:
             rows = self._db.execute(
                 f"""
+                -- Anti-join against a once-materialized id set, NOT a correlated
+                -- NOT EXISTS. core.fct_transactions is an expensive view (the full
+                -- merge/dedup/categorization pipeline); a correlated subquery
+                -- re-evaluates it per app.transaction_categories row — O(N × view) —
+                -- which wedges the doctor once this table is populated and the
+                -- optimizer can't decorrelate the view.
                 SELECT c.transaction_id
                 FROM {TRANSACTION_CATEGORIES.full_name} c
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM {FCT_TRANSACTIONS.full_name} t
-                    WHERE t.transaction_id = c.transaction_id
-                )
+                LEFT JOIN (
+                    SELECT DISTINCT transaction_id FROM {FCT_TRANSACTIONS.full_name}
+                ) t ON t.transaction_id = c.transaction_id
+                WHERE t.transaction_id IS NULL
                 ORDER BY c.transaction_id
                 """  # noqa: S608  # TableRef constants, no user input
             ).fetchall()
