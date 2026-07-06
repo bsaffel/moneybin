@@ -324,6 +324,7 @@ Columns:
   currency_code           VARCHAR          -- Denominating currency
   is_open                 BOOLEAN          -- remaining_quantity > 0
   source_transaction_id   VARCHAR          -- FK to the opening core.fct_investment_transactions row
+  basis_incomplete        BOOLEAN          -- TRUE when this lot opened with no supplied basis (e.g. transfer_in with unknown cost basis); see "Oversold lots"
   updated_at              TIMESTAMP        -- Row freshness
 ```
 
@@ -509,18 +510,29 @@ their staging models. No dedicated `exchange`/`spin_off` enum values until real
 import experience demands them — the `event_group_id` linkage is the durable
 primitive.
 
-### Oversold lots (missing acquisitions)
+### Oversold lots and incomplete acquisitions
 
-When a disposal exceeds the security's tracked open lots (incomplete history, a
-`transfer_in` without basis), the engine **never blocks the rebuild and never
-silently invents basis**: the unmatched slice realizes with **zero cost basis**
-(worst case for the user, conservative for taxes), the affected
-`core.fct_realized_gains` rows carry `basis_incomplete = TRUE`, and CLI/MCP
-surfaces flag the condition (`investments gains` warning + response-envelope
-`warnings`). This adopts the pattern Rotki ships (structured missing-acquisition
-records surfaced to review) over the log-and-continue degradation Portfolio
-Performance uses. Watch their documented false-positive class: the same economic
-security arriving under two identifiers — which the surrogate-key resolution
+The engine **never blocks the rebuild and never silently invents basis** when
+data is incomplete, on either side of a lot's life:
+
+- **Disposal side (oversold).** A disposal exceeds the security's tracked open
+  lots (incomplete history). The unmatched slice realizes with **zero cost
+  basis** (worst case for the user, conservative for taxes) and the affected
+  `core.fct_realized_gains` row carries `basis_incomplete = TRUE`.
+- **Acquisition side (missing basis).** A `transfer_in` with no supplied basis
+  (real-world ACATS transfers of uncovered securities often arrive this way)
+  opens a **zero-basis lot** in `core.fct_investment_lots` flagged
+  `basis_incomplete = TRUE` — never rejected, since the basis genuinely may be
+  unknown at transfer time. If that lot is later sold, the flag carries
+  forward onto the resulting `core.fct_realized_gains` row exactly as an
+  oversold disposal would.
+
+CLI/MCP surfaces flag both conditions (`investments lots`/`investments gains`
+warnings + response-envelope `warnings`). This adopts the pattern Rotki ships
+(structured missing-acquisition records surfaced to review) over the
+log-and-continue degradation Portfolio Performance uses. Watch their documented
+false-positive class: the same economic security arriving under two
+identifiers — which the surrogate-key resolution
 chain exists to prevent.
 
 ## Plaid Investments Readiness

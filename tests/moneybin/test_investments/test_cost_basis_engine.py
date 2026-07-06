@@ -401,6 +401,72 @@ def test_transfer_in_without_original_date_uses_trade_date() -> None:
     assert lots[0].acquisition_date == date(2024, 5, 1)
 
 
+def test_transfer_in_without_basis_opens_basis_incomplete_zero_cost_lot() -> None:
+    # Unlike buy/sell/reinvest (amount required — Task-8 review finding),
+    # transfer_in tolerates a missing basis (real-world ACATS transfers of
+    # uncovered securities often arrive with no basis). The engine never
+    # invents a number: it opens a zero-basis lot flagged basis_incomplete so
+    # downstream consumers can surface it, exactly like an oversold disposal.
+    events = [
+        _event(
+            "ti",
+            event_type="transfer_in",
+            trade_date=date(2024, 5, 1),
+            quantity=D("10"),
+            amount=None,
+        ),
+    ]
+    lots, _gains = _run(events)
+
+    assert len(lots) == 1
+    lot = lots[0]
+    assert lot.cost_basis_total == D("0.00")
+    assert lot.cost_basis_remaining == D("0.00")
+    assert lot.basis_incomplete is True
+
+
+def test_transfer_in_with_basis_is_not_basis_incomplete() -> None:
+    events = [
+        _event(
+            "ti",
+            event_type="transfer_in",
+            trade_date=date(2024, 5, 1),
+            quantity=D("10"),
+            amount=D("-5000.00"),
+        ),
+    ]
+    lots, _gains = _run(events)
+    assert lots[0].basis_incomplete is False
+
+
+def test_selling_a_basis_incomplete_lot_flags_the_realized_gain() -> None:
+    # The basis_incomplete signal must survive from acquisition through to the
+    # 1099-B row: a full sale of a no-basis transfer_in lot reports 100% of
+    # proceeds as gain, so the realized-gain row must carry the same flag a
+    # legitimately-oversold disposal would — not a hardcoded False.
+    events = [
+        _event(
+            "ti",
+            event_type="transfer_in",
+            trade_date=date(2024, 1, 1),
+            quantity=D("10"),
+            amount=None,
+        ),
+        _event(
+            "s1",
+            event_type="sell",
+            trade_date=date(2024, 6, 1),
+            quantity=D("-10"),
+            amount=D("1000.00"),
+        ),
+    ]
+    _lots, gains = _run(events)
+
+    assert len(gains) == 1
+    assert gains[0].cost_basis == D("0.00")
+    assert gains[0].basis_incomplete is True
+
+
 def test_cash_only_and_null_security_events_are_ignored() -> None:
     events = [
         _event(

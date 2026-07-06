@@ -103,6 +103,7 @@ def _insert_lot(
     remaining_quantity: Decimal = Decimal("10"),
     cost_basis_remaining: Decimal = Decimal("1500.00"),
     is_open: bool = True,
+    basis_incomplete: bool = False,
 ) -> None:
     with get_database(read_only=False) as db:
         db.execute(
@@ -110,8 +111,9 @@ def _insert_lot(
             INSERT INTO core.fct_investment_lots
                 (lot_id, account_id, security_id, acquisition_date, acquisition_type,
                  original_quantity, remaining_quantity, cost_basis_total,
-                 cost_basis_remaining, cost_basis_method, currency_code, is_open)
-            VALUES (?, ?, ?, ?, 'buy', ?, ?, ?, ?, 'fifo', 'USD', ?)
+                 cost_basis_remaining, cost_basis_method, currency_code, is_open,
+                 basis_incomplete)
+            VALUES (?, ?, ?, ?, 'buy', ?, ?, ?, ?, 'fifo', 'USD', ?, ?)
             """,  # noqa: S608  # test fixture insert, static SQL
             [
                 lot_id,
@@ -123,6 +125,7 @@ def _insert_lot(
                 cost_basis_remaining,
                 cost_basis_remaining,
                 is_open,
+                basis_incomplete,
             ],
         )
 
@@ -337,6 +340,30 @@ class TestInvestmentsLots:
         result = await investments_lots(open_only=False)
         rows = result.to_dict()["data"]["rows"]
         assert {r["lot_id"] for r in rows} == {"lot_open", "lot_closed"}
+
+    @pytest.mark.unit
+    async def test_no_warning_when_all_lots_complete(self, mcp_db: Path) -> None:
+        _seed_investment_core()
+        sec = _add_security()
+        _insert_lot(lot_id="lot_1", security_id=sec, basis_incomplete=False)
+        result = await investments_lots()
+        parsed = result.to_dict()
+        assert parsed["data"]["warnings"] == []
+
+    @pytest.mark.unit
+    async def test_basis_incomplete_field_and_warning_present(
+        self, mcp_db: Path
+    ) -> None:
+        _seed_investment_core()
+        sec = _add_security()
+        _insert_lot(lot_id="lot_complete", security_id=sec, basis_incomplete=False)
+        _insert_lot(lot_id="lot_incomplete", security_id=sec, basis_incomplete=True)
+        result = await investments_lots()
+        parsed = result.to_dict()
+        by_id = {r["lot_id"]: r for r in parsed["data"]["rows"]}
+        assert by_id["lot_complete"]["basis_incomplete"] is False
+        assert by_id["lot_incomplete"]["basis_incomplete"] is True
+        assert parsed["data"]["warnings"]
 
 
 class TestInvestmentsGains:

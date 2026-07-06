@@ -51,6 +51,7 @@ from sqlmesh import (  # type: ignore[import-untyped] — sqlmesh has no type st
         "currency_code": "VARCHAR",
         "is_open": "BOOLEAN",
         "source_transaction_id": "VARCHAR",
+        "basis_incomplete": "BOOLEAN",
         "updated_at": "TIMESTAMP",
     },
     column_descriptions={
@@ -67,6 +68,7 @@ from sqlmesh import (  # type: ignore[import-untyped] — sqlmesh has no type st
         "currency_code": "Denominating currency",
         "is_open": "remaining_quantity > 0",
         "source_transaction_id": "FK to the opening core.fct_investment_transactions row",
+        "basis_incomplete": "TRUE when this lot opened with no supplied basis (e.g. a transfer_in with unknown cost basis) — cost_basis_total/remaining are 0.00, not a real zero",
         "updated_at": "Latest of all per-row input timestamps contributing to this row's current values (MAX over the position's ledger rows). Does not advance on idempotent SQLMesh re-applies. See docs/specs/core-updated-at-convention.md.",
     },
     description=(
@@ -113,6 +115,7 @@ def execute(
             "currency_code": lot.currency_code,
             "is_open": lot.remaining_quantity > 0,
             "source_transaction_id": lot.source_transaction_id,
+            "basis_incomplete": lot.basis_incomplete,
             "updated_at": group_updated_at.get((lot.account_id, lot.security_id)),
         }
         for lot in lots
@@ -135,6 +138,7 @@ def execute(
         pa.field("currency_code", pa.string()),
         pa.field("is_open", pa.bool_()),
         pa.field("source_transaction_id", pa.string()),
+        pa.field("basis_incomplete", pa.bool_()),
         pa.field("updated_at", pa.timestamp("us")),
     ])
     yield pa.Table.from_pylist(rows, schema=schema).to_pandas(

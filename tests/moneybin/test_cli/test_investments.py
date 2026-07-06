@@ -473,6 +473,47 @@ class TestLotsList:
             "lot_closed",
         }
 
+    @pytest.mark.unit
+    def test_lots_json_reports_basis_incomplete_warning(
+        self, runner: CliRunner, db: Database
+    ) -> None:
+        db.conn.execute(
+            """
+            INSERT INTO core.fct_investment_lots
+                (lot_id, account_id, security_id, acquisition_date,
+                 acquisition_type, original_quantity, remaining_quantity,
+                 cost_basis_total, cost_basis_remaining, cost_basis_method,
+                 currency_code, is_open, basis_incomplete)
+            VALUES ('lot_incomplete', 'acct_brokerage', 'sec_1', '2024-01-15',
+                    'transfer_in', 10, 10, 0.00, 0.00, 'fifo', 'USD', true, true)
+            """  # noqa: S608  # test fixture insert, static SQL
+        )
+        result = runner.invoke(app, ["investments", "lots", "list", "--output", "json"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.stdout)
+        assert data["data"]["rows"][0]["basis_incomplete"] is True
+        assert data["data"]["warnings"]
+
+    @pytest.mark.unit
+    def test_lots_list_text_flags_basis_incomplete_row(
+        self, runner: CliRunner, db: Database
+    ) -> None:
+        db.conn.execute(
+            """
+            INSERT INTO core.fct_investment_lots
+                (lot_id, account_id, security_id, acquisition_date,
+                 acquisition_type, original_quantity, remaining_quantity,
+                 cost_basis_total, cost_basis_remaining, cost_basis_method,
+                 currency_code, is_open, basis_incomplete)
+            VALUES ('lot_incomplete', 'acct_brokerage', 'sec_1', '2024-01-15',
+                    'transfer_in', 10, 10, 0.00, 0.00, 'fifo', 'USD', true, true)
+            """  # noqa: S608  # test fixture insert, static SQL
+        )
+        result = runner.invoke(app, ["investments", "lots", "list"])
+        assert result.exit_code == 0, result.output
+        assert "basis_incomplete" in result.stdout
+        assert "incomplete" in result.stderr
+
 
 # ---------------------------------------------------------------------------
 # investments lots select / --clear

@@ -68,7 +68,7 @@ def _insert_investment_txn(
     txn_type: str,
     trade_date: str,
     quantity: str,
-    amount: str,
+    amount: str | None,
     created_at: str,
 ) -> None:
     """Seed one manual investment row (decimals/dates cast to their target types)."""
@@ -210,3 +210,39 @@ def test_transform_builds_investment_lots_gains_and_holdings(db: Database) -> No
     assert average_cost == Decimal("0.0000810000")
     assert currency_code == "USD"
     assert holding_updated_at == _SELL_CREATED_AT
+
+
+@pytest.mark.slow
+def test_transform_flags_transfer_in_without_basis_as_basis_incomplete(
+    db: Database,
+) -> None:
+    """A transfer_in with no supplied basis materializes basis_incomplete=TRUE.
+
+    Exercises the real engine<->SQLMesh<->DuckDB round trip (not just the
+    pure-Python engine unit test) for the acquisition-side basis_incomplete
+    column added to core.fct_investment_lots.
+    """
+    _insert_security(db)
+    _insert_investment_txn(
+        db,
+        source_txn_id="manual_transfer_in_1",
+        investment_txn_id="inv_transfer_in_1",
+        txn_type="transfer_in",
+        trade_date="2024-01-01",
+        quantity="10",
+        amount=None,
+        created_at="2024-01-01 09:00:00",
+    )
+
+    result = TransformService(db).apply()
+    assert result.applied, f"transform apply failed: {result.error}"
+
+    lots = db.execute(
+        "SELECT cost_basis_total, cost_basis_remaining, basis_incomplete "
+        "FROM core.fct_investment_lots"
+    ).fetchall()
+    assert len(lots) == 1, f"expected one lot, got {lots}"
+    cost_basis_total, cost_basis_remaining, basis_incomplete = lots[0]
+    assert cost_basis_total == Decimal("0.00")
+    assert cost_basis_remaining == Decimal("0.00")
+    assert basis_incomplete is True

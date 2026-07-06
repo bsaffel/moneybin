@@ -146,7 +146,11 @@ def investments_lots(
         open_only: Show only open lots (default) or the full open+closed
             history when False.
 
-    Amounts are in the currency named by `summary.display_currency`.
+    A row with `basis_incomplete=true` means it opened with no supplied
+    basis (e.g. a transfer_in recorded with unknown cost basis) — its
+    cost_basis_total/remaining are 0.00, not a real zero. When any row is
+    incomplete, `data.warnings` names the count. Amounts are in the
+    currency named by `summary.display_currency`.
     """
     with get_database(read_only=True) as db:
         result = InvestmentService(db).lots(
@@ -268,7 +272,11 @@ def investments_record(
     `amount` is negative for cash leaving the account (buy, reinvest,
     withdrawal, fee) and positive for cash arriving (sell, deposit,
     dividend, interest, capital_gain_distribution, return_of_capital);
-    buy/sell/reinvest require a non-null amount. A `split` event carries the
+    buy/sell/reinvest require a non-null amount — `transfer_in` does not:
+    when the transferred-in cost basis is unknown, omit `basis`/`amount` and
+    the resulting lot opens at zero basis flagged `basis_incomplete=true`
+    (see `investments_lots`) rather than a value being invented. A `split`
+    event carries the
     split multiplier in `quantity` (e.g. 2 for a 2:1 split) with price/
     amount/fees left unset. A `reinvest` event atomically writes the
     acquisition leg AND a paired income row sharing one `event_group_id` —
@@ -491,8 +499,11 @@ def register_investments_tools(mcp: FastMCP) -> None:
         investments_lots,
         "investments_lots",
         "Tax lots with remaining quantity and basis. Open lots only by "
-        "default (open_only=False for full history). Amounts are in the "
-        "currency named by `summary.display_currency`.",
+        "default (open_only=False for full history). A row with "
+        "basis_incomplete=true opened with no supplied basis (e.g. a "
+        "transfer_in with unknown cost basis); data.warnings names the count "
+        "when any row is incomplete. Amounts are in the currency named by "
+        "`summary.display_currency`.",
     )
     register(
         mcp,

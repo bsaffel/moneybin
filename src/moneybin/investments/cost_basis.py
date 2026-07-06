@@ -22,7 +22,10 @@ rounding residual is assigned to the last slice) so the row sums reconcile to a
 broker statement to the cent. Quantities and prices keep full ``Decimal``
 precision. The engine never raises on an oversold position — it emits a
 zero-basis ``basis_incomplete`` slice instead (worst case for the taxpayer,
-conservative for the IRS).
+conservative for the IRS). The same flag applies on the acquisition side: a
+``transfer_in`` with no supplied basis opens a zero-basis ``basis_incomplete``
+lot rather than inventing a number, and that lot's flag survives onto any
+realized gain a later disposal draws from it.
 
 IDs are content hashes so lots and gains are stable across rebuilds and
 referenceable by ``app.lot_selections``.
@@ -109,6 +112,7 @@ class Lot:
     cost_basis_method: str
     currency_code: str | None
     source_transaction_id: str
+    basis_incomplete: bool
 
 
 @dataclass(frozen=True)
@@ -221,6 +225,10 @@ def _open_lot(
 
     ``acquisition_type`` records the event type verbatim, so a ``reinvest`` lot
     is distinguishable from a plain ``buy`` while behaving identically otherwise.
+    ``buy``/``reinvest`` always carry a non-``None`` amount (service-layer
+    validation rejects otherwise); ``transfer_in`` may not (basis is often
+    unknown at transfer time) — a ``None`` amount opens a zero-basis lot
+    flagged ``basis_incomplete`` rather than inventing a number.
     """
     if event.type == "transfer_in":
         # Holding period transfers with the shares: keep the original date.
@@ -250,6 +258,7 @@ def _open_lot(
         cost_basis_method=method,
         currency_code=event.currency_code,
         source_transaction_id=event.investment_transaction_id,
+        basis_incomplete=event.amount is None,
     )
 
 
@@ -393,7 +402,9 @@ def _consume(
                 acquisition_date=lot.acquisition_date,
                 quantity=take,
                 cost_basis=slice_basis,
-                basis_incomplete=False,
+                # Carries an incomplete-basis acquisition (e.g. a no-basis
+                # transfer_in) forward onto the realized gain it produces.
+                basis_incomplete=lot.basis_incomplete,
             )
         )
         remaining -= take

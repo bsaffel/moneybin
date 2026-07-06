@@ -597,13 +597,21 @@ class ImportService:
         ``import_id`` to attribute their raw rows. ``source_type`` must be
         in the loader's allowlist (see ``REVERT_TABLES``); ``actor`` is
         recorded as the ``account_names`` payload so audit consumers can
-        trace which surface (cli/mcp) initiated the batch.
+        trace which surface (cli/mcp) initiated the batch. ``format_name``
+        is folded into the synthetic ``source_file`` key alongside
+        ``source_type`` and ``actor`` — callers that share ``source_type``
+        (e.g. manual cash entries and manual investment events both use
+        ``"manual"``) but write to different raw tables use distinct
+        ``format_name`` values, so this keeps their ``source_file`` keys
+        distinct too. Without it, ``revert()``'s superseded-lookup (which
+        matches purely on ``source_file``) could cross-match a batch from
+        an unrelated domain.
         """
         from moneybin.loaders import import_log
 
         return import_log.begin_import(
             self._db,
-            source_file=f"<{source_type}:{actor}>",
+            source_file=f"<{source_type}:{format_name}:{actor}>",
             source_type=source_type,  # type: ignore[arg-type]  # runtime-validated
             source_origin=actor,
             account_names=[actor],

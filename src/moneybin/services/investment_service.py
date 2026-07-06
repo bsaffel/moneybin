@@ -60,6 +60,7 @@ from moneybin.metrics.registry import (
 )
 from moneybin.repositories.lot_selections_repo import LotSelectionsRepo
 from moneybin.repositories.securities_repo import SecuritiesRepo
+from moneybin.services.account_service import COST_BASIS_METHODS
 from moneybin.services.audit_service import AuditService
 from moneybin.tables import (
     DIM_HOLDINGS,
@@ -89,6 +90,19 @@ TAXONOMY: frozenset[str] = frozenset({
     "split",
     "fee",
     "return_of_capital",
+    "other",
+})
+
+# Closed vocabulary (Req 12) — mirrors the app.securities.security_type CHECK
+# constraint. Hard-validated in upsert_security(); the DB CHECK is the backstop,
+# not the primary contract (same pattern as account_service.COST_BASIS_METHODS).
+SECURITY_TYPES: frozenset[str] = frozenset({
+    "equity",
+    "etf",
+    "mutual_fund",
+    "bond",
+    "crypto",
+    "cash",
     "other",
 })
 
@@ -285,6 +299,7 @@ class LotRow:
     cost_basis_method: str
     currency_code: str
     is_open: bool
+    basis_incomplete: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -574,13 +589,35 @@ class InvestmentService:
     ) -> str:
         """Create-or-update one catalog entry; return its ``security_id``.
 
-        Validates ``average`` cost basis to ``mutual_fund``/``etf`` (Req 12) —
-        electing it on any other type raises a :class:`UserError`. Delegates the
-        row + audit write to :class:`SecuritiesRepo`; the resulting id (minted
-        when ``security_id`` is ``None``) is recovered from the returned
-        ``AuditEvent.target_id`` (Decision D1). The ``security_type`` /
-        ``cost_basis_method`` CHECK constraints are enforced by the DDL.
+        ``security_type`` and ``cost_basis_method`` are hard-validated against
+        their closed vocabularies (:data:`SECURITY_TYPES`,
+        :data:`account_service.COST_BASIS_METHODS`) before the DB write — the
+        column CHECK constraints are the backstop, not the primary contract
+        (same pattern as ``AccountService.settings_update``). Also validates
+        ``average`` cost basis to ``mutual_fund``/``etf`` (Req 12) — electing it
+        on any other type raises a :class:`UserError`. Delegates the row +
+        audit write to :class:`SecuritiesRepo`; the resulting id (minted when
+        ``security_id`` is ``None``) is recovered from the returned
+        ``AuditEvent.target_id`` (Decision D1).
         """
+        if security_type not in SECURITY_TYPES:
+            valid = ", ".join(sorted(SECURITY_TYPES))
+            raise UserError(
+                f"Invalid security type: {security_type!r}. Valid types: {valid}.",
+                code=error_codes.MUTATION_INVALID_INPUT,
+                hint=f"Valid types: {valid}.",
+            )
+        if (
+            cost_basis_method is not None
+            and cost_basis_method not in COST_BASIS_METHODS
+        ):
+            valid = ", ".join(sorted(COST_BASIS_METHODS))
+            raise UserError(
+                f"Invalid cost-basis method: {cost_basis_method!r}. "
+                f"Valid methods: {valid}.",
+                code=error_codes.MUTATION_INVALID_INPUT,
+                hint=f"Valid methods: {valid}.",
+            )
         if cost_basis_method == "average" and security_type not in {
             "mutual_fund",
             "etf",
@@ -1534,7 +1571,9 @@ class InvestmentService:
     ) -> LotsResult:
         """Tax lots from ``core.fct_investment_lots``; open lots only by default.
 
-        Pass ``open_only=False`` for the full open+closed history.
+        Pass ``open_only=False`` for the full open+closed history. Carries a
+        warning naming the count of ``basis_incomplete`` rows (e.g. a
+        ``transfer_in`` recorded with no supplied basis) when any are present.
         """
         account_id, security_id = self._resolve_filters(account_ref, security_ref)
 
@@ -1555,33 +1594,40 @@ class InvestmentService:
             SELECT lot_id, account_id, security_id, acquisition_date,
                    acquisition_type, original_quantity, remaining_quantity,
                    cost_basis_total, cost_basis_remaining, cost_basis_method,
-                   currency_code, is_open
+                   currency_code, is_open, basis_incomplete
               FROM {FCT_INVESTMENT_LOTS.full_name}
               {where_sql}
              ORDER BY acquisition_date, lot_id
             """,  # noqa: S608  # TableRef + parameterized values; where_sql built from literal fragments above
             params,
         ).fetchall()
-        return LotsResult(
-            rows=[
-                LotRow(
-                    lot_id=str(r[0]),
-                    account_id=str(r[1]),
-                    security_id=str(r[2]),
-                    acquisition_date=r[3],
-                    acquisition_type=str(r[4]),
-                    original_quantity=r[5],
-                    remaining_quantity=r[6],
-                    cost_basis_total=r[7],
-                    cost_basis_remaining=r[8],
-                    cost_basis_method=str(r[9]),
-                    currency_code=str(r[10]),
-                    is_open=bool(r[11]),
-                )
-                for r in rows
-            ],
-            warnings=[],
-        )
+        lot_rows = [
+            LotRow(
+                lot_id=str(r[0]),
+                account_id=str(r[1]),
+                security_id=str(r[2]),
+                acquisition_date=r[3],
+                acquisition_type=str(r[4]),
+                original_quantity=r[5],
+                remaining_quantity=r[6],
+                cost_basis_total=r[7],
+                cost_basis_remaining=r[8],
+                cost_basis_method=str(r[9]),
+                currency_code=str(r[10]),
+                is_open=bool(r[11]),
+                basis_incomplete=bool(r[12]),
+            )
+            for r in rows
+        ]
+        warnings: list[str] = []
+        incomplete_count = sum(1 for row in lot_rows if row.basis_incomplete)
+        if incomplete_count:
+            warnings.append(
+                f"{incomplete_count} lot(s) have incomplete cost basis "
+                "(e.g. a transfer_in with no supplied basis) — figures are "
+                "conservative."
+            )
+        return LotsResult(rows=lot_rows, warnings=warnings)
 
     def gains(
         self,

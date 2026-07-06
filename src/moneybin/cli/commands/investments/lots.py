@@ -38,7 +38,7 @@ def investments_lots_list(
         help="Show only open lots (default) or the full open+closed history",
     ),
     output: OutputFormat = output_option,
-    quiet: bool = quiet_option,  # noqa: ARG001 — list has no informational chatter; only data
+    quiet: bool = quiet_option,
 ) -> None:
     """List tax lots with remaining quantity and basis. Open lots only by default."""
     with handle_cli_errors(cli_actor="investments_lots_list"):
@@ -58,12 +58,16 @@ def investments_lots_list(
         return
     for row in result.rows:
         state = "open" if row.is_open else "closed"
+        flag = " ⚠️ basis_incomplete" if row.basis_incomplete else ""
         typer.echo(
             f"{row.lot_id:<10} {row.security_id:<8} acq={row.acquisition_date} "
             f"remaining={row.remaining_quantity} "
             f"basis_remaining={row.cost_basis_remaining} "
-            f"method={row.cost_basis_method} [{state}]"
+            f"method={row.cost_basis_method} [{state}]{flag}"
         )
+    if not quiet:
+        for w in result.warnings:
+            typer.echo(f"⚠️  {w}", err=True)
 
 
 def _parse_lot_selection(entry: str) -> tuple[str, Decimal]:

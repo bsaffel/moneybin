@@ -174,3 +174,44 @@ def test_revert_manual_investment_deletes_rows_not_orphaned(db: Database) -> Non
     ).fetchone()
     assert status_row is not None
     assert status_row[0] == "reverted"
+
+
+def test_revert_stuck_investment_import_not_superseded_by_cash_batch(
+    db: Database,
+) -> None:
+    """A stuck (zero-row) investment import isn't superseded by a cash batch.
+
+    Both domains share ``source_type='manual'``; before ``allocate_import_log``
+    namespaced its synthetic ``source_file`` key by ``format_name``
+    (``manual_investment_entry`` vs ``manual_entry``), they collided on the
+    exact same key, and revert()'s superseded-lookup (which fires when
+    rows_to_delete == 0 — e.g. a crash between allocate_import_log and the
+    write transaction's commit) could cross-match a batch from the other
+    domain.
+    """
+    stuck_investment_import_id = ImportService(db).allocate_import_log(
+        source_type="manual",
+        format_name="manual_investment_entry",
+        actor="cli",
+    )
+    # Backdate so the later cash batch is unambiguously "started_at >" —
+    # removes flakiness from timestamp-resolution ties, without faking the
+    # outcome under test (revert() still runs its real query).
+    db.execute(
+        "UPDATE raw.import_log SET started_at = CURRENT_TIMESTAMP - INTERVAL '1 hour' "
+        "WHERE import_id = ?",
+        [stuck_investment_import_id],
+    )
+    cash_import_id = ImportService(db).allocate_import_log(
+        source_type="manual",
+        format_name="manual_entry",
+        actor="cli",
+    )
+    import_log.finalize_import(
+        db, cash_import_id, status="complete", rows_total=1, rows_imported=1
+    )
+
+    result = ImportService(db).revert(stuck_investment_import_id)
+
+    assert result["status"] == "reverted"
+    assert result["rows_deleted"] == 0

@@ -43,6 +43,15 @@ from typing import TYPE_CHECKING, Annotated
 
 from moneybin.privacy.taxonomy import DataClass
 
+# Every payload below classifies its `warnings` field AGGREGATE (Tier.LOW), not
+# DESCRIPTION: these are canned system-generated diagnostic strings (the
+# Pillar-C caveat, an oversold-row count) — never interpolated user-authored
+# free text — so classifying them as DESCRIPTION (Tier.MEDIUM) would
+# over-classify and, for InvestmentSecuritiesPayload (which has no other
+# elevated field), wrongly push the derived tier to "medium" instead of the
+# intended "low". (Each `warnings` field below points back to this comment
+# rather than repeating it.)
+
 if TYPE_CHECKING:
     from moneybin.services.investment_service import (
         EventRow,
@@ -109,12 +118,7 @@ class InvestmentEventsPayload:
     """Payload for the ``investments`` tool (ledger list)."""
 
     rows: list[InvestmentEventRow]
-    # AGGREGATE (Tier.LOW), not DESCRIPTION: these are canned system-generated
-    # diagnostic strings (the Pillar-C caveat, an oversold-row count) — never
-    # interpolated user-authored free text — so classifying them as
-    # DESCRIPTION (Tier.MEDIUM) would over-classify and, for
-    # InvestmentSecuritiesPayload (which has no other elevated field), wrongly
-    # push the derived tier to "medium" instead of the intended "low".
+    # AGGREGATE (Tier.LOW) — rationale in the module-level comment above.
     warnings: Annotated[list[str], DataClass.AGGREGATE] = field(default_factory=list)
 
     @classmethod
@@ -160,12 +164,7 @@ class InvestmentHoldingsPayload:
     """Payload for ``investments_holdings``."""
 
     rows: list[InvestmentHoldingRow]
-    # AGGREGATE (Tier.LOW), not DESCRIPTION: these are canned system-generated
-    # diagnostic strings (the Pillar-C caveat, an oversold-row count) — never
-    # interpolated user-authored free text — so classifying them as
-    # DESCRIPTION (Tier.MEDIUM) would over-classify and, for
-    # InvestmentSecuritiesPayload (which has no other elevated field), wrongly
-    # push the derived tier to "medium" instead of the intended "low".
+    # AGGREGATE (Tier.LOW) — rationale in the module-level comment above.
     warnings: Annotated[list[str], DataClass.AGGREGATE] = field(default_factory=list)
 
     @classmethod
@@ -198,6 +197,7 @@ class InvestmentLotRow:
     cost_basis_method: Annotated[str, DataClass.TXN_TYPE]
     currency_code: Annotated[str, DataClass.CURRENCY]
     is_open: Annotated[bool, DataClass.TXN_TYPE]
+    basis_incomplete: Annotated[bool, DataClass.TXN_TYPE]
 
     @classmethod
     def from_row(cls, row: LotRow) -> InvestmentLotRow:
@@ -215,6 +215,7 @@ class InvestmentLotRow:
             cost_basis_method=row.cost_basis_method,
             currency_code=row.currency_code,
             is_open=row.is_open,
+            basis_incomplete=row.basis_incomplete,
         )
 
 
@@ -223,12 +224,7 @@ class InvestmentLotsPayload:
     """Payload for ``investments_lots``."""
 
     rows: list[InvestmentLotRow]
-    # AGGREGATE (Tier.LOW), not DESCRIPTION: these are canned system-generated
-    # diagnostic strings (the Pillar-C caveat, an oversold-row count) — never
-    # interpolated user-authored free text — so classifying them as
-    # DESCRIPTION (Tier.MEDIUM) would over-classify and, for
-    # InvestmentSecuritiesPayload (which has no other elevated field), wrongly
-    # push the derived tier to "medium" instead of the intended "low".
+    # AGGREGATE (Tier.LOW) — rationale in the module-level comment above.
     warnings: Annotated[list[str], DataClass.AGGREGATE] = field(default_factory=list)
 
     @classmethod
@@ -292,12 +288,7 @@ class InvestmentGainsPayload:
     """Payload for ``investments_gains``."""
 
     rows: list[InvestmentGainRow]
-    # AGGREGATE (Tier.LOW), not DESCRIPTION: these are canned system-generated
-    # diagnostic strings (the Pillar-C caveat, an oversold-row count) — never
-    # interpolated user-authored free text — so classifying them as
-    # DESCRIPTION (Tier.MEDIUM) would over-classify and, for
-    # InvestmentSecuritiesPayload (which has no other elevated field), wrongly
-    # push the derived tier to "medium" instead of the intended "low".
+    # AGGREGATE (Tier.LOW) — rationale in the module-level comment above.
     warnings: Annotated[list[str], DataClass.AGGREGATE] = field(default_factory=list)
 
     @classmethod
@@ -353,12 +344,7 @@ class InvestmentSecuritiesPayload:
     """Payload for ``investments_securities``."""
 
     rows: list[InvestmentSecurityRow]
-    # AGGREGATE (Tier.LOW), not DESCRIPTION: these are canned system-generated
-    # diagnostic strings (the Pillar-C caveat, an oversold-row count) — never
-    # interpolated user-authored free text — so classifying them as
-    # DESCRIPTION (Tier.MEDIUM) would over-classify and, for
-    # InvestmentSecuritiesPayload (which has no other elevated field), wrongly
-    # push the derived tier to "medium" instead of the intended "low".
+    # AGGREGATE (Tier.LOW) — rationale in the module-level comment above.
     warnings: Annotated[list[str], DataClass.AGGREGATE] = field(default_factory=list)
 
     @classmethod

@@ -266,6 +266,29 @@ class TestUpsertSecurity:
         ).fetchone()
         assert row == ("New",)
 
+    def test_invalid_cost_basis_method_raises_user_error(self, db: Database) -> None:
+        # Mirrors AccountService.settings_update's hard-validation of the same
+        # closed vocabulary: the DB CHECK constraint is the backstop, not the
+        # primary contract — an invalid value must raise UserError, not a raw
+        # duckdb.ConstraintException.
+        with pytest.raises(UserError, match="[Ll]ifo"):
+            db_service(db).upsert_security(
+                security_id=None,
+                name="Apple Inc.",
+                security_type="equity",
+                cost_basis_method="lifo",
+                actor="cli",
+            )
+
+    def test_invalid_security_type_raises_user_error(self, db: Database) -> None:
+        with pytest.raises(UserError, match="stock"):
+            db_service(db).upsert_security(
+                security_id=None,
+                name="Apple Inc.",
+                security_type="stock",
+                actor="cli",
+            )
+
 
 # ---------------------------------------------------------------------------
 # set_security — partial-update merge (read-modify-write)
@@ -1045,14 +1068,16 @@ def _insert_lot(
     remaining_quantity: Decimal = Decimal("10"),
     cost_basis_remaining: Decimal = Decimal("1500.00"),
     is_open: bool = True,
+    basis_incomplete: bool = False,
 ) -> None:
     db.conn.execute(
         """
         INSERT INTO core.fct_investment_lots
             (lot_id, account_id, security_id, acquisition_date, acquisition_type,
              original_quantity, remaining_quantity, cost_basis_total,
-             cost_basis_remaining, cost_basis_method, currency_code, is_open)
-        VALUES (?, ?, ?, ?, 'buy', ?, ?, ?, ?, 'fifo', 'USD', ?)
+             cost_basis_remaining, cost_basis_method, currency_code, is_open,
+             basis_incomplete)
+        VALUES (?, ?, ?, ?, 'buy', ?, ?, ?, ?, 'fifo', 'USD', ?, ?)
         """,  # noqa: S608  # test fixture insert, static SQL
         [
             lot_id,
@@ -1064,6 +1089,7 @@ def _insert_lot(
             cost_basis_remaining,
             cost_basis_remaining,
             is_open,
+            basis_incomplete,
         ],
     )
 
@@ -1343,6 +1369,25 @@ class TestLots:
         _seed_read_fixtures(db)
         with pytest.raises(SecurityResolutionError):
             db_service(db).lots(security_ref="nothing-matches-this")
+
+    def test_basis_incomplete_field_and_warning_present(self, db: Database) -> None:
+        _seed_read_fixtures(db)
+        _insert_lot(db, lot_id="lot_complete", basis_incomplete=False)
+        _insert_lot(db, lot_id="lot_incomplete", basis_incomplete=True)
+        result = db_service(db).lots()
+        by_id = {r.lot_id: r for r in result.rows}
+        assert by_id["lot_complete"].basis_incomplete is False
+        assert by_id["lot_incomplete"].basis_incomplete is True
+        assert len(result.warnings) == 1
+        assert "1" in result.warnings[0]
+        assert "incomplete" in result.warnings[0]
+
+    def test_no_warning_when_all_lots_complete(self, db: Database) -> None:
+        _seed_read_fixtures(db)
+        _insert_lot(db, lot_id="lot_1", basis_incomplete=False)
+        _insert_lot(db, lot_id="lot_2", basis_incomplete=False)
+        result = db_service(db).lots()
+        assert result.warnings == []
 
 
 class TestGains:

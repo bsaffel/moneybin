@@ -604,6 +604,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "currency_code": DataClass.CURRENCY,
         "is_open": DataClass.TXN_TYPE,
         "source_transaction_id": DataClass.RECORD_ID,
+        "basis_incomplete": DataClass.TXN_TYPE,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
     },
     ("core", "fct_investment_transactions"): {

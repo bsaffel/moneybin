@@ -271,6 +271,7 @@ CREATE TABLE IF NOT EXISTS core.fct_investment_lots (
     currency_code VARCHAR,
     is_open BOOLEAN,
     source_transaction_id VARCHAR,
+    basis_incomplete BOOLEAN,
     updated_at TIMESTAMP
 );
 """
