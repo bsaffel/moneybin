@@ -21,7 +21,6 @@ verbs, not a bare command that also carries a nested one.
 
 from __future__ import annotations
 
-import dataclasses
 import logging
 from datetime import date as date_cls
 from decimal import Decimal
@@ -36,6 +35,12 @@ from moneybin.cli.output import (
 )
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
+from moneybin.privacy.payloads.investments import (
+    InvestmentEventsPayload,
+    InvestmentGainsPayload,
+    InvestmentHoldingsPayload,
+    InvestmentRecordPayload,
+)
 from moneybin.protocol.envelope import build_envelope
 from moneybin.services.investment_service import InvestmentService
 
@@ -120,7 +125,9 @@ def investments_add(
     income row sharing one ``event_group_id`` — reports both
     ``investment_transaction_id``s.
     """
-    with handle_cli_errors(cli_actor="investments_add"):
+    with handle_cli_errors(
+        cli_actor="investments_add", payload_type=InvestmentRecordPayload
+    ):
         with get_database(read_only=False) as db:
             ids = InvestmentService(db).record_event(
                 account_ref=account,
@@ -172,7 +179,9 @@ def investments_list(
     quiet: bool = quiet_option,  # noqa: ARG001 — list has no informational chatter; only data
 ) -> None:
     """List ledger events from the canonical investment-transaction fact table."""
-    with handle_cli_errors(cli_actor="investments_list"):
+    with handle_cli_errors(
+        cli_actor="investments_list", payload_type=InvestmentEventsPayload
+    ):
         with get_database(read_only=True) as db:
             result = InvestmentService(db).list_events(
                 account_ref=account,
@@ -182,12 +191,11 @@ def investments_list(
                 date_to=_parse_date(to),
             )
     if output == OutputFormat.JSON:
+        # No explicit sensitivity: InvestmentEventsPayload carries TXN_AMOUNT
+        # (HIGH) fields; render_or_json derives the tier from the typed
+        # payload's Annotated metadata — identical to the MCP tool.
         render_or_json(
-            # HIGH, not medium: quantity/amount rows are Tier.HIGH in
-            # privacy/payloads/investments.py, which the MCP tool derives — the
-            # CLI must report the same tier so the redaction contract is
-            # identical across surfaces (cli.md).
-            build_envelope(data=dataclasses.asdict(result), sensitivity="high"),
+            build_envelope(data=InvestmentEventsPayload.from_result(result)),
             output,
             cli_actor="investments_list",
         )
@@ -218,14 +226,17 @@ def investments_holdings(
     Market value / unrealized gain require price feeds (Pillar C) — v1 shows
     cost basis only and says so via a warning.
     """
-    with handle_cli_errors(cli_actor="investments_holdings"):
+    with handle_cli_errors(
+        cli_actor="investments_holdings", payload_type=InvestmentHoldingsPayload
+    ):
         with get_database(read_only=True) as db:
             result = InvestmentService(db).holdings(account_ref=account)
     if output == OutputFormat.JSON:
+        # No explicit sensitivity: InvestmentHoldingsPayload carries BALANCE
+        # (HIGH) fields; render_or_json derives the tier from the typed
+        # payload's Annotated metadata — identical to the MCP tool.
         render_or_json(
-            # HIGH: cost-basis rows are Tier.HIGH — match the MCP-derived tier
-            # (privacy/payloads/investments.py) so redaction is identical.
-            build_envelope(data=dataclasses.asdict(result), sensitivity="high"),
+            build_envelope(data=InvestmentHoldingsPayload.from_result(result)),
             output,
             cli_actor="investments_holdings",
         )
@@ -262,7 +273,9 @@ def investments_gains(
     quiet: bool = quiet_option,
 ) -> None:
     """Realized gain/loss (the 1099-B surface) from the realized-gains fact table."""
-    with handle_cli_errors(cli_actor="investments_gains"):
+    with handle_cli_errors(
+        cli_actor="investments_gains", payload_type=InvestmentGainsPayload
+    ):
         with get_database(read_only=True) as db:
             result = InvestmentService(db).gains(
                 account_ref=account,
@@ -272,10 +285,11 @@ def investments_gains(
                 term=term,
             )
     if output == OutputFormat.JSON:
+        # No explicit sensitivity: InvestmentGainsPayload carries BALANCE
+        # (HIGH) fields; render_or_json derives the tier from the typed
+        # payload's Annotated metadata — identical to the MCP tool.
         render_or_json(
-            # HIGH: proceeds/basis/gain rows are Tier.HIGH — match the
-            # MCP-derived tier (privacy/payloads/investments.py).
-            build_envelope(data=dataclasses.asdict(result), sensitivity="high"),
+            build_envelope(data=InvestmentGainsPayload.from_result(result)),
             output,
             cli_actor="investments_gains",
         )

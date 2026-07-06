@@ -1452,6 +1452,41 @@ def test_average_subsequent_buy_shifts_the_running_average() -> None:
     assert by_txn["s2"].quantity == D("5")
 
 
+def test_average_zero_quantity_acquisition_does_not_inflate_pool() -> None:
+    # A malformed zero-quantity, non-zero-basis acquisition (should be
+    # rejected at the Task-14 service boundary) must not contribute its cost
+    # to the pool with no offsetting units — that would permanently inflate
+    # the average for every later disposal. Defensive skip, not a raise.
+    events = [
+        _event(
+            "b1",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("10"),
+            amount=D("-100.00"),
+        ),
+        _event(
+            "malformed",
+            event_type="buy",
+            trade_date=date(2024, 2, 1),
+            quantity=D("0"),
+            amount=D("-500.00"),
+        ),
+        _event(
+            "s1",
+            event_type="sell",
+            trade_date=date(2024, 3, 1),
+            quantity=D("-10"),
+            amount=D("120.00"),
+        ),
+    ]
+    _lots, gains = _run(events, method_for=_average)
+
+    assert len(gains) == 1
+    # avg stays $10/unit (100/10) — the malformed $500 never entered pool.cost.
+    assert gains[0].cost_basis == D("100.00")
+
+
 def test_average_sell_spanning_st_and_lt_lots_splits_terms_pooled_basis() -> None:
     # Long-term lot (2023) at $10/unit and short-term lot (2024) at $20/unit;
     # pool = 20 units / $300, avg $15. Selling 15 across both: each slice's term
@@ -1603,6 +1638,88 @@ def test_average_oversold_consumes_available_at_avg_then_zero_basis_remainder() 
 
     assert lots[0].remaining_quantity == D("0")
     assert lots[0].cost_basis_remaining == D("0.00")
+
+
+def test_average_pool_dilution_by_incomplete_transfer_in_flags_every_slice() -> None:
+    # buy 10u/$100 (known) + transfer_in 10u/no-basis (incomplete) pools to
+    # 20u/$100 -> avg $5/unit. Selling all 20 must NOT report basis_incomplete
+    # only on the slice FIFO-attributes to the transfer_in lot: the pool
+    # itself was contaminated, so every slice this disposal produces carries
+    # the flag, even the one attributed to the known-basis buy lot.
+    events = [
+        _event(
+            "b1",
+            event_type="buy",
+            trade_date=date(2024, 1, 1),
+            quantity=D("10"),
+            amount=D("-100.00"),
+        ),
+        _event(
+            "ti",
+            event_type="transfer_in",
+            trade_date=date(2024, 2, 1),
+            quantity=D("10"),
+            amount=None,
+        ),
+        _event(
+            "s1",
+            event_type="sell",
+            trade_date=date(2024, 3, 1),
+            quantity=D("-20"),
+            amount=D("150.00"),
+        ),
+    ]
+    lots, gains = _run(events, method_for=_average)
+
+    assert len(gains) == 2
+    for gain in gains:
+        assert gain.basis_incomplete is True
+    total_cost_basis = sum((g.cost_basis for g in gains), D("0"))
+    assert total_cost_basis == D("100.00")  # only the buy's basis, pool-averaged
+    for lot in lots:
+        assert lot.remaining_quantity == D("0")
+
+
+def test_average_pool_incompleteness_clears_after_full_drain() -> None:
+    # Pool contaminated then fully drained by a sell; a fresh buy afterward
+    # starts a clean pool, so a later sell of ONLY the fresh buy must not
+    # carry the stale incomplete flag forward.
+    events = [
+        _event(
+            "ti",
+            event_type="transfer_in",
+            trade_date=date(2024, 1, 1),
+            quantity=D("10"),
+            amount=None,
+        ),
+        _event(
+            "s1",
+            event_type="sell",
+            trade_date=date(2024, 2, 1),
+            quantity=D("-10"),
+            amount=D("50.00"),
+        ),
+        _event(
+            "b2",
+            event_type="buy",
+            trade_date=date(2024, 3, 1),
+            quantity=D("5"),
+            amount=D("-50.00"),
+        ),
+        _event(
+            "s2",
+            event_type="sell",
+            trade_date=date(2024, 4, 1),
+            quantity=D("-5"),
+            amount=D("60.00"),
+        ),
+    ]
+    _lots, gains = _run(events, method_for=_average)
+
+    by_txn = {g.disposal_txn_id: g for g in gains}
+    assert by_txn["s1"].basis_incomplete is True
+    assert by_txn["s2"].basis_incomplete is False
+    assert by_txn["s2"].cost_basis == D("50.00")
 
 
 def test_average_full_pool_close_takes_all_remaining_conserves_pennies() -> None:

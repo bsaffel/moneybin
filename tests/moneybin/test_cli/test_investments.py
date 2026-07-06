@@ -587,6 +587,46 @@ class TestLotsSelect:
         assert remaining[0] == 0
 
     @pytest.mark.unit
+    def test_select_json_reports_high_sensitivity_and_selections(
+        self, runner: CliRunner, db: Database
+    ) -> None:
+        # Must match the investments_lots_select MCP tool's tier: selected
+        # quantities carry TXN_AMOUNT (HIGH) — a hardcoded "low" here would
+        # break the redaction-contract parity cli.md requires.
+        db.conn.execute(
+            """
+            INSERT INTO core.fct_investment_transactions
+                (investment_transaction_id, account_id, security_id, type, quantity)
+            VALUES ('sell_1', 'acct_brokerage', 'sec_1', 'sell', -5)
+            """  # noqa: S608  # test fixture insert, static SQL
+        )
+        db.conn.execute(
+            """
+            INSERT INTO core.fct_investment_lots
+                (lot_id, account_id, security_id, remaining_quantity)
+            VALUES ('lot_a', 'acct_brokerage', 'sec_1', 5)
+            """  # noqa: S608  # test fixture insert, static SQL
+        )
+        result = runner.invoke(
+            app,
+            [
+                "investments",
+                "lots",
+                "select",
+                "sell_1",
+                "--lot",
+                "lot_a:5",
+                "--output",
+                "json",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.stdout)
+        assert data["summary"]["sensitivity"] == "high"
+        assert data["data"]["disposal_txn_id"] == "sell_1"
+        assert data["data"]["selections"] == [{"lot_id": "lot_a", "quantity": 5.0}]
+
+    @pytest.mark.unit
     def test_select_and_clear_mutually_exclusive_exits_2(
         self, runner: CliRunner, db: Database
     ) -> None:
@@ -681,3 +721,60 @@ class TestSecuritiesListAndSet:
         )
         assert result.exit_code == 1
         assert "Traceback" not in result.stderr
+
+    @pytest.mark.unit
+    def test_add_invalid_cost_basis_method_exits_1_cleanly(
+        self, runner: CliRunner, db: Database
+    ) -> None:
+        # Must surface as a clean UserError, not a raw duckdb.ConstraintException
+        # traceback — the whole point of the upsert_security hard-validation fix.
+        result = runner.invoke(
+            app,
+            [
+                "investments",
+                "securities",
+                "add",
+                "--name",
+                "Apple Inc.",
+                "--type",
+                "equity",
+                "--method",
+                "lifo",
+            ],
+        )
+        assert result.exit_code == 1
+        assert "Traceback" not in result.stderr
+        assert "lifo" in result.stderr
+
+    @pytest.mark.unit
+    def test_add_invalid_security_type_exits_1_cleanly(
+        self, runner: CliRunner, db: Database
+    ) -> None:
+        result = runner.invoke(
+            app,
+            [
+                "investments",
+                "securities",
+                "add",
+                "--name",
+                "Apple Inc.",
+                "--type",
+                "stock",
+            ],
+        )
+        assert result.exit_code == 1
+        assert "Traceback" not in result.stderr
+        assert "stock" in result.stderr
+
+    @pytest.mark.unit
+    def test_set_invalid_cost_basis_method_exits_1_cleanly(
+        self, runner: CliRunner, db: Database
+    ) -> None:
+        security_id = _add_security(runner, name="Apple Inc.", type_="equity")
+        result = runner.invoke(
+            app,
+            ["investments", "securities", "set", security_id, "--method", "lifo"],
+        )
+        assert result.exit_code == 1
+        assert "Traceback" not in result.stderr
+        assert "lifo" in result.stderr

@@ -400,6 +400,14 @@ class TestListSecurities:
         result = db_service(db).list_securities()
         assert result.rows == []
 
+    def test_invalid_security_type_filter_raises(self, db: Database) -> None:
+        # Matches the sibling type_filter/term validation pattern in
+        # list_events/gains — a typo'd filter must raise, not silently
+        # return zero rows.
+        create_core_dim_stub_views(db)
+        with pytest.raises(ValueError, match="security_type"):
+            db_service(db).list_securities(security_type="stock")
+
 
 # ---------------------------------------------------------------------------
 # record_event — sign validation (Req 6)

@@ -465,8 +465,12 @@ unable to model anything beyond splits for a decade) and never user-computed
 zero-and-refill pairs (the Beancount recipe whose own docs concede it destroys
 holding-period continuity):
 
-- `split` adjusts open-lot `original_quantity`/`remaining_quantity` by the split ratio
-  while preserving `cost_basis_total` (per-unit basis changes, total does not).
+- `split` carries the split **multiplier** `M` (new shares per old share — `2`
+  for 2:1, `1.5` for 3:2, `0.5` for a 1:2 reverse split) in its `quantity`
+  field; `price`/`amount`/`fees` are unused. Every open lot's
+  `original_quantity`/`remaining_quantity` scales by `M` while
+  `cost_basis_total` is preserved (per-unit basis changes, total does not).
+  Deliberately simpler than a ratio-as-added-units encoding (Decision D6).
 - `return_of_capital` reduces `cost_basis_remaining` without creating a disposal,
   allocated **pro-rata across the security's open lots by remaining quantity**
   (RoC arrives per-position on broker statements; the engine owns the per-lot
@@ -637,8 +641,8 @@ moneybin investments lots [--account <id|name>] [--security <ticker|name>] \
 - Lots with remaining quantity and basis. Default: open lots only.
 
 ```
-moneybin investments lots select <disposal_txn_id> --lot <lot_id>:<quantity> [--lot <lot_id>:<quantity> ...] [--yes]
-moneybin investments lots select <disposal_txn_id> --clear [--yes]
+moneybin investments lots select <disposal_txn_id> --lot <lot_id>:<quantity> [--lot <lot_id>:<quantity> ...]
+moneybin investments lots select <disposal_txn_id> --clear
 ```
 - Sets the **full** specific-identification selection for the disposal in
   `app.lot_selections` — a declarative state-set (Shape 1a): the listed `(lot,

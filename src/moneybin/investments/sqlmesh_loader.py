@@ -164,19 +164,32 @@ def _load_ledger(
     return events, group_updated_at
 
 
+_AVERAGE_ELIGIBLE_TYPES = frozenset({"mutual_fund", "etf"})
+
+
 def _load_method_for(context: ExecutionContext) -> MethodFor:
-    """Build the elected-method resolver: per-security -> per-account -> fifo."""
+    """Build the elected-method resolver: per-security -> per-account -> fifo.
+
+    An account-level ``default_cost_basis_method='average'`` does NOT apply to
+    a non-fund security it happens to hold — Req 12 validates 'average' to
+    mutual_fund/etf at election time (``upsert_security``/``AccountService.
+    settings_update``), but that per-field check can't see the OTHER side of
+    this fallback: an account holding a mix of funds and stocks with no
+    per-security override. Falling through silently to global FIFO for the
+    ineligible security matches the stated restriction instead of leaking
+    'average' onto a security type it was never valid for.
+    """
     securities: pd.DataFrame = context.fetchdf(
-        """
-        SELECT security_id, cost_basis_method
-        FROM app.securities
-        WHERE NOT cost_basis_method IS NULL
-        """
+        "SELECT security_id, cost_basis_method, security_type FROM app.securities"
     )
-    security_method = {
-        str(record["security_id"]): str(record["cost_basis_method"])
-        for record in _records(securities)
-    }
+    security_method: dict[str, str] = {}
+    security_type: dict[str, str] = {}
+    for record in _records(securities):
+        sid = str(record["security_id"])
+        security_type[sid] = str(record["security_type"])
+        method = record["cost_basis_method"]
+        if method is not None:
+            security_method[sid] = str(method)
     accounts: pd.DataFrame = context.fetchdf(
         """
         SELECT account_id, default_cost_basis_method
@@ -194,7 +207,10 @@ def _load_method_for(context: ExecutionContext) -> MethodFor:
         if elected is not None:
             return elected
         elected = account_default.get(account_id)
-        if elected is not None:
+        if elected is not None and (
+            elected != "average"
+            or security_type.get(security_id) in _AVERAGE_ELIGIBLE_TYPES
+        ):
             return elected
         return _DEFAULT_METHOD
 

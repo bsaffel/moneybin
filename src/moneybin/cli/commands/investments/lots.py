@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 from decimal import Decimal
 
 import typer
@@ -15,6 +14,11 @@ from moneybin.cli.output import (
 )
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
+from moneybin.privacy.payloads.investments import (
+    InvestmentLotSelectionEntry,
+    InvestmentLotsPayload,
+    InvestmentLotsSelectPayload,
+)
 from moneybin.protocol.envelope import build_envelope
 from moneybin.services.investment_service import InvestmentService
 
@@ -41,17 +45,19 @@ def investments_lots_list(
     quiet: bool = quiet_option,
 ) -> None:
     """List tax lots with remaining quantity and basis. Open lots only by default."""
-    with handle_cli_errors(cli_actor="investments_lots_list"):
+    with handle_cli_errors(
+        cli_actor="investments_lots_list", payload_type=InvestmentLotsPayload
+    ):
         with get_database(read_only=True) as db:
             result = InvestmentService(db).lots(
                 account_ref=account, security_ref=security, open_only=open_only
             )
     if output == OutputFormat.JSON:
+        # No explicit sensitivity: InvestmentLotsPayload carries TXN_AMOUNT/
+        # BALANCE (HIGH) fields; render_or_json derives the tier from the
+        # typed payload's Annotated metadata — identical to the MCP tool.
         render_or_json(
-            # HIGH: quantity/cost-basis rows are Tier.HIGH — match the
-            # MCP-derived tier (privacy/payloads/investments.py) so redaction is
-            # identical across surfaces (cli.md).
-            build_envelope(data=dataclasses.asdict(result), sensitivity="high"),
+            build_envelope(data=InvestmentLotsPayload.from_result(result)),
             output,
             cli_actor="investments_lots_list",
         )
@@ -93,9 +99,6 @@ def investments_lots_select(
         "--clear",
         help="Clear all lot-selection overrides for this disposal (revert to FIFO)",
     ),
-    yes: bool = typer.Option(  # noqa: ARG001 — no interactive prompt yet; flag reserved for parity
-        False, "--yes", "-y", help="Skip confirmation"
-    ),
     output: OutputFormat = output_option,
 ) -> None:
     """Set (or clear) the full specific-identification lot selection for a disposal.
@@ -112,20 +115,27 @@ def investments_lots_select(
         typer.echo("error: pass --lot LOT_ID:QTY (repeatable) or --clear", err=True)
         raise typer.Exit(2)
 
-    with handle_cli_errors(cli_actor="investments_lots_select"):
+    with handle_cli_errors(
+        cli_actor="investments_lots_select", payload_type=InvestmentLotsSelectPayload
+    ):
         selections = [] if clear else [_parse_lot_selection(entry) for entry in lot]
         with get_database(read_only=False) as db:
             InvestmentService(db).select_lots(disposal_txn_id, selections, actor="cli")
 
     if output == OutputFormat.JSON:
-        payload = {
-            "disposal_txn_id": disposal_txn_id,
-            "selections": [
-                {"lot_id": lot_id, "quantity": qty} for lot_id, qty in selections
+        # No explicit sensitivity: selections[].quantity carries TXN_AMOUNT
+        # (HIGH); render_or_json derives the tier from the typed payload's
+        # Annotated metadata — identical to the investments_lots_select MCP
+        # tool, which reports HIGH for this same field (cli.md).
+        payload = InvestmentLotsSelectPayload(
+            disposal_txn_id=disposal_txn_id,
+            selections=[
+                InvestmentLotSelectionEntry(lot_id=lot_id, quantity=qty)
+                for lot_id, qty in selections
             ],
-        }
+        )
         render_or_json(
-            build_envelope(data=payload, sensitivity="low"),
+            build_envelope(data=payload),
             output,
             cli_actor="investments_lots_select",
         )

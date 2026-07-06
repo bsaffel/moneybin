@@ -66,8 +66,12 @@ def _ledger_frame() -> pd.DataFrame:
 
 def _securities_frame() -> pd.DataFrame:
     return pd.DataFrame({
-        "security_id": ["sec_hifo"],
-        "cost_basis_method": ["hifo"],
+        "security_id": ["sec_hifo", "sec_fund_unset", "sec_stock_unset"],
+        "cost_basis_method": ["hifo", None, None],
+        # sec_fund_unset (etf) is average-eligible; sec_stock_unset (equity)
+        # is not — together they prove the account-default 'average'
+        # fallback applies only when the security's type permits it.
+        "security_type": ["equity", "etf", "equity"],
     })
 
 
@@ -126,10 +130,29 @@ def test_load_engine_inputs_method_for_prefers_security_then_account_then_fifo()
 
     # Per-security election wins even when the account has a default.
     assert method_for("acct_avg", "sec_hifo") == "hifo"
-    # Per-account default applies when the security has none.
-    assert method_for("acct_avg", "sec_unset") == "average"
+    # Per-account 'average' default applies to an average-eligible security
+    # (etf) when it has no per-security override.
+    assert method_for("acct_avg", "sec_fund_unset") == "average"
     # Global fallback when neither elects.
-    assert method_for("acct_other", "sec_unset") == "fifo"
+    assert method_for("acct_other", "sec_fund_unset") == "fifo"
+
+
+def test_load_engine_inputs_method_for_average_default_does_not_leak_to_stocks() -> (
+    None
+):
+    # An account's 'average' default must not silently apply to a non-fund
+    # security it happens to hold with no per-security override — Req 12
+    # validates 'average' to mutual_fund/etf, and that restriction must hold
+    # across the account-fallback path too, not just at direct election.
+    _events, method_for, _selections_for, _freshness = load_engine_inputs(
+        _ctx(
+            _ledger_frame(),
+            _securities_frame(),
+            _accounts_frame(),
+            _selections_frame(),
+        )
+    )
+    assert method_for("acct_avg", "sec_stock_unset") == "fifo"
 
 
 def test_load_engine_inputs_selections_group_by_disposal_with_exact_quantities() -> (

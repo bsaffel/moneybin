@@ -755,6 +755,30 @@ class TestInvestmentsSecuritiesSet:
         assert result.to_dict()["status"] == "error"
 
     @pytest.mark.unit
+    async def test_invalid_cost_basis_method_returns_clean_error_envelope(
+        self, mcp_db: Path
+    ) -> None:
+        # Must surface as a clean UserError envelope, not a raw
+        # duckdb.ConstraintException — the point of the hard-validation fix.
+        result = await investments_securities_set(
+            name="Apple Inc.", security_type="equity", cost_basis_method="lifo"
+        )
+        parsed = result.to_dict()
+        assert parsed["status"] == "error"
+        assert "lifo" in parsed["error"]["message"]
+
+    @pytest.mark.unit
+    async def test_invalid_security_type_returns_clean_error_envelope(
+        self, mcp_db: Path
+    ) -> None:
+        result = await investments_securities_set(
+            name="Apple Inc.", security_type="stock"
+        )
+        parsed = result.to_dict()
+        assert parsed["status"] == "error"
+        assert "stock" in parsed["error"]["message"]
+
+    @pytest.mark.unit
     async def test_update_existing_security_preserves_unset_fields(
         self, mcp_db: Path
     ) -> None:

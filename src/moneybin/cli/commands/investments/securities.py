@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import dataclasses
-
 import typer
 
 from moneybin.cli.output import (
@@ -14,6 +12,10 @@ from moneybin.cli.output import (
 )
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
+from moneybin.privacy.payloads.investments import (
+    InvestmentSecuritiesPayload,
+    InvestmentSecuritySetPayload,
+)
 from moneybin.protocol.envelope import build_envelope
 from moneybin.services.investment_service import InvestmentService
 
@@ -34,12 +36,19 @@ def investments_securities_list(
     quiet: bool = quiet_option,  # noqa: ARG001 — list has no informational chatter; only data
 ) -> None:
     """List the securities catalog."""
-    with handle_cli_errors(cli_actor="investments_securities_list"):
+    with handle_cli_errors(
+        cli_actor="investments_securities_list",
+        payload_type=InvestmentSecuritiesPayload,
+    ):
         with get_database(read_only=True) as db:
             result = InvestmentService(db).list_securities(security_type=type_)
     if output == OutputFormat.JSON:
+        # No explicit sensitivity: render_or_json derives the tier from the
+        # typed payload's Annotated metadata (resolves to "low" — reference
+        # data only) instead of a hardcoded literal that bypasses the
+        # audit-trail classes_returned walk (cli.md).
         render_or_json(
-            build_envelope(data=dataclasses.asdict(result), sensitivity="low"),
+            build_envelope(data=InvestmentSecuritiesPayload.from_result(result)),
             output,
             cli_actor="investments_securities_list",
         )
@@ -86,7 +95,10 @@ def investments_securities_add(
     output: OutputFormat = output_option,
 ) -> None:
     """Add one security to the catalog."""
-    with handle_cli_errors(cli_actor="investments_securities_add"):
+    with handle_cli_errors(
+        cli_actor="investments_securities_add",
+        payload_type=InvestmentSecuritySetPayload,
+    ):
         with get_database(read_only=False) as db:
             security_id = InvestmentService(db).upsert_security(
                 security_id=None,
@@ -161,7 +173,10 @@ def investments_securities_set(
         typer.echo("error: at least one --field flag is required", err=True)
         raise typer.Exit(2)
 
-    with handle_cli_errors(cli_actor="investments_securities_set"):
+    with handle_cli_errors(
+        cli_actor="investments_securities_set",
+        payload_type=InvestmentSecuritySetPayload,
+    ):
         with get_database(read_only=False) as db:
             InvestmentService(db).set_security(
                 security_id,

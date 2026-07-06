@@ -158,10 +158,20 @@ class _Pool:
     basis (money, 2dp). Every acquisition adds to both; every disposal draws both
     down at the pooled average. Basis lives here, not on any ``Lot``, because
     under average cost no lot has a basis of its own.
+
+    ``basis_incomplete`` tracks group-level (not per-lot) incompleteness: once
+    ANY contributing acquisition is incomplete (e.g. a no-basis ``transfer_in``,
+    which adds its quantity to ``units`` but $0 to ``cost``), every disposal
+    that draws from the pool is contaminated by that missing basis regardless
+    of which lot FIFO/HIFO/specific attributes the sale to for holding-period
+    purposes — reading the flag off the attributed lot alone would silently
+    under-report it. Cleared only when the pool fully drains (a fresh pool has
+    no outstanding incomplete contribution).
     """
 
     units: Decimal = Decimal("0")
     cost: Decimal = _ZERO_MONEY
+    basis_incomplete: bool = False
 
 
 def _money(value: Decimal) -> Decimal:
@@ -404,7 +414,12 @@ def _consume(
                 cost_basis=slice_basis,
                 # Carries an incomplete-basis acquisition (e.g. a no-basis
                 # transfer_in) forward onto the realized gain it produces.
-                basis_incomplete=lot.basis_incomplete,
+                # Under average cost the basis comes from the POOL, not the
+                # attributed lot, so a group-level contamination (pool.
+                # basis_incomplete) must OR in even when this particular lot's
+                # own contribution was complete.
+                basis_incomplete=lot.basis_incomplete
+                or (pool is not None and pool.basis_incomplete),
             )
         )
         remaining -= take
@@ -421,6 +436,9 @@ def _consume(
                 disposal_basis = pool.cost
                 pool.cost = _ZERO_MONEY
                 pool.units = Decimal("0")
+                # Pool fully drains: no outstanding incomplete contribution
+                # remains, so the next acquisition into this group starts clean.
+                pool.basis_incomplete = False
             else:
                 disposal_basis = _money(matched_quantity * avg)
                 pool.cost = _money(pool.cost - disposal_basis)
@@ -734,7 +752,16 @@ def compute_lots_and_gains(
                 lots.append(lot)
                 if pool is not None:
                     pool.units = pool.units + lot.original_quantity
-                    pool.cost = pool.cost + lot.cost_basis_total
+                    # Defensive: a zero-quantity, non-zero-basis acquisition is
+                    # malformed input (Task-14 service-boundary validation
+                    # should reject it) — adding its cost with no offsetting
+                    # units would permanently inflate the pooled average.
+                    # Skip the cost contribution rather than raise, matching
+                    # the engine's never-raise philosophy.
+                    if lot.original_quantity > 0:
+                        pool.cost = pool.cost + lot.cost_basis_total
+                    if lot.basis_incomplete:
+                        pool.basis_incomplete = True
             elif event.type in _DISPOSAL_TYPES:
                 all_gains.extend(
                     _consume(

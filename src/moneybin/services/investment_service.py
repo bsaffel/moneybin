@@ -1715,6 +1715,11 @@ class InvestmentService:
 
         Optional ``security_type`` filter; no mandatory warning.
         """
+        if security_type is not None and security_type not in SECURITY_TYPES:
+            raise ValueError(
+                f"security_type must be one of {sorted(SECURITY_TYPES)}, "
+                f"got {security_type!r}"
+            )
         where_sql = ""
         params: list[object] = []
         if security_type is not None:

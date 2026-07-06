@@ -33,6 +33,7 @@ no method is elected):
 
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime
 from decimal import Decimal
 
@@ -220,7 +221,9 @@ def test_transform_flags_transfer_in_without_basis_as_basis_incomplete(
 
     Exercises the real engine<->SQLMesh<->DuckDB round trip (not just the
     pure-Python engine unit test) for the acquisition-side basis_incomplete
-    column added to core.fct_investment_lots.
+    column added to core.fct_investment_lots, AND proves the flag survives
+    onto core.fct_realized_gains when that lot is later sold through the
+    real pipeline (not just the pure-Python engine's own unit tests).
     """
     _insert_security(db)
     _insert_investment_txn(
@@ -232,6 +235,16 @@ def test_transform_flags_transfer_in_without_basis_as_basis_incomplete(
         quantity="10",
         amount=None,
         created_at="2024-01-01 09:00:00",
+    )
+    _insert_investment_txn(
+        db,
+        source_txn_id="manual_sell_1",
+        investment_txn_id="inv_sell_1",
+        txn_type="sell",
+        trade_date="2024-06-01",
+        quantity="-10",
+        amount="500.00",
+        created_at="2024-06-01 10:00:00",
     )
 
     result = TransformService(db).apply()
@@ -246,3 +259,89 @@ def test_transform_flags_transfer_in_without_basis_as_basis_incomplete(
     assert cost_basis_total == Decimal("0.00")
     assert cost_basis_remaining == Decimal("0.00")
     assert basis_incomplete is True
+
+    gains = db.execute(
+        "SELECT cost_basis, gain_loss, basis_incomplete FROM core.fct_realized_gains"
+    ).fetchall()
+    assert len(gains) == 1, f"expected one realized gain, got {gains}"
+    gain_cost_basis, gain_loss, gain_basis_incomplete = gains[0]
+    assert gain_cost_basis == Decimal("0.00")
+    assert gain_loss == Decimal("500.00")
+    assert gain_basis_incomplete is True
+
+
+@pytest.mark.slow
+def test_transform_specific_id_selection_redirects_consumption(db: Database) -> None:
+    """An app.lot_selections override redirects consumption through the pipeline.
+
+    Two buys at different per-unit costs; FIFO would draw the sale from the
+    OLDER (cheaper) lot. A specific-ID selection naming the NEWER (pricier)
+    lot must redirect the disposal to it instead, proving app.lot_selections
+    actually threads through sqlmesh_loader.py's selections_for callback.
+    """
+    db.execute(
+        """
+        INSERT INTO app.securities
+            (security_id, name, security_type, currency_code, cost_basis_method)
+        VALUES (?, 'Test Security', 'equity', 'USD', 'specific')
+        """,  # noqa: S608  # test fixture, not executing user SQL
+        [_SECURITY_ID],
+    )
+    _insert_investment_txn(
+        db,
+        source_txn_id="manual_buy_old",
+        investment_txn_id="inv_buy_old",
+        txn_type="buy",
+        trade_date="2024-01-01",
+        quantity="10",
+        amount="-100.00",  # $10/unit — FIFO's natural (cheaper) pick
+        created_at="2024-01-01 09:00:00",
+    )
+    _insert_investment_txn(
+        db,
+        source_txn_id="manual_buy_new",
+        investment_txn_id="inv_buy_new",
+        txn_type="buy",
+        trade_date="2024-02-01",
+        quantity="10",
+        amount="-300.00",  # $30/unit — the specific-ID override target
+        created_at="2024-02-01 09:00:00",
+    )
+    _insert_investment_txn(
+        db,
+        source_txn_id="manual_sell_1",
+        investment_txn_id="inv_sell_1",
+        txn_type="sell",
+        trade_date="2024-03-01",
+        quantity="-5",
+        amount="200.00",
+        created_at="2024-03-01 10:00:00",
+    )
+    # lot_id is a content hash of (account_id, security_id, acquisition_date,
+    # opening txn id) — computed inline (not imported) to match how the other
+    # tests in this suite independently derive expected ids, per testing.md.
+    newer_lot_id = (
+        "lot_"
+        + hashlib.sha256(
+            f"{_ACCOUNT_ID}|{_SECURITY_ID}|2024-02-01|inv_buy_new".encode()
+        ).hexdigest()[:16]
+    )
+    db.execute(
+        """
+        INSERT INTO app.lot_selections (investment_transaction_id, lot_id, quantity)
+        VALUES ('inv_sell_1', ?, 5)
+        """,  # noqa: S608  # test fixture, not executing user SQL
+        [newer_lot_id],
+    )
+
+    result = TransformService(db).apply()
+    assert result.applied, f"transform apply failed: {result.error}"
+
+    gains = db.execute(
+        "SELECT lot_id, cost_basis FROM core.fct_realized_gains"
+    ).fetchall()
+    assert len(gains) == 1, f"expected one realized gain, got {gains}"
+    lot_id, cost_basis = gains[0]
+    assert lot_id == newer_lot_id
+    # 5 units at the newer lot's $30/unit, not FIFO's $10/unit ($50).
+    assert cost_basis == Decimal("150.00")
