@@ -825,6 +825,25 @@ class TestInvestmentsSecuritiesSet:
         assert parsed["status"] == "error"
         assert parsed["error"]["code"] == "mutation_not_found"
 
+    @pytest.mark.unit
+    async def test_update_rejects_security_type_change(self, mcp_db: Path) -> None:
+        # security_type is immutable post-creation (docstring says so); the
+        # update path must reject an attempt to change it, not silently drop
+        # it while returning an "ok" envelope.
+        sid = _add_security(
+            security_id="sec_eq", name="Apple Inc.", security_type="equity"
+        )
+        result = await investments_securities_set(security_id=sid, security_type="bond")
+        parsed = result.to_dict()
+        assert parsed["status"] == "error"
+        assert parsed["error"]["code"] == "mutation_invalid_input"
+        with get_database(read_only=True) as db:
+            row = db.execute(
+                "SELECT security_type FROM app.securities WHERE security_id = ?",
+                [sid],
+            ).fetchone()
+        assert row == ("equity",)
+
 
 class TestInvestmentsLotsSelect:
     """Tests for the investments_lots_select MCP tool (Shape 1a state-set)."""

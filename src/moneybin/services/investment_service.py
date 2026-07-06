@@ -1068,7 +1068,12 @@ class InvestmentService:
                 row_oad=None,
             )
             # Income leg: NULL quantity, positive amount, carries the security.
-            income_amount = -amount if amount is not None else None
+            # `amount` is fee-inclusive (Req 6); the fee is a transaction cost,
+            # not part of the taxable dividend/interest/capital-gain income, so
+            # it's added back before negating (amount is negative, fees is not).
+            income_amount = (
+                -(amount + (fees or Decimal("0"))) if amount is not None else None
+            )
             income = base_row(
                 row_type=income_type,
                 row_subtype=None,

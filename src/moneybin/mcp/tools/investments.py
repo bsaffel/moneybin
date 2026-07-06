@@ -406,6 +406,11 @@ def investments_securities_set(
                 actor="mcp",
             )
         else:
+            if security_type is not None:
+                raise UserError(
+                    "security_type cannot be changed after creation.",
+                    code=error_codes.MUTATION_INVALID_INPUT,
+                )
             new_id = svc.set_security(
                 security_id,
                 name=name,

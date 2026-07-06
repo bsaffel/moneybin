@@ -839,6 +839,37 @@ class TestReinvestPairing:
         types = {r[2] for r in _raw_rows(db)}
         assert types == {"reinvest", expected_income_type}
 
+    def test_reinvest_income_excludes_fees(self, db: Database) -> None:
+        # `amount` is fee-inclusive per the module's sign-convention docstring
+        # ("--amount help: Signed cash amount, including fees") — a $150.00
+        # dividend reinvested with a $4.95 fee redeploys $154.95 total. The
+        # income leg must report the $150.00 gross dividend, not the
+        # fee-inclusive $154.95 acquisition amount.
+        svc = self._svc(db)
+        svc.record_event(
+            account_ref="acct_brokerage",
+            security_ref="VTSAX",
+            type_="reinvest",
+            subtype=None,
+            trade_date=date(2024, 3, 20),
+            quantity=Decimal("1.5"),
+            price=Decimal("100.00"),
+            amount=Decimal("-154.95"),
+            fees=Decimal("4.95"),
+            acquired=None,
+            basis=None,
+            event_group_id=None,
+            currency_code="USD",
+            description="reinvest dividend with fee",
+            actor="cli",
+            created_by="cli",
+        )
+        rows = _raw_rows(db)
+        acq = next(r for r in rows if r[2] == "reinvest")
+        income = next(r for r in rows if r[2] == "dividend")
+        assert acq[7] == Decimal("-154.95")  # acquisition stays fee-inclusive
+        assert income[7] == Decimal("150.00")  # income excludes the fee
+
 
 # ---------------------------------------------------------------------------
 # record_event — split (D6) + transfer_in (Req 5 corporate actions)
