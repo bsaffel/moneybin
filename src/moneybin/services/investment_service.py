@@ -1320,7 +1320,7 @@ class InvestmentService:
         declarative set; ``selections=[]`` clears all overrides → FIFO).
         """
         row = self._db.execute(
-            f"SELECT account_id, security_id, type, quantity "  # noqa: S608  # TableRef constant
+            f"SELECT account_id, security_id, type, quantity, trade_date "  # noqa: S608  # TableRef constant
             f"FROM {FCT_INVESTMENT_TRANSACTIONS.full_name} "
             "WHERE investment_transaction_id = ?",
             [disposal_txn_id],
@@ -1331,9 +1331,13 @@ class InvestmentService:
                 code=error_codes.MUTATION_NOT_FOUND,
                 hint=_REFRESH_MATERIALIZE_HINT,
             )
-        disposal_account_id, disposal_security_id, disposal_type, disposal_quantity = (
-            row
-        )
+        (
+            disposal_account_id,
+            disposal_security_id,
+            disposal_type,
+            disposal_quantity,
+            disposal_date,
+        ) = row
         if disposal_type != "sell":
             raise UserError(
                 f"{disposal_txn_id!r} is a {disposal_type!r}, not a disposal; "
@@ -1343,7 +1347,7 @@ class InvestmentService:
 
         if selections:
             self._validate_selection_lots(
-                selections, disposal_account_id, disposal_security_id
+                selections, disposal_account_id, disposal_security_id, disposal_date
             )
             total = sum((qty for _, qty in selections), Decimal("0"))
             available = abs(Decimal(str(disposal_quantity)))
@@ -1369,16 +1373,21 @@ class InvestmentService:
         selections: list[tuple[str, Decimal]],
         account_id: str,
         security_id: str | None,
+        disposal_date: date,
     ) -> None:
-        """Raise unless every selected lot belongs to the disposal's position.
+        """Raise unless every selected lot was open by the disposal's trade date.
 
-        A lot is valid only if it exists in ``core.fct_investment_lots`` AND
-        belongs to the disposal's ``(account_id, security_id)``. Binding the
-        check to the position (not global existence) is load-bearing: a lot from
-        another security would otherwise pass validation and then be silently
-        dropped to a FIFO fallback by the engine (``_consumption_plan`` looks it
-        up in the disposal group's ``by_lot_id`` and skips it), producing a wrong
-        1099-B with no error.
+        A lot is valid only if it exists in ``core.fct_investment_lots``,
+        belongs to the disposal's ``(account_id, security_id)``, AND was
+        acquired on or before ``disposal_date``. All three are load-bearing:
+        the engine's chronological replay (``compute_lots_and_gains``) only
+        adds a lot to the group's open-lot list once its acquisition event has
+        been processed, so a lot from another position *or* one acquired after
+        this disposal isn't in ``_consumption_plan``'s ``by_lot_id`` yet at
+        replay time — the selection is silently dropped to a FIFO fallback,
+        producing a wrong 1099-B with no error. Same-day acquisitions ARE
+        valid: ``_SAME_DAY_TYPE_ORDER`` processes acquisitions before disposals
+        on a shared trade date.
         """
         for lot_id, qty in selections:
             if qty <= 0:
@@ -1393,15 +1402,16 @@ class InvestmentService:
             for r in self._db.execute(
                 f"SELECT lot_id FROM {FCT_INVESTMENT_LOTS.full_name} "  # noqa: S608  # TableRef constant
                 f"WHERE lot_id IN ({placeholders}) "
-                "AND account_id = ? AND security_id = ?",
-                [*lot_ids, account_id, security_id],
+                "AND account_id = ? AND security_id = ? AND acquisition_date <= ?",
+                [*lot_ids, account_id, security_id, disposal_date],
             ).fetchall()
         }
         missing = [lot_id for lot_id in lot_ids if lot_id not in found]
         if missing:
             raise UserError(
-                "Lot(s) not part of this disposal's position "
-                f"(account/security): {', '.join(repr(m) for m in missing)}.",
+                "Lot(s) not part of this disposal's position as of its trade "
+                f"date (account/security/acquisition date): "
+                f"{', '.join(repr(m) for m in missing)}.",
                 code=error_codes.MUTATION_NOT_FOUND,
                 hint=_REFRESH_MATERIALIZE_HINT,
             )

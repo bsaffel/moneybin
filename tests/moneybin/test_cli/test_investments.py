@@ -530,15 +530,16 @@ class TestLotsSelect:
         db.conn.execute(
             """
             INSERT INTO core.fct_investment_transactions
-                (investment_transaction_id, account_id, security_id, type, quantity)
-            VALUES ('sell_1', 'acct_brokerage', 'sec_1', 'sell', -10)
+                (investment_transaction_id, account_id, security_id, trade_date,
+                 type, quantity)
+            VALUES ('sell_1', 'acct_brokerage', 'sec_1', '2024-06-15', 'sell', -10)
             """  # noqa: S608  # test fixture insert, static SQL
         )
         db.conn.executemany(
             """
             INSERT INTO core.fct_investment_lots
-                (lot_id, account_id, security_id, remaining_quantity)
-            VALUES (?, 'acct_brokerage', 'sec_1', ?)
+                (lot_id, account_id, security_id, acquisition_date, remaining_quantity)
+            VALUES (?, 'acct_brokerage', 'sec_1', '2024-01-10', ?)
             """,  # noqa: S608  # test fixture insert, static SQL
             [["lot_a", Decimal("6")], ["lot_b", Decimal("6")]],
         )
@@ -596,15 +597,16 @@ class TestLotsSelect:
         db.conn.execute(
             """
             INSERT INTO core.fct_investment_transactions
-                (investment_transaction_id, account_id, security_id, type, quantity)
-            VALUES ('sell_1', 'acct_brokerage', 'sec_1', 'sell', -5)
+                (investment_transaction_id, account_id, security_id, trade_date,
+                 type, quantity)
+            VALUES ('sell_1', 'acct_brokerage', 'sec_1', '2024-06-15', 'sell', -5)
             """  # noqa: S608  # test fixture insert, static SQL
         )
         db.conn.execute(
             """
             INSERT INTO core.fct_investment_lots
-                (lot_id, account_id, security_id, remaining_quantity)
-            VALUES ('lot_a', 'acct_brokerage', 'sec_1', 5)
+                (lot_id, account_id, security_id, acquisition_date, remaining_quantity)
+            VALUES ('lot_a', 'acct_brokerage', 'sec_1', '2024-01-10', 5)
             """  # noqa: S608  # test fixture insert, static SQL
         )
         result = runner.invoke(

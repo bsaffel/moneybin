@@ -836,16 +836,18 @@ class TestInvestmentsLotsSelect:
             db.execute(
                 """
                 INSERT INTO core.fct_investment_transactions
-                    (investment_transaction_id, account_id, security_id, type, quantity)
-                VALUES ('sell_1', ?, ?, 'sell', -10)
+                    (investment_transaction_id, account_id, security_id, trade_date,
+                     type, quantity)
+                VALUES ('sell_1', ?, ?, '2024-06-15', 'sell', -10)
                 """,  # noqa: S608  # test fixture insert, static SQL
                 [_ACCOUNT, sec],
             )
             db.executemany(
                 """
                 INSERT INTO core.fct_investment_lots
-                    (lot_id, account_id, security_id, remaining_quantity)
-                VALUES (?, ?, ?, ?)
+                    (lot_id, account_id, security_id, acquisition_date,
+                     remaining_quantity)
+                VALUES (?, ?, ?, '2024-01-10', ?)
                 """,  # noqa: S608  # test fixture insert, static SQL
                 [
                     ["lot_a", _ACCOUNT, sec, Decimal("6")],

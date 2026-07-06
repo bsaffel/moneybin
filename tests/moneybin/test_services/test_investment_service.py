@@ -66,23 +66,29 @@ def _seed_disposal_and_lots(db: Database) -> None:
     """Materialize + seed the two derived core tables select_lots validates against.
 
     These are SQLMesh-managed in production; ``create_core_dim_stub_views``
-    builds them with the real column shapes for unit tests.
+    builds them with the real column shapes for unit tests. ``sell_1`` trades
+    on 2024-06-15; both lots are acquired well before that so date-validity
+    tests can add a lot acquired *after* it without disturbing these dates.
     """
     create_core_dim_stub_views(db)
     db.conn.execute(
         """
         INSERT INTO core.fct_investment_transactions
-            (investment_transaction_id, account_id, security_id, type, quantity)
-        VALUES ('sell_1', 'acct_brokerage', 'sec_1', 'sell', -10)
+            (investment_transaction_id, account_id, security_id, trade_date,
+             type, quantity)
+        VALUES ('sell_1', 'acct_brokerage', 'sec_1', '2024-06-15', 'sell', -10)
         """  # noqa: S608  # test fixture insert, static SQL
     )
     db.conn.executemany(
         """
         INSERT INTO core.fct_investment_lots
-            (lot_id, account_id, security_id, remaining_quantity)
-        VALUES (?, 'acct_brokerage', 'sec_1', ?)
+            (lot_id, account_id, security_id, acquisition_date, remaining_quantity)
+        VALUES (?, 'acct_brokerage', 'sec_1', ?, ?)
         """,  # noqa: S608  # test fixture insert, static SQL
-        [["lot_a", Decimal("6")], ["lot_b", Decimal("6")]],
+        [
+            ["lot_a", date(2024, 1, 10), Decimal("6")],
+            ["lot_b", date(2024, 3, 20), Decimal("6")],
+        ],
     )
 
 
@@ -1008,6 +1014,50 @@ class TestSelectLots:
             db_service(db).select_lots(
                 "sell_1", [("lot_other", Decimal("5"))], actor="cli"
             )
+
+    def test_lot_acquired_after_disposal_date_rejected(self, db: Database) -> None:
+        # A lot acquired after the disposal's trade date isn't open yet at
+        # replay time — the engine's chronological loop hasn't reached the
+        # acquisition event when it processes this disposal, so the lot is
+        # absent from `_consumption_plan`'s `by_lot_id` and the selection is
+        # silently dropped to FIFO (same silent-wrong-1099-B failure mode as
+        # the cross-position case above, just triggered by date instead of
+        # account/security). Reject it up front instead.
+        _seed_disposal_and_lots(db)  # sell_1 trades 2024-06-15
+        db.conn.execute(
+            """
+            INSERT INTO core.fct_investment_lots
+                (lot_id, account_id, security_id, acquisition_date,
+                 remaining_quantity)
+            VALUES ('lot_future', 'acct_brokerage', 'sec_1', '2024-07-01', 10)
+            """  # noqa: S608  # test fixture insert, static SQL
+        )
+        with pytest.raises(UserError, match="position|lot"):
+            db_service(db).select_lots(
+                "sell_1", [("lot_future", Decimal("5"))], actor="cli"
+            )
+
+    def test_lot_acquired_same_day_as_disposal_accepted(self, db: Database) -> None:
+        # The engine orders same-day acquisitions before disposals
+        # (_SAME_DAY_TYPE_ORDER), so a lot acquired on the disposal's own
+        # trade date IS open by replay time and must be a valid selection.
+        _seed_disposal_and_lots(db)  # sell_1 trades 2024-06-15
+        db.conn.execute(
+            """
+            INSERT INTO core.fct_investment_lots
+                (lot_id, account_id, security_id, acquisition_date,
+                 remaining_quantity)
+            VALUES ('lot_sameday', 'acct_brokerage', 'sec_1', '2024-06-15', 10)
+            """  # noqa: S608  # test fixture insert, static SQL
+        )
+        db_service(db).select_lots(
+            "sell_1", [("lot_sameday", Decimal("5"))], actor="cli"
+        )
+        rows = db.conn.execute(
+            "SELECT lot_id FROM app.lot_selections "
+            "WHERE investment_transaction_id = 'sell_1'"
+        ).fetchall()
+        assert rows == [("lot_sameday",)]
 
     def test_unknown_disposal_hints_at_refresh(self, db: Database) -> None:
         # A just-recorded sell lives in raw until `refresh run` materializes core;
