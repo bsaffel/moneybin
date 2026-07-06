@@ -82,12 +82,13 @@ def _seed_disposal_and_lots(db: Database) -> None:
     db.conn.executemany(
         """
         INSERT INTO core.fct_investment_lots
-            (lot_id, account_id, security_id, acquisition_date, remaining_quantity)
-        VALUES (?, 'acct_brokerage', 'sec_1', ?, ?)
+            (lot_id, account_id, security_id, acquisition_date, original_quantity,
+             remaining_quantity)
+        VALUES (?, 'acct_brokerage', 'sec_1', ?, ?, ?)
         """,  # noqa: S608  # test fixture insert, static SQL
         [
-            ["lot_a", date(2024, 1, 10), Decimal("6")],
-            ["lot_b", date(2024, 3, 20), Decimal("6")],
+            ["lot_a", date(2024, 1, 10), Decimal("6"), Decimal("6")],
+            ["lot_b", date(2024, 3, 20), Decimal("6"), Decimal("6")],
         ],
     )
 
@@ -1077,8 +1078,8 @@ class TestSelectLots:
             """
             INSERT INTO core.fct_investment_lots
                 (lot_id, account_id, security_id, acquisition_date,
-                 remaining_quantity)
-            VALUES ('lot_sameday', 'acct_brokerage', 'sec_1', '2024-06-15', 10)
+                 original_quantity, remaining_quantity)
+            VALUES ('lot_sameday', 'acct_brokerage', 'sec_1', '2024-06-15', 10, 10)
             """  # noqa: S608  # test fixture insert, static SQL
         )
         db_service(db).select_lots(
@@ -1089,6 +1090,75 @@ class TestSelectLots:
             "WHERE investment_transaction_id = 'sell_1'"
         ).fetchall()
         assert rows == [("lot_sameday",)]
+
+    def test_lot_already_closed_by_earlier_disposal_rejected(
+        self, db: Database
+    ) -> None:
+        # lot_a (original_quantity=6) was already fully consumed by an
+        # earlier disposal (sell_earlier, 2024-04-01, before sell_1's
+        # 2024-06-15). At replay time sell_1 sees lot_a with
+        # remaining_quantity=0 in `_consumption_plan`'s `by_lot_id` and
+        # silently skips it, falling to FIFO for the full amount — the same
+        # silent-wrong-1099-B failure mode as an unavailable-by-date lot.
+        _seed_disposal_and_lots(db)  # sell_1 trades 2024-06-15, lot_a qty=6
+        db.conn.execute(
+            """
+            INSERT INTO core.fct_investment_transactions
+                (investment_transaction_id, account_id, security_id, trade_date,
+                 type, quantity)
+            VALUES ('sell_earlier', 'acct_brokerage', 'sec_1', '2024-04-01',
+                    'sell', -6)
+            """  # noqa: S608  # test fixture insert, static SQL
+        )
+        db.conn.execute(
+            """
+            INSERT INTO core.fct_realized_gains
+                (realized_gain_id, account_id, security_id, disposal_txn_id,
+                 lot_id, quantity, acquisition_date, disposal_date, proceeds,
+                 cost_basis, gain_loss, term, cost_basis_method,
+                 basis_incomplete, currency_code)
+            VALUES ('rg_1', 'acct_brokerage', 'sec_1', 'sell_earlier', 'lot_a',
+                    6, '2024-01-10', '2024-04-01', 600.00, 500.00, 100.00,
+                    'short', 'fifo', false, 'USD')
+            """  # noqa: S608  # test fixture insert, static SQL
+        )
+        with pytest.raises(UserError, match="position|lot"):
+            db_service(db).select_lots("sell_1", [("lot_a", Decimal("6"))], actor="cli")
+
+    def test_lot_partially_consumed_by_earlier_disposal_caps_selection(
+        self, db: Database
+    ) -> None:
+        # lot_a (original_quantity=6) had 4 units drawn by an earlier
+        # disposal, leaving 2 available as of sell_1's trade date. Selecting
+        # more than that available remainder must be rejected — the
+        # requested-but-unavailable units would otherwise silently fall to
+        # FIFO instead of raising.
+        _seed_disposal_and_lots(db)
+        db.conn.execute(
+            """
+            INSERT INTO core.fct_investment_transactions
+                (investment_transaction_id, account_id, security_id, trade_date,
+                 type, quantity)
+            VALUES ('sell_earlier', 'acct_brokerage', 'sec_1', '2024-04-01',
+                    'sell', -4)
+            """  # noqa: S608  # test fixture insert, static SQL
+        )
+        db.conn.execute(
+            """
+            INSERT INTO core.fct_realized_gains
+                (realized_gain_id, account_id, security_id, disposal_txn_id,
+                 lot_id, quantity, acquisition_date, disposal_date, proceeds,
+                 cost_basis, gain_loss, term, cost_basis_method,
+                 basis_incomplete, currency_code)
+            VALUES ('rg_1', 'acct_brokerage', 'sec_1', 'sell_earlier', 'lot_a',
+                    4, '2024-01-10', '2024-04-01', 400.00, 333.33, 66.67,
+                    'short', 'fifo', false, 'USD')
+            """  # noqa: S608  # test fixture insert, static SQL
+        )
+        with pytest.raises(UserError, match="position|lot"):
+            db_service(db).select_lots("sell_1", [("lot_a", Decimal("3"))], actor="cli")
+        # The 2 units still available are a valid selection.
+        db_service(db).select_lots("sell_1", [("lot_a", Decimal("2"))], actor="cli")
 
     def test_unknown_disposal_hints_at_refresh(self, db: Database) -> None:
         # A just-recorded sell lives in raw until `refresh run` materializes core;

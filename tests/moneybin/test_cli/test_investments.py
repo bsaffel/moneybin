@@ -538,10 +538,14 @@ class TestLotsSelect:
         db.conn.executemany(
             """
             INSERT INTO core.fct_investment_lots
-                (lot_id, account_id, security_id, acquisition_date, remaining_quantity)
-            VALUES (?, 'acct_brokerage', 'sec_1', '2024-01-10', ?)
+                (lot_id, account_id, security_id, acquisition_date,
+                 original_quantity, remaining_quantity)
+            VALUES (?, 'acct_brokerage', 'sec_1', '2024-01-10', ?, ?)
             """,  # noqa: S608  # test fixture insert, static SQL
-            [["lot_a", Decimal("6")], ["lot_b", Decimal("6")]],
+            [
+                ["lot_a", Decimal("6"), Decimal("6")],
+                ["lot_b", Decimal("6"), Decimal("6")],
+            ],
         )
 
         select_result = runner.invoke(
@@ -605,8 +609,9 @@ class TestLotsSelect:
         db.conn.execute(
             """
             INSERT INTO core.fct_investment_lots
-                (lot_id, account_id, security_id, acquisition_date, remaining_quantity)
-            VALUES ('lot_a', 'acct_brokerage', 'sec_1', '2024-01-10', 5)
+                (lot_id, account_id, security_id, acquisition_date,
+                 original_quantity, remaining_quantity)
+            VALUES ('lot_a', 'acct_brokerage', 'sec_1', '2024-01-10', 5, 5)
             """  # noqa: S608  # test fixture insert, static SQL
         )
         result = runner.invoke(

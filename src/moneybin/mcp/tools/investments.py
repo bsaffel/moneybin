@@ -472,6 +472,11 @@ def investments_lots_select(
                 for lot_id, qty in parsed
             ],
         ),
+        actions=[
+            "Use refresh_run to materialize the updated selection into "
+            "core.fct_realized_gains",
+            "Use investments_gains to see the updated allocation",
+        ],
     )
 
 

@@ -1352,7 +1352,11 @@ class InvestmentService:
 
         if selections:
             self._validate_selection_lots(
-                selections, disposal_account_id, disposal_security_id, disposal_date
+                selections,
+                disposal_account_id,
+                disposal_security_id,
+                disposal_txn_id,
+                disposal_date,
             )
             total = sum((qty for _, qty in selections), Decimal("0"))
             available = abs(Decimal(str(disposal_quantity)))
@@ -1378,21 +1382,27 @@ class InvestmentService:
         selections: list[tuple[str, Decimal]],
         account_id: str,
         security_id: str | None,
+        disposal_txn_id: str,
         disposal_date: date,
     ) -> None:
-        """Raise unless every selected lot was open by the disposal's trade date.
+        """Raise unless every selected lot has enough quantity open at replay time.
 
         A lot is valid only if it exists in ``core.fct_investment_lots``,
-        belongs to the disposal's ``(account_id, security_id)``, AND was
-        acquired on or before ``disposal_date``. All three are load-bearing:
-        the engine's chronological replay (``compute_lots_and_gains``) only
-        adds a lot to the group's open-lot list once its acquisition event has
-        been processed, so a lot from another position *or* one acquired after
-        this disposal isn't in ``_consumption_plan``'s ``by_lot_id`` yet at
-        replay time — the selection is silently dropped to a FIFO fallback,
+        belongs to the disposal's ``(account_id, security_id)``, was acquired
+        on or before ``disposal_date``, AND has enough quantity left after
+        subtracting whatever earlier disposals (by ``core.fct_realized_gains``)
+        already drew from it. All four are load-bearing: the engine's
+        chronological replay (``compute_lots_and_gains``) mutates each lot's
+        ``remaining_quantity`` in place as it consumes disposals in trade-date
+        order, so a lot from another position, one acquired after this
+        disposal, or one already exhausted (fully or partially) by an earlier
+        disposal isn't available for the full requested quantity in
+        ``_consumption_plan``'s ``by_lot_id`` at replay time — the selection
+        (or its unavailable remainder) is silently dropped to a FIFO fallback,
         producing a wrong 1099-B with no error. Same-day acquisitions ARE
         valid: ``_SAME_DAY_TYPE_ORDER`` processes acquisitions before disposals
-        on a shared trade date.
+        on a shared trade date; the "earlier disposal" comparison excludes this
+        disposal's own already-materialized realized-gain rows.
         """
         for lot_id, qty in selections:
             if qty <= 0:
@@ -1400,23 +1410,44 @@ class InvestmentService:
                     f"Lot selection quantity for {lot_id!r} must be positive.",
                     code=error_codes.MUTATION_INVALID_INPUT,
                 )
-        lot_ids = [lot_id for lot_id, _ in selections]
+        requested = dict(selections)
+        lot_ids = list(requested)
         placeholders = ", ".join("?" * len(lot_ids))
-        found = {
-            str(r[0])
-            for r in self._db.execute(
-                f"SELECT lot_id FROM {FCT_INVESTMENT_LOTS.full_name} "  # noqa: S608  # TableRef constant
-                f"WHERE lot_id IN ({placeholders}) "
-                "AND account_id = ? AND security_id = ? AND acquisition_date <= ?",
-                [*lot_ids, account_id, security_id, disposal_date],
-            ).fetchall()
-        }
-        missing = [lot_id for lot_id in lot_ids if lot_id not in found]
-        if missing:
+        rows = self._db.execute(
+            f"SELECT l.lot_id, l.original_quantity, "  # noqa: S608  # TableRef constant
+            "COALESCE(SUM(g.quantity), 0) "
+            f"FROM {FCT_INVESTMENT_LOTS.full_name} l "
+            f"LEFT JOIN {FCT_REALIZED_GAINS.full_name} g "
+            "ON g.lot_id = l.lot_id AND g.disposal_txn_id != ? "
+            "AND (g.disposal_date < ? "
+            "OR (g.disposal_date = ? AND g.disposal_txn_id < ?)) "
+            f"WHERE l.lot_id IN ({placeholders}) "
+            "AND l.account_id = ? AND l.security_id = ? "
+            "AND l.acquisition_date <= ? "
+            "GROUP BY l.lot_id, l.original_quantity",
+            [
+                disposal_txn_id,
+                disposal_date,
+                disposal_date,
+                disposal_txn_id,
+                *lot_ids,
+                account_id,
+                security_id,
+                disposal_date,
+            ],
+        ).fetchall()
+        available = {str(r[0]): Decimal(str(r[1])) - Decimal(str(r[2])) for r in rows}
+        problems = [
+            lot_id
+            for lot_id in lot_ids
+            if lot_id not in available or requested[lot_id] > available[lot_id]
+        ]
+        if problems:
             raise UserError(
-                "Lot(s) not part of this disposal's position as of its trade "
-                f"date (account/security/acquisition date): "
-                f"{', '.join(repr(m) for m in missing)}.",
+                "Lot(s) not part of this disposal's position, or already "
+                "exhausted by an earlier disposal, as of its trade date "
+                f"(account/security/acquisition date/available quantity): "
+                f"{', '.join(repr(m) for m in problems)}.",
                 code=error_codes.MUTATION_NOT_FOUND,
                 hint=_REFRESH_MATERIALIZE_HINT,
             )
