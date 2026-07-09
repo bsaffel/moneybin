@@ -144,7 +144,9 @@ def investments_securities_set(
         "--method",
         help=(
             "Cost-basis method: fifo, hifo, specific, or average "
-            "(average requires mutual_fund or etf)"
+            "(average requires mutual_fund or etf). Changing this recomputes "
+            "cost basis and gains for ALL of this security's past disposals "
+            "on the next refresh_run, not just future ones."
         ),
     ),
     currency: str | None = typer.Option(
@@ -155,7 +157,11 @@ def investments_securities_set(
     """Update one or more fields of an existing security (partial update).
 
     Unset flags leave the existing value untouched; ``security_type`` is not
-    settable here (immutable post-creation in v1).
+    settable here (immutable post-creation in v1). ``--method`` applies
+    retroactively: core.fct_investment_lots/fct_realized_gains re-derive the
+    full history from the current method on every refresh, so changing it
+    after a disposal was realized silently recomputes that disposal's cost
+    basis (v1 does not enforce IRS election lock-in).
     """
     if all(
         v is None

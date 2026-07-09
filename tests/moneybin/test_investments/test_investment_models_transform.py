@@ -345,3 +345,83 @@ def test_transform_specific_id_selection_redirects_consumption(db: Database) -> 
     assert lot_id == newer_lot_id
     # 5 units at the newer lot's $30/unit, not FIFO's $10/unit ($50).
     assert cost_basis == Decimal("150.00")
+
+
+@pytest.mark.slow
+def test_transform_method_change_retroactively_rewrites_realized_gains(
+    db: Database,
+) -> None:
+    """Changing cost_basis_method after a disposal is realized rewrites it.
+
+    ``core.fct_investment_lots``/``core.fct_realized_gains`` are ``kind="FULL"``
+    models that re-derive the ENTIRE history from the CURRENT
+    ``cost_basis_method`` on every refresh (Mirror, don't enforce —
+    ``investments-data-model.md``: v1 does not enforce IRS election lock-in).
+    A sell already realized under one method silently gets a different cost
+    basis on the next refresh if the method changes afterward, with no error
+    or warning — an accepted v1 design choice, pinned here so it isn't lost.
+    """
+    db.execute(
+        """
+        INSERT INTO app.securities
+            (security_id, name, security_type, currency_code, cost_basis_method)
+        VALUES (?, 'Test Security', 'equity', 'USD', 'fifo')
+        """,  # noqa: S608  # test fixture, not executing user SQL
+        [_SECURITY_ID],
+    )
+    _insert_investment_txn(
+        db,
+        source_txn_id="manual_buy_old",
+        investment_txn_id="inv_buy_old",
+        txn_type="buy",
+        trade_date="2024-01-01",
+        quantity="10",
+        amount="-100.00",  # $10/unit — FIFO's natural (cheaper, older) pick
+        created_at="2024-01-01 09:00:00",
+    )
+    _insert_investment_txn(
+        db,
+        source_txn_id="manual_buy_new",
+        investment_txn_id="inv_buy_new",
+        txn_type="buy",
+        trade_date="2024-02-01",
+        quantity="10",
+        amount="-300.00",  # $30/unit — HIFO's pick once the method flips
+        created_at="2024-02-01 09:00:00",
+    )
+    _insert_investment_txn(
+        db,
+        source_txn_id="manual_sell_1",
+        investment_txn_id="inv_sell_1",
+        txn_type="sell",
+        trade_date="2024-03-01",
+        quantity="-5",
+        amount="200.00",
+        created_at="2024-03-01 10:00:00",
+    )
+
+    result = TransformService(db).apply()
+    assert result.applied, f"transform apply failed: {result.error}"
+    fifo_cost_basis = db.execute(
+        "SELECT cost_basis FROM core.fct_realized_gains "
+        "WHERE disposal_txn_id = 'inv_sell_1'"
+    ).fetchone()
+    assert fifo_cost_basis is not None
+    # 5 units at the older lot's $10/unit.
+    assert fifo_cost_basis[0] == Decimal("50.00")
+
+    db.execute(
+        "UPDATE app.securities SET cost_basis_method = 'hifo' WHERE security_id = ?",  # noqa: S608  # test fixture, not executing user SQL
+        [_SECURITY_ID],
+    )
+    result = TransformService(db).apply()
+    assert result.applied, f"transform apply failed: {result.error}"
+    hifo_cost_basis = db.execute(
+        "SELECT cost_basis FROM core.fct_realized_gains "
+        "WHERE disposal_txn_id = 'inv_sell_1'"
+    ).fetchone()
+    assert hifo_cost_basis is not None
+    # Same already-realized disposal, no new transactions — but the FULL
+    # model re-derives from scratch under the new method, so the cost basis
+    # silently changes to the newer lot's $30/unit.
+    assert hifo_cost_basis[0] == Decimal("150.00")

@@ -377,7 +377,11 @@ def investments_securities_set(
     `cost_basis_method` (fifo, hifo, specific, or average) is a per-security
     override of the account/global default; "average" is valid only for
     mutual_fund or etf securities and raises mutation_invalid_input on any
-    other security_type.
+    other security_type. Changing it on an update applies retroactively:
+    core.fct_investment_lots/fct_realized_gains re-derive the full history
+    from the current method on every refresh_run, so a disposal already
+    realized under the old method silently gets a different cost basis (v1
+    does not enforce IRS election lock-in).
 
     Mutation surface: writes app.securities. No delete tool exists for
     catalog entries in v1; revert by calling again with the prior values.
