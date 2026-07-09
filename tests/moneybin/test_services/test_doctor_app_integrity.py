@@ -24,9 +24,11 @@ from moneybin.repositories.balance_assertions_repo import BalanceAssertionsRepo
 from moneybin.repositories.budgets_repo import BudgetsRepo
 from moneybin.repositories.categorization_rules_repo import CategorizationRulesRepo
 from moneybin.repositories.imports_repo import ImportsRepo
+from moneybin.repositories.lot_selections_repo import LotSelectionsRepo
 from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
 from moneybin.repositories.pdf_formats_repo import PdfFormatsRepo
 from moneybin.repositories.proposed_rules_repo import ProposedRulesRepo
+from moneybin.repositories.securities_repo import SecuritiesRepo
 from moneybin.repositories.tabular_formats_repo import TabularFormatsRepo
 from moneybin.repositories.transaction_categories_repo import (
     TransactionCategoriesRepo,
@@ -44,9 +46,11 @@ from moneybin.tables import (
     BUDGETS,
     CATEGORIZATION_RULES,
     IMPORTS,
+    LOT_SELECTIONS,
     MATCH_DECISIONS,
     PDF_FORMATS,
     PROPOSED_RULES,
+    SECURITIES,
     TABULAR_FORMATS,
     TRANSACTION_CATEGORIES,
     USER_CATEGORIES,
@@ -550,6 +554,8 @@ def test_run_all_includes_app_integrity_invariants(db: Database) -> None:
     assert "app_pdf_formats_recipe_validity" in names
     assert "app_pdf_formats_bounds" in names
     assert "app_pdf_formats_fingerprint_shape" in names
+    assert "app_audit_coverage_securities" in names
+    assert "app_audit_coverage_lot_selections" in names
 
 
 # ---------------------------------------------------------------------------
@@ -624,6 +630,52 @@ def test_audit_coverage_passes_for_repo_mutated_budget(db: Database) -> None:
     )
     result = DoctorService(db)._run_app_audit_coverage(BUDGETS, "budget_id")
     assert result.status == "pass"
+
+
+def test_audit_coverage_passes_for_repo_mutated_security(db: Database) -> None:
+    SecuritiesRepo(db).upsert(
+        security_id=None, name="Apple Inc.", security_type="equity", actor="cli"
+    )
+    result = DoctorService(db)._run_app_audit_coverage(SECURITIES, "security_id")
+    assert result.status == "pass"
+
+
+def test_audit_coverage_flags_bypass_security(db: Database) -> None:
+    db.execute(
+        "INSERT INTO app.securities (security_id, name, security_type) "  # noqa: S608  # test input, not executing user SQL
+        "VALUES ('bypass_sec', 'Sneaky Corp', 'equity')"
+    )
+    result = DoctorService(db)._run_app_audit_coverage(SECURITIES, "security_id")
+    assert result.status == "fail"
+    assert "bypass_sec" in result.affected_ids
+
+
+def test_audit_coverage_passes_for_repo_mutated_lot_selection(db: Database) -> None:
+    # lot_selections.set audits the whole disposal as ONE row (collection-shaped
+    # before/after), not one audit row per (investment_transaction_id, lot_id) —
+    # the coverage check keys on investment_transaction_id alone to match.
+    LotSelectionsRepo(db).set_for_disposal(
+        investment_transaction_id="sell_cov",
+        selections=[("lot_a", Decimal("2"))],
+        actor="cli",
+    )
+    result = DoctorService(db)._run_app_audit_coverage(
+        LOT_SELECTIONS, "investment_transaction_id", updated_col="created_at"
+    )
+    assert result.status == "pass"
+
+
+def test_audit_coverage_flags_bypass_lot_selection(db: Database) -> None:
+    db.execute(
+        "INSERT INTO app.lot_selections "  # noqa: S608  # test input, not executing user SQL
+        "(investment_transaction_id, lot_id, quantity) "
+        "VALUES ('bypass_sell', 'lot_x', 3)"
+    )
+    result = DoctorService(db)._run_app_audit_coverage(
+        LOT_SELECTIONS, "investment_transaction_id", updated_col="created_at"
+    )
+    assert result.status == "fail"
+    assert "bypass_sell" in result.affected_ids
 
 
 def test_account_settings_account_fk_flags_orphan(db: Database) -> None:

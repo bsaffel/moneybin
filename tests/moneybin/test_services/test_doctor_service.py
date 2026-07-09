@@ -699,19 +699,20 @@ def test_run_all_returns_expected_invariants(
     monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
     svc = DoctorService(doctor_db)
     report = svc.run_all()
-    # 3 sqlmesh audits + dedup_reconciliation + categorization + 25 app.* integrity
+    # 3 sqlmesh audits + dedup_reconciliation + categorization + 27 app.* integrity
     # checks (audit coverage for user_categories / category_overrides /
     # gsheet_connections / user_merchants / categorization_rules / proposed_rules /
     # transaction_categories / account_settings / balance_assertions / budgets /
-    # tabular_formats / match_decisions / imports / pdf_formats + user_categories
-    # uniqueness + user_merchants orphans + proposed_rules->rule FK +
-    # transaction_categories->fct FK + account_settings->dim_accounts FK +
-    # balance_assertions->dim_accounts FK + budgets->dim_categories FK +
-    # match_decisions->dim_accounts FK + pdf_formats recipe-validity / bounds /
-    # fingerprint-shape) + orphan_app_state (PR4: scans transaction_notes /
-    # transaction_tags vs core) + account_links / account_link_decisions /
-    # transaction_id_aliases audit coverage (M1S).
-    assert len(report.invariants) == 34
+    # tabular_formats / match_decisions / imports / pdf_formats / securities /
+    # lot_selections + user_categories uniqueness + user_merchants orphans +
+    # proposed_rules->rule FK + transaction_categories->fct FK +
+    # account_settings->dim_accounts FK + balance_assertions->dim_accounts FK +
+    # budgets->dim_categories FK + match_decisions->dim_accounts FK +
+    # pdf_formats recipe-validity / bounds / fingerprint-shape) +
+    # orphan_app_state (PR4: scans transaction_notes / transaction_tags vs
+    # core) + account_links / account_link_decisions / transaction_id_aliases
+    # audit coverage (M1S).
+    assert len(report.invariants) == 36
     names = [r.name for r in report.invariants]
     assert "fct_transactions_fk_integrity" in names
     assert "fct_transactions_sign_convention" in names
@@ -727,6 +728,8 @@ def test_run_all_returns_expected_invariants(
     assert "app_audit_coverage_tabular_formats" in names
     assert "app_audit_coverage_match_decisions" in names
     assert "app_audit_coverage_imports" in names
+    assert "app_audit_coverage_securities" in names
+    assert "app_audit_coverage_lot_selections" in names
     assert "app_user_categories_uniqueness" in names
     assert "app_account_settings_account_fk" in names
     assert "app_balance_assertions_account_fk" in names
